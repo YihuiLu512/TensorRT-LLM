@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 import os
 from typing import Dict, List, Optional, Union
 
@@ -404,16 +407,28 @@ class KvCacheCreator:
 
         fraction = self._kv_cache_config.free_gpu_memory_fraction
 
+        # Before estimating KV cache capacity, a warm-up step reserves inactive GPU memory in
+        # torch as cache , and this reserved space is non-negligible (commit-2ee7dbae). Since
+        # this cache is managed in torch memory while KV cache is managed in non-torch memory,
+        # they cannot be shared. Therefore, this reserved space must also be excluded when
+        # calculating available KV cache space to avoid potential OOM.
+        torch_reserved_bytes = torch.cuda.memory_stats(
+        )["reserved_bytes.all.current"]
+
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
         end, total_gpu_memory = torch.cuda.mem_get_info()
         total_used_bytes = total_gpu_memory - end
         model_bytes = torch.cuda.memory_stats()["allocated_bytes.all.current"]
+        warmup_cached_byte = torch_reserved_bytes - model_bytes
         logger.info(
             f"Memory used after loading model weights (inside torch) in memory usage profiling: {model_bytes / (GB):.2f} GiB"
         )
         logger.info(
             f"Memory used after loading model weights (outside torch) in memory usage profiling: {((total_used_bytes - model_bytes) if total_used_bytes > model_bytes else 0) / (GB):.2f} GiB"
+        )
+        logger.info(
+            f"Memory cached after loading warmup (inside torch) in memory usage profiling: {warmup_cached_byte / (GB):.2f} GiB"
         )
 
         if py_executor is not None and not self._skip_est:
@@ -467,7 +482,7 @@ class KvCacheCreator:
             total_used_bytes = total_gpu_memory - end
             activation_bytes = torch_peak_memory - model_bytes
             extra_cost = max(total_used_bytes - torch_used_bytes, 0)
-            peak_memory = torch_peak_memory + extra_cost
+            peak_memory = torch_peak_memory + extra_cost + warmup_cached_byte
             logger.info(
                 f"Memory dynamically allocated during inference (inside torch) in memory usage profiling: {activation_bytes / (GB):.2f} GiB"
             )
@@ -476,7 +491,7 @@ class KvCacheCreator:
             )
 
         else:
-            peak_memory = total_used_bytes
+            peak_memory = total_used_bytes + warmup_cached_byte
             allocated_bytes = 0
             activation_bytes = 0
 
