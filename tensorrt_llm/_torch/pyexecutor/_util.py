@@ -175,18 +175,27 @@ class KvCacheCreator:
         return kv_size_per_token
 
     def _cal_max_memory(self, peak_memory, total_gpu_memory, fraction,
-                        allocated_bytes: int) -> int:
+                        allocated_bytes: int, warmup_cached_byte: int) -> int:
         """
         Calculate the max KV cache capacity.
 
         NOTE: `allocated_bytes` is the total KV-cache memory that must be pre-allocated during the estimation phase (for both the main and draft models) so the estimation run can complete successfully. When computing `available_kv_mem`, add this amount back in.
+        NOTE: `warmup_cached_byte` is the torch-inactive memory during warm-up (or 0 if warm-up is skipped). It should be subtracted when calculating available_kv_mem to avoid OOM. It should not be reserved by scaling with a fraction, as that would reduce KV cache capacity too much and break backward compatibility with the fraction semantics.
         """
         kv_size_per_token = self._get_kv_size_per_token()
 
-        available_kv_mem = (total_gpu_memory - peak_memory +
-                            allocated_bytes) * fraction
+        headroom = (
+            0.5 * GB
+        ) if warmup_cached_byte else 0  # headroom for lazy-allocation like cublas workspace
+        base_free_mem = (total_gpu_memory - peak_memory + allocated_bytes)
+        warmup_reservation = min(headroom + warmup_cached_byte, base_free_mem)
+        fraction_reservation = base_free_mem * (1 - fraction)
+        reserved_mem = max(warmup_reservation, fraction_reservation)
+        available_kv_mem = base_free_mem - reserved_mem
+        assert available_kv_mem >= 0, f'available_kv_mem should >= 0, now = {available_kv_mem}'
         logger.info(
             f"Peak memory during memory usage profiling (torch + non-torch): {peak_memory / (GB):.2f} GiB, "
+            f"warmup allocated memory(+headroom) usage profiling: {warmup_reservation / (GB):.2f} GiB, "
             f"available KV cache memory when calculating max tokens: {available_kv_mem / (GB):.2f} GiB, "
             f"fraction is set {fraction}, kv size per token is {kv_size_per_token}. device total memory {total_gpu_memory / (GB):.2f} GiB, "
             f"temporary kv cache memory during profiling {allocated_bytes / (GB):.2f} GiB"
@@ -412,24 +421,28 @@ class KvCacheCreator:
         # this cache is managed in torch memory while KV cache is managed in non-torch memory,
         # they cannot be shared. Therefore, this reserved space must also be excluded when
         # calculating available KV cache space to avoid potential OOM.
-        torch_reserved_bytes = torch.cuda.memory_stats(
-        )["reserved_bytes.all.current"]
+        if py_executor is not None:
+            torch_reserved_bytes = torch.cuda.memory_stats(
+            )["reserved_bytes.all.current"]
 
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
         end, total_gpu_memory = torch.cuda.mem_get_info()
         total_used_bytes = total_gpu_memory - end
         model_bytes = torch.cuda.memory_stats()["allocated_bytes.all.current"]
-        warmup_cached_byte = torch_reserved_bytes - model_bytes
         logger.info(
             f"Memory used after loading model weights (inside torch) in memory usage profiling: {model_bytes / (GB):.2f} GiB"
         )
         logger.info(
             f"Memory used after loading model weights (outside torch) in memory usage profiling: {((total_used_bytes - model_bytes) if total_used_bytes > model_bytes else 0) / (GB):.2f} GiB"
         )
-        logger.info(
-            f"Memory cached after loading warmup (inside torch) in memory usage profiling: {warmup_cached_byte / (GB):.2f} GiB"
-        )
+        if py_executor is not None:
+            warmup_cached_byte = torch_reserved_bytes - model_bytes
+            logger.info(
+                f"Memory cached after loading warmup (inside torch) in memory usage profiling: {warmup_cached_byte / (GB):.2f} GiB"
+            )
+        else:
+            warmup_cached_byte = 0
 
         if py_executor is not None and not self._skip_est:
             py_executor.set_gather_responses(True)
@@ -482,7 +495,7 @@ class KvCacheCreator:
             total_used_bytes = total_gpu_memory - end
             activation_bytes = torch_peak_memory - model_bytes
             extra_cost = max(total_used_bytes - torch_used_bytes, 0)
-            peak_memory = torch_peak_memory + extra_cost + warmup_cached_byte
+            peak_memory = torch_peak_memory + extra_cost
             logger.info(
                 f"Memory dynamically allocated during inference (inside torch) in memory usage profiling: {activation_bytes / (GB):.2f} GiB"
             )
@@ -491,14 +504,15 @@ class KvCacheCreator:
             )
 
         else:
-            peak_memory = total_used_bytes + warmup_cached_byte
+            peak_memory = total_used_bytes
             allocated_bytes = 0
             activation_bytes = 0
 
         # calculate max memory from peak memory and free gpu memory fraction
         kv_cache_max_memory = self._cal_max_memory(peak_memory,
                                                    total_gpu_memory, fraction,
-                                                   allocated_bytes)
+                                                   allocated_bytes,
+                                                   warmup_cached_byte)
 
         # NOTE:
         # For KVCacheManager, KvCacheCreator currently controls capacity using two parameters in KVCacheConfig:
