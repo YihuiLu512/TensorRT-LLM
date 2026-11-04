@@ -378,6 +378,15 @@ commands:
         is_flag: true
         flags:
         - "--openengine-enable-load-metrics"
+      openengine_endpoint:
+        type: str
+        default: null
+        status: prototype
+        required: false
+        multiple: false
+        is_flag: false
+        flags:
+        - "--openengine-endpoint"
       openengine_metrics_host:
         type: str
         default: null

@@ -18,8 +18,10 @@ import contextlib
 import gc
 import importlib
 import inspect
+import ipaddress
 import json
 import os
+import re
 import secrets
 import signal
 import socket
@@ -584,10 +586,14 @@ def _share_prometheus_multiproc_dir(llm, ipc_dir: str) -> None:
             f"Shared PROMETHEUS_MULTIPROC_DIR for all frontends: {path}")
 
 
-def _resolve_default_num_serve_frontends(llm_args: dict, *, requested: bool,
-                                         port: int, grpc: bool,
+def _resolve_default_num_serve_frontends(llm_args: dict,
+                                         *,
+                                         requested: bool,
+                                         port: int,
+                                         grpc: bool,
                                          report_addr: Optional[str],
-                                         enable_sleep_mode: bool) -> None:
+                                         enable_sleep_mode: bool,
+                                         openengine: bool = False) -> None:
     """Fall back to one frontend where the default count cannot run.
 
     An explicit count (CLI, --config YAML or --set) is left alone, so the
@@ -607,6 +613,8 @@ def _resolve_default_num_serve_frontends(llm_args: dict, *, requested: bool,
         reason = "enable_resource_governor"
     elif enable_sleep_mode:
         reason = "--enable_sleep_mode"
+    elif openengine:
+        reason = "--openengine-endpoint"
     else:
         return
     logger.info(
@@ -1337,6 +1345,16 @@ def launch_visual_gen_server(
     "a middleware class or an async HTTP middleware function.",
     status="prototype")
 @stability_option(
+    "--openengine-endpoint",
+    type=str,
+    default=None,
+    help="Serve the OpenAI API from an external OpenEngine v1 engine at "
+    "host:port instead of loading the model. MODEL must be a local directory "
+    "holding the model config, and the tokenizer unless --tokenizer is given. "
+    "The engine owns the executor and the sampling defaults: options for them "
+    "are ignored or rejected.",
+    status="prototype")
+@stability_option(
     "--grpc",
     is_flag=True,
     default=False,
@@ -1476,12 +1494,49 @@ def serve(
     report_addr: Optional[str],
     enable_locality_domains: bool,
     enable_sleep_mode: bool,
+    openengine_endpoint: Optional[str],
 ) -> None:
     """Running an OpenAI API compatible server
 
     MODEL: model name or Hugging Face checkpoint path
     """
     logger.set_level(log_level)
+    if openengine_endpoint is not None:
+        conflicting = {
+            "--grpc": grpc,
+            "--enable_sleep_mode": enable_sleep_mode,
+            "--server_role": server_role,
+            "--metadata_server_config_file": metadata_server_config_file,
+            "--disagg_cluster_uri": disagg_cluster_uri,
+            "--visual_gen_args": visual_gen_args,
+            "--enable_visual_gen": enable_visual_gen,
+            "--report_addr": report_addr,
+            "--port 0": port == 0,
+        }
+        used = [name for name, value in conflicting.items() if value]
+        if used:
+            raise click.UsageError(
+                f"--openengine-endpoint cannot be combined with {', '.join(used)}"
+            )
+        engine_host, _, engine_port = openengine_endpoint.rpartition(":")
+        if engine_host.startswith("[") and engine_host.endswith("]"):
+            try:
+                ipaddress.IPv6Address(engine_host[1:-1])
+                valid_host = True
+            except ValueError:
+                valid_host = False
+        else:
+            valid_host = re.fullmatch(r"[A-Za-z0-9._-]+",
+                                      engine_host) is not None
+        if (not valid_host or not engine_port.isascii()
+                or not engine_port.isdigit()
+                or not 0 < int(engine_port) < 65536):
+            raise click.UsageError(
+                "--openengine-endpoint must be host:port, with an IPv6 host "
+                f"in brackets as in [::1]:8000, got {openengine_endpoint!r}")
+        if gpus_per_node is None:
+            # No executor runs here, so the node needs no GPU.
+            gpus_per_node = 1
     if enable_sleep_mode and backend != "pytorch":
         raise click.UsageError(
             "--enable_sleep_mode is only supported by the PyTorch backend.")
@@ -1594,11 +1649,13 @@ def serve(
             "text-generation server.")
 
     def _serve_llm():
-        try:
-            from tensorrt_llm.usage.usage_lib import _mark_llm_startup
-            _mark_llm_startup()
-        except Exception:
-            pass
+        # The OpenEngine path never builds an LLM, so it is not an LLM startup.
+        if openengine_endpoint is None:
+            try:
+                from tensorrt_llm.usage.usage_lib import _mark_llm_startup
+                _mark_llm_startup()
+            except Exception:
+                pass
         nonlocal server_role, allow_request_chat_template
         llm_args, _ = get_llm_args(
             model=model,
@@ -1667,15 +1724,18 @@ def serve(
             port=port,
             grpc=grpc,
             report_addr=report_addr,
-            enable_sleep_mode=enable_sleep_mode)
+            enable_sleep_mode=enable_sleep_mode,
+            openengine=openengine_endpoint is not None)
 
         _apply_effective_telemetry_config(llm_args, telemetry=telemetry)
         # Preserve requested settings for failures before entering the LLM constructor.
-        try:
-            from tensorrt_llm.usage.usage_lib import _capture_startup_context
-            _capture_startup_context(requested=llm_args)
-        except Exception:
-            pass
+        if openengine_endpoint is None:
+            try:
+                from tensorrt_llm.usage.usage_lib import \
+                    _capture_startup_context
+                _capture_startup_context(requested=llm_args)
+            except Exception:
+                pass
 
         metadata_server_cfg = parse_metadata_server_config_file(
             metadata_server_config_file)
@@ -1683,6 +1743,19 @@ def serve(
         # Specify disagg_cluster_config in config file or through command line "--disagg_cluster_uri",
         # but disagg_cluster_uri takes precedence over cluster uri in config file
         disagg_cluster_config = llm_args.pop("disagg_cluster", None)
+        if openengine_endpoint is not None:
+            unsupported = {
+                "internal_request_auth_key": internal_disagg_auth_key,
+                "disagg_cluster": disagg_cluster_config,
+                # An output guardrail must not be skipped silently.
+                "post_processor_hook": llm_args.get("post_processor_hook"),
+                # Tracing is set up by LLM, which this path does not build.
+                "otlp_traces_endpoint": llm_args.get("otlp_traces_endpoint"),
+            }
+            used = [name for name, value in unsupported.items() if value]
+            if used:
+                raise click.UsageError(
+                    f"--openengine-endpoint does not support {', '.join(used)}")
         if disagg_cluster_config:
             disagg_cluster_config = extract_disagg_cluster_config(
                 disagg_cluster_config, disagg_cluster_uri)
@@ -1788,6 +1861,34 @@ def serve(
                         metrics_port=8001 if openengine_metrics_port is None
                         else openengine_metrics_port,
                         subagent_affinity_auth_key=internal_disagg_auth_key)
+        elif openengine_endpoint is not None:
+            try:
+                from tensorrt_llm.serve.openengine_poc.launch import \
+                    launch_openengine_server
+            except ImportError as error:
+                raise click.ClickException(
+                    f"Failed to import the OpenEngine client: {error}. "
+                    "Restore its runtime with `python -m pip install "
+                    "\"grpcio>=1.73.1,<2\" "
+                    "\"grpcio-health-checking>=1.73.1,<1.82\" "
+                    "\"protobuf>=6.30.2,<7\" \"uvloop>=0.19.0,<0.23.0\"`."
+                ) from error
+            if llm_args.get("num_serve_frontends", 1) not in (None, 1):
+                raise click.UsageError(
+                    "--openengine-endpoint supports a single serving frontend")
+            launch_openengine_server(
+                host,
+                port,
+                llm_args,
+                openengine_endpoint,
+                tool_parser=tool_parser,
+                middleware=middleware,
+                chat_template=chat_template,
+                served_model_name=served_model_name,
+                allow_request_chat_template=allow_request_chat_template,
+                multimodal_server_config=multimodal_server_config,
+                num_input_processor_workers=num_input_processor_workers,
+                num_media_load_workers=num_media_load_workers)
         else:
             # Default: launch OpenAI HTTP server
             launch_server(
@@ -1832,6 +1933,10 @@ def serve(
         if grpc:
             raise click.UsageError(
                 "--grpc is not supported by the VisualGen server")
+        if openengine_endpoint is not None:
+            raise click.UsageError(
+                "--openengine-endpoint is not supported by the VisualGen server"
+            )
         _serve_visual_gen()
     else:
         _serve_llm()
