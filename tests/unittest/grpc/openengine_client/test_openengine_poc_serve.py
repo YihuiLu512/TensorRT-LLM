@@ -379,6 +379,69 @@ def test_completion_from_token_ids_reports_length(tmp_path) -> None:
     _serve(engine, tmp_path, body)
 
 
+def _expected_request(
+    max_tokens: int, ignore_eos: bool | None = None
+) -> generation_pb2.GenerateRequest:
+    """The whole request a greedy call with ``max_tokens`` must reach the engine as."""
+    stopping = generation_pb2.StoppingOptions(max_tokens=max_tokens)
+    if ignore_eos is not None:
+        stopping.ignore_eos = ignore_eos
+    extra = struct_pb2.Struct()
+    extra.update({"detokenize": False})
+    return generation_pb2.GenerateRequest(
+        model=MODEL,
+        token_ids=generation_pb2.TokenIds(ids=PROMPT_IDS),
+        sampling=generation_pb2.SamplingParams(temperature=0.0),
+        stopping=stopping,
+        extra=extra,
+    )
+
+
+@pytest.mark.parametrize(
+    "path,payload,expected",
+    [
+        (
+            "/v1/completions",
+            {"prompt": PROMPT_IDS, "max_tokens": 16, "ignore_eos": True, "detokenize": False},
+            _expected_request(16, ignore_eos=True),
+        ),
+        ("/v1/completions", {"prompt": PROMPT_IDS, "max_tokens": 16}, _expected_request(16)),
+        (
+            "/v1/completions",
+            {"prompt": "Hello", "max_tokens": 16, "stop": ["Question:", "</s>"]},
+            _expected_request(16),
+        ),
+        (
+            "/v1/chat/completions",
+            {"messages": [{"role": "user", "content": "Hi"}], "max_tokens": 16, "ignore_eos": True},
+            _expected_request(16, ignore_eos=True),
+        ),
+    ],
+    ids=["token-ids-ignore-eos", "token-ids-eos", "text-with-stop-strings", "chat"],
+)
+def test_engine_receives_exactly_the_expected_greedy_request(
+    tmp_path, path, payload, expected
+) -> None:
+    """The ``GenerateRequest`` the engine receives equals ``expected`` field for field.
+
+    Only the client-assigned ``request_id`` is left out of the comparison. Stop
+    strings are matched in the server and are not sent, and every request asks
+    for token ids only (``extra.detokenize = false``).
+    """
+    engine = _engine(token(0, WORLD), _finished(generation_pb2.FINISH_REASON_LENGTH))
+
+    async def body(engine, adapter, http):
+        response = await http.post(path, json={"model": MODEL, "temperature": 0, **payload})
+        assert response.status_code == 200, response.text
+        sent = generation_pb2.GenerateRequest()
+        sent.CopyFrom(engine.requests[0])
+        assert sent.request_id
+        sent.ClearField("request_id")
+        assert sent == expected
+
+    _serve(engine, tmp_path, body)
+
+
 def test_unsupported_parameter_is_rejected_before_the_engine_sees_it(tmp_path) -> None:
     engine = _engine(_finished())
 
