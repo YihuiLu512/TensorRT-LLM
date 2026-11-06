@@ -150,7 +150,7 @@ META_TARGET_DP_RANK = "openengine-target-dp-rank"
 PRIORITY_SCALE = 1000
 
 # The only engine for which a client may assume capabilities it does not
-# report, and only while it reports no conventions version.
+# report, and only while its ServerInfo.extra has no conventions version key.
 BUILTIN_CAPABILITY_ENGINE = "tensorrt_llm"
 
 
@@ -222,7 +222,7 @@ class ExtraCapabilities:
         return key in self.declared
 
 
-# What a TRT-LLM server that reports no conventions version supports.
+# What a TRT-LLM server whose ServerInfo.extra has no conventions version key supports.
 BUILTIN_CAPABILITIES = ExtraCapabilities(
     declared=frozenset(SAMPLING_CAPABILITY_KEYS + (CAP_STOP_TEXT, CAP_REQ_CONVERSATION_ID)),
     builtin=True,

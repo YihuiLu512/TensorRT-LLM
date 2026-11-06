@@ -23,8 +23,9 @@ when one of its own imports is) or does not define the function; any other
 import error propagates. A slot logs where its implementation came from the
 first time it resolves it. A slot module is imported while the slot is looked
 up, not while this module is, so it may call other slots at import time; a slot
-called while its own module is still being imported uses the default for that
-call and is looked up again on the next one.
+called while its own module is still being imported, before that module defines
+the slot's function, uses the default for that call and is looked up again on
+the next one.
 
 The module also holds the messages between a frontend and its postprocessing
 processes, the plain-data check for what crosses into them, and the frontend's
@@ -748,13 +749,21 @@ def resolve_post_processor(path: str) -> Callable[..., Any]:
 _PLAIN_SCALARS = (type(None), bool, int, float, str, bytes)
 
 
+def _importable(cls: type) -> bool:
+    """Whether pickle can find ``cls`` again by its module and name."""
+    owner: Any = sys.modules.get(cls.__module__)
+    for part in cls.__qualname__.split("."):
+        owner = getattr(owner, part, None)
+    return owner is cls
+
+
 def _is_plain_named_tuple(item: Any) -> bool:
     """A named tuple whose class pickles by name and adds no per-instance state."""
     cls = type(item)
     return (
         isinstance(item, tuple)
         and hasattr(cls, "_fields")
-        and getattr(sys.modules.get(cls.__module__), cls.__qualname__, None) is cls
+        and _importable(cls)
         and not hasattr(item, "__dict__")
     )
 
@@ -762,10 +771,10 @@ def _is_plain_named_tuple(item: Any) -> bool:
 def check_plain_data(value: Any, *, path: str = "postproc_args") -> None:
     """Check that ``value`` holds plain data only, so it can cross into another process.
 
-    Plain data is None, bool, int, float, str, bytes, enum members, lists,
-    tuples, module-level named tuples, sets and dicts of plain data (not other
-    subclasses of them, which may carry state of their own), and dataclass or
-    pydantic model
+    Plain data is None, bool, int, float, str, bytes, lists, tuples, sets and
+    dicts of plain data (not subclasses of them, which may carry state of their
+    own), and instances of classes pickle can import by name: enum members,
+    named tuples without per-instance state, and dataclass or pydantic model
     instances whose attributes are all plain data, declared or not. Callables,
     tensors, parsers, tokenizers and any other object are not.
 
@@ -775,7 +784,19 @@ def check_plain_data(value: Any, *, path: str = "postproc_args") -> None:
     seen: set[int] = set()
 
     def check(item: Any, where: str) -> None:
-        if type(item) in _PLAIN_SCALARS or isinstance(item, enum.Enum):
+        if type(item) in _PLAIN_SCALARS:
+            return
+        is_record = isinstance(item, enum.Enum) or (
+            dataclasses.is_dataclass(item) and not isinstance(item, type)
+        )
+        model_fields = getattr(type(item), "model_fields", None)
+        is_record = is_record or (isinstance(model_fields, dict) and hasattr(item, "model_dump"))
+        # Pickle stores these by class name, so the class must be importable by it.
+        if is_record and not _importable(type(item)):
+            raise PostprocDataError(
+                f"{where} is a {type(item).__qualname__}, which pickle cannot import by name"
+            )
+        if isinstance(item, enum.Enum):
             return
         if id(item) in seen:
             return
@@ -795,9 +816,10 @@ def check_plain_data(value: Any, *, path: str = "postproc_args") -> None:
             names = [f.name for f in dataclasses.fields(item)]
             names += [name for name in getattr(item, "__dict__", {}) if name not in names]
             for name in names:
-                check(getattr(item, name), f"{where}.{name}")
+                # An init=False field may not be set yet; nothing is pickled for it.
+                if hasattr(item, name):
+                    check(getattr(item, name), f"{where}.{name}")
             return
-        model_fields = getattr(type(item), "model_fields", None)
         if isinstance(model_fields, dict) and hasattr(item, "model_dump"):
             # Everything pickled with a pydantic model: its __dict__, the
             # extra fields and the private attributes.

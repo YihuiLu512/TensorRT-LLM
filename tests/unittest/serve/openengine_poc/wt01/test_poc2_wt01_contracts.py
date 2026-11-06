@@ -5,11 +5,13 @@
 import asyncio
 import collections
 import dataclasses
+import enum
 import json
 import os
 import sys
 import types
 from types import SimpleNamespace
+from typing import Any
 from unittest import mock
 
 import click
@@ -732,6 +734,29 @@ def test_check_plain_data_rejects_container_subclasses():
         contracts.check_plain_data([local_point(1, 2)])
     with pytest.raises(contracts.PostprocDataError, match="_TaggedStr"):
         contracts.check_plain_data({"s": _TaggedStr("x")})
+
+
+def test_check_plain_data_needs_classes_pickle_can_import():
+    class LocalColor(enum.Enum):
+        RED = 1
+
+    @dataclasses.dataclass
+    class LocalRecord:
+        x: int = 1
+
+    for value in (LocalColor.RED, LocalRecord()):
+        with pytest.raises(contracts.PostprocDataError, match="cannot import by name"):
+            contracts.check_plain_data([value])
+
+
+@dataclasses.dataclass
+class _Lazy:
+    x: int = 1
+    later: Any = dataclasses.field(init=False)
+
+
+def test_check_plain_data_skips_an_unset_init_false_field():
+    contracts.check_plain_data(_Lazy())
 
 
 def test_check_plain_data_rejects_a_tensor():

@@ -135,7 +135,15 @@ def verified_rows(
     known_ids = None if known is None else set(known)
     done = set()
     for record in records:
-        for entry in (record or {}).get("entries") or []:
+        if record is None:
+            continue
+        if not isinstance(record, Mapping):
+            print(
+                f"warning: verification record is not a mapping, ignored: {record!r}",
+                file=sys.stderr,
+            )
+            continue
+        for entry in record.get("entries") or []:
             row = entry.get("row") if isinstance(entry, Mapping) else None
             if not isinstance(row, str):
                 print(
@@ -268,6 +276,11 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if not args.task:
         parser.error("--task is required unless --landed is given")
+    if args.task in landed:
+        print(
+            f"warning: {args.task} has already landed; its obligations were fixed when it landed",
+            file=sys.stderr,
+        )
     result = obligations(
         args.task,
         landed,

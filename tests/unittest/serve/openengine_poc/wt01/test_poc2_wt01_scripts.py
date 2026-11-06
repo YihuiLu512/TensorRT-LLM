@@ -11,9 +11,12 @@ import pytest
 import yaml
 
 __extra_import_path__ = ["~/scripts/poc2"]
+# poc2_common first: the scripts import it themselves, and only this file's
+# imports are resolved through __extra_import_path__.
+from poc2_common import landed_tasks, parse_task  # noqa: E402, I001
+
 import check_ownership  # noqa: E402
 import pending_e2e  # noqa: E402
-from poc2_common import landed_tasks, parse_task  # noqa: E402
 
 pytestmark = [pytest.mark.cpu_only, pytest.mark.threadleak(enabled=False)]
 
@@ -143,10 +146,12 @@ def test_entries_without_a_known_row_are_reported(rows, capsys):
     records = [
         {"entries": [{"features": ["F-15"]}, {"row": "F-99"}, {"row": "F-05"}]},
         None,
+        ["not", "a", "mapping"],
     ]
     assert pending_e2e.verified_rows(records, [row.id for row in rows]) == {"F-05"}
     err = capsys.readouterr().err
     assert "without a row id" in err and "unknown row 'F-99'" in err
+    assert "not a mapping" in err
 
 
 def test_integration_rounds(rows):
@@ -382,3 +387,10 @@ def test_feature_deps_matches_tasks_md_section_3():
             if feature_id.startswith("F-"):
                 assert feature_id in feature, (feature, row["id"])
         assert ("case-01" in feature) == (row.get("chain") == "case-01"), row["id"]
+
+
+def test_a_task_that_already_landed_is_warned_about(repo, capsys):
+    _git(repo, "checkout", "-q", "integration")
+    _commit(repo, "a\n\nPoC2-Task: WT-01")
+    assert pending_e2e.main(["--repo", str(repo), "--ref", "integration", "--task", "WT-01"]) == 0
+    assert "WT-01 has already landed" in capsys.readouterr().err
