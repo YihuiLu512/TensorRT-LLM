@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""``OpenAIServer`` on ``OpenEngineLLMAdapter``, against a scripted OpenEngine engine on CPU."""
+"""``OpenAIServer`` on ``OpenEngineLLMAdapter``, against the fake OpenEngine engine on CPU."""
 
 from __future__ import annotations
 
@@ -11,11 +11,13 @@ from typing import Any
 from unittest import mock
 
 import click
+import grpc
 import httpx
 import pytest
 import torch
+from fake_openengine import PROFILES, Fail, FakeEngine, FakeProfile, Hang
 from google.protobuf import struct_pb2
-from openengine_client_helpers import WAIT_SECONDS, Hang, StubEngine, engine_error, script, token
+from openengine_client_helpers import WAIT_SECONDS, engine_error, token
 from tokenizers import Tokenizer
 from tokenizers.decoders import ByteFallback, Fuse
 from tokenizers.decoders import Sequence as DecoderSequence
@@ -129,7 +131,7 @@ def _args() -> SimpleNamespace:
     )
 
 
-def _adapter(engine: StubEngine, tmp_path) -> OpenEngineLLMAdapter:
+def _adapter(engine: FakeEngine, tmp_path) -> OpenEngineLLMAdapter:
     return OpenEngineLLMAdapter(
         args=_args(),
         tokenizer=_tokenizer(),
@@ -139,7 +141,7 @@ def _adapter(engine: StubEngine, tmp_path) -> OpenEngineLLMAdapter:
     )
 
 
-def _serve(engine: StubEngine, tmp_path, body) -> Any:
+def _serve(engine: FakeEngine, tmp_path, body) -> Any:
     """Run ``body(engine, adapter, http)`` with the server wired to ``engine``."""
 
     async def main() -> Any:
@@ -168,18 +170,27 @@ def _serve(engine: StubEngine, tmp_path, body) -> Any:
     return asyncio.run(main())
 
 
-def _engine(
-    *steps: Any,
-    info: model_pb2.ModelInfo | None = None,
-    health_states: tuple[int, ...] = (lifecycle_pb2.HEALTH_STATE_READY,),
-    **caps: bool,
-) -> StubEngine:
-    async def get_model_info(request, context):
-        return info if info is not None else _model_info(**caps)
-
-    return StubEngine(
-        script(*steps), control={"GetModelInfo": get_model_info}, health_states=health_states
+def _profile() -> FakeProfile:
+    """``trtllm-like`` serving this file's model, declaring none of the gated sampling fields."""
+    return PROFILES["trtllm-like"].replace(
+        model=MODEL,
+        max_context_length=MAX_CONTEXT,
+        vocab_size=len(_VOCAB),
+        eos_token_ids=(EOS,),
+        bos_token_id=None,
+        capabilities={
+            f"trtllm.sampling.{name}": False
+            for name in ("min_p", "frequency_penalty", "presence_penalty", "repetition_penalty")
+        },
     )
+
+
+def _engine(*steps: Any, profile: FakeProfile | None = None) -> FakeEngine:
+    """A fake engine that answers every accepted request with ``steps``.
+
+    Without ``steps`` it answers with its built-in generator.
+    """
+    return FakeEngine(profile or _profile(), script=list(steps) or None)
 
 
 def _sse_chunks(text: str) -> list[dict[str, Any]]:
@@ -455,6 +466,36 @@ def test_unsupported_parameter_is_rejected_before_the_engine_sees_it(tmp_path) -
 
 
 @pytest.mark.parametrize(
+    "code,error",
+    [
+        (grpc.StatusCode.INVALID_ARGUMENT, ValueError),
+        (grpc.StatusCode.UNIMPLEMENTED, ValueError),
+        (grpc.StatusCode.UNAVAILABLE, RuntimeError),
+    ],
+)
+def test_engine_refusal_fails_the_request(tmp_path, code, error) -> None:
+    """A request the engine refuses before accepting it fails with the engine's message.
+
+    The request was at fault for INVALID_ARGUMENT and UNIMPLEMENTED, so those
+    become ``ValueError``; other statuses become ``RuntimeError``.
+    """
+    engine = _engine(Fail(code, "engine refused it"))
+
+    async def body(engine, adapter, http):
+        output = adapter.generate_async(PROMPT_IDS, SamplingParams(max_tokens=2))
+        with pytest.raises(error, match="engine refused it"):
+            await output.aresult()
+        assert engine.counters["trtllm.counters.generate_accepted"] == 0
+        response = await http.post("/v1/completions", json={"model": MODEL, "prompt": PROMPT_IDS})
+        # The completion handler answers 400 for any generator error, so a
+        # RuntimeError (UNAVAILABLE here) is a 400 as well.
+        assert response.status_code == 400
+        assert "engine refused it" in response.text
+
+    _serve(engine, tmp_path, body)
+
+
+@pytest.mark.parametrize(
     "code", [error_pb2.ERROR_CODE_INVALID_ARGUMENT, error_pb2.ERROR_CODE_INTERNAL]
 )
 def test_engine_error_fails_the_request(tmp_path, code: int) -> None:
@@ -552,11 +593,10 @@ def test_health_is_lost_after_close(tmp_path) -> None:
 
 def test_health_follows_the_engine(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(adapter_module, "HEALTH_POLL_SECONDS", 0.01)
-    engine = _engine(
-        health_states=(lifecycle_pb2.HEALTH_STATE_READY, lifecycle_pb2.HEALTH_STATE_NOT_READY)
-    )
+    engine = _engine()
 
     async def body(engine, adapter, http):
+        engine.set_health(lifecycle_pb2.HEALTH_STATE_NOT_READY)
         while adapter._check_health():
             await asyncio.sleep(0.01)
         assert (await http.get("/health")).status_code != 200
@@ -582,8 +622,6 @@ def test_health_is_lost_when_the_watcher_fails(tmp_path, monkeypatch) -> None:
 
 
 def test_two_sequences_are_detokenized_separately(tmp_path) -> None:
-    info = _model_info()
-    info.generation.max_num_sequences = 2
     engine = _engine(
         token(0, HE),
         token(1, WORLD),
@@ -591,7 +629,7 @@ def test_two_sequences_are_detokenized_separately(tmp_path) -> None:
         _finished(index=0, terminal=False),
         token(1, BANG),
         _finished(generation_pb2.FINISH_REASON_LENGTH, index=1),
-        info=info,
+        profile=_profile().replace(max_num_sequences=2),
     )
 
     async def body(engine, adapter, http):
@@ -683,13 +721,8 @@ def test_detokenize_false_returns_token_ids_only(tmp_path) -> None:
 
 @pytest.mark.parametrize("declared", [False, None])
 def test_engine_without_token_id_input_is_refused(tmp_path, declared) -> None:
-    info = _model_info()
-    if declared is None:
-        # A capability the engine does not declare counts as unsupported.
-        info.ClearField("supports_token_ids_input")
-    else:
-        info.supports_token_ids_input = declared
-    engine = _engine(info=info)
+    # None leaves the capability undeclared, which counts as unsupported.
+    engine = _engine(profile=_profile().replace(supports_token_ids_input=declared))
 
     async def main() -> None:
         async with engine:
