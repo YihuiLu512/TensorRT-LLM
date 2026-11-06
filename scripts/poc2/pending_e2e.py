@@ -26,11 +26,14 @@ ignored::
         commit: <sha>
         junit: <path>
 
-glm work items land on the glm repository's integration branch, read with
-``--glm-repo``; an item counts as landed when either branch has its trailer.
-Without ``--glm-repo``, a glm item missing from the TRT-LLM branch has an
-unknown landing: rows waiting only on such items are listed separately rather
-than counted as owed or not.
+A glm work item counts as landed when the glm repository's integration branch
+(``--glm-repo``, ``--glm-ref``) has its trailer; its commits on the TRT-LLM
+branch do not count. Without ``--glm-repo`` the landing of glm items is unknown:
+rows waiting only on them are listed separately rather than counted as owed or
+not.
+
+Run it after the last rebase onto the integration branch: pushes only fast
+forward, so whichever item lands second sees the first one as landed.
 
 Usage::
 
@@ -250,7 +253,7 @@ def main(argv: list[str] | None = None) -> int:
 
     groups, rows = load_rows()
     glm_tasks = set(groups.get("glm", ()))
-    landed = landed_tasks(args.repo, args.ref)
+    landed = {t for t in landed_tasks(args.repo, args.ref) if parse_task(t)[0] not in glm_tasks}
     if args.glm_repo:
         landed |= {
             t for t in landed_tasks(args.glm_repo, args.glm_ref) if parse_task(t)[0] in glm_tasks

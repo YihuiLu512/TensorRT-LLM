@@ -218,10 +218,12 @@ def test_glm_items_are_read_from_the_glm_repository(repo, tmp_path, capsys):
     _git(glm, "init", "-q", "-b", "main")
     _commit(glm, "base")
     _commit(glm, "x\n\nPoC2-Task: WT-07")
-    # A TRT-LLM item's trailer in the glm repository is not counted.
+    # A TRT-LLM item's trailer in the glm repository is not counted ...
     _commit(glm, "y\n\nPoC2-Task: WT-11")
     _git(repo, "checkout", "-q", "integration")
     _commit(repo, "a\n\nPoC2-Task: WT-01")
+    # ... nor a glm item's trailer on the TRT-LLM branch.
+    _commit(repo, "b\n\nPoC2-Task: WT-06")
     base = ["--repo", str(repo), "--ref", "integration", "--json"]
     assert pending_e2e.main([*base, "--landed"]) == 0
     out = capsys.readouterr()
@@ -331,14 +333,9 @@ def test_no_path_has_two_exclusive_owners():
         assert len(exclusive) == 1, (rule.pattern, exclusive)
 
 
-# tasks.md lives in the planning directory, outside the repository.
-TASKS_MD = Path(
-    os.environ.get(
-        "POC2_TASKS_MD",
-        "/home/scratch.yihlu_coreai/dev/feat-dev-J17503/tmp/meta/explain/"
-        "04_epic17503-poc2-plan/01_overall-plan/tasks.md",
-    )
-)
+# tasks.md lives in the planning directory, outside the repository; set
+# POC2_TASKS_MD to its path to run the comparison.
+TASKS_MD = Path(os.environ["POC2_TASKS_MD"]) if os.environ.get("POC2_TASKS_MD") else None
 
 
 def _tasks_md_rows():
@@ -366,7 +363,9 @@ def _normalize_deps(text):
     return deps
 
 
-@pytest.mark.skipif(not TASKS_MD.is_file(), reason="the planning tasks.md is not available")
+@pytest.mark.skipif(
+    TASKS_MD is None or not TASKS_MD.is_file(), reason="POC2_TASKS_MD does not name tasks.md"
+)
 def test_feature_deps_matches_tasks_md_section_3():
     data = yaml.safe_load(pending_e2e.FEATURE_DEPS.read_text())
     md_rows = _tasks_md_rows()

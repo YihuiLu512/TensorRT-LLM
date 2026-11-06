@@ -38,6 +38,7 @@ from __future__ import annotations
 import dataclasses
 import enum
 import importlib
+import inspect
 import json
 import os
 import tempfile
@@ -128,6 +129,10 @@ def resolve_slot(name: str) -> tuple[Callable[..., Any], str]:
         found = getattr(module, slot.attribute, None)
         if found is not None:
             impl, source = found, f"{slot.module}:{slot.attribute}"
+        elif getattr(getattr(module, "__spec__", None), "_initializing", False):
+            # The slot module is still being imported (it called its own slot
+            # at import time): use the default now, and look again next time.
+            return impl, source
     with _RESOLVE_LOCK:
         if name in _RESOLVED:
             return _RESOLVED[name]
@@ -147,7 +152,7 @@ def slots() -> Mapping[str, Slot]:
     return dict(_SLOTS)
 
 
-# --- Request mapping (WT-11) --------------------------------------------------
+# --- Request mapping ----------------------------------------------------------
 
 
 @dataclass
@@ -390,7 +395,7 @@ def default_map_request(
     ]
 
 
-# --- Response assembly (WT-12) ------------------------------------------------
+# --- Response assembly --------------------------------------------------------
 
 
 class ResponseAssembler(Protocol):
@@ -538,7 +543,7 @@ def default_create_response_assembler(
     return _DefaultResponseAssembler(detokenizers)
 
 
-# --- Postprocessing (WT-13) ---------------------------------------------------
+# --- Postprocessing -----------------------------------------------------------
 
 _UNSET: Any = object()
 
@@ -700,6 +705,8 @@ def post_processor_path(post_processor: Callable[..., Any]) -> str:
         PostprocDataError: The function is not importable by that path, or lives
             outside :data:`POST_PROCESSOR_MODULE_PREFIX`.
     """
+    if not inspect.isfunction(post_processor):
+        raise PostprocDataError(f"{post_processor!r} is not a function")
     module = getattr(post_processor, "__module__", None)
     qualname = getattr(post_processor, "__qualname__", None)
     if not module or not qualname or "<" in qualname or "." in qualname:
@@ -711,15 +718,25 @@ def post_processor_path(post_processor: Callable[..., Any]) -> str:
 
 
 def resolve_post_processor(path: str) -> Callable[..., Any]:
-    """Import a postprocessor by the path :func:`post_processor_path` gave."""
+    """Import a postprocessor by the path :func:`post_processor_path` gave.
+
+    Raises:
+        PostprocDataError: The path is outside :data:`POST_PROCESSOR_MODULE_PREFIX`,
+            its module does not import, or it does not name a function defined
+            in that module.
+    """
     if not path.startswith(POST_PROCESSOR_MODULE_PREFIX):
         raise PostprocDataError(
             f"postprocessors must come from {POST_PROCESSOR_MODULE_PREFIX}*, got {path!r}"
         )
     module_name, _, name = path.rpartition(".")
-    function = getattr(importlib.import_module(module_name), name, None)
-    if not callable(function):
-        raise PostprocDataError(f"{path!r} is not a callable")
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError as error:
+        raise PostprocDataError(f"cannot import {module_name} for {path!r}: {error}") from error
+    function = getattr(module, name, None)
+    if not inspect.isfunction(function):
+        raise PostprocDataError(f"{path!r} is not a function")
     if getattr(function, "__module__", None) != module_name:
         raise PostprocDataError(f"{path!r} is not defined in {module_name}")
     return cast(Callable[..., Any], function)
@@ -732,7 +749,8 @@ def check_plain_data(value: Any, *, path: str = "postproc_args") -> None:
     """Check that ``value`` holds plain data only, so it can cross into another process.
 
     Plain data is None, bool, int, float, str, bytes, enum members, lists,
-    tuples, sets and dicts of plain data, and dataclass or pydantic model
+    tuples, named tuples, sets and dicts of plain data (not subclasses of them,
+    which may carry state of their own), and dataclass or pydantic model
     instances whose attributes are all plain data, declared or not. Callables,
     tensors, parsers, tokenizers and any other object are not.
 
@@ -747,11 +765,13 @@ def check_plain_data(value: Any, *, path: str = "postproc_args") -> None:
         if id(item) in seen:
             return
         seen.add(id(item))
-        if isinstance(item, (list, tuple, set, frozenset)):
+        if type(item) in (list, tuple, set, frozenset) or (
+            isinstance(item, tuple) and hasattr(type(item), "_fields")
+        ):
             for i, element in enumerate(item):
                 check(element, f"{where}[{i}]")
             return
-        if isinstance(item, dict):
+        if type(item) is dict:
             for key, element in item.items():
                 check(key, f"{where}.keys()")
                 check(element, f"{where}[{key!r}]")
@@ -779,7 +799,7 @@ def check_plain_data(value: Any, *, path: str = "postproc_args") -> None:
     check(value, path)
 
 
-# --- Frontends (WT-14) --------------------------------------------------------
+# --- Frontends ----------------------------------------------------------------
 
 
 @dataclass
@@ -844,7 +864,7 @@ def default_launch_frontends(config: FrontendLaunchConfig) -> None:
     )
 
 
-# --- Metrics (WT-15) ----------------------------------------------------------
+# --- Metrics ------------------------------------------------------------------
 
 
 class RequestMetrics(Protocol):
@@ -909,7 +929,7 @@ def default_create_metrics_recorder(args: Any) -> MetricsRecorder:
     return _NoMetrics()
 
 
-# --- Media and LoRA (WT-16) ---------------------------------------------------
+# --- Media and LoRA -----------------------------------------------------------
 
 _MULTIMODAL_KEYS = ("multi_modal_data", "multi_modal_embeddings", "mm_processor_kwargs")
 
@@ -994,6 +1014,7 @@ class GenerateCounter:
         if counter_dir is _UNSET:
             counter_dir = os.environ.get(SERVE_COUNTER_DIR_ENV) or None
         self._dir = Path(counter_dir) if counter_dir is not None else None
+        self._dir_ready = False
         self._value = 0
         self._lock = threading.Lock()
 
@@ -1014,7 +1035,9 @@ class GenerateCounter:
     def _write(self) -> None:
         assert self._dir is not None
         pid = os.getpid()
-        self._dir.mkdir(parents=True, exist_ok=True)
+        if not self._dir_ready:
+            self._dir.mkdir(parents=True, exist_ok=True)
+            self._dir_ready = True
         # A fresh temporary file (created exclusively), then an atomic rename.
         fd, tmp = tempfile.mkstemp(prefix=f".{pid}.", suffix=".tmp", dir=self._dir)
         try:

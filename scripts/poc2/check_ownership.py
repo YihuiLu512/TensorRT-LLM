@@ -8,9 +8,10 @@ rules in :data:`OWNERSHIP`, and every commit in ``<base>..<head>`` must carry
 the trailer ``PoC2-Task: <work item>``. A fix (``WT-xx-fixN``) owns what WT-xx
 owns.
 
-A rule is ``own`` (only this item changes the path), ``shared`` (another item
-owns the path too, and this item may change only the part the note names) or
-``exception`` (a one-off allowance the note describes). Paths changed under
+A rule is ``own`` (only this item changes the path), ``shared`` (this item may
+change only the part the note names; the rest of the file belongs to its owner,
+which may be another item or code outside PoC-S2) or ``exception`` (a one-off
+allowance the note describes). Paths changed under
 ``shared`` and ``exception`` rules are listed for a reviewer to check by hand.
 A pattern starting with ``!`` excludes paths from the rules before it.
 

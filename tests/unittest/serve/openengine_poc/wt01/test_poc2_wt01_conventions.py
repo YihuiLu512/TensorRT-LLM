@@ -77,6 +77,7 @@ def test_builtin_table_only_for_unconverted_trtllm_server():
         (" 5", None),
         ("1_000", None),
         ("+5", None),
+        ("9" * 5000, None),
     ],
 )
 def test_as_int(value, expected):

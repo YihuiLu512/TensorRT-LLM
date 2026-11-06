@@ -149,8 +149,8 @@ META_PRIORITY = "openengine-priority"
 META_TARGET_DP_RANK = "openengine-target-dp-rank"
 PRIORITY_SCALE = 1000
 
-# EX-CAP-5: the only engine for which a client may assume capabilities it does
-# not report, and only while it reports no conventions version.
+# The only engine for which a client may assume capabilities it does not
+# report, and only while it reports no conventions version.
 BUILTIN_CAPABILITY_ENGINE = "tensorrt_llm"
 
 
@@ -192,7 +192,10 @@ def as_int(value: Any) -> int | None:
     if isinstance(value, float):
         return int(value) if math.isfinite(value) and value.is_integer() else None
     if isinstance(value, str) and _DECIMAL_INT.fullmatch(value):
-        return int(value)
+        try:
+            return int(value)
+        except ValueError:  # More digits than int() converts.
+            return None
     return None
 
 
@@ -219,7 +222,7 @@ class ExtraCapabilities:
         return key in self.declared
 
 
-# EX-CAP-5: what the TRT-LLM server supported before it reported capability keys.
+# What a TRT-LLM server that reports no capability keys supports.
 BUILTIN_CAPABILITIES = ExtraCapabilities(
     declared=frozenset(SAMPLING_CAPABILITY_KEYS + (CAP_STOP_TEXT, CAP_REQ_CONVERSATION_ID)),
     builtin=True,
@@ -419,7 +422,7 @@ class ModelCapabilities:
         max_num_sequences: Most sequences one Generate call can return; 1 if unset.
         supported_modalities: The media modalities the engine accepts.
         supports_dp_rank_targeting: Whether ``openengine-target-dp-rank`` is honoured.
-        extra: The capability keys (EX-CAP).
+        extra: The declared capability keys.
         tokenizer_fingerprint: The engine's fingerprint, or None if it reports none.
     """
 
@@ -445,7 +448,7 @@ class ModelCapabilities:
     tokenizer_fingerprint: TokenizerFingerprint | None = None
 
     def supports(self, key: str) -> bool:
-        """Whether a capability key (EX-CAP) is declared."""
+        """Whether a capability key is declared."""
         return self.extra.supports(key)
 
 

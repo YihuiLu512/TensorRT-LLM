@@ -3,6 +3,8 @@
 """The contract wiring: imports stay light, and OpenAIServer postprocesses where num_postprocess_workers says."""
 
 import asyncio
+import importlib.abc
+import importlib.util
 import json
 import subprocess
 import sys
@@ -110,26 +112,42 @@ def test_chat_response_comes_from_the_same_place(workers):
     assert response == ("from worker" if workers else "from handler")
 
 
+class _FailingImport(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    """Makes importing one module fail as if one of its own imports were missing."""
+
+    def __init__(self, name: str, missing: str) -> None:
+        self.name = name
+        self.missing = missing
+
+    def find_spec(self, fullname, path, target=None):
+        return importlib.util.spec_from_loader(fullname, self) if fullname == self.name else None
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module):
+        raise ModuleNotFoundError(f"No module named {self.missing!r}", name=self.missing)
+
+
 def test_a_launcher_module_missing_a_dependency_gets_the_install_hint(tmp_path, monkeypatch):
     import click
 
     from tensorrt_llm.commands import serve as serve_cmd
 
-    real_import = contracts.importlib.import_module
-
-    def import_module(name):
-        if name == contracts.slots()["launch_frontends"].module:
-            raise ModuleNotFoundError("No module named 'uvloop'", name="uvloop")
-        return real_import(name)
-
-    contracts.reset_slot_cache()
-    monkeypatch.setattr(contracts.importlib, "import_module", import_module)
+    launcher = contracts.slots()["launch_frontends"].module
+    missing = "poc2_wt01_missing_dependency"
+    monkeypatch.delitem(sys.modules, launcher, raising=False)
+    monkeypatch.setattr(sys, "meta_path", [_FailingImport(launcher, missing), *sys.meta_path])
     monkeypatch.setattr(serve_cmd, "get_is_diffusion_only_model", lambda *a, **k: False)
+    contracts.reset_slot_cache()
     try:
-        with pytest.raises(click.ClickException, match="Failed to import the OpenEngine client"):
+        with pytest.raises(click.ClickException) as error:
             serve_cmd.main(
                 args=[str(tmp_path), "--openengine-endpoint", "localhost:1"],
                 standalone_mode=False,
             )
     finally:
         contracts.reset_slot_cache()
+    # The hint names the real missing module, not one the earlier imports lacked.
+    assert "Failed to import the OpenEngine client" in error.value.message
+    assert missing in error.value.message

@@ -112,6 +112,23 @@ def test_a_broken_implementation_module_is_not_hidden(monkeypatch):
         contracts.resolve_slot("map_media")
 
 
+def test_a_slot_resolved_while_its_module_is_imported_is_looked_up_again(monkeypatch):
+    real_import = contracts.importlib.import_module
+    name = f"{PACKAGE}.media"
+    loaded = types.ModuleType(name)
+    loaded.__spec__ = SimpleNamespace(_initializing=True)
+
+    def import_module(module_name):
+        return loaded if module_name == name else real_import(module_name)
+
+    monkeypatch.setattr(contracts.importlib, "import_module", import_module)
+    # Still being imported, without the function yet: the default, not cached.
+    assert contracts.resolve_slot("map_media")[1] == "default"
+    loaded.__spec__._initializing = False
+    loaded.map_media = lambda *args, **kwargs: []
+    assert contracts.resolve_slot("map_media")[1] == f"{name}:map_media"
+
+
 def test_a_slot_module_may_resolve_other_slots_while_it_is_imported(monkeypatch):
     real_import = contracts.importlib.import_module
     nested = []
@@ -641,8 +658,13 @@ def test_post_processor_path_rejects_what_cannot_be_imported_back():
             contracts.post_processor_path(function)
     with pytest.raises(contracts.PostprocDataError, match="must come from"):
         contracts.resolve_post_processor("os.system")
-    with pytest.raises(contracts.PostprocDataError, match="not a callable"):
+    with pytest.raises(contracts.PostprocDataError, match="not a function"):
         contracts.resolve_post_processor("tensorrt_llm.serve.postprocess_handlers.nope")
+    # A class is callable but not a postprocessor.
+    with pytest.raises(contracts.PostprocDataError, match="not a function"):
+        contracts.resolve_post_processor("tensorrt_llm.serve.openengine_poc.contracts.DetokOptions")
+    with pytest.raises(contracts.PostprocDataError, match="cannot import"):
+        contracts.resolve_post_processor("tensorrt_llm.serve.no_such_module.post")
     # Imported into the module, not defined there.
     with pytest.raises(contracts.PostprocDataError, match="not defined in"):
         contracts.resolve_post_processor(
@@ -687,6 +709,17 @@ def test_check_plain_data_checks_attributes_beyond_the_declared_fields():
     with pytest.raises(contracts.PostprocDataError, match=r"^postproc_args\.hook is a "):
         contracts.check_plain_data(_ExtraModel(hook=object()))
     contracts.check_plain_data(_ExtraModel(note="plain"))
+
+
+def test_check_plain_data_rejects_container_subclasses():
+    import collections
+
+    with pytest.raises(
+        contracts.PostprocDataError, match=r"^postproc_args\['d'\] is a defaultdict"
+    ):
+        contracts.check_plain_data({"d": collections.defaultdict(lambda: 0)})
+    Point = collections.namedtuple("Point", "x y")
+    contracts.check_plain_data([Point(1, 2)])
 
 
 def test_check_plain_data_rejects_a_tensor():
