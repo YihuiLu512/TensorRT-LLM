@@ -1,0 +1,301 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+"""The interface trtllm-serve uses to run requests on an engine, and the types it exchanges.
+
+``EngineClient`` is internal to trtllm-serve: engines do not implement it. The
+OpenEngine implementation translates its requests and events to and from
+OpenEngine v1 messages. The method names and signatures follow the
+``EngineClient`` of the serve refactor (TRTLLM-17056, item X1), plus the LoRA
+and KV-event methods the OpenEngine path needs.
+
+A request is accepted or rejected before ``generate`` yields its first event:
+an error before acceptance is raised by the first ``__anext__``, an error after
+acceptance is raised while iterating. Closing the iterator cancels the request.
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any, Literal, Protocol, runtime_checkable
+
+from tensorrt_llm.grpc.openengine_conventions import ModelCapabilities
+
+__all__ = [
+    "EngineClient",
+    "EngineEvent",
+    "EngineHealth",
+    "EngineInfo",
+    "EngineLoad",
+    "EngineRequest",
+    "FinishReason",
+    "GuidedMode",
+    "GuidedSpec",
+    "HealthState",
+    "KvEventSource",
+    "LoraAdapter",
+    "MediaSpec",
+    "Modality",
+    "ModelCapabilities",
+    "OutputFinished",
+    "PromptInfo",
+    "TokenDelta",
+    "TokenLogprob",
+    "Usage",
+]
+
+GuidedMode = Literal["json_schema", "regex", "ebnf_grammar", "structural_tag", "json_object"]
+Modality = Literal["image", "video", "audio"]
+FinishReason = Literal["stop", "length", "cancelled"]
+HealthState = Literal["starting", "ready", "degraded", "not_ready", "unspecified"]
+
+
+@dataclass(frozen=True)
+class GuidedSpec:
+    """One guided-decoding constraint.
+
+    Attributes:
+        mode: The constraint kind, named as the OpenEngine ``GuidedDecoding`` oneof field.
+        value: The schema, regex, grammar or structural tag; None for ``json_object``.
+    """
+
+    mode: GuidedMode
+    value: str | None = None
+
+
+@dataclass(frozen=True)
+class MediaSpec:
+    """One media item of a prompt; exactly one of ``url``, ``data_uri`` and ``raw_bytes`` is set.
+
+    Attributes:
+        uuid: An id the engine may use to reuse its media cache, for example an mm hash.
+    """
+
+    modality: Modality
+    url: str | None = None
+    data_uri: str | None = None
+    raw_bytes: bytes | None = None
+    mime_type: str | None = None
+    uuid: str | None = None
+
+    def __post_init__(self) -> None:
+        sources = [s for s in (self.url, self.data_uri, self.raw_bytes) if s is not None]
+        if len(sources) != 1:
+            raise ValueError("a MediaSpec needs exactly one of url, data_uri and raw_bytes")
+
+
+@dataclass
+class EngineRequest:
+    """One Generate call.
+
+    Only what the user's request actually set is filled in: an unset sampling
+    field is left out of ``sampling`` rather than sent with a default value.
+
+    Attributes:
+        request_id: ``"trtllm-"`` followed by a uuid4 in hex; unique per call.
+        sampling: OpenEngine ``SamplingParams`` fields by name (``temperature``,
+            ``top_p``, ``top_k``, ``min_p``, ``seed`` and the penalties); not
+            ``num_sequences``, which has its own field.
+        stop_texts: Stop strings for the engine to match; empty unless the
+            engine declares ``trtllm.stopping.stop_text``.
+        output_logprobs_top_n: None for no logprobs; 0 for the sampled token's only.
+        extra: ``GenerateRequest.extra`` entries; only keys the conventions define.
+        metadata: gRPC metadata such as ``traceparent``, ``openengine-priority``
+            and ``openengine-target-dp-rank``.
+    """
+
+    request_id: str
+    prompt_token_ids: list[int]
+    max_tokens: int | None
+    sampling: dict[str, float | int] = field(default_factory=dict)
+    min_tokens: int | None = None
+    stop_token_ids: list[int] = field(default_factory=list)
+    stop_texts: list[str] = field(default_factory=list)
+    ignore_eos: bool | None = None
+    include_stop_in_output: bool | None = None
+    num_sequences: int = 1
+    output_logprobs_top_n: int | None = None
+    prompt_logprobs_top_n: int | None = None
+    guided: GuidedSpec | None = None
+    cache_salt: str | None = None
+    media: list[MediaSpec] = field(default_factory=list)
+    lora_name: str | None = None
+    model: str = ""
+    extra: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class TokenLogprob:
+    """The logprob of one token, with its rank and the top candidates when requested.
+
+    Attributes:
+        top: ``(token_id, logprob)`` of the candidates, highest logprob first.
+    """
+
+    token_id: int
+    logprob: float
+    rank: int | None = None
+    top: tuple[tuple[int, float], ...] = ()
+
+
+@dataclass(frozen=True)
+class Usage:
+    """Token counts of a whole Generate call."""
+
+    prompt_tokens: int
+    completion_tokens: int
+    cached_prompt_tokens: int | None = None
+
+
+@dataclass(frozen=True)
+class PromptInfo:
+    """Prompt logprobs; sent once, before any token, and only when requested."""
+
+    token_logprobs: tuple[TokenLogprob, ...] = ()
+
+
+@dataclass(frozen=True)
+class TokenDelta:
+    """New tokens of one output; may hold several tokens."""
+
+    output_index: int
+    token_ids: tuple[int, ...]
+    logprobs: tuple[TokenLogprob, ...] | None = None
+
+
+@dataclass(frozen=True)
+class OutputFinished:
+    """One output ended.
+
+    At most one of ``eos_token_id``, ``stop_token_id`` and ``stop_text`` is set,
+    and only for ``reason == "stop"``: it says what ended the output. ``usage``
+    is set only on the last event of the call.
+    """
+
+    output_index: int
+    reason: FinishReason
+    eos_token_id: int | None = None
+    stop_token_id: int | None = None
+    stop_text: str | None = None
+    usage: Usage | None = None
+
+
+EngineEvent = PromptInfo | TokenDelta | OutputFinished
+
+
+@dataclass(frozen=True)
+class EngineHealth:
+    """The engine's answer to a health check.
+
+    Attributes:
+        checks: ``(name, state, message)`` of each sub-check the engine reported.
+    """
+
+    state: HealthState
+    checks: tuple[tuple[str, HealthState, str], ...] = ()
+
+    @property
+    def serving(self) -> bool:
+        """Whether the engine takes new requests."""
+        return self.state in ("ready", "degraded")
+
+
+@dataclass(frozen=True)
+class EngineLoad:
+    """A load snapshot of the engine.
+
+    Attributes:
+        attributes: ``LoadInfo.attributes``, including the counters of the conventions.
+    """
+
+    instance_id: str
+    running_requests: int | None = None
+    queued_requests: int | None = None
+    used_kv_blocks: int | None = None
+    total_kv_blocks: int | None = None
+    attributes: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class EngineInfo:
+    """Who the engine is.
+
+    Attributes:
+        instance_id: Changes when the engine process restarts.
+        extra: ``ServerInfo.extra``.
+    """
+
+    engine_name: str
+    engine_version: str
+    instance_id: str
+    schema_revision: int
+    minimum_client_revision: int = 0
+    schema_release: str = ""
+    max_running_requests: int | None = None
+    max_loras: int | None = None
+    extra: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class KvEventSource:
+    """Where the engine publishes KV-cache events."""
+
+    transport: str
+    host: str
+    port: int
+    protocol: str = ""
+    topic: str = ""
+    replay_endpoint: str = ""
+    data_parallel_rank: int | None = None
+    encoding: str = ""
+
+
+@dataclass(frozen=True)
+class LoraAdapter:
+    """A LoRA adapter registered with the engine."""
+
+    name: str
+    int_id: int
+    path: str
+
+
+@runtime_checkable
+class EngineClient(Protocol):
+    """How trtllm-serve runs requests on an engine."""
+
+    def generate(self, request: EngineRequest) -> AsyncIterator[EngineEvent]:
+        """Run one Generate call and stream its events; closing the iterator cancels it."""
+        ...
+
+    async def abort(self, request_id: str) -> None:
+        """Abort a request; aborting one that is unknown or already finished is not an error."""
+        ...
+
+    async def health(self, *, deep: bool = False) -> EngineHealth:
+        """Check the engine's health; ``deep`` adds an inference probe."""
+        ...
+
+    async def load(self) -> EngineLoad | None:
+        """The engine's load and counters; None if the engine does not report load."""
+        ...
+
+    def server_info(self) -> EngineInfo:
+        """The engine's identity, read at start and again when its instance id changes."""
+        ...
+
+    def model_info(self) -> ModelCapabilities:
+        """The engine's capabilities, read at start and again when its instance id changes."""
+        ...
+
+    async def load_lora(self, name: str, int_id: int, path: str) -> bool:
+        """Register a LoRA adapter; returns whether it was already loaded."""
+        ...
+
+    async def list_loras(self) -> Sequence[LoraAdapter]:
+        """The LoRA adapters the engine has registered."""
+        ...
+
+    async def kv_event_sources(self) -> Sequence[KvEventSource]:
+        """Where the engine publishes KV-cache events; empty if it publishes none."""
+        ...

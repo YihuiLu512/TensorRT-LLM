@@ -1863,8 +1863,12 @@ def serve(
                         subagent_affinity_auth_key=internal_disagg_auth_key)
         elif openengine_endpoint is not None:
             try:
-                from tensorrt_llm.serve.openengine_poc.launch import \
-                    launch_openengine_server
+                # Imported for its gRPC client dependencies, so a missing
+                # runtime fails here with the hint below.
+                from tensorrt_llm.serve.openengine_poc import \
+                    launch as _openengine_launch  # noqa: F401
+                from tensorrt_llm.serve.openengine_poc.contracts import (
+                    FrontendLaunchConfig, launch_frontends)
             except ImportError as error:
                 raise click.ClickException(
                     f"Failed to import the OpenEngine client: {error}. "
@@ -1873,22 +1877,20 @@ def serve(
                     "\"grpcio-health-checking>=1.73.1,<1.82\" "
                     "\"protobuf>=6.30.2,<7\" \"uvloop>=0.19.0,<0.23.0\"`."
                 ) from error
-            if llm_args.get("num_serve_frontends", 1) not in (None, 1):
-                raise click.UsageError(
-                    "--openengine-endpoint supports a single serving frontend")
-            launch_openengine_server(
-                host,
-                port,
-                llm_args,
-                openengine_endpoint,
-                tool_parser=tool_parser,
-                middleware=middleware,
-                chat_template=chat_template,
-                served_model_name=served_model_name,
-                allow_request_chat_template=allow_request_chat_template,
-                multimodal_server_config=multimodal_server_config,
-                num_input_processor_workers=num_input_processor_workers,
-                num_media_load_workers=num_media_load_workers)
+            launch_frontends(
+                FrontendLaunchConfig(
+                    host=host,
+                    port=port,
+                    llm_args=llm_args,
+                    endpoint=openengine_endpoint,
+                    tool_parser=tool_parser,
+                    middleware=middleware,
+                    chat_template=chat_template,
+                    served_model_name=served_model_name,
+                    allow_request_chat_template=allow_request_chat_template,
+                    multimodal_server_config=multimodal_server_config,
+                    num_input_processor_workers=num_input_processor_workers,
+                    num_media_load_workers=num_media_load_workers))
         else:
             # Default: launch OpenAI HTTP server
             launch_server(

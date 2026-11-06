@@ -1,0 +1,994 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+"""The pluggable parts of serving through an OpenEngine engine, with their default implementations.
+
+Each part is a *slot*: a function with a fixed signature, looked up in a fixed
+module. When that module exists and defines the function, the slot calls it;
+otherwise the slot calls the default implementation in this file, which keeps
+the behavior of the first prototype. So a part is replaced by adding its module,
+without touching this file or the code that calls the slot.
+
+| Slot | Implementation looked up in |
+|---|---|
+| :func:`map_request` | ``openengine_poc.mapping:map_request`` |
+| :func:`create_response_assembler` | ``openengine_poc.response:create_response_assembler`` |
+| :func:`create_postproc_dispatch` | ``openengine_poc.postproc_pool:create_postproc_dispatch`` |
+| :func:`launch_frontends` | ``openengine_poc.multi_frontend:launch_frontends`` |
+| :func:`create_metrics_recorder` | ``openengine_poc.metrics:create_metrics_recorder`` |
+| :func:`map_media` | ``openengine_poc.media:map_media`` |
+| :func:`create_lora_registry` | ``openengine_poc.lora:create_lora_registry`` |
+
+The default implementation is used only when the module is missing (and not
+when one of its own imports is) or does not define the function; any other
+import error propagates. The first lookup of each slot is logged.
+
+The module also holds the messages between a frontend and its postprocessing
+processes, the plain-data check for what crosses into them, and the frontend's
+count of Generate calls.
+
+This module is imported by ``OpenAIServer``, so it imports nothing beyond the
+standard library, the logger and :mod:`.engine_client` at module level.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import enum
+import importlib
+import json
+import os
+import threading
+import uuid
+from collections.abc import Awaitable, Callable, Mapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
+
+from tensorrt_llm.grpc.openengine_conventions import (
+    REQ_DETOKENIZE,
+    SAMPLING_FIELD_CAPABILITY,
+    SERVE_COUNTER_DIR_ENV,
+    SERVE_COUNTER_GENERATE_SENT,
+)
+from tensorrt_llm.logger import logger
+
+from .engine_client import (
+    EngineClient,
+    EngineEvent,
+    EngineLoad,
+    EngineRequest,
+    MediaSpec,
+    ModelCapabilities,
+    OutputFinished,
+    TokenDelta,
+    Usage,
+)
+
+if TYPE_CHECKING:
+    from tensorrt_llm.executor.result import CompletionOutput
+    from tensorrt_llm.sampling_params import SamplingParams
+
+# Bump on any change to a signature, type or message in this module or in
+# engine_client.py, in a commit of its own.
+POC2_CONTRACT_VERSION = 1
+
+_PACKAGE = "tensorrt_llm.serve.openengine_poc"
+
+
+class OpenEngineUnsupportedError(NotImplementedError):
+    """A feature the OpenEngine path does not provide; endpoints report it as 501."""
+
+
+# --- Slots --------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Slot:
+    """Where a slot's implementation is looked up, and the default it falls back to."""
+
+    name: str
+    module: str
+    attribute: str
+    owner: str
+    default: Callable[..., Any]
+
+
+_SLOTS: dict[str, Slot] = {}
+_RESOLVED: dict[str, tuple[Callable[..., Any], str]] = {}
+_RESOLVE_LOCK = threading.Lock()
+
+
+def _slot(name: str, module: str, owner: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    def register(default: Callable[..., Any]) -> Callable[..., Any]:
+        _SLOTS[name] = Slot(name, f"{_PACKAGE}.{module}", name, owner, default)
+        return default
+
+    return register
+
+
+def resolve_slot(name: str) -> tuple[Callable[..., Any], str]:
+    """Return a slot's implementation and where it came from (``"module:function"`` or ``"default"``)."""
+    with _RESOLVE_LOCK:
+        if name in _RESOLVED:
+            return _RESOLVED[name]
+        slot = _SLOTS[name]
+        impl, source = slot.default, "default"
+        try:
+            module = importlib.import_module(slot.module)
+        except ModuleNotFoundError as error:
+            if error.name != slot.module:
+                raise
+        else:
+            found = getattr(module, slot.attribute, None)
+            if found is not None:
+                impl, source = found, f"{slot.module}:{slot.attribute}"
+        logger.info(f"OpenEngine slot {name}: using {source}")
+        _RESOLVED[name] = (impl, source)
+        return impl, source
+
+
+def reset_slot_cache() -> None:
+    """Forget resolved slots, so the next call looks them up again (for tests)."""
+    with _RESOLVE_LOCK:
+        _RESOLVED.clear()
+
+
+def slots() -> Mapping[str, Slot]:
+    """Every slot by name."""
+    return dict(_SLOTS)
+
+
+# --- Request mapping (WT-11) --------------------------------------------------
+
+
+@dataclass
+class GenerateOptions:
+    """The ``generate_async`` arguments besides the prompt and the sampling parameters.
+
+    Attributes:
+        media: The prompt's media, from :func:`map_media`.
+        lora_name: The registered adapter name, from :class:`LoraRegistry`.
+    """
+
+    streaming: bool = False
+    lora_request: Any = None
+    lora_name: str | None = None
+    disaggregated_params: Any = None
+    cache_salt: str | None = None
+    kv_hints: Any = None
+    conversation_params: Any = None
+    scheduling_params: Any = None
+    priority: float | None = None
+    trace_headers: Mapping[str, str] | None = None
+    media: Sequence[MediaSpec] = ()
+
+
+def map_request(
+    prompt_token_ids: list[int],
+    sampling_params: SamplingParams,
+    capabilities: ModelCapabilities,
+    options: GenerateOptions,
+    *,
+    engine_name: str,
+) -> list[EngineRequest]:
+    """Map one request to the Generate calls that serve it, in output order.
+
+    Raises:
+        ValueError: The request asks for something the engine cannot do, or
+            the prompt does not fit; reported as HTTP 400.
+    """
+    impl, _ = resolve_slot("map_request")
+    return cast(
+        list[EngineRequest],
+        impl(prompt_token_ids, sampling_params, capabilities, options, engine_name=engine_name),
+    )
+
+
+# Values that leave sampling unchanged; OpenAIServer always fills these fields,
+# so a neutral value counts as not set.
+_NEUTRAL: dict[str, Any] = {
+    "top_k": 0,
+    "min_p": 0.0,
+    "frequency_penalty": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+}
+# SamplingParams fields the default mapping cannot carry; each must be unset
+# (None or empty) or equal to the value given.
+_UNSUPPORTED_DEFAULTS: dict[str, Any] = {
+    "use_beam_search": False,
+    "logprobs": None,
+    "prompt_logprobs": None,
+    "guided_decoding": None,
+    # Before logits_processor: OpenAIServer turns a thinking budget into a
+    # logits processor, and the budget is what the request asked for.
+    "thinking_token_budget": None,
+    "logits_processor": None,
+    "embedding_bias": None,
+    "bad": None,
+    "bad_token_ids": None,
+    "additional_model_outputs": None,
+    "return_context_logits": False,
+    "return_generation_logits": False,
+    "return_routed_experts": False,
+    "truncate_prompt_tokens": None,
+    "length_penalty": None,
+    "early_stopping": None,
+    "no_repeat_ngram_size": None,
+    "top_p_min": None,
+    "top_p_decay": None,
+    "top_p_reset_ids": None,
+    "beam_search_diversity_rate": None,
+    "beam_width_array": None,
+}
+_SAMPLING_FIELDS = (
+    "temperature",
+    "top_p",
+    "top_k",
+    "min_p",
+    "frequency_penalty",
+    "presence_penalty",
+    "repetition_penalty",
+)
+
+
+def _not_supported(field_name: str, value: Any, engine_name: str) -> ValueError:
+    return ValueError(
+        f"{field_name}={value!r} is not supported when serving through the OpenEngine engine "
+        f"{engine_name!r}"
+    )
+
+
+def _requested(sampling_params: SamplingParams, name: str) -> Any:
+    """The value to send for a sampling field; None when it is unset, neutral or a server-filled default."""
+    from tensorrt_llm.sampling_params import _GENERATION_CONFIG_SAMPLING_FIELDS
+
+    value = getattr(sampling_params, name)
+    if value is None or _NEUTRAL.get(name, object()) == value:
+        return None
+    provided = sampling_params._request_provided_fields
+    if provided is not None and name in _GENERATION_CONFIG_SAMPLING_FIELDS and name not in provided:
+        return None
+    return value
+
+
+def new_request_id() -> str:
+    """A fresh Generate ``request_id``."""
+    return f"trtllm-{uuid.uuid4().hex}"
+
+
+@_slot("map_request", "mapping", owner="WT-11")
+def default_map_request(
+    prompt_token_ids: list[int],
+    sampling_params: SamplingParams,
+    capabilities: ModelCapabilities,
+    options: GenerateOptions,
+    *,
+    engine_name: str,
+) -> list[EngineRequest]:
+    """The first prototype's mapping: one call, serving-side stop strings, no request options.
+
+    ``priority``, ``scheduling_params``, ``conversation_params`` and
+    ``trace_headers`` are accepted and not forwarded.
+    """
+    from tensorrt_llm.executor.utils import context_length_exceeded_message
+
+    for name, value in (
+        ("lora_request", options.lora_request),
+        ("disaggregated_params", options.disaggregated_params),
+        ("cache_salt", options.cache_salt),
+        ("kv_hints", options.kv_hints),
+    ):
+        if value is not None:
+            raise ValueError(f"{name} is not supported when serving through an OpenEngine engine")
+    if options.media:
+        raise ValueError(
+            "multimodal inputs are not supported when serving through an OpenEngine engine"
+        )
+    for name, default in _UNSUPPORTED_DEFAULTS.items():
+        value = getattr(sampling_params, name)
+        if default is None:
+            unset = value is None or (isinstance(value, (list, tuple)) and not value)
+        else:
+            unset = value == default
+        if unset:
+            continue
+        if name in ("logits_processor", "embedding_bias", "guided_decoding"):
+            # OpenAI requests set embedding_bias through logit_bias.
+            label = "logit_bias (embedding_bias)" if name == "embedding_bias" else name
+            raise ValueError(
+                f"{label} is not supported when serving through the OpenEngine engine "
+                f"{engine_name!r}"
+            )
+        raise _not_supported(name, value, engine_name)
+    if sampling_params.prompt_ignore_length:
+        raise _not_supported(
+            "prompt_ignore_length", sampling_params.prompt_ignore_length, engine_name
+        )
+
+    n = sampling_params.n
+    if sampling_params.best_of is not None and sampling_params.best_of != n:
+        raise _not_supported("best_of", sampling_params.best_of, engine_name)
+    if n > capabilities.max_num_sequences:
+        raise ValueError(
+            f"n={n} exceeds the {capabilities.max_num_sequences} sequence(s) engine "
+            f"{engine_name!r} supports"
+        )
+    max_context = capabilities.max_context_length
+    if max_context is not None and len(prompt_token_ids) >= max_context:
+        # The LLM path's wording, so OpenAIServer reports code context_length_exceeded.
+        raise ValueError(
+            context_length_exceeded_message(
+                max_context_length=max_context, num_prompt_tokens=len(prompt_token_ids)
+            )
+        )
+
+    sampling: dict[str, float | int] = {}
+    for name in _SAMPLING_FIELDS:
+        value = _requested(sampling_params, name)
+        if value is None:
+            continue
+        capability = SAMPLING_FIELD_CAPABILITY.get(name)
+        if capability is not None and not capabilities.supports(capability):
+            raise _not_supported(name, value, engine_name)
+        sampling[name] = value
+    if sampling_params.seed is not None:
+        if sampling_params.seed < 0:
+            raise ValueError(f"seed must be non-negative, got {sampling_params.seed}")
+        sampling["seed"] = sampling_params.seed
+
+    limits = []
+    if max_context is not None:
+        limits.append(max_context - len(prompt_token_ids))
+    if capabilities.max_output_tokens is not None:
+        limits.append(capabilities.max_output_tokens)
+    limit = min(limits) if limits else None
+    max_tokens = sampling_params.max_tokens
+    if max_tokens is not None and max_tokens <= 0:
+        raise ValueError(f"max_tokens must be greater than 0, got {max_tokens}")
+    if max_tokens is None:
+        max_tokens = limit
+    elif limit is not None and max_tokens > limit:
+        # As LLM does: cap the request at what the engine can still generate.
+        logger.warning(
+            f"max_tokens={max_tokens} is more than the {limit} tokens engine {engine_name!r} "
+            "can generate for this prompt; using it instead"
+        )
+        max_tokens = limit
+
+    if not sampling_params.detokenize and sampling_params.stop:
+        # Stop strings are matched on the text the serving side decodes.
+        raise ValueError(
+            "stop strings are not supported when serving through an OpenEngine engine "
+            "without detokenizing (detokenize=False, or a harmony model)"
+        )
+    return [
+        EngineRequest(
+            request_id=new_request_id(),
+            prompt_token_ids=list(prompt_token_ids),
+            max_tokens=max_tokens,
+            sampling=sampling,
+            min_tokens=sampling_params.min_tokens or None,
+            stop_token_ids=list(dict.fromkeys(sampling_params.stop_token_ids or ())),
+            ignore_eos=True if sampling_params.ignore_eos else None,
+            num_sequences=n,
+            model=capabilities.served_model_name,
+            extra={REQ_DETOKENIZE: False},
+        )
+    ]
+
+
+# --- Response assembly (WT-12) ------------------------------------------------
+
+
+class ResponseAssembler(Protocol):
+    """Builds the outputs of one Generate call from its events.
+
+    ``outputs`` hold the ``CompletionOutput`` objects a ``RequestOutput`` hands
+    to the handlers; their ``*_diff`` views cover the last change.
+    """
+
+    outputs: list[CompletionOutput]
+    cached_tokens: int
+
+    @property
+    def finished(self) -> bool:
+        """Whether every output has finished."""
+        ...
+
+    def apply(self, event: EngineEvent) -> bool:
+        """Apply one event; return whether any output changed."""
+        ...
+
+    def finish_cancelled(self) -> None:
+        """End the outputs that have not finished, after the call was cancelled by the serving side."""
+        ...
+
+
+def create_response_assembler(
+    *, sampling_params: SamplingParams, tokenizer: Any, num_outputs: int
+) -> ResponseAssembler:
+    """Create the assembler for one Generate call returning ``num_outputs`` outputs."""
+    impl, _ = resolve_slot("create_response_assembler")
+    return cast(
+        ResponseAssembler,
+        impl(sampling_params=sampling_params, tokenizer=tokenizer, num_outputs=num_outputs),
+    )
+
+
+class _DefaultResponseAssembler:
+    """The first prototype's assembly: serving-side detokenization and stop strings."""
+
+    def __init__(self, detokenizers: list[Any]) -> None:
+        from tensorrt_llm.executor.result import CompletionOutput
+
+        self.outputs = [CompletionOutput(index=i) for i in range(len(detokenizers))]
+        self.cached_tokens = 0
+        self._detokenizers = detokenizers
+
+    @property
+    def finished(self) -> bool:
+        return all(output.finish_reason is not None for output in self.outputs)
+
+    def _start_step(self) -> None:
+        for output in self.outputs:
+            output._last_text_len = len(output.text)
+            output._last_token_ids_len = len(output.token_ids)
+            output._last_logprobs_len = len(output.logprobs)
+
+    def apply(self, event: EngineEvent) -> bool:
+        if isinstance(event, TokenDelta):
+            return self._apply_tokens(event)
+        if isinstance(event, OutputFinished):
+            if event.usage is not None and event.usage.cached_prompt_tokens is not None:
+                self.cached_tokens = event.usage.cached_prompt_tokens
+            return self._apply_finished(event)
+        return False
+
+    def _apply_tokens(self, event: TokenDelta) -> bool:
+        output = self.outputs[event.output_index]
+        if output.finish_reason is not None:
+            return False
+        token_ids = list(event.token_ids)
+        self._start_step()
+        detokenizer = self._detokenizers[event.output_index]
+        if detokenizer is None:
+            output.token_ids.extend(token_ids)
+            return True
+        delta = detokenizer.step(token_ids)
+        output.text += delta.text
+        if delta.stop is None:
+            output.token_ids.extend(token_ids)
+            return True
+        # Count the output up to the token that completed the stop string.
+        keep = delta.stop.token_index + 1 - len(output.token_ids)
+        output.token_ids.extend(token_ids[: max(keep, 0)])
+        output.finish_reason = "stop"
+        output.stop_reason = delta.stop.stop_str
+        return True
+
+    def _apply_finished(self, event: OutputFinished) -> bool:
+        output = self.outputs[event.output_index]
+        if output.finish_reason is not None:
+            return False
+        self._start_step()
+        detokenizer = self._detokenizers[event.output_index]
+        delta = detokenizer.finish() if detokenizer is not None else None
+        if delta is not None:
+            output.text += delta.text
+        if delta is not None and delta.stop is not None:
+            output.finish_reason = "stop"
+            output.stop_reason = delta.stop.stop_str
+            return True
+        output.finish_reason = event.reason
+        if event.stop_token_id is not None:
+            output.stop_reason = event.stop_token_id
+        elif event.stop_text is not None:
+            output.stop_reason = event.stop_text
+        return True
+
+    def finish_cancelled(self) -> None:
+        # As with LLM, an unfinished output ends with "cancelled", unless the
+        # text its detokenizer still holds completes a stop string.
+        self._start_step()
+        for output, detokenizer in zip(self.outputs, self._detokenizers):
+            if output.finish_reason is not None:
+                continue
+            delta = detokenizer.finish() if detokenizer is not None else None
+            if delta is not None:
+                output.text += delta.text
+            if delta is not None and delta.stop is not None:
+                output.finish_reason = "stop"
+                output.stop_reason = delta.stop.stop_str
+            else:
+                output.finish_reason = "cancelled"
+
+
+@_slot("create_response_assembler", "response", owner="WT-12")
+def default_create_response_assembler(
+    *, sampling_params: SamplingParams, tokenizer: Any, num_outputs: int
+) -> ResponseAssembler:
+    """One serving-side detokenizer per output, or none when ``detokenize`` is off."""
+    from tensorrt_llm.serve.detokenize import IncrementalDetokenizer
+
+    detokenizers = [
+        None
+        if not sampling_params.detokenize
+        else IncrementalDetokenizer(
+            tokenizer,
+            stop=sampling_params.stop,
+            include_stop_str_in_output=sampling_params.include_stop_str_in_output,
+            skip_special_tokens=sampling_params.skip_special_tokens,
+            spaces_between_special_tokens=sampling_params.spaces_between_special_tokens,
+        )
+        for _ in range(num_outputs)
+    ]
+    return _DefaultResponseAssembler(detokenizers)
+
+
+# --- Postprocessing (WT-13) ---------------------------------------------------
+
+_UNSET: Any = object()
+
+
+class PostprocDispatch(Protocol):
+    """Where ``OpenAIServer`` runs a request's postprocessor.
+
+    With ``enabled``, postprocessing runs outside the handler: the handler
+    passes its ``PostprocParams`` to ``generate_async`` and reads each result
+    from ``output.outputs[0]._postprocess_result``. Otherwise the handler runs
+    the postprocessor itself.
+    """
+
+    @property
+    def enabled(self) -> bool: ...
+
+    def generate_params(self, postproc_params: Any) -> Any:
+        """The ``_postproc_params`` to pass to ``generate_async``."""
+        ...
+
+    def prepare(self, postproc_args: Any, promise: Any, *, tokenizer: Any = _UNSET) -> None:
+        """Fill in what a handler-run postprocessor needs once the request has started.
+
+        Args:
+            tokenizer: Set ``postproc_args.tokenizer`` to this; left alone if not given.
+        """
+        ...
+
+    def result(self, output: Any, postproc_params: Any) -> Any:
+        """The postprocessed result of one ``RequestOutput`` step."""
+        ...
+
+
+@dataclass(frozen=True)
+class DefaultPostprocDispatch:
+    """Postprocess in the LLM's postprocessing workers when there are any, else in the handler."""
+
+    enabled: bool
+
+    def generate_params(self, postproc_params: Any) -> Any:
+        return postproc_params if self.enabled else None
+
+    def prepare(self, postproc_args: Any, promise: Any, *, tokenizer: Any = _UNSET) -> None:
+        if self.enabled:
+            return
+        if tokenizer is not _UNSET:
+            postproc_args.tokenizer = tokenizer
+        postproc_args.num_prompt_tokens = len(promise.prompt_token_ids)
+
+    def result(self, output: Any, postproc_params: Any) -> Any:
+        if self.enabled:
+            return output.outputs[0]._postprocess_result
+        return postproc_params.post_processor(output, postproc_params.postproc_args)
+
+
+def create_postproc_dispatch(generator: Any, *, is_visual_gen: bool) -> PostprocDispatch:
+    """The postprocessing dispatch for ``OpenAIServer`` serving ``generator``.
+
+    An implementation must return :class:`DefaultPostprocDispatch` semantics for
+    every generator other than the OpenEngine facade, in-process ``LLM`` included.
+    """
+    impl, _ = resolve_slot("create_postproc_dispatch")
+    return cast(PostprocDispatch, impl(generator, is_visual_gen=is_visual_gen))
+
+
+@_slot("create_postproc_dispatch", "postproc_pool", owner="WT-13")
+def default_create_postproc_dispatch(generator: Any, *, is_visual_gen: bool) -> PostprocDispatch:
+    if is_visual_gen:
+        return DefaultPostprocDispatch(enabled=False)
+    return DefaultPostprocDispatch(enabled=generator.args.num_postprocess_workers > 0)
+
+
+# Messages between a frontend process and its postprocessing processes.
+
+
+@dataclass(frozen=True)
+class DetokOptions:
+    """How a postprocessing process detokenizes and matches stop strings for one request."""
+
+    skip_special_tokens: bool = True
+    spaces_between_special_tokens: bool = True
+    stop: tuple[str, ...] | None = None
+    include_stop_str_in_output: bool = False
+    min_tokens: int = 0
+
+
+@dataclass(frozen=True)
+class PPOpen:
+    """Start postprocessing a request.
+
+    Attributes:
+        post_processor: Dotted import path of the postprocessor, see :func:`post_processor_path`.
+        postproc_args: ``PostprocArgs`` holding plain data only, see :func:`check_plain_data`.
+    """
+
+    request_id: str
+    streaming: bool
+    n: int
+    post_processor: str
+    postproc_args: Any
+    detok: DetokOptions
+
+
+@dataclass(frozen=True)
+class PPEvent:
+    """One engine event of a request, in arrival order."""
+
+    request_id: str
+    event: EngineEvent
+
+
+@dataclass(frozen=True)
+class PPClose:
+    """The request ended; ``cancelled`` when the serving side stopped it."""
+
+    request_id: str
+    reason: Literal["done", "cancelled"]
+
+
+@dataclass(frozen=True)
+class PPResult:
+    """Postprocessed output of a request.
+
+    Attributes:
+        chunks: SSE strings for a streaming request, else the response object.
+        stop_hit: Indices of the outputs a stop string ended; the frontend cancels their calls.
+        usage_fix: Corrected token counts after a serving-side stop.
+    """
+
+    request_id: str
+    chunks: Any
+    is_final: bool
+    stop_hit: tuple[int, ...] | None = None
+    usage_fix: Usage | None = None
+
+
+PPMessage = PPOpen | PPEvent | PPClose | PPResult
+
+# Postprocessors are imported by path in the postprocessing processes, and
+# only from this package tree.
+POST_PROCESSOR_MODULE_PREFIX = "tensorrt_llm.serve."
+
+
+class PostprocDataError(TypeError):
+    """Something that is not plain data was about to cross into a postprocessing process."""
+
+
+def post_processor_path(post_processor: Callable[..., Any]) -> str:
+    """The dotted import path of a module-level postprocessor.
+
+    Raises:
+        PostprocDataError: The function is not importable by that path, or lives
+            outside :data:`POST_PROCESSOR_MODULE_PREFIX`.
+    """
+    module = getattr(post_processor, "__module__", None)
+    qualname = getattr(post_processor, "__qualname__", None)
+    if not module or not qualname or "<" in qualname or "." in qualname:
+        raise PostprocDataError(f"{post_processor!r} is not a module-level function")
+    path = f"{module}.{qualname}"
+    if resolve_post_processor(path) is not post_processor:
+        raise PostprocDataError(f"{path} does not import back to {post_processor!r}")
+    return path
+
+
+def resolve_post_processor(path: str) -> Callable[..., Any]:
+    """Import a postprocessor by the path :func:`post_processor_path` gave."""
+    if not path.startswith(POST_PROCESSOR_MODULE_PREFIX):
+        raise PostprocDataError(
+            f"postprocessors must come from {POST_PROCESSOR_MODULE_PREFIX}*, got {path!r}"
+        )
+    module_name, _, name = path.rpartition(".")
+    function = getattr(importlib.import_module(module_name), name, None)
+    if not callable(function):
+        raise PostprocDataError(f"{path!r} is not a callable")
+    return cast(Callable[..., Any], function)
+
+
+_PLAIN_SCALARS = (type(None), bool, int, float, str, bytes)
+
+
+def check_plain_data(value: Any, *, path: str = "postproc_args") -> None:
+    """Check that ``value`` holds plain data only, so it can cross into another process.
+
+    Plain data is None, bool, int, float, str, bytes, enum members, lists,
+    tuples, sets and dicts of plain data, and dataclass or pydantic model
+    instances whose fields are plain data. Callables, tensors, parsers,
+    tokenizers and any other object are not.
+
+    Raises:
+        PostprocDataError: Names the first offending value by its path.
+    """
+    seen: set[int] = set()
+
+    def check(item: Any, where: str) -> None:
+        if isinstance(item, _PLAIN_SCALARS) or isinstance(item, enum.Enum):
+            return
+        if id(item) in seen:
+            return
+        seen.add(id(item))
+        if isinstance(item, (list, tuple, set, frozenset)):
+            for i, element in enumerate(item):
+                check(element, f"{where}[{i}]")
+            return
+        if isinstance(item, dict):
+            for key, element in item.items():
+                check(key, f"{where}.keys()")
+                check(element, f"{where}[{key!r}]")
+            return
+        if dataclasses.is_dataclass(item) and not isinstance(item, type):
+            for f in dataclasses.fields(item):
+                check(getattr(item, f.name), f"{where}.{f.name}")
+            return
+        model_fields = getattr(type(item), "model_fields", None)
+        if isinstance(model_fields, dict) and hasattr(item, "model_dump"):
+            for name in model_fields:
+                check(getattr(item, name), f"{where}.{name}")
+            return
+        raise PostprocDataError(f"{where} is a {type(item).__qualname__}, which is not plain data")
+
+    check(value, path)
+
+
+# --- Frontends (WT-14) --------------------------------------------------------
+
+
+@dataclass
+class FrontendLaunchConfig:
+    """Everything needed to start the serving frontends for one engine.
+
+    Attributes:
+        llm_args: The ``trtllm-serve`` LLM arguments, including ``num_serve_frontends``.
+        ready_timeout: Seconds to wait for the engine; None for the frontend's own default.
+    """
+
+    host: str
+    port: int
+    llm_args: dict[str, Any]
+    endpoint: str
+    tool_parser: str | None = None
+    middleware: Sequence[str] = ()
+    chat_template: str | None = None
+    served_model_name: str | None = None
+    allow_request_chat_template: bool = False
+    multimodal_server_config: Any = None
+    num_input_processor_workers: int = 8
+    num_media_load_workers: int = 8
+    ready_timeout: float | None = None
+    report_addr: str | None = None
+
+
+def launch_frontends(config: FrontendLaunchConfig) -> None:
+    """Start the frontends and serve until they stop."""
+    impl, _ = resolve_slot("launch_frontends")
+    impl(config)
+
+
+@_slot("launch_frontends", "multi_frontend", owner="WT-14")
+def default_launch_frontends(config: FrontendLaunchConfig) -> None:
+    """One frontend, in this process."""
+    import click
+
+    from . import launch
+
+    if config.llm_args.get("num_serve_frontends", 1) not in (None, 1):
+        raise click.UsageError("--openengine-endpoint supports a single serving frontend")
+    kwargs: dict[str, Any] = {}
+    if config.ready_timeout is not None:
+        kwargs["ready_timeout"] = config.ready_timeout
+    launch.launch_openengine_server(
+        config.host,
+        config.port,
+        config.llm_args,
+        config.endpoint,
+        tool_parser=config.tool_parser,
+        middleware=config.middleware,
+        chat_template=config.chat_template,
+        served_model_name=config.served_model_name,
+        allow_request_chat_template=config.allow_request_chat_template,
+        multimodal_server_config=config.multimodal_server_config,
+        num_input_processor_workers=config.num_input_processor_workers,
+        num_media_load_workers=config.num_media_load_workers,
+        **kwargs,
+    )
+
+
+# --- Metrics (WT-15) ----------------------------------------------------------
+
+
+class RequestMetrics(Protocol):
+    """Timing of one request, measured from its engine events on the serving side."""
+
+    def on_event(self, event: EngineEvent, now: float) -> None: ...
+
+    def metrics_dict(self) -> dict[str, Any]:
+        """The ``RequestOutput.metrics_dict`` entries measured so far."""
+        ...
+
+
+class MetricsRecorder(Protocol):
+    """Request metrics, iteration stats and KV-cache events of a frontend."""
+
+    def start_request(self, request_id: str, arrival_time: float) -> RequestMetrics: ...
+
+    def iteration_stats(self, load: EngineLoad | None) -> dict[str, Any] | None:
+        """One ``/metrics`` entry derived from an engine load snapshot; None for none."""
+        ...
+
+    def kv_cache_events(self, client: EngineClient, timeout: float | None) -> Awaitable[Any]:
+        """The KV-cache events received so far, in ``/kv_cache_events`` format.
+
+        Raises:
+            OpenEngineUnsupportedError: The engine publishes no KV-cache events.
+        """
+        ...
+
+
+def create_metrics_recorder(args: Any) -> MetricsRecorder:
+    """The metrics recorder for a frontend serving with ``args`` (its ``TorchLlmArgs``)."""
+    impl, _ = resolve_slot("create_metrics_recorder")
+    return cast(MetricsRecorder, impl(args))
+
+
+class _NoRequestMetrics:
+    def on_event(self, event: EngineEvent, now: float) -> None:
+        pass
+
+    def metrics_dict(self) -> dict[str, Any]:
+        return {}
+
+
+class _NoMetrics:
+    """Records nothing: the first prototype turned the perf metrics off."""
+
+    def start_request(self, request_id: str, arrival_time: float) -> RequestMetrics:
+        return _NoRequestMetrics()
+
+    def iteration_stats(self, load: EngineLoad | None) -> dict[str, Any] | None:
+        return None
+
+    async def kv_cache_events(self, client: EngineClient, timeout: float | None) -> Any:
+        raise OpenEngineUnsupportedError(
+            "/kv_cache_events is not supported when serving through an OpenEngine engine"
+        )
+
+
+@_slot("create_metrics_recorder", "metrics", owner="WT-15")
+def default_create_metrics_recorder(args: Any) -> MetricsRecorder:
+    return _NoMetrics()
+
+
+# --- Media and LoRA (WT-16) ---------------------------------------------------
+
+_MULTIMODAL_KEYS = ("multi_modal_data", "multi_modal_embeddings", "mm_processor_kwargs")
+
+
+def map_media(
+    inputs: Mapping[str, Any], capabilities: ModelCapabilities, *, engine_name: str
+) -> list[MediaSpec]:
+    """The media of a prompt, in placeholder order.
+
+    Raises:
+        ValueError: The engine does not take this media; reported as HTTP 400.
+    """
+    impl, _ = resolve_slot("map_media")
+    return cast(list[MediaSpec], impl(inputs, capabilities, engine_name=engine_name))
+
+
+@_slot("map_media", "media", owner="WT-16")
+def default_map_media(
+    inputs: Mapping[str, Any], capabilities: ModelCapabilities, *, engine_name: str
+) -> list[MediaSpec]:
+    """Reject every multimodal input."""
+    if any(inputs.get(key) is not None for key in _MULTIMODAL_KEYS):
+        raise ValueError(
+            "multimodal inputs are not supported when serving through an OpenEngine engine"
+        )
+    return []
+
+
+class LoraRegistry(Protocol):
+    """Registers LoRA adapters with the engine the first time a request uses them."""
+
+    async def resolve(self, lora_request: Any) -> str | None:
+        """The adapter name to send for ``lora_request``; None when there is none.
+
+        Raises:
+            ValueError: The adapter cannot be used; reported as HTTP 400.
+        """
+        ...
+
+
+def create_lora_registry(client: EngineClient, capabilities: ModelCapabilities) -> LoraRegistry:
+    """The LoRA registry of a frontend connected to ``client``."""
+    impl, _ = resolve_slot("create_lora_registry")
+    return cast(LoraRegistry, impl(client, capabilities))
+
+
+class _NoLora:
+    async def resolve(self, lora_request: Any) -> str | None:
+        if lora_request is not None:
+            raise ValueError(
+                "lora_request is not supported when serving through an OpenEngine engine"
+            )
+        return None
+
+
+@_slot("create_lora_registry", "lora", owner="WT-16")
+def default_create_lora_registry(
+    client: EngineClient, capabilities: ModelCapabilities
+) -> LoraRegistry:
+    """Reject every LoRA request."""
+    return _NoLora()
+
+
+# --- Generate-call counter ----------------------------------------------------
+
+
+class GenerateCounter:
+    """Counts the Generate calls a frontend sent, for proving requests went through the engine.
+
+    The count starts at 0 and only grows; every call counts, including each
+    call of a split request. When ``counter_dir`` is set, every change writes
+    ``{"pid": ..., "generate_sent": ...}`` to ``<counter_dir>/<pid>.json``,
+    replacing the file atomically.
+
+    Args:
+        counter_dir: Where to write the count; defaults to ``$TRTLLM_OPENENGINE_COUNTER_DIR``.
+    """
+
+    def __init__(self, counter_dir: str | os.PathLike[str] | None = _UNSET) -> None:
+        if counter_dir is _UNSET:
+            counter_dir = os.environ.get(SERVE_COUNTER_DIR_ENV) or None
+        self._dir = Path(counter_dir) if counter_dir is not None else None
+        self._value = 0
+        self._lock = threading.Lock()
+
+    @property
+    def value(self) -> int:
+        return self._value
+
+    def increment(self, count: int = 1) -> int:
+        """Add ``count`` calls and return the new total."""
+        if count < 0:
+            raise ValueError(f"the count only grows, got {count}")
+        with self._lock:
+            self._value += count
+            if self._dir is not None:
+                self._write()
+            return self._value
+
+    def _write(self) -> None:
+        assert self._dir is not None
+        pid = os.getpid()
+        path = self._dir / f"{pid}.json"
+        tmp = self._dir / f".{pid}.json.tmp"
+        tmp.write_text(json.dumps({"pid": pid, SERVE_COUNTER_GENERATE_SENT: self._value}))
+        os.replace(tmp, path)
+
+
+def read_generate_sent(counter_dir: str | os.PathLike[str]) -> int:
+    """The total of ``generate_sent`` over every frontend's file in ``counter_dir``."""
+    total = 0
+    for path in sorted(Path(counter_dir).glob("*.json")):
+        total += int(json.loads(path.read_text())[SERVE_COUNTER_GENERATE_SENT])
+    return total

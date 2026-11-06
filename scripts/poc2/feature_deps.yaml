@@ -1,0 +1,234 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# PoC-S2 features: who writes their end-to-end cases and which work items must
+# have landed before they can be verified. pending_e2e.py reads this file.
+#
+# Row fields:
+#   id        Unique row id; verification records name the row they verify.
+#   features  Feature ids (F-xx), or the case id for a cross-cutting row.
+#   cases     The cases that verify the row.
+#   author    The work item that writes the cases.
+#   deps      Work items that must have landed. "link" stands for the minimal
+#             working chain, "trtllm-features" for every TRT-LLM feature item.
+#   chain     case-02 (the TRT-LLM engine, default) or case-01 (glm). case-01
+#             rows are verified only by a glm work item or by R3.
+#   assignee  A fixed verifier, for rows that belong to an integration round.
+#   deferred  True for rows nobody verifies in this stage.
+#
+# The verifier of a row is the dependency that lands last, unless the row has
+# an assignee or is a case-01 row.
+
+version: 1
+
+groups:
+  link: [WT-01, WT-03, WT-04, WT-10]
+  trtllm-features: [WT-01, WT-02, WT-03, WT-04, WT-05, WT-10, WT-11, WT-12, WT-13, WT-14, WT-15, WT-16]
+  glm: [WT-06, WT-07]
+
+rows:
+  - id: F-33+F-34
+    features: [F-33, F-34]
+    cases: "T25, T26 (H-2); the cached_tokens cases of T1, T2"
+    author: WT-03
+    deps: [WT-03]
+  - id: T17
+    features: [T17]
+    cases: "T17 (H-2), configuration precedence"
+    author: WT-03
+    deps: [WT-03]
+  - id: F-01+F-02
+    features: [F-01, F-02]
+    cases: "basic streaming and non-streaming cases of T1, T2"
+    author: WT-10
+    deps: [link]
+  - id: F-05
+    features: [F-05]
+    cases: "T6; new: the frontend stops itself when the engine is lost"
+    author: WT-10
+    deps: [link]
+  - id: F-06
+    features: [F-06]
+    cases: "new: test_server_info_engine_block"
+    author: WT-10
+    deps: [link]
+  - id: F-07
+    features: [F-07]
+    cases: "new: test_chat_template_kwargs (with the fingerprint check)"
+    author: WT-10
+    deps: [link]
+  - id: F-14
+    features: [F-14]
+    cases: "the max_tokens / length cases of T1, T2"
+    author: WT-10
+    deps: [link]
+  - id: F-41
+    features: [F-41]
+    cases: "the cancel case of T6; new: engine active requests drop to 0 after a disconnect"
+    author: WT-10
+    deps: [link]
+  - id: F-47
+    features: [F-47]
+    cases: "new: test_unsupported_endpoints"
+    author: WT-10
+    deps: [link]
+  - id: F-44-cpu
+    features: [F-44]
+    cases: "new: test_no_silent_drop (against the gRPC fake)"
+    author: WT-11
+    deps: [WT-01, WT-02, WT-11]
+  - id: F-08
+    features: [F-08]
+    cases: "T8; one case of T27"
+    author: WT-11
+    deps: [link, WT-11]
+  - id: F-09
+    features: [F-09]
+    cases: "the truncate_prompt_tokens case of T12"
+    author: WT-11
+    deps: [link, WT-11]
+  - id: F-11+F-12
+    features: [F-11, F-12]
+    cases: "the sampling cases of T1, T2; new: test_sampling_knobs_reach_engine"
+    author: WT-11
+    deps: [link, WT-11]
+  - id: F-13
+    features: [F-13]
+    cases: "new: test_penalties"
+    author: WT-11
+    deps: [link, WT-11]
+  - id: F-19
+    features: [F-19]
+    cases: "the n cases of T1, T2; new: call-count assertions (native and fallback paths)"
+    author: WT-11
+    deps: [link, WT-11]
+  - id: F-23
+    features: [F-23]
+    cases: "T23"
+    author: WT-11
+    deps: [link, WT-11]
+  - id: F-25+F-26
+    features: [F-25, F-26]
+    cases: "the beam cases of T1, T2 (expected 400); new: test_unsupported_fields_rejected"
+    author: WT-11
+    deps: [link, WT-11]
+  - id: F-35
+    features: [F-35]
+    cases: "_test_openai_cache_salt.py (not in CI)"
+    author: WT-11
+    deps: [link, WT-11]
+  - id: F-03+F-04
+    features: [F-03, F-04]
+    cases: "T29 (Qwen3 part), T10; T30"
+    author: WT-12
+    deps: [link, WT-11, WT-12]
+  - id: F-15+F-16
+    features: [F-15, F-16]
+    cases: "test_stop_reason of T2; T6; T5"
+    author: WT-12
+    deps: [link, WT-11, WT-12]
+  - id: F-17+F-18+F-30
+    features: [F-17, F-18, F-30]
+    cases: "test_stop_reason of T2; the usage cases of T1, T2; new: test_stop_string_variants"
+    author: WT-12
+    deps: [link, WT-11, WT-12]
+  - id: F-20+F-21
+    features: [F-20, F-21]
+    cases: "T5; the logprobs cases of T1; new: test_prompt_logprobs"
+    author: WT-12
+    deps: [link, WT-11, WT-12]
+  - id: F-24
+    features: [F-24]
+    cases: "the matching cases of T1; new: test_detokenize_options"
+    author: WT-12
+    deps: [link, WT-11, WT-12]
+  - id: F-27+F-28
+    features: [F-27, F-28]
+    cases: "T7, T8; the matching parts of T29, T30"
+    author: WT-12
+    deps: [link, WT-11, WT-12]
+  - id: F-38
+    features: [F-38]
+    cases: "the num_postprocess_workers cases of T1, T2, T29; new: the subprocesses do the work"
+    author: WT-13
+    deps: [link, WT-13]
+  - id: F-40
+    features: [F-40]
+    cases: "T9"
+    author: WT-13
+    deps: [link, WT-13]
+  - id: F-22
+    features: [F-22]
+    cases: "T3, T4"
+    author: WT-11
+    deps: [link, WT-11, WT-05]
+  - id: F-29
+    features: [F-29]
+    cases: "new: test_thinking_token_budget (four entry points)"
+    author: WT-11
+    deps: [link, WT-11, WT-12, WT-05]
+  - id: F-44-chain
+    features: [F-44]
+    cases: "chain cases of priority, scheduling and kv_hints; X-1 again on the real chain"
+    author: WT-05
+    deps: [link, WT-11, WT-05]
+  - id: F-42
+    features: [F-42]
+    cases: "T11, T12"
+    author: WT-15
+    deps: [link, WT-12, WT-15]
+  - id: F-43
+    features: [F-43]
+    cases: "new: test_kv_cache_events_over_chain"
+    author: WT-15
+    deps: [link, WT-15]
+  - id: F-45
+    features: [F-45]
+    cases: "T18"
+    author: WT-15
+    deps: [link, WT-15]
+  - id: F-39
+    features: [F-39]
+    cases: "T24; the smoke set again with the default 8 frontends and the postproc pool"
+    author: WT-14
+    deps: [link, WT-13, WT-14]
+  - id: F-10
+    features: [F-10]
+    cases: "T14, T15; T33 (expected to be rejected)"
+    author: WT-16
+    deps: [link, WT-11, WT-05, WT-16]
+  - id: F-46
+    features: [F-46]
+    cases: "T21, T22"
+    author: WT-16
+    deps: [link, WT-11, WT-05, WT-16]
+  - id: F-15-case01
+    features: [F-15]
+    cases: "the E2E acceptance of WT-07 (min_tokens)"
+    author: WT-07
+    deps: [link, WT-07]
+    chain: case-01
+  - id: F-17+F-30+F-19-case01
+    features: [F-17, F-30, F-19]
+    cases: "test_sampling_and_stop, test_n_best_of of the GLM module"
+    author: WT-06
+    deps: [link, WT-11, WT-12, WT-06]
+    chain: case-01
+  - id: F-32
+    features: [F-32]
+    cases: "T31 (4xB200), T32"
+    author: WT-20-R2
+    deps: [trtllm-features]
+    assignee: WT-20-R2
+  - id: F-31+F-36+F-37+GLM
+    features: [F-31, F-36, F-37]
+    cases: "the GLM module; GSM8K"
+    author: WT-20-R3
+    deps: [WT-20-R2, WT-06, WT-07]
+    assignee: WT-20-R3
+  - id: F-48
+    features: [F-48]
+    cases: "-"
+    author: "-"
+    deps: []
+    deferred: true
