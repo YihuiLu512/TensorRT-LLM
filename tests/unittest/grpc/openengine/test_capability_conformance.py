@@ -278,7 +278,16 @@ def test_multi_sequence_support_matches_max_num_sequences(llm, model_info):
             "but the engine accepted n=2"
         )
     else:
-        assert accepted, "no limit advertised but the engine rejected n=2"
+        assert accepted, (
+            f"advertised max_num_sequences={generation.max_num_sequences or 'unset'} "
+            "but the engine rejected n=2"
+        )
+    if generation.HasField("max_num_sequences") and generation.max_num_sequences > 2:
+        limit = generation.max_num_sequences
+        assert _accepted(
+            llm,
+            _request(sampling=generation_pb2.SamplingParams(temperature=1.0, num_sequences=limit)),
+        ), f"advertised max_num_sequences={limit} but the engine rejected n={limit}"
 
 
 def test_prompt_logprobs_match_their_advertised_support(llm, model_info):

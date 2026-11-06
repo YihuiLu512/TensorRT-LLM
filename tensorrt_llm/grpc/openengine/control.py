@@ -35,7 +35,26 @@ from .bindings import (
     openengine_pb2_grpc,
     server_pb2,
 )
-from .capabilities import supported_guides, supports_image_routing
+from .capabilities import (
+    CONVENTIONS_VERSION,
+    CONVENTIONS_VERSION_KEY,
+    MAX_NUM_SEQUENCES,
+    REQUEST_BEST_OF_KEY,
+    REQUEST_CONVERSATION_ID_KEY,
+    REQUEST_KV_HINTS_KEY,
+    REQUEST_LOGIT_BIAS_KEY,
+    REQUEST_SCHEDULING_KEY,
+    REQUEST_THINKING_TOKEN_BUDGET_KEY,
+    SAMPLING_FREQUENCY_PENALTY_KEY,
+    SAMPLING_MIN_P_KEY,
+    SAMPLING_PRESENCE_PENALTY_KEY,
+    SAMPLING_REPETITION_PENALTY_KEY,
+    SAMPLING_SEED_SCOPE_KEY,
+    STOPPING_STOP_TEXT_KEY,
+    supported_guides,
+    supports_image_routing,
+    tokenizer_fingerprint,
+)
 from .coordinator import CoordinationError, FrontendClient, InvalidRequestIdError
 from .errors import AbortFailedError
 from .kv_events import data_parallel_size, events_config
@@ -54,6 +73,26 @@ _MODE_BY_GUIDE_FIELD = {
     "ebnf_grammar": model_pb2.GUIDED_DECODING_MODE_EBNF_GRAMMAR,
     "structural_tag": model_pb2.GUIDED_DECODING_MODE_STRUCTURAL_TAG,
     "json_object": model_pb2.GUIDED_DECODING_MODE_JSON_OBJECT,
+}
+
+# Capability keys of the `extra` conventions. A key reported true must take
+# effect in Generate; a conforming client never sends a request key whose
+# capability is false.
+_EXTRA_CAPABILITIES = {
+    SAMPLING_MIN_P_KEY: True,
+    SAMPLING_FREQUENCY_PENALTY_KEY: True,
+    SAMPLING_PRESENCE_PENALTY_KEY: True,
+    SAMPLING_REPETITION_PENALTY_KEY: True,
+    # Per-request seed reproducibility is unmeasured; claim only batch scope.
+    SAMPLING_SEED_SCOPE_KEY: "batch_dependent",
+    STOPPING_STOP_TEXT_KEY: True,
+    REQUEST_CONVERSATION_ID_KEY: True,
+    # Generate does not read these request keys.
+    REQUEST_THINKING_TOKEN_BUDGET_KEY: False,
+    REQUEST_LOGIT_BIAS_KEY: False,
+    REQUEST_KV_HINTS_KEY: False,
+    REQUEST_SCHEDULING_KEY: False,
+    REQUEST_BEST_OF_KEY: False,
 }
 
 _INFERENCE_PROBE_TIMEOUT_SECONDS = 30.0
@@ -120,6 +159,23 @@ class OpenEngineControlServicer(openengine_pb2_grpc.ControlServicer):
         self._capacity_reporting_enabled = (
             self._load_reporting_enabled or events_config(llm) is not None
         )
+        self._tokenizer_fingerprint = self._compute_tokenizer_fingerprint()
+
+    def _compute_tokenizer_fingerprint(self) -> dict:
+        """Fingerprint the loaded tokenizer; empty when there is none to report.
+
+        A client treats a missing fingerprint as unverified rather than as a
+        mismatch, so a tokenizer that cannot be fingerprinted is logged and left
+        out instead of failing every GetModelInfo.
+        """
+        tokenizer = getattr(self._llm, "tokenizer", None)
+        if tokenizer is None:
+            return {}
+        try:
+            return tokenizer_fingerprint(tokenizer, getattr(self._llm, "_hf_model_dir", None))
+        except (NotImplementedError, OSError, TypeError, ValueError) as error:
+            logger.warning(f"OpenEngine cannot fingerprint the tokenizer: {error!r}")
+            return {}
 
     async def _get_kv_cache_load(self) -> dict:
         """Coalesce concurrent control-plane polls into one engine query."""
@@ -251,6 +307,7 @@ class OpenEngineControlServicer(openengine_pb2_grpc.ControlServicer):
             info.extra.update({"trtllm_node": node})
         info.capacity.CopyFrom(capacity)
 
+        info.extra.update({CONVENTIONS_VERSION_KEY: CONVENTIONS_VERSION})
         # A rank hint places the first turn; conversation affinity preserves
         # that binding on later turns, even if their hints differ.
         info.extra.update({"trtllm_supports_dp_rank_targeting": True})
@@ -298,6 +355,11 @@ class OpenEngineControlServicer(openengine_pb2_grpc.ControlServicer):
         info.extra.update({"trtllm_supported_modalities": sorted(media_modalities)})
         if supports_image_routing(self._llm, media_modalities):
             info.extra.update({"trtllm_image_routing_version": 1})
+        info.extra.update(_EXTRA_CAPABILITIES)
+        if getattr(self._llm, "tokenizer", None) is None:
+            # Stop strings are encoded to token ids with the tokenizer.
+            info.extra.update({STOPPING_STOP_TEXT_KEY: False})
+        info.extra.update(self._tokenizer_fingerprint)
 
         max_seq_len = _positive_int(self._llm.args.max_seq_len)
         if max_seq_len is not None:
@@ -332,8 +394,19 @@ class OpenEngineControlServicer(openengine_pb2_grpc.ControlServicer):
                 else [],
             )
         )
-        # max_num_sequences stays unset: n > 1 is served by sampling, not beam
-        # search, so max_beam_width is not its limit.
+        # n > 1 is served by sampling, not beam search, so max_beam_width is not
+        # its limit. Without attention DP, the scheduler admits a request only
+        # when its n sequences fit in max_batch_size x pipeline-stage slots; a
+        # larger n would never be scheduled. With attention DP, the per-rank limit
+        # can be lower when max_num_tokens is small, which this value does not
+        # account for. A request with an attention-DP rank hint is limited to one
+        # sequence.
+        max_num_sequences = MAX_NUM_SEQUENCES
+        batch_size = _positive_int(getattr(self._llm.args, "max_batch_size", None))
+        if batch_size is not None:
+            stages = _positive_int(getattr(self._llm.args, "pipeline_parallel_size", None)) or 1
+            max_num_sequences = min(max_num_sequences, batch_size * stages)
+        generation.max_num_sequences = max_num_sequences
         generation.supports_priority = False  # Generate rejects openengine-priority
         generation.supports_stop_in_output = True
         generation.supports_cache_salt = True
@@ -377,6 +450,7 @@ class OpenEngineControlServicer(openengine_pb2_grpc.ControlServicer):
         load = server_pb2.LoadInfo(instance_id=self._instance_id)
         load.timestamp_unix_nanos = time.time_ns()
         load.running_requests = running_requests
+        load.attributes.update(self._inference.generate_counters.attributes())
         used_blocks = snapshot.get("usedKvBlocks")
         total_blocks = snapshot.get("totalKvBlocks")
         if isinstance(used_blocks, int) and used_blocks >= 0:

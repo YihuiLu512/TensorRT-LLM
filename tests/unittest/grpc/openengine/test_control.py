@@ -3,7 +3,11 @@
 
 """Unit tests for the OpenEngine Control service."""
 
+import hashlib
+import json
+from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -13,7 +17,9 @@ grpc = pytest.importorskip(  # noqa: E402
 pytest.importorskip("grpc_health", reason="gRPC health runtime not installed")
 from conftest import AbortError, FakeServicerContext  # noqa: E402
 
+import tensorrt_llm.grpc.openengine.control as openengine_control  # noqa: E402
 from tensorrt_llm.grpc.openengine.bindings import (  # noqa: E402
+    generation_pb2,
     kv_pb2,
     lifecycle_pb2,
     lora_pb2,
@@ -21,8 +27,10 @@ from tensorrt_llm.grpc.openengine.bindings import (  # noqa: E402
     server_pb2,
 )
 from tensorrt_llm.grpc.openengine.capabilities import (  # noqa: E402
+    GenerateCounters,
     MediaCapabilities,
     supports_image_routing,
+    tokenizer_fingerprint,
 )
 from tensorrt_llm.grpc.openengine.control import OpenEngineControlServicer  # noqa: E402
 from tensorrt_llm.grpc.openengine.servicer import OpenEngineInferenceServicer  # noqa: E402
@@ -434,8 +442,8 @@ async def test_model_info_capabilities_match_the_generate_path():
     # `kv.cache_salt` is read and forwarded to generate_async.
     assert info.generation.supports_cache_salt is True
     # n > 1 is served by sampling, not beam search, so max_beam_width is not the
-    # limit and no limit is claimed.
-    assert not info.generation.HasField("max_num_sequences")
+    # limit.
+    assert info.generation.max_num_sequences == 16
 
 
 @pytest.mark.asyncio
@@ -940,3 +948,336 @@ async def test_subscribe_kv_events_is_unimplemented(enabled):
             kv_pb2.SubscribeKvEventsRequest(), context
         )
     assert context.abort_code == grpc.StatusCode.UNIMPLEMENTED
+
+
+# -- `extra` conventions: capabilities, tokenizer fingerprint, counters ----------
+
+RECEIVED = "trtllm.counters.generate_received"
+ACCEPTED = "trtllm.counters.generate_accepted"
+# Every capability key a conforming engine must report, with this server's value.
+EXPECTED_EXTRA_CAPABILITIES = {
+    "trtllm.sampling.min_p": True,
+    "trtllm.sampling.frequency_penalty": True,
+    "trtllm.sampling.presence_penalty": True,
+    "trtllm.sampling.repetition_penalty": True,
+    "trtllm.sampling.seed_scope": "batch_dependent",
+    "trtllm.stopping.stop_text": True,
+    "trtllm.request.conversation_id": True,
+    "trtllm.request.thinking_token_budget": False,
+    "trtllm.request.logit_bias": False,
+    "trtllm.request.kv_hints": False,
+    "trtllm.request.scheduling": False,
+    "trtllm.request.best_of": False,
+}
+FINGERPRINT_KEYS = {
+    "trtllm.tokenizer.vocab_size",
+    "trtllm.tokenizer.eos_token_ids",
+    "trtllm.tokenizer.bos_token_id",
+    "trtllm.tokenizer.files_sha256",
+}
+MODALITIES_KEY = "trtllm_supported_modalities"
+
+
+class _HfTokenizer:
+    """The Hugging Face tokenizer attributes a fingerprint reads."""
+
+    def __init__(self, size: int = 100, eos: Any = 2, bos: Any = 1) -> None:
+        self.eos_token_id = eos
+        self.bos_token_id = bos
+        self._size = size
+
+    def __len__(self) -> int:
+        return self._size
+
+
+class _UnsizedTokenizer:
+    """A custom tokenizer like ``TokenizerBase``: ``len()`` is not implemented."""
+
+    def __len__(self) -> int:
+        raise NotImplementedError()
+
+
+class _TokenizerWrapper:
+    """A TensorRT-LLM tokenizer: a Hugging Face tokenizer under ``tokenizer``."""
+
+    def __init__(self, hf_tokenizer: _HfTokenizer) -> None:
+        self.tokenizer = hf_tokenizer
+
+    def decode(self, token_ids: list[int], skip_special_tokens: bool = False) -> str:
+        del skip_special_tokens
+        return "".join(f"token-{token_id}" for token_id in token_ids)
+
+    def convert_ids_to_tokens(
+        self, token_ids: list[int], skip_special_tokens: bool = False
+    ) -> list[str]:
+        del skip_special_tokens
+        return [f"token-{token_id}" for token_id in token_ids]
+
+
+@pytest.fixture
+def model_dir(tmp_path: Path) -> Path:
+    (tmp_path / "tokenizer.json").write_text('{"model": "bpe"}')
+    (tmp_path / "tokenizer_config.json").write_text('{"eos_token": "</s>"}')
+    (tmp_path / "chat_template.jinja").write_text("{{ messages }}")
+    (tmp_path / "vocab.json").write_text("{}")
+    (tmp_path / "generation_config.json").write_text(json.dumps({"eos_token_id": [151645, 151643]}))
+    return tmp_path
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _fingerprinted_servicer(model_dir: Path | None, **tokenizer_fields: Any):
+    llm = _llm(_tokenizer=_TokenizerWrapper(_HfTokenizer(**tokenizer_fields)))
+    llm._hf_model_dir = model_dir
+    return OpenEngineControlServicer(llm, MODEL, _inference(), kv_transfer_backend="")
+
+
+@pytest.mark.asyncio
+async def test_server_info_reports_the_conventions_version():
+    info = await _servicer().GetServerInfo(server_pb2.GetServerInfoRequest(), FakeServicerContext())
+
+    version = info.extra["trtllm.conventions_version"]
+    assert isinstance(version, float) and version == 2
+
+
+@pytest.mark.asyncio
+async def test_model_info_reports_exactly_the_convention_keys_with_their_types(model_dir):
+    info = await _fingerprinted_servicer(model_dir).GetModelInfo(
+        model_pb2.GetModelInfoRequest(model=MODEL), FakeServicerContext()
+    )
+
+    assert set(info.extra.keys()) == (
+        set(EXPECTED_EXTRA_CAPABILITIES) | FINGERPRINT_KEYS | {MODALITIES_KEY}
+    )
+    for key, expected in EXPECTED_EXTRA_CAPABILITIES.items():
+        assert type(info.extra[key]) is type(expected), key
+        assert info.extra[key] == expected, key
+
+
+@pytest.mark.asyncio
+async def test_model_info_without_a_tokenizer_reports_capabilities_but_no_fingerprint():
+    info = await _servicer(_tokenizer=None).GetModelInfo(
+        model_pb2.GetModelInfoRequest(), FakeServicerContext()
+    )
+
+    assert set(info.extra.keys()) == set(EXPECTED_EXTRA_CAPABILITIES) | {MODALITIES_KEY}
+    assert {key: info.extra[key] for key in EXPECTED_EXTRA_CAPABILITIES} == {
+        **EXPECTED_EXTRA_CAPABILITIES,
+        "trtllm.stopping.stop_text": False,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("overrides", "expected"),
+    [
+        ({}, 16),
+        ({"max_batch_size": 512}, 16),
+        ({"max_batch_size": None}, 16),
+        ({"max_beam_width": 4}, 16),
+        ({"max_batch_size": 2}, 2),
+        ({"max_batch_size": 4, "pipeline_parallel_size": 2}, 8),
+    ],
+)
+async def test_model_info_bounds_the_multi_sequence_limit_by_batch_capacity(overrides, expected):
+    """The limit is 16, lowered to max_batch_size x pipeline stages when that is smaller."""
+    info = await _servicer(**overrides).GetModelInfo(
+        model_pb2.GetModelInfoRequest(), FakeServicerContext()
+    )
+
+    assert info.generation.HasField("max_num_sequences")
+    assert info.generation.max_num_sequences == expected
+
+
+@pytest.mark.asyncio
+async def test_model_info_fingerprint_matches_a_local_computation(model_dir):
+    servicer = _fingerprinted_servicer(model_dir, size=151_669, eos=151_645, bos=None)
+
+    info = await servicer.GetModelInfo(model_pb2.GetModelInfoRequest(), FakeServicerContext())
+
+    assert info.extra["trtllm.tokenizer.vocab_size"] == 151_669
+    assert list(info.extra["trtllm.tokenizer.eos_token_ids"]) == [151_643, 151_645]
+    assert info.extra["trtllm.tokenizer.bos_token_id"] is None
+    assert dict(info.extra["trtllm.tokenizer.files_sha256"]) == {
+        name: _sha256(model_dir / name)
+        for name in ("tokenizer.json", "tokenizer_config.json", "chat_template.jinja")
+    }
+
+
+def test_fingerprint_keeps_only_integer_token_ids(model_dir):
+    (model_dir / "generation_config.json").write_text(json.dumps({"eos_token_id": [2, None, True]}))
+
+    fingerprint = tokenizer_fingerprint(_HfTokenizer(eos=None, bos=[1]), model_dir)
+
+    assert fingerprint["trtllm.tokenizer.eos_token_ids"] == [2]
+    assert fingerprint["trtllm.tokenizer.bos_token_id"] is None
+
+
+def test_fingerprint_without_a_model_directory_hashes_nothing():
+    fingerprint = tokenizer_fingerprint(_TokenizerWrapper(_HfTokenizer(eos=7)), None)
+
+    assert fingerprint["trtllm.tokenizer.eos_token_ids"] == [7]
+    assert fingerprint["trtllm.tokenizer.files_sha256"] == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure", ["invalid_generation_config", "no_vocabulary_size", "len_not_implemented"]
+)
+async def test_a_tokenizer_that_cannot_be_fingerprinted_is_left_out(model_dir, failure):
+    """GetModelInfo still answers, every time, with the capabilities and no fingerprint."""
+    if failure == "invalid_generation_config":
+        (model_dir / "generation_config.json").write_text("{not json")
+        servicer = _fingerprinted_servicer(model_dir)
+    else:
+        tokenizer = object() if failure == "no_vocabulary_size" else _UnsizedTokenizer()
+        llm = _llm(_tokenizer=tokenizer)
+        llm._hf_model_dir = model_dir
+        servicer = OpenEngineControlServicer(llm, MODEL, _inference(), kv_transfer_backend="")
+
+    for _ in range(2):
+        info = await servicer.GetModelInfo(model_pb2.GetModelInfoRequest(), FakeServicerContext())
+        assert set(info.extra.keys()) == set(EXPECTED_EXTRA_CAPABILITIES) | {MODALITIES_KEY}
+
+
+@pytest.mark.asyncio
+async def test_fingerprint_is_computed_once(model_dir, monkeypatch):
+    calls = []
+
+    def counting_fingerprint(*args):
+        calls.append(args)
+        return tokenizer_fingerprint(*args)
+
+    monkeypatch.setattr(openengine_control, "tokenizer_fingerprint", counting_fingerprint)
+    servicer = _fingerprinted_servicer(model_dir)
+    for _ in range(3):
+        await servicer.GetModelInfo(model_pb2.GetModelInfoRequest(), FakeServicerContext())
+
+    assert len(calls) == 1
+
+
+def test_generate_counters_start_at_zero_and_only_increase():
+    counters = GenerateCounters()
+    assert counters.attributes() == {RECEIVED: 0, ACCEPTED: 0}
+
+    counters.record_received()
+    counters.record_received()
+    counters.record_accepted()
+
+    assert counters.attributes() == {RECEIVED: 2, ACCEPTED: 1}
+
+
+class _ResultHandle:
+    """Stands in for GenerationResult: streams fixed results, records an abort."""
+
+    def __init__(self, results: list[Any]) -> None:
+        self._results = results
+        self.aborted = False
+        self.finished = False
+        self.prompt_token_ids: list[int] = []
+        self.outputs: list[Any] = []
+        self.cached_tokens = 0
+        self.error = None
+
+    async def __aiter__(self):
+        for result in self._results:
+            outputs = result.outputs
+            result.finished = all(output.finish_reason for output in outputs)
+            self.finished = result.finished
+            self.prompt_token_ids = result.prompt_token_ids
+            self.outputs = outputs
+            yield result
+
+    def abort(self) -> None:
+        self.aborted = True
+
+
+def _result(finish_reason: str | None) -> SimpleNamespace:
+    output = SimpleNamespace(
+        index=0,
+        token_ids=[10],
+        text="A",
+        logprobs=[],
+        prompt_logprobs=[],
+        finish_reason=finish_reason,
+        stop_reason=None,
+    )
+    return SimpleNamespace(prompt_token_ids=[1], outputs=[output], cached_tokens=0, error=None)
+
+
+def _generating_servicers(
+    results: list[Any] | None = None, submit_error: Exception | None = None
+) -> tuple[OpenEngineInferenceServicer, OpenEngineControlServicer, _ResultHandle]:
+    """Inference and Control sharing one LLM whose generate_async streams `results`."""
+    llm = _llm(_tokenizer=_TokenizerWrapper(_HfTokenizer()))
+    handle = _ResultHandle(results or [_result("length")])
+
+    def generate_async(**kwargs: Any) -> _ResultHandle:
+        if submit_error is not None:
+            raise submit_error
+        kwargs["sampling_params"]._validate()
+        return handle
+
+    llm.generate_async = generate_async
+    inference = OpenEngineInferenceServicer(llm, MODEL)
+    control = OpenEngineControlServicer(llm, MODEL, inference, kv_transfer_backend="")
+    return inference, control, handle
+
+
+async def _counters(control: OpenEngineControlServicer) -> tuple[float, float]:
+    load = await control.GetLoad(server_pb2.GetLoadRequest(), FakeServicerContext())
+    return load.attributes[RECEIVED], load.attributes[ACCEPTED]
+
+
+async def _generate(inference: OpenEngineInferenceServicer, **fields: Any) -> Any:
+    """Run one Generate call to the end; return the status it aborted with, if any."""
+    request = generation_pb2.GenerateRequest(model=MODEL, prompt="hello", **fields)
+    context = FakeServicerContext()
+    try:
+        async for _ in inference.Generate(request, context):
+            pass
+    except AbortError:
+        pass
+    return context.abort_code
+
+
+@pytest.mark.asyncio
+async def test_get_load_counts_accepted_and_rejected_generate_calls():
+    inference, control, _ = _generating_servicers()
+    assert await _counters(control) == (0, 0)
+
+    assert await _generate(inference, request_id="ok") is None
+    assert await _counters(control) == (1, 1)
+
+    # Rejected before the engine sees them: counted as received only.
+    assert await _generate(inference, request_id="") == grpc.StatusCode.INVALID_ARGUMENT
+    invalid_n = generation_pb2.SamplingParams(num_sequences=0)
+    assert (
+        await _generate(inference, request_id="bad-n", sampling=invalid_n)
+        == grpc.StatusCode.INVALID_ARGUMENT
+    )
+    assert await _counters(control) == (3, 1)
+
+
+@pytest.mark.asyncio
+async def test_aborting_an_accepted_request_does_not_lower_the_counters():
+    inference, control, handle = _generating_servicers(results=[_result(None), _result(None)])
+    request = generation_pb2.GenerateRequest(request_id="abort-me", model=MODEL, prompt="hello")
+
+    responses = inference.Generate(request, FakeServicerContext())
+    await responses.__anext__()
+    assert await _counters(control) == (1, 1)
+    await responses.aclose()
+
+    assert handle.aborted
+    assert await _counters(control) == (1, 1)
+
+
+@pytest.mark.asyncio
+async def test_engine_submission_failure_is_received_but_not_accepted():
+    inference, control, _ = _generating_servicers(submit_error=ValueError("prompt too long"))
+
+    assert await _generate(inference, request_id="too-long") == grpc.StatusCode.INVALID_ARGUMENT
+    assert await _counters(control) == (1, 0)

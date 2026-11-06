@@ -22,6 +22,7 @@ from tensorrt_llm.scheduling_params import SchedulingParams
 
 from .affinity import validate_parent_affinity
 from .bindings import error_pb2, generation_pb2, openengine_pb2_grpc
+from .capabilities import GenerateCounters
 from .coordinator import (
     CoordinationError,
     DuplicateRequestError,
@@ -190,6 +191,7 @@ class OpenEngineInferenceServicer(openengine_pb2_grpc.InferenceServicer):
         self.subagent_affinity_auth_key = subagent_affinity_auth_key
         self._active_requests: dict[str, Any] = {}
         self._metrics = metrics
+        self.generate_counters = GenerateCounters()
 
     @property
     def supported_media_modalities(self) -> frozenset[str]:
@@ -255,6 +257,7 @@ class OpenEngineInferenceServicer(openengine_pb2_grpc.InferenceServicer):
         registration = None
         reservation = None
         request_metrics = RequestMetrics(self._metrics) if self._metrics else None
+        self.generate_counters.record_received()
         try:
             if not request.request_id:
                 await context.abort(
@@ -566,6 +569,7 @@ class OpenEngineInferenceServicer(openengine_pb2_grpc.InferenceServicer):
             return
 
         local_request.bind_engine(result_handle)
+        self.generate_counters.record_accepted()
         if request_metrics is not None:
             request_metrics.accepted()
 

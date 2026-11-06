@@ -3,7 +3,11 @@
 
 """Shared capability resolution for OpenEngine Control and Generate."""
 
+import hashlib
+import json
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Collection, Mapping
 
@@ -127,10 +131,175 @@ def resolve_media_capabilities(
     return MediaCapabilities(placeholders)
 
 
+# OpenEngine v1 has no fields for some capabilities, for a tokenizer
+# fingerprint, or for request counters. The `extra` conventions (version 2)
+# carry them as flat `trtllm.*` keys in ServerInfo.extra, ModelInfo.extra and
+# LoadInfo.attributes.
+# TODO: import these keys and the fingerprint from
+# tensorrt_llm/grpc/openengine_conventions.py once it exists.
+CONVENTIONS_VERSION_KEY = "trtllm.conventions_version"
+CONVENTIONS_VERSION = 2
+
+SAMPLING_MIN_P_KEY = "trtllm.sampling.min_p"
+SAMPLING_FREQUENCY_PENALTY_KEY = "trtllm.sampling.frequency_penalty"
+SAMPLING_PRESENCE_PENALTY_KEY = "trtllm.sampling.presence_penalty"
+SAMPLING_REPETITION_PENALTY_KEY = "trtllm.sampling.repetition_penalty"
+SAMPLING_SEED_SCOPE_KEY = "trtllm.sampling.seed_scope"
+STOPPING_STOP_TEXT_KEY = "trtllm.stopping.stop_text"
+
+REQUEST_CONVERSATION_ID_KEY = "trtllm.request.conversation_id"
+REQUEST_THINKING_TOKEN_BUDGET_KEY = "trtllm.request.thinking_token_budget"
+REQUEST_LOGIT_BIAS_KEY = "trtllm.request.logit_bias"
+REQUEST_KV_HINTS_KEY = "trtllm.request.kv_hints"
+REQUEST_SCHEDULING_KEY = "trtllm.request.scheduling"
+REQUEST_BEST_OF_KEY = "trtllm.request.best_of"
+
+TOKENIZER_VOCAB_SIZE_KEY = "trtllm.tokenizer.vocab_size"
+TOKENIZER_EOS_TOKEN_IDS_KEY = "trtllm.tokenizer.eos_token_ids"
+TOKENIZER_BOS_TOKEN_ID_KEY = "trtllm.tokenizer.bos_token_id"
+TOKENIZER_FILES_SHA256_KEY = "trtllm.tokenizer.files_sha256"
+# Model-directory files hashed into the fingerprint, when present.
+TOKENIZER_FINGERPRINT_FILES = (
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "chat_template.jinja",
+    "chat_template.json",
+)
+
+COUNTER_GENERATE_RECEIVED_KEY = "trtllm.counters.generate_received"
+COUNTER_GENERATE_ACCEPTED_KEY = "trtllm.counters.generate_accepted"
+
+# Upper bound of the `num_sequences` limit Control reports; a smaller batch
+# capacity lowers it. Generate does not reject a larger value.
+MAX_NUM_SEQUENCES = 16
+
+
+def _token_ids(value: Any) -> list[int]:
+    """The integer token ids in an unset, scalar or list token-id setting."""
+    values = value if isinstance(value, list) else [value]
+    return [v for v in values if isinstance(v, int) and not isinstance(v, bool)]
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def tokenizer_fingerprint(
+    tokenizer: Any, model_dir: str | os.PathLike[str] | None
+) -> dict[str, Any]:
+    """Compute the tokenizer fingerprint keys for ``ModelInfo.extra``.
+
+    - ``vocab_size``: ``len()`` of the Hugging Face tokenizer, which counts added tokens.
+    - ``eos_token_ids``: the tokenizer's ``eos_token_id`` together with the
+      ``eos_token_id`` (a number or a list) of ``generation_config.json`` in
+      ``model_dir``, without duplicates, ascending.
+    - ``bos_token_id``: the tokenizer's ``bos_token_id`` when it is an integer, else None.
+    - ``files_sha256``: sha256 of each of ``TOKENIZER_FINGERPRINT_FILES`` present in ``model_dir``.
+
+    Args:
+        tokenizer: A Hugging Face tokenizer, or a TensorRT-LLM wrapper whose
+            ``tokenizer`` attribute holds one.
+        model_dir: The local model directory, or None to hash no files and read
+            no generation config.
+
+    Raises:
+        TypeError: The tokenizer does not report a vocabulary size.
+        NotImplementedError: The tokenizer derives from Hugging Face's
+            ``PreTrainedTokenizerBase`` without implementing ``__len__``.
+        OSError: A file in ``model_dir`` cannot be read.
+        ValueError: ``generation_config.json`` is not valid JSON.
+    """
+    hf_tokenizer = getattr(tokenizer, "tokenizer", None)
+    if hf_tokenizer is None:
+        hf_tokenizer = tokenizer
+    vocab_size = len(hf_tokenizer)
+    eos_token_ids = set(_token_ids(getattr(hf_tokenizer, "eos_token_id", None)))
+    files_sha256 = {}
+    if model_dir is not None:
+        directory = Path(model_dir)
+        generation_config = directory / "generation_config.json"
+        if generation_config.is_file():
+            config = json.loads(generation_config.read_text(encoding="utf-8"))
+            if isinstance(config, dict):
+                eos_token_ids.update(_token_ids(config.get("eos_token_id")))
+        for name in TOKENIZER_FINGERPRINT_FILES:
+            path = directory / name
+            if path.is_file():
+                files_sha256[name] = _sha256(path)
+    bos_token_id = getattr(hf_tokenizer, "bos_token_id", None)
+    if not isinstance(bos_token_id, int) or isinstance(bos_token_id, bool):
+        bos_token_id = None
+    return {
+        TOKENIZER_VOCAB_SIZE_KEY: vocab_size,
+        TOKENIZER_EOS_TOKEN_IDS_KEY: sorted(eos_token_ids),
+        TOKENIZER_BOS_TOKEN_ID_KEY: bos_token_id,
+        TOKENIZER_FILES_SHA256_KEY: files_sha256,
+    }
+
+
+class GenerateCounters:
+    """Counts of ``Generate`` calls handled by one inference servicer.
+
+    Both counts start at zero when the servicer is created and only increase.
+    They are updated on the gRPC event loop, which serializes the updates. Each
+    OpenEngine frontend process has its own servicer, so with several frontends
+    the counts are per frontend, not per engine.
+    """
+
+    def __init__(self) -> None:
+        self.received = 0
+        """int: Generate calls that reached the servicer, including ones it rejected."""
+        self.accepted = 0
+        """int: Generate calls whose request ``generate_async`` accepted."""
+
+    def record_received(self) -> None:
+        """Count one Generate call as the servicer starts handling it, before validation."""
+        self.received += 1
+
+    def record_accepted(self) -> None:
+        """Count one Generate call whose request ``generate_async`` accepted."""
+        self.accepted += 1
+
+    def attributes(self) -> dict[str, int]:
+        """The counts as ``LoadInfo.attributes`` keys."""
+        return {
+            COUNTER_GENERATE_RECEIVED_KEY: self.received,
+            COUNTER_GENERATE_ACCEPTED_KEY: self.accepted,
+        }
+
+
 __all__ = [
+    "COUNTER_GENERATE_ACCEPTED_KEY",
+    "COUNTER_GENERATE_RECEIVED_KEY",
+    "CONVENTIONS_VERSION",
+    "CONVENTIONS_VERSION_KEY",
     "GUIDE_SUPPORT_BY_BACKEND",
+    "GenerateCounters",
+    "MAX_NUM_SEQUENCES",
     "MediaCapabilities",
+    "REQUEST_BEST_OF_KEY",
+    "REQUEST_CONVERSATION_ID_KEY",
+    "REQUEST_KV_HINTS_KEY",
+    "REQUEST_LOGIT_BIAS_KEY",
+    "REQUEST_SCHEDULING_KEY",
+    "REQUEST_THINKING_TOKEN_BUDGET_KEY",
+    "SAMPLING_FREQUENCY_PENALTY_KEY",
+    "SAMPLING_MIN_P_KEY",
+    "SAMPLING_PRESENCE_PENALTY_KEY",
+    "SAMPLING_REPETITION_PENALTY_KEY",
+    "SAMPLING_SEED_SCOPE_KEY",
+    "STOPPING_STOP_TEXT_KEY",
+    "TOKENIZER_BOS_TOKEN_ID_KEY",
+    "TOKENIZER_EOS_TOKEN_IDS_KEY",
+    "TOKENIZER_FILES_SHA256_KEY",
+    "TOKENIZER_FINGERPRINT_FILES",
+    "TOKENIZER_VOCAB_SIZE_KEY",
     "resolve_media_capabilities",
     "supported_guides",
     "supports_image_routing",
+    "tokenizer_fingerprint",
 ]
