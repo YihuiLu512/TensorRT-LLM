@@ -47,6 +47,17 @@ def test_task_names():
             parse_task(bad)
 
 
+def test_every_work_item_name_has_an_ownership_entry():
+    names = [f"WT-{i:02d}" for i in range(100)] + ["WT-20-R2", "WT-20-R3"]
+    accepted = set()
+    for name in names:
+        try:
+            accepted.add(parse_task(name)[0])
+        except ValueError:
+            pass
+    assert accepted == set(check_ownership.OWNERSHIP)
+
+
 def test_wt01_owes_nothing(rows):
     assert _owed("WT-01", set(), rows) == ([], [], [])
 
@@ -100,6 +111,42 @@ def test_case01_rows(rows):
     assert r3 == ["F-17+F-30+F-19-case01"]
     # A TRT-LLM item completing a glm row without its own dependency never owes it.
     assert "F-15-case01" not in _owed("WT-10", {"WT-01", "WT-03", "WT-04", "WT-07"}, rows)[0]
+
+
+def test_rows_waiting_only_on_unchecked_glm_items_are_reported(rows):
+    # WT-07 landed only in the glm repository, which was not read.
+    result = pending_e2e.obligations(
+        "WT-20-R3",
+        TRTLLM_FEATURES | {"WT-06", "WT-20-R2"},
+        rows,
+        {"F-32"},
+        unknown={"WT-06", "WT-07"},
+    )
+    unknown = [row.id for row in result.unknown]
+    assert "F-15-case01" in unknown and "F-31+F-36+F-37+GLM" in unknown
+    assert not {row.id for row in result.owed} & set(unknown)
+    # An item known to have landed is not unknown.
+    result = pending_e2e.obligations("WT-12", LINK | {"WT-11", "WT-06"}, rows, unknown={"WT-06"})
+    assert [row.id for row in result.left_to_r3] == ["F-17+F-30+F-19-case01"]
+
+
+def test_the_glm_group_comes_from_feature_deps(rows):
+    owed, r3, _ = _owed("WT-07", LINK, rows)
+    assert owed == ["F-15-case01"]
+    result = pending_e2e.obligations("WT-07", LINK, rows, glm_tasks=())
+    assert [row.id for row in result.left_to_r3] == ["F-15-case01"]
+    groups, _ = pending_e2e.load_rows()
+    assert groups["glm"] == ["WT-06", "WT-07"]
+
+
+def test_entries_without_a_known_row_are_reported(rows, capsys):
+    records = [
+        {"entries": [{"features": ["F-15"]}, {"row": "F-99"}, {"row": "F-05"}]},
+        None,
+    ]
+    assert pending_e2e.verified_rows(records, [row.id for row in rows]) == {"F-05"}
+    err = capsys.readouterr().err
+    assert "without a row id" in err and "unknown row 'F-99'" in err
 
 
 def test_integration_rounds(rows):
@@ -163,6 +210,24 @@ def test_landed_tasks_and_verified_records_from_git(repo):
     assert pending_e2e.read_verified(repo, "integration") == {"F-33+F-34"}
     assert pending_e2e.read_verified(repo, "main") == set()
     assert pending_e2e.main(["--repo", str(repo), "--ref", "integration", "--task", "WT-10"]) == 0
+
+
+def test_glm_items_are_read_from_the_glm_repository(repo, tmp_path, capsys):
+    glm = tmp_path / "glm"
+    glm.mkdir()
+    _git(glm, "init", "-q", "-b", "main")
+    _commit(glm, "base")
+    _commit(glm, "x\n\nPoC2-Task: WT-07")
+    # A TRT-LLM item's trailer in the glm repository is not counted.
+    _commit(glm, "y\n\nPoC2-Task: WT-11")
+    _git(repo, "checkout", "-q", "integration")
+    _commit(repo, "a\n\nPoC2-Task: WT-01")
+    base = ["--repo", str(repo), "--ref", "integration", "--json"]
+    assert pending_e2e.main([*base, "--landed"]) == 0
+    out = capsys.readouterr()
+    assert yaml.safe_load(out.out) == ["WT-01"] and "--glm-repo not given" in out.err
+    assert pending_e2e.main([*base, "--landed", "--glm-repo", str(glm), "--glm-ref", "main"]) == 0
+    assert yaml.safe_load(capsys.readouterr().out) == ["WT-01", "WT-07"]
 
 
 def test_ownership_in_bounds(repo, capsys):

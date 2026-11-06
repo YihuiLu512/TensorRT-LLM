@@ -15,6 +15,7 @@ from pathlib import Path
 
 TRAILER = "PoC2-Task"
 DEFAULT_REF = "fork/feat/engine_integration"
+GLM_DEFAULT_REF = "origin/feat/engine_integration"
 
 # WT-01 .. WT-16 (no WT-08), the integration rounds, WT-21 and WT-22, and fixes.
 _TASK_RE = re.compile(r"^(?P<base>WT-(?:0[1-79]|1[0-6]|20-R[23]|21|22))(?:-fix(?P<fix>[1-9]\d*))?$")

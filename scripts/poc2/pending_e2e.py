@@ -7,7 +7,7 @@ A feature row of ``feature_deps.yaml`` is owed by the work item whose landing
 completes the row's dependencies, provided nobody has recorded it as verified:
 
 - a row with an ``assignee`` is owed only by that integration round;
-- a case-01 row is owed by a glm work item (WT-06, WT-07) that completes it;
+- a case-01 row is owed by a glm work item (``groups.glm``) that completes it;
   when a TRT-LLM work item completes it instead, it is left to R3 (WT-20-R3),
   which also owes every completed case-01 row nobody verified;
 - a fix (``WT-xx-fixN``) owes nothing new;
@@ -15,7 +15,9 @@ completes the row's dependencies, provided nobody has recorded it as verified:
 
 A row counts as verified when a verification record on the integration branch
 (``tests/integration/defs/openengine_chain/verified/*.yaml``) has an entry whose
-``row`` is the row id, in this format::
+``row`` is the row id (feature ids alone are ambiguous: a feature can have a
+case-01 row and a case-02 row). Entries without ``row`` are reported and
+ignored::
 
     entries:
       - row: F-01+F-02
@@ -24,9 +26,15 @@ A row counts as verified when a verification record on the integration branch
         commit: <sha>
         junit: <path>
 
+glm work items land on the glm repository's integration branch, read with
+``--glm-repo``; an item counts as landed when either branch has its trailer.
+Without ``--glm-repo``, a glm item missing from the TRT-LLM branch has an
+unknown landing: rows waiting only on such items are listed separately rather
+than counted as owed or not.
+
 Usage::
 
-    python3 scripts/poc2/pending_e2e.py --task WT-10
+    python3 scripts/poc2/pending_e2e.py --task WT-10 --glm-repo ../glm-5.3-flash
     python3 scripts/poc2/pending_e2e.py --landed            # just list what landed
 """
 
@@ -44,7 +52,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from poc2_common import DEFAULT_REF, git, landed_tasks, parse_task  # noqa: E402
+from poc2_common import DEFAULT_REF, GLM_DEFAULT_REF, git, landed_tasks, parse_task  # noqa: E402
 
 FEATURE_DEPS = Path(__file__).resolve().parent / "feature_deps.yaml"
 VERIFIED_DIR = "tests/integration/defs/openengine_chain/verified"
@@ -72,6 +80,8 @@ class Obligations:
         left_to_r3: case-01 rows this item completes but R3 verifies.
         unverified: Rows whose dependencies have all landed, without a
             verification record, that this item does not owe.
+        unknown: Rows whose only missing dependencies are items whose landing
+            was not checked; the result for them is not known.
     """
 
     task: str
@@ -79,6 +89,7 @@ class Obligations:
     owed: list[Row] = field(default_factory=list)
     left_to_r3: list[Row] = field(default_factory=list)
     unverified: list[Row] = field(default_factory=list)
+    unknown: list[Row] = field(default_factory=list)
 
 
 def load_rows(path: Path = FEATURE_DEPS) -> tuple[dict[str, list[str]], list[Row]]:
@@ -113,17 +124,32 @@ def load_rows(path: Path = FEATURE_DEPS) -> tuple[dict[str, list[str]], list[Row
     return groups, rows
 
 
-def verified_rows(records: Iterable[Mapping[str, Any]]) -> set[str]:
-    """The row ids named by verification records."""
+def verified_rows(
+    records: Iterable[Mapping[str, Any]], known: Iterable[str] | None = None
+) -> set[str]:
+    """The row ids named by verification records.
+
+    Warns about entries without a ``row`` and, given the ``known`` row ids,
+    about rows that are not among them.
+    """
+    known_ids = None if known is None else set(known)
     done = set()
     for record in records:
         for entry in (record or {}).get("entries") or []:
-            if isinstance(entry, Mapping) and isinstance(entry.get("row"), str):
-                done.add(entry["row"])
+            row = entry.get("row") if isinstance(entry, Mapping) else None
+            if not isinstance(row, str):
+                print(
+                    f"warning: verification entry without a row id ignored: {entry!r}",
+                    file=sys.stderr,
+                )
+            elif known_ids is not None and row not in known_ids:
+                print(f"warning: verification entry names an unknown row {row!r}", file=sys.stderr)
+            else:
+                done.add(row)
     return done
 
 
-def read_verified(repo: str | Path, ref: str) -> set[str]:
+def read_verified(repo: str | Path, ref: str, rows: Iterable[Row] | None = None) -> set[str]:
     """The row ids verified by the records on ``ref``."""
     listing = git(repo, "ls-tree", "--name-only", ref, f"{VERIFIED_DIR}/")
     names = [Path(path).name for path in listing.split()]
@@ -132,7 +158,7 @@ def read_verified(repo: str | Path, ref: str) -> set[str]:
         for name in names
         if name.endswith(".yaml")
     ]
-    return verified_rows(records)
+    return verified_rows(records, None if rows is None else (row.id for row in rows))
 
 
 def obligations(
@@ -140,17 +166,28 @@ def obligations(
     landed: Iterable[str],
     rows: Iterable[Row],
     verified: Iterable[str] = (),
-    glm_tasks: Iterable[str] = ("WT-06", "WT-07"),
+    glm_tasks: Iterable[str] | None = None,
+    unknown: Iterable[str] = (),
 ) -> Obligations:
-    """Work out what ``task`` owes, given what has landed and what has been verified."""
+    """Work out what ``task`` owes, given what has landed and what has been verified.
+
+    Args:
+        glm_tasks: The glm work items; ``groups.glm`` of ``feature_deps.yaml`` if None.
+        unknown: Work items whose landing was not checked.
+    """
     base, fix = parse_task(task)
     landed_bases = {parse_task(name)[0] for name in landed}
     done = set(verified)
-    glm = set(glm_tasks)
+    glm = set(load_rows()[0].get("glm", ()) if glm_tasks is None else glm_tasks)
+    unchecked = set(unknown) - landed_bases - {base}
     result = Obligations(task=task, landed=sorted(landed))
     after = landed_bases | {base}
     for row in rows:
         if row.deferred or row.id in done:
+            continue
+        missing = row.deps - after
+        if missing and missing <= unchecked:
+            result.unknown.append(row)
             continue
         complete = row.deps <= after
         completed_by_task = complete and base in row.deps and fix is None
@@ -190,6 +227,7 @@ def _format(result: Obligations) -> str:
     section("Owed end-to-end checks", result.owed)
     section("Completed here, left to R3 (case-01)", result.left_to_r3)
     section("Dependencies landed but not verified, owed by others", result.unverified)
+    section("Waiting only on items whose landing was not checked", result.unknown)
     return "\n".join(lines)
 
 
@@ -198,22 +236,46 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--task", help="the work item, e.g. WT-10 or WT-11-fix1")
     parser.add_argument("--ref", default=DEFAULT_REF, help="the integration branch")
     parser.add_argument("--repo", default=".", help="the TRT-LLM checkout")
+    parser.add_argument("--glm-repo", help="the glm checkout, to see which glm items landed")
+    parser.add_argument(
+        "--glm-ref", default=GLM_DEFAULT_REF, help="the glm repository's integration branch"
+    )
     parser.add_argument(
         "--landed",
         action="store_true",
-        help="only list the work items that have landed on --ref",
+        help="only list the work items that have landed (on --ref, and --glm-ref if given)",
     )
     parser.add_argument("--json", action="store_true", help="print JSON")
     args = parser.parse_args(argv)
 
+    groups, rows = load_rows()
+    glm_tasks = set(groups.get("glm", ()))
     landed = landed_tasks(args.repo, args.ref)
+    if args.glm_repo:
+        landed |= {
+            t for t in landed_tasks(args.glm_repo, args.glm_ref) if parse_task(t)[0] in glm_tasks
+        }
+        unknown: set[str] = set()
+    else:
+        unknown = glm_tasks
+        print(
+            f"warning: --glm-repo not given; not checked whether {', '.join(sorted(glm_tasks))} "
+            "landed",
+            file=sys.stderr,
+        )
     if args.landed:
         print(json.dumps(sorted(landed)) if args.json else "\n".join(sorted(landed)))
         return 0
     if not args.task:
         parser.error("--task is required unless --landed is given")
-    _, rows = load_rows()
-    result = obligations(args.task, landed, rows, read_verified(args.repo, args.ref))
+    result = obligations(
+        args.task,
+        landed,
+        rows,
+        read_verified(args.repo, args.ref, rows),
+        glm_tasks=glm_tasks,
+        unknown=unknown,
+    )
     if args.json:
         print(
             json.dumps(
@@ -223,6 +285,7 @@ def main(argv: list[str] | None = None) -> int:
                     "owed": [row.id for row in result.owed],
                     "left_to_r3": [row.id for row in result.left_to_r3],
                     "unverified": [row.id for row in result.unverified],
+                    "unknown": [row.id for row in result.unknown],
                 },
                 indent=2,
             )

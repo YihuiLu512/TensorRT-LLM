@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Tests of the contract slots: lookup, and that each default keeps the first prototype's behavior."""
+"""Tests of the contract slots: lookup, and that each default matches the adapter and mapping code."""
 
 import asyncio
 import dataclasses
@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import click
+import pydantic
 import pytest
 import torch
 
@@ -109,6 +110,24 @@ def test_a_broken_implementation_module_is_not_hidden(monkeypatch):
     monkeypatch.setattr(contracts.importlib, "import_module", broken)
     with pytest.raises(SyntaxError):
         contracts.resolve_slot("map_media")
+
+
+def test_a_slot_module_may_resolve_other_slots_while_it_is_imported(monkeypatch):
+    real_import = contracts.importlib.import_module
+    nested = []
+
+    def import_module(name):
+        if name == f"{PACKAGE}.media":
+            # What a slot module that calls another slot at import time does.
+            nested.append(contracts.resolve_slot("create_lora_registry")[1])
+            module = types.ModuleType(name)
+            module.map_media = lambda *args, **kwargs: []
+            return module
+        return real_import(name)
+
+    monkeypatch.setattr(contracts.importlib, "import_module", import_module)
+    assert contracts.resolve_slot("map_media")[1] == f"{PACKAGE}.media:map_media"
+    assert nested == ["default"]
 
 
 # --- map_request ----------------------------------------------------------------
@@ -267,6 +286,7 @@ def test_default_map_request_rejects_gated_fields_the_engine_lacks():
     "options, match",
     [
         (contracts.GenerateOptions(lora_request=object()), "lora_request"),
+        (contracts.GenerateOptions(lora_name="adapter"), "lora_name"),
         (contracts.GenerateOptions(disaggregated_params=object()), "disaggregated_params"),
         (contracts.GenerateOptions(cache_salt="s"), "cache_salt"),
         (contracts.GenerateOptions(kv_hints=object()), "kv_hints"),
@@ -529,7 +549,7 @@ def test_visual_gen_needs_no_args():
 # --- launch_frontends -----------------------------------------------------------
 
 
-def test_default_launch_calls_the_single_frontend_launcher_as_before():
+def test_default_launch_calls_the_single_frontend_launcher():
     from tensorrt_llm.serve.openengine_poc import launch
 
     config = contracts.FrontendLaunchConfig(
@@ -561,6 +581,14 @@ def test_default_launch_rejects_several_frontends():
         host="h", port=1, llm_args={"num_serve_frontends": 2}, endpoint="e:2"
     )
     with pytest.raises(click.UsageError, match="single serving frontend"):
+        contracts.launch_frontends(config)
+
+
+def test_default_launch_rejects_a_report_address():
+    config = contracts.FrontendLaunchConfig(
+        host="h", port=1, llm_args={}, endpoint="e:2", report_addr="/tmp/addr"
+    )
+    with pytest.raises(click.UsageError, match="--report_addr"):
         contracts.launch_frontends(config)
 
 
@@ -615,6 +643,11 @@ def test_post_processor_path_rejects_what_cannot_be_imported_back():
         contracts.resolve_post_processor("os.system")
     with pytest.raises(contracts.PostprocDataError, match="not a callable"):
         contracts.resolve_post_processor("tensorrt_llm.serve.postprocess_handlers.nope")
+    # Imported into the module, not defined there.
+    with pytest.raises(contracts.PostprocDataError, match="not defined in"):
+        contracts.resolve_post_processor(
+            "tensorrt_llm.serve.postprocess_handlers.make_tool_call_id"
+        )
 
 
 def test_check_plain_data_accepts_plain_postproc_args():
@@ -638,6 +671,22 @@ def test_check_plain_data_names_the_offending_value(value, where):
     with pytest.raises(contracts.PostprocDataError) as error:
         contracts.check_plain_data(value)
     assert str(error.value).startswith(where + " is a ")
+
+
+class _ExtraModel(pydantic.BaseModel):
+    model_config = pydantic.ConfigDict(extra="allow")
+
+    name: str = "x"
+
+
+def test_check_plain_data_checks_attributes_beyond_the_declared_fields():
+    args = PostprocArgs()
+    args.parser = object()
+    with pytest.raises(contracts.PostprocDataError, match=r"^postproc_args\.parser is a "):
+        contracts.check_plain_data(args)
+    with pytest.raises(contracts.PostprocDataError, match=r"^postproc_args\.hook is a "):
+        contracts.check_plain_data(_ExtraModel(hook=object()))
+    contracts.check_plain_data(_ExtraModel(note="plain"))
 
 
 def test_check_plain_data_rejects_a_tensor():
@@ -682,6 +731,13 @@ def test_counter_writes_one_file_per_process(tmp_path):
     assert contracts.read_generate_sent(tmp_path) == 7
     with pytest.raises(ValueError):
         counter.increment(-1)
+
+
+def test_counter_creates_its_directory_and_leaves_no_temporary_file(tmp_path):
+    counter_dir = tmp_path / "new" / "counters"
+    contracts.GenerateCounter(counter_dir).increment()
+    assert [p.name for p in counter_dir.iterdir()] == [f"{os.getpid()}.json"]
+    assert contracts.read_generate_sent(counter_dir) == 1
 
 
 def test_counter_directory_comes_from_the_environment(tmp_path, monkeypatch):

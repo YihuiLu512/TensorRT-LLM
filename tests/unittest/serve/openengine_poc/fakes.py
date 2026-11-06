@@ -217,12 +217,23 @@ class FakeEngineClient:
         self.generate_accepted += 1
         self.active.add(request_id)
         unfinished = set(range(request.num_sequences))
+        generated = 0
         completed = False
         try:
             for step in steps:
                 if aborted.is_set():
+                    usage = Usage(
+                        prompt_tokens=len(request.prompt_token_ids),
+                        completion_tokens=generated,
+                        cached_prompt_tokens=0,
+                    )
+                    last = max(unfinished, default=None)
                     for index in sorted(unfinished):
-                        yield OutputFinished(output_index=index, reason="cancelled")
+                        yield OutputFinished(
+                            output_index=index,
+                            reason="cancelled",
+                            usage=usage if index == last else None,
+                        )
                     completed = True
                     return
                 if isinstance(step, Delay):
@@ -232,6 +243,8 @@ class FakeEngineClient:
                 else:
                     if isinstance(step, OutputFinished):
                         unfinished.discard(step.output_index)
+                    elif isinstance(step, TokenDelta):
+                        generated += len(step.token_ids)
                     yield step
             completed = True
         finally:

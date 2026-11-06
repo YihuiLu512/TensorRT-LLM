@@ -63,7 +63,21 @@ def test_builtin_table_only_for_unconverted_trtllm_server():
 
 @pytest.mark.parametrize(
     "value, expected",
-    [(2, 2), (2.0, 2), (2.5, None), ("12345678901234567890", 12345678901234567890), (True, None)],
+    [
+        (2, 2),
+        (2.0, 2),
+        (2.5, None),
+        ("12345678901234567890", 12345678901234567890),
+        ("-5", -5),
+        (True, None),
+        # Malformed strings read as missing rather than raising.
+        ("--5", None),
+        ("-", None),
+        ("", None),
+        (" 5", None),
+        ("1_000", None),
+        ("+5", None),
+    ],
 )
 def test_as_int(value, expected):
     assert conv.as_int(value) == expected

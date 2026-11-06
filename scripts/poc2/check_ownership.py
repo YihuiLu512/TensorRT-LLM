@@ -185,6 +185,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
     "WT-16": _own(f"{POC}/media.py", f"{POC}/lora.py"),
     "WT-20-R2": [],
     "WT-20-R3": [],
+    "WT-21": [],
     "WT-22": [],
 }
 for _name in OWNERSHIP:

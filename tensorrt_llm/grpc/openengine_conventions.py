@@ -21,6 +21,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -176,6 +177,9 @@ def struct_to_dict(struct: struct_pb2.Struct | None) -> dict[str, Any]:
     return dict(json_format.MessageToDict(struct))
 
 
+_DECIMAL_INT = re.compile(r"-?[0-9]+")
+
+
 def as_int(value: Any) -> int | None:
     """Read an integer from a Struct value: a whole number, or a decimal string for large ones.
 
@@ -187,7 +191,7 @@ def as_int(value: Any) -> int | None:
         return value
     if isinstance(value, float):
         return int(value) if math.isfinite(value) and value.is_integer() else None
-    if isinstance(value, str) and value.lstrip("-").isdigit() and value.isascii():
+    if isinstance(value, str) and _DECIMAL_INT.fullmatch(value):
         return int(value)
     return None
 

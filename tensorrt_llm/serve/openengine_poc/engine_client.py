@@ -4,9 +4,8 @@
 
 ``EngineClient`` is internal to trtllm-serve: engines do not implement it. The
 OpenEngine implementation translates its requests and events to and from
-OpenEngine v1 messages. The method names and signatures follow the
-``EngineClient`` of the serve refactor (TRTLLM-17056, item X1), plus the LoRA
-and KV-event methods the OpenEngine path needs.
+OpenEngine v1 messages. Besides running requests and reading the engine's
+state, it covers the LoRA and KV-event methods the OpenEngine path needs.
 
 A request is accepted or rejected before ``generate`` yields its first event:
 an error before acceptance is raised by the first ``__anext__``, an error after
@@ -88,8 +87,8 @@ class MediaSpec:
 class EngineRequest:
     """One Generate call.
 
-    Only what the user's request actually set is filled in: an unset sampling
-    field is left out of ``sampling`` rather than sent with a default value.
+    An unset sampling field is left out of ``sampling`` rather than sent with a
+    default value, so the engine applies its own default.
 
     Attributes:
         request_id: ``"trtllm-"`` followed by a uuid4 in hex; unique per call.
@@ -170,7 +169,7 @@ class OutputFinished:
 
     At most one of ``eos_token_id``, ``stop_token_id`` and ``stop_text`` is set,
     and only for ``reason == "stop"``: it says what ended the output. ``usage``
-    is set only on the last event of the call.
+    is set only on the last event of the call, a cancelled call included.
     """
 
     output_index: int

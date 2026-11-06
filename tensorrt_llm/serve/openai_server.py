@@ -1141,11 +1141,16 @@ class OpenAIServer(_VideoRoutesMixin):
     def _postproc_dispatch(self) -> openengine_contracts.PostprocDispatch:
         """Where postprocessing runs for this server's generator.
 
-        Looked up on every access rather than cached, because unit tests build
-        the server with ``__new__`` and swap its generator.
+        Created once per generator, so every request of the server uses the
+        same dispatch; a server whose generator is replaced gets a new one.
         """
-        return openengine_contracts.create_postproc_dispatch(
-            self.generator, is_visual_gen=self._is_visual_gen)
+        cached = self.__dict__.get("_postproc_dispatch_for")
+        if cached is None or cached[0] is not self.generator:
+            cached = (self.generator,
+                      openengine_contracts.create_postproc_dispatch(
+                          self.generator, is_visual_gen=self._is_visual_gen))
+            self.__dict__["_postproc_dispatch_for"] = cached
+        return cached[1]
 
     @property
     def postproc_worker_enabled(self) -> bool:
@@ -3126,8 +3131,7 @@ class OpenAIServer(_VideoRoutesMixin):
                                  promise,
                                  tokenizer=self.tokenizer)
                 promises.append(promise)
-                postproc_params_collection.append(
-                    None if dispatch.enabled else postproc_params)
+                postproc_params_collection.append(postproc_params)
 
             if request.stream:
                 generators = [

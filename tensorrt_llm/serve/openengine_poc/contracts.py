@@ -4,9 +4,9 @@
 
 Each part is a *slot*: a function with a fixed signature, looked up in a fixed
 module. When that module exists and defines the function, the slot calls it;
-otherwise the slot calls the default implementation in this file, which keeps
-the behavior of the first prototype. So a part is replaced by adding its module,
-without touching this file or the code that calls the slot.
+otherwise the slot calls the default implementation in this file. So a part is
+replaced by adding its module, without touching this file or the code that
+calls the slot.
 
 | Slot | Implementation looked up in |
 |---|---|
@@ -20,14 +20,17 @@ without touching this file or the code that calls the slot.
 
 The default implementation is used only when the module is missing (and not
 when one of its own imports is) or does not define the function; any other
-import error propagates. The first lookup of each slot is logged.
+import error propagates. The first lookup of each slot is logged. A slot module
+is imported while the slot is looked up, not while this module is, so it may
+call other slots at import time.
 
 The module also holds the messages between a frontend and its postprocessing
 processes, the plain-data check for what crosses into them, and the frontend's
 count of Generate calls.
 
-This module is imported by ``OpenAIServer``, so it imports nothing beyond the
-standard library, the logger and :mod:`.engine_client` at module level.
+This module is imported by ``OpenAIServer``, so at module level it imports only
+the standard library, the logger, :mod:`tensorrt_llm.grpc.openengine_conventions`
+and :mod:`.engine_client`, none of which loads protobuf or gRPC.
 """
 
 from __future__ import annotations
@@ -37,6 +40,7 @@ import enum
 import importlib
 import json
 import os
+import tempfile
 import threading
 import uuid
 from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -111,17 +115,22 @@ def resolve_slot(name: str) -> tuple[Callable[..., Any], str]:
     with _RESOLVE_LOCK:
         if name in _RESOLVED:
             return _RESOLVED[name]
-        slot = _SLOTS[name]
-        impl, source = slot.default, "default"
-        try:
-            module = importlib.import_module(slot.module)
-        except ModuleNotFoundError as error:
-            if error.name != slot.module:
-                raise
-        else:
-            found = getattr(module, slot.attribute, None)
-            if found is not None:
-                impl, source = found, f"{slot.module}:{slot.attribute}"
+    slot = _SLOTS[name]
+    impl, source = slot.default, "default"
+    # Imported without holding the lock, so a slot module may resolve other
+    # slots while it is imported; the import system serializes the import itself.
+    try:
+        module = importlib.import_module(slot.module)
+    except ModuleNotFoundError as error:
+        if error.name != slot.module:
+            raise
+    else:
+        found = getattr(module, slot.attribute, None)
+        if found is not None:
+            impl, source = found, f"{slot.module}:{slot.attribute}"
+    with _RESOLVE_LOCK:
+        if name in _RESOLVED:
+            return _RESOLVED[name]
         logger.info(f"OpenEngine slot {name}: using {source}")
         _RESOLVED[name] = (impl, source)
         return impl, source
@@ -266,15 +275,18 @@ def default_map_request(
     *,
     engine_name: str,
 ) -> list[EngineRequest]:
-    """The first prototype's mapping: one call, serving-side stop strings, no request options.
+    """One call, serving-side stop strings, no request options.
 
     ``priority``, ``scheduling_params``, ``conversation_params`` and
-    ``trace_headers`` are accepted and not forwarded.
+    ``trace_headers`` are accepted and not forwarded; LoRA, disaggregated
+    serving, ``cache_salt``, ``kv_hints`` and media are rejected. ``streaming``
+    does not change the call, which always streams.
     """
     from tensorrt_llm.executor.utils import context_length_exceeded_message
 
     for name, value in (
         ("lora_request", options.lora_request),
+        ("lora_name", options.lora_name),
         ("disaggregated_params", options.disaggregated_params),
         ("cache_salt", options.cache_salt),
         ("kv_hints", options.kv_hints),
@@ -417,7 +429,7 @@ def create_response_assembler(
 
 
 class _DefaultResponseAssembler:
-    """The first prototype's assembly: serving-side detokenization and stop strings."""
+    """Serving-side detokenization and stop strings."""
 
     def __init__(self, detokenizers: list[Any]) -> None:
         from tensorrt_llm.executor.result import CompletionOutput
@@ -538,6 +550,11 @@ class PostprocDispatch(Protocol):
     passes its ``PostprocParams`` to ``generate_async`` and reads each result
     from ``output.outputs[0]._postprocess_result``. Otherwise the handler runs
     the postprocessor itself.
+
+    ``OpenAIServer`` creates one dispatch per generator and uses it for every
+    request. The ``/v1/completions`` handler passes its ``PostprocParams`` to
+    ``generate_async`` whether or not ``enabled`` is set, without calling
+    :meth:`generate_params`.
     """
 
     @property
@@ -587,6 +604,8 @@ def create_postproc_dispatch(generator: Any, *, is_visual_gen: bool) -> Postproc
 
     An implementation must return :class:`DefaultPostprocDispatch` semantics for
     every generator other than the OpenEngine facade, in-process ``LLM`` included.
+    Every ``OpenAIServer`` looks this slot up, so its module must import without
+    the gRPC stack.
     """
     impl, _ = resolve_slot("create_postproc_dispatch")
     return cast(PostprocDispatch, impl(generator, is_visual_gen=is_visual_gen))
@@ -701,6 +720,8 @@ def resolve_post_processor(path: str) -> Callable[..., Any]:
     function = getattr(importlib.import_module(module_name), name, None)
     if not callable(function):
         raise PostprocDataError(f"{path!r} is not a callable")
+    if getattr(function, "__module__", None) != module_name:
+        raise PostprocDataError(f"{path!r} is not defined in {module_name}")
     return cast(Callable[..., Any], function)
 
 
@@ -712,8 +733,8 @@ def check_plain_data(value: Any, *, path: str = "postproc_args") -> None:
 
     Plain data is None, bool, int, float, str, bytes, enum members, lists,
     tuples, sets and dicts of plain data, and dataclass or pydantic model
-    instances whose fields are plain data. Callables, tensors, parsers,
-    tokenizers and any other object are not.
+    instances whose attributes are all plain data, declared or not. Callables,
+    tensors, parsers, tokenizers and any other object are not.
 
     Raises:
         PostprocDataError: Names the first offending value by its path.
@@ -736,13 +757,22 @@ def check_plain_data(value: Any, *, path: str = "postproc_args") -> None:
                 check(element, f"{where}[{key!r}]")
             return
         if dataclasses.is_dataclass(item) and not isinstance(item, type):
-            for f in dataclasses.fields(item):
-                check(getattr(item, f.name), f"{where}.{f.name}")
+            # Everything pickled with the instance: the fields, and any other
+            # attribute in its __dict__.
+            names = [f.name for f in dataclasses.fields(item)]
+            names += [name for name in getattr(item, "__dict__", {}) if name not in names]
+            for name in names:
+                check(getattr(item, name), f"{where}.{name}")
             return
         model_fields = getattr(type(item), "model_fields", None)
         if isinstance(model_fields, dict) and hasattr(item, "model_dump"):
-            for name in model_fields:
-                check(getattr(item, name), f"{where}.{name}")
+            # Everything pickled with a pydantic model: its __dict__, the
+            # extra fields and the private attributes.
+            attributes = dict(getattr(item, "__dict__", {}))
+            attributes.update(getattr(item, "__pydantic_extra__", None) or {})
+            attributes.update(getattr(item, "__pydantic_private__", None) or {})
+            for name, element in attributes.items():
+                check(element, f"{where}.{name}")
             return
         raise PostprocDataError(f"{where} is a {type(item).__qualname__}, which is not plain data")
 
@@ -792,6 +822,8 @@ def default_launch_frontends(config: FrontendLaunchConfig) -> None:
 
     if config.llm_args.get("num_serve_frontends", 1) not in (None, 1):
         raise click.UsageError("--openengine-endpoint supports a single serving frontend")
+    if config.report_addr is not None:
+        raise click.UsageError("--report_addr is not supported with --openengine-endpoint")
     kwargs: dict[str, Any] = {}
     if config.ready_timeout is not None:
         kwargs["ready_timeout"] = config.ready_timeout
@@ -858,7 +890,7 @@ class _NoRequestMetrics:
 
 
 class _NoMetrics:
-    """Records nothing: the first prototype turned the perf metrics off."""
+    """Records nothing; the OpenEngine path serves with perf metrics off."""
 
     def start_request(self, request_id: str, arrival_time: float) -> RequestMetrics:
         return _NoRequestMetrics()
@@ -950,7 +982,9 @@ class GenerateCounter:
     The count starts at 0 and only grows; every call counts, including each
     call of a split request. When ``counter_dir`` is set, every change writes
     ``{"pid": ..., "generate_sent": ...}`` to ``<counter_dir>/<pid>.json``,
-    replacing the file atomically.
+    replacing the file atomically; the directory is created if missing. A
+    process keeps one counter, and each run uses a directory of its own:
+    :func:`read_generate_sent` sums every file in it.
 
     Args:
         counter_dir: Where to write the count; defaults to ``$TRTLLM_OPENENGINE_COUNTER_DIR``.
@@ -980,10 +1014,16 @@ class GenerateCounter:
     def _write(self) -> None:
         assert self._dir is not None
         pid = os.getpid()
-        path = self._dir / f"{pid}.json"
-        tmp = self._dir / f".{pid}.json.tmp"
-        tmp.write_text(json.dumps({"pid": pid, SERVE_COUNTER_GENERATE_SENT: self._value}))
-        os.replace(tmp, path)
+        self._dir.mkdir(parents=True, exist_ok=True)
+        # A fresh temporary file (created exclusively), then an atomic rename.
+        fd, tmp = tempfile.mkstemp(prefix=f".{pid}.", suffix=".tmp", dir=self._dir)
+        try:
+            with os.fdopen(fd, "w") as file:
+                file.write(json.dumps({"pid": pid, SERVE_COUNTER_GENERATE_SENT: self._value}))
+            os.replace(tmp, self._dir / f"{pid}.json")
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
 
 
 def read_generate_sent(counter_dir: str | os.PathLike[str]) -> int:

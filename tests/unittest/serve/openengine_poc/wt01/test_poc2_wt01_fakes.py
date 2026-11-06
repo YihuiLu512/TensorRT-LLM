@@ -14,6 +14,7 @@ from tensorrt_llm.serve.openengine_poc.engine_client import (
     MediaSpec,
     OutputFinished,
     TokenDelta,
+    Usage,
 )
 
 __extra_import_path__ = [".."]
@@ -118,7 +119,11 @@ def test_abort_ends_the_unfinished_outputs_as_cancelled():
         return events
 
     events = asyncio.run(run())
-    assert events == [TokenDelta(0, (1,)), OutputFinished(0, "cancelled")]
+    # The last event carries the usage, as on any call.
+    assert events == [
+        TokenDelta(0, (1,)),
+        OutputFinished(0, "cancelled", usage=Usage(2, 1, cached_prompt_tokens=0)),
+    ]
     assert client.aborted == ["trtllm-1"]
     assert client.active == set()
     # Aborting an unknown or finished request is not an error.

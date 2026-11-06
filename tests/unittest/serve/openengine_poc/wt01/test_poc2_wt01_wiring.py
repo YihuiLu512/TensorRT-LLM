@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""The contract wiring changes nothing: imports stay light and OpenAIServer picks postprocessing as before."""
+"""The contract wiring: imports stay light, and OpenAIServer postprocesses where num_postprocess_workers says."""
 
 import asyncio
 import json
@@ -74,6 +74,11 @@ def test_postproc_worker_enabled_is_unchanged(workers, enabled):
     assert isinstance(server._postproc_dispatch, contracts.DefaultPostprocDispatch)
 
 
+def test_one_dispatch_serves_every_request_of_a_generator():
+    server = _server(2)
+    assert server._postproc_dispatch is server._postproc_dispatch
+
+
 def test_the_dispatch_follows_a_swapped_generator():
     server = _server(0)
     assert not server.postproc_worker_enabled
@@ -103,3 +108,28 @@ def test_chat_response_comes_from_the_same_place(workers):
     )
     response = asyncio.run(server._create_chat_response(promise, params, raw_request=None))
     assert response == ("from worker" if workers else "from handler")
+
+
+def test_a_launcher_module_missing_a_dependency_gets_the_install_hint(tmp_path, monkeypatch):
+    import click
+
+    from tensorrt_llm.commands import serve as serve_cmd
+
+    real_import = contracts.importlib.import_module
+
+    def import_module(name):
+        if name == contracts.slots()["launch_frontends"].module:
+            raise ModuleNotFoundError("No module named 'uvloop'", name="uvloop")
+        return real_import(name)
+
+    contracts.reset_slot_cache()
+    monkeypatch.setattr(contracts.importlib, "import_module", import_module)
+    monkeypatch.setattr(serve_cmd, "get_is_diffusion_only_model", lambda *a, **k: False)
+    try:
+        with pytest.raises(click.ClickException, match="Failed to import the OpenEngine client"):
+            serve_cmd.main(
+                args=[str(tmp_path), "--openengine-endpoint", "localhost:1"],
+                standalone_mode=False,
+            )
+    finally:
+        contracts.reset_slot_cache()

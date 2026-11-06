@@ -1868,7 +1868,10 @@ def serve(
                 from tensorrt_llm.serve.openengine_poc import \
                     launch as _openengine_launch  # noqa: F401
                 from tensorrt_llm.serve.openengine_poc.contracts import (
-                    FrontendLaunchConfig, launch_frontends)
+                    FrontendLaunchConfig, launch_frontends, resolve_slot)
+
+                # Imports the frontend launcher's module, if there is one.
+                resolve_slot("launch_frontends")
             except ImportError as error:
                 raise click.ClickException(
                     f"Failed to import the OpenEngine client: {error}. "
