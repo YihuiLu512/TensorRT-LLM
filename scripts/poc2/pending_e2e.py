@@ -52,10 +52,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from poc2_common import DEFAULT_REF, GLM_DEFAULT_REF, git, landed_tasks, parse_task  # noqa: E402
+from poc2_common import DEFAULT_REF, GLM_DEFAULT_REF, git, landed_tasks, parse_task
 
 FEATURE_DEPS = Path(__file__).resolve().parent / "feature_deps.yaml"
 VERIFIED_DIR = "tests/integration/defs/openengine_chain/verified"

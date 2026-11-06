@@ -20,9 +20,11 @@ calls the slot.
 
 The default implementation is used only when the module is missing (and not
 when one of its own imports is) or does not define the function; any other
-import error propagates. The first lookup of each slot is logged. A slot module
-is imported while the slot is looked up, not while this module is, so it may
-call other slots at import time.
+import error propagates. A slot logs where its implementation came from the
+first time it resolves it. A slot module is imported while the slot is looked
+up, not while this module is, so it may call other slots at import time; a slot
+called while its own module is still being imported uses the default for that
+call and is looked up again on the next one.
 
 The module also holds the messages between a frontend and its postprocessing
 processes, the plain-data check for what crosses into them, and the frontend's
@@ -41,6 +43,7 @@ import importlib
 import inspect
 import json
 import os
+import sys
 import tempfile
 import threading
 import uuid
@@ -99,7 +102,7 @@ class Slot:
 
 
 _SLOTS: dict[str, Slot] = {}
-_RESOLVED: dict[str, tuple[Callable[..., Any], str]] = {}
+_resolved: dict[str, tuple[Callable[..., Any], str]] = {}
 _RESOLVE_LOCK = threading.Lock()
 
 
@@ -114,8 +117,8 @@ def _slot(name: str, module: str, owner: str) -> Callable[[Callable[..., Any]], 
 def resolve_slot(name: str) -> tuple[Callable[..., Any], str]:
     """Return a slot's implementation and where it came from (``"module:function"`` or ``"default"``)."""
     with _RESOLVE_LOCK:
-        if name in _RESOLVED:
-            return _RESOLVED[name]
+        if name in _resolved:
+            return _resolved[name]
     slot = _SLOTS[name]
     impl, source = slot.default, "default"
     # Imported without holding the lock, so a slot module may resolve other
@@ -134,17 +137,17 @@ def resolve_slot(name: str) -> tuple[Callable[..., Any], str]:
             # at import time): use the default now, and look again next time.
             return impl, source
     with _RESOLVE_LOCK:
-        if name in _RESOLVED:
-            return _RESOLVED[name]
+        if name in _resolved:
+            return _resolved[name]
         logger.info(f"OpenEngine slot {name}: using {source}")
-        _RESOLVED[name] = (impl, source)
+        _resolved[name] = (impl, source)
         return impl, source
 
 
 def reset_slot_cache() -> None:
     """Forget resolved slots, so the next call looks them up again (for tests)."""
     with _RESOLVE_LOCK:
-        _RESOLVED.clear()
+        _resolved.clear()
 
 
 def slots() -> Mapping[str, Slot]:
@@ -722,8 +725,8 @@ def resolve_post_processor(path: str) -> Callable[..., Any]:
 
     Raises:
         PostprocDataError: The path is outside :data:`POST_PROCESSOR_MODULE_PREFIX`,
-            its module does not import, or it does not name a function defined
-            in that module.
+            importing its module raises ImportError, or it does not name a
+            function defined in that module.
     """
     if not path.startswith(POST_PROCESSOR_MODULE_PREFIX):
         raise PostprocDataError(
@@ -745,12 +748,24 @@ def resolve_post_processor(path: str) -> Callable[..., Any]:
 _PLAIN_SCALARS = (type(None), bool, int, float, str, bytes)
 
 
+def _is_plain_named_tuple(item: Any) -> bool:
+    """A named tuple whose class pickles by name and adds no per-instance state."""
+    cls = type(item)
+    return (
+        isinstance(item, tuple)
+        and hasattr(cls, "_fields")
+        and getattr(sys.modules.get(cls.__module__), cls.__qualname__, None) is cls
+        and not hasattr(item, "__dict__")
+    )
+
+
 def check_plain_data(value: Any, *, path: str = "postproc_args") -> None:
     """Check that ``value`` holds plain data only, so it can cross into another process.
 
     Plain data is None, bool, int, float, str, bytes, enum members, lists,
-    tuples, named tuples, sets and dicts of plain data (not subclasses of them,
-    which may carry state of their own), and dataclass or pydantic model
+    tuples, module-level named tuples, sets and dicts of plain data (not other
+    subclasses of them, which may carry state of their own), and dataclass or
+    pydantic model
     instances whose attributes are all plain data, declared or not. Callables,
     tensors, parsers, tokenizers and any other object are not.
 
@@ -760,14 +775,12 @@ def check_plain_data(value: Any, *, path: str = "postproc_args") -> None:
     seen: set[int] = set()
 
     def check(item: Any, where: str) -> None:
-        if isinstance(item, _PLAIN_SCALARS) or isinstance(item, enum.Enum):
+        if type(item) in _PLAIN_SCALARS or isinstance(item, enum.Enum):
             return
         if id(item) in seen:
             return
         seen.add(id(item))
-        if type(item) in (list, tuple, set, frozenset) or (
-            isinstance(item, tuple) and hasattr(type(item), "_fields")
-        ):
+        if type(item) in (list, tuple, set, frozenset) or _is_plain_named_tuple(item):
             for i, element in enumerate(item):
                 check(element, f"{where}[{i}]")
             return
@@ -1014,7 +1027,6 @@ class GenerateCounter:
         if counter_dir is _UNSET:
             counter_dir = os.environ.get(SERVE_COUNTER_DIR_ENV) or None
         self._dir = Path(counter_dir) if counter_dir is not None else None
-        self._dir_ready = False
         self._value = 0
         self._lock = threading.Lock()
 
@@ -1035,11 +1047,12 @@ class GenerateCounter:
     def _write(self) -> None:
         assert self._dir is not None
         pid = os.getpid()
-        if not self._dir_ready:
-            self._dir.mkdir(parents=True, exist_ok=True)
-            self._dir_ready = True
         # A fresh temporary file (created exclusively), then an atomic rename.
-        fd, tmp = tempfile.mkstemp(prefix=f".{pid}.", suffix=".tmp", dir=self._dir)
+        try:
+            fd, tmp = tempfile.mkstemp(prefix=f".{pid}.", suffix=".tmp", dir=self._dir)
+        except FileNotFoundError:
+            self._dir.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(prefix=f".{pid}.", suffix=".tmp", dir=self._dir)
         try:
             with os.fdopen(fd, "w") as file:
                 file.write(json.dumps({"pid": pid, SERVE_COUNTER_GENERATE_SENT: self._value}))

@@ -222,7 +222,7 @@ class ExtraCapabilities:
         return key in self.declared
 
 
-# What a TRT-LLM server that reports no capability keys supports.
+# What a TRT-LLM server that reports no conventions version supports.
 BUILTIN_CAPABILITIES = ExtraCapabilities(
     declared=frozenset(SAMPLING_CAPABILITY_KEYS + (CAP_STOP_TEXT, CAP_REQ_CONVERSATION_ID)),
     builtin=True,

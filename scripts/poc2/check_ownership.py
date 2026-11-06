@@ -8,11 +8,12 @@ rules in :data:`OWNERSHIP`, and every commit in ``<base>..<head>`` must carry
 the trailer ``PoC2-Task: <work item>``. A fix (``WT-xx-fixN``) owns what WT-xx
 owns.
 
-A rule is ``own`` (only this item changes the path), ``shared`` (this item may
+A rule is ``own`` (this item owns the path; another item may change it only
+under a ``shared`` or ``exception`` rule of its own), ``shared`` (this item may
 change only the part the note names; the rest of the file belongs to its owner,
 which may be another item or code outside PoC-S2) or ``exception`` (a one-off
-allowance the note describes). Paths changed under
-``shared`` and ``exception`` rules are listed for a reviewer to check by hand.
+allowance the note describes). Paths changed under ``shared`` and ``exception``
+rules are listed for a reviewer to check by hand.
 A pattern starting with ``!`` excludes paths from the rules before it.
 
 Usage::
@@ -31,9 +32,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from poc2_common import TRAILER, git, parse_task, trailers  # noqa: E402
+from poc2_common import TRAILER, git, parse_task, trailers
 
 TRTLLM = "trtllm"
 GLM = "glm"

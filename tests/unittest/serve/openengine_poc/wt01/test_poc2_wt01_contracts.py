@@ -3,6 +3,7 @@
 """Tests of the contract slots: lookup, and that each default matches the adapter and mapping code."""
 
 import asyncio
+import collections
 import dataclasses
 import json
 import os
@@ -232,7 +233,8 @@ def _both(prompt, params, server, model):
         SamplingParams(min_p=0.1, frequency_penalty=0.5, presence_penalty=0.2),
         SamplingParams(repetition_penalty=1.1, max_tokens=8, min_tokens=2, ignore_eos=True),
         SamplingParams(stop_token_ids=[5, 5, 6], max_tokens=1000),
-        SamplingParams(n=2, best_of=2),
+        # Several outputs need sampling: greedy decoding rejects best_of > 1.
+        SamplingParams(n=2, best_of=2, temperature=1.0),
         SamplingParams(top_k=0, min_p=0.0, repetition_penalty=1.0),
     ],
     ids=lambda p: "params",
@@ -266,8 +268,8 @@ def test_default_map_request_matches_poc_s1(params, engine):
     [
         (SamplingParams(use_beam_search=True, n=2, best_of=2), [1]),
         (SamplingParams(logprobs=2), [1]),
-        (SamplingParams(n=3, best_of=4), [1]),
-        (SamplingParams(n=9), [1]),
+        (SamplingParams(n=3, best_of=4, temperature=1.0), [1]),
+        (SamplingParams(n=9, temperature=1.0), [1]),
         (SamplingParams(seed=-1), [1]),
         (SamplingParams(max_tokens=1), list(range(64))),
         (SamplingParams(truncate_prompt_tokens=2), [1]),
@@ -508,7 +510,7 @@ FINAL_USAGE = Usage(prompt_tokens=1, completion_tokens=3, cached_prompt_tokens=4
                 OutputFinished(1, "length"),
                 OutputFinished(0, "length", usage=FINAL_USAGE),
             ],
-            SamplingParams(n=2, best_of=2),
+            SamplingParams(n=2, best_of=2, temperature=1.0),
             id="two-outputs",
         ),
         pytest.param(
@@ -711,15 +713,25 @@ def test_check_plain_data_checks_attributes_beyond_the_declared_fields():
     contracts.check_plain_data(_ExtraModel(note="plain"))
 
 
-def test_check_plain_data_rejects_container_subclasses():
-    import collections
+_Point = collections.namedtuple("_Point", "x y")
 
+
+class _TaggedStr(str):
+    pass
+
+
+def test_check_plain_data_rejects_container_subclasses():
     with pytest.raises(
         contracts.PostprocDataError, match=r"^postproc_args\['d'\] is a defaultdict"
     ):
         contracts.check_plain_data({"d": collections.defaultdict(lambda: 0)})
-    Point = collections.namedtuple("Point", "x y")
-    contracts.check_plain_data([Point(1, 2)])
+    contracts.check_plain_data([_Point(1, 2)])
+    # Subclasses that pickle extra state, or a class pickle cannot find by name.
+    local_point = collections.namedtuple("LocalPoint", "x y")
+    with pytest.raises(contracts.PostprocDataError, match="LocalPoint"):
+        contracts.check_plain_data([local_point(1, 2)])
+    with pytest.raises(contracts.PostprocDataError, match="_TaggedStr"):
+        contracts.check_plain_data({"s": _TaggedStr("x")})
 
 
 def test_check_plain_data_rejects_a_tensor():
@@ -771,6 +783,16 @@ def test_counter_creates_its_directory_and_leaves_no_temporary_file(tmp_path):
     contracts.GenerateCounter(counter_dir).increment()
     assert [p.name for p in counter_dir.iterdir()] == [f"{os.getpid()}.json"]
     assert contracts.read_generate_sent(counter_dir) == 1
+
+
+def test_counter_recreates_a_removed_directory(tmp_path):
+    counter_dir = tmp_path / "counters"
+    counter = contracts.GenerateCounter(counter_dir)
+    counter.increment()
+    (counter_dir / f"{os.getpid()}.json").unlink()
+    counter_dir.rmdir()
+    counter.increment()
+    assert contracts.read_generate_sent(counter_dir) == 2
 
 
 def test_counter_directory_comes_from_the_environment(tmp_path, monkeypatch):
