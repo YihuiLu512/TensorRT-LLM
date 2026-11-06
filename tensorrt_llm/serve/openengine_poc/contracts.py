@@ -406,7 +406,8 @@ class ResponseAssembler(Protocol):
     """Builds the outputs of one Generate call from its events.
 
     ``outputs`` hold the ``CompletionOutput`` objects a ``RequestOutput`` hands
-    to the handlers; their ``*_diff`` views cover the last change.
+    to the handlers. Their ``*_diff`` views cover the last :meth:`apply` that
+    returned True, so the caller hands the outputs on after each such call.
     """
 
     outputs: list[CompletionOutput]
@@ -694,7 +695,7 @@ class PPResult:
 PPMessage = PPOpen | PPEvent | PPClose | PPResult
 
 # Postprocessors are imported by path in the postprocessing processes, and
-# only from this package tree.
+# only from modules under this prefix.
 POST_PROCESSOR_MODULE_PREFIX = "tensorrt_llm.serve."
 
 
@@ -773,8 +774,8 @@ def check_plain_data(value: Any, *, path: str = "postproc_args") -> None:
 
     Plain data is None, bool, int, float, str, bytes, lists, tuples, sets and
     dicts of plain data (not subclasses of them, which may carry state of their
-    own), and instances of classes pickle can import by name: enum members,
-    named tuples without per-instance state, and dataclass or pydantic model
+    own), and instances of classes pickle can import by name: enum members
+    whose values are plain data, named tuples without per-instance state, and dataclass or pydantic model
     instances whose attributes are all plain data, declared or not. Callables,
     tensors, parsers, tokenizers and any other object are not.
 
@@ -797,6 +798,8 @@ def check_plain_data(value: Any, *, path: str = "postproc_args") -> None:
                 f"{where} is a {type(item).__qualname__}, which pickle cannot import by name"
             )
         if isinstance(item, enum.Enum):
+            # Pickle stores a member by its class and value.
+            check(item.value, f"{where}.value")
             return
         if id(item) in seen:
             return
@@ -816,9 +819,14 @@ def check_plain_data(value: Any, *, path: str = "postproc_args") -> None:
             names = [f.name for f in dataclasses.fields(item)]
             names += [name for name in getattr(item, "__dict__", {}) if name not in names]
             for name in names:
-                # An init=False field may not be set yet; nothing is pickled for it.
                 if hasattr(item, name):
                     check(getattr(item, name), f"{where}.{name}")
+                elif not hasattr(item, "__dict__"):
+                    # An init=False field may not be set yet. Pickle skips it
+                    # when attributes live in a __dict__; with __slots__ it
+                    # may read every field (a frozen dataclass does), so an
+                    # unset one is rejected.
+                    raise PostprocDataError(f"{where}.{name} is not set")
             return
         if isinstance(model_fields, dict) and hasattr(item, "model_dump"):
             # Everything pickled with a pydantic model: its __dict__, the
@@ -1057,16 +1065,21 @@ class GenerateCounter:
         return self._value
 
     def increment(self, count: int = 1) -> int:
-        """Add ``count`` calls and return the new total."""
+        """Add ``count`` calls and return the new total.
+
+        Raises:
+            OSError: The file could not be written; the count is unchanged.
+        """
         if count < 0:
             raise ValueError(f"the count only grows, got {count}")
         with self._lock:
-            self._value += count
+            # The count only moves once its file is written.
             if self._dir is not None:
-                self._write()
+                self._write(self._value + count)
+            self._value += count
             return self._value
 
-    def _write(self) -> None:
+    def _write(self, value: int) -> None:
         assert self._dir is not None
         pid = os.getpid()
         # A fresh temporary file (created exclusively), then an atomic rename.
@@ -1077,7 +1090,7 @@ class GenerateCounter:
             fd, tmp = tempfile.mkstemp(prefix=f".{pid}.", suffix=".tmp", dir=self._dir)
         try:
             with os.fdopen(fd, "w") as file:
-                file.write(json.dumps({"pid": pid, SERVE_COUNTER_GENERATE_SENT: self._value}))
+                file.write(json.dumps({"pid": pid, SERVE_COUNTER_GENERATE_SENT: value}))
             os.replace(tmp, self._dir / f"{pid}.json")
         except BaseException:
             Path(tmp).unlink(missing_ok=True)

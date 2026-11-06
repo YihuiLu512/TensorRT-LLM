@@ -326,7 +326,7 @@ def compute_tokenizer_fingerprint(
     - ``vocab_size``: ``len()`` of the Hugging Face tokenizer, which counts added tokens.
     - ``eos_token_ids``: the tokenizer's ``eos_token_id`` together with the
       ``eos_token_id`` (a number or a list) of ``generation_config.json`` in
-      ``model_dir``, without duplicates, ascending.
+      ``model_dir`` when that file holds a JSON object, without duplicates, ascending.
     - ``bos_token_id``: the tokenizer's ``bos_token_id``.
     - ``files_sha256``: sha256 of each of :data:`FINGERPRINT_FILES` present in ``model_dir``.
 
@@ -348,7 +348,8 @@ def compute_tokenizer_fingerprint(
         directory = Path(model_dir)
         generation_config = directory / "generation_config.json"
         if generation_config.is_file():
-            config_eos = json.loads(generation_config.read_text()).get("eos_token_id")
+            config = json.loads(generation_config.read_text())
+            config_eos = config.get("eos_token_id") if isinstance(config, dict) else None
             for token_id in config_eos if isinstance(config_eos, list) else [config_eos]:
                 if isinstance(token_id, int) and not isinstance(token_id, bool):
                     eos_ids.add(token_id)

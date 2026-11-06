@@ -755,8 +755,28 @@ class _Lazy:
     later: Any = dataclasses.field(init=False)
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class _FrozenLazy:
+    x: int = 1
+    later: Any = dataclasses.field(init=False)
+
+
+class _Hooks(enum.Enum):
+    PLAIN = 1
+    CALLABLE = (print,)
+
+
 def test_check_plain_data_skips_an_unset_init_false_field():
     contracts.check_plain_data(_Lazy())
+    # A frozen dataclass with __slots__ pickles every field, set or not.
+    with pytest.raises(contracts.PostprocDataError, match=r"\.later is not set"):
+        contracts.check_plain_data(_FrozenLazy())
+
+
+def test_check_plain_data_checks_enum_values():
+    contracts.check_plain_data([_Hooks.PLAIN])
+    with pytest.raises(contracts.PostprocDataError, match=r"\[0\]\.value\[0\]"):
+        contracts.check_plain_data([_Hooks.CALLABLE])
 
 
 def test_check_plain_data_rejects_a_tensor():
@@ -818,6 +838,19 @@ def test_counter_recreates_a_removed_directory(tmp_path):
     counter_dir.rmdir()
     counter.increment()
     assert contracts.read_generate_sent(counter_dir) == 2
+
+
+def test_counter_keeps_its_count_when_the_write_fails(tmp_path, monkeypatch):
+    counter = contracts.GenerateCounter(tmp_path)
+    counter.increment()
+
+    def fail(*args, **kwargs):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(contracts.tempfile, "mkstemp", fail)
+    with pytest.raises(PermissionError):
+        counter.increment()
+    assert counter.value == 1 and contracts.read_generate_sent(tmp_path) == 1
 
 
 def test_counter_directory_comes_from_the_environment(tmp_path, monkeypatch):

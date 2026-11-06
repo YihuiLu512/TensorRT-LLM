@@ -117,6 +117,9 @@ def test_fingerprint_computation(tmp_path):
     # A single-number eos_token_id in generation_config.json is read too.
     _model_dir(tmp_path, generation_eos=6)
     assert conv.compute_tokenizer_fingerprint(tiny_tokenizer(), tmp_path).eos_token_ids == (1, 6)
+    # A generation_config.json that is not a JSON object adds nothing.
+    (tmp_path / "generation_config.json").write_text("[6]")
+    assert conv.compute_tokenizer_fingerprint(tiny_tokenizer(), tmp_path).eos_token_ids == (1,)
 
 
 def test_fingerprint_extra_round_trip_and_compare(tmp_path):

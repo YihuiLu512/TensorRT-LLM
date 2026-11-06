@@ -35,7 +35,7 @@ def test_contracts_do_not_load_the_grpc_client():
     heavy = [
         m
         for m in loaded
-        if m == "grpc"
+        if m in ("grpc", "tensorrt_llm.grpc.openengine")
         or m.startswith(
             ("grpc.", "tensorrt_llm.grpc.openengine_client", "tensorrt_llm.grpc.openengine.")
         )
