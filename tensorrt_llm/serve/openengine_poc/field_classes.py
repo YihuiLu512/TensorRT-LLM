@@ -9,17 +9,18 @@ these kinds:
 - ``MAPPED``: it reaches the engine, at ``target``. When the engine has not
   declared ``capability``, a set value is rejected, unless ``fallback`` names
   how the serving side handles it instead.
-- ``SERVE``: the serving side handles it; ``verified_by`` names the test of
-  that handling.
+- ``SERVE``: the serving side handles it; ``verified_by`` names the feature
+  row (``row F-xx``) whose tests verify that handling, or says why none is needed.
 - ``REJECTED``: a set value is rejected with HTTP 400.
 - ``INTERNAL``: not a request option (state derived from other fields, or an
   input of the mapping itself).
 
-:mod:`.mapping` rejects a field it finds set that is ``REJECTED`` here, or that
-is in none of the tables. A request-model field names the ``SamplingParams``
-field or the ``GenerateOptions`` field it becomes, or is handled on the serving
-side. The no-silent-drop test checks that the tables cover every field, so a
-field added later fails that test until it is classified here.
+:mod:`.mapping` rejects a ``SamplingParams`` or ``GenerateOptions`` field it
+finds set that is ``REJECTED`` here, or that is in neither table. A
+request-model field names the ``SamplingParams`` field or the
+``GenerateOptions`` field it becomes, or is handled on the serving side. The
+no-silent-drop test checks that the tables cover every field, so a field added
+later fails that test until it is classified here.
 
 This module imports nothing from TensorRT-LLM, so tests and tools can read it
 without loading the package.
@@ -49,7 +50,7 @@ class FieldClass:
             engine supports it.
         fallback: ``MAPPED``: what the serving side does when the capability is
             missing; empty means the field is then rejected.
-        verified_by: ``SERVE``: the test (or feature row) that verifies the handling.
+        verified_by: ``SERVE``: the feature row whose tests verify the handling.
     """
 
     kind: Kind
@@ -76,18 +77,18 @@ def _internal(why: str) -> FieldClass:
 
 
 _NO_CARRIER = "OpenEngine v1 has no field for it"
-_BEAM = "beam search; OpenEngine v1 has no beam stream semantics (deviation X-a)"
-_DETOK = "the response assembler (SV-DTK, WT-12)"
-_DETOK_TEST = "row F-24: test_detokenize_options"
-_FACADE_META = "the facade adds it after map_request (OE-META, WT-10)"
+_BEAM = "OpenEngine has no beam search"
+_DETOK = "the response assembler (SV-DTK)"
+_DETOK_TEST = "row F-24"
+_FACADE_META = "the facade adds it after map_request and checks the capability (OE-META)"
 
 # Every field of SamplingParams, including the private ones.
 SAMPLING_PARAMS: dict[str, FieldClass] = {
     "end_id": _rejected(f"replaces the EOS id; {_NO_CARRIER}"),
     "pad_id": _rejected(_NO_CARRIER),
     "max_tokens": _mapped("stopping.max_tokens"),
-    "bad": _rejected(f"P2; {_NO_CARRIER}"),
-    "bad_token_ids": _rejected(f"P2; {_NO_CARRIER}"),
+    "bad": _rejected(_NO_CARRIER),
+    "bad_token_ids": _rejected(_NO_CARRIER),
     "_bad_word_ids": _internal("derived from bad and bad_token_ids"),
     "stop": _mapped(
         "stopping.conditions[].stop_text",
@@ -101,12 +102,8 @@ SAMPLING_PARAMS: dict[str, FieldClass] = {
         fallback="stop strings are matched on the serving side, which keeps them",
     ),
     "_stop_word_ids": _internal("derived from stop and stop_token_ids"),
-    "embedding_bias": _rejected(
-        "a bias tensor; logit_bias reaches the engine as data (GenerateOptions.logit_bias)"
-    ),
-    "logits_processor": _rejected(
-        "a callable; a thinking budget reaches the engine as data (thinking_token_budget)"
-    ),
+    "embedding_bias": _rejected("a bias tensor; logit_bias is sent instead"),
+    "logits_processor": _rejected("a callable; thinking_token_budget is sent instead"),
     "apply_batched_logits_processor": _rejected(_NO_CARRIER),
     "n": _mapped("sampling.num_sequences, or ceil(n / max_num_sequences) calls (SV-MAP-6)"),
     "best_of": _mapped("extra[trtllm.best_of]", "trtllm.request.best_of"),
@@ -126,7 +123,7 @@ SAMPLING_PARAMS: dict[str, FieldClass] = {
     ),
     "presence_penalty": _mapped("sampling.presence_penalty", "trtllm.sampling.presence_penalty"),
     "frequency_penalty": _mapped("sampling.frequency_penalty", "trtllm.sampling.frequency_penalty"),
-    "prompt_ignore_length": _rejected(f"P2; {_NO_CARRIER}"),
+    "prompt_ignore_length": _rejected(_NO_CARRIER),
     "length_penalty": _rejected(_BEAM),
     "early_stopping": _rejected(_BEAM),
     "no_repeat_ngram_size": _rejected(_NO_CARRIER),
@@ -136,15 +133,13 @@ SAMPLING_PARAMS: dict[str, FieldClass] = {
     "prompt_logprobs": _mapped("response.prompt_candidates.top_n", "prompt logprobs"),
     "logprobs_simple_format": _rejected("the response assembler builds no simple format"),
     "prompt_logprobs_simple_format": _rejected("the response assembler builds no simple format"),
-    "return_context_logits": _rejected(f"a tensor; {_NO_CARRIER} (deviation X-b)"),
-    "return_generation_logits": _rejected(f"a tensor; {_NO_CARRIER} (deviation X-b)"),
+    "return_context_logits": _rejected(f"a tensor; {_NO_CARRIER}"),
+    "return_generation_logits": _rejected(f"a tensor; {_NO_CARRIER}"),
     "exclude_input_from_output": _rejected(f"False echoes the prompt ids; {_NO_CARRIER}"),
     "return_encoder_output": _rejected(f"a tensor; {_NO_CARRIER}"),
-    "return_perf_metrics": _serve(
-        "the frontend's metrics recorder (SV-MET, WT-15)", "row F-42: T11, T12"
-    ),
+    "return_perf_metrics": _serve("the frontend's metrics recorder (SV-MET)", "row F-42: T11, T12"),
     "return_routed_experts": _rejected(f"a tensor; {_NO_CARRIER}"),
-    "additional_model_outputs": _rejected(f"tensors; {_NO_CARRIER} (deviation X-b)"),
+    "additional_model_outputs": _rejected(f"tensors; {_NO_CARRIER}"),
     "_decoder_output_token_prefix": _rejected("encoder-decoder models only"),
     "guided_decoding": _mapped("guided", "the guided decoding mode"),
     "thinking_token_budget": _mapped(
@@ -166,7 +161,7 @@ SAMPLING_PARAMS: dict[str, FieldClass] = {
 # Every field of GenerateOptions.
 GENERATE_OPTIONS: dict[str, FieldClass] = {
     "streaming": _serve("every Generate call streams; the handler decides", "row F-01+F-02"),
-    "lora_request": _mapped("lora_name, once the LoRA registry resolves it (WT-16)", "LoRA"),
+    "lora_request": _mapped("lora_name, once the LoRA registry resolves it", "LoRA"),
     "lora_name": _mapped("lora_name", "LoRA"),
     "disaggregated_params": _rejected("disaggregated serving is deferred in this stage"),
     "cache_salt": _mapped("kv.cache_salt", "supports_cache_salt"),
@@ -179,7 +174,7 @@ GENERATE_OPTIONS: dict[str, FieldClass] = {
     ),
     "priority": _mapped("metadata openengine-priority; " + _FACADE_META, "supports_priority"),
     "trace_headers": _mapped("metadata traceparent, tracestate; " + _FACADE_META),
-    "media": _mapped("media, from map_media (WT-16)", "the media modality"),
+    "media": _mapped("media, from map_media", "the media modality"),
     "logit_bias": _mapped("extra[trtllm.logit_bias]", "trtllm.request.logit_bias"),
     "reasoning_parser": _internal("input of the thinking-budget mapping (SV-MAP-5)"),
     "tokenizer": _internal("input of the thinking-budget mapping (SV-MAP-5)"),
@@ -274,16 +269,16 @@ REQUEST_MODELS: dict[str, dict[str, Route]] = {
         "tools": _serve(_TOOLS, "row F-27+F-28: T8"),
         "tool_choice": _serve(_TOOLS + "; a forced choice adds guided decoding", "row F-27+F-28"),
         "parallel_tool_calls": _serve(_TOOLS, "row F-27+F-28"),
-        "reasoning_effort": _serve("the chat template", "row F-07: test_chat_template_kwargs"),
+        "reasoning_effort": _serve("the chat template", "row F-07"),
         "thinking": _serve("the chat template", "row F-27+F-28: T7"),
         "client_metadata": _serve(_IGNORED, "none needed: in-process ignores it too"),
         "add_generation_prompt": _serve("the chat template", "row F-07"),
         "documents": _serve("the chat template", "row F-07"),
         "chat_template": _serve("the chat template", "row F-07"),
-        "chat_template_kwargs": _serve("the chat template", "row F-07: test_chat_template_kwargs"),
+        "chat_template_kwargs": _serve("the chat template", "row F-07"),
         "injected_chat_template_kwargs": _serve("the chat template", "row F-07"),
-        "media_io_kwargs": _serve("media loading (WT-16)", "row F-10: T14, T15"),
-        "mm_processor_kwargs": _serve("multimodal processing (WT-16)", "row F-10: T14, T15"),
+        "media_io_kwargs": _serve("media loading", "row F-10: T14, T15"),
+        "mm_processor_kwargs": _serve("multimodal processing", "row F-10: T14, T15"),
         "agent_hierarchy": _opt("scheduling_params"),
         "cache_salt": _opt("cache_salt"),
     },

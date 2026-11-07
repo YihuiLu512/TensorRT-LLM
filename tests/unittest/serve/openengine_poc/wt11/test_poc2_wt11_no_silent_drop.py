@@ -11,11 +11,14 @@ rejected and must name its test.
 """
 
 import dataclasses
+import re
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
 import torch
+import yaml
 
 from tensorrt_llm.grpc import openengine_conventions as conv
 from tensorrt_llm.sampling_params import GuidedDecodingParams, LogprobMode, SamplingParams
@@ -101,7 +104,7 @@ def test_every_request_model_field_is_classified(model):
         assert target_table[target].kind is not fc.Kind.INTERNAL, f"{name} -> {route}"
 
 
-def test_every_serve_field_names_its_test():
+def test_every_serve_field_names_a_feature_row():
     for table in (
         fc.SAMPLING_PARAMS,
         fc.GENERATE_OPTIONS,
@@ -111,8 +114,20 @@ def test_every_serve_field_names_its_test():
         ],
     ):
         for name, field_class in table.items():
-            if field_class.kind is fc.Kind.SERVE:
-                assert field_class.verified_by, name
+            if field_class.kind is not fc.Kind.SERVE:
+                continue
+            verified_by = field_class.verified_by
+            if verified_by.startswith("none needed: "):
+                continue
+            rows = re.findall(r"\brow (F-[\w+-]+)", verified_by)
+            assert rows and verified_by.startswith("row "), (name, verified_by)
+            assert set(rows) <= _feature_rows(), (name, verified_by)
+
+
+def _feature_rows() -> set[str]:
+    path = Path(__file__).resolve().parents[5] / "scripts" / "poc2" / "feature_deps.yaml"
+    with open(path, encoding="utf-8") as f:
+        return {row["id"] for row in yaml.safe_load(f)["rows"]}
 
 
 # --- probes -------------------------------------------------------------------------

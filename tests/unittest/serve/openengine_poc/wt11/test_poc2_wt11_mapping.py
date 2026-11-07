@@ -134,6 +134,13 @@ def test_neutral_values_are_not_sent_unless_explicit():
         "repetition_penalty",
     )
     assert _one(explicit).sampling == {"top_k": 0, "min_p": 0.0, "repetition_penalty": 1.0}
+    # SamplingParams does not record whether the request set these two.
+    penalties = _explicit(
+        SamplingParams(frequency_penalty=0.0, presence_penalty=0.0),
+        "frequency_penalty",
+        "presence_penalty",
+    )
+    assert _one(penalties, _caps("glm")).sampling == {}
 
 
 def test_values_the_server_filled_in_are_not_sent():
@@ -193,9 +200,25 @@ def test_n_beyond_the_limit_is_split(n, limit, sizes):
     requests = _map(_sampled(n=n, seed=9, prompt_logprobs=1), caps)
     assert [r.num_sequences for r in requests] == sizes
     assert len(requests) == math.ceil(n / limit)
-    assert [r.sampling["seed"] for r in requests] == [9 + k for k in range(len(sizes))]
+    starts = [sum(sizes[:k]) for k in range(len(sizes))]
+    assert [r.sampling["seed"] for r in requests] == [9 + start for start in starts]
     assert [r.prompt_logprobs_top_n for r in requests] == [1] + [None] * (len(sizes) - 1)
     assert len({r.request_id for r in requests}) == len(sizes)
+
+
+def test_split_calls_without_a_seed_continue_the_in_process_seeds():
+    # TRT-LLM seeds sequence i of a request with its seed plus i, and 0 when unset.
+    requests = _map(_sampled(n=7), _caps(max_num_sequences=3))
+    assert ["seed" in r.sampling for r in requests] == [False, True, True]
+    assert [r.sampling["seed"] for r in requests[1:]] == [3, 6]
+
+
+@pytest.mark.parametrize("n", [0, -1])
+def test_n_below_one_is_rejected(n):
+    params = _sampled()
+    params.n = n
+    with pytest.raises(ValueError, match="n must be at least 1"):
+        _map(params)
 
 
 def test_split_seeds_wrap_around_uint64():
@@ -227,6 +250,8 @@ def test_best_of_needs_the_capability_and_a_single_call():
     assert _one(params, caps).extra[conv.REQ_BEST_OF] == 2
     with pytest.raises(ValueError, match="split"):
         _map(_sampled(n=2, best_of=3), dataclasses.replace(caps, max_num_sequences=1))
+    with pytest.raises(ValueError, match="at most 4"):
+        _map(_sampled(n=2, best_of=5), dataclasses.replace(caps, max_num_sequences=4))
 
 
 # --- prompt and length ------------------------------------------------------------
@@ -306,6 +331,10 @@ def test_logprobs():
         _one(SamplingParams(logprobs=21), _caps("glm"))
     with pytest.raises(ValueError, match="prompt_logprobs"):
         _one(SamplingParams(prompt_logprobs=1), _caps("glm"))
+    negative = SamplingParams()
+    negative.logprobs = -1
+    with pytest.raises(ValueError, match="logprobs must be non-negative"):
+        _one(negative)
 
 
 class Answer(BaseModel):
@@ -331,6 +360,9 @@ class Answer(BaseModel):
             GuidedDecodingParams(json=Answer),
             GuidedSpec("json_schema", json.dumps(Answer.model_json_schema())),
         ),
+        # Empty values are still a choice, as in-process.
+        (GuidedDecodingParams(json={}), GuidedSpec("json_schema", "{}")),
+        (GuidedDecodingParams(regex=""), GuidedSpec("regex", "")),
     ],
 )
 def test_guided_decoding(params, spec):
@@ -365,6 +397,31 @@ def test_thinking_budget_ids_match_the_in_process_algorithm(parser):
         "start_token_ids": processor.reasoning_start_token_ids,
         "end_token_ids": processor.reasoning_end_token_ids,
     }
+
+
+@pytest.mark.parametrize("parser", sorted(ReasoningParserFactory._parsers))
+@pytest.mark.parametrize(
+    "kwargs",
+    [{"enable_thinking": False}, {"enable_thinking": True}, {"thinking": True}],
+    ids=lambda k: "-".join(f"{key}={value}" for key, value in k.items()),
+)
+def test_thinking_budget_ids_do_not_depend_on_chat_template_kwargs(parser, kwargs):
+    # The chat path passes the request's chat_template_kwargs; map_request has none.
+    in_process = SamplingParams(thinking_token_budget=8)
+    try:
+        add_thinking_budget_logits_processor(
+            in_process,
+            reasoning_parser=parser,
+            tokenizer=CharTokenizer(),
+            chat_template_kwargs=kwargs,
+        )
+    except ValueError:
+        return
+    processor = in_process.logits_processor
+    request = _one(SamplingParams(thinking_token_budget=8), options=_budget_options(parser))
+    budget = request.extra[conv.REQ_THINKING_TOKEN_BUDGET]
+    assert budget["start_token_ids"] == processor.reasoning_start_token_ids
+    assert budget["end_token_ids"] == processor.reasoning_end_token_ids
 
 
 def test_thinking_budget_rejections():
@@ -450,6 +507,21 @@ def test_kv_hints_integers_a_struct_would_round_are_rejected(value):
     )
     with pytest.raises(ValueError, match=r"kv_hints.*2\*\*53"):
         _one(options=contracts.GenerateOptions(kv_hints=hints))
+    # An engine without kv_hints is told so, not about the integer.
+    with pytest.raises(ValueError, match=r"kv_hints=<dict> is not supported [^(]*'eng'$"):
+        _one(caps=_caps("glm"), options=contracts.GenerateOptions(kv_hints=hints))
+
+
+def test_scheduling_and_best_of_integers_a_struct_would_round_are_rejected():
+    scheduling = SimpleNamespace(
+        attention_dp_rank=None,
+        attention_dp_relax=True,
+        agent_hierarchy=[("planner", 2**53 + 1)],
+        subagent_affinity_id=None,
+    )
+    caps = _declare(_caps(), conv.CAP_REQ_SCHEDULING)
+    with pytest.raises(ValueError, match=r"scheduling_params.*2\*\*53"):
+        _one(caps=caps, options=contracts.GenerateOptions(scheduling_params=scheduling))
 
 
 def test_default_scheduling_params_send_nothing():
@@ -485,7 +557,7 @@ def test_cache_salt_lora_media_and_disaggregation():
             _one(caps=_caps("glm"), options=options)
 
 
-# --- contract v4: request data -----------------------------------------------------------
+# --- the request-data contract --------------------------------------------------------------
 
 
 def test_takes_request_data_reads_the_class():

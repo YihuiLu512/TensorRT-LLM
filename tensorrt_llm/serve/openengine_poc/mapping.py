@@ -3,11 +3,14 @@
 """Map a request to the OpenEngine Generate calls that serve it.
 
 :func:`map_request` implements the ``map_request`` slot of :mod:`.contracts`.
-Every field of the request is in :mod:`.field_classes`: a mapped field reaches
-the engine when the engine declares what it needs and is rejected otherwise, a
-field the serving side handles is left to it, and any other field that is set
-is rejected. A rejection is a ``ValueError`` raised before anything is sent,
-which ``OpenAIServer`` returns as HTTP 400.
+Every field of ``SamplingParams`` and ``GenerateOptions`` is classified in
+:mod:`.field_classes`. A mapped field reaches the engine when the engine
+declares what it needs; otherwise it is rejected, or, where the table names a
+fallback (stop strings), left to the serving side. A field the serving side
+handles, and an input of the mapping itself, is not sent. Any other field that
+is set, including one missing from the tables, is rejected. A rejection is a
+``ValueError`` raised before anything is sent, which ``OpenAIServer`` returns
+as HTTP 400.
 
 ``n`` beyond the sequences one call can return is split into several calls.
 
@@ -65,7 +68,9 @@ __all__ = [
 
 # Values that leave sampling unchanged. OpenAIServer fills some of them in when
 # the request does not set the field; such a value is sent only when the
-# request set it explicitly (SV-MAP-2).
+# request set it explicitly (SV-MAP-2). SamplingParams records explicit values
+# only for _GENERATION_CONFIG_SAMPLING_FIELDS, so a neutral frequency_penalty or
+# presence_penalty is never sent, even when the request set it.
 _NEUTRAL: dict[str, Any] = {
     "top_k": 0,
     "min_p": 0.0,
@@ -122,6 +127,7 @@ def _not_supported(name: str, value: Any, engine_name: str, why: str = "") -> Va
 
 
 def _check_struct_ints(name: str, value: Any, engine_name: str) -> None:
+    # Applied to every value of GenerateRequest.extra, which is a Struct.
     """Reject integers a ``Struct`` would round, rather than send a different value."""
     if isinstance(value, Mapping):
         for item in value.values():
@@ -171,10 +177,10 @@ def _explicit(sampling_params: SamplingParams, name: str) -> bool:
 def _requested(sampling_params: SamplingParams, name: str) -> Any:
     """The value to send for a sampling field, or None.
 
-    A value is sent when it is not neutral, or when the request set it
-    explicitly (OE-GEN-2: the engine's own default would apply otherwise). A
-    value ``OpenAIServer`` filled in although the request did not set it is not
-    sent.
+    A value the request set explicitly is sent (OE-GEN-2: the engine's own
+    default would apply otherwise). A value ``OpenAIServer`` filled in although
+    the request did not set it is not sent. For fields whose explicitness
+    ``SamplingParams`` does not record, a value is sent when it is not neutral.
     """
     value = getattr(sampling_params, name)
     if value is None:
@@ -201,6 +207,8 @@ def log_sequence_capability(engine_name: str, capabilities: ModelCapabilities) -
     """
     limit = max(1, capabilities.max_num_sequences)
     key = (engine_name, capabilities.served_model_name, limit)
+    if key in _logged:
+        return
     with _logged_lock:
         if key in _logged:
             return
@@ -321,9 +329,11 @@ def _logprobs_top_n(
 ) -> int | None:
     if value is None:
         return None
+    if value < 0:
+        raise ValueError(f"{name} must be non-negative, got {value}")
     if max_top_n is None:
         raise _not_supported(name, value, engine_name)
-    if value < 0 or value > max_top_n:
+    if value > max_top_n:
         raise ValueError(
             f"{name}={value} is more than the {max_top_n} candidates the OpenEngine engine "
             f"{engine_name!r} returns"
@@ -337,7 +347,12 @@ def _guided(
     params = sampling_params.guided_decoding
     if params is None:
         return None
-    chosen = [(name, getattr(params, name)) for name in _GUIDED_MODES if getattr(params, name)]
+    # An empty schema or pattern is still a choice; json_object=False is not.
+    chosen = [
+        (name, value)
+        for name in _GUIDED_MODES
+        if (value := getattr(params, name)) is not None and value is not False
+    ]
     if not chosen:
         return None
     if len(chosen) > 1:
@@ -448,10 +463,12 @@ def _extra(
     def put(key: str, capability: str, name: str, value: Any) -> None:
         if not capabilities.supports(capability):
             raise _not_supported(name, value, engine_name)
+        _check_struct_ints(name, value, engine_name)
         extra[key] = value
 
     budget = _thinking_budget(sampling_params, capabilities, options, engine_name)
     if budget is not None:
+        _check_struct_ints("thinking_token_budget", budget, engine_name)
         extra[REQ_THINKING_TOKEN_BUDGET] = budget
     if options.logit_bias:
         extra[REQ_LOGIT_BIAS] = _logit_bias(options.logit_bias, capabilities, engine_name)
@@ -459,7 +476,6 @@ def _extra(
         hints = options.kv_hints
         if hasattr(hints, "model_dump"):
             hints = hints.model_dump(mode="json")
-        _check_struct_ints("kv_hints", hints, engine_name)
         put(REQ_KV_HINTS, CAP_REQ_KV_HINTS, "kv_hints", hints)
     if options.conversation_params is not None:
         conversation_id = options.conversation_params.conversation_id
@@ -504,8 +520,11 @@ def map_request(
 
     ``n`` up to the engine's ``max_num_sequences`` (M) is one call; above that
     the request is split into ceil(n / M) calls of M sequences, the last one
-    taking the rest. Call k uses ``seed + k`` when the request has a seed, and
-    only the first call asks for prompt logprobs.
+    taking the rest, and only the first call asks for prompt logprobs. TRT-LLM
+    seeds sequence i of a request with its seed plus i (seed 0 when unset), so
+    each call after the first is sent the seed (0 when unset) plus the number of
+    sequences before it: the n sequences get the seeds one in-process request
+    with n sequences gives them.
 
     ``priority``, ``trace_headers`` and ``scheduling_params.attention_dp_rank``
     become metadata, which the caller adds (OE-META).
@@ -535,6 +554,8 @@ def map_request(
     extra = _extra(sampling_params, capabilities, options, engine_name)
 
     n = sampling_params.n
+    if n < 1:
+        raise ValueError(f"n must be at least 1, got {n}")
     limit = max(1, capabilities.max_num_sequences)
     sizes = [limit] * (n // limit) + ([n % limit] if n % limit else [])
     best_of = sampling_params.best_of
@@ -543,15 +564,22 @@ def map_request(
             raise _not_supported("best_of", best_of, engine_name, f"n={n} is split into calls")
         if not capabilities.supports(CAP_REQ_BEST_OF):
             raise _not_supported("best_of", best_of, engine_name)
+        if best_of > limit:
+            raise _not_supported(
+                "best_of", best_of, engine_name, f"one Generate call returns at most {limit}"
+            )
+        _check_struct_ints("best_of", best_of, engine_name)
         extra[REQ_BEST_OF] = best_of
     if len(sizes) > 1:
         logger.debug(f"n={n} is served by {len(sizes)} Generate calls of at most {limit}")
 
     requests = []
+    offset = 0
     for k, size in enumerate(sizes):
         call_sampling = dict(sampling)
-        if k and "seed" in call_sampling:
-            call_sampling["seed"] = (int(call_sampling["seed"]) + k) % _SEED_LIMIT
+        if offset:
+            call_sampling["seed"] = (int(sampling.get("seed", 0)) + offset) % _SEED_LIMIT
+        offset += size
         requests.append(
             EngineRequest(
                 request_id=new_request_id(),

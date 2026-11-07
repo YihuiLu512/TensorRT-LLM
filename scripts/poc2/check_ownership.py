@@ -253,12 +253,12 @@ OWNERSHIP: dict[str, list[Rule]] = {
         Rule(
             f"{POC}/{path}",
             "exception",
-            "only contract v4: a thinking budget and logit_bias as request data",
+            "only the request-data contract: a thinking budget and logit_bias as request data",
         )
         for path in ("contracts.py", "facade.py")
     ]
     + [
-        Rule(path, "exception", f"only contract v4: {what}")
+        Rule(path, "exception", f"only the request-data contract: {what}")
         for path, what in (
             (
                 "tensorrt_llm/serve/openai_server.py",
