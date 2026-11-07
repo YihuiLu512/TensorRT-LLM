@@ -24,6 +24,7 @@ import requests
 import yaml
 from defs.common import get_free_port_in_ci
 from defs.conftest import llm_models_root, skip_no_hopper, skip_pre_blackwell
+from defs.openengine_chain.h2 import serve_popen
 from defs.trt_test_alternative import popen, print_error, print_info
 from openai import OpenAI
 from requests.exceptions import RequestException
@@ -257,7 +258,7 @@ def test_config_override_precedence(llm_root, llm_venv, tmp_path) -> None:
         "--set",
         "pipeline_parallel_size=1",
     ]
-    with popen(cmd) as proc:
+    with serve_popen(cmd) as proc:
         _wait_for_server_ready(proc, http_port=port)
         with OpenAI(base_url=f"http://localhost:{port}/v1",
                     api_key="tensorrt_llm",

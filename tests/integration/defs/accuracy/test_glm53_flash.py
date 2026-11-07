@@ -195,7 +195,7 @@ class TestGLM53FlashFP8(LlmapiAccuracyTestHarness):
 
         from ..common import get_free_port_in_ci
         from ..examples.serve.test_serve import _wait_for_server_ready
-        from ..trt_test_alternative import popen
+        from ..openengine_chain.h2 import serve_popen
 
         pytest.importorskip("cv2", reason="video decoding requires OpenCV")
         pytest.importorskip("transformers.models.glm5_next.processing_glm5_next")
@@ -244,7 +244,7 @@ class TestGLM53FlashFP8(LlmapiAccuracyTestHarness):
         ]
         # The request sends the video as a local path.
         env = dict(os.environ, TRTLLM_MEDIA_ALLOWED_LOCAL_PATH=str(video.parent))
-        with popen(command, env=env) as process:
+        with serve_popen(command, env=env) as process:
             _wait_for_server_ready(process, http_port=port, timeout=1200)
             with OpenAI(base_url=f"http://127.0.0.1:{port}/v1", api_key="tensorrt_llm") as client:
                 response = client.chat.completions.create(

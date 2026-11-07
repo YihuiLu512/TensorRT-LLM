@@ -48,7 +48,8 @@ from requests.exceptions import RequestException
 from ..common import get_free_port_in_ci
 from ..conftest import llm_models_root
 from ..local_venv import PythonVenvRunnerImpl
-from ..trt_test_alternative import popen, print_error, print_info
+from ..openengine_chain.h2 import serve_popen
+from ..trt_test_alternative import print_error, print_info
 
 MODEL_PATH = f"{llm_models_root()}/Qwen3/Qwen3-0.6B"
 MODEL_NAME = "Qwen3-0.6B"
@@ -501,7 +502,7 @@ def _start_server_until_ready(
             continue
 
         with open(attempt_log, "w") as log_f:
-            with popen(cmd, stderr=log_f, stdout=log_f, env=env) as proc:
+            with serve_popen(cmd, stderr=log_f, stdout=log_f, env=env) as proc:
                 try:
                     _wait_for_server_ready(proc, port, server_log=attempt_log)
                 except (RuntimeError, TimeoutError) as exc:

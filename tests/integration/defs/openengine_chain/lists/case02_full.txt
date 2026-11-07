@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# case-02 (trtllm-serve front end -> TRT-LLM OpenEngine engine) on 1xB200: a selection of serve
+# tests, served by RemoteOpenAIServer or started through openengine_chain.h2; other serve tests
+# can be added. Tests of features the chain does not support yet are listed too
+# and fail until it does; no expectation table excuses them, so a run of this list shows what
+# is missing.
+# Test-db syntax; run with runner.py. New tests that work items add go in their own lists.
+test_e2e.py::test_openai_completions_example[pytorch]
+test_e2e.py::test_openai_chat_example[pytorch] TIMEOUT (90)
+test_e2e.py::test_openai_completions_with_logit_bias
+test_e2e.py::test_openai_chat_with_logit_bias
+test_e2e.py::test_trtllm_serve_top_logprobs[pytorch]
+test_e2e.py::test_openai_misc_example[pytorch]
+test_e2e.py::test_openai_reasoning[pytorch]
+test_e2e.py::test_openai_tool_call
+test_e2e.py::test_openai_post_processor
+test_e2e.py::test_openai_responses_entrypoint
+test_e2e.py::test_openai_perf_metrics
+test_e2e.py::test_openai_prometheus
+test_e2e.py::test_trtllm_serve_multimodal_example
+test_e2e.py::test_openai_chat_multimodal_example ISOLATION
+examples/serve/test_serve.py::test_config_override_precedence
+unittest/others/test_tracing.py
+test_e2e.py::test_openai_lora
+test_e2e.py::test_trtllm_serve_lora_example
+test_e2e.py::test_openai_chat_guided_decoding[openai/gpt-oss-120b]
+test_e2e.py::test_openai_multi_frontend
+kv_cache/test_prefix_aware_scheduling.py::TestServePrefixAwareScheduling::test_multi_round_qa_shared_prefix_smoke
+kv_cache/test_prefix_aware_scheduling.py::TestServePrefixAwareScheduling::test_multi_round_qa_shared_prefix[guaranteed-chunked]
+kv_cache/test_prefix_aware_scheduling.py::TestServePrefixAwareScheduling::test_multi_round_qa_shared_prefix[guaranteed-no-chunked]
+kv_cache/test_prefix_aware_scheduling.py::TestServePrefixAwareScheduling::test_multi_round_qa_shared_prefix[max-util-chunked]
+kv_cache/test_prefix_aware_scheduling.py::TestServePrefixAwareScheduling::test_multi_round_qa_shared_prefix[python-scheduler]
+kv_cache/test_prefix_aware_scheduling.py::TestServePrefixAwareScheduling::test_multi_round_qa_shared_prefix[swa-chunked]
+kv_cache/test_prefix_aware_scheduling.py::TestServePrefixAwareScheduling::test_multi_round_qa_shared_prefix[no-overlap-chunked]
+kv_cache/test_prefix_aware_scheduling.py::TestServePrefixAwareScheduling::test_multi_round_qa_shared_prefix[offload-chunked]
+kv_cache/test_prefix_aware_scheduling.py::TestServePrefixAwareScheduling::test_multi_round_qa_shared_prefix[offload-no-chunked]
+# Only the Qwen3 half: the gpt-oss half is harmony, out of scope.
+unittest/llmapi/apps/_test_openai_responses.py -k "Qwen3"
+test_e2e.py::test_anthropic_messages
+unittest/llmapi/apps/_test_openai_chat_multimodal.py::test_single_chat_session_image_embeds -m needs_l40s
+# Not in any CI list.
+unittest/llmapi/apps/_test_openai_cache_salt.py

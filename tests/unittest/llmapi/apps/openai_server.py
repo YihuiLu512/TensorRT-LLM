@@ -31,6 +31,9 @@ def _picks_num_frontends(cli_args: List[str],
 class RemoteOpenAIServer:
     DUMMY_API_KEY = "tensorrt_llm"
     MAX_SERVER_START_WAIT_S = 7200  # wait for server to start for 7200 seconds (~ 2 hours) for LLM models weight loading
+    # Engine and front end when TRTLLM_TEST_OPENENGINE_CHAIN selects the OpenEngine
+    # chain harness (tests/integration/defs/openengine_chain); None otherwise.
+    _chain_handle = None
 
     def __init__(self,
                  model: str,
@@ -74,6 +77,27 @@ class RemoteOpenAIServer:
             launch_cmd = ["trtllm-llmapi-launch"] + launch_cmd
         if not env:
             env = os.environ.copy()
+        if os.environ.get("TRTLLM_TEST_OPENENGINE_CHAIN"):
+            try:
+                # Importable only when the harness runner sets PYTHONPATH.
+                from openengine_chain.remote import launch_for_remote_server
+                self._chain_handle = launch_for_remote_server(
+                    launch_cmd,
+                    env=env,
+                    llmapi_launch=llmapi_launch,
+                    role=self.role,
+                    sink=self._get_output())
+                self.proc = self._chain_handle.frontend
+                if wait:
+                    self.wait_for_server(timeout=self.MAX_SERVER_START_WAIT_S)
+            except BaseException:
+                # __exit__ does not run for a constructor that raised.
+                if self._chain_handle is not None:
+                    self._chain_handle.terminate()
+                self.proc = None
+                self._release_files()
+                raise
+            return
         self.proc = subprocess.Popen(launch_cmd,
                                      env=env,
                                      stdout=self._get_output(),
@@ -99,18 +123,27 @@ class RemoteOpenAIServer:
     def terminate(self):
         if self.proc is None:
             return
-        self.proc.terminate()
-        try:
-            self.proc.wait(timeout=30)
-        except subprocess.TimeoutExpired as e:
-            self.proc.kill()
-            self.proc.wait(timeout=30)
+        if self._chain_handle is not None:
+            self._chain_handle.terminate()
+        else:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=30)
+            except subprocess.TimeoutExpired as e:
+                self.proc.kill()
+                self.proc.wait(timeout=30)
+        self.proc = None
+        self._release_files()
+
+    def _release_files(self):
         try:
             if self.extra_config_file:
                 os.remove(self.extra_config_file)
         except Exception as e:
             print(f"Error removing extra config file: {e}")
-        self.proc = None
+        # Can run twice for one start: a chain start whose /health keeps failing until
+        # the timeout calls terminate(), then __init__ cleans up after the error.
+        self.extra_config_file = None
         if self.log_file:
             self.log_file.close()
             self.log_file = None
@@ -122,6 +155,8 @@ class RemoteOpenAIServer:
         # run health check on the first rank only.
         start = time.time()
         while True:
+            if self._chain_handle is not None:
+                self._check_chain_start(start, timeout)
             try:
                 if self.rank == 0:
                     if requests.get(url).status_code == 200:
@@ -142,6 +177,15 @@ class RemoteOpenAIServer:
                     self.terminate()
                     raise RuntimeError(
                         "Server failed to start in time.") from err
+
+    def _check_chain_start(self, start: float, timeout: float):
+        # The chain's front end answers /health with 503 while the engine is not
+        # serving, so its status alone never ends the wait. The caller stops the
+        # chain: __init__ on its own failure, the test's teardown otherwise.
+        if self._chain_handle.poll() is not None:
+            raise RuntimeError("Server exited unexpectedly.")
+        if time.time() - start > timeout:
+            raise RuntimeError("Server failed to start in time.")
 
     @property
     def url_root(self) -> str:
