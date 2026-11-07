@@ -89,6 +89,8 @@ _SAMPLING_DEFAULTS = {
 }
 # OpenEngine's seed is a uint64.
 _SEED_LIMIT = 1 << 64
+# A protobuf Struct holds numbers as doubles, exact for integers up to 2**53.
+_STRUCT_EXACT_INT = 1 << 53
 # OpenAIServer sends 0 for "not set".
 _ZERO_IS_UNSET = frozenset({"prompt_ignore_length"})
 # GuidedDecodingParams field -> OpenEngine guided mode.
@@ -117,6 +119,23 @@ def _not_supported(name: str, value: Any, engine_name: str, why: str = "") -> Va
         f"{name}={_short(value)} is not supported when serving through the OpenEngine engine "
         f"{engine_name!r}{reason}"
     )
+
+
+def _check_struct_ints(name: str, value: Any, engine_name: str) -> None:
+    """Reject integers a ``Struct`` would round, rather than send a different value."""
+    if isinstance(value, Mapping):
+        for item in value.values():
+            _check_struct_ints(name, item, engine_name)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _check_struct_ints(name, item, engine_name)
+    elif isinstance(value, int) and not isinstance(value, bool) and abs(value) > _STRUCT_EXACT_INT:
+        raise _not_supported(
+            name,
+            value,
+            engine_name,
+            f"integers beyond 2**53 cannot be sent exactly; {value} is one",
+        )
 
 
 def _unset(name: str, value: Any) -> bool:
@@ -440,6 +459,7 @@ def _extra(
         hints = options.kv_hints
         if hasattr(hints, "model_dump"):
             hints = hints.model_dump(mode="json")
+        _check_struct_ints("kv_hints", hints, engine_name)
         put(REQ_KV_HINTS, CAP_REQ_KV_HINTS, "kv_hints", hints)
     if options.conversation_params is not None:
         conversation_id = options.conversation_params.conversation_id

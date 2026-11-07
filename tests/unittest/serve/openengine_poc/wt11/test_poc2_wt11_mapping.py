@@ -423,6 +423,30 @@ def test_kv_hints_conversation_and_scheduling():
             _one(caps=_caps("glm"), options=options)
 
 
+@pytest.mark.parametrize("value", [2**53 + 1, -(2**53) - 1, 2**64 - 1])
+def test_kv_hints_integers_a_struct_would_round_are_rejected(value):
+    exact = KvHintsEnvelope(
+        protocol_version="1", message_id="m", actions=[], block_hashes=[2**53, -(2**53)]
+    )
+    assert _one(options=contracts.GenerateOptions(kv_hints=exact)).extra[conv.REQ_KV_HINTS][
+        "block_hashes"
+    ] == [2**53, -(2**53)]
+    hints = KvHintsEnvelope(
+        protocol_version="1",
+        message_id="m",
+        actions=[
+            {
+                "action_id": "a",
+                "action_type": "kv.fetch",
+                "action_version": "1",
+                "payload": {"block_hashes": [1, value]},
+            }
+        ],
+    )
+    with pytest.raises(ValueError, match=r"kv_hints.*2\*\*53"):
+        _one(options=contracts.GenerateOptions(kv_hints=hints))
+
+
 def test_default_scheduling_params_send_nothing():
     default = SimpleNamespace(
         attention_dp_rank=3,
