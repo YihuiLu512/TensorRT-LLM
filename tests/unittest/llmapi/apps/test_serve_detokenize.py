@@ -175,7 +175,7 @@ def test_stop_string_completed_by_second_byte_of_character(
             ["abc", "b"],
             [[A, B, C]],
             ["a", ""],
-            StopMatch("b", 1),
+            StopMatch("b", 1, num_stop_tokens=1),
             id="match_that_ends_first_wins",
         ),
         pytest.param(
@@ -245,33 +245,38 @@ def test_calls_after_stop_release_nothing(tokenizer: TransformersTokenizer) -> N
 
 @pytest.mark.parametrize("spaces_between_special_tokens", [True, False])
 @pytest.mark.parametrize(
-    "token_ids, fallback_token_index",
+    "stop, token_ids, expected_text, expected_index",
     [
-        pytest.param([A, NEWLINE, B], 2, id="one_newline"),
-        pytest.param([A, NEWLINE, NEWLINE, B], 3, id="two_newlines"),
+        pytest.param("a\n", [C, A, NEWLINE, B], "c", 2, id="one_newline"),
+        pytest.param("a\n\n", [C, A, NEWLINE, NEWLINE, B], "c", 3, id="two_newlines"),
+        pytest.param("a\n\n", [C, A, NEWLINE, B, NEWLINE], "ca\nb\n", None, id="no_match"),
     ],
 )
 def test_stop_string_ending_in_whitespace(
     tokenizer: TransformersTokenizer,
-    backend: str,
     spaces_between_special_tokens: bool,
+    stop: str,
     token_ids: list[int],
-    fallback_token_index: int,
+    expected_text: str,
+    expected_index: int | None,
 ) -> None:
-    """``DecodeStream`` releases a newline with its own token; the fallback waits for ``b``.
+    """Found with the token that adds the whitespace, on both decoders.
 
-    The setting that makes ``decode_incrementally`` pick its fallback for a
-    tokenizer does not change which decoder this component uses.
+    The fallback decoder holds back text that only adds whitespace; text that
+    completes a stop string is released anyway. The stop strings are not in
+    the vocabulary, so they are found in the text. The setting that makes
+    ``decode_incrementally`` pick its fallback for a tokenizer does not change
+    which decoder this component uses.
     """
     detokenizer = IncrementalDetokenizer(
-        tokenizer, stop=["\n"], spaces_between_special_tokens=spaces_between_special_tokens
+        tokenizer, stop=[stop], spaces_between_special_tokens=spaces_between_special_tokens
     )
 
     text = "".join(_run(detokenizer, [[token_id] for token_id in token_ids]))
 
-    assert text == "a"
-    expected_index = 1 if backend == "decode_stream" else fallback_token_index
-    assert detokenizer.stop_match == StopMatch("\n", expected_index)
+    assert text == expected_text
+    expected = None if expected_index is None else StopMatch(stop, expected_index)
+    assert detokenizer.stop_match == expected
 
 
 def test_kept_stop_string_is_not_held_back(tokenizer: TransformersTokenizer) -> None:
@@ -323,11 +328,9 @@ def test_finish_without_tokens(tokenizer: TransformersTokenizer) -> None:
     assert detokenizer.finished
 
 
-def test_empty_stop_strings_ignored(tokenizer: TransformersTokenizer) -> None:
-    detokenizer = IncrementalDetokenizer(tokenizer, stop=["", "b"])
-
-    assert _run(detokenizer, [[A, B, C]]) == ["a", ""]
-    assert detokenizer.stop_match == StopMatch("b", 1)
+def test_empty_stop_string_rejected(tokenizer: TransformersTokenizer) -> None:
+    with pytest.raises(ValueError, match="must not be empty"):
+        IncrementalDetokenizer(tokenizer, stop=["", "b"])
 
 
 def test_single_stop_string_is_not_split_into_characters(
@@ -347,3 +350,156 @@ def test_non_str_stop_string_rejected(tokenizer: TransformersTokenizer) -> None:
 def test_tokenizer_of_another_type_rejected() -> None:
     with pytest.raises(TypeError, match="TransformersTokenizer"):
         IncrementalDetokenizer(object())
+
+
+# -- Matching on the stop string's token ids, as LLM's engine does --------------
+
+
+@pytest.mark.parametrize("skip_special_tokens", [True, False])
+def test_stop_string_of_special_tokens_matched_on_token_ids(
+    tokenizer: TransformersTokenizer, skip_special_tokens: bool
+) -> None:
+    """``</s>`` is found even when special tokens are left out of the text."""
+    detokenizer = IncrementalDetokenizer(
+        tokenizer, stop=["</s>"], skip_special_tokens=skip_special_tokens
+    )
+
+    deltas = _run(detokenizer, [[HE, LLO], [EOS, WORLD]])
+
+    assert "".join(deltas) == "Hello"
+    assert detokenizer.stop_match == StopMatch("</s>", 2, num_stop_tokens=1)
+
+
+@pytest.mark.parametrize("skip_special_tokens", [True, False])
+def test_kept_special_token_stop_string(
+    tokenizer: TransformersTokenizer, skip_special_tokens: bool
+) -> None:
+    """Kept in the output, the stop tokens stay and their text is what decode gives."""
+    detokenizer = IncrementalDetokenizer(
+        tokenizer,
+        stop=["</s>"],
+        include_stop_str_in_output=True,
+        skip_special_tokens=skip_special_tokens,
+    )
+
+    text = "".join(_run(detokenizer, [[HE, LLO, EOS, WORLD]]))
+
+    assert text == tokenizer.decode([HE, LLO, EOS], skip_special_tokens=skip_special_tokens)
+    assert detokenizer.stop_match == StopMatch("</s>", 2, num_stop_tokens=1)
+
+
+def test_token_ids_match_before_text_match_on_the_same_token(
+    tokenizer: TransformersTokenizer,
+) -> None:
+    """``b`` is a token and ends ``ab`` in the text; the token-id match wins, as in LLM.
+
+    LLM's engine drops the ``b`` token, and the text of the rest no longer holds ``ab``.
+    """
+    detokenizer = IncrementalDetokenizer(tokenizer, stop=["ab", "b"])
+
+    assert "".join(_run(detokenizer, [[C, A, B]])) == "ca"
+    assert detokenizer.stop_match == StopMatch("b", 2, num_stop_tokens=1)
+
+
+def test_token_ids_match_without_detokenizing(tokenizer: TransformersTokenizer) -> None:
+    """Without text, stop strings are still matched on their token ids, as in LLM."""
+    detokenizer = IncrementalDetokenizer(tokenizer, stop=["b", "</ans>"], detokenize=False)
+
+    assert detokenizer.step([A, C]) == DetokenizeDelta("")
+    assert detokenizer.step([B, C]) == DetokenizeDelta("", StopMatch("b", 2, num_stop_tokens=1))
+    assert detokenizer.text == ""
+
+
+# -- min_tokens --------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "stop, chunks, min_tokens, expected_text, expected_match",
+    [
+        pytest.param(["b"], [[A, B, C, B]], 3, "abc", StopMatch("b", 3, 1), id="token_ids"),
+        pytest.param(["b"], [[A, B, C, B]], 2, "a", StopMatch("b", 1, 1), id="token_ids_at_min"),
+        pytest.param(["ab"], [[A, B, C, A, B]], 3, "abc", StopMatch("ab", 4), id="text"),
+        pytest.param(["ab"], [[A, B], [C]], 3, "abc", None, id="text_never_counts"),
+        pytest.param(["aab"], [[A, A], [A, B]], 3, "a", StopMatch("aab", 3), id="overlapping"),
+    ],
+)
+def test_matches_before_min_tokens_do_not_count(
+    tokenizer: TransformersTokenizer,
+    stop: list[str],
+    chunks: list[list[int]],
+    min_tokens: int,
+    expected_text: str,
+    expected_match: StopMatch | None,
+) -> None:
+    detokenizer = IncrementalDetokenizer(tokenizer, stop=stop, min_tokens=min_tokens)
+
+    assert "".join(_run(detokenizer, chunks)) == expected_text
+    assert detokenizer.stop_match == expected_match
+
+
+# -- engine_stop: the engine matches the stop strings ------------------------------
+
+
+def test_engine_stop_never_ends_the_output(tokenizer: TransformersTokenizer) -> None:
+    """The engine decides; the text is held back from the match on, then cut at finish."""
+    detokenizer = IncrementalDetokenizer(tokenizer, stop=["</ans>"], engine_stop=True)
+
+    assert detokenizer.step([HE, LLO, CLOSE]) == DetokenizeDelta("Hello")
+    assert detokenizer.step([ANS, GT, WORLD]) == DetokenizeDelta("")
+    assert not detokenizer.finished
+    assert detokenizer.finish(stop_text="</ans>") == DetokenizeDelta("")
+    assert detokenizer.text == "Hello"
+    assert detokenizer.stop_match is None
+
+
+@pytest.mark.parametrize(
+    "include_stop_str_in_output, stop_text, expected_text",
+    [
+        pytest.param(False, "b", "a", id="cut_at_first_occurrence"),
+        pytest.param(True, "b", "ab", id="kept"),
+        pytest.param(False, "</ans>", "abcab", id="not_in_text"),
+        pytest.param(False, None, "abcab", id="no_stop_reported"),
+    ],
+)
+def test_engine_stop_cuts_as_llm_does(
+    tokenizer: TransformersTokenizer,
+    include_stop_str_in_output: bool,
+    stop_text: str | None,
+    expected_text: str,
+) -> None:
+    """``LLM`` cuts the text at the first occurrence of the stop string it matched."""
+    detokenizer = IncrementalDetokenizer(
+        tokenizer,
+        stop=["b"],
+        include_stop_str_in_output=include_stop_str_in_output,
+        engine_stop=True,
+    )
+
+    text = "".join(_run_finish(detokenizer, [[A, B, C], [A, B]], stop_text))
+
+    assert text == expected_text
+    assert detokenizer.text == expected_text
+
+
+def test_engine_stop_holds_back_a_possible_stop_string(tokenizer: TransformersTokenizer) -> None:
+    detokenizer = IncrementalDetokenizer(tokenizer, stop=["ab"], engine_stop=True)
+
+    assert detokenizer.step([C, A]) == DetokenizeDelta("c")
+    assert detokenizer.step([C]) == DetokenizeDelta("ac")
+    assert detokenizer.finish() == DetokenizeDelta("")
+
+
+def test_engine_stop_does_not_match_token_ids(tokenizer: TransformersTokenizer) -> None:
+    """The engine removes the stop tokens itself; this class does not look for them."""
+    detokenizer = IncrementalDetokenizer(tokenizer, stop=["</s>"], engine_stop=True)
+
+    assert "".join(_run(detokenizer, [[HE, EOS, LLO]])) == "Hello"
+    assert detokenizer.stop_match is None
+
+
+def _run_finish(
+    detokenizer: IncrementalDetokenizer, chunks: list[list[int]], stop_text: str | None
+) -> list[str]:
+    deltas = [detokenizer.step(chunk).text for chunk in chunks]
+    deltas.append(detokenizer.finish(stop_text=stop_text).text)
+    return deltas
