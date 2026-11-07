@@ -49,7 +49,7 @@ def _fresh_slots():
 
 
 def test_contract_version():
-    assert contracts.POC2_CONTRACT_VERSION == 2
+    assert contracts.POC2_CONTRACT_VERSION == 3
 
 
 def test_slot_table():
@@ -76,7 +76,12 @@ def test_slot_table():
     }
 
 
-def test_every_slot_uses_its_default_until_its_module_defines_it():
+def test_every_slot_uses_its_default_until_its_module_defines_it(monkeypatch):
+    def absent(name):
+        raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+
+    # As if no work item had added its module yet.
+    monkeypatch.setattr(contracts.importlib, "import_module", absent)
     for name, slot in contracts.slots().items():
         impl, source = contracts.resolve_slot(name)
         assert (impl, source) == (slot.default, "default"), name
@@ -543,6 +548,48 @@ def test_default_assembler_cancel_matches_poc_s1():
     got = _default_steps(events, params, cancel_after=1)
     assert got == expected
     assert got[0][-1][0][4] == "cancelled"
+
+
+@pytest.mark.parametrize("engine_stop_texts", [False, True])
+def test_create_response_assembler_passes_engine_stop_texts(monkeypatch, engine_stop_texts):
+    module = types.ModuleType(f"{PACKAGE}.response")
+    calls = []
+    module.create_response_assembler = lambda **kwargs: calls.append(kwargs) or "assembler"
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    params = SamplingParams()
+    if engine_stop_texts:
+        result = contracts.create_response_assembler(
+            sampling_params=params, tokenizer="t", num_outputs=2, engine_stop_texts=True
+        )
+    else:
+        result = contracts.create_response_assembler(
+            sampling_params=params, tokenizer="t", num_outputs=2
+        )
+    assert result == "assembler"
+    assert calls == [
+        dict(
+            sampling_params=params,
+            tokenizer="t",
+            num_outputs=2,
+            engine_stop_texts=engine_stop_texts,
+        )
+    ]
+
+
+def test_default_assembler_matches_stop_strings_itself():
+    # Whatever engine_stop_texts says, the default ends the output at the stop string.
+    events = [TokenDelta(0, (2,)), TokenDelta(0, (3, 4)), OutputFinished(0, "length")]
+    params = SamplingParams(stop=["llo"])
+    assembler = contracts.default_create_response_assembler(
+        sampling_params=params, tokenizer=tiny_tokenizer(), num_outputs=1, engine_stop_texts=True
+    )
+    for event in events:
+        assembler.apply(event)
+        if assembler.finished:
+            break
+    output = assembler.outputs[0]
+    assert (output.text, output.finish_reason, output.stop_reason) == ("He", "stop", "llo")
+    assert contracts.DetokOptions().engine_stop is False
 
 
 # --- create_postproc_dispatch ---------------------------------------------------

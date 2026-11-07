@@ -80,7 +80,7 @@ if TYPE_CHECKING:
 
 # Bump on any change to a signature, type or message in this module or in
 # engine_client.py, in a commit of its own.
-POC2_CONTRACT_VERSION = 2
+POC2_CONTRACT_VERSION = 3
 
 _PACKAGE = "tensorrt_llm.serve.openengine_poc"
 
@@ -432,13 +432,29 @@ class ResponseAssembler(Protocol):
 
 
 def create_response_assembler(
-    *, sampling_params: SamplingParams, tokenizer: Any, num_outputs: int
+    *,
+    sampling_params: SamplingParams,
+    tokenizer: Any,
+    num_outputs: int,
+    engine_stop_texts: bool = False,
 ) -> ResponseAssembler:
-    """Create the assembler for one Generate call returning ``num_outputs`` outputs."""
+    """Create the assembler for one Generate call returning ``num_outputs`` outputs.
+
+    Args:
+        engine_stop_texts: The call's ``EngineRequest.stop_texts`` holds the
+            request's stop strings, so the engine matches them and the
+            assembler waits for the engine to end each output; otherwise the
+            serving side matches them.
+    """
     impl, _ = resolve_slot("create_response_assembler")
     return cast(
         ResponseAssembler,
-        impl(sampling_params=sampling_params, tokenizer=tokenizer, num_outputs=num_outputs),
+        impl(
+            sampling_params=sampling_params,
+            tokenizer=tokenizer,
+            num_outputs=num_outputs,
+            engine_stop_texts=engine_stop_texts,
+        ),
     )
 
 
@@ -532,9 +548,16 @@ class _DefaultResponseAssembler:
 
 @_slot("create_response_assembler", "response", owner="WT-12")
 def default_create_response_assembler(
-    *, sampling_params: SamplingParams, tokenizer: Any, num_outputs: int
+    *,
+    sampling_params: SamplingParams,
+    tokenizer: Any,
+    num_outputs: int,
+    engine_stop_texts: bool = False,
 ) -> ResponseAssembler:
-    """One serving-side detokenizer per output, or none when ``detokenize`` is off."""
+    """One serving-side detokenizer per output, or none when ``detokenize`` is off.
+
+    It matches the stop strings on the serving side whatever ``engine_stop_texts`` says.
+    """
     from tensorrt_llm.serve.detokenize import IncrementalDetokenizer
 
     detokenizers = [
@@ -654,6 +677,9 @@ class DetokOptions:
     stop: tuple[str, ...] | None = None
     include_stop_str_in_output: bool = False
     min_tokens: int = 0
+    # The engine matches the stop strings (the ``engine_stop_texts`` given to
+    # :meth:`PostprocPool.open`).
+    engine_stop: bool = False
 
 
 @dataclass(frozen=True)
@@ -664,7 +690,8 @@ class PPOpen:
         post_processor: Dotted import path of the postprocessor, see :func:`post_processor_path`.
         postproc_args: ``PostprocArgs`` holding plain data only, see :func:`check_plain_data`.
         n: The number of outputs, the ``num_outputs`` given to :meth:`PostprocPool.open`.
-        detok: Derived from ``sampling_params`` by the pool, so the two agree.
+        detok: Derived by the pool from ``sampling_params``, so the two agree,
+            and from the ``engine_stop_texts`` given to :meth:`PostprocPool.open`.
         num_prompt_tokens: The prompt's length in tokens.
         sampling_params: A copy of the request's ``SamplingParams`` with
             ``logits_processor`` and ``embedding_bias`` unset, holding plain data only.
@@ -966,6 +993,7 @@ class PostprocPool(Protocol):
         streaming: bool,
         num_outputs: int,
         num_prompt_tokens: int,
+        engine_stop_texts: bool = False,
     ) -> PostprocSession:
         """Start postprocessing a request in the process ``request_id`` routes to.
 
@@ -979,6 +1007,8 @@ class PostprocPool(Protocol):
                 The pool sends the copy described in :class:`PPOpen`.
             num_prompt_tokens: The prompt's length in tokens, for the usage the
                 postprocessor reports.
+            engine_stop_texts: As for :func:`create_response_assembler`; the
+                pool sends it as ``DetokOptions.engine_stop``.
 
         Raises:
             PostprocDataError: ``postproc_params``, or a field of

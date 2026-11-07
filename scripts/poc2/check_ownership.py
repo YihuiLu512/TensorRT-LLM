@@ -235,7 +235,26 @@ OWNERSHIP: dict[str, list[Rule]] = {
         f"{POC}/response.py",
         "tensorrt_llm/serve/detokenize.py",
         "tests/unittest/llmapi/apps/test_serve_detokenize.py",
-    ),
+    )
+    + [
+        Rule(
+            f"{POC}/contracts.py",
+            "exception",
+            "only contract v3: engine_stop_texts of create_response_assembler and"
+            " PostprocPool.open, and DetokOptions.engine_stop",
+        ),
+        Rule(
+            "tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_contracts.py",
+            "exception",
+            "only the contract v3 version, the engine_stop_texts tests and keeping the"
+            " slot-default test independent of the slot modules that exist",
+        ),
+        Rule(
+            "scripts/poc2/check_ownership.py",
+            "exception",
+            "only the contract v3 exceptions of WT-12",
+        ),
+    ],
     "WT-13": _own(
         f"{POC}/postproc_pool.py",
         "tensorrt_llm/serve/openai_server.py",
