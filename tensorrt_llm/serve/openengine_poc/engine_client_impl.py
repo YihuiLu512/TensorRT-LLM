@@ -185,6 +185,11 @@ class EngineEventStream:
         return self._stream.request_id
 
     @property
+    def sent(self) -> bool:
+        """Whether the call was sent to the engine."""
+        return self._stream.sent
+
+    @property
     def cancelled(self) -> bool:
         """Whether the call was cancelled by this side before it finished."""
         return self._stream.cancelled
@@ -317,6 +322,10 @@ class OpenEngineEngineClient:
         """
         await self._client.refresh()
         self._cache(self._client.server_info, self._client.model_info)
+
+    async def current_instance_id(self) -> str:
+        """The engine's instance id now, read without updating the cached identity."""
+        return (await self._client.get_server_info()).instance_id
 
     def generate(self, request: EngineRequest) -> EngineEventStream:
         """Start one Generate call; the request is sent at the first iteration.

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import gc
 import os
+import socket
 from collections.abc import Sequence
 from typing import Any
 
@@ -13,7 +14,24 @@ import uvloop
 
 from tensorrt_llm.logger import logger
 
-from .adapter import OpenEngineLLMAdapter
+from .facade import DEFAULT_CONTROL_TIMEOUT_S, DEFAULT_READY_TIMEOUT_S, OpenEngineLLM, adapt_server
+
+
+def _bind(host: str, port: int) -> socket.socket:
+    """Bind the listening socket now, so ``port=0`` resolves to the port the kernel picked."""
+    addr_info = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    family = (
+        socket.AF_INET6 if all(info[0] == socket.AF_INET6 for info in addr_info) else socket.AF_INET
+    )
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    try:
+        # As launch_server does: a restart is not refused during TIME_WAIT.
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((host, port))
+    except BaseException:
+        sock.close()
+        raise
+    return sock
 
 
 def launch_openengine_server(
@@ -30,21 +48,38 @@ def launch_openengine_server(
     multimodal_server_config: Any = None,
     num_input_processor_workers: int = 8,
     num_media_load_workers: int = 8,
-    ready_timeout: float = 600.0,
+    ready_timeout: float = DEFAULT_READY_TIMEOUT_S,
+    control_timeout: float = DEFAULT_CONTROL_TIMEOUT_S,
+    allow_newer_schema: bool = False,
+    report_addr: str | None = None,
 ) -> None:
-    """Serve ``/v1/chat/completions`` and ``/v1/completions`` from the engine at ``endpoint``.
+    """Serve the OpenAI API from the engine at ``endpoint`` in this process.
 
     No model weights are loaded and no executor is started. The tokenizer is
-    the one in ``llm_args``, else the model directory's.
-    ``/health`` follows the engine. Other ``OpenAIServer`` endpoints are
-    registered but not adapted to this path.
+    the one in ``llm_args``, else the model directory's. ``/health`` follows the
+    engine; endpoints that need an in-process engine answer 501. With
+    ``port=0`` or ``report_addr``, the socket is bound before the engine is
+    awaited and the bound address is written to ``report_addr``, as the
+    in-process server does.
+
+    Raises:
+        ValueError: The configuration asks for something this frontend cannot do.
+        OpenEngineStartupError: The engine is not usable; the message names the step.
     """
-    from tensorrt_llm.commands.serve import _apply_fastapi_middlewares
+    from tensorrt_llm.commands.serve import _apply_fastapi_middlewares, _publish_bound_address
     from tensorrt_llm.serve.openai_server import OpenAIServer
 
-    adapter = OpenEngineLLMAdapter.from_llm_args(llm_args, endpoint)
+    if port == 0 and not report_addr:
+        raise ValueError("port 0 needs --report_addr to tell clients the port")
+    facade = OpenEngineLLM.from_llm_args(
+        llm_args,
+        endpoint,
+        ready_timeout=ready_timeout,
+        control_timeout=control_timeout,
+        allow_newer_schema=allow_newer_schema,
+    )
     server = OpenAIServer(
-        generator=adapter,
+        generator=facade,
         model=served_model_name or llm_args["model"],
         tool_parser=tool_parser,
         server_role=None,
@@ -55,17 +90,29 @@ def launch_openengine_server(
         input_processor_workers=num_input_processor_workers,
         media_load_workers=num_media_load_workers,
     )
+    adapt_server(server, facade)
     _apply_fastapi_middlewares(server.app, middleware)
+
+    sockets = None
+    if report_addr:
+        sock = _bind(host, port)
+        port = sock.getsockname()[1]
+        sockets = [sock]
+        _publish_bound_address(report_addr, host, port)
 
     async def run() -> None:
         # As launch_server does.
         if os.getenv("TRTLLM_SERVER_DISABLE_GC", "0") == "1":
             gc.disable()
         try:
-            await adapter.start(ready_timeout=ready_timeout)
+            await facade.start()
             logger.info(f"Serving the OpenEngine engine at {endpoint} on {host}:{port}")
-            await server(host, port)
+            await server(host, port, sockets=sockets)
         finally:
-            await adapter.aclose()
+            await facade.aclose()
 
-    uvloop.run(run())
+    try:
+        uvloop.run(run())
+    finally:
+        for sock in sockets or ():
+            sock.close()

@@ -210,6 +210,19 @@ class OpenEngineClient:
         self._server_info = server_info
         self._model_info = model_info
 
+    async def get_server_info(self, *, timeout: float | None = None) -> server_pb2.ServerInfo:
+        """Read ``ServerInfo`` without caching it or checking its schema revision.
+
+        Args:
+            timeout: Deadline in seconds; ``None`` means ``control_timeout``.
+        """
+        return await self._call_control(
+            self._control.GetServerInfo,
+            server_pb2.GetServerInfoRequest(),
+            rpc="GetServerInfo",
+            timeout=timeout,
+        )
+
     async def health(
         self, *, include_inference_probe: bool = False, timeout: float | None = None
     ) -> lifecycle_pb2.HealthResponse:

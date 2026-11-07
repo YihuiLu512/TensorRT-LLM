@@ -1355,6 +1355,13 @@ def launch_visual_gen_server(
     "are ignored or rejected.",
     status="prototype")
 @stability_option(
+    "--openengine-ready-timeout",
+    type=float,
+    default=None,
+    help="With --openengine-endpoint: seconds to wait at startup for the "
+    "engine to become ready (default: 1800).",
+    status="prototype")
+@stability_option(
     "--grpc",
     is_flag=True,
     default=False,
@@ -1495,12 +1502,20 @@ def serve(
     enable_locality_domains: bool,
     enable_sleep_mode: bool,
     openengine_endpoint: Optional[str],
+    openengine_ready_timeout: Optional[float],
 ) -> None:
     """Running an OpenAI API compatible server
 
     MODEL: model name or Hugging Face checkpoint path
     """
     logger.set_level(log_level)
+    if openengine_ready_timeout is not None:
+        if openengine_endpoint is None:
+            raise click.UsageError(
+                "--openengine-ready-timeout requires --openengine-endpoint")
+        if not openengine_ready_timeout > 0:
+            raise click.UsageError(
+                "--openengine-ready-timeout must be greater than 0")
     if openengine_endpoint is not None:
         conflicting = {
             "--grpc": grpc,
@@ -1744,13 +1759,10 @@ def serve(
         # but disagg_cluster_uri takes precedence over cluster uri in config file
         disagg_cluster_config = llm_args.pop("disagg_cluster", None)
         if openengine_endpoint is not None:
+            # The frontend refuses the options it cannot honour when it starts.
             unsupported = {
                 "internal_request_auth_key": internal_disagg_auth_key,
                 "disagg_cluster": disagg_cluster_config,
-                # An output guardrail must not be skipped silently.
-                "post_processor_hook": llm_args.get("post_processor_hook"),
-                # Tracing is set up by LLM, which this path does not build.
-                "otlp_traces_endpoint": llm_args.get("otlp_traces_endpoint"),
             }
             used = [name for name, value in unsupported.items() if value]
             if used:
@@ -1893,7 +1905,8 @@ def serve(
                     allow_request_chat_template=allow_request_chat_template,
                     multimodal_server_config=multimodal_server_config,
                     num_input_processor_workers=num_input_processor_workers,
-                    num_media_load_workers=num_media_load_workers))
+                    num_media_load_workers=num_media_load_workers,
+                    ready_timeout=openengine_ready_timeout))
         else:
             # Default: launch OpenAI HTTP server
             launch_server(

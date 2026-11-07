@@ -405,6 +405,15 @@ commands:
         is_flag: false
         flags:
         - "--openengine-metrics-port"
+      openengine_ready_timeout:
+        type: float
+        default: null
+        status: prototype
+        required: false
+        multiple: false
+        is_flag: false
+        flags:
+        - "--openengine-ready-timeout"
       otlp_traces_endpoint:
         type: str
         default: null

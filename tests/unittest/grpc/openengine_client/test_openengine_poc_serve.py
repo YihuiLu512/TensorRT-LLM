@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""``OpenAIServer`` on ``OpenEngineLLMAdapter``, against the fake OpenEngine engine on CPU."""
+"""``OpenAIServer`` on the ``OpenEngineLLM`` facade, against the fake OpenEngine engine on CPU."""
 
 from __future__ import annotations
 
@@ -32,15 +32,32 @@ from tensorrt_llm.grpc.openengine.bindings import (
     model_pb2,
     server_pb2,
 )
+from tensorrt_llm.grpc.openengine_conventions import (
+    CONVENTIONS_VERSION,
+    CONVENTIONS_VERSION_KEY,
+    META_PRIORITY,
+    META_TARGET_DP_RANK,
+    META_TRACEPARENT,
+    SERVE_COUNTER_DIR_ENV,
+    encode_priority,
+)
 from tensorrt_llm.inputs.media_io import BaseMediaIO
 from tensorrt_llm.sampling_params import GuidedDecodingParams, SamplingParams
+from tensorrt_llm.scheduling_params import SchedulingParams
 from tensorrt_llm.serve.detokenize import IncrementalDetokenizer
 from tensorrt_llm.serve.openai_protocol import ChatCompletionRequest
 from tensorrt_llm.serve.openai_server import OpenAIServer
-from tensorrt_llm.serve.openengine_poc import OpenEngineLLMAdapter, build_generate_request
-from tensorrt_llm.serve.openengine_poc import adapter as adapter_module
+from tensorrt_llm.serve.openengine_poc import OpenEngineLLM, build_generate_request, contracts
+from tensorrt_llm.serve.openengine_poc import facade as facade_module
 from tensorrt_llm.serve.openengine_poc import launch as launch_module
 from tensorrt_llm.serve.openengine_poc import mapping as mapping_module
+from tensorrt_llm.serve.openengine_poc.facade import (
+    UNSUPPORTED_ENDPOINTS,
+    OpenEngineServeError,
+    OpenEngineStartupError,
+    adapt_server,
+    check_frontend_options,
+)
 from tensorrt_llm.tokenizer import TransformersTokenizer
 from tensorrt_llm.usage import usage_lib
 
@@ -131,39 +148,45 @@ def _args() -> SimpleNamespace:
     )
 
 
-def _adapter(engine: FakeEngine, tmp_path) -> OpenEngineLLMAdapter:
-    return OpenEngineLLMAdapter(
+def _facade(engine: FakeEngine, tmp_path, **kwargs: Any) -> OpenEngineLLM:
+    return OpenEngineLLM(
         args=_args(),
         tokenizer=_tokenizer(),
         input_processor=_InputProcessor(),
         hf_model_dir=str(tmp_path),
         endpoint=engine.target,
+        ready_timeout=WAIT_SECONDS,
+        **kwargs,
     )
 
 
-def _serve(engine: FakeEngine, tmp_path, body) -> Any:
-    """Run ``body(engine, adapter, http)`` with the server wired to ``engine``."""
+def _serve(engine: FakeEngine, tmp_path, body, **facade_kwargs: Any) -> Any:
+    """Run ``body(engine, facade, http)`` with the server wired to ``engine``.
+
+    ``facade_kwargs`` go to :class:`OpenEngineLLM`.
+    """
 
     async def main() -> Any:
         async with engine:
-            adapter = _adapter(engine, tmp_path)
-            await adapter.start(ready_timeout=WAIT_SECONDS)
+            facade = _facade(engine, tmp_path, **facade_kwargs)
+            await facade.start()
             previous_media_executor = BaseMediaIO._executor
             server = OpenAIServer(
-                generator=adapter,
+                generator=facade,
                 model=MODEL,
                 tool_parser=None,
                 server_role=None,
                 metadata_server_cfg=None,
             )
+            adapt_server(server, facade)
             BaseMediaIO.set_executor(previous_media_executor)
             server._media_load_executor.shutdown(wait=False)
             try:
                 transport = httpx.ASGITransport(app=server.app)
                 async with httpx.AsyncClient(transport=transport, base_url="http://test") as http:
-                    return await asyncio.wait_for(body(engine, adapter, http), WAIT_SECONDS * 2)
+                    return await asyncio.wait_for(body(engine, facade, http), WAIT_SECONDS * 2)
             finally:
-                await adapter.aclose()
+                await facade.aclose()
                 server._input_proc_executor.shutdown(wait=False)
                 server._metrics_stats_executor.shutdown(wait=False)
 
@@ -335,7 +358,7 @@ def test_mapping_rejects_a_prompt_that_fills_the_context() -> None:
 def test_streaming_chat_end_to_end(tmp_path) -> None:
     engine = _engine(token(0, HE), token(0, LLO, WORLD), _finished())
 
-    async def body(engine, adapter, http):
+    async def body(engine, facade, http):
         response = await http.post("/v1/chat/completions", json=_chat(True))
         assert response.status_code == 200
         chunks = _sse_chunks(response.text)
@@ -343,9 +366,9 @@ def test_streaming_chat_end_to_end(tmp_path) -> None:
         assert content == "Hello world"
         assert chunks[-1]["choices"][0]["finish_reason"] == "stop"
         assert response.text.rstrip().endswith("data: [DONE]")
-        assert adapter.input_processor.prompts == ["Hi"]
+        assert facade.input_processor.prompts == ["Hi"]
         assert list(engine.requests[0].token_ids.ids) == PROMPT_IDS
-        assert adapter._check_health()
+        assert facade._check_health()
 
     _serve(engine, tmp_path, body)
 
@@ -353,7 +376,7 @@ def test_streaming_chat_end_to_end(tmp_path) -> None:
 def test_stop_string_truncates_and_cancels_the_engine_request(tmp_path) -> None:
     engine = _engine(token(0, HE), token(0, LLO), token(0, WORLD, AGAIN), Hang())
 
-    async def body(engine, adapter, http):
+    async def body(engine, facade, http):
         response = await http.post("/v1/chat/completions", json=_chat(False, stop=[" world"]))
         assert response.status_code == 200, response.text
         choice = response.json()["choices"][0]
@@ -372,7 +395,7 @@ def test_completion_from_token_ids_reports_length(tmp_path) -> None:
         token(0, WORLD), token(0, BANG), _finished(generation_pb2.FINISH_REASON_LENGTH)
     )
 
-    async def body(engine, adapter, http):
+    async def body(engine, facade, http):
         response = await http.post(
             "/v1/completions",
             json={"model": MODEL, "prompt": PROMPT_IDS, "max_tokens": 2, "temperature": 0},
@@ -441,7 +464,7 @@ def test_engine_receives_exactly_the_expected_greedy_request(
     """
     engine = _engine(token(0, WORLD), _finished(generation_pb2.FINISH_REASON_LENGTH))
 
-    async def body(engine, adapter, http):
+    async def body(engine, facade, http):
         response = await http.post(path, json={"model": MODEL, "temperature": 0, **payload})
         assert response.status_code == 200, response.text
         sent = generation_pb2.GenerateRequest()
@@ -456,7 +479,7 @@ def test_engine_receives_exactly_the_expected_greedy_request(
 def test_unsupported_parameter_is_rejected_before_the_engine_sees_it(tmp_path) -> None:
     engine = _engine(_finished())
 
-    async def body(engine, adapter, http):
+    async def body(engine, facade, http):
         response = await http.post("/v1/chat/completions", json=_chat(True, presence_penalty=0.5))
         assert response.status_code == 400
         assert "presence_penalty" in response.text
@@ -466,46 +489,53 @@ def test_unsupported_parameter_is_rejected_before_the_engine_sees_it(tmp_path) -
 
 
 @pytest.mark.parametrize(
-    "code,error",
+    "code,error,status",
     [
-        (grpc.StatusCode.INVALID_ARGUMENT, ValueError),
-        (grpc.StatusCode.UNIMPLEMENTED, ValueError),
-        (grpc.StatusCode.UNAVAILABLE, RuntimeError),
+        (grpc.StatusCode.INVALID_ARGUMENT, ValueError, 400),
+        (grpc.StatusCode.UNIMPLEMENTED, ValueError, 400),
+        (grpc.StatusCode.RESOURCE_EXHAUSTED, OpenEngineServeError, 503),
+        (grpc.StatusCode.UNAVAILABLE, OpenEngineServeError, 503),
+        (grpc.StatusCode.DEADLINE_EXCEEDED, OpenEngineServeError, 504),
+        (grpc.StatusCode.INTERNAL, OpenEngineServeError, 500),
     ],
 )
-def test_engine_refusal_fails_the_request(tmp_path, code, error) -> None:
+def test_engine_refusal_fails_the_request(tmp_path, code, error, status) -> None:
     """A request the engine refuses before accepting it fails with the engine's message.
 
     The request was at fault for INVALID_ARGUMENT and UNIMPLEMENTED, so those
-    become ``ValueError``; other statuses become ``RuntimeError``.
+    become ``ValueError`` and HTTP 400; the other statuses keep their own HTTP
+    status (SV-ERR-1).
     """
     engine = _engine(Fail(code, "engine refused it"))
 
-    async def body(engine, adapter, http):
-        output = adapter.generate_async(PROMPT_IDS, SamplingParams(max_tokens=2))
+    async def body(engine, facade, http):
+        output = facade.generate_async(PROMPT_IDS, SamplingParams(max_tokens=2))
         with pytest.raises(error, match="engine refused it"):
             await output.aresult()
         assert engine.counters["trtllm.counters.generate_accepted"] == 0
         response = await http.post("/v1/completions", json={"model": MODEL, "prompt": PROMPT_IDS})
-        # The completion handler answers 400 for any generator error, so a
-        # RuntimeError (UNAVAILABLE here) is a 400 as well.
-        assert response.status_code == 400
+        assert response.status_code == status
         assert "engine refused it" in response.text
+        # The engine is named, its address is not.
+        assert engine.target not in response.text
 
     _serve(engine, tmp_path, body)
 
 
 @pytest.mark.parametrize(
-    "code", [error_pb2.ERROR_CODE_INVALID_ARGUMENT, error_pb2.ERROR_CODE_INTERNAL]
+    "code,status",
+    [
+        (error_pb2.ERROR_CODE_INVALID_ARGUMENT, 400),
+        (error_pb2.ERROR_CODE_OVERLOADED, 503),
+        (error_pb2.ERROR_CODE_INTERNAL, 500),
+    ],
 )
-def test_engine_error_fails_the_request(tmp_path, code: int) -> None:
+def test_engine_error_fails_the_request(tmp_path, code: int, status: int) -> None:
     engine = _engine(engine_error(code, retryable=False))
 
-    async def body(engine, adapter, http):
+    async def body(engine, facade, http):
         response = await http.post("/v1/chat/completions", json=_chat(False))
-        # The chat handler answers 400 for any generator error, so an engine
-        # INTERNAL error is a 400 here as well.
-        assert response.status_code == 400
+        assert response.status_code == status
         assert "engine gave up" in response.text
 
     _serve(engine, tmp_path, body)
@@ -514,8 +544,8 @@ def test_engine_error_fails_the_request(tmp_path, code: int) -> None:
 def test_abort_cancels_the_engine_request(tmp_path) -> None:
     engine = _engine(token(0, HE), Hang())
 
-    async def body(engine, adapter, http):
-        output = adapter.generate_async(PROMPT_IDS, SamplingParams(max_tokens=8))
+    async def body(engine, facade, http):
+        output = facade.generate_async(PROMPT_IDS, SamplingParams(max_tokens=8))
         first = await output.__anext__()
         assert first.outputs[0].text_diff == "He"
         output.abort()
@@ -532,8 +562,8 @@ def test_abort_cancels_the_engine_request(tmp_path) -> None:
 def test_abort_while_waiting_for_the_engine_ends_the_request(tmp_path) -> None:
     engine = _engine(token(0, HE), Hang())
 
-    async def body(engine, adapter, http):
-        output = adapter.generate_async(PROMPT_IDS, SamplingParams(max_tokens=8))
+    async def body(engine, facade, http):
+        output = facade.generate_async(PROMPT_IDS, SamplingParams(max_tokens=8))
         await output.__anext__()
         waiting = asyncio.create_task(output.aresult())
         await asyncio.sleep(0.05)
@@ -548,8 +578,8 @@ def test_abort_while_waiting_for_the_engine_ends_the_request(tmp_path) -> None:
 def test_abort_releases_text_held_back_for_a_stop_string(tmp_path) -> None:
     engine = _engine(token(0, HE), token(0, BANG), Hang())
 
-    async def body(engine, adapter, http):
-        output = adapter.generate_async(PROMPT_IDS, SamplingParams(max_tokens=8, stop=["! again"]))
+    async def body(engine, facade, http):
+        output = facade.generate_async(PROMPT_IDS, SamplingParams(max_tokens=8, stop=["! again"]))
         await output.__anext__()
         held = await output.__anext__()
         # "!" could start the stop string, so it is held back.
@@ -566,7 +596,7 @@ def test_abort_releases_text_held_back_for_a_stop_string(tmp_path) -> None:
 def test_engine_error_in_a_streaming_completion_is_an_error_event(tmp_path) -> None:
     engine = _engine(engine_error(error_pb2.ERROR_CODE_INTERNAL, retryable=False))
 
-    async def body(engine, adapter, http):
+    async def body(engine, facade, http):
         response = await http.post(
             "/v1/completions",
             json={"model": MODEL, "prompt": PROMPT_IDS, "max_tokens": 2, "stream": True},
@@ -582,43 +612,45 @@ def test_engine_error_in_a_streaming_completion_is_an_error_event(tmp_path) -> N
 def test_health_is_lost_after_close(tmp_path) -> None:
     engine = _engine(_finished())
 
-    async def body(engine, adapter, http):
+    async def body(engine, facade, http):
         assert (await http.get("/health")).status_code == 200
-        await adapter.aclose()
-        assert not adapter._check_health()
+        await facade.aclose()
+        assert not facade._check_health()
         assert (await http.get("/health")).status_code != 200
 
     _serve(engine, tmp_path, body)
 
 
-def test_health_follows_the_engine(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(adapter_module, "HEALTH_POLL_SECONDS", 0.01)
+def test_health_follows_the_engine(tmp_path) -> None:
     engine = _engine()
 
-    async def body(engine, adapter, http):
+    async def body(engine, facade, http):
         engine.set_health(lifecycle_pb2.HEALTH_STATE_NOT_READY)
-        while adapter._check_health():
+        while facade._check_health():
             await asyncio.sleep(0.01)
         assert (await http.get("/health")).status_code != 200
+        engine.set_health(lifecycle_pb2.HEALTH_STATE_READY)
+        while not facade._check_health():
+            await asyncio.sleep(0.01)
+        assert (await http.get("/health")).status_code == 200
 
-    _serve(engine, tmp_path, body)
+    _serve(engine, tmp_path, body, health_poll_interval=0.01)
 
 
 def test_health_is_lost_when_the_watcher_fails(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(adapter_module, "HEALTH_POLL_SECONDS", 0.01)
     engine = _engine()
 
-    async def body(engine, adapter, http):
+    async def body(engine, facade, http):
         async def broken_health():
             raise TypeError("unexpected")
 
-        monkeypatch.setattr(adapter.client, "health", broken_health)
-        while not adapter._health_task.done():
+        monkeypatch.setattr(facade.client, "health", broken_health)
+        while not facade._health_task.done():
             await asyncio.sleep(0.01)
-        assert not adapter._check_health()
+        assert not facade._check_health()
         assert (await http.get("/health")).status_code != 200
 
-    _serve(engine, tmp_path, body)
+    _serve(engine, tmp_path, body, health_poll_interval=0.01)
 
 
 def test_two_sequences_are_detokenized_separately(tmp_path) -> None:
@@ -632,9 +664,9 @@ def test_two_sequences_are_detokenized_separately(tmp_path) -> None:
         profile=_profile().replace(max_num_sequences=2),
     )
 
-    async def body(engine, adapter, http):
+    async def body(engine, facade, http):
         # SamplingParams refuses n > 1 with greedy decoding, so sample.
-        output = await adapter.generate_async(
+        output = await facade.generate_async(
             PROMPT_IDS, SamplingParams(n=2, temperature=1.0, max_tokens=2)
         )
         assert [o.text for o in output.outputs] == ["Hello", " world!"]
@@ -647,7 +679,7 @@ def test_two_sequences_are_detokenized_separately(tmp_path) -> None:
 def test_prompt_over_the_context_reports_context_length_exceeded(tmp_path) -> None:
     engine = _engine(_finished())
 
-    async def body(engine, adapter, http):
+    async def body(engine, facade, http):
         response = await http.post(
             "/v1/completions",
             json={"model": MODEL, "prompt": [HE] * MAX_CONTEXT, "max_tokens": 2},
@@ -669,8 +701,8 @@ def test_a_failure_while_applying_a_response_cancels_the_engine_request(
 
     monkeypatch.setattr(IncrementalDetokenizer, "step", fail)
 
-    async def body(engine, adapter, http):
-        output = adapter.generate_async(PROMPT_IDS, SamplingParams(max_tokens=8))
+    async def body(engine, facade, http):
+        output = facade.generate_async(PROMPT_IDS, SamplingParams(max_tokens=8))
         with pytest.raises(RuntimeError, match="detokenizer broke"):
             await output.__anext__()
         await asyncio.wait_for(engine.cancel_seen.wait(), WAIT_SECONDS)
@@ -682,15 +714,15 @@ def test_a_failure_while_applying_a_response_cancels_the_engine_request(
 def test_chat_tokenizes_through_preprocess(tmp_path) -> None:
     engine = _engine(token(0, HE), _finished())
 
-    async def body(engine, adapter, http):
+    async def body(engine, facade, http):
         calls = []
-        original = adapter.preprocess
+        original = facade.preprocess
 
         def preprocess(*args, **kwargs):
             calls.append(args)
             return original(*args, **kwargs)
 
-        adapter.preprocess = preprocess
+        facade.preprocess = preprocess
         response = await http.post("/v1/chat/completions", json=_chat(False))
         assert response.status_code == 200, response.text
         assert len(calls) == 1
@@ -704,15 +736,15 @@ def test_detokenize_false_returns_token_ids_only(tmp_path) -> None:
         token(0, WORLD), token(0, BANG), _finished(generation_pb2.FINISH_REASON_LENGTH)
     )
 
-    async def body(engine, adapter, http):
-        output = await adapter.generate_async(
+    async def body(engine, facade, http):
+        output = await facade.generate_async(
             PROMPT_IDS, SamplingParams(max_tokens=2, detokenize=False)
         )
         assert output.outputs[0].text == ""
         assert output.outputs[0].token_ids == [WORLD, BANG]
         assert output.outputs[0].finish_reason == "length"
         with pytest.raises(ValueError, match="detokenize"):
-            adapter.generate_async(
+            facade.generate_async(
                 PROMPT_IDS, SamplingParams(max_tokens=2, detokenize=False, stop=["!"])
             )
 
@@ -726,16 +758,16 @@ def test_engine_without_token_id_input_is_refused(tmp_path, declared) -> None:
 
     async def main() -> None:
         async with engine:
-            adapter = _adapter(engine, tmp_path)
-            with pytest.raises(ValueError, match="token id input"):
-                await adapter.start(ready_timeout=WAIT_SECONDS)
+            facade = _facade(engine, tmp_path)
+            with pytest.raises(OpenEngineStartupError, match="supports_token_ids_input"):
+                await facade.start()
 
     asyncio.run(main())
 
 
-def test_adapter_needs_a_hugging_face_tokenizer(tmp_path) -> None:
+def test_facade_needs_a_hugging_face_tokenizer(tmp_path) -> None:
     with pytest.raises(TypeError, match="Hugging Face tokenizer"):
-        OpenEngineLLMAdapter(
+        OpenEngineLLM(
             args=_args(),
             tokenizer=object(),
             input_processor=_InputProcessor(),
@@ -747,23 +779,17 @@ def test_adapter_needs_a_hugging_face_tokenizer(tmp_path) -> None:
 # -- Building from trtllm-serve arguments ---------------------------------------
 
 
-def test_from_llm_args_loads_the_model_tokenizer_and_forces_serving_options(
-    tmp_path, monkeypatch
-) -> None:
+def test_from_llm_args_loads_the_model_tokenizer_and_keeps_serving_options(tmp_path) -> None:
     _hf_tokenizer().save_pretrained(tmp_path)
-    warnings = []
-    monkeypatch.setattr(adapter_module.logger, "warning", lambda msg, *a, **k: warnings.append(msg))
 
-    adapter = OpenEngineLLMAdapter.from_llm_args(
-        {"model": str(tmp_path), "num_postprocess_workers": 2}, "localhost:1"
+    facade = OpenEngineLLM.from_llm_args(
+        {"model": str(tmp_path), "num_postprocess_workers": 0, "max_seq_len": 32}, "localhost:1"
     )
 
-    assert isinstance(adapter.tokenizer, TransformersTokenizer)
-    assert adapter.tokenizer.decode([HE, LLO]) == "Hello"
-    assert adapter.args.num_postprocess_workers == 0
-    # The logger is shared, so keep only the adapter's own warnings.
-    overrides = [w for w in warnings if "OpenEngine" in w]
-    assert len(overrides) == 1 and "num_postprocess_workers=2" in overrides[0]
+    assert isinstance(facade.tokenizer, TransformersTokenizer)
+    assert facade.tokenizer.decode([HE, LLO]) == "Hello"
+    # The options reach OpenAIServer as given; nothing is overridden.
+    assert facade.args.max_seq_len == 32
 
 
 def test_from_llm_args_wraps_a_bare_tokenizer_from_the_input_processor(
@@ -775,15 +801,15 @@ def test_from_llm_args_wraps_a_bare_tokenizer_from_the_input_processor(
         "tensorrt_llm.inputs.registry.create_input_processor", lambda *a, **k: processor
     )
 
-    adapter = OpenEngineLLMAdapter.from_llm_args({"model": str(tmp_path)}, "localhost:1")
+    facade = OpenEngineLLM.from_llm_args({"model": str(tmp_path)}, "localhost:1")
 
-    assert isinstance(adapter.tokenizer, TransformersTokenizer)
-    assert adapter.tokenizer.tokenizer is processor.tokenizer
+    assert isinstance(facade.tokenizer, TransformersTokenizer)
+    assert facade.tokenizer.tokenizer is processor.tokenizer
 
 
 def test_from_llm_args_needs_a_local_model_directory(tmp_path) -> None:
     with pytest.raises(ValueError, match="local model directory"):
-        OpenEngineLLMAdapter.from_llm_args({"model": str(tmp_path / "missing")}, "localhost:1")
+        OpenEngineLLM.from_llm_args({"model": str(tmp_path / "missing")}, "localhost:1")
 
 
 def _run_cli(tmp_path, *args: str, diffusion_only: bool = False, endpoint: str = "localhost:1"):
@@ -841,15 +867,49 @@ def test_cli_reports_the_sleep_mode_conflict_before_sleep_mode_checks(
 
 
 @pytest.mark.parametrize(
-    "args, name",
+    "args, name, value",
     [
-        (["--post_processor_hook", "guardrails:redact"], "post_processor_hook"),
-        (["--otlp_traces_endpoint", "http://localhost:4318"], "otlp_traces_endpoint"),
+        (
+            ["--post_processor_hook", "guardrails:redact"],
+            "post_processor_hook",
+            "guardrails:redact",
+        ),
+        (
+            ["--otlp_traces_endpoint", "http://localhost:4318"],
+            "otlp_traces_endpoint",
+            "http://localhost:4318",
+        ),
     ],
 )
-def test_cli_rejects_llm_side_features_it_would_skip(tmp_path, args, name) -> None:
-    with pytest.raises(click.UsageError, match=name):
+def test_cli_hands_frontend_options_to_the_frontend(tmp_path, args, name, value) -> None:
+    """The CLI passes these on; the frontend accepts or refuses them when it starts."""
+    launch = _run_cli(tmp_path, *args)
+    assert launch.call_args.args[2][name] == value
+
+
+def test_cli_passes_the_ready_timeout(tmp_path) -> None:
+    launch = _run_cli(tmp_path, "--openengine-ready-timeout", "12.5")
+    assert launch.call_args.kwargs["ready_timeout"] == 12.5
+    assert "ready_timeout" not in _run_cli(tmp_path).call_args.kwargs
+
+
+@pytest.mark.parametrize(
+    "args, message",
+    [
+        (["--openengine-ready-timeout", "0"], "greater than 0"),
+        (["--openengine-ready-timeout", "-1"], "greater than 0"),
+    ],
+)
+def test_cli_rejects_a_bad_ready_timeout(tmp_path, args, message) -> None:
+    with pytest.raises(click.UsageError, match=message):
         _run_cli(tmp_path, *args)
+
+
+def test_cli_rejects_a_ready_timeout_without_an_endpoint(tmp_path) -> None:
+    with pytest.raises(click.UsageError, match="requires --openengine-endpoint"):
+        serve_cmd.main(
+            args=[str(tmp_path), "--openengine-ready-timeout", "5"], standalone_mode=False
+        )
 
 
 @pytest.mark.parametrize(
@@ -893,3 +953,273 @@ def test_cli_rejects_a_disaggregated_cluster_in_the_config(tmp_path) -> None:
     config.write_text("disagg_cluster:\n  cluster_uri: http://localhost:1\n")
     with pytest.raises(click.UsageError, match="disagg_cluster"):
         _run_cli(tmp_path, "--config", str(config))
+
+
+# -- Facade: startup, engine loss, counting, metadata, endpoints ------------------
+
+
+def _start_fails(engine: FakeEngine, tmp_path) -> OpenEngineStartupError:
+    async def main() -> OpenEngineStartupError:
+        async with engine:
+            facade = _facade(engine, tmp_path)
+            with pytest.raises(OpenEngineStartupError) as error:
+                await facade.start()
+            return error.value
+
+    return asyncio.run(main())
+
+
+def test_startup_fails_on_another_conventions_version(tmp_path) -> None:
+    other = CONVENTIONS_VERSION + 1
+    profile = _profile().replace(server_info_extra={CONVENTIONS_VERSION_KEY: other})
+    error = _start_fails(_engine(profile=profile), tmp_path)
+    assert "conventions version" in str(error)
+    assert f"serve={CONVENTIONS_VERSION} engine={other}" in str(error)
+
+
+def test_startup_fails_on_another_tokenizer_and_names_both_values(tmp_path) -> None:
+    error = _start_fails(_engine(profile=_profile().replace(vocab_size=99)), tmp_path)
+    assert "tokenizer fingerprint" in str(error)
+    assert f"vocab_size: serve={len(_VOCAB)} engine=99" in str(error)
+
+
+def test_startup_continues_with_a_warning_without_the_conventions(tmp_path, monkeypatch) -> None:
+    warnings = []
+    monkeypatch.setattr(facade_module.logger, "warning", lambda msg, *a, **k: warnings.append(msg))
+    engine = _engine(profile=_profile().replace(follows_conventions=False))
+
+    async def body(engine, facade, http):
+        assert facade.check_health()
+
+    _serve(engine, tmp_path, body)
+    assert any(CONVENTIONS_VERSION_KEY in w for w in warnings)
+    assert any("no tokenizer fingerprint" in w for w in warnings)
+
+
+def test_a_lost_engine_stops_the_frontend_after_the_timeout(tmp_path) -> None:
+    lost = []
+
+    def on_engine_lost(facade) -> None:
+        lost.append(facade)
+        # As the default handler does, so /health does not send SIGINT itself.
+        facade._executor.doing_shutdown = True
+
+    engine = _engine()
+
+    async def body(engine, facade, http):
+        # Shorter than the timeout: the frontend stays up.
+        engine.set_health(lifecycle_pb2.HEALTH_STATE_NOT_READY)
+        while facade.check_health():
+            await asyncio.sleep(0.01)
+        engine.set_health(lifecycle_pb2.HEALTH_STATE_READY)
+        while not facade.check_health():
+            await asyncio.sleep(0.01)
+        assert lost == []
+        # Longer than the timeout: the frontend stops with a fatal error.
+        await engine.stop()
+        while not lost:
+            await asyncio.sleep(0.01)
+        assert lost == [facade]
+        assert "unavailable" in str(facade._executor._fatal_error)
+        assert (await http.get("/health")).status_code == 503
+
+    _serve(
+        engine,
+        tmp_path,
+        body,
+        health_poll_interval=0.01,
+        engine_lost_timeout=2.0,
+        on_engine_lost=on_engine_lost,
+    )
+
+
+def test_the_default_engine_lost_handler_sends_one_sigint(monkeypatch) -> None:
+    sent = []
+    monkeypatch.setattr(facade_module.signal, "raise_signal", sent.append)
+    facade = SimpleNamespace(_executor=facade_module._FacadeExecutor())
+    facade_module._stop_frontend(facade)
+    facade_module._stop_frontend(facade)
+    assert sent == [facade_module.signal.SIGINT]
+    assert facade._executor.doing_shutdown
+
+
+def test_a_restarted_engine_is_followed(tmp_path) -> None:
+    engine = _engine()
+
+    async def body(engine, facade, http):
+        before = facade.client.server_info().instance_id
+        engine.instance_id = "fake-restarted"
+        while facade.client.server_info().instance_id == before:
+            await asyncio.sleep(0.01)
+        assert facade.client.server_info().instance_id == "fake-restarted"
+        assert facade.check_health()
+        response = await http.post("/v1/completions", json={"model": MODEL, "prompt": PROMPT_IDS})
+        assert response.status_code == 200, response.text
+
+    _serve(engine, tmp_path, body, health_poll_interval=0.01)
+
+
+def test_generate_sent_is_written_to_the_counter_dir(tmp_path, monkeypatch) -> None:
+    counter_dir = tmp_path / "counters"
+    monkeypatch.setenv(SERVE_COUNTER_DIR_ENV, str(counter_dir))
+    engine = _engine()
+
+    def written(facade) -> int:
+        # The file is written off the event loop, in order; wait for the queued writes.
+        facade._counter_writer.submit(lambda: None).result(WAIT_SECONDS)
+        return contracts.read_generate_sent(counter_dir)
+
+    async def body(engine, facade, http):
+        assert written(facade) == 0
+        response = await http.post(
+            "/v1/completions", json={"model": MODEL, "prompt": PROMPT_IDS, "max_tokens": 2}
+        )
+        assert response.status_code == 200, response.text
+        # Refused by the engine: sent all the same.
+        engine.push_script(Fail(grpc.StatusCode.INVALID_ARGUMENT, "refused"))
+        response = await http.post("/v1/completions", json={"model": MODEL, "prompt": PROMPT_IDS})
+        assert response.status_code == 400 and "refused" in response.text
+        # Refused by the facade: never sent.
+        response = await http.post("/v1/chat/completions", json=_chat(False, presence_penalty=0.5))
+        assert response.status_code == 400
+        assert facade.generate_sent == 2 == engine.counters["trtllm.counters.generate_received"]
+        assert written(facade) == 2
+        info = (await http.get("/server_info")).json()
+        assert info["engine"]["generate_sent"] == 2
+
+    _serve(engine, tmp_path, body)
+    assert contracts.read_generate_sent(counter_dir) == 2
+
+
+def test_request_metadata_reaches_the_engine(tmp_path) -> None:
+    engine = _engine(profile=_profile().replace(supports_priority=True))
+    traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+
+    async def body(engine, facade, http):
+        await facade.generate_async(
+            PROMPT_IDS,
+            SamplingParams(max_tokens=1),
+            priority=0.9,
+            trace_headers={META_TRACEPARENT: traceparent},
+            scheduling_params=SchedulingParams(attention_dp_rank=0),
+        )
+        received = engine.accepted[0]
+        assert received.metadata_value(META_TRACEPARENT) == traceparent
+        assert received.metadata_value(META_PRIORITY) == str(encode_priority(0.9))
+        assert received.admitted.priority == encode_priority(0.9)
+        assert received.metadata_value(META_TARGET_DP_RANK) == "0"
+        # The default priority is not sent.
+        await facade.generate_async(PROMPT_IDS, SamplingParams(max_tokens=1), priority=0.5)
+        assert engine.accepted[1].metadata_value(META_PRIORITY) is None
+
+    _serve(engine, tmp_path, body)
+
+
+@pytest.mark.parametrize(
+    "profile_changes, options, message",
+    [
+        ({"supports_priority": False}, {"priority": 0.9}, "priority"),
+        (
+            {"dp_rank_targeting": False},
+            {"scheduling_params": SchedulingParams(attention_dp_rank=0)},
+            "attention_dp_rank",
+        ),
+    ],
+)
+def test_request_options_the_engine_does_not_declare_are_refused(
+    tmp_path, profile_changes, options, message
+) -> None:
+    engine = _engine(profile=_profile().replace(**profile_changes))
+
+    async def body(engine, facade, http):
+        with pytest.raises(ValueError, match=message):
+            facade.generate_async(PROMPT_IDS, SamplingParams(max_tokens=1), **options)
+        assert engine.requests == []
+
+    _serve(engine, tmp_path, body)
+
+
+def test_server_info_has_the_engine_block(tmp_path) -> None:
+    engine = _engine()
+
+    async def body(engine, facade, http):
+        response = await http.get("/server_info")
+        assert response.status_code == 200
+        block = response.json()["engine"]
+        assert block == {
+            "kind": "openengine",
+            "endpoint": engine.target,
+            "engine_name": engine.profile.engine_name,
+            "engine_version": engine.profile.engine_version,
+            "instance_id": engine.instance_id,
+            "generate_sent": 0,
+        }
+
+    _serve(engine, tmp_path, body)
+
+
+@pytest.mark.parametrize("method, path", UNSUPPORTED_ENDPOINTS)
+def test_endpoints_that_need_an_in_process_engine_answer_501(tmp_path, method, path) -> None:
+    engine = _engine()
+
+    async def body(engine, facade, http):
+        response = await http.request(method, path)
+        assert response.status_code == 501, response.text
+        assert "OpenEngine" in response.text
+
+    _serve(engine, tmp_path, body)
+
+
+def _options(**changes: Any) -> SimpleNamespace:
+    return SimpleNamespace(**{**vars(_args()), **changes})
+
+
+@pytest.mark.parametrize(
+    "changes, name",
+    [
+        ({"enable_energy_metrics": True}, "enable_energy_metrics"),
+        ({"enable_resource_governor": True}, "enable_resource_governor"),
+        ({"max_beam_width": 2}, "max_beam_width"),
+        ({"num_postprocess_workers": 2}, "num_postprocess_workers"),
+        ({"post_processor_hook": "guardrails:redact"}, "post_processor_hook"),
+        ({"return_perf_metrics": True}, "return_perf_metrics"),
+        ({"perf_metrics_output_dir": "/tmp/perf"}, "perf_metrics_output_dir"),
+        ({"enable_iter_perf_stats": True}, "enable_iter_perf_stats"),
+        ({"otlp_traces_endpoint": "http://localhost:4318"}, "otlp_traces_endpoint"),
+    ],
+)
+def test_options_the_frontend_cannot_honour_are_refused(changes, name) -> None:
+    with pytest.raises(ValueError, match=name):
+        check_frontend_options(_options(**changes))
+
+
+def test_options_are_accepted_once_their_component_is_present(monkeypatch) -> None:
+    resolve_slot = contracts.resolve_slot
+
+    def implemented(name: str):
+        impl, _ = resolve_slot(name)
+        return impl, f"tests:{name}"
+
+    monkeypatch.setattr(facade_module.contracts, "resolve_slot", implemented)
+    check_frontend_options(
+        _options(
+            post_processor_hook="guardrails:redact",
+            return_perf_metrics=True,
+            enable_iter_perf_stats=True,
+            otlp_traces_endpoint="http://localhost:4318",
+        )
+    )
+    check_frontend_options(_options())
+
+
+def test_from_llm_args_refuses_an_option_it_cannot_honour(tmp_path) -> None:
+    _hf_tokenizer().save_pretrained(tmp_path)
+    with pytest.raises(ValueError, match="num_postprocess_workers"):
+        OpenEngineLLM.from_llm_args(
+            {"model": str(tmp_path), "num_postprocess_workers": 2}, "localhost:1"
+        )
+
+
+def test_port_zero_needs_a_report_addr(tmp_path) -> None:
+    with pytest.raises(ValueError, match="report_addr"):
+        launch_module.launch_openengine_server("127.0.0.1", 0, {"model": str(tmp_path)}, "x:1")

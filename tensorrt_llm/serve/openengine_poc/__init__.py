@@ -3,8 +3,8 @@
 """Prototype: serve the OpenAI API from an external engine over OpenEngine v1.
 
 ``trtllm-serve <model dir> --openengine-endpoint host:port`` builds
-``OpenAIServer`` on :class:`OpenEngineLLMAdapter` instead of ``LLM``.
-Only ``/v1/chat/completions``, ``/v1/completions`` and ``/health`` are adapted.
+``OpenAIServer`` on :class:`OpenEngineLLM` instead of ``LLM``. Endpoints that
+need an in-process engine answer 501.
 
 The exports load on first use: ``OpenAIServer`` imports :mod:`.contracts`,
 which must not pull in the gRPC client.
@@ -14,12 +14,18 @@ import importlib
 from typing import Any
 
 _EXPORTS = {
+    "OpenEngineLLM": ".facade",
     "OpenEngineLLMAdapter": ".adapter",
-    "OpenEngineRequestOutput": ".adapter",
+    "OpenEngineRequestOutput": ".facade",
     "build_generate_request": ".mapping",
 }
 
-__all__ = ["OpenEngineLLMAdapter", "OpenEngineRequestOutput", "build_generate_request"]
+__all__ = [
+    "OpenEngineLLM",
+    "OpenEngineLLMAdapter",
+    "OpenEngineRequestOutput",
+    "build_generate_request",
+]
 
 
 def __getattr__(name: str) -> Any:

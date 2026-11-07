@@ -106,6 +106,11 @@ class GenerateStream:
         return self._request.request_id
 
     @property
+    def sent(self) -> bool:
+        """Whether the call was started; a stream cancelled before its first iteration never is."""
+        return self._call is not None
+
+    @property
     def done(self) -> bool:
         """Whether iteration has ended, normally, by error, or by cancellation."""
         return self._done
