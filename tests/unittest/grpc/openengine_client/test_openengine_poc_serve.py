@@ -56,6 +56,7 @@ from tensorrt_llm.serve.openengine_poc import OpenEngineLLM, build_generate_requ
 from tensorrt_llm.serve.openengine_poc import facade as facade_module
 from tensorrt_llm.serve.openengine_poc import launch as launch_module
 from tensorrt_llm.serve.openengine_poc import mapping as mapping_module
+from tensorrt_llm.serve.openengine_poc.engine_client import OutputFinished
 from tensorrt_llm.serve.openengine_poc.facade import (
     UNSUPPORTED_ENDPOINTS,
     OpenEngineServeError,
@@ -1580,6 +1581,7 @@ def test_options_are_accepted_once_their_component_is_present(monkeypatch) -> No
     check_frontend_options(
         _options(
             post_processor_hook="guardrails:redact",
+            num_postprocess_workers=2,
             return_perf_metrics=True,
             enable_iter_perf_stats=True,
             otlp_traces_endpoint="http://localhost:4318",
@@ -1669,3 +1671,214 @@ def test_launch_closes_the_socket_when_publishing_the_address_fails(tmp_path, mo
             "127.0.0.1", 0, {"model": str(tmp_path)}, "x:1", report_addr=str(tmp_path / "addr")
         )
     assert bound[0].fileno() == -1
+
+
+# -- Postprocessing pool ----------------------------------------------------------
+
+
+class _FakeSession:
+    """Answers every event with one result; the result for a finished output is final."""
+
+    def __init__(self, request_id: str, *, overflow_after: int | None, fail_iteration: bool):
+        self.request_id = request_id
+        self.events: list[Any] = []
+        self.closed: list[str] = []
+        self._overflow_after = overflow_after
+        self._results: asyncio.Queue = asyncio.Queue()
+        self._over = False
+        if fail_iteration:
+            self._results.put_nowait(contracts.PostprocError("the postprocessor raised"))
+
+    def _result(self, chunks: Any, final: bool) -> None:
+        if not self._over:
+            self._over = final
+            self._results.put_nowait(contracts.PPResult(self.request_id, chunks, final))
+
+    def send(self, event: Any) -> None:
+        if self._over:
+            return
+        if self._overflow_after is not None and len(self.events) >= self._overflow_after:
+            self._over = True
+            raise contracts.PostprocOverflowError("too many events")
+        self.events.append(event)
+        self._result([f"chunk-{len(self.events)}"], isinstance(event, OutputFinished))
+
+    def close(self, reason: str) -> None:
+        self.closed.append(reason)
+        self._result([f"closed-{reason}"], True)
+
+    async def _iterate(self):
+        while True:
+            result = await self._results.get()
+            if isinstance(result, Exception):
+                raise result
+            yield result
+            if result.is_final:
+                return
+
+    def __aiter__(self):
+        return self._iterate()
+
+
+class _FakePool:
+    def __init__(self, num_workers: int, tokenizer_dir: str, **behaviour: Any) -> None:
+        self.size = num_workers
+        self.tokenizer_dir = tokenizer_dir
+        self.sessions: list[_FakeSession] = []
+        self.opened: list[dict[str, Any]] = []
+        self.closed = False
+        self._behaviour = {"overflow_after": None, "fail_iteration": False, "open_error": None}
+        self._behaviour.update(behaviour)
+
+    def open(self, request_id, postproc_params, sampling_params, **kwargs):
+        if self._behaviour["open_error"] is not None:
+            raise self._behaviour["open_error"]
+        self.opened.append({"request_id": request_id, "params": postproc_params, **kwargs})
+        session = _FakeSession(
+            request_id,
+            overflow_after=self._behaviour["overflow_after"],
+            fail_iteration=self._behaviour["fail_iteration"],
+        )
+        self.sessions.append(session)
+        return session
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+def _with_pool(monkeypatch, **behaviour: Any) -> list[_FakePool]:
+    pools: list[_FakePool] = []
+
+    def create_postproc_pool(args, *, num_workers, tokenizer_dir):
+        pool = _FakePool(num_workers, tokenizer_dir, **behaviour)
+        pools.append(pool)
+        return pool
+
+    monkeypatch.setattr(facade_module.contracts, "create_postproc_pool", create_postproc_pool)
+    return pools
+
+
+def test_the_facade_hands_its_pool_to_the_server(tmp_path, monkeypatch) -> None:
+    pools = _with_pool(monkeypatch)
+    engine = _engine()
+
+    async def body(engine, facade, http):
+        assert facade.postproc_pool is pools[0]
+        assert pools[0].size == 3 and pools[0].tokenizer_dir == str(tmp_path)
+        # The server recognizes the facade by its class and postprocesses in its pool.
+        assert contracts.create_postproc_dispatch(facade, is_visual_gen=False).enabled
+        assert not contracts.create_postproc_dispatch(facade, is_visual_gen=True).enabled
+
+    _serve(engine, tmp_path, body, postproc_workers=3)
+    assert pools[0].closed and facade_module.OpenEngineLLM.postproc_host is True
+
+
+def test_without_a_pool_postprocessing_stays_in_the_handler(tmp_path) -> None:
+    engine = _engine()
+
+    async def body(engine, facade, http):
+        assert facade.postproc_pool is None
+        output = await facade.generate_async(
+            PROMPT_IDS, SamplingParams(max_tokens=1), _postproc_params=object()
+        )
+        assert output.outputs[0]._postprocess_result is None
+
+    _serve(engine, tmp_path, body)
+
+
+def test_a_request_is_postprocessed_in_the_pool(tmp_path, monkeypatch) -> None:
+    pools = _with_pool(monkeypatch)
+    engine = _engine(token(0, HE), _finished())
+    params = object()
+
+    async def body(engine, facade, http):
+        output = facade.generate_async(
+            PROMPT_IDS, SamplingParams(max_tokens=4), streaming=True, _postproc_params=params
+        )
+        seen = [list(step.outputs[0]._postprocess_result) async for step in output]
+        assert seen == [["chunk-1"], ["chunk-2"]]
+        assert output.finished and output.error is None
+        (opened,) = pools[0].opened
+        assert opened == {
+            "request_id": output.id,
+            "params": params,
+            "streaming": True,
+            "num_outputs": 1,
+            "num_prompt_tokens": len(PROMPT_IDS),
+        }
+        session = pools[0].sessions[0]
+        assert [type(event).__name__ for event in session.events][-1] == "OutputFinished"
+        assert len(session.closed) == 1
+        # Without _postproc_params the request is assembled in the facade.
+        plain = await facade.generate_async(PROMPT_IDS, SamplingParams(max_tokens=1))
+        assert plain.outputs[0]._postprocess_result is None and len(pools[0].opened) == 1
+
+    _serve(engine, tmp_path, body, postproc_workers=1)
+
+
+@pytest.mark.parametrize(
+    "behaviour, status",
+    [
+        ({"open_error": contracts.PostprocDataError("not plain data")}, 500),
+        ({"open_error": contracts.PostprocWorkerError("the pool is closed")}, 500),
+    ],
+)
+def test_a_request_the_pool_cannot_open_fails_before_it_starts(
+    tmp_path, monkeypatch, behaviour, status
+) -> None:
+    _with_pool(monkeypatch, **behaviour)
+    engine = _engine()
+
+    async def body(engine, facade, http):
+        with pytest.raises(OpenEngineServeError) as error:
+            facade.generate_async(PROMPT_IDS, SamplingParams(max_tokens=1), _postproc_params=1)
+        assert error.value.status_code == status
+        assert engine.requests == []
+
+    _serve(engine, tmp_path, body, postproc_workers=1)
+
+
+@pytest.mark.parametrize(
+    "behaviour, status, message",
+    [
+        ({"overflow_after": 1}, 503, "too many events"),
+        ({"fail_iteration": True}, 500, "the postprocessor raised"),
+    ],
+)
+def test_a_postprocessing_failure_ends_the_request_and_its_calls(
+    tmp_path, monkeypatch, behaviour, status, message
+) -> None:
+    pools = _with_pool(monkeypatch, **behaviour)
+    engine = _engine(token(0, HE), token(0, LLO), Hang())
+
+    async def body(engine, facade, http):
+        output = facade.generate_async(
+            PROMPT_IDS, SamplingParams(max_tokens=8), _postproc_params=object()
+        )
+        with pytest.raises(OpenEngineServeError, match=message) as error:
+            await asyncio.wait_for(output.aresult(), WAIT_SECONDS)
+        assert error.value.status_code == status
+        await asyncio.wait_for(engine.cancel_seen.wait(), WAIT_SECONDS)
+        assert pools[0].sessions[0].closed == ["cancelled"]
+
+    _serve(engine, tmp_path, body, postproc_workers=1)
+
+
+def test_an_aborted_postprocessed_request_closes_its_session(tmp_path, monkeypatch) -> None:
+    pools = _with_pool(monkeypatch)
+    engine = _engine(token(0, HE), Hang())
+
+    async def body(engine, facade, http):
+        output = facade.generate_async(
+            PROMPT_IDS, SamplingParams(max_tokens=8), _postproc_params=object()
+        )
+        first = await output.__anext__()
+        assert first.outputs[0]._postprocess_result == ["chunk-1"]
+        output.abort()
+        await asyncio.wait_for(engine.cancel_seen.wait(), WAIT_SECONDS)
+        result = await asyncio.wait_for(output.aresult(), WAIT_SECONDS)
+        assert result.finished and result.error is None
+        assert result.outputs[0]._postprocess_result == ["closed-cancelled"]
+        assert pools[0].sessions[0].closed == ["cancelled"]
+
+    _serve(engine, tmp_path, body, postproc_workers=1)

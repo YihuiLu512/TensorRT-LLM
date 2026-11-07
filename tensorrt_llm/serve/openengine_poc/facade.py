@@ -7,7 +7,11 @@ uses and runs each request on an engine through :class:`EngineClient`: the
 request is mapped to Generate calls (the ``map_request`` slot), the calls'
 events are assembled into ``CompletionOutput`` objects (the
 ``create_response_assembler`` slot), and :class:`OpenEngineRequestOutput`
-hands them to the handlers the way a streaming ``RequestOutput`` does.
+hands them to the handlers the way a streaming ``RequestOutput`` does. With a
+postprocessing pool (the ``create_postproc_pool`` slot), a request the handler
+passes ``_postproc_params`` is postprocessed in the pool instead: the facade
+sends the calls' events to the request's session and hands its results to the
+handler in ``outputs[0]._postprocess_result``.
 
 Startup (:meth:`OpenEngineLLM.start`) connects, waits for the engine, checks
 its schema revision and conventions version, reads its capabilities, checks
@@ -237,7 +241,16 @@ class OpenEngineLLM:
         health_poll_interval: Seconds between health checks.
         on_engine_lost: Called once the engine is declared lost; defaults to
             stopping the process with SIGINT.
+        postproc_workers: This frontend's share of ``num_postprocess_workers``,
+            the size of its postprocessing pool; None for the whole of it.
+
+    Attributes:
+        postproc_pool: The postprocessing pool, or None; set once, here, and
+            kept after :meth:`aclose`. ``OpenAIServer`` recognizes the facade
+            by its class (``postproc_host``) and reads this when it is built.
     """
+
+    postproc_host = True
 
     def __init__(
         self,
@@ -253,6 +266,7 @@ class OpenEngineLLM:
         engine_lost_timeout: float = DEFAULT_ENGINE_LOST_TIMEOUT_S,
         health_poll_interval: float = HEALTH_POLL_SECONDS,
         on_engine_lost: Callable[[OpenEngineLLM], None] = _stop_frontend,
+        postproc_workers: int | None = None,
     ) -> None:
         from tensorrt_llm.tokenizer import TransformersTokenizer
 
@@ -292,6 +306,11 @@ class OpenEngineLLM:
         self._lost_close: asyncio.Task[None] | None = None
         # The default registry refuses every adapter; such requests fail before they start.
         self._lora_supported = contracts.resolve_slot("create_lora_registry")[1] != "default"
+        if postproc_workers is None:
+            postproc_workers = getattr(args, "num_postprocess_workers", 0) or 0
+        self.postproc_pool: contracts.PostprocPool | None = contracts.create_postproc_pool(
+            args, num_workers=postproc_workers, tokenizer_dir=hf_model_dir
+        )
 
     # -- Construction --------------------------------------------------------
 
@@ -573,7 +592,10 @@ class OpenEngineLLM:
         self._executor.doing_shutdown = True
 
     async def aclose(self) -> None:
-        """Stop watching health, cancel open calls and close the connection. Safe to call again."""
+        """Stop watching health, cancel open calls, close the connection and the pool.
+
+        Safe to call again.
+        """
         self.shutdown()
         task, self._health_task = self._health_task, None
         if task is not None and not task.done():
@@ -586,6 +608,8 @@ class OpenEngineLLM:
             await self._lost_close
         if self._client is not None:
             await self._client.close()
+        if self.postproc_pool is not None:
+            await self.postproc_pool.aclose()
         if self._counter_writer is not None:
             # The last writes may go to a slow file system; the loop keeps running meanwhile.
             await asyncio.to_thread(self._counter_writer.shutdown, True)
@@ -751,10 +775,13 @@ class OpenEngineLLM:
         ``streaming`` does not change the calls, which always stream; the
         returned object can be iterated or awaited.
 
+        With a postprocessing pool, a request given ``_postproc_params`` is
+        postprocessed in it; without one, ``_postproc_params`` is ignored.
+
         Raises:
             ValueError: The request asks for something the engine cannot do; reported as 400.
+            OpenEngineServeError: The pool cannot take the request.
         """
-        del _postproc_params
         sampling_params = sampling_params or SamplingParams()
         engine_name = self.client.server_info().engine_name
         media = self._media(inputs)
@@ -796,7 +823,7 @@ class OpenEngineLLM:
         assembler = contracts.create_response_assembler(
             sampling_params=sampling_params, tokenizer=self.tokenizer, num_outputs=sampling_params.n
         )
-        return OpenEngineRequestOutput(
+        output = OpenEngineRequestOutput(
             self,
             prompt_token_ids,
             assembler,
@@ -804,6 +831,11 @@ class OpenEngineLLM:
             prepare=prepare,
             engine_name=engine_name,
         )
+        if self.postproc_pool is not None and _postproc_params is not None:
+            output._open_session(
+                self.postproc_pool, _postproc_params, sampling_params, streaming=streaming
+            )
+        return output
 
     # -- Stats and events ----------------------------------------------------
 
@@ -852,9 +884,21 @@ def _log_counter_failure(future: Any) -> None:
 
 
 _END = object()
-# Strong references to the tasks reading Generate calls, so they are not
-# garbage-collected while running; a task drops out when its call ends.
+# Strong references to the tasks reading Generate calls and feeding the
+# postprocessing pool, so they are not garbage-collected while running; a task
+# drops out when it ends.
 _RUNNING_PUMPS: set[asyncio.Task[None]] = set()
+
+
+def _keep(task: asyncio.Task[None]) -> None:
+    _RUNNING_PUMPS.add(task)
+    task.add_done_callback(_RUNNING_PUMPS.discard)
+
+
+def _postproc_failure(error: Exception) -> OpenEngineServeError:
+    """The error a request ends with when postprocessing it failed."""
+    status = getattr(error, "http_status", HTTPStatus.INTERNAL_SERVER_ERROR)
+    return OpenEngineServeError(f"postprocessing the request failed: {error}", HTTPStatus(status))
 
 
 class OpenEngineRequestOutput:
@@ -865,6 +909,10 @@ class OpenEngineRequestOutput:
     ``CompletionOutput`` objects in :attr:`outputs` keep their ``*_diff`` views
     relative to the previous yield. When the request is served by several calls,
     output ``i`` of call ``k`` is request output ``offset_k + i``.
+
+    When the request is postprocessed in the pool, the events go to its
+    session instead of the assembler, and each yield carries the next result's
+    ``chunks`` in ``outputs[0]._postprocess_result``; the last one is final.
     """
 
     def __init__(
@@ -898,6 +946,39 @@ class OpenEngineRequestOutput:
         self.candidate_metrics = None
         self.disaggregated_params = None
         self._request_metrics = facade._metrics.start_request(self.request_id, time.time())
+        self._session: contracts.PostprocSession | None = None
+        self._session_closed = False
+        self._results: asyncio.Queue[Any] | None = None
+
+    def _open_session(
+        self,
+        pool: contracts.PostprocPool,
+        postproc_params: Any,
+        sampling_params: SamplingParams,
+        *,
+        streaming: bool,
+    ) -> None:
+        """Postprocess this request in ``pool``."""
+        try:
+            self._session = pool.open(
+                self.id,
+                postproc_params,
+                sampling_params,
+                streaming=streaming,
+                num_outputs=sampling_params.n,
+                num_prompt_tokens=len(self.prompt_token_ids),
+            )
+        except contracts.PostprocError as error:
+            raise _postproc_failure(error) from error
+        except contracts.PostprocDataError as error:
+            raise OpenEngineServeError(
+                f"the request cannot be postprocessed: {error}", HTTPStatus.INTERNAL_SERVER_ERROR
+            ) from error
+
+    def _close_session(self, reason: str) -> None:
+        if self._session is not None and not self._session_closed:
+            self._session_closed = True
+            self._session.close(reason)
 
     @property
     def outputs(self) -> list[Any]:
@@ -953,11 +1034,13 @@ class OpenEngineRequestOutput:
         for request in self._requests:
             stream = client.generate(request)
             self._streams.append(stream)
-            pump = asyncio.create_task(self._pump(stream, offset))
-            _RUNNING_PUMPS.add(pump)
-            pump.add_done_callback(_RUNNING_PUMPS.discard)
+            _keep(asyncio.create_task(self._pump(stream, offset)))
             offset += request.num_sequences
         self._open_calls = len(self._streams)
+        if self._session is not None:
+            self._results = asyncio.Queue()
+            _keep(asyncio.create_task(self._feed()))
+            _keep(asyncio.create_task(self._drain()))
         if self._aborted:
             for stream in self._streams:
                 stream.cancel()
@@ -967,9 +1050,10 @@ class OpenEngineRequestOutput:
 
         The call is counted as sent when its first read returns an event, or
         when reading it ends, provided the call was started (``stream.sent``),
-        whether or not the engine accepted it. The pump keeps reading after the request finished,
-        so a call the engine ends itself is closed by the engine;
-        ``stream.cancel()`` only takes effect before the engine's last event.
+        whether or not the engine accepted it. The pump keeps reading after the
+        request finished, so a call the engine ends itself is closed by the
+        engine; ``stream.cancel()`` only takes effect before the engine's last
+        event.
         When the request holds :data:`MAX_BUFFERED_EVENTS` unread events, the
         pump cancels its call and hands the reader a 503 error.
         """
@@ -1015,6 +1099,102 @@ class OpenEngineRequestOutput:
         self._cancel_sent = True
         for stream in self._streams:
             stream.cancel()
+        self._close_session("cancelled")
+
+    def _call_failure(self, error: BaseException) -> Exception:
+        """The error a request ends with when one of its calls failed with ``error``."""
+        if isinstance(error, OpenEngineClientError):
+            return request_error(error, self._engine_name)
+        if isinstance(error, OpenEngineServeError):
+            return error
+        return OpenEngineServeError(str(error), HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def _engine_cancelled(self, event: Any) -> OpenEngineServeError | None:
+        """The error for an output the engine cancelled although this side did not ask it to."""
+        if (
+            isinstance(event, OutputFinished)
+            and event.reason == "cancelled"
+            and not self._cancel_sent
+        ):
+            return OpenEngineServeError(
+                f"the OpenEngine engine {self._engine_name!r} cancelled the request",
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+        return None
+
+    async def _feed(self) -> None:
+        """Send the calls' events to the postprocessing session, in arrival order."""
+        queue, results, session = self._queue, self._results, self._session
+        assert queue is not None and results is not None and session is not None
+        try:
+            while True:
+                offset, item = await queue.get()
+                if item is _END or (isinstance(item, BaseException) and self._aborted):
+                    self._open_calls -= 1
+                    if self._open_calls == 0:
+                        self._close_session("cancelled" if self._aborted else "done")
+                        return
+                    continue
+                if isinstance(item, BaseException):
+                    results.put_nowait(self._call_failure(item))
+                    return
+                cancelled = self._engine_cancelled(item)
+                if cancelled is not None:
+                    results.put_nowait(cancelled)
+                    return
+                event = _shifted(item, offset) if offset and hasattr(item, "output_index") else item
+                self._request_metrics.on_event(event, time.time())
+                if not self._session_closed:
+                    session.send(event)
+        except contracts.PostprocError as error:
+            results.put_nowait(_postproc_failure(error))
+        except Exception as error:
+            results.put_nowait(
+                OpenEngineServeError(
+                    f"failed to postprocess an OpenEngine response: {error}",
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            )
+
+    async def _drain(self) -> None:
+        """Queue the session's results for the reader, then ``_END``."""
+        results, session = self._results, self._session
+        assert results is not None and session is not None
+        try:
+            async for result in session:
+                results.put_nowait(result)
+        except contracts.PostprocError as error:
+            results.put_nowait(_postproc_failure(error))
+            return
+        except Exception as error:
+            results.put_nowait(
+                OpenEngineServeError(
+                    f"failed to postprocess an OpenEngine response: {error}",
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            )
+            return
+        results.put_nowait(_END)
+
+    async def _next_postprocessed(self) -> OpenEngineRequestOutput:
+        results = self._results
+        assert results is not None
+        item = await results.get()
+        if item is _END:
+            raise self._fail(
+                OpenEngineServeError(
+                    "postprocessing ended before the request finished",
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            )
+        if isinstance(item, BaseException):
+            raise self._fail(item)
+        self.outputs[0]._postprocess_result = item.chunks
+        if item.is_final:
+            self.finished = True
+            # The calls still running are not needed any more (SV-PP-6).
+            self._cancel_calls()
+        return self
 
     def _fail(self, error: Exception) -> Exception:
         if not isinstance(error, ValueError):
@@ -1058,6 +1238,8 @@ class OpenEngineRequestOutput:
                 self._cancel_calls()
                 raise
         assert self._queue is not None
+        if self._session is not None:
+            return await self._next_postprocessed()
         while True:
             offset, item = await self._queue.get()
             if item is _END:
@@ -1084,26 +1266,12 @@ class OpenEngineRequestOutput:
                 self.finished = True
                 return self
             if isinstance(item, BaseException):
-                if isinstance(item, OpenEngineClientError):
-                    raise self._fail(request_error(item, self._engine_name)) from item
-                if isinstance(item, OpenEngineServeError):
-                    raise self._fail(item)
-                raise self._fail(
-                    OpenEngineServeError(str(item), HTTPStatus.INTERNAL_SERVER_ERROR)
-                ) from item
+                raise self._fail(self._call_failure(item)) from item
             event = item
-            if (
-                isinstance(event, OutputFinished)
-                and event.reason == "cancelled"
-                and not self._cancel_sent
-            ):
+            cancelled = self._engine_cancelled(event)
+            if cancelled is not None:
                 # The engine gave up on the request on its own: not a result to return.
-                raise self._fail(
-                    OpenEngineServeError(
-                        f"the OpenEngine engine {self._engine_name!r} cancelled the request",
-                        HTTPStatus.SERVICE_UNAVAILABLE,
-                    )
-                )
+                raise self._fail(cancelled)
             if offset and hasattr(event, "output_index"):
                 event = _shifted(event, offset)
             self._request_metrics.on_event(event, time.time())
@@ -1142,11 +1310,13 @@ def _shifted(event: Any, offset: int) -> Any:
 def check_frontend_options(args: Any) -> None:
     """Refuse options this frontend cannot honour, instead of ignoring them.
 
-    ``post_processor_hook`` is accepted when the ``create_postproc_dispatch``
-    slot has an implementation other than the default, and the metrics and
-    tracing options when the ``create_metrics_recorder`` slot has one; with
-    the default slot they are refused with the reason.
-    ``num_postprocess_workers`` greater than 0 is always refused.
+    Energy metrics, the resource governor and beam search are always refused.
+    An option that needs another component is accepted only when that
+    component's slot has an implementation other than the default, and refused
+    with the reason otherwise: ``post_processor_hook`` needs
+    ``create_postproc_dispatch``, ``num_postprocess_workers`` greater than 0
+    needs ``create_postproc_pool``, and the metrics and tracing options need
+    ``create_metrics_recorder``.
 
     Raises:
         ValueError: An option cannot be honoured.
@@ -1158,12 +1328,13 @@ def check_frontend_options(args: Any) -> None:
     if (getattr(args, "max_beam_width", 1) or 1) > 1:
         problems.append("max_beam_width > 1 is not supported: OpenEngine has no beam search")
     postproc_dispatch = contracts.resolve_slot("create_postproc_dispatch")[1] != "default"
+    postproc_pool = contracts.resolve_slot("create_postproc_pool")[1] != "default"
     metrics = contracts.resolve_slot("create_metrics_recorder")[1] != "default"
     needs = [
         (
             "num_postprocess_workers",
             (getattr(args, "num_postprocess_workers", 0) or 0) > 0,
-            False,
+            postproc_pool,
             "the OpenEngine postprocessing pool",
         ),
         (
