@@ -573,6 +573,21 @@ def test_a_grpc_peer_address_is_not_reported_to_the_client() -> None:
     assert "engine-host" not in str(error)
 
 
+def test_a_cancellation_by_the_engine_is_an_error(tmp_path) -> None:
+    engine = _engine(token(0, HE), _finished(generation_pb2.FINISH_REASON_CANCELLED))
+
+    async def body(engine, facade, http):
+        output = facade.generate_async(PROMPT_IDS, SamplingParams(max_tokens=4))
+        with pytest.raises(OpenEngineServeError, match="cancelled the request") as error:
+            await output.aresult()
+        assert error.value.status_code == 503
+        engine.push_script(token(0, HE), _finished(generation_pb2.FINISH_REASON_CANCELLED))
+        response = await http.post("/v1/chat/completions", json=_chat(False))
+        assert response.status_code == 503, response.text
+
+    _serve(engine, tmp_path, body)
+
+
 def test_abort_cancels_the_engine_request(tmp_path) -> None:
     engine = _engine(token(0, HE), Hang())
 

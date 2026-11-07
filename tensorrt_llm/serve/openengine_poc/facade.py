@@ -61,7 +61,7 @@ from tensorrt_llm.logger import logger
 from tensorrt_llm.sampling_params import SamplingParams
 
 from . import contracts
-from .engine_client import EngineInfo, EngineLoad, EngineRequest, ModelCapabilities
+from .engine_client import EngineInfo, EngineLoad, EngineRequest, ModelCapabilities, OutputFinished
 from .engine_client_impl import EngineEventStream, OpenEngineEngineClient
 
 __all__ = [
@@ -822,6 +822,8 @@ class OpenEngineRequestOutput:
         self._queue: asyncio.Queue[tuple[int, Any]] | None = None
         self._open_calls = 0
         self._aborted = False
+        # Whether this side has cancelled the calls; a cancellation it did not ask for is an error.
+        self._cancel_sent = False
         self.request_id = requests[0].request_id if requests else contracts.new_request_id()
         # The streaming postprocessors build the response id from ``id``.
         self.id = self.request_id
@@ -858,8 +860,7 @@ class OpenEngineRequestOutput:
         """
         if not self.finished:
             self._aborted = True
-        for stream in self._streams:
-            stream.cancel()
+        self._cancel_calls()
 
     def __aiter__(self) -> OpenEngineRequestOutput:
         return self
@@ -927,6 +928,7 @@ class OpenEngineRequestOutput:
         queue.put_nowait((offset, _END))
 
     def _cancel_calls(self) -> None:
+        self._cancel_sent = True
         for stream in self._streams:
             stream.cancel()
 
@@ -971,6 +973,18 @@ class OpenEngineRequestOutput:
                     OpenEngineServeError(str(item), HTTPStatus.INTERNAL_SERVER_ERROR)
                 ) from item
             event = item
+            if (
+                isinstance(event, OutputFinished)
+                and event.reason == "cancelled"
+                and not self._cancel_sent
+            ):
+                # The engine gave up on the request on its own: not a result to return.
+                raise self._fail(
+                    OpenEngineServeError(
+                        f"the OpenEngine engine {self._engine_name!r} cancelled the request",
+                        HTTPStatus.SERVICE_UNAVAILABLE,
+                    )
+                )
             if offset and hasattr(event, "output_index"):
                 event = _shifted(event, offset)
             self._request_metrics.on_event(event, time.time())
@@ -996,8 +1010,6 @@ class OpenEngineRequestOutput:
 
 def _shifted(event: Any, offset: int) -> Any:
     """``event`` with its ``output_index`` moved by ``offset``."""
-    import dataclasses
-
     return dataclasses.replace(event, output_index=event.output_index + offset)
 
 
