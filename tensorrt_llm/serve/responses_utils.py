@@ -1550,8 +1550,14 @@ async def request_preprocess(
     reasoning_parser: Optional[str] = None,
     multimodal_server_config: Optional[MultimodalServerConfig] = None,
     chat_template: Optional[str] = None,
+    thinking_budget_processor: bool = True,
 ) -> tuple[PromptInputs, SamplingParams]:
+    """Render the request and build its sampling parameters.
 
+    With ``thinking_budget_processor=False`` a thinking budget stays as data in
+    the sampling parameters instead of becoming a logits processor, for a
+    generator that takes it as data.
+    """
     sampling_params = request.to_sampling_params(
         default_sampling_params={
             "stop_token_ids":
@@ -1610,11 +1616,12 @@ async def request_preprocess(
         _responses_debug_log("======= Complete Inputs to model =======")
         _responses_debug_log(prompt_text)
         _responses_debug_log("========================================")
-    add_thinking_budget_logits_processor(
-        sampling_params,
-        reasoning_parser=reasoning_parser,
-        tokenizer=tokenizer,
-    )
+    if thinking_budget_processor:
+        add_thinking_budget_logits_processor(
+            sampling_params,
+            reasoning_parser=reasoning_parser,
+            tokenizer=tokenizer,
+        )
     return input_tokens, sampling_params
 
 

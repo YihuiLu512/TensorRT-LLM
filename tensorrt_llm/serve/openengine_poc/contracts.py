@@ -169,6 +169,12 @@ class GenerateOptions:
     Attributes:
         media: The prompt's media, from :func:`map_media`.
         lora_name: The registered adapter name, from :class:`LoraRegistry`.
+        logit_bias: The request's OpenAI ``logit_bias`` (token id -> bias), not
+            turned into a bias tensor; set only for a generator that
+            :func:`takes_request_data`.
+        reasoning_parser: The serving side's reasoning parser, from which the
+            mapping derives the reasoning start and end tokens of a thinking budget.
+        tokenizer: The serving side's tokenizer, for the same purpose.
     """
 
     streaming: bool = False
@@ -182,6 +188,20 @@ class GenerateOptions:
     priority: float | None = None
     trace_headers: Mapping[str, str] | None = None
     media: Sequence[MediaSpec] = ()
+    logit_bias: Mapping[str, float] | None = None
+    reasoning_parser: str | None = None
+    tokenizer: Any = None
+
+
+def takes_request_data(generator: Any) -> bool:
+    """Whether ``generator`` takes a thinking budget and ``logit_bias`` as request data.
+
+    True when the generator's class sets ``takes_request_data = True``. For such a
+    generator ``OpenAIServer`` builds neither a thinking-budget logits processor
+    nor an embedding-bias tensor: it leaves ``thinking_token_budget`` in the
+    sampling parameters and passes ``logit_bias`` to ``generate_async``.
+    """
+    return getattr(type(generator), "takes_request_data", False) is True
 
 
 def map_request(
@@ -291,7 +311,7 @@ def default_map_request(
 
     ``priority``, ``scheduling_params``, ``conversation_params`` and
     ``trace_headers`` are accepted and not forwarded; LoRA, disaggregated
-    serving, ``cache_salt``, ``kv_hints`` and media are rejected. ``streaming``
+    serving, ``cache_salt``, ``kv_hints``, ``logit_bias`` and media are rejected. ``streaming``
     does not change the call, which always streams.
     """
     from tensorrt_llm.executor.utils import context_length_exceeded_message
@@ -302,6 +322,7 @@ def default_map_request(
         ("disaggregated_params", options.disaggregated_params),
         ("cache_salt", options.cache_salt),
         ("kv_hints", options.kv_hints),
+        ("logit_bias", options.logit_bias),
     ):
         if value is not None:
             raise ValueError(f"{name} is not supported when serving through an OpenEngine engine")

@@ -248,7 +248,32 @@ OWNERSHIP: dict[str, list[Rule]] = {
             "only the contract v4 exceptions of WT-10",
         ),
     ],
-    "WT-11": _own(f"{POC}/mapping.py", f"{POC}/field_classes.py"),
+    "WT-11": _own(f"{POC}/mapping.py", f"{POC}/field_classes.py")
+    + [
+        Rule(
+            f"{POC}/{path}",
+            "exception",
+            "only contract v4: a thinking budget and logit_bias as request data",
+        )
+        for path in ("contracts.py", "facade.py")
+    ]
+    + [
+        Rule(path, "exception", f"only contract v4: {what}")
+        for path, what in (
+            (
+                "tensorrt_llm/serve/openai_server.py",
+                "no thinking-budget processor or bias tensor for a generator that takes"
+                " request data, and logit_bias passed to it",
+            ),
+            ("tensorrt_llm/serve/openai_protocol.py", "the switch that does not materialize"),
+            ("tensorrt_llm/serve/responses_utils.py", "the thinking-budget processor switch"),
+            (
+                "tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_contracts.py",
+                "the version and the slot-default test",
+            ),
+            ("scripts/poc2/check_ownership.py", "these WT-11 exceptions"),
+        )
+    ],
     "WT-12": _own(
         f"{POC}/response.py",
         "tensorrt_llm/serve/detokenize.py",

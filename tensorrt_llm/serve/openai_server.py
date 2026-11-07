@@ -1057,6 +1057,16 @@ class OpenAIServer(_VideoRoutesMixin):
                 "hook or set DISABLE_HARMONY_ADAPTER=1 if the harmony path is "
                 "not needed.")
 
+    def _takes_request_data(self) -> bool:
+        """Whether the generator takes a thinking budget and logit_bias as data (OpenEngine)."""
+        return openengine_contracts.takes_request_data(self.generator)
+
+    def _request_data_kwargs(self, request: Any) -> Dict[str, Any]:
+        """``generate_async`` arguments of a generator that takes request data."""
+        if not self._takes_request_data():
+            return {}
+        return {"logit_bias": getattr(request, "logit_bias", None)}
+
     def _logit_bias_vocab_size(self) -> int:
         for config in (self.model_config,
                        getattr(self.model_config, "text_config", None)):
@@ -2121,7 +2131,8 @@ class OpenAIServer(_VideoRoutesMixin):
                 gather_generation_logits=self.generator.args.
                 gather_generation_logits,
                 reasoning_parser=self.generator.args.reasoning_parser,
-                backend=self.generator.args.backend)
+                backend=self.generator.args.backend,
+                materialize_logit_bias=not self._takes_request_data())
             if required_tool_grammar:
                 _validate_required_tool_grammar_request(
                     request,
@@ -2133,12 +2144,13 @@ class OpenAIServer(_VideoRoutesMixin):
             # Pre-render, so the mode may be unresolved. Safe because the
             # boundary lookup reads the parser class attributes, not the
             # branch `__init__` picked.
-            add_thinking_budget_logits_processor(
-                sampling_params,
-                reasoning_parser=self.generator.args.reasoning_parser,
-                tokenizer=self.tokenizer,
-                chat_template_kwargs=request.chat_template_kwargs,
-            )
+            if not self._takes_request_data():
+                add_thinking_budget_logits_processor(
+                    sampling_params,
+                    reasoning_parser=self.generator.args.reasoning_parser,
+                    tokenizer=self.tokenizer,
+                    chat_template_kwargs=request.chat_template_kwargs,
+                )
             # Resolve a named tool_choice (OpenAI spec / Azure compat):
             #   tool_choice = {"type": "function", "function": {"name": "X"}}
             # forces the model to call exactly function X. We honor this by
@@ -2494,6 +2506,7 @@ class OpenAIServer(_VideoRoutesMixin):
                 scheduling_params=scheduling_params,
                 priority=request.priority
                 if request.priority is not None else DEFAULT_REQUEST_PRIORITY,
+                **self._request_data_kwargs(request),
             )
             asyncio.create_task(self.await_disconnected(raw_request, promise))
             dispatch.prepare(postproc_args, promise, tokenizer=self.tokenizer)
@@ -3067,12 +3080,14 @@ class OpenAIServer(_VideoRoutesMixin):
                 vocab_size=self._logit_bias_vocab_size(),
                 gather_generation_logits=self.generator.args.
                 gather_generation_logits,
-                backend=self.generator.args.backend)
-            add_thinking_budget_logits_processor(
-                sampling_params,
-                reasoning_parser=self.generator.args.reasoning_parser,
-                tokenizer=self.tokenizer,
-            )
+                backend=self.generator.args.backend,
+                materialize_logit_bias=not self._takes_request_data())
+            if not self._takes_request_data():
+                add_thinking_budget_logits_processor(
+                    sampling_params,
+                    reasoning_parser=self.generator.args.reasoning_parser,
+                    tokenizer=self.tokenizer,
+                )
             # TODO: better way to enable metrics
             if len(os.getenv("TRTLLM_KVCACHE_TIME_OUTPUT_PATH", "")) > 0:
                 sampling_params.return_perf_metrics = True
@@ -3123,7 +3138,8 @@ class OpenAIServer(_VideoRoutesMixin):
                     trace_headers=trace_headers,
                     kv_hints=request.kv_hints,
                     priority=request.priority if request.priority is not None
-                    else DEFAULT_REQUEST_PRIORITY)
+                    else DEFAULT_REQUEST_PRIORITY,
+                    **self._request_data_kwargs(request))
                 asyncio.create_task(
                     self.await_disconnected(raw_request, promise))
                 dispatch = self._postproc_dispatch
@@ -3236,7 +3252,8 @@ class OpenAIServer(_VideoRoutesMixin):
 
             sampling_params = request.to_sampling_params(
                 vocab_size=self._logit_bias_vocab_size(),
-                reasoning_parser="gpt_oss")
+                reasoning_parser="gpt_oss",
+                materialize_logit_bias=not self._takes_request_data())
             if sampling_params.thinking_token_budget is not None:
                 raise ValueError(
                     "thinking_token_budget is not supported by the Harmony "
@@ -3289,6 +3306,7 @@ class OpenAIServer(_VideoRoutesMixin):
                 kv_hints=request.kv_hints,
                 priority=request.priority
                 if request.priority is not None else DEFAULT_REQUEST_PRIORITY,
+                **self._request_data_kwargs(request),
             )
             dispatch.prepare(postproc_args, promise)
 
@@ -3455,6 +3473,7 @@ class OpenAIServer(_VideoRoutesMixin):
                 multimodal_server_config=self.multimodal_server_config,
                 chat_template=self.chat_template
                 if not self.use_harmony else None,
+                thinking_budget_processor=not self._takes_request_data(),
             )
             if not self.use_harmony:
                 # Detokenize as chat completions does for these parsers: a

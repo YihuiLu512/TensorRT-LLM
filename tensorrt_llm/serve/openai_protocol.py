@@ -101,8 +101,13 @@ def ensure_request_chat_template_allowed(request: Any,
 
 def _logit_bias_to_embedding_bias(
         logit_bias: Optional[Dict[str, float]],
-        vocab_size: Optional[int]) -> Optional[torch.Tensor]:
-    """Convert OpenAI logit_bias dict to embedding_bias tensor for sampling."""
+        vocab_size: Optional[int],
+        materialize: bool = True) -> Optional[torch.Tensor]:
+    """Convert OpenAI logit_bias dict to embedding_bias tensor for sampling.
+
+    With ``materialize=False`` the dict is only validated and None is returned,
+    for a generator that takes ``logit_bias`` as data.
+    """
     if logit_bias is None:
         return None
     if vocab_size is None:
@@ -115,7 +120,8 @@ def _logit_bias_to_embedding_bias(
         raise ValueError("vocab_size must be positive when logit_bias is used")
 
     # Create 1D zeros tensor as expected by executor API (will be unsqueezed to [1, vocab_size] internally)
-    embedding_bias = torch.zeros(vocab_size, dtype=torch.float32)
+    embedding_bias = (torch.zeros(vocab_size, dtype=torch.float32)
+                      if materialize else None)
 
     # Apply biases for specified token IDs
     for token_str, bias in logit_bias.items():
@@ -144,7 +150,8 @@ def _logit_bias_to_embedding_bias(
             raise ValueError(
                 f"logit_bias value for token ID {token_id} must be in "
                 f"[{_LOGIT_BIAS_MIN:g}, {_LOGIT_BIAS_MAX:g}]")
-        embedding_bias[token_id] = bias_value
+        if embedding_bias is not None:
+            embedding_bias[token_id] = bias_value
 
     return embedding_bias
 
@@ -743,10 +750,12 @@ class CompletionRequest(OpenAIBaseModel):
 
     # doc: end-completion-extra-params
 
-    def to_sampling_params(self,
-                           vocab_size: Optional[int] = None,
-                           gather_generation_logits: bool = False,
-                           backend: Optional[str] = None) -> SamplingParams:
+    def to_sampling_params(
+            self,
+            vocab_size: Optional[int] = None,
+            gather_generation_logits: bool = False,
+            backend: Optional[str] = None,
+            materialize_logit_bias: bool = True) -> SamplingParams:
         sampling_logprobs = None
         if self.logprobs:
             if backend == "pytorch" or gather_generation_logits:
@@ -793,7 +802,7 @@ class CompletionRequest(OpenAIBaseModel):
 
             # logits_bias
             embedding_bias=_logit_bias_to_embedding_bias(
-                self.logit_bias, vocab_size),
+                self.logit_bias, vocab_size, materialize_logit_bias),
 
             # completion-extra-params
             add_special_tokens=self.add_special_tokens,
@@ -1306,11 +1315,13 @@ class ChatCompletionRequest(OpenAIBaseModel):
 
     # doc: end-chat-completion-extra-params
 
-    def to_sampling_params(self,
-                           vocab_size: Optional[int] = None,
-                           gather_generation_logits: bool = False,
-                           reasoning_parser: Optional[str] = None,
-                           backend: Optional[str] = None) -> SamplingParams:
+    def to_sampling_params(
+            self,
+            vocab_size: Optional[int] = None,
+            gather_generation_logits: bool = False,
+            reasoning_parser: Optional[str] = None,
+            backend: Optional[str] = None,
+            materialize_logit_bias: bool = True) -> SamplingParams:
         sampling_logprobs = None
         if self.logprobs:
             logprobs = 1 if not self.top_logprobs else self.top_logprobs
@@ -1358,7 +1369,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
 
             # logits_bias
             embedding_bias=_logit_bias_to_embedding_bias(
-                self.logit_bias, vocab_size),
+                self.logit_bias, vocab_size, materialize_logit_bias),
 
             # chat-completion-extra-params
             add_special_tokens=self.add_special_tokens,
