@@ -63,6 +63,11 @@ def _one(*args, **kwargs):
     return request
 
 
+def _sampled(**kwargs):
+    """SamplingParams that sample: greedy decoding refuses n > 1 and best_of > 1."""
+    return SamplingParams(temperature=1.0, **kwargs)
+
+
 def _explicit(params, *names):
     params._set_request_provided_fields(names)
     return params
@@ -176,7 +181,7 @@ def test_seed_scope_does_not_stop_a_seed():
 
 
 def test_n_within_the_limit_is_one_call():
-    (request,) = _map(SamplingParams(n=3, seed=5))
+    (request,) = _map(_sampled(n=3, seed=5))
     assert request.num_sequences == 3 and request.sampling["seed"] == 5
 
 
@@ -185,7 +190,7 @@ def test_n_within_the_limit_is_one_call():
 )
 def test_n_beyond_the_limit_is_split(n, limit, sizes):
     caps = _caps(max_num_sequences=limit)
-    requests = _map(SamplingParams(n=n, seed=9, prompt_logprobs=1), caps)
+    requests = _map(_sampled(n=n, seed=9, prompt_logprobs=1), caps)
     assert [r.num_sequences for r in requests] == sizes
     assert len(requests) == math.ceil(n / limit)
     assert [r.sampling["seed"] for r in requests] == [9 + k for k in range(len(sizes))]
@@ -194,12 +199,12 @@ def test_n_beyond_the_limit_is_split(n, limit, sizes):
 
 
 def test_split_seeds_wrap_around_uint64():
-    requests = _map(SamplingParams(n=2, seed=(1 << 64) - 1), _caps("glm"))
+    requests = _map(_sampled(n=2, seed=(1 << 64) - 1), _caps("glm"))
     assert [r.sampling["seed"] for r in requests] == [(1 << 64) - 1, 0]
 
 
 def test_an_engine_without_a_limit_counts_as_one():
-    assert len(_map(SamplingParams(n=2), _caps(max_num_sequences=0))) == 2
+    assert len(_map(_sampled(n=2), _caps(max_num_sequences=0))) == 2
 
 
 def test_the_sequence_limit_is_logged_once_per_engine(monkeypatch):
@@ -207,7 +212,7 @@ def test_the_sequence_limit_is_logged_once_per_engine(monkeypatch):
     monkeypatch.setattr(mapping.logger, "warning", lambda msg: warnings.append(msg))
     monkeypatch.setattr(mapping, "_logged", set())
     for _ in range(3):
-        _map(SamplingParams(n=2), _caps("glm"))
+        _map(_sampled(n=2), _caps("glm"))
     mapping.log_sequence_capability("eng", _caps("glm"))
     assert len(warnings) == 1 and "at most 1 sequence" in warnings[0]
     mapping.log_sequence_capability("eng", _caps("glm", max_num_sequences=4))
@@ -215,13 +220,13 @@ def test_the_sequence_limit_is_logged_once_per_engine(monkeypatch):
 
 
 def test_best_of_needs_the_capability_and_a_single_call():
-    params = SamplingParams(n=1, best_of=2)
+    params = _sampled(n=1, best_of=2)
     with pytest.raises(ValueError, match="best_of"):
         _map(params)
     caps = _declare(_caps(), conv.CAP_REQ_BEST_OF)
     assert _one(params, caps).extra[conv.REQ_BEST_OF] == 2
     with pytest.raises(ValueError, match="split"):
-        _map(SamplingParams(n=2, best_of=3), dataclasses.replace(caps, max_num_sequences=1))
+        _map(_sampled(n=2, best_of=3), dataclasses.replace(caps, max_num_sequences=1))
 
 
 # --- prompt and length ------------------------------------------------------------

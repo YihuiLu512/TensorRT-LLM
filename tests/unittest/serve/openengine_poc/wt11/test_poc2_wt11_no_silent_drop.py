@@ -163,7 +163,8 @@ MAPPED_PROBES: dict[str, Probe] = {
         supported=lambda caps: caps.supports_stop_in_output,
         landed=_first(lambda r: r.include_stop_in_output is True),
     ),
-    "n": Probe({"n": 2}, landed=lambda rs: sum(r.num_sequences for r in rs) == 2),
+    # SamplingParams sets best_of to n when it is not given.
+    "n": Probe({"n": 2, "best_of": 2}, landed=lambda rs: sum(r.num_sequences for r in rs) == 2),
     "best_of": Probe(
         {"n": 1, "best_of": 2},
         supported=_cap(conv.CAP_REQ_BEST_OF),
