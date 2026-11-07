@@ -1533,8 +1533,10 @@ def serve(
         if timeout is not None:
             if openengine_endpoint is None:
                 raise click.UsageError(f"{flag} requires --openengine-endpoint")
-            if not timeout > 0:
-                raise click.UsageError(f"{flag} must be greater than 0")
+            # Infinity would overflow the gRPC deadline; NaN fails both checks.
+            if not 0 < timeout < float("inf"):
+                raise click.UsageError(
+                    f"{flag} must be a finite number greater than 0")
     if openengine_allow_newer_schema and openengine_endpoint is None:
         raise click.UsageError(
             "--openengine-allow-newer-schema requires --openengine-endpoint")

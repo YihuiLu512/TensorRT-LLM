@@ -985,6 +985,8 @@ def test_cli_passes_the_engine_options_and_the_report_address(tmp_path) -> None:
         (["--openengine-ready-timeout", "0"], "greater than 0"),
         (["--openengine-ready-timeout", "-1"], "greater than 0"),
         (["--openengine-control-timeout", "0"], "greater than 0"),
+        (["--openengine-control-timeout", "inf"], "finite number"),
+        (["--openengine-ready-timeout", "nan"], "finite number"),
     ],
 )
 def test_cli_rejects_a_bad_ready_timeout(tmp_path, args, message) -> None:
@@ -2131,17 +2133,9 @@ def test_the_fingerprint_covers_the_model_directory_whatever_the_tokenizer_direc
     _serve(engine, tmp_path, body, tokenizer_dir=str(tokenizer_dir), postproc_workers=1)
 
 
-@pytest.mark.parametrize("local", [True, False])
-def test_the_pool_takes_the_postprocess_tokenizer_directory_when_it_is_local(
-    tmp_path, monkeypatch, local
-) -> None:
-    pools = _with_pool(monkeypatch)
-    postproc_dir = tmp_path / "postproc"
-    if local:
-        postproc_dir.mkdir()
-    args = SimpleNamespace(**vars(_args()), postprocess_tokenizer_dir=str(postproc_dir))
-    OpenEngineLLM(
-        args=args,
+def _facade_with_postproc_dir(tmp_path, postproc_dir: str) -> OpenEngineLLM:
+    return OpenEngineLLM(
+        args=SimpleNamespace(**vars(_args()), postprocess_tokenizer_dir=postproc_dir),
         tokenizer=_tokenizer(),
         input_processor=_InputProcessor(),
         hf_model_dir=str(tmp_path),
@@ -2149,8 +2143,24 @@ def test_the_pool_takes_the_postprocess_tokenizer_directory_when_it_is_local(
         endpoint="127.0.0.1:1",
         postproc_workers=1,
     )
-    # trtllm-serve may set it to a Hub name; the pool is given a local directory.
-    assert pools[0].tokenizer_dir == str(postproc_dir if local else tmp_path / "tokenizer")
+
+
+def test_the_pool_takes_the_postprocess_tokenizer_directory(tmp_path, monkeypatch) -> None:
+    pools = _with_pool(monkeypatch)
+    postproc_dir = tmp_path / "postproc"
+    postproc_dir.mkdir()
+    _facade_with_postproc_dir(tmp_path, str(postproc_dir))
+    assert pools[0].tokenizer_dir == str(postproc_dir)
+
+
+def test_a_pool_is_refused_when_the_tokenizer_is_not_in_a_local_directory(
+    tmp_path, monkeypatch
+) -> None:
+    pools = _with_pool(monkeypatch)
+    # trtllm-serve sets postprocess_tokenizer_dir to a Hub --tokenizer as given.
+    with pytest.raises(ValueError, match="local directory"):
+        _facade_with_postproc_dir(tmp_path, "org/hub-tokenizer")
+    assert pools == []
 
 
 def test_a_postprocessed_request_cut_off_by_closing_the_frontend_is_503(
@@ -2229,3 +2239,67 @@ def test_startup_fails_when_the_local_tokenizer_cannot_be_fingerprinted(
     monkeypatch.setattr(facade_module, "compute_tokenizer_fingerprint", unreadable)
     error = _start_fails(_engine(), tmp_path)
     assert "tokenizer fingerprint" in str(error) and "cannot be read" in str(error)
+
+
+def test_postprocessed_calls_that_end_before_every_output_are_500(tmp_path, monkeypatch) -> None:
+    pools = _with_pool(monkeypatch)
+    engine = _engine(token(0, HE), Hang())
+
+    async def body(engine, facade, http):
+        output = facade.generate_async(
+            PROMPT_IDS, SamplingParams(max_tokens=8), _postproc_params=object()
+        )
+        await asyncio.wait_for(output.__anext__(), WAIT_SECONDS)
+        # The call ends quietly before its output finished, as when its connection closes.
+        output._queue.put_nowait((0, facade_module._END))
+        with pytest.raises(OpenEngineServeError, match="ended a call before") as error:
+            await asyncio.wait_for(output.aresult(), WAIT_SECONDS)
+        assert error.value.status_code == 500
+        assert pools[0].sessions[0].closed == ["cancelled"]
+
+    _serve(engine, tmp_path, body, postproc_workers=1)
+
+
+def test_closing_closes_the_pool_even_when_closing_the_connection_fails(
+    tmp_path, monkeypatch
+) -> None:
+    pools = _with_pool(monkeypatch)
+    engine = _engine()
+
+    async def main() -> None:
+        async with engine:
+            facade = _facade(engine, tmp_path, postproc_workers=1)
+            await facade.start()
+            close = facade.client.close
+
+            async def failing_close() -> None:
+                await close()
+                raise RuntimeError("close failed")
+
+            monkeypatch.setattr(facade.client, "close", failing_close)
+            with pytest.raises(RuntimeError, match="close failed"):
+                await facade.aclose()
+            assert pools[0].closed
+
+    asyncio.run(main())
+
+
+def test_a_restarted_engine_whose_tokenizer_cannot_be_checked_is_lost(
+    tmp_path, monkeypatch
+) -> None:
+    lost = []
+    engine = _engine()
+
+    def unreadable(tokenizer, directory):
+        raise OSError("tokenizer.json cannot be read")
+
+    async def body(engine, facade, http):
+        monkeypatch.setattr(facade_module, "compute_tokenizer_fingerprint", unreadable)
+        # As for an engine that reported no fingerprint at startup.
+        facade._local_fingerprint = None
+        engine.instance_id = "fake-restarted"
+        while not lost:
+            await asyncio.sleep(0.01)
+        assert "cannot be read" in str(facade._executor._fatal_error)
+
+    _serve(engine, tmp_path, body, health_poll_interval=0.01, on_engine_lost=lost.append)

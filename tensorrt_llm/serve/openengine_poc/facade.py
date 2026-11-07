@@ -249,9 +249,10 @@ class OpenEngineLLM:
         hf_model_dir: The local model directory holding the config.
         tokenizer_dir: The local directory holding the tokenizer files; None for
             ``hf_model_dir``. The postprocessing pool loads its tokenizer from
-            ``args.postprocess_tokenizer_dir`` if that is a local directory, else
-            from this one (``trtllm-serve`` sets ``postprocess_tokenizer_dir`` to
-            ``--tokenizer`` or the model, which may be a Hugging Face Hub name).
+            ``args.postprocess_tokenizer_dir`` if that is set, else from this
+            one; it needs a local directory, so a pool is refused when
+            ``postprocess_tokenizer_dir`` is something else, such as the Hugging
+            Face Hub name ``trtllm-serve`` sets it to for a Hub ``--tokenizer``.
             The fingerprint is computed over ``hf_model_dir``, as the engine
             computes it over its model directory.
         endpoint: The engine's ``host:port``.
@@ -332,12 +333,21 @@ class OpenEngineLLM:
         self._lora_supported = contracts.resolve_slot("create_lora_registry")[1] != "default"
         if postproc_workers is None:
             postproc_workers = getattr(args, "num_postprocess_workers", 0) or 0
+        postproc_tokenizer_dir = getattr(args, "postprocess_tokenizer_dir", None)
+        if (
+            postproc_workers > 0
+            and postproc_tokenizer_dir
+            and not Path(postproc_tokenizer_dir).is_dir()
+        ):
+            # The pool would load another tokenizer than the frontend's.
+            raise ValueError(
+                "num_postprocess_workers > 0 with an OpenEngine engine needs the tokenizer in a "
+                f"local directory, got {postproc_tokenizer_dir!r}"
+            )
         self.postproc_pool: contracts.PostprocPool | None = contracts.create_postproc_pool(
             args,
             num_workers=postproc_workers,
-            tokenizer_dir=_tokenizer_dir(
-                getattr(args, "postprocess_tokenizer_dir", None), Path(self._tokenizer_dir)
-            ),
+            tokenizer_dir=postproc_tokenizer_dir or self._tokenizer_dir,
         )
 
     # -- Construction --------------------------------------------------------
@@ -647,8 +657,12 @@ class OpenEngineLLM:
                 pass
         try:
             if self._lost_close is not None:
-                # Its failure was logged by the task; the connection is closed again below.
-                await asyncio.gather(self._lost_close, return_exceptions=True)
+                # The connection is closed again below whatever happened to this close.
+                (lost_close,) = await asyncio.gather(self._lost_close, return_exceptions=True)
+                if isinstance(lost_close, Exception):
+                    logger.warning(
+                        f"Closing the connection to the lost OpenEngine engine failed: {lost_close!r}"
+                    )
             if self._client is not None:
                 await self._client.close()
         finally:
@@ -1063,7 +1077,7 @@ class OpenEngineRequestOutput:
 
     @property
     def outputs(self) -> list[Any]:
-        # Empty until a request with a LoRA adapter is first read.
+        # Empty for a request with a LoRA adapter until its calls are mapped, at its first read.
         return [] if self._assembler is None else self._assembler.outputs
 
     @property
@@ -1200,6 +1214,9 @@ class OpenEngineRequestOutput:
         """Send the calls' events to the postprocessing session, in arrival order."""
         queue, results, session = self._queue, self._results, self._session
         assert queue is not None and results is not None and session is not None
+        assert self._requests is not None
+        num_outputs = sum(request.num_sequences for request in self._requests)
+        finished_outputs: set[int] = set()
         try:
             while True:
                 offset, item = await queue.get()
@@ -1209,12 +1226,13 @@ class OpenEngineRequestOutput:
                         continue
                     if self._aborted:
                         self._close_session("cancelled")
-                    elif self._facade._closing or self._facade._executor._fatal_error is not None:
-                        # The frontend cut the calls off: the request did not finish.
+                    elif len(finished_outputs) == num_outputs:
+                        self._close_session("done")
+                    else:
+                        # The calls ended before every output did: as without the pool,
+                        # 503 when the frontend cut them off, else the engine's fault (500).
                         self._close_session("cancelled")
                         results.put_nowait(self._stopping_error(_ended_early(self._engine_name)))
-                    else:
-                        self._close_session("done")
                     return
                 if isinstance(item, BaseException):
                     results.put_nowait(self._call_failure(item))
@@ -1224,6 +1242,8 @@ class OpenEngineRequestOutput:
                     results.put_nowait(cancelled)
                     return
                 event = _shifted(item, offset) if offset and hasattr(item, "output_index") else item
+                if isinstance(event, OutputFinished):
+                    finished_outputs.add(event.output_index)
                 self._request_metrics.on_event(event, time.time())
                 if not self._session_closed:
                     session.send(event)
@@ -1340,7 +1360,7 @@ class OpenEngineRequestOutput:
                     )
                 ) from error
             except BaseException:
-                # Cancelled while starting: the calls already sent must not keep running,
+                # Cancelled while starting: any call already sent must not keep running,
                 # and reading again must not send the request a second time.
                 self.finished = True
                 self._cancel_calls()
