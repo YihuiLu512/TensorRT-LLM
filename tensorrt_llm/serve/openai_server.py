@@ -3375,6 +3375,12 @@ class OpenAIServer(_VideoRoutesMixin):
             if dispatch.enabled:
                 response = dispatch.result(promise, postproc_params)
             else:
+                # This path formats the response itself rather than through
+                # dispatch.result, so a dispatch that runs a hook in the
+                # handler (the OpenEngine facade's) runs it here.
+                apply_hook = getattr(dispatch, "apply_hook", None)
+                if apply_hook is not None:
+                    apply_hook(promise)
                 args = postproc_params.postproc_args
                 response = await responses_api_create_response(
                     generator=promise,

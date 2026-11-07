@@ -325,7 +325,13 @@ OWNERSHIP: dict[str, list[Rule]] = {
         Rule(
             "scripts/poc2/check_ownership.py",
             "exception",
-            "only the contract v2 exceptions of WT-13",
+            "only the exceptions of WT-13",
+        ),
+        Rule(
+            f"{CLIENT_TESTS}/test_openengine_poc_serve.py",
+            "exception",
+            "only the cases that expected the postprocessing options refused while their slots"
+            " had the default implementation",
         ),
         _shared(
             "tensorrt_llm/serve/postprocess_handlers.py", "making PostprocArgs plain data only"

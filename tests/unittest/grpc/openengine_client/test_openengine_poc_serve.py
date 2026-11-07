@@ -1591,8 +1591,6 @@ def _options(**changes: Any) -> SimpleNamespace:
         ({"enable_energy_metrics": True}, "enable_energy_metrics"),
         ({"enable_resource_governor": True}, "enable_resource_governor"),
         ({"max_beam_width": 2}, "max_beam_width"),
-        ({"num_postprocess_workers": 2}, "num_postprocess_workers"),
-        ({"post_processor_hook": "guardrails:redact"}, "post_processor_hook"),
         ({"return_perf_metrics": True}, "return_perf_metrics"),
         ({"perf_metrics_output_dir": "/tmp/perf"}, "perf_metrics_output_dir"),
         ({"enable_iter_perf_stats": True}, "enable_iter_perf_stats"),
@@ -1626,9 +1624,9 @@ def test_options_are_accepted_once_their_component_is_present(monkeypatch) -> No
 
 def test_from_llm_args_refuses_an_option_it_cannot_honour(tmp_path) -> None:
     _hf_tokenizer().save_pretrained(tmp_path)
-    with pytest.raises(ValueError, match="num_postprocess_workers"):
+    with pytest.raises(ValueError, match="enable_energy_metrics"):
         OpenEngineLLM.from_llm_args(
-            {"model": str(tmp_path), "num_postprocess_workers": 2}, "localhost:1"
+            {"model": str(tmp_path), "enable_energy_metrics": True}, "localhost:1"
         )
 
 
@@ -1639,9 +1637,9 @@ def test_port_zero_needs_a_report_addr(tmp_path) -> None:
 
 def test_launch_reports_a_configuration_error_as_a_usage_error(tmp_path) -> None:
     _hf_tokenizer().save_pretrained(tmp_path)
-    with pytest.raises(click.UsageError, match="num_postprocess_workers"):
+    with pytest.raises(click.UsageError, match="enable_energy_metrics"):
         launch_module.launch_openengine_server(
-            "127.0.0.1", 8000, {"model": str(tmp_path), "num_postprocess_workers": 2}, "x:1"
+            "127.0.0.1", 8000, {"model": str(tmp_path), "enable_energy_metrics": True}, "x:1"
         )
 
 

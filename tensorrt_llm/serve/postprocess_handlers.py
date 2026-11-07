@@ -1075,6 +1075,10 @@ class ResponsesAPIPostprocArgs(PostprocArgs):
     reasoning_parser: Optional[str] = None
     tool_parser: Optional[str] = None
     streaming_processor: Optional[ResponsesStreamingProcessor] = None
+    # The creation time of a streaming response, for a postprocessing process
+    # that builds its own ``streaming_processor`` after the opening events
+    # were sent with this time.
+    streaming_created_time: Optional[int] = None
 
 
 @nvtx_range_debug("responses_api_post_processor")
