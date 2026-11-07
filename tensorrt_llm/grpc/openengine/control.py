@@ -77,7 +77,8 @@ _MODE_BY_GUIDE_FIELD = {
 
 # Capability keys of the `extra` conventions. A key reported true must take
 # effect in Generate; a conforming client never sends a request key whose
-# capability is false.
+# capability is false. One-model speculative decoding turns the min_p and
+# penalty keys false (`_speculative_sampling_capabilities`).
 _EXTRA_CAPABILITIES = {
     SAMPLING_MIN_P_KEY: True,
     SAMPLING_FREQUENCY_PENALTY_KEY: True,
@@ -94,6 +95,41 @@ _EXTRA_CAPABILITIES = {
     REQUEST_SCHEDULING_KEY: False,
     REQUEST_BEST_OF_KEY: False,
 }
+
+
+def _speculative_sampling_capabilities(llm_args: Any) -> dict:
+    """Report min_p and the occurrence penalties unsupported under one-model speculation.
+
+    The one-model speculative modes apply these only on some draft and
+    acceptance paths. Which path runs depends on settings such as
+    ``advanced_sampling_mode``, ``enable_penalty``, the dynamic tree, relaxed
+    acceptance and the checkpoint's MTP layer count, which the server process
+    cannot all see. A request that sets one of them may be rejected, or decoded
+    without it.
+    """
+    spec_config = getattr(llm_args, "speculative_config", None)
+    if spec_config is None:
+        return {}
+    if spec_config.decoding_type == "AUTO":
+        # Resolving `spec_dec_mode` imports this package anyway.
+        from tensorrt_llm._torch.speculative import suggest_spec_config
+
+        # The executor replaces AUTO with this config when it starts.
+        spec_config = suggest_spec_config(
+            _positive_int(getattr(llm_args, "max_batch_size", None)) or 1
+        )
+    if not spec_config.spec_dec_mode.use_one_engine():
+        return {}
+    return dict.fromkeys(
+        (
+            SAMPLING_MIN_P_KEY,
+            SAMPLING_FREQUENCY_PENALTY_KEY,
+            SAMPLING_PRESENCE_PENALTY_KEY,
+            SAMPLING_REPETITION_PENALTY_KEY,
+        ),
+        False,
+    )
+
 
 _INFERENCE_PROBE_TIMEOUT_SECONDS = 30.0
 _LOAD_SNAPSHOT_CACHE_SECONDS = 0.1
@@ -356,6 +392,7 @@ class OpenEngineControlServicer(openengine_pb2_grpc.ControlServicer):
         if supports_image_routing(self._llm, media_modalities):
             info.extra.update({"trtllm_image_routing_version": 1})
         info.extra.update(_EXTRA_CAPABILITIES)
+        info.extra.update(_speculative_sampling_capabilities(self._llm.args))
         if getattr(self._llm, "tokenizer", None) is None:
             # Stop strings are encoded to token ids with the tokenizer.
             info.extra.update({STOPPING_STOP_TEXT_KEY: False})

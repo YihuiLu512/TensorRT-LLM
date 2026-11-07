@@ -35,6 +35,13 @@ from tensorrt_llm.grpc.openengine.capabilities import (  # noqa: E402
 from tensorrt_llm.grpc.openengine.control import OpenEngineControlServicer  # noqa: E402
 from tensorrt_llm.grpc.openengine.servicer import OpenEngineInferenceServicer  # noqa: E402
 from tensorrt_llm.llmapi import KVEventsConfig  # noqa: E402
+from tensorrt_llm.llmapi.llm_args import (  # noqa: E402
+    AutoDecodingConfig,
+    Eagle3DecodingConfig,
+    MTPDecodingConfig,
+    NGramDecodingConfig,
+    SADecodingConfig,
+)
 
 # Runs on the CPU stage: the engine is stubbed, so nothing here needs a GPU.
 pytestmark = pytest.mark.cpu_only
@@ -1066,6 +1073,48 @@ async def test_model_info_without_a_tokenizer_reports_capabilities_but_no_finger
     assert {key: info.extra[key] for key in EXPECTED_EXTRA_CAPABILITIES} == {
         **EXPECTED_EXTRA_CAPABILITIES,
         "trtllm.stopping.stop_text": False,
+    }
+
+
+SPECULATIVE_SAMPLING_KEYS = (
+    "trtllm.sampling.min_p",
+    "trtllm.sampling.frequency_penalty",
+    "trtllm.sampling.presence_penalty",
+    "trtllm.sampling.repetition_penalty",
+)
+DRAFT = "/models/draft"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("make_config", "supported"),
+    [
+        (lambda: None, True),
+        # NGram drafts outside the model and keeps TorchSampler.
+        (lambda: NGramDecodingConfig(max_draft_len=3, max_matching_ngram_size=2), True),
+        (lambda: MTPDecodingConfig(max_draft_len=3), False),
+        # Opting in to the penalties does not make every acceptance path apply them.
+        (lambda: MTPDecodingConfig(max_draft_len=3, enable_penalty=True), False),
+        (lambda: Eagle3DecodingConfig(max_draft_len=3, speculative_model=DRAFT), False),
+        (lambda: SADecodingConfig(max_draft_len=3, enable_penalty=True), False),
+        # The executor replaces AUTO with a one-model SA config.
+        (lambda: AutoDecodingConfig(), False),
+    ],
+)
+async def test_model_info_reports_no_min_p_or_penalties_under_one_model_speculation(
+    make_config, supported
+):
+    # Built in the test so that a config that fails validation fails only its own case.
+    info = await _servicer(speculative_config=make_config()).GetModelInfo(
+        model_pb2.GetModelInfoRequest(), FakeServicerContext()
+    )
+
+    assert {key: info.extra[key] for key in SPECULATIVE_SAMPLING_KEYS} == dict.fromkeys(
+        SPECULATIVE_SAMPLING_KEYS, supported
+    )
+    other_keys = set(EXPECTED_EXTRA_CAPABILITIES) - set(SPECULATIVE_SAMPLING_KEYS)
+    assert {key: info.extra[key] for key in other_keys} == {
+        key: EXPECTED_EXTRA_CAPABILITIES[key] for key in other_keys
     }
 
 
