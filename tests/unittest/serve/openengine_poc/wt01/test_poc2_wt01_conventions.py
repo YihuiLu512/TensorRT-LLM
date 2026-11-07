@@ -229,4 +229,5 @@ def test_module_does_not_import_the_serving_side():
         "print(sorted(m for m in set(sys.modules) - before if m.startswith('tensorrt_llm.serve')))"
     )
     out = subprocess.run([sys.executable, "-c", code], check=True, capture_output=True, text=True)
-    assert out.stdout.strip() == "[]"
+    # Importing tensorrt_llm prints a version banner first.
+    assert out.stdout.strip().splitlines()[-1] == "[]"

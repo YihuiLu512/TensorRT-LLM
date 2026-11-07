@@ -142,14 +142,14 @@ def test_the_glm_group_comes_from_feature_deps(rows):
     assert groups["glm"] == ["WT-06", "WT-07"]
 
 
-def test_entries_without_a_known_row_are_reported(rows, capsys):
+def test_entries_without_a_known_row_are_reported(rows, capfd):
     records = [
         {"entries": [{"features": ["F-15"]}, {"row": "F-99"}, {"row": "F-05"}]},
         None,
         ["not", "a", "mapping"],
     ]
     assert pending_e2e.verified_rows(records, [row.id for row in rows]) == {"F-05"}
-    err = capsys.readouterr().err
+    err = capfd.readouterr().err
     assert "without a row id" in err and "unknown row 'F-99'" in err
     assert "not a mapping" in err
 
@@ -217,7 +217,7 @@ def test_landed_tasks_and_verified_records_from_git(repo):
     assert pending_e2e.main(["--repo", str(repo), "--ref", "integration", "--task", "WT-10"]) == 0
 
 
-def test_glm_items_are_read_from_the_glm_repository(repo, tmp_path, capsys):
+def test_glm_items_are_read_from_the_glm_repository(repo, tmp_path, capfd):
     glm = tmp_path / "glm"
     glm.mkdir()
     _git(glm, "init", "-q", "-b", "main")
@@ -231,13 +231,13 @@ def test_glm_items_are_read_from_the_glm_repository(repo, tmp_path, capsys):
     _commit(repo, "b\n\nPoC2-Task: WT-06")
     base = ["--repo", str(repo), "--ref", "integration", "--json"]
     assert pending_e2e.main([*base, "--landed"]) == 0
-    out = capsys.readouterr()
+    out = capfd.readouterr()
     assert yaml.safe_load(out.out) == ["WT-01"] and "--glm-repo not given" in out.err
     assert pending_e2e.main([*base, "--landed", "--glm-repo", str(glm), "--glm-ref", "main"]) == 0
-    assert yaml.safe_load(capsys.readouterr().out) == ["WT-01", "WT-07"]
+    assert yaml.safe_load(capfd.readouterr().out) == ["WT-01", "WT-07"]
 
 
-def test_ownership_in_bounds(repo, capsys):
+def test_ownership_in_bounds(repo, capfd):
     _git(repo, "checkout", "-q", "-b", "work")
     _commit(
         repo,
@@ -249,7 +249,7 @@ def test_ownership_in_bounds(repo, capsys):
         ],
     )
     assert check_ownership.check("WT-11", "main..work", str(repo)) == 0
-    assert "PASS" in capsys.readouterr().out
+    assert "PASS" in capfd.readouterr().out
     # A fix owns what its work item owns.
     _commit(
         repo,
@@ -259,7 +259,7 @@ def test_ownership_in_bounds(repo, capsys):
     assert check_ownership.check("WT-11-fix1", "work~1..work", str(repo)) == 0
 
 
-def test_ownership_rejects_a_deliberately_out_of_bounds_change(repo, capsys):
+def test_ownership_rejects_a_deliberately_out_of_bounds_change(repo, capfd):
     _git(repo, "checkout", "-q", "-b", "work")
     _commit(
         repo,
@@ -270,21 +270,21 @@ def test_ownership_rejects_a_deliberately_out_of_bounds_change(repo, capsys):
         ],
     )
     assert check_ownership.check("WT-11", "main..work", str(repo)) == 1
-    out = capsys.readouterr().out
+    out = capfd.readouterr().out
     assert "OUT OF BOUNDS  tensorrt_llm/serve/openengine_poc/response.py  (owned by WT-12)" in out
     assert "FAIL" in out
 
 
-def test_ownership_rejects_commits_without_the_trailer(repo, capsys):
+def test_ownership_rejects_commits_without_the_trailer(repo, capfd):
     _git(repo, "checkout", "-q", "-b", "work")
     _commit(repo, "map", [("tensorrt_llm/serve/openengine_poc/mapping.py", "x")])
     _commit(repo, "other\n\nPoC2-Task: WT-12")
     assert check_ownership.check("WT-11", "main..work", str(repo)) == 1
-    out = capsys.readouterr().out
+    out = capfd.readouterr().out
     assert out.count("BAD TRAILER") == 2
 
 
-def test_shared_files_are_listed_for_review(repo, capsys):
+def test_shared_files_are_listed_for_review(repo, capfd):
     _git(repo, "checkout", "-q", "-b", "work")
     _commit(
         repo,
@@ -292,7 +292,7 @@ def test_shared_files_are_listed_for_review(repo, capsys):
         [("tensorrt_llm/serve/openai_server.py", "x"), ("scripts/poc2/x.py", "x")],
     )
     assert check_ownership.check("WT-01", "main..work", str(repo)) == 0
-    out = capsys.readouterr().out
+    out = capfd.readouterr().out
     assert "CHECK BY HAND  SHARED" in out and "openai_server.py" in out
     assert "scripts/poc2/x.py" not in out
 
@@ -398,8 +398,8 @@ def test_feature_deps_matches_tasks_md_section_3():
         assert ("case-01" in feature) == (row.get("chain") == "case-01"), row["id"]
 
 
-def test_a_task_that_already_landed_is_warned_about(repo, capsys):
+def test_a_task_that_already_landed_is_warned_about(repo, capfd):
     _git(repo, "checkout", "-q", "integration")
     _commit(repo, "a\n\nPoC2-Task: WT-01")
     assert pending_e2e.main(["--repo", str(repo), "--ref", "integration", "--task", "WT-01"]) == 0
-    assert "WT-01 has already landed" in capsys.readouterr().err
+    assert "WT-01 has already landed" in capfd.readouterr().err
