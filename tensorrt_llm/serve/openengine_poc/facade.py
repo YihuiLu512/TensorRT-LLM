@@ -12,15 +12,18 @@ hands them to the handlers the way a streaming ``RequestOutput`` does.
 Startup (:meth:`OpenEngineLLM.start`) connects, waits for the engine, checks
 its schema revision and conventions version, reads its capabilities, checks
 the tokenizer fingerprint and the serving prerequisites. Afterwards the facade
-polls the engine's health; when the engine stays unreachable or not ready
-longer than ``engine_lost_timeout``, it records a fatal error and stops the
-frontend. :func:`adapt_server` adds the ``engine`` block to ``/server_info``
-and answers the endpoints this path does not support with 501.
+polls the engine's health. It records a fatal error and stops the frontend
+when the engine stays unreachable or not ready longer than
+``engine_lost_timeout``, when a restarted engine fails the startup checks, and
+when the health watcher itself fails. :func:`adapt_server` adds the ``engine``
+block to ``/server_info`` and answers the endpoints this path does not support
+with 501.
 """
 
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import dataclasses
 import json
 import os
@@ -28,7 +31,6 @@ import re
 import signal
 import time
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any
@@ -69,6 +71,7 @@ __all__ = [
     "DEFAULT_ENGINE_LOST_TIMEOUT_S",
     "DEFAULT_READY_TIMEOUT_S",
     "HEALTH_POLL_SECONDS",
+    "MAX_BUFFERED_EVENTS",
     "OpenEngineLLM",
     "OpenEngineRequestOutput",
     "OpenEngineServeError",
@@ -81,6 +84,8 @@ DEFAULT_CONTROL_TIMEOUT_S = 5.0
 DEFAULT_ENGINE_LOST_TIMEOUT_S = 30.0
 HEALTH_POLL_SECONDS = 5.0
 LOG_PROMPT_IDS_ENV = "TRTLLM_OPENENGINE_POC_LOG_PROMPT_IDS"
+# Events a request may hold unread; past this the request is cancelled and answered 503.
+MAX_BUFFERED_EVENTS = 4096
 
 # Endpoints that need the engine in this process; answered with 501.
 UNSUPPORTED_ENDPOINTS: tuple[tuple[str, str], ...] = (
@@ -278,8 +283,10 @@ class OpenEngineLLM:
         self._generate_sent = 0
         self._counter_dir = os.environ.get(SERVE_COUNTER_DIR_ENV) or None
         self._counter = contracts.GenerateCounter(self._counter_dir)
-        self._counter_writer: ThreadPoolExecutor | None = None
+        self._counter_writer: concurrent.futures.ThreadPoolExecutor | None = None
         self._metrics = contracts.create_metrics_recorder(args)
+        # The default recorder derives nothing from the engine's load, so none is fetched.
+        self._metrics_use_load = contracts.resolve_slot("create_metrics_recorder")[1] != "default"
         self._lora: contracts.LoraRegistry | None = None
         self._local_fingerprint: Any = None
 
@@ -406,6 +413,13 @@ class OpenEngineLLM:
     def _check_engine(self, info: EngineInfo, caps: ModelCapabilities) -> None:
         """Check the conventions version, token-id input and the tokenizer fingerprint."""
         version = conventions_version(info.extra)
+        reported = info.extra.get(CONVENTIONS_VERSION_KEY)
+        if version is None and reported is not None:
+            raise self._startup_error(
+                "conventions version",
+                f"{CONVENTIONS_VERSION_KEY} is not an integer: serve={CONVENTIONS_VERSION} "
+                f"engine={reported!r}",
+            )
         if version is None:
             logger.warning(
                 f"OpenEngine engine {info.engine_name!r} at {self._endpoint} reports no "
@@ -490,15 +504,19 @@ class OpenEngineLLM:
         """Re-read the engine's identity and capabilities if it restarted.
 
         Returns:
-            False if the restarted engine cannot be served from; it is then
-            declared lost.
+            False if the restarted engine cannot be served from (its schema
+            revision or a startup check fails); it is then declared lost.
         """
         client = self.client
         before_info, before_caps = client.server_info(), client.model_info()
         current = await client.current_instance_id()
         if current == before_info.instance_id:
             return True
-        await client.refresh()
+        try:
+            await client.refresh()
+        except OpenEngineIncompatibleServerError as error:
+            self._engine_lost(f"the restarted OpenEngine engine is not usable: {error}")
+            return False
         info, caps = client.server_info(), client.model_info()
         logger.warning(
             f"OpenEngine engine at {self._endpoint} restarted: instance {before_info.instance_id} "
@@ -556,12 +574,17 @@ class OpenEngineLLM:
         if self._client is not None:
             await self._client.close()
         if self._counter_writer is not None:
-            self._counter_writer.shutdown(wait=True)
+            # The last writes may go to a slow file system; the loop keeps running meanwhile.
+            await asyncio.to_thread(self._counter_writer.shutdown, True)
 
     # -- Counting ------------------------------------------------------------
 
     def _record_sent(self, count: int) -> None:
-        """Count ``count`` more Generate calls; the count file is written off the event loop."""
+        """Count ``count`` more Generate calls.
+
+        With a counter directory, a writer thread updates the count file;
+        while the frontend closes, the file is written on the calling thread.
+        """
         self._generate_sent += count
         if self._counter_dir is None or self._closing:
             # Calls that end while the frontend closes are written here, after the writer stopped.
@@ -572,7 +595,9 @@ class OpenEngineLLM:
             return
         if self._counter_writer is None:
             # One thread keeps the writes in order, so the last one holds the total.
-            self._counter_writer = ThreadPoolExecutor(1, thread_name_prefix="openengine-counter")
+            self._counter_writer = concurrent.futures.ThreadPoolExecutor(
+                1, thread_name_prefix="openengine-counter"
+            )
         future = self._counter_writer.submit(self._counter.increment, count)
         future.add_done_callback(_log_counter_failure)
 
@@ -590,12 +615,23 @@ class OpenEngineLLM:
 
     # -- Requests ------------------------------------------------------------
 
-    def _prompt_token_ids(self, inputs: Any, sampling_params: SamplingParams) -> list[int]:
+    def _media(self, inputs: Any) -> list[contracts.MediaSpec]:
+        """The prompt's media as the ``map_media`` slot maps them; it refuses what it cannot map."""
+        client = self.client
+        return contracts.map_media(
+            prompt_inputs(inputs), client.model_info(), engine_name=client.server_info().engine_name
+        )
+
+    def _prompt_token_ids(
+        self, inputs: Any, sampling_params: SamplingParams, media: list[contracts.MediaSpec]
+    ) -> list[int]:
         prompt = prompt_inputs(inputs)
         if prompt.get("prompt_token_ids") is not None:
             return list(prompt["prompt_token_ids"])
         prompt_token_ids, extra = self.input_processor(prompt, sampling_params)
-        if extra and any(extra.get(key) for key in ("multimodal_data", "multimodal_input")):
+        has_media = extra and any(extra.get(key) for key in ("multimodal_data", "multimodal_input"))
+        if has_media and not media:
+            # The input processor found media that the map_media slot did not map.
             raise ValueError(
                 "multimodal inputs are not supported when serving through an OpenEngine engine"
             )
@@ -617,10 +653,15 @@ class OpenEngineLLM:
                 "disaggregated_params is not supported when serving through an OpenEngine engine"
             )
         prompt = prompt_inputs(inputs)
+        # The map_media slot decides on the media before the input processor
+        # spends time on them; the default slot refuses all media.
+        media = self._media(prompt)
         tokenized: dict[str, Any] = {
-            "prompt_token_ids": self._prompt_token_ids(inputs, sampling_params or SamplingParams())
+            "prompt_token_ids": self._prompt_token_ids(
+                inputs, sampling_params or SamplingParams(), media
+            )
         }
-        # Media stay with the prompt, so generate_async maps or refuses them.
+        # Media the slot accepted stay with the prompt for generate_async to map.
         for key in contracts._MULTIMODAL_KEYS:
             if prompt.get(key) is not None:
                 tokenized[key] = prompt[key]
@@ -701,12 +742,9 @@ class OpenEngineLLM:
         """
         del _postproc_params
         sampling_params = sampling_params or SamplingParams()
-        client = self.client
-        caps = client.model_info()
-        engine_name = client.server_info().engine_name
-        prompt = prompt_inputs(inputs)
-        media = contracts.map_media(prompt, caps, engine_name=engine_name)
-        prompt_token_ids = self._prompt_token_ids(inputs, sampling_params)
+        engine_name = self.client.server_info().engine_name
+        media = self._media(inputs)
+        prompt_token_ids = self._prompt_token_ids(inputs, sampling_params, media)
         options = contracts.GenerateOptions(
             streaming=streaming,
             lora_request=lora_request,
@@ -752,7 +790,7 @@ class OpenEngineLLM:
     # -- Stats and events ----------------------------------------------------
 
     async def _iteration_stats(self) -> list[dict[str, Any]]:
-        load: EngineLoad | None = await self.client.load()
+        load: EngineLoad | None = await self.client.load() if self._metrics_use_load else None
         stat = self._metrics.iteration_stats(load)
         return [] if stat is None else [stat]
 
@@ -763,7 +801,8 @@ class OpenEngineLLM:
         future = asyncio.run_coroutine_threadsafe(self._iteration_stats(), self._loop)
         try:
             return future.result(max(timeout, 0) + self._control_timeout)
-        except TimeoutError:
+        except (TimeoutError, concurrent.futures.TimeoutError):
+            # Before Python 3.11 the future raises its own TimeoutError class.
             future.cancel()
             raise
 
@@ -877,8 +916,12 @@ class OpenEngineRequestOutput:
         if self._requests is None:
             assert self._prepare is not None
             self._requests = await self._prepare()
+            if not self._requests:
+                raise _no_calls(self._engine_name)
             # As on the other path, the request is known by its first call's id.
             self._requests[0] = dataclasses.replace(self._requests[0], request_id=self.request_id)
+        if not self._requests:
+            raise _no_calls(self._engine_name)
         self._queue = asyncio.Queue()
         client = self._facade.client
         offset = 0
@@ -897,10 +940,13 @@ class OpenEngineRequestOutput:
     async def _pump(self, stream: EngineEventStream, offset: int) -> None:
         """Read one call to its end into the queue.
 
-        The call counts as sent once its first read returns. The pump keeps
-        reading after the request finished, so a call the engine ends itself
-        is closed by the engine; ``stream.cancel()`` only takes effect before
-        the engine's last event.
+        The call is counted as sent when its first read returns an event, or
+        when reading it ends, provided the call reached the engine
+        (``stream.sent``). The pump keeps reading after the request finished,
+        so a call the engine ends itself is closed by the engine;
+        ``stream.cancel()`` only takes effect before the engine's last event.
+        When the request holds :data:`MAX_BUFFERED_EVENTS` unread events, the
+        pump cancels its call and hands the reader a 503 error.
         """
         queue = self._queue
         assert queue is not None
@@ -915,6 +961,19 @@ class OpenEngineRequestOutput:
         try:
             async for event in stream:
                 count()
+                if queue.qsize() >= MAX_BUFFERED_EVENTS:
+                    stream.cancel()
+                    queue.put_nowait(
+                        (
+                            offset,
+                            OpenEngineServeError(
+                                f"the response of the OpenEngine engine {self._engine_name!r} "
+                                f"was not read fast enough ({MAX_BUFFERED_EVENTS} events waiting)",
+                                HTTPStatus.SERVICE_UNAVAILABLE,
+                            ),
+                        )
+                    )
+                    return
                 queue.put_nowait((offset, event))
         except asyncio.CancelledError:
             stream.cancel()
@@ -933,6 +992,11 @@ class OpenEngineRequestOutput:
             stream.cancel()
 
     def _fail(self, error: Exception) -> Exception:
+        if self._facade._closing and not isinstance(error, ValueError):
+            # Closing the frontend cancels its calls; that is not the engine's failure.
+            error = OpenEngineServeError(
+                "this frontend is shutting down", HTTPStatus.SERVICE_UNAVAILABLE
+            )
         self.error = str(error)
         self.finished = True
         self._cancel_calls()
@@ -946,8 +1010,20 @@ class OpenEngineRequestOutput:
                 await self._start()
             except OpenEngineClientError as error:
                 raise self._fail(request_error(error, self._engine_name)) from error
-            except ValueError as error:
+            except (ValueError, OpenEngineServeError) as error:
                 raise self._fail(error) from error
+            except Exception as error:
+                raise self._fail(
+                    OpenEngineServeError(
+                        f"failed to start the request on the OpenEngine engine "
+                        f"{self._engine_name!r}: {error}",
+                        HTTPStatus.INTERNAL_SERVER_ERROR,
+                    )
+                ) from error
+            except BaseException:
+                # Cancelled while starting: the calls already sent must not keep running.
+                self._cancel_calls()
+                raise
         assert self._queue is not None
         while True:
             offset, item = await self._queue.get()
@@ -969,6 +1045,8 @@ class OpenEngineRequestOutput:
             if isinstance(item, BaseException):
                 if isinstance(item, OpenEngineClientError):
                     raise self._fail(request_error(item, self._engine_name)) from item
+                if isinstance(item, OpenEngineServeError):
+                    raise self._fail(item)
                 raise self._fail(
                     OpenEngineServeError(str(item), HTTPStatus.INTERNAL_SERVER_ERROR)
                 ) from item
@@ -1008,6 +1086,13 @@ class OpenEngineRequestOutput:
             return self
 
 
+def _no_calls(engine_name: str) -> OpenEngineServeError:
+    return OpenEngineServeError(
+        f"the request mapped to no Generate call on the OpenEngine engine {engine_name!r}",
+        HTTPStatus.INTERNAL_SERVER_ERROR,
+    )
+
+
 def _shifted(event: Any, offset: int) -> Any:
     """``event`` with its ``output_index`` moved by ``offset``."""
     return dataclasses.replace(event, output_index=event.output_index + offset)
@@ -1016,11 +1101,11 @@ def _shifted(event: Any, offset: int) -> Any:
 def check_frontend_options(args: Any) -> None:
     """Refuse options this frontend cannot honour, instead of ignoring them.
 
-    ``post_processor_hook`` and the metrics options are accepted once the slot
-    of the component that implements them (the postprocessing dispatch, the
-    metrics recorder) has an implementation, and refused with the reason
-    until then. ``num_postprocess_workers`` is refused until the
-    postprocessing pool is wired into the facade.
+    ``post_processor_hook`` is accepted when the ``create_postproc_dispatch``
+    slot has an implementation other than the default, and the metrics and
+    tracing options when the ``create_metrics_recorder`` slot has one; with
+    the default slot they are refused with the reason.
+    ``num_postprocess_workers`` greater than 0 is always refused.
 
     Raises:
         ValueError: An option cannot be honoured.
@@ -1073,7 +1158,7 @@ def check_frontend_options(args: Any) -> None:
     ]
     for name, used, available, component in needs:
         if used and not available:
-            problems.append(f"{name} needs {component}, which this frontend does not have yet")
+            problems.append(f"{name} needs {component}, which this frontend does not have")
     if problems:
         raise ValueError(
             "--openengine-endpoint cannot serve this configuration: " + "; ".join(problems)
@@ -1086,8 +1171,10 @@ def adapt_server(server: Any, facade: OpenEngineLLM) -> None:
     - ``/server_info`` gains the ``engine`` block;
     - the endpoints in :data:`UNSUPPORTED_ENDPOINTS` answer 501, as does a
       request whose handler lets ``OpenEngineUnsupportedError`` propagate;
-    - a request that fails with :class:`OpenEngineServeError` is reported with
-      that error's HTTP status rather than 400.
+    - when a handler reports an :class:`OpenEngineServeError` as a 400 error
+      response, the response carries that error's HTTP status instead; once a
+      streaming response has started, the error is a stream event and the
+      status stays 200.
     """
     import sys
 
@@ -1103,11 +1190,13 @@ def adapt_server(server: Any, facade: OpenEngineLLM) -> None:
 
     def replace_route(path: str, method: str, endpoint: Callable[..., Any]) -> None:
         routes = app.router.routes
+        include_in_schema = False
         for index, route in enumerate(routes):
             if isinstance(route, APIRoute) and route.path == path and method in route.methods:
+                include_in_schema = route.include_in_schema
                 del routes[index]
                 break
-        app.add_api_route(path, endpoint, methods=[method], include_in_schema=False)
+        app.add_api_route(path, endpoint, methods=[method], include_in_schema=include_in_schema)
 
     def unsupported_endpoint(path: str) -> Callable[[], Any]:
         async def unsupported() -> JSONResponse:
@@ -1122,9 +1211,11 @@ def adapt_server(server: Any, facade: OpenEngineLLM) -> None:
 
     async def server_info() -> JSONResponse:
         response = await original_server_info()
+        if response.status_code != HTTPStatus.OK:
+            return response
         content = json.loads(response.body)
         content["engine"] = facade.engine_block()
-        return JSONResponse(content=content)
+        return JSONResponse(content=content, status_code=response.status_code)
 
     replace_route("/server_info", "GET", server_info)
 

@@ -1,12 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Earlier names of the OpenEngine ``LLM`` facade (see :mod:`.facade`), and the PoC-S1 request output.
+"""``OpenEngineLLMAdapter``, another name of the OpenEngine ``LLM`` facade, and a reference request output.
 
-``OpenEngineLLMAdapter`` is the facade. ``OpenEngineRequestOutput`` here is the
-request output of the PoC-S1 adapter, which read one Generate stream through
-per-output detokenizers; the facade does not use it. It stays as the reference
-the default response assembler is checked against. The facade's request
-output is :class:`.facade.OpenEngineRequestOutput`, which the package exports.
+``OpenEngineLLMAdapter`` is :class:`.facade.OpenEngineLLM`, with the facade's
+constructor and methods. ``OpenEngineRequestOutput`` here reads one Generate
+stream through per-output detokenizers; the facade does not use it, and the
+tests of the default response assembler compare against it. The facade's
+request output is :class:`.facade.OpenEngineRequestOutput`, which the package
+exports.
 """
 
 from __future__ import annotations

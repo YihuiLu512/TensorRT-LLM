@@ -113,9 +113,13 @@ def launch_openengine_server(
     sockets = None
     if report_addr:
         sock = _bind(host, port)
-        port = sock.getsockname()[1]
+        try:
+            port = sock.getsockname()[1]
+            _publish_bound_address(report_addr, host, port)
+        except BaseException:
+            sock.close()
+            raise
         sockets = [sock]
-        _publish_bound_address(report_addr, host, port)
 
     async def run() -> None:
         # As launch_server does.

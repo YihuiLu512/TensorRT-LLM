@@ -28,9 +28,10 @@ chain_only = pytest.mark.skipif(
     not CHAIN, reason="checks the OpenEngine frontend; runs on the chain only"
 )
 
-# How long the frontend waits before giving up on an engine that does not
-# answer (health polled every 5 s, lost after 30 s), plus room for shutdown.
-ENGINE_LOST_STOP_S = 5 + 30 + 60
+# How long a frontend takes to stop when its engine stops answering: the first
+# failed poll ends after the 5 s poll interval and the 5 s Health RPC timeout,
+# the engine is declared lost 30 s later, and shutdown gets the rest.
+ENGINE_LOST_STOP_S = 5 + 5 + 30 + 90
 # Endpoints that need an engine in the frontend's process; the frontend answers 501.
 UNSUPPORTED_ENDPOINTS = (
     ("POST", "/start_profile"),
