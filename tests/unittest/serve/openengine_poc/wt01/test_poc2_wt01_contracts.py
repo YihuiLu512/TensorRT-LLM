@@ -49,7 +49,7 @@ def _fresh_slots():
 
 
 def test_contract_version():
-    assert contracts.POC2_CONTRACT_VERSION == 3
+    assert contracts.POC2_CONTRACT_VERSION == 4
 
 
 def test_slot_table():
@@ -698,6 +698,16 @@ def test_default_launch_calls_the_single_frontend_launcher():
     with mock.patch.object(launch, "launch_openengine_server") as launcher:
         contracts.launch_frontends(dataclasses.replace(config, ready_timeout=5.0))
     assert launcher.call_args.kwargs["ready_timeout"] == 5.0
+    with mock.patch.object(launch, "launch_openengine_server") as launcher:
+        contracts.launch_frontends(
+            dataclasses.replace(
+                config, report_addr="/tmp/addr", allow_newer_schema=True, control_timeout=2.0
+            )
+        )
+    kwargs = launcher.call_args.kwargs
+    assert kwargs["report_addr"] == "/tmp/addr"
+    assert kwargs["allow_newer_schema"] is True
+    assert kwargs["control_timeout"] == 2.0
 
 
 def test_default_launch_rejects_several_frontends():
@@ -705,14 +715,6 @@ def test_default_launch_rejects_several_frontends():
         host="h", port=1, llm_args={"num_serve_frontends": 2}, endpoint="e:2"
     )
     with pytest.raises(click.UsageError, match="single serving frontend"):
-        contracts.launch_frontends(config)
-
-
-def test_default_launch_rejects_a_report_address():
-    config = contracts.FrontendLaunchConfig(
-        host="h", port=1, llm_args={}, endpoint="e:2", report_addr="/tmp/addr"
-    )
-    with pytest.raises(click.UsageError, match="--report_addr"):
         contracts.launch_frontends(config)
 
 

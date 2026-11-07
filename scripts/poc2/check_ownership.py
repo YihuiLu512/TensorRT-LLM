@@ -229,7 +229,25 @@ OWNERSHIP: dict[str, list[Rule]] = {
         f"!{CLIENT_TESTS}/fake_openengine.py",
         f"!{CLIENT_TESTS}/test_fake_openengine*.py",
     )
-    + [_shared(f"{POC}/__init__.py", "exports of the facade")],
+    + [
+        _shared(f"{POC}/__init__.py", "exports of the facade"),
+        Rule(
+            f"{POC}/contracts.py",
+            "exception",
+            "only contract v4: FrontendLaunchConfig's allow_newer_schema and control_timeout,"
+            " and the default launch passing them and report_addr on",
+        ),
+        Rule(
+            "tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_contracts.py",
+            "exception",
+            "only the contract v4 version and the default launch's arguments",
+        ),
+        Rule(
+            "scripts/poc2/check_ownership.py",
+            "exception",
+            "only the contract v4 exceptions of WT-10",
+        ),
+    ],
     "WT-11": _own(f"{POC}/mapping.py", f"{POC}/field_classes.py"),
     "WT-12": _own(
         f"{POC}/response.py",

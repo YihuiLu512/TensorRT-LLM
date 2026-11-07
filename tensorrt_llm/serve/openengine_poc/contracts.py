@@ -80,7 +80,7 @@ if TYPE_CHECKING:
 
 # Bump on any change to a signature, type or message in this module or in
 # engine_client.py, in a commit of its own.
-POC2_CONTRACT_VERSION = 3
+POC2_CONTRACT_VERSION = 4
 
 _PACKAGE = "tensorrt_llm.serve.openengine_poc"
 
@@ -1084,6 +1084,12 @@ class FrontendLaunchConfig:
     Attributes:
         llm_args: The ``trtllm-serve`` LLM arguments, including ``num_serve_frontends``.
         ready_timeout: Seconds to wait for the engine; None for the frontend's own default.
+        report_addr: File to write the address the frontend bound to, as for
+            the in-process server; needed with ``port=0``.
+        allow_newer_schema: Accept an engine whose ``schema_revision`` is newer
+            than the client's, as long as its ``minimum_client_revision`` allows the client.
+        control_timeout: Seconds allowed for each Control RPC; None for the
+            frontend's own default.
     """
 
     host: str
@@ -1100,6 +1106,8 @@ class FrontendLaunchConfig:
     num_media_load_workers: int = 8
     ready_timeout: float | None = None
     report_addr: str | None = None
+    allow_newer_schema: bool = False
+    control_timeout: float | None = None
 
 
 def launch_frontends(config: FrontendLaunchConfig) -> None:
@@ -1117,11 +1125,16 @@ def default_launch_frontends(config: FrontendLaunchConfig) -> None:
 
     if config.llm_args.get("num_serve_frontends", 1) not in (None, 1):
         raise click.UsageError("--openengine-endpoint supports a single serving frontend")
-    if config.report_addr is not None:
-        raise click.UsageError("--report_addr is not supported with --openengine-endpoint")
+    # Passed only when set, so the frontend's own defaults apply otherwise.
     kwargs: dict[str, Any] = {}
     if config.ready_timeout is not None:
         kwargs["ready_timeout"] = config.ready_timeout
+    if config.control_timeout is not None:
+        kwargs["control_timeout"] = config.control_timeout
+    if config.report_addr is not None:
+        kwargs["report_addr"] = config.report_addr
+    if config.allow_newer_schema:
+        kwargs["allow_newer_schema"] = True
     launch.launch_openengine_server(
         config.host,
         config.port,
