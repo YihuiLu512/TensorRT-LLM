@@ -147,9 +147,36 @@ OWNERSHIP: dict[str, list[Rule]] = {
     + [
         _shared(
             f"{OE_SERVER}/control.py",
-            "only the LoRA RPC delegation and the thinking_token_budget, logit_bias, kv_hints"
-            " and scheduling capability values, after WT-04 landed",
-        )
+            "only taking the request keys, priority, LoRA and max_loras from the request"
+            " capabilities, max_num_sequences from max_num_sequences_for, and delegating"
+            " the LoRA RPCs; WT-04 owns it",
+        ),
+        Rule(
+            f"{OE_SERVER_TESTS}/test_control.py",
+            "exception",
+            "only the expected request-key values, and the comments and docstrings that"
+            " state what Generate accepts",
+        ),
+        Rule(
+            f"{OE_SERVER}/capabilities.py",
+            "exception",
+            "only the comment on MAX_NUM_SEQUENCES",
+        ),
+        Rule(
+            f"{OE_SERVER}/README.md",
+            "exception",
+            "only the sentences on priority metadata, lora_name and the LoRA RPCs",
+        ),
+        Rule(
+            "docs/source/features/kv-hints.md",
+            "exception",
+            "only the known-limitations paragraphs on gRPC transport",
+        ),
+        Rule(
+            "scripts/poc2/check_ownership.py",
+            "exception",
+            "only the WT-05 rules",
+        ),
     ],
     "WT-06": _own("python/glm5_serve/openengine/**", "tests/openengine/**", repo=GLM)
     + _own("tests/unittest/llmapi/apps/_test_openengine_glm53.py"),

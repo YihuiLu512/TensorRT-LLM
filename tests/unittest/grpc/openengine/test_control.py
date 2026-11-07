@@ -430,7 +430,7 @@ async def test_unsupported_rpcs_report_unimplemented(rpc, request_message):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("enable_lora", [False, True])
 async def test_model_info_never_advertises_lora_that_generate_rejects(enable_lora):
-    """Generate rejects `lora_name` unconditionally, even on an enable_lora build."""
+    """LoRA follows `lora_config`; `enable_lora` alone gives Generate no adapter registry."""
     info = await _servicer(enable_lora=enable_lora).GetModelInfo(
         model_pb2.GetModelInfoRequest(), FakeServicerContext()
     )
@@ -442,7 +442,7 @@ async def test_model_info_capabilities_match_the_generate_path():
     """Advertising a capability Generate rejects turns discovery into failures."""
     info = await _servicer().GetModelInfo(model_pb2.GetModelInfoRequest(), FakeServicerContext())
 
-    # `openengine-priority` is rejected by Generate.
+    # Without a priority waiting queue, Generate rejects `openengine-priority`.
     assert info.generation.supports_priority is False
     # `kv.bypass_prefix_cache` is rejected by Generate.
     assert info.generation.supports_prefix_cache_bypass is False
@@ -970,9 +970,11 @@ EXPECTED_EXTRA_CAPABILITIES = {
     "trtllm.sampling.seed_scope": "batch_dependent",
     "trtllm.stopping.stop_text": True,
     "trtllm.request.conversation_id": True,
+    # The fake engine reports no vocabulary size to check token ids against.
     "trtllm.request.thinking_token_budget": False,
     "trtllm.request.logit_bias": False,
-    "trtllm.request.kv_hints": False,
+    "trtllm.request.kv_hints": True,
+    # Neither attention DP nor an agent-tree reorder policy is configured.
     "trtllm.request.scheduling": False,
     "trtllm.request.best_of": False,
 }

@@ -5,16 +5,32 @@
 
 import asyncio
 import importlib
+import math
 import threading
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import grpc
+from google.protobuf import struct_pb2
 
 from tensorrt_llm.conversation_params import ConversationParams
+from tensorrt_llm.grpc.openengine_conventions import LOGIT_BIAS_MAX as _LOGIT_BIAS_MAX
+from tensorrt_llm.grpc.openengine_conventions import (
+    LOGIT_BIAS_MAX_ENTRIES as _LOGIT_BIAS_MAX_ENTRIES,
+)
+from tensorrt_llm.grpc.openengine_conventions import LOGIT_BIAS_MIN as _LOGIT_BIAS_MIN
+from tensorrt_llm.grpc.openengine_conventions import META_PRIORITY as _PRIORITY_METADATA_KEY
+from tensorrt_llm.grpc.openengine_conventions import META_TARGET_DP_RANK as _TARGET_DP_RANK_KEY
+from tensorrt_llm.grpc.openengine_conventions import REQ_KV_HINTS as _KV_HINTS_EXTRA_KEY
+from tensorrt_llm.grpc.openengine_conventions import REQ_LOGIT_BIAS as _LOGIT_BIAS_EXTRA_KEY
+from tensorrt_llm.grpc.openengine_conventions import REQ_SCHEDULING as _SCHEDULING_EXTRA_KEY
+from tensorrt_llm.grpc.openengine_conventions import (
+    REQ_THINKING_TOKEN_BUDGET as _THINKING_TOKEN_BUDGET_EXTRA_KEY,
+)
+from tensorrt_llm.grpc.openengine_conventions import decode_priority
 from tensorrt_llm.inputs.media_io import (
     AudioMediaIO,
     ImageMediaIO,
@@ -27,8 +43,20 @@ from tensorrt_llm.inputs.registry import BaseMultimodalInputProcessor
 from tensorrt_llm.sampling_params import GuidedDecodingParams, SamplingParams
 
 from .bindings import generation_pb2
-from .capabilities import MediaCapabilities, resolve_media_capabilities, supported_guides
+from .capabilities import (
+    MAX_NUM_SEQUENCES,
+    REQUEST_KV_HINTS_KEY,
+    REQUEST_LOGIT_BIAS_KEY,
+    REQUEST_SCHEDULING_KEY,
+    REQUEST_THINKING_TOKEN_BUDGET_KEY,
+    MediaCapabilities,
+    resolve_media_capabilities,
+    supported_guides,
+)
 from .errors import MediaUnavailableError, UnsupportedFeatureError
+
+if TYPE_CHECKING:
+    from tensorrt_llm.kv_hints.protocol import KvHintsEnvelope
 
 # Cap on the number of stop conditions. Each one costs a KMP automaton per
 # output index and a scan of every generated token, so an unbounded list lets a
@@ -43,6 +71,239 @@ _MAX_CONCURRENT_MEDIA_LOADS = 8
 _MAX_TOTAL_DECODED_MEDIA_BYTES = 512 * 1024 * 1024
 _CONVERSATION_ID_EXTRA_KEY = "conversation_id"
 _DETOKENIZE_EXTRA_KEY = "detokenize"
+# Every `extra` request key of the conventions in this namespace is checked
+# against the engine's capabilities.
+_TRTLLM_EXTRA_PREFIX = "trtllm."
+# The processor scans each sequence for its markers at every decode step.
+_MAX_REASONING_MARKER_TOKENS = 32
+# The AgentTree reorder policy has one level of nodes below its root; a deeper
+# hierarchy fails the scheduler step for the whole batch. Node ids are C++ int.
+_MAX_AGENT_HIERARCHY_DEPTH = 1
+_MAX_AGENT_NODE_ID = 2**31 - 1
+# Float sampling fields. Admission rejects non-finite values in all of them;
+# ``SamplingParams`` validation does not catch NaN in every one.
+_FLOAT_SAMPLING_FIELDS = (
+    "temperature",
+    "top_p",
+    "min_p",
+    "frequency_penalty",
+    "presence_penalty",
+    "repetition_penalty",
+)
+
+
+@dataclass(frozen=True)
+class RequestCapabilities:
+    """What ``Generate`` accepts beyond the portable request, fixed per engine.
+
+    ``Generate`` accepts a request option only when its field here allows it;
+    ``GetModelInfo`` and ``GetServerInfo`` report the request keys, priority,
+    LoRA support and ``max_loras`` from this object, and ``max_num_sequences``
+    from the same :func:`max_num_sequences_for`.
+    """
+
+    max_num_sequences: int
+    """int: Largest ``sampling.num_sequences`` accepted."""
+    supports_priority: bool
+    """bool: Whether the scheduler orders waiting requests by ``openengine-priority``."""
+    vocab_size: int | None
+    """int | None: Width of the logits, which bounds token ids; None when unknown."""
+    supports_logit_bias: bool
+    """bool: Whether ``trtllm.logit_bias`` is accepted; requires ``vocab_size``."""
+    supports_thinking_token_budget: bool
+    """bool: Whether ``trtllm.thinking_token_budget`` is accepted."""
+    supports_kv_hints: bool
+    """bool: Whether ``trtllm.kv_hints`` is accepted."""
+    supports_scheduling: bool
+    """bool: Whether ``trtllm.scheduling`` is accepted; the executor reads both of its fields."""
+    lora_ckpt_source: str | None
+    """str | None: Checkpoint format of LoRA adapters; None when LoRA is not supported."""
+    max_loras: int | None
+    """int | None: Adapters the LoRA cache keeps on the GPU; None when unknown or unsupported."""
+
+    def __post_init__(self) -> None:
+        if self.supports_logit_bias and self.vocab_size is None:
+            raise ValueError("supports_logit_bias requires vocab_size")
+
+    @property
+    def supports_lora(self) -> bool:
+        return self.lora_ckpt_source is not None
+
+    def extra_capabilities(self) -> dict[str, bool]:
+        """The ``trtllm.request.*`` capability keys this object decides."""
+        return {
+            REQUEST_THINKING_TOKEN_BUDGET_KEY: self.supports_thinking_token_budget,
+            REQUEST_LOGIT_BIAS_KEY: self.supports_logit_bias,
+            REQUEST_KV_HINTS_KEY: self.supports_kv_hints,
+            REQUEST_SCHEDULING_KEY: self.supports_scheduling,
+        }
+
+    def accepted_extra_keys(self) -> frozenset[str]:
+        """The ``trtllm.*`` request keys ``Generate`` accepts."""
+        supported = (
+            (_THINKING_TOKEN_BUDGET_EXTRA_KEY, self.supports_thinking_token_budget),
+            (_LOGIT_BIAS_EXTRA_KEY, self.supports_logit_bias),
+            (_KV_HINTS_EXTRA_KEY, self.supports_kv_hints),
+            (_SCHEDULING_EXTRA_KEY, self.supports_scheduling),
+        )
+        return frozenset(key for key, accepted in supported if accepted)
+
+
+# Used when no engine is given: only the portable request is accepted.
+PORTABLE_REQUEST_CAPABILITIES = RequestCapabilities(
+    max_num_sequences=MAX_NUM_SEQUENCES,
+    supports_priority=False,
+    vocab_size=None,
+    supports_logit_bias=False,
+    supports_thinking_token_budget=False,
+    supports_kv_hints=False,
+    supports_scheduling=False,
+    lora_ckpt_source=None,
+    max_loras=None,
+)
+
+
+def _positive_int(value: Any) -> int | None:
+    """``value`` as a positive int, else None; unset limits mean "unknown"."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def max_num_sequences_for(llm_args: Any) -> int:
+    """The ``num_sequences`` limit.
+
+    n > 1 is served by sampling, not beam search, so max_beam_width is not its
+    limit. Without attention DP, the scheduler admits a request only when its n
+    sequences fit in max_batch_size x pipeline-stage slots; a larger n would
+    never be scheduled. With attention DP, the per-rank limit can be lower when
+    max_num_tokens is small, which this value does not account for. A request
+    with an attention-DP rank hint is limited to one sequence.
+    """
+    limit = MAX_NUM_SEQUENCES
+    batch_size = _positive_int(getattr(llm_args, "max_batch_size", None))
+    if batch_size is not None:
+        stages = _positive_int(getattr(llm_args, "pipeline_parallel_size", None)) or 1
+        limit = min(limit, batch_size * stages)
+    return limit
+
+
+def _priority_scheduling_enabled(llm_args: Any) -> bool:
+    """Whether waiting requests are ordered by priority.
+
+    The ``TLLM_GEN_ADMISSION`` ordering replaces the priority queue when it is
+    enabled, and the executor reads it from the same environment.
+    """
+    from tensorrt_llm.llmapi.llm_args import WaitingQueuePolicy
+
+    scheduler_config = getattr(llm_args, "scheduler_config", None)
+    if getattr(scheduler_config, "waiting_queue_policy", None) != WaitingQueuePolicy.PRIORITY:
+        return False
+    from tensorrt_llm._torch.pyexecutor.scheduler.gen_admission_queue import GenAdmissionConfig
+
+    return not GenAdmissionConfig.from_env().enabled
+
+
+def uses_one_model_speculation(llm_args: Any) -> bool:
+    """Whether a one-model speculative decoding mode runs, which rejects ``embedding_bias``."""
+    spec_config = getattr(llm_args, "speculative_config", None)
+    if spec_config is None:
+        return False
+    if spec_config.decoding_type == "AUTO":
+        from tensorrt_llm._torch.speculative import suggest_spec_config
+
+        # The executor replaces AUTO with this config when it starts.
+        spec_config = suggest_spec_config(
+            _positive_int(getattr(llm_args, "max_batch_size", None)) or 1
+        )
+    return bool(spec_config.spec_dec_mode.use_one_engine())
+
+
+def _agent_tree_scheduling_enabled(llm_args: Any) -> bool:
+    """Whether the configuration asks for the agent-tree reorder policy.
+
+    ``agent_hierarchy`` is read only by the ``reorder_policy_config`` policy,
+    which builds its tree only from a non-empty ``agent_types`` list and is
+    installed only by the C++ capacity scheduler built for a V1 KV cache
+    manager, so the configuration must select V1 explicitly
+    (``use_kv_cache_manager_v2="auto"`` resolves per model). A model that
+    requires the V2 manager gets it anyway, which the configuration does not
+    show.
+    """
+    reorder_policy_config = getattr(llm_args, "reorder_policy_config", None)
+    if reorder_policy_config is None:
+        return False
+    if not getattr(getattr(reorder_policy_config, "policy_args", None), "agent_types", None):
+        return False
+    if getattr(getattr(llm_args, "scheduler_config", None), "use_python_scheduler", False):
+        return False
+    kv_cache_config = getattr(llm_args, "kv_cache_config", None)
+    return getattr(kv_cache_config, "use_kv_cache_manager_v2", True) is False
+
+
+def _vocab_size(llm: Any) -> int | None:
+    """The logits width from the model config; None when the config does not give it.
+
+    The tokenizer's ``vocab_size`` is not a substitute: it leaves out added
+    tokens, and a bias vector narrower than the logits fails in the sampler.
+    """
+    config = getattr(llm, "_hf_model_config", None)
+    for candidate in (config, getattr(config, "text_config", None)):
+        vocab_size = _positive_int(getattr(candidate, "vocab_size", None))
+        if vocab_size is not None:
+            return vocab_size
+    return None
+
+
+def request_capabilities_for_model(llm: Any) -> RequestCapabilities:
+    """Resolve what ``Generate`` accepts for the loaded engine."""
+    args = getattr(llm, "args", None)
+    lora_config = getattr(args, "lora_config", None)
+    # The LoRA registry lives in one frontend process, while every frontend
+    # feeds the same executor, whose LoRA cache is keyed by adapter id: two
+    # frontends could bind one id to different adapters.
+    lora_enabled = (
+        lora_config is not None
+        and (_positive_int(getattr(args, "num_serve_frontends", None)) or 1) == 1
+    )
+    vocab_size = _vocab_size(llm)
+    return RequestCapabilities(
+        max_num_sequences=max_num_sequences_for(args),
+        supports_priority=_priority_scheduling_enabled(args),
+        vocab_size=vocab_size,
+        supports_logit_bias=vocab_size is not None and not uses_one_model_speculation(args),
+        # Declared only without speculative decoding: the per-request logits
+        # processor runs after the forward pass, one-model speculation samples
+        # inside it, DSpark verification fails the whole batch on it, and the
+        # other modes are unverified. Its token ids are checked against the
+        # vocabulary, so that must be known.
+        supports_thinking_token_budget=(
+            vocab_size is not None and getattr(args, "speculative_config", None) is None
+        ),
+        supports_kv_hints=True,
+        # One capability covers both fields, so it is declared only where the
+        # executor reads both: attention DP reads attention_dp_relax and the
+        # agent-tree reorder policy reads agent_hierarchy.
+        supports_scheduling=(
+            bool(getattr(args, "enable_attention_dp", False))
+            and _agent_tree_scheduling_enabled(args)
+        ),
+        lora_ckpt_source=(
+            str(getattr(lora_config, "lora_ckpt_source", "hf")) if lora_enabled else None
+        ),
+        max_loras=_positive_int(lora_config.max_loras) if lora_enabled else None,
+    )
+
+
+@dataclass(frozen=True)
+class ExtraOptions:
+    """Request options carried in ``GenerateRequest.extra`` outside ``SamplingParams``."""
+
+    kv_hints: "KvHintsEnvelope | None" = None
+    attention_dp_relax: bool | None = None
+    agent_hierarchy: list[tuple[str, int]] | None = None
 
 
 _MediaLoader = Callable[[generation_pb2.MediaItem, int], Awaitable[Any]]
@@ -237,11 +498,217 @@ def _guided_decoding_from_request(
     raise UnsupportedFeatureError(f"guided decoding mode '{guide}' is not supported")
 
 
+def _extra_value(request: generation_pb2.GenerateRequest, key: str) -> struct_pb2.Value | None:
+    if not request.HasField("extra"):
+        return None
+    return request.extra.fields.get(key)
+
+
+def _check_extra_keys(
+    request: generation_pb2.GenerateRequest, capabilities: RequestCapabilities
+) -> None:
+    """Reject ``trtllm.*`` request keys this engine does not declare."""
+    if not request.HasField("extra"):
+        return
+    accepted = capabilities.accepted_extra_keys()
+    for key in request.extra.fields:
+        if key.startswith(_TRTLLM_EXTRA_PREFIX) and key not in accepted:
+            raise UnsupportedFeatureError(f"extra key '{key}' is not supported by this engine")
+
+
+def _struct_fields(value: struct_pb2.Value, name: str, keys: Iterable[str]) -> dict:
+    """The fields of an object value, which may only use ``keys``."""
+    if value.WhichOneof("kind") != "struct_value":
+        raise ValueError(f"{name} must be an object")
+    fields = dict(value.struct_value.fields)
+    unknown = sorted(set(fields) - set(keys))
+    if unknown:
+        raise ValueError(f"{name} has unknown fields {unknown}")
+    return fields
+
+
+def _integer(value: struct_pb2.Value, name: str, minimum: int = 0) -> int:
+    """An integral number of at least ``minimum``; ``Struct`` numbers are doubles."""
+    if value.WhichOneof("kind") != "number_value":
+        raise ValueError(f"{name} must be a number")
+    number = value.number_value
+    if not math.isfinite(number) or not number.is_integer() or abs(number) > 2**53:
+        raise ValueError(f"{name} must be an integer, got {number}")
+    if number < minimum:
+        raise ValueError(f"{name} must be at least {minimum}, got {int(number)}")
+    return int(number)
+
+
+def _token_id(value: struct_pb2.Value, name: str, vocab_size: int | None) -> int:
+    token_id = _integer(value, name)
+    if vocab_size is not None and token_id >= vocab_size:
+        raise ValueError(f"{name} {token_id} is outside the vocabulary [0, {vocab_size})")
+    return token_id
+
+
+def _token_ids(value: struct_pb2.Value | None, name: str, vocab_size: int | None) -> list[int]:
+    if value is None or value.WhichOneof("kind") != "list_value":
+        raise ValueError(f"{name} must be a list of token ids")
+    ids = [
+        _token_id(item, f"{name}[{index}]", vocab_size)
+        for index, item in enumerate(value.list_value.values)
+    ]
+    if not ids:
+        raise ValueError(f"{name} must not be empty")
+    if len(ids) > _MAX_REASONING_MARKER_TOKENS:
+        raise ValueError(
+            f"{name} has {len(ids)} ids; at most {_MAX_REASONING_MARKER_TOKENS} are supported"
+        )
+    return ids
+
+
+def _thinking_budget_processor(value: struct_pb2.Value, vocab_size: int | None) -> Any:
+    """Build the logits processor ``trtllm-serve`` would attach for a thinking budget."""
+    from tensorrt_llm.llmapi.thinking_budget import ThinkingBudgetLogitsProcessor
+
+    name = _THINKING_TOKEN_BUDGET_EXTRA_KEY
+    fields = _struct_fields(value, name, ("budget", "start_token_ids", "end_token_ids"))
+    if "budget" not in fields:
+        raise ValueError(f"{name}.budget must be set")
+    return ThinkingBudgetLogitsProcessor(
+        thinking_token_budget=_integer(fields["budget"], f"{name}.budget"),
+        reasoning_start_token_ids=_token_ids(
+            fields.get("start_token_ids"), f"{name}.start_token_ids", vocab_size
+        ),
+        reasoning_end_token_ids=_token_ids(
+            fields.get("end_token_ids"), f"{name}.end_token_ids", vocab_size
+        ),
+    )
+
+
+def _embedding_bias(value: struct_pb2.Value, vocab_size: int) -> Any:
+    """Materialize ``trtllm.logit_bias`` into an ``embedding_bias`` vector."""
+    import torch
+
+    name = _LOGIT_BIAS_EXTRA_KEY
+    if value.WhichOneof("kind") != "struct_value":
+        raise ValueError(f"{name} must be an object")
+    entries = value.struct_value.fields
+    if len(entries) > _LOGIT_BIAS_MAX_ENTRIES:
+        raise ValueError(
+            f"{name} has {len(entries)} entries; at most {_LOGIT_BIAS_MAX_ENTRIES} are supported"
+        )
+    if not entries:
+        return None
+    bias = torch.zeros(vocab_size, dtype=torch.float32)
+    for key, entry in entries.items():
+        # Canonical form only, so two keys never name the same token.
+        if not (key.isascii() and key.isdecimal()) or str(int(key)) != key:
+            raise ValueError(f"{name} key '{key}' must be a decimal token id without leading zeros")
+        token_id = int(key)
+        if token_id >= vocab_size:
+            raise ValueError(
+                f"{name} token id {token_id} is outside the vocabulary [0, {vocab_size})"
+            )
+        if entry.WhichOneof("kind") != "number_value":
+            raise ValueError(f"{name}['{key}'] must be a number")
+        number = entry.number_value
+        if not math.isfinite(number) or not _LOGIT_BIAS_MIN <= number <= _LOGIT_BIAS_MAX:
+            raise ValueError(
+                f"{name}['{key}'] must be in [{_LOGIT_BIAS_MIN:g}, {_LOGIT_BIAS_MAX:g}], got {number}"
+            )
+        bias[token_id] = number
+    return bias
+
+
+def _plain(value: struct_pb2.Value) -> Any:
+    """A ``Struct`` value as JSON data, with integral numbers as ints (EX-GEN-3)."""
+    kind = value.WhichOneof("kind")
+    if kind == "struct_value":
+        return {key: _plain(item) for key, item in value.struct_value.fields.items()}
+    if kind == "list_value":
+        return [_plain(item) for item in value.list_value.values]
+    if kind == "number_value":
+        number = value.number_value
+        return int(number) if number.is_integer() and abs(number) <= 2**53 else number
+    if kind == "string_value":
+        return value.string_value
+    if kind == "bool_value":
+        return value.bool_value
+    return None
+
+
+def _kv_hints(value: struct_pb2.Value) -> "KvHintsEnvelope":
+    """Admit ``trtllm.kv_hints`` the way ``generate_async`` admits hints.
+
+    Hints that admission would drop are rejected instead, so a client never
+    believes a hint took effect when it did not.
+    """
+    from tensorrt_llm.kv_hints.protocol import admit_kv_hints
+
+    if value.WhichOneof("kind") != "struct_value":
+        raise ValueError(f"{_KV_HINTS_EXTRA_KEY} must be an object")
+    admitted = admit_kv_hints(_plain(value))
+    if admitted is None:
+        raise ValueError(
+            f"{_KV_HINTS_EXTRA_KEY} was not admitted: unsupported protocol_version, "
+            "oversized or malformed"
+        )
+    return admitted
+
+
+def _scheduling(value: struct_pb2.Value) -> tuple[bool | None, list[tuple[str, int]] | None]:
+    name = _SCHEDULING_EXTRA_KEY
+    fields = _struct_fields(value, name, ("attention_dp_relax", "agent_hierarchy"))
+    relax = None
+    if "attention_dp_relax" in fields:
+        if fields["attention_dp_relax"].WhichOneof("kind") != "bool_value":
+            raise ValueError(f"{name}.attention_dp_relax must be a boolean")
+        relax = fields["attention_dp_relax"].bool_value
+    hierarchy = None
+    if "agent_hierarchy" in fields:
+        entries = fields["agent_hierarchy"]
+        if entries.WhichOneof("kind") != "list_value":
+            raise ValueError(f"{name}.agent_hierarchy must be a list")
+        if len(entries.list_value.values) > _MAX_AGENT_HIERARCHY_DEPTH:
+            raise ValueError(
+                f"{name}.agent_hierarchy has {len(entries.list_value.values)} levels; "
+                f"the agent-tree reorder policy supports {_MAX_AGENT_HIERARCHY_DEPTH}"
+            )
+        hierarchy = []
+        for index, entry in enumerate(entries.list_value.values):
+            item = f"{name}.agent_hierarchy[{index}]"
+            pair = entry.list_value.values if entry.WhichOneof("kind") == "list_value" else ()
+            if len(pair) != 2 or pair[0].WhichOneof("kind") != "string_value":
+                raise ValueError(f"{item} must be a [string, integer] pair")
+            node_id = _integer(pair[1], f"{item}[1]")
+            if node_id > _MAX_AGENT_NODE_ID:
+                raise ValueError(f"{item}[1] must be at most {_MAX_AGENT_NODE_ID}, got {node_id}")
+            hierarchy.append((pair[0].string_value, node_id))
+    return relax, hierarchy or None
+
+
+def extra_options_from_request(
+    request: generation_pb2.GenerateRequest,
+    capabilities: RequestCapabilities = PORTABLE_REQUEST_CAPABILITIES,
+) -> ExtraOptions:
+    """Translate the ``extra`` keys that are not sampling parameters."""
+    _check_extra_keys(request, capabilities)
+    kv_hints = None
+    if (value := _extra_value(request, _KV_HINTS_EXTRA_KEY)) is not None:
+        kv_hints = _kv_hints(value)
+    relax = hierarchy = None
+    if (value := _extra_value(request, _SCHEDULING_EXTRA_KEY)) is not None:
+        relax, hierarchy = _scheduling(value)
+    return ExtraOptions(kv_hints=kv_hints, attention_dp_relax=relax, agent_hierarchy=hierarchy)
+
+
 def sampling_params_from_request(
     request: generation_pb2.GenerateRequest,
     guided_backend: str | None = None,
+    capabilities: RequestCapabilities = PORTABLE_REQUEST_CAPABILITIES,
 ) -> SamplingParams:
-    """Translate portable OpenEngine generation options to TensorRT-LLM."""
+    """Translate OpenEngine generation options to TensorRT-LLM.
+
+    ``capabilities`` decides which ``trtllm.*`` request keys are accepted and
+    the ``num_sequences`` limit.
+    """
+    _check_extra_keys(request, capabilities)
     kwargs: dict[str, Any] = {}
     num_sequences = 1
     provided_fields: set[str] = set()
@@ -260,11 +727,19 @@ def sampling_params_from_request(
         )
         for name in sampling_fields:
             if sampling.HasField(name):
-                kwargs[name] = getattr(sampling, name)
+                value = getattr(sampling, name)
+                if name in _FLOAT_SAMPLING_FIELDS and not math.isfinite(value):
+                    raise ValueError(f"sampling.{name} must be finite, got {value}")
+                kwargs[name] = value
                 provided_fields.add(name)
         if sampling.HasField("num_sequences"):
             if sampling.num_sequences == 0:
                 raise ValueError("sampling.num_sequences must be greater than zero")
+            if sampling.num_sequences > capabilities.max_num_sequences:
+                raise ValueError(
+                    f"sampling.num_sequences must be at most {capabilities.max_num_sequences}, "
+                    f"got {sampling.num_sequences}"
+                )
             num_sequences = sampling.num_sequences
 
     if request.HasField("stopping"):
@@ -284,6 +759,8 @@ def sampling_params_from_request(
         for condition in stopping.conditions:
             kind = condition.WhichOneof("condition")
             if kind == "stop_text":
+                if not condition.stop_text:
+                    raise ValueError("stopping condition stop_text must be non-empty")
                 stop_texts.append(condition.stop_text)
             elif kind == "stop_token_id":
                 stop_token_ids.append(condition.stop_token_id)
@@ -318,6 +795,11 @@ def sampling_params_from_request(
     guided_decoding = _guided_decoding_from_request(request, guided_backend)
     if guided_decoding is not None:
         kwargs["guided_decoding"] = guided_decoding
+
+    if (value := _extra_value(request, _THINKING_TOKEN_BUDGET_EXTRA_KEY)) is not None:
+        kwargs["logits_processor"] = _thinking_budget_processor(value, capabilities.vocab_size)
+    if (value := _extra_value(request, _LOGIT_BIAS_EXTRA_KEY)) is not None:
+        kwargs["embedding_bias"] = _embedding_bias(value, capabilities.vocab_size)
 
     # Normalize unspecified sampling knobs to the same protocol defaults the
     # trtllm-serve OpenAI path (/v1/completions) applies, so a sampling request
@@ -365,14 +847,34 @@ def conversation_params_from_request(
     return ConversationParams(conversation_id=conversation_id.string_value)
 
 
+@dataclass(frozen=True)
+class RequestMetadata:
+    """What ``Generate`` reads from the gRPC invocation metadata."""
+
+    trace_headers: Mapping[str, str] | None
+    target_dp_rank: int | None
+    affinity_headers: dict[str, str]
+    priority: float | None
+
+
+def _priority(value: str) -> float:
+    """Decode ``openengine-priority`` (OE-META-3): an integer in [0, 1000] scaled to [0, 1]."""
+    # int() would also take signs, underscores, spaces and non-ASCII digits.
+    if not (value.isascii() and value.isdigit()):
+        raise ValueError(f"{_PRIORITY_METADATA_KEY} must be a decimal integer, got '{value}'")
+    return decode_priority(int(value))
+
+
 def _metadata_from_context(
     context: grpc.aio.ServicerContext,
-) -> tuple[Mapping[str, str] | None, int | None, dict[str, str]]:
-    """Extract tracing and strict attention-DP routing metadata."""
+    capabilities: RequestCapabilities = PORTABLE_REQUEST_CAPABILITIES,
+) -> RequestMetadata:
+    """Extract tracing, priority and strict attention-DP routing metadata."""
     headers: dict[str, str] = {}
     affinity_headers: dict[str, str] = {}
     openengine_keys: set[str] = set()
     target_dp_rank = None
+    priority = None
     for item in context.invocation_metadata():
         key = item.key
         value = item.value
@@ -382,15 +884,20 @@ def _metadata_from_context(
             openengine_keys.add(key)
             if key == "openengine-routing-key":
                 raise UnsupportedFeatureError("openengine-routing-key is not supported")
-            elif key == "openengine-priority":
-                raise UnsupportedFeatureError(f"gRPC metadata key '{key}' is not supported")
-            elif key == "openengine-target-dp-rank":
-                try:
-                    target_dp_rank = int(value)
-                except ValueError as error:
-                    raise ValueError("openengine-target-dp-rank must be an integer") from error
-                if target_dp_rank < 0:
-                    raise ValueError("openengine-target-dp-rank must be non-negative")
+            elif key == _PRIORITY_METADATA_KEY:
+                if not capabilities.supports_priority:
+                    raise UnsupportedFeatureError(
+                        f"gRPC metadata key '{key}' is not supported: the scheduler does not "
+                        "order requests by priority"
+                    )
+                priority = _priority(value)
+            elif key == _TARGET_DP_RANK_KEY:
+                if not (value.isascii() and value.isdigit()):
+                    raise ValueError(
+                        f"{_TARGET_DP_RANK_KEY} must be a non-negative decimal integer, "
+                        f"got '{value}'"
+                    )
+                target_dp_rank = int(value)
             else:
                 raise UnsupportedFeatureError(f"gRPC metadata key '{key}' is not supported")
         elif key in ("traceparent", "tracestate"):
@@ -399,7 +906,7 @@ def _metadata_from_context(
             if key in affinity_headers:
                 raise ValueError(f"gRPC metadata key '{key}' must not be repeated")
             affinity_headers[key] = value
-    return headers or None, target_dp_rank, affinity_headers
+    return RequestMetadata(headers or None, target_dp_rank, affinity_headers, priority)
 
 
 def _base_input_from_request(
@@ -804,7 +1311,15 @@ async def _input_from_request(
 
 
 __all__ = [
+    "ExtraOptions",
+    "PORTABLE_REQUEST_CAPABILITIES",
+    "RequestCapabilities",
+    "RequestMetadata",
     "conversation_params_from_request",
+    "extra_options_from_request",
+    "max_num_sequences_for",
+    "request_capabilities_for_model",
     "sampling_params_from_request",
     "token_ids_input_supported",
+    "uses_one_model_speculation",
 ]

@@ -54,13 +54,19 @@ paths carry this metadata, including through the disaggregated proxy.
 
 ## Known limitations
 
-**Current gRPC request paths do not forward `kv_hints` to the executor.** This
-affects clients and routers that submit requests to workers over gRPC, including
-routers that accept HTTP requests but use gRPC for the worker connection.
-TensorRT-LLM emits no hint-specific warning or drop metric for this missing
-transport support; the admission counters below do not report this gap.
-gRPC parity remains follow-up work. Use a supported HTTP or Python path when
-hint transport is required.
+**The SMG gRPC request path does not forward `kv_hints` to the executor.** This
+affects clients and routers that submit requests to SMG workers over gRPC,
+including routers that accept HTTP requests but use gRPC for the worker
+connection. TensorRT-LLM emits no hint-specific warning or drop metric for this
+missing transport support; the admission counters below do not report this gap.
+Use a supported HTTP or Python path, or send the request directly to the
+OpenEngine gRPC server, when hint transport is required.
+
+The OpenEngine gRPC server accepts hints as `extra["trtllm.kv_hints"]` and reports
+`trtllm.request.kv_hints` in `GetModelInfo`. It does not read
+`TRTLLM_TRUST_KV_HINTS` and accepts hints as if that switch were set, so expose
+its port only to trusted clients; the server does not authenticate them. A hint
+that admission would drop is rejected with `INVALID_ARGUMENT` instead.
 
 ## Ingress and admission
 

@@ -172,8 +172,8 @@ def resolve_media_capabilities(
     return MediaCapabilities(placeholders)
 
 
-# Upper bound of the `num_sequences` limit Control reports; a smaller batch
-# capacity lowers it. Generate does not reject a larger value.
+# Upper bound of the `num_sequences` limit; a smaller batch capacity lowers it.
+# Generate rejects a larger value.
 MAX_NUM_SEQUENCES = 16
 
 

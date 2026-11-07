@@ -1,0 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# A streaming completion through the OpenEngine Generate path.
+unittest/llmapi/apps/_test_openai_completions.py::test_completion_stream_options[pytorch-disable_processpool]

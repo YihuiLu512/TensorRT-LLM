@@ -7,9 +7,10 @@ Reported capabilities describe what ``Generate`` accepts, not how the engine was
 built: a capability a client acts on and ``Generate`` then rejects turns
 discovery into a per-request failure.
 
-The LoRA lifecycle RPCs return ``UNIMPLEMENTED``: the LLM API has no runtime
-adapter load/unload. KV-event discovery advertises the engine's streaming
-publisher, which is off unless ``kv_cache_config.kv_events_config`` enables it.
+The LoRA lifecycle RPCs keep a name registry (``lora_registry``) when the engine
+has a ``lora_config`` and one serve frontend, and return ``UNIMPLEMENTED``
+otherwise. KV-event discovery advertises the engine's streaming publisher,
+which is off unless ``kv_cache_config.kv_events_config`` enables it.
 Event delivery is direct ZMQ; ``SubscribeKvEvents`` remains unimplemented.
 """
 
@@ -38,13 +39,8 @@ from .bindings import (
 from .capabilities import (
     CONVENTIONS_VERSION,
     CONVENTIONS_VERSION_KEY,
-    MAX_NUM_SEQUENCES,
     REQUEST_BEST_OF_KEY,
     REQUEST_CONVERSATION_ID_KEY,
-    REQUEST_KV_HINTS_KEY,
-    REQUEST_LOGIT_BIAS_KEY,
-    REQUEST_SCHEDULING_KEY,
-    REQUEST_THINKING_TOKEN_BUDGET_KEY,
     SAMPLING_FREQUENCY_PENALTY_KEY,
     SAMPLING_MIN_P_KEY,
     SAMPLING_PRESENCE_PENALTY_KEY,
@@ -58,7 +54,12 @@ from .capabilities import (
 from .coordinator import CoordinationError, FrontendClient, InvalidRequestIdError
 from .errors import AbortFailedError
 from .kv_events import data_parallel_size, events_config
-from .request_mapping import conversation_affinity_enabled, token_ids_input_supported
+from .lora_registry import list_loras, load_lora, unload_lora
+from .request_mapping import (
+    conversation_affinity_enabled,
+    max_num_sequences_for,
+    token_ids_input_supported,
+)
 
 __all__ = ["OpenEngineControlServicer"]
 
@@ -78,7 +79,9 @@ _MODE_BY_GUIDE_FIELD = {
 # Capability keys of the `extra` conventions. A key reported true must take
 # effect in Generate; a conforming client never sends a request key whose
 # capability is false. One-model speculative decoding turns the min_p and
-# penalty keys false (`_speculative_sampling_capabilities`).
+# penalty keys false (`_speculative_sampling_capabilities`). The
+# thinking_token_budget, logit_bias, kv_hints and scheduling keys come from the
+# inference servicer's `request_capabilities`.
 _EXTRA_CAPABILITIES = {
     SAMPLING_MIN_P_KEY: True,
     SAMPLING_FREQUENCY_PENALTY_KEY: True,
@@ -88,11 +91,6 @@ _EXTRA_CAPABILITIES = {
     SAMPLING_SEED_SCOPE_KEY: "batch_dependent",
     STOPPING_STOP_TEXT_KEY: True,
     REQUEST_CONVERSATION_ID_KEY: True,
-    # Generate does not read these request keys.
-    REQUEST_THINKING_TOKEN_BUDGET_KEY: False,
-    REQUEST_LOGIT_BIAS_KEY: False,
-    REQUEST_KV_HINTS_KEY: False,
-    REQUEST_SCHEDULING_KEY: False,
     REQUEST_BEST_OF_KEY: False,
 }
 
@@ -314,6 +312,9 @@ class OpenEngineControlServicer(openengine_pb2_grpc.ControlServicer):
         block_size = _positive_int(self._llm.args.kv_cache_config.tokens_per_block)
         if block_size is not None:
             capacity.kv_block_size = block_size
+        max_loras = self._inference.request_capabilities.max_loras
+        if max_loras is not None:
+            capacity.max_loras = max_loras
         executor = getattr(self._llm, "_executor", None)
         capacity_getter = getattr(executor, "get_kv_cache_capacity", None)
         if callable(capacity_getter):
@@ -383,8 +384,7 @@ class OpenEngineControlServicer(openengine_pb2_grpc.ControlServicer):
             # Without a tokenizer the input processor rejects every string prompt.
             supports_text_input=getattr(self._llm, "tokenizer", None) is not None,
             supports_token_ids_input=token_ids_input_supported(self._llm),
-            # Generate rejects `lora_name` even on an enable_lora build.
-            supports_lora=False,
+            supports_lora=self._inference.request_capabilities.supports_lora,
             supports_multimodal=bool(media_modalities),
             reasoning_parser=str(self._llm.args.reasoning_parser or ""),
         )
@@ -392,6 +392,7 @@ class OpenEngineControlServicer(openengine_pb2_grpc.ControlServicer):
         if supports_image_routing(self._llm, media_modalities):
             info.extra.update({"trtllm_image_routing_version": 1})
         info.extra.update(_EXTRA_CAPABILITIES)
+        info.extra.update(self._inference.request_capabilities.extra_capabilities())
         info.extra.update(_speculative_sampling_capabilities(self._llm.args))
         if getattr(self._llm, "tokenizer", None) is None:
             # Stop strings are encoded to token ids with the tokenizer.
@@ -431,20 +432,8 @@ class OpenEngineControlServicer(openengine_pb2_grpc.ControlServicer):
                 else [],
             )
         )
-        # n > 1 is served by sampling, not beam search, so max_beam_width is not
-        # its limit. Without attention DP, the scheduler admits a request only
-        # when its n sequences fit in max_batch_size x pipeline-stage slots; a
-        # larger n would never be scheduled. With attention DP, the per-rank limit
-        # can be lower when max_num_tokens is small, which this value does not
-        # account for. A request with an attention-DP rank hint is limited to one
-        # sequence.
-        max_num_sequences = MAX_NUM_SEQUENCES
-        batch_size = _positive_int(getattr(self._llm.args, "max_batch_size", None))
-        if batch_size is not None:
-            stages = _positive_int(getattr(self._llm.args, "pipeline_parallel_size", None)) or 1
-            max_num_sequences = min(max_num_sequences, batch_size * stages)
-        generation.max_num_sequences = max_num_sequences
-        generation.supports_priority = False  # Generate rejects openengine-priority
+        generation.max_num_sequences = max_num_sequences_for(self._llm.args)
+        generation.supports_priority = self._inference.request_capabilities.supports_priority
         generation.supports_stop_in_output = True
         generation.supports_cache_salt = True
         generation.supports_prefix_cache_bypass = False  # Generate rejects it
@@ -726,37 +715,28 @@ class OpenEngineControlServicer(openengine_pb2_grpc.ControlServicer):
 
         await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "AbortRequest has no target set")
 
-    # -- Not supported by this engine ---------------------------------------
+    # -- LoRA -----------------------------------------------------------------
 
     async def LoadLora(
         self,
         request: lora_pb2.LoadLoraRequest,
         context: grpc.aio.ServicerContext,
     ) -> lora_pb2.LoadLoraResponse:
-        await context.abort(
-            grpc.StatusCode.UNIMPLEMENTED,
-            "runtime LoRA load is not supported; configure adapters at startup",
-        )
+        return await load_lora(self._inference.lora_registry, request, context)
 
     async def UnloadLora(
         self,
         request: lora_pb2.UnloadLoraRequest,
         context: grpc.aio.ServicerContext,
     ) -> lora_pb2.UnloadLoraResponse:
-        await context.abort(
-            grpc.StatusCode.UNIMPLEMENTED,
-            "runtime LoRA unload is not supported; configure adapters at startup",
-        )
+        return await unload_lora(self._inference.lora_registry, request, context)
 
     async def ListLoras(
         self,
         request: lora_pb2.ListLorasRequest,
         context: grpc.aio.ServicerContext,
     ) -> lora_pb2.ListLorasResponse:
-        await context.abort(
-            grpc.StatusCode.UNIMPLEMENTED,
-            "runtime LoRA enumeration is not supported",
-        )
+        return await list_loras(self._inference.lora_registry, request, context)
 
     async def _requested_sources(
         self,

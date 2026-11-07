@@ -33,6 +33,7 @@ from .coordinator import (
 from .disagg import disaggregated_params_from_request
 from .errors import AbortFailedError, MediaUnavailableError, UnsupportedFeatureError
 from .formatting import _engine_error_response, _stop_texts
+from .lora_registry import LORA_UNSUPPORTED_MESSAGE, LoraNotRegisteredError, LoraRegistry
 from .metrics import OpenEngineMetrics, RequestMetrics
 from .preparation import _decode_preparation, _prepared_decode_from_request
 from .request_mapping import (
@@ -42,7 +43,9 @@ from .request_mapping import (
     _validate_media_placeholders,
     conversation_affinity_enabled,
     conversation_params_from_request,
+    extra_options_from_request,
     media_capabilities_for_model,
+    request_capabilities_for_model,
     sampling_params_from_request,
 )
 from .streaming import (
@@ -188,6 +191,14 @@ class OpenEngineInferenceServicer(openengine_pb2_grpc.InferenceServicer):
         self._kv_transfer_backend = kv_transfer_backend
         self._guided_backend = llm.args.guided_decoding_backend
         self._media_capabilities = media_capabilities_for_model(llm)
+        self.request_capabilities = request_capabilities_for_model(llm)
+        """RequestCapabilities: What Generate accepts beyond the portable request."""
+        self.lora_registry = (
+            LoraRegistry(self.request_capabilities.lora_ckpt_source)
+            if self.request_capabilities.lora_ckpt_source is not None
+            else None
+        )
+        """LoraRegistry | None: Adapters LoadLora registered; None without LoRA support."""
         self.subagent_affinity_auth_key = subagent_affinity_auth_key
         self._active_requests: dict[str, Any] = {}
         self._metrics = metrics
@@ -340,8 +351,11 @@ class OpenEngineInferenceServicer(openengine_pb2_grpc.InferenceServicer):
             # Like the HTTP /v1/completions single-model server, any non-empty
             # model name is accepted and served by the loaded model (no NOT_FOUND
             # on a mismatch) so the two transports behave consistently.
+            lora_request = None
             if request.lora_name:
-                raise UnsupportedFeatureError("LoRA selection is not supported")
+                if self.lora_registry is None:
+                    raise UnsupportedFeatureError(LORA_UNSUPPORTED_MESSAGE)
+                lora_request = self.lora_registry.lora_request(request.lora_name)
             if request.HasField("kv"):
                 if request.kv.HasField("bypass_prefix_cache") and request.kv.bypass_prefix_cache:
                     raise UnsupportedFeatureError("prefix cache bypass is not supported")
@@ -349,8 +363,15 @@ class OpenEngineInferenceServicer(openengine_pb2_grpc.InferenceServicer):
             prepared_input = _prepare_input_from_request(
                 request, self._llm, self._media_capabilities
             )
-            sampling_params = sampling_params_from_request(request, self._guided_backend)
-            trace_headers, target_dp_rank, affinity_headers = _metadata_from_context(context)
+            capabilities = self.request_capabilities
+            sampling_params = sampling_params_from_request(
+                request, self._guided_backend, capabilities
+            )
+            extra_options = extra_options_from_request(request, capabilities)
+            metadata = _metadata_from_context(context, capabilities)
+            trace_headers = metadata.trace_headers
+            target_dp_rank = metadata.target_dp_rank
+            affinity_headers = metadata.affinity_headers
             conversation_params = conversation_params_from_request(request)
             disaggregated_params = disaggregated_params_from_request(request)
             if request_metrics is not None:
@@ -391,10 +412,18 @@ class OpenEngineInferenceServicer(openengine_pb2_grpc.InferenceServicer):
             scheduling_params = (
                 SchedulingParams(
                     attention_dp_rank=target_dp_rank,
-                    attention_dp_relax=target_dp_rank is None,
+                    attention_dp_relax=(
+                        target_dp_rank is None
+                        if extra_options.attention_dp_relax is None
+                        else extra_options.attention_dp_relax
+                    ),
+                    agent_hierarchy=extra_options.agent_hierarchy,
                     subagent_affinity_id=parent_affinity_id,
                 )
-                if target_dp_rank is not None or parent_affinity_id is not None
+                if target_dp_rank is not None
+                or parent_affinity_id is not None
+                or extra_options.attention_dp_relax is not None
+                or extra_options.agent_hierarchy is not None
                 else None
             )
             cache_salt = (
@@ -509,7 +538,7 @@ class OpenEngineInferenceServicer(openengine_pb2_grpc.InferenceServicer):
         except UnsupportedFeatureError as error:
             await context.abort(grpc.StatusCode.UNIMPLEMENTED, str(error))
             return
-        except MediaUnavailableError as error:
+        except (MediaUnavailableError, LoraNotRegisteredError) as error:
             await context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(error))
             return
         except ValueError as error:
@@ -542,7 +571,11 @@ class OpenEngineInferenceServicer(openengine_pb2_grpc.InferenceServicer):
                 scheduling_params=scheduling_params,
                 conversation_params=conversation_params,
                 cache_salt=cache_salt,
-                priority=DEFAULT_REQUEST_PRIORITY,
+                priority=(
+                    DEFAULT_REQUEST_PRIORITY if metadata.priority is None else metadata.priority
+                ),
+                kv_hints=extra_options.kv_hints,
+                lora_request=lora_request,
                 disaggregated_params=disaggregated_params,
             )
         except ValueError as error:
