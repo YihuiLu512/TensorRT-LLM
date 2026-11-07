@@ -153,7 +153,38 @@ OWNERSHIP: dict[str, list[Rule]] = {
     ],
     "WT-06": _own("python/glm5_serve/openengine/**", "tests/openengine/**", repo=GLM)
     + _own("tests/unittest/llmapi/apps/_test_openengine_glm53.py"),
-    "WT-07": _own("csrc/**", "tests/test_min_tokens*.py", repo=GLM),
+    "WT-07": _own(
+        "csrc/**",
+        "tests/test_min_tokens*.py",
+        "tests/test_min_tokens*.cpp",
+        "tests/test_ban_logits.py",
+        repo=GLM,
+    )
+    + [
+        Rule(
+            "python/glm5_serve/engine_api.py",
+            "exception",
+            "only the MockEngine's min_tokens masking, the masked-id limit constant and the"
+            " min_tokens API notes",
+            repo=GLM,
+        ),
+        Rule(
+            "python/glm5_serve/openengine/servicer.py",
+            "exception",
+            "only the module docstring's min_tokens note; WT-06 owns the file",
+            repo=GLM,
+        ),
+        Rule(
+            "tests/openengine/test_openengine_server.py",
+            "exception",
+            "only the min_tokens tests and their imports; WT-06 owns the file",
+            repo=GLM,
+        ),
+        Rule(
+            "README.md", "exception", "only the min_tokens notes and test-table entries", repo=GLM
+        ),
+        Rule("scripts/poc2/check_ownership.py", "exception", "only WT-07's entry in OWNERSHIP"),
+    ],
     "WT-09": _own("tests/integration/defs/perf/openengine_arms.py")
     + [
         _shared("tests/integration/defs/perf/test_perf_sanity.py", "the arm hook only"),
