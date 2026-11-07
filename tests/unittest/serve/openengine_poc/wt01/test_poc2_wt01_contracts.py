@@ -8,6 +8,7 @@ import dataclasses
 import enum
 import json
 import os
+import pickle
 import sys
 import types
 from types import SimpleNamespace
@@ -766,11 +767,28 @@ class _Hooks(enum.Enum):
     CALLABLE = (print,)
 
 
-def test_check_plain_data_skips_an_unset_init_false_field():
-    contracts.check_plain_data(_Lazy())
-    # A frozen dataclass with __slots__ pickles every field, set or not.
-    with pytest.raises(contracts.PostprocDataError, match=r"\.later is not set"):
-        contracts.check_plain_data(_FrozenLazy())
+@dataclasses.dataclass(frozen=True)
+class _FrozenLazyChild(_FrozenLazy):
+    pass
+
+
+@dataclasses.dataclass(slots=True)
+class _SlottedLazy:
+    x: int = 1
+    later: Any = dataclasses.field(init=False)
+
+
+def test_check_plain_data_and_an_unset_init_false_field():
+    # The default pickling skips an unset field.
+    for value in (_Lazy(), _SlottedLazy()):
+        contracts.check_plain_data(value)
+        pickle.loads(pickle.dumps(value))
+    # A frozen dataclass with __slots__, and its subclasses, read every field.
+    for value in (_FrozenLazy(), _FrozenLazyChild()):
+        with pytest.raises(contracts.PostprocDataError, match=r"\.later is not set"):
+            contracts.check_plain_data(value)
+        with pytest.raises(AttributeError):
+            pickle.dumps(value)
 
 
 def test_check_plain_data_checks_enum_values():
@@ -840,17 +858,21 @@ def test_counter_recreates_a_removed_directory(tmp_path):
     assert contracts.read_generate_sent(counter_dir) == 2
 
 
-def test_counter_keeps_its_count_when_the_write_fails(tmp_path, monkeypatch):
+def test_counter_counts_a_call_whose_write_failed(tmp_path, monkeypatch):
     counter = contracts.GenerateCounter(tmp_path)
     counter.increment()
 
     def fail(*args, **kwargs):
         raise PermissionError("read-only")
 
-    monkeypatch.setattr(contracts.tempfile, "mkstemp", fail)
-    with pytest.raises(PermissionError):
-        counter.increment()
-    assert counter.value == 1 and contracts.read_generate_sent(tmp_path) == 1
+    with monkeypatch.context() as patch:
+        patch.setattr(contracts.tempfile, "mkstemp", fail)
+        with pytest.raises(PermissionError):
+            counter.increment()
+    assert counter.value == 2 and contracts.read_generate_sent(tmp_path) == 1
+    # The next write brings the file up to date.
+    assert counter.increment() == 3
+    assert contracts.read_generate_sent(tmp_path) == 3
 
 
 def test_counter_directory_comes_from_the_environment(tmp_path, monkeypatch):

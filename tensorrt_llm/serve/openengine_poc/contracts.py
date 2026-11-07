@@ -406,8 +406,9 @@ class ResponseAssembler(Protocol):
     """Builds the outputs of one Generate call from its events.
 
     ``outputs`` hold the ``CompletionOutput`` objects a ``RequestOutput`` hands
-    to the handlers. Their ``*_diff`` views cover the last :meth:`apply` that
-    returned True, so the caller hands the outputs on after each such call.
+    to the handlers. Their ``*_diff`` views cover the change made by the last
+    :meth:`apply` that returned True, or by :meth:`finish_cancelled`, so the
+    caller hands the outputs on after each such call.
     """
 
     outputs: list[CompletionOutput]
@@ -748,6 +749,8 @@ def resolve_post_processor(path: str) -> Callable[..., Any]:
 
 
 _PLAIN_SCALARS = (type(None), bool, int, float, str, bytes)
+# None before Python 3.11, where object has no __getstate__.
+_OBJECT_GETSTATE = getattr(object, "__getstate__", None)
 
 
 def _importable(cls: type) -> bool:
@@ -821,11 +824,11 @@ def check_plain_data(value: Any, *, path: str = "postproc_args") -> None:
             for name in names:
                 if hasattr(item, name):
                     check(getattr(item, name), f"{where}.{name}")
-                elif not hasattr(item, "__dict__"):
-                    # An init=False field may not be set yet. Pickle skips it
-                    # when attributes live in a __dict__; with __slots__ it
-                    # may read every field (a frozen dataclass does), so an
-                    # unset one is rejected.
+                elif getattr(type(item), "__getstate__", None) is not _OBJECT_GETSTATE:
+                    # An init=False field may not be set yet. The default
+                    # pickling skips it, but a class with a __getstate__ of its
+                    # own (a frozen dataclass with __slots__, or a subclass of
+                    # one) may read it and fail.
                     raise PostprocDataError(f"{where}.{name} is not set")
             return
         if isinstance(model_fields, dict) and hasattr(item, "model_dump"):
@@ -1043,7 +1046,8 @@ class GenerateCounter:
     """Counts the Generate calls a frontend sent, for proving requests went through the engine.
 
     The count starts at 0 and only grows; every call counts, including each
-    call of a split request. When ``counter_dir`` is set, every change writes
+    call of a split request. Call :meth:`increment` once a call has been sent.
+    When ``counter_dir`` is set, every change writes
     ``{"pid": ..., "generate_sent": ...}`` to ``<counter_dir>/<pid>.json``,
     replacing the file atomically; the directory is created if missing. A
     process keeps one counter, and each run uses a directory of its own:
@@ -1068,15 +1072,16 @@ class GenerateCounter:
         """Add ``count`` calls and return the new total.
 
         Raises:
-            OSError: The file could not be written; the count is unchanged.
+            ValueError: ``count`` is negative.
+            OSError: The file could not be written. The calls are counted
+                anyway, and the next write that succeeds brings the file up to date.
         """
         if count < 0:
             raise ValueError(f"the count only grows, got {count}")
         with self._lock:
-            # The count only moves once its file is written.
-            if self._dir is not None:
-                self._write(self._value + count)
             self._value += count
+            if self._dir is not None:
+                self._write(self._value)
             return self._value
 
     def _write(self, value: int) -> None:
