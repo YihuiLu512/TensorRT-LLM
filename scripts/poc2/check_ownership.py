@@ -91,9 +91,14 @@ OWNERSHIP: dict[str, list[Rule]] = {
         _shared("tensorrt_llm/serve/openai_server.py", "wiring points only; WT-13 owns it"),
         _shared("tensorrt_llm/commands/serve.py", "wiring points only; WT-10 owns it"),
         Rule(
-            f"{CLIENT_TESTS}/fake_engine.py",
+            f"{CLIENT_TESTS}/fake_openengine.py",
             "exception",
             "only to switch WT-02's local convention constants to openengine_conventions",
+        ),
+        Rule(
+            f"{CHAIN}/conventions.py",
+            "exception",
+            "only to switch WT-03's local convention constants to openengine_conventions",
         ),
         Rule(
             f"{OE_SERVER}/control.py",
@@ -106,7 +111,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
             "only to switch WT-04's local convention constants to openengine_conventions",
         ),
     ],
-    "WT-02": _own(f"{CLIENT_TESTS}/fake_engine.py", f"{CLIENT_TESTS}/test_fake_engine*.py")
+    "WT-02": _own(f"{CLIENT_TESTS}/fake_openengine.py", f"{CLIENT_TESTS}/test_fake_openengine*.py")
     + [
         _shared(
             f"{CLIENT_TESTS}/test_openengine_poc_serve.py",
@@ -127,13 +132,15 @@ OWNERSHIP: dict[str, list[Rule]] = {
         _shared(
             "tests/integration/defs/kv_cache/test_prefix_aware_scheduling.py", "the H-2 chain hook"
         ),
+        _shared("tests/integration/defs/accuracy/test_glm53_flash.py", "the H-2 chain hook"),
     ],
     "WT-04": _own(
         f"{OE_SERVER}/control.py",
         f"{OE_SERVER}/capabilities.py",
         f"{OE_SERVER_TESTS}/test_control.py",
         f"{OE_SERVER_TESTS}/test_capability_conformance.py",
-    ),
+    )
+    + [Rule(f"{OE_SERVER}/servicer.py", "exception", "only the Generate counter calls")],
     "WT-05": _own(
         f"{OE_SERVER}/request_mapping.py",
         f"{OE_SERVER}/servicer.py",
@@ -142,7 +149,13 @@ OWNERSHIP: dict[str, list[Rule]] = {
         f"{OE_SERVER_TESTS}/test_request_mapping*.py",
         f"{OE_SERVER_TESTS}/test_lora_registry*.py",
     )
-    + [_shared(f"{OE_SERVER}/control.py", "only the LoRA RPC delegation, after WT-04 landed")],
+    + [
+        _shared(
+            f"{OE_SERVER}/control.py",
+            "only the LoRA RPC delegation and the thinking_token_budget, logit_bias, kv_hints"
+            " and scheduling capability values, after WT-04 landed",
+        )
+    ],
     "WT-06": _own("python/glm5_serve/openengine/**", "tests/openengine/**", repo=GLM)
     + _own("tests/unittest/llmapi/apps/_test_openengine_glm53.py"),
     "WT-07": _own("csrc/**", "tests/test_min_tokens*.py", repo=GLM),
@@ -160,8 +173,8 @@ OWNERSHIP: dict[str, list[Rule]] = {
         "tensorrt_llm/commands/serve.py",
         "tests/unittest/api_stability/references/trtllm_serve_cli.yaml",
         f"{CLIENT_TESTS}/**",
-        f"!{CLIENT_TESTS}/fake_engine.py",
-        f"!{CLIENT_TESTS}/test_fake_engine*.py",
+        f"!{CLIENT_TESTS}/fake_openengine.py",
+        f"!{CLIENT_TESTS}/test_fake_openengine*.py",
     )
     + [_shared(f"{POC}/__init__.py", "exports of the facade")],
     "WT-11": _own(f"{POC}/mapping.py", f"{POC}/field_classes.py"),

@@ -314,10 +314,19 @@ def test_per_item_files_belong_to_their_item_only():
     assert [n for n, _ in check_ownership.owners(f"{chain}/verified/WT-20-R2.yaml")] == ["WT-20-R2"]
     assert [n for n, _ in check_ownership.owners(f"{chain}/harness.py")] == ["WT-03"]
     assert [n for n, _ in check_ownership.owners(f"{chain}/smoke/WT-03.txt")] == ["WT-03"]
-    fake = "tests/unittest/grpc/openengine_client/fake_engine.py"
+    fake = "tests/unittest/grpc/openengine_client/fake_openengine.py"
     assert {n: r.kind for n, r in check_ownership.owners(fake)} == {
         "WT-02": "own",
         "WT-01": "exception",
+    }
+    assert {n: r.kind for n, r in check_ownership.owners(f"{chain}/conventions.py")} == {
+        "WT-03": "own",
+        "WT-01": "exception",
+    }
+    servicer = "tensorrt_llm/grpc/openengine/servicer.py"
+    assert {n: r.kind for n, r in check_ownership.owners(servicer)} == {
+        "WT-05": "own",
+        "WT-04": "exception",
     }
     assert [
         n for n, _ in check_ownership.owners("tests/unittest/grpc/openengine_client/test_client.py")
