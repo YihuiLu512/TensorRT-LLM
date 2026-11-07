@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+entries:
+  - row: F-33+F-34
+    features: [F-33, F-34]
+    cases:
+      - kv_cache/test_prefix_aware_scheduling.py::TestServePrefixAwareScheduling::test_multi_round_qa_shared_prefix_smoke
+      - kv_cache/test_prefix_aware_scheduling.py::TestServePrefixAwareScheduling::test_multi_round_qa_shared_prefix[guaranteed-chunked]
+      - kv_cache/test_prefix_aware_scheduling.py::TestServePrefixAwareScheduling::test_multi_round_qa_shared_prefix[guaranteed-no-chunked]
+      - kv_cache/test_prefix_aware_scheduling.py::TestServePrefixAwareScheduling::test_multi_round_qa_shared_prefix[max-util-chunked]
+      - kv_cache/test_prefix_aware_scheduling.py::TestServePrefixAwareScheduling::test_multi_round_qa_shared_prefix[python-scheduler]
+      - kv_cache/test_prefix_aware_scheduling.py::TestServePrefixAwareScheduling::test_multi_round_qa_shared_prefix[swa-chunked]
+      - kv_cache/test_prefix_aware_scheduling.py::TestServePrefixAwareScheduling::test_multi_round_qa_shared_prefix[no-overlap-chunked]
+      - kv_cache/test_prefix_aware_scheduling.py::TestServePrefixAwareScheduling::test_multi_round_qa_shared_prefix[offload-chunked]
+      - kv_cache/test_prefix_aware_scheduling.py::TestServePrefixAwareScheduling::test_multi_round_qa_shared_prefix[offload-no-chunked]
+      - unittest/llmapi/apps/_test_openai_completions.py::test_completion_cached_tokens[pytorch-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_completions.py::test_completion_cached_tokens[pytorch-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_chat.py::test_chat_cached_tokens[pytorch-extra_options-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_chat.py::test_chat_cached_tokens[pytorch-extra_options-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_chat.py::test_chat_cached_tokens[pytorch-no_extra_options-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_chat.py::test_chat_cached_tokens[pytorch-no_extra_options-enable_processpool]
+    moved:
+      - to_row: F-17+F-18+F-30
+        why: they check the usage of every streamed chunk (F-30)
+        cases:
+          - unittest/llmapi/apps/_test_openai_completions.py::test_completion_cached_tokens_stream[pytorch-disable_processpool]
+          - unittest/llmapi/apps/_test_openai_completions.py::test_completion_cached_tokens_stream[pytorch-enable_processpool]
+          - unittest/llmapi/apps/_test_openai_chat.py::test_chat_cached_tokens_stream[pytorch-extra_options-disable_processpool]
+          - unittest/llmapi/apps/_test_openai_chat.py::test_chat_cached_tokens_stream[pytorch-extra_options-enable_processpool]
+          - unittest/llmapi/apps/_test_openai_chat.py::test_chat_cached_tokens_stream[pytorch-no_extra_options-disable_processpool]
+          - unittest/llmapi/apps/_test_openai_chat.py::test_chat_cached_tokens_stream[pytorch-no_extra_options-enable_processpool]
+    commit: 77b65bc6b167681393607bff70f09b8621019c27
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p1/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p1/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p2/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p2/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p3/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p3/junit/
+    result: passed
+    chain_proof: incomplete
+  - row: T17
+    features: [T17]
+    cases: [examples/serve/test_serve.py::test_config_override_precedence]
+    commit: 77b65bc6b167681393607bff70f09b8621019c27
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p1/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p2/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p3/outer-junit.xml
+    result: passed
+    chain_proof: incomplete
