@@ -38,6 +38,7 @@ from defs.trt_test_alternative import (Popen, cleanup_process_tree, print_error,
 from ..common import get_trt_llm_lib_dir
 from ..local_venv import PythonVenvRunnerImpl
 from ..test_list_parser import parse_test_list
+from . import openengine_arms
 from .data_export import (GPU_MONITORING_FORMAT_KEYS, write_csv,
                           write_gpu_monitoring_no_test_results, write_yaml)
 from .gpu_clock_lock import GPUClockLock, InvalidGPUMonitoringResultError
@@ -283,6 +284,11 @@ class PerfBenchScriptTestCmds(NamedTuple):
     mpi_cmd: List[str]
 
     def run_cmd(self, cmd_idx: int, venv) -> str:
+        if os.environ.get(openengine_arms.ENV_ARM) or os.environ.get(
+                openengine_arms.ENV_CHAIN):
+            raise openengine_arms.ArmError(
+                f"{openengine_arms.ENV_ARM} and {openengine_arms.ENV_CHAIN} "
+                "apply to serve perf tests only, not to trtllm-bench")
         output = ""
         mpi_cmd = self.mpi_cmd
         build_cmd_str = self.get_cmd_str(len(self.data_cmds))
@@ -392,14 +398,17 @@ class PerfServeScriptTestCmds:
         self._server_proc = None
         self._server_log_path = None
         self._server_log_file = None
+        # The comparison arm of an OpenEngine perf run, or None.
+        self._arm = openengine_arms.selected_arm()
 
     def start_server(self) -> None:
         """Start the server, capture stdout/stderr, and wait for readiness."""
         if self._server_proc is not None:
             return
         from tensorrt_llm._utils import get_free_port
-        self._port = get_free_port()
         self._host = "localhost"
+        self._port = (openengine_arms.free_port(self._host)
+                      if self._arm is not None else get_free_port())
         cmd = self.server_cmd + [
             "--host", self._host, "--port",
             str(self._port)
@@ -417,10 +426,20 @@ class PerfServeScriptTestCmds:
             delete=False)
         self._server_log_path = self._server_log_file.name
         print_info(f"trtllm-serve log: {self._server_log_path}")
-        self._server_proc = subprocess.Popen(cmd,
-                                             env=self.server_env,
-                                             stdout=self._server_log_file,
-                                             stderr=subprocess.STDOUT)
+        if self._arm is not None:
+            plan = openengine_arms.prepare_server(cmd, self._arm, log_dir)
+            print_info(f"Perf arm {self._arm.name}: {' '.join(plan.cmd)}")
+            self._server_proc = openengine_arms.launch(
+                plan,
+                self._arm,
+                env=self.server_env,
+                sink=self._server_log_file,
+                ready_timeout=self.server_timeout)
+        else:
+            self._server_proc = subprocess.Popen(cmd,
+                                                 env=self.server_env,
+                                                 stdout=self._server_log_file,
+                                                 stderr=subprocess.STDOUT)
         _wait_for_server_ready(f"http://{self._host}:{self._port}/health",
                                timeout=self.server_timeout,
                                server_proc=self._server_proc)
@@ -505,9 +524,26 @@ class PerfServeScriptTestCmds:
             client_cmd_with_port = self.client_cmds[client_idx] + host_port
             print_info(
                 f"Running benchmark client: {' '.join(client_cmd_with_port)}")
+            arm_run = (self._server_proc.start_run()
+                       if self._arm is not None else None)
             output = _run_command_with_captured_output(client_cmd_with_port,
                                                        env=copy.deepcopy(
                                                            os.environ))
+            if arm_run is not None:
+                try:
+                    arm_result = arm_run.finish(
+                        output=output,
+                        client_cmd=client_cmd_with_port,
+                        test_id=f"{openengine_arms.current_test_id()}"
+                        f"|client={client_idx}",
+                        default_dir=os.path.abspath(self._server_log_dir
+                                                    or os.getcwd()))
+                except openengine_arms.ArmError as error:
+                    # Printing here would go to the caller's captured stdout,
+                    # which is dropped when the command fails.
+                    raise openengine_arms.ArmError(
+                        f"{error}\nBenchmark output:\n{output}") from error
+                print_info(f"Perf arm {self._arm.name} result: {arm_result}")
         return output
 
     @staticmethod

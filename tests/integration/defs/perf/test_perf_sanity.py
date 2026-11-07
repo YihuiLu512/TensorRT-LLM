@@ -42,6 +42,7 @@ from defs.common import wait_for_reported_addr
 from defs.trt_test_alternative import print_info, print_warning
 
 from ..conftest import get_llm_root, llm_models_root
+from . import openengine_arms
 from ._model_paths import MODEL_PATH_DICT
 from .perf_regression_utils import _percentile, get_job_info, process_and_upload_test_results
 from .time_breakdown_metrics import ALL_METRICS as TIME_BREAKDOWN_METRIC_NAMES
@@ -2807,11 +2808,10 @@ class AggrTestCmds(NamedTuple):
         for stale_log in warmup_pass_logs(self.test_output_dir, server_idx):
             os.remove(stale_log)
 
+        # The comparison arm of an OpenEngine perf run, or None.
+        arm = openengine_arms.selected_arm()
         try:
             server_hostname = "localhost"
-            # port 0 + --report_addr: let the server bind a kernel-assigned
-            # port and tell us which one, instead of reserving one here and
-            # racing whoever takes it before the server binds.
             server_addr_path = os.path.join(self.test_output_dir, f"trtllm-serve.{server_idx}.addr")
             if os.path.exists(server_addr_path):
                 os.remove(server_addr_path)
@@ -2820,7 +2820,18 @@ class AggrTestCmds(NamedTuple):
                 num_frontends = (
                     getattr(self.server_configs[server_idx], "num_serve_frontends", 1) or 1
                 )
-            if num_frontends > 1:
+            arm_plan = None
+            if arm is not None:
+                arm_plan = openengine_arms.prepare_server(server_cmd, arm, self.test_output_dir)
+                server_cmd = list(arm_plan.cmd)
+            if arm is not None and arm.explicit_port:
+                # Arms that start on a port chosen in advance (Arm.explicit_port).
+                server_port = openengine_arms.free_port(server_hostname)
+                server_cmd_with_port = add_host_port_to_cmd(
+                    server_cmd, server_hostname, server_port
+                )
+                publish_addr_file(server_addr_path, server_hostname, server_port)
+            elif num_frontends > 1 and arm is None:
                 # trtllm-serve refuses port 0 / --report_addr with several
                 # frontends (a ctx_only case inherits them from the disagg ctx
                 # worker), so reserve the port here and publish it on the
@@ -2831,6 +2842,9 @@ class AggrTestCmds(NamedTuple):
                 )
                 publish_addr_file(server_addr_path, server_hostname, server_port)
             else:
+                # port 0 + --report_addr: let the server bind a kernel-assigned
+                # port and tell us which one, instead of reserving one here and
+                # racing whoever takes it before the server binds.
                 server_cmd_with_port = add_host_port_to_cmd(server_cmd, server_hostname, 0) + [
                     "--report_addr",
                     server_addr_path,
@@ -2842,12 +2856,23 @@ class AggrTestCmds(NamedTuple):
             if server_idx < len(self.server_configs):
                 server_env.update(self.server_configs[server_idx].to_env())
             with open(server_file_path, "w") as server_ctx:
-                server_proc = subprocess.Popen(
-                    server_cmd_with_port,
-                    env=server_env,
-                    stdout=server_ctx,
-                    stderr=subprocess.STDOUT,
-                )
+                if arm is not None:
+                    server_proc = openengine_arms.launch(
+                        openengine_arms.ServerPlan(tuple(server_cmd_with_port), arm_plan.config),
+                        arm,
+                        env=server_env,
+                        sink=server_ctx,
+                        ready_timeout=min(
+                            self.timeout, server_ready_timeout(AGG_SERVER_READY_TIMEOUT, "AGG")
+                        ),
+                    )
+                else:
+                    server_proc = subprocess.Popen(
+                        server_cmd_with_port,
+                        env=server_env,
+                        stdout=server_ctx,
+                        stderr=subprocess.STDOUT,
+                    )
                 _, server_port = wait_for_reported_addr(server_addr_path, self.timeout, server_proc)
 
                 wait_for_endpoint_ready(
@@ -2917,11 +2942,23 @@ class AggrTestCmds(NamedTuple):
                     client_env = copy.deepcopy(os.environ)
                     if client_config:
                         client_env.update(client_config.to_env())
+                    arm_run = server_proc.start_run() if arm is not None else None
                     output = _run_benchmark_with_log(
                         client_cmd_with_port,
                         client_env,
                         client_file_path,
                     )
+                    if arm_run is not None:
+                        arm_result = arm_run.finish(
+                            output=output,
+                            client_cmd=client_cmd_with_port,
+                            test_id=(
+                                f"{openengine_arms.current_test_id()}"
+                                f"|server={server_idx}|client={client_idx}"
+                            ),
+                            default_dir=self.test_output_dir,
+                        )
+                        print_info(f"Perf arm {arm.name} result: {arm_result}")
                     outputs.append(output)
                     if collect_time_breakdown:
                         pending_time_breakdown.append(
@@ -4979,6 +5016,35 @@ class PerfSanityTestConfig:
         """Get commands based on runtime and benchmark_mode."""
         self.test_output_dir = os.path.join(self._output_dir, self._test_param_labels)
         os.makedirs(self.test_output_dir, exist_ok=True)
+
+        # OpenEngine comparison arms: plain single-node aggregated cases with
+        # benchmark_serving clients only (no accuracy run), results never uploaded.
+        arm = openengine_arms.selected_arm()
+        if arm is not None and (
+            self.runtime != "aggr_server"
+            or self.benchmark_mode
+            or self.time_breakdown
+            or any(c.gpus > c.gpus_per_node for c in self.server_configs)
+        ):
+            raise openengine_arms.ArmError(
+                f"{openengine_arms.ENV_ARM}={arm.name} applies to plain single-node aggregated "
+                "cases only, "
+                f"not to {self._test_param_labels}"
+            )
+        if arm is not None and "upload" in self._test_param_labels.split("-")[0]:
+            raise openengine_arms.ArmError(
+                f"{openengine_arms.ENV_ARM}={arm.name}: run the aggr- test id, not "
+                f"{self._test_param_labels}; arm results are not uploaded"
+            )
+        if arm is not None:
+            for client in (c for cs in self.server_client_configs.values() for c in cs):
+                accuracy = client.accuracy_config and client.accuracy_config.enable_accuracy_test
+                if client.benchmark_client or client.use_nv_sa_benchmark or accuracy:
+                    raise openengine_arms.ArmError(
+                        f"{openengine_arms.ENV_ARM}={arm.name} measures benchmark_serving "
+                        f"clients only; client {client.name} uses another client or runs "
+                        "an accuracy test"
+                    )
 
         if self.runtime == GEN_ONLY_NO_CONTEXT_RUNTIME:
             return self._get_gen_only_no_context_commands(self._output_dir, self.test_output_dir)
