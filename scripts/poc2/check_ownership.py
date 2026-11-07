@@ -101,14 +101,9 @@ OWNERSHIP: dict[str, list[Rule]] = {
             "only the note on its local copies of the convention constants",
         ),
         Rule(
-            f"{OE_SERVER}/control.py",
-            "exception",
-            "only to switch WT-04's local convention constants to openengine_conventions",
-        ),
-        Rule(
             f"{OE_SERVER}/capabilities.py",
             "exception",
-            "only to switch WT-04's local convention constants to openengine_conventions",
+            "only to take WT-04's convention names and tokenizer fingerprint from openengine_conventions",
         ),
     ],
     "WT-02": _own(f"{CLIENT_TESTS}/fake_openengine.py", f"{CLIENT_TESTS}/test_fake_openengine*.py")

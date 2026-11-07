@@ -90,6 +90,9 @@ from tensorrt_llm.grpc.openengine_conventions import (
     FP_EOS_TOKEN_IDS,
     FP_FILES_SHA256,
     FP_VOCAB_SIZE,
+    LOGIT_BIAS_MAX,
+    LOGIT_BIAS_MIN,
+    PRIORITY_SCALE,
     REQ_BEST_OF,
     REQ_CONVERSATION_ID,
     REQ_DETOKENIZE,
@@ -109,6 +112,11 @@ from tensorrt_llm.grpc.openengine_conventions import (
 from tensorrt_llm.grpc.openengine_conventions import (
     CONVENTIONS_VERSION_KEY as KEY_CONVENTIONS_VERSION,
 )
+from tensorrt_llm.grpc.openengine_conventions import (
+    LOGIT_BIAS_MAX_ENTRIES as MAX_LOGIT_BIAS_ENTRIES,
+)
+from tensorrt_llm.grpc.openengine_conventions import META_PRIORITY as METADATA_PRIORITY
+from tensorrt_llm.grpc.openengine_conventions import META_TARGET_DP_RANK as METADATA_TARGET_DP_RANK
 from tensorrt_llm.grpc.openengine_conventions import (
     MODEL_SUPPORTED_MODALITIES_KEY as SUPPORTED_MODALITIES,
 )
@@ -200,10 +208,6 @@ _BOOLEAN_CAPABILITIES = (
 
 MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 MAX_STOP_CONDITIONS = 64
-MAX_LOGIT_BIAS_ENTRIES = 300
-METADATA_PRIORITY = "openengine-priority"
-METADATA_TARGET_DP_RANK = "openengine-target-dp-rank"
-PRIORITY_SCALE = 1000
 
 _GUIDE_MODE = {
     "json_schema": model_pb2.GUIDED_DECODING_MODE_JSON_SCHEMA,
@@ -695,8 +699,13 @@ def _validate_request_key(
         for token, bias in entries.items():
             if not (token.isascii() and token.isdigit()) or int(token) >= profile.vocab_size:
                 raise _invalid(f"extra.{key} key {token!r} is not a token id in the vocabulary")
-            if bias.WhichOneof("kind") != "number_value" or not -100 <= bias.number_value <= 100:
-                raise _invalid(f"extra.{key}[{token}] must be a number in [-100, 100]")
+            if bias.WhichOneof("kind") != "number_value" or not (
+                LOGIT_BIAS_MIN <= bias.number_value <= LOGIT_BIAS_MAX
+            ):
+                raise _invalid(
+                    f"extra.{key}[{token}] must be a number in "
+                    f"[{LOGIT_BIAS_MIN:g}, {LOGIT_BIAS_MAX:g}]"
+                )
     elif key == REQ_SCHEDULING:
         unknown = set(entries) - {"attention_dp_relax", "agent_hierarchy"}
         if unknown:

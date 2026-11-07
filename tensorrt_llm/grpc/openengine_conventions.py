@@ -333,7 +333,8 @@ def compute_tokenizer_fingerprint(
     - ``eos_token_ids``: the tokenizer's ``eos_token_id`` together with the
       ``eos_token_id`` of ``generation_config.json`` in ``model_dir`` when that
       file holds a JSON object (each a number or a list), without duplicates, ascending.
-    - ``bos_token_id``: the tokenizer's ``bos_token_id``.
+      Ids that are not integers are left out.
+    - ``bos_token_id``: the tokenizer's ``bos_token_id`` when it is an integer, else None.
     - ``files_sha256``: sha256 of each of :data:`FINGERPRINT_FILES` present in ``model_dir``.
 
     Args:
