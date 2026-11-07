@@ -172,9 +172,10 @@ class GenerateOptions:
         logit_bias: The request's OpenAI ``logit_bias`` (token id -> bias), not
             turned into a bias tensor; set only for a generator that
             :func:`takes_request_data`.
-        reasoning_parser: The serving side's reasoning parser, from which the
-            mapping derives the reasoning start and end tokens of a thinking budget.
-        tokenizer: The serving side's tokenizer, for the same purpose.
+        reasoning_parser: The reasoning parser ``OpenAIServer`` would build this
+            request's thinking-budget processor from in-process; the mapping
+            derives the reasoning start and end tokens of a thinking budget from it.
+        tokenizer: The tokenizer it would use for that, or None where it has none.
     """
 
     streaming: bool = False
@@ -199,7 +200,8 @@ def takes_request_data(generator: Any) -> bool:
     True when the generator's class sets ``takes_request_data = True``. For such a
     generator ``OpenAIServer`` builds neither a thinking-budget logits processor
     nor an embedding-bias tensor: it leaves ``thinking_token_budget`` in the
-    sampling parameters and passes ``logit_bias`` to ``generate_async``.
+    sampling parameters and passes ``logit_bias``, and the reasoning parser and
+    tokenizer it would have built the processor from, to ``generate_async``.
     """
     return getattr(type(generator), "takes_request_data", False) is True
 
@@ -322,7 +324,7 @@ def default_map_request(
         ("disaggregated_params", options.disaggregated_params),
         ("cache_salt", options.cache_salt),
         ("kv_hints", options.kv_hints),
-        ("logit_bias", options.logit_bias),
+        ("logit_bias", options.logit_bias or None),
     ):
         if value is not None:
             raise ValueError(f"{name} is not supported when serving through an OpenEngine engine")

@@ -206,15 +206,12 @@ def test_n_beyond_the_limit_is_split(n, limit, sizes):
     assert len({r.request_id for r in requests}) == len(sizes)
 
 
-def test_a_split_request_without_a_seed_gets_a_random_one():
-    requests = _map(_sampled(n=7), _caps(max_num_sequences=3))
-    base = requests[0].sampling["seed"]
-    assert [r.sampling["seed"] for r in requests] == [
-        (base + start) % (1 << 64) for start in (0, 3, 6)
-    ]
-    again = _map(_sampled(n=7), _caps(max_num_sequences=3))
-    assert again[0].sampling["seed"] != base
-    # One call is left to the engine's own seeding.
+@pytest.mark.parametrize("limit, seeds", [(3, [0, 3, 6]), (1, [0, 1, 2, 3, 4, 5, 6])])
+def test_a_split_request_without_a_seed_gets_the_in_process_seeds(limit, seeds):
+    # In-process, sequence i of an unseeded request gets seed 0 + i.
+    requests = _map(_sampled(n=7), _caps(max_num_sequences=limit))
+    assert [r.sampling["seed"] for r in requests] == seeds
+    # One call is left to the engine, which seeds it as in-process.
     assert "seed" not in _one(_sampled(n=3), _caps(max_num_sequences=3)).sampling
 
 
@@ -222,7 +219,8 @@ def test_a_split_request_without_a_seed_gets_a_random_one():
     "name, value, message",
     [
         ("top_k", 1 << 31, "top_k must be in"),
-        ("max_tokens", 1 << 32, "max_tokens must be in"),
+        ("top_k", 1 << 1100, "top_k must be in"),
+        ("max_tokens", 1 << 32, "max_tokens must be less than 2"),
         ("min_tokens", 1 << 32, "min_tokens must be in"),
         ("stop_token_ids", [1 << 32], "stop token id"),
         ("stop_token_ids", [-1], "stop token id"),
@@ -232,15 +230,25 @@ def test_integers_outside_the_request_field_ranges_are_rejected(name, value, mes
     params = SamplingParams()
     setattr(params, name, value)
     params = _explicit(params, name)
+    caps = _caps(tokenizer_fingerprint=None, max_context_length=None, max_output_tokens=None)
     with pytest.raises(ValueError, match=message):
-        _map(params, _caps(tokenizer_fingerprint=None))
+        _map(params, caps)
 
 
-def test_a_stop_token_id_beyond_the_vocabulary_is_rejected():
+def test_max_tokens_beyond_the_field_range_is_capped_when_the_engine_has_a_limit():
+    caps = _caps(max_context_length=None, max_output_tokens=100)
+    assert _one(SamplingParams(max_tokens=1 << 32), caps).max_tokens == 100
+
+
+def test_stop_token_ids_are_not_checked_against_the_vocabulary():
+    # As in-process; the vocabulary the tokenizer fingerprint reports is not the model's.
     caps = _caps(tokenizer_fingerprint=conv.TokenizerFingerprint(10, (1,), None))
-    assert _one(SamplingParams(stop_token_ids=[9]), caps).stop_token_ids == [9]
-    with pytest.raises(ValueError, match=r"stop token id 10 is out of range.*\[0, 10\)"):
-        _one(SamplingParams(stop_token_ids=[10]), caps)
+    assert _one(SamplingParams(stop_token_ids=[10]), caps).stop_token_ids == [10]
+
+
+def test_prompt_token_ids_beyond_the_field_range_are_rejected():
+    with pytest.raises(ValueError, match=r"prompt token id 4294967296 .*\[0, 4294967296\)"):
+        _one(caps=_caps(tokenizer_fingerprint=None), prompt=[1, 1 << 32])
 
 
 @pytest.mark.parametrize("n", [0, -1])
@@ -474,8 +482,12 @@ def test_logit_bias_as_data():
     caps = _caps(tokenizer_fingerprint=conv.TokenizerFingerprint(100, (1,), None))
     options = contracts.GenerateOptions(logit_bias={"007": 5, "3": -100.0})
     assert _one(caps=caps, options=options).extra[conv.REQ_LOGIT_BIAS] == {"7": 5.0, "3": -100.0}
+    # OpenAIServer checks the ids against the model's vocabulary, as in-process.
+    assert _one(caps=caps, options=contracts.GenerateOptions(logit_bias={"100": 1})).extra[
+        conv.REQ_LOGIT_BIAS
+    ] == {"100": 1.0}
     for bias, match in [
-        ({"100": 1}, "vocabulary"),
+        ({str(1 << 32): 1}, r"out of range \[0, 2\*\*32\)"),
         ({"x": 1}, "Invalid logit_bias key"),
         ({"1": math.inf}, r"\[-100"),
         ({"1": 101}, r"\[-100"),
@@ -485,6 +497,11 @@ def test_logit_bias_as_data():
     too_many = {str(i): 1 for i in range(conv.LOGIT_BIAS_MAX_ENTRIES + 1)}
     with pytest.raises(ValueError, match="entries"):
         _one(options=contracts.GenerateOptions(logit_bias=too_many))
+    # Spellings of one id count once.
+    aliases = {str(i): 1 for i in range(conv.LOGIT_BIAS_MAX_ENTRIES)} | {"07": 1}
+    assert len(
+        _one(options=contracts.GenerateOptions(logit_bias=aliases)).extra[conv.REQ_LOGIT_BIAS]
+    ) == (conv.LOGIT_BIAS_MAX_ENTRIES)
     with pytest.raises(ValueError, match="logit_bias"):
         _one(caps=_caps("glm"), options=options)
 
@@ -497,15 +514,18 @@ def test_kv_hints_conversation_and_scheduling():
         agent_hierarchy=[("planner", 2)],
         subagent_affinity_id=None,
     )
+    conversation = contracts.GenerateOptions(
+        conversation_params=SimpleNamespace(conversation_id="c1")
+    )
     each = {
         "kv_hints": contracts.GenerateOptions(kv_hints=hints),
-        "conversation_id": contracts.GenerateOptions(
-            conversation_params=SimpleNamespace(conversation_id="c1")
-        ),
         "scheduling_params": contracts.GenerateOptions(scheduling_params=scheduling),
     }
     assert _one(options=each["kv_hints"]).extra[conv.REQ_KV_HINTS] == hints.model_dump(mode="json")
-    assert _one(options=each["conversation_id"]).extra[conv.REQ_CONVERSATION_ID] == "c1"
+    assert _one(options=conversation).extra[conv.REQ_CONVERSATION_ID] == "c1"
+    # A routing hint (OpenAIServer also takes it from gateway headers): not sent
+    # to an engine without it, as in-process ignores it without conversation routing.
+    assert conv.REQ_CONVERSATION_ID not in _one(caps=_caps("glm"), options=conversation).extra
     assert _one(options=each["scheduling_params"]).extra[conv.REQ_SCHEDULING] == {
         "attention_dp_relax": False,
         "agent_hierarchy": [["planner", 2]],
@@ -623,15 +643,28 @@ def test_logit_bias_is_validated_but_not_materialized(request_cls, kwargs):
         bad.to_sampling_params(vocab_size=4, materialize_logit_bias=False)
 
 
-def test_the_server_passes_logit_bias_only_to_a_generator_that_takes_it():
+def test_the_server_passes_request_data_only_to_a_generator_that_takes_it():
     from tensorrt_llm.serve.openai_server import OpenAIServer
 
     class Facade:
         takes_request_data = True
+        args = SimpleNamespace(reasoning_parser="qwen3")
 
     server = OpenAIServer.__new__(OpenAIServer)
+    server.tokenizer = tokenizer = CharTokenizer()
     request = SimpleNamespace(logit_bias={"1": 2.0})
     server.generator = Facade()
-    assert server._request_data_kwargs(request) == {"logit_bias": {"1": 2.0}}
+    assert server._request_data_kwargs(request) == {
+        "logit_bias": {"1": 2.0},
+        "reasoning_parser": "qwen3",
+        "tokenizer": tokenizer,
+    }
+    server.use_harmony = False
+    assert server._responses_request_data_kwargs(request)["reasoning_parser"] == "qwen3"
+    # As in-process: a harmony Responses request uses gpt_oss and has no tokenizer.
+    server.use_harmony = True
+    harmony = server._responses_request_data_kwargs(request)
+    assert (harmony["reasoning_parser"], harmony["tokenizer"]) == ("gpt_oss", None)
     server.generator = SimpleNamespace()
     assert server._request_data_kwargs(request) == {}
+    assert server._responses_request_data_kwargs(request) == {}

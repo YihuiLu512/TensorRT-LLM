@@ -1061,11 +1061,38 @@ class OpenAIServer(_VideoRoutesMixin):
         """Whether the generator takes a thinking budget and logit_bias as data (OpenEngine)."""
         return openengine_contracts.takes_request_data(self.generator)
 
-    def _request_data_kwargs(self, request: Any) -> Dict[str, Any]:
-        """``generate_async`` arguments of a generator that takes request data."""
+    def _request_data_kwargs(self,
+                             request: Any,
+                             reasoning_parser: Optional[str] = None,
+                             tokenizer: Any = None) -> Dict[str, Any]:
+        """``generate_async`` arguments of a generator that takes request data.
+
+        ``reasoning_parser`` and ``tokenizer`` are what the in-process path would
+        build this request's thinking-budget processor from; they default to the
+        server's own.
+        """
         if not self._takes_request_data():
             return {}
-        return {"logit_bias": getattr(request, "logit_bias", None)}
+        return {
+            "logit_bias":
+            getattr(request, "logit_bias", None),
+            "reasoning_parser":
+            (self.generator.args.reasoning_parser
+             if reasoning_parser is None else reasoning_parser),
+            "tokenizer":
+            self.tokenizer if tokenizer is None else tokenizer,
+        }
+
+    def _responses_request_data_kwargs(self, request: Any) -> Dict[str, Any]:
+        """Request data of a Responses request: its parser and tokenizer as above."""
+        if not self.use_harmony:
+            return self._request_data_kwargs(request)
+        kwargs = self._request_data_kwargs(request, reasoning_parser="gpt_oss")
+        if kwargs:
+            # In-process, a harmony Responses request has no tokenizer to
+            # build a thinking budget from.
+            kwargs["tokenizer"] = None
+        return kwargs
 
     def _logit_bias_vocab_size(self) -> int:
         for config in (self.model_config,
@@ -3528,6 +3555,7 @@ class OpenAIServer(_VideoRoutesMixin):
                 conversation_params=conversation_params,
                 kv_hints=request.kv_hints,
                 _postproc_params=dispatch.generate_params(postproc_params),
+                **self._responses_request_data_kwargs(request),
             )
             # The executor sets these only for postprocessing it runs itself.
             dispatch.prepare(postproc_args, promise, tokenizer=self.tokenizer)

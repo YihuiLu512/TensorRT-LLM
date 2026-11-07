@@ -7,7 +7,8 @@ models must be classified; a mapped field set to a non-default value must reach
 the engine's request when the engine declares what it needs and be rejected (or
 fall back to the serving side, where the table says so) when it does not; a
 rejected field must be rejected; a field the serving side handles must not be
-rejected and must name the feature row whose tests verify it.
+rejected and must name the feature row whose tests verify it, or say why none
+is needed.
 """
 
 import dataclasses
@@ -142,7 +143,8 @@ class Probe:
         options: GenerateOptions fields to set.
         supported: Whether an engine with these capabilities takes the field.
         landed: Whether the field is in the engine requests.
-        fallback: Whether the serving side handles the field when it is not supported.
+        fallback: Whether an unsupported field is handled on the serving side or left
+            out as in-process, instead of rejected.
     """
 
     params: dict = dataclasses.field(default_factory=dict)
@@ -246,7 +248,8 @@ OPTION_PROBES: dict[str, Probe] = {
     "conversation_params": Probe(
         options={"conversation_params": type("C", (), {"conversation_id": "c"})()},
         supported=_cap(conv.CAP_REQ_CONVERSATION_ID),
-        landed=_first(lambda r: r.extra[conv.REQ_CONVERSATION_ID] == "c"),
+        landed=_first(lambda r: r.extra.get(conv.REQ_CONVERSATION_ID) == "c"),
+        fallback=True,
     ),
     "scheduling_params": Probe(
         options={"scheduling_params": type("S", (), {"attention_dp_relax": False})()},

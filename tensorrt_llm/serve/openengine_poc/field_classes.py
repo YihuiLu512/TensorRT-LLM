@@ -10,7 +10,8 @@ these kinds:
   declared ``capability``, a set value is rejected, unless ``fallback`` names
   how the serving side handles it instead.
 - ``SERVE``: the serving side handles it; ``verified_by`` names the feature
-  row (``row F-xx``) whose tests verify that handling, or says why none is needed.
+  row (``row F-xx``) whose tests verify that handling, or says why none is
+  needed (``none needed: ...``).
 - ``REJECTED``: a set value is rejected with HTTP 400.
 - ``INTERNAL``: not a request option (state derived from other fields, or an
   input of the mapping itself).
@@ -163,10 +164,14 @@ GENERATE_OPTIONS: dict[str, FieldClass] = {
     "streaming": _serve("every Generate call streams; the handler decides", "row F-01+F-02"),
     "lora_request": _mapped("lora_name, once the LoRA registry resolves it", "LoRA"),
     "lora_name": _mapped("lora_name", "LoRA"),
-    "disaggregated_params": _rejected("disaggregated serving is not supported through OpenEngine"),
+    "disaggregated_params": _rejected("this frontend does not map disaggregated requests"),
     "cache_salt": _mapped("kv.cache_salt", "supports_cache_salt"),
     "kv_hints": _mapped("extra[trtllm.kv_hints]", "trtllm.request.kv_hints"),
-    "conversation_params": _mapped("extra[conversation_id]", "trtllm.request.conversation_id"),
+    "conversation_params": _mapped(
+        "extra[conversation_id]",
+        "trtllm.request.conversation_id",
+        fallback="not sent: a routing hint, which in-process also ignores without conversation routing",
+    ),
     "scheduling_params": _mapped(
         "extra[trtllm.scheduling]; attention_dp_rank as metadata openengine-target-dp-rank, "
         + _FACADE_META,

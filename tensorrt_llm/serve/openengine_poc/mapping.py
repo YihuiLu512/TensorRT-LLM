@@ -24,7 +24,6 @@ from __future__ import annotations
 import dataclasses
 import json
 import math
-import secrets
 import threading
 from collections.abc import Collection, Mapping
 from typing import Any
@@ -132,7 +131,8 @@ def _not_supported(name: str, value: Any, engine_name: str, why: str = "") -> Va
 
 
 def _check_struct_ints(name: str, value: Any, engine_name: str) -> None:
-    # GenerateRequest.extra is a Struct; values that can hold request integers pass here.
+    # GenerateRequest.extra is a Struct: kv_hints, scheduling_params and the thinking budget
+    # carry request integers into it.
     """Reject integers a ``Struct`` would round, rather than send a different value."""
     if isinstance(value, Mapping):
         for item in value.values():
@@ -232,7 +232,7 @@ def _sampling(
         value = _requested(sampling_params, name)
         if value is None:
             continue
-        if isinstance(value, bool) or not math.isfinite(value):
+        if isinstance(value, bool) or (isinstance(value, float) and not math.isfinite(value)):
             raise ValueError(f"{name} must be a finite number, got {value!r}")
         capability = SAMPLING_FIELD_CAPABILITY.get(name)
         if capability is not None and not capabilities.supports(capability):
@@ -252,10 +252,10 @@ def _check_prompt(prompt_token_ids: list[int], capabilities: ModelCapabilities) 
         raise ValueError("the prompt must have at least one token")
     fingerprint = capabilities.tokenizer_fingerprint
     low, high = min(prompt_token_ids), max(prompt_token_ids)
-    if low < 0 or (fingerprint is not None and high >= fingerprint.vocab_size):
+    vocab = fingerprint.vocab_size if fingerprint is not None else _UINT32_LIMIT
+    if low < 0 or high >= vocab:
         bad = low if low < 0 else high
-        limit = f"[0, {fingerprint.vocab_size})" if fingerprint is not None else "non-negative"
-        raise ValueError(f"prompt token id {bad} is out of range: token ids must be {limit}")
+        raise ValueError(f"prompt token id {bad} is out of range: token ids must be [0, {vocab})")
     max_context = capabilities.max_context_length
     if max_context is not None and len(prompt_token_ids) >= max_context:
         # The LLM path's wording, so OpenAIServer reports code context_length_exceeded.
@@ -279,8 +279,8 @@ def _max_tokens(
         limits.append(capabilities.max_output_tokens)
     limit = min(limits) if limits else None
     max_tokens = sampling_params.max_tokens
-    if max_tokens is not None and not 0 < max_tokens < _UINT32_LIMIT:
-        raise ValueError(f"max_tokens must be in [1, 2**32), got {max_tokens}")
+    if max_tokens is not None and max_tokens <= 0:
+        raise ValueError(f"max_tokens must be greater than 0, got {max_tokens}")
     if max_tokens is None:
         return limit
     if limit is not None and max_tokens > limit:
@@ -290,6 +290,8 @@ def _max_tokens(
             "can generate for this prompt; using it instead"
         )
         return limit
+    if max_tokens >= _UINT32_LIMIT:
+        raise ValueError(f"max_tokens must be less than 2**32, got {max_tokens}")
     return max_tokens
 
 
@@ -309,13 +311,10 @@ def _stopping(
     """``(stop_texts, stop_token_ids, include_stop_in_output)`` for the engine."""
     stops = _stop_strings(sampling_params)
     stop_token_ids = list(dict.fromkeys(sampling_params.stop_token_ids or ()))
-    fingerprint = capabilities.tokenizer_fingerprint
-    high = fingerprint.vocab_size if fingerprint is not None else _UINT32_LIMIT
+    # Only the field's range: in-process does not check stop token ids against the vocabulary.
     for token_id in stop_token_ids:
-        if not 0 <= token_id < high:
-            raise ValueError(
-                f"stop token id {token_id} is out of range: token ids must be [0, {high})"
-            )
+        if not 0 <= token_id < _UINT32_LIMIT:
+            raise ValueError(f"stop token id {token_id} is out of range: it must be in [0, 2**32)")
     include = bool(sampling_params.include_stop_str_in_output)
     engine_stops = capabilities.supports(CAP_STOP_TEXT) and (
         not include or capabilities.supports_stop_in_output
@@ -420,12 +419,7 @@ def _logit_bias(
     """EX-REQ-4: canonical decimal token ids, biases in range, at most the conventions' count."""
     if not capabilities.supports(CAP_REQ_LOGIT_BIAS):
         raise _not_supported("logit_bias", dict(logit_bias), engine_name)
-    if len(logit_bias) > LOGIT_BIAS_MAX_ENTRIES:
-        raise ValueError(
-            f"logit_bias has {len(logit_bias)} entries; at most {LOGIT_BIAS_MAX_ENTRIES} are "
-            f"supported when serving through the OpenEngine engine {engine_name!r}"
-        )
-    fingerprint = capabilities.tokenizer_fingerprint
+    # OpenAIServer has checked the token ids against the model's vocabulary, as in-process.
     out: dict[str, float] = {}
     for key, bias in logit_bias.items():
         try:
@@ -434,9 +428,8 @@ def _logit_bias(
             raise ValueError(
                 f"Invalid logit_bias key {key!r}: must be a valid integer token ID"
             ) from None
-        if token_id < 0 or (fingerprint is not None and token_id >= fingerprint.vocab_size):
-            limit = f"[0, {fingerprint.vocab_size})" if fingerprint is not None else "non-negative"
-            raise ValueError(f"Token ID {token_id} out of vocabulary range {limit}")
+        if not 0 <= token_id < _UINT32_LIMIT:
+            raise ValueError(f"Token ID {token_id} out of range [0, 2**32)")
         if isinstance(bias, bool) or not isinstance(bias, (int, float)):
             raise ValueError(f"logit_bias value for token ID {token_id} must be a number")
         bias = float(bias)
@@ -446,6 +439,12 @@ def _logit_bias(
                 f"[{LOGIT_BIAS_MIN:g}, {LOGIT_BIAS_MAX:g}]"
             )
         out[str(token_id)] = bias
+    # Counted once spellings such as "7" and "07" have become one id.
+    if len(out) > LOGIT_BIAS_MAX_ENTRIES:
+        raise ValueError(
+            f"logit_bias has {len(out)} entries; at most {LOGIT_BIAS_MAX_ENTRIES} are supported "
+            f"when serving through the OpenEngine engine {engine_name!r}"
+        )
     return out
 
 
@@ -491,7 +490,9 @@ def _extra(
         if hasattr(hints, "model_dump"):
             hints = hints.model_dump(mode="json")
         put(REQ_KV_HINTS, CAP_REQ_KV_HINTS, "kv_hints", hints)
-    if options.conversation_params is not None:
+    if options.conversation_params is not None and capabilities.supports(CAP_REQ_CONVERSATION_ID):
+        # A routing hint, also taken from gateway headers; in-process ignores it
+        # too where conversation routing is off.
         conversation_id = options.conversation_params.conversation_id
         put(REQ_CONVERSATION_ID, CAP_REQ_CONVERSATION_ID, "conversation_id", conversation_id)
     scheduling = _scheduling(options.scheduling_params, engine_name)
@@ -535,11 +536,9 @@ def map_request(
     ``n`` up to the engine's ``max_num_sequences`` (M) is one call; above that
     the request is split into ceil(n / M) calls of M sequences, the last one
     taking the rest, and only the first call asks for prompt logprobs. TRT-LLM
-    seeds sequence i of a request with its seed plus i, so each call is sent the
-    request's seed plus the number of sequences before it: the n sequences get
-    the seeds one in-process request with that seed gives them. A split request
-    without a seed gets a random one, so that its calls differ from each other
-    and from those of other requests.
+    seeds sequence i of a request with its seed (0 when unset) plus i, so each
+    call of a split request is sent that seed plus the number of sequences
+    before it: the n sequences get the seeds one in-process request gives them.
 
     ``priority``, ``trace_headers`` and ``scheduling_params.attention_dp_rank``
     become metadata, which the caller adds (OE-META).
@@ -589,8 +588,8 @@ def map_request(
     if len(sizes) > 1:
         logger.debug(f"n={n} is served by {len(sizes)} Generate calls of at most {limit}")
 
-    if len(sizes) > 1 and "seed" not in sampling:
-        sampling["seed"] = secrets.randbits(64)
+    if len(sizes) > 1:
+        sampling.setdefault("seed", 0)
     requests = []
     offset = 0
     for k, size in enumerate(sizes):
