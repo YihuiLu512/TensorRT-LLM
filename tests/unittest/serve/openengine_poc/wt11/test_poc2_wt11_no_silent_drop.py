@@ -5,7 +5,7 @@
 Every field of ``SamplingParams``, ``GenerateOptions`` and the OpenAI request
 models must be classified; a mapped field set to a non-default value must reach
 the engine's request when the engine declares what it needs and be rejected (or
-fall back to the serving side, where the table says so) when it does not; a
+handled as the table's fallback says) when it does not; a
 rejected field must be rejected; a field the serving side handles must not be
 rejected and must name the feature row whose tests verify it, or say why none
 is needed.
@@ -143,8 +143,8 @@ class Probe:
         options: GenerateOptions fields to set.
         supported: Whether an engine with these capabilities takes the field.
         landed: Whether the field is in the engine requests.
-        fallback: Whether an unsupported field is handled on the serving side or left
-            out as in-process, instead of rejected.
+        fallback: Whether an unsupported field is handled as the table's fallback
+            says instead of rejected.
     """
 
     params: dict = dataclasses.field(default_factory=dict)

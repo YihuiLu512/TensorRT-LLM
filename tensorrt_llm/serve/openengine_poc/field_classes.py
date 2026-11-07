@@ -8,7 +8,7 @@ these kinds:
 
 - ``MAPPED``: it reaches the engine, at ``target``. When the engine has not
   declared ``capability``, a set value is rejected, unless ``fallback`` names
-  how the serving side handles it instead.
+  what happens to it instead.
 - ``SERVE``: the serving side handles it; ``verified_by`` names the feature
   row (``row F-xx``) whose tests verify that handling, or says why none is
   needed (``none needed: ...``).
@@ -49,8 +49,8 @@ class FieldClass:
             ``extra`` key or a metadata key. Otherwise what handles it or why.
         capability: ``MAPPED``: what the engine must declare; empty when every
             engine supports it.
-        fallback: ``MAPPED``: what the serving side does when the capability is
-            missing; empty means the field is then rejected.
+        fallback: ``MAPPED``: what happens to a set value when the capability
+            is missing; empty means the field is then rejected.
         verified_by: ``SERVE``: the feature row whose tests verify the handling.
     """
 
@@ -170,7 +170,7 @@ GENERATE_OPTIONS: dict[str, FieldClass] = {
     "conversation_params": _mapped(
         "extra[conversation_id]",
         "trtllm.request.conversation_id",
-        fallback="not sent: a routing hint, which in-process also ignores without conversation routing",
+        fallback="not sent: a routing and cache-retention hint that does not change the output",
     ),
     "scheduling_params": _mapped(
         "extra[trtllm.scheduling]; attention_dp_rank as metadata openengine-target-dp-rank, "

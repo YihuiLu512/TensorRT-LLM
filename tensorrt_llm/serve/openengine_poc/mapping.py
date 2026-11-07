@@ -5,8 +5,9 @@
 :func:`map_request` implements the ``map_request`` slot of :mod:`.contracts`.
 Every field of ``SamplingParams`` and ``GenerateOptions`` is classified in
 :mod:`.field_classes`. A mapped field reaches the engine when the engine
-declares what it needs; otherwise it is rejected, or, where the table names a
-fallback (stop strings), left to the serving side. A field the serving side
+declares what it needs; otherwise it is rejected, or handled as the fallback
+the table names (stop strings are left to the serving side; a conversation id
+is not sent). A field the serving side
 handles, and an internal field (state derived from other fields, or an input of
 the mapping itself), is not sent. A field classified as rejected, or missing
 from the tables, is rejected when it is set. A rejection is a
@@ -250,12 +251,12 @@ def _sampling(
 def _check_prompt(prompt_token_ids: list[int], capabilities: ModelCapabilities) -> None:
     if not prompt_token_ids:
         raise ValueError("the prompt must have at least one token")
-    fingerprint = capabilities.tokenizer_fingerprint
     low, high = min(prompt_token_ids), max(prompt_token_ids)
-    vocab = fingerprint.vocab_size if fingerprint is not None else _UINT32_LIMIT
-    if low < 0 or high >= vocab:
+    # Only the field's range: the model's vocabulary, which in-process checks
+    # the ids against, is the engine's; the tokenizer fingerprint does not report it.
+    if low < 0 or high >= _UINT32_LIMIT:
         bad = low if low < 0 else high
-        raise ValueError(f"prompt token id {bad} is out of range: token ids must be [0, {vocab})")
+        raise ValueError(f"prompt token id {bad} is out of range: it must be in [0, 2**32)")
     max_context = capabilities.max_context_length
     if max_context is not None and len(prompt_token_ids) >= max_context:
         # The LLM path's wording, so OpenAIServer reports code context_length_exceeded.
@@ -491,13 +492,13 @@ def _extra(
             hints = hints.model_dump(mode="json")
         put(REQ_KV_HINTS, CAP_REQ_KV_HINTS, "kv_hints", hints)
     if options.conversation_params is not None and capabilities.supports(CAP_REQ_CONVERSATION_ID):
-        # A routing hint, also taken from gateway headers; in-process ignores it
-        # too where conversation routing is off.
-        conversation_id = options.conversation_params.conversation_id
-        put(REQ_CONVERSATION_ID, CAP_REQ_CONVERSATION_ID, "conversation_id", conversation_id)
+        # A routing and cache-retention hint, also taken from gateway headers,
+        # that does not change the output: not sent to an engine without it.
+        extra[REQ_CONVERSATION_ID] = options.conversation_params.conversation_id
     scheduling = _scheduling(options.scheduling_params, engine_name)
     if scheduling is not None:
-        put(REQ_SCHEDULING, CAP_REQ_SCHEDULING, "scheduling_params", scheduling)
+        name = "scheduling_params." + "/".join(scheduling)
+        put(REQ_SCHEDULING, CAP_REQ_SCHEDULING, name, scheduling)
     return extra
 
 
@@ -536,7 +537,8 @@ def map_request(
     ``n`` up to the engine's ``max_num_sequences`` (M) is one call; above that
     the request is split into ceil(n / M) calls of M sequences, the last one
     taking the rest, and only the first call asks for prompt logprobs. TRT-LLM
-    seeds sequence i of a request with its seed (0 when unset) plus i, so each
+    seeds sequence i of a request for n > 1 sequences with its seed (0 when
+    unset) plus i, so each
     call of a split request is sent that seed plus the number of sequences
     before it: the n sequences get the seeds one in-process request gives them.
 

@@ -263,7 +263,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
             (
                 "tensorrt_llm/serve/openai_server.py",
                 "no thinking-budget processor or bias tensor for a generator that takes"
-                " request data, and logit_bias passed to it",
+                " request data, and logit_bias, the reasoning parser and the tokenizer passed to it",
             ),
             ("tensorrt_llm/serve/openai_protocol.py", "the switch that does not materialize"),
             ("tensorrt_llm/serve/responses_utils.py", "the thinking-budget processor switch"),

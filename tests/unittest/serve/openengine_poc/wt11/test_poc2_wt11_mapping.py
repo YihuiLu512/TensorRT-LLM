@@ -208,7 +208,7 @@ def test_n_beyond_the_limit_is_split(n, limit, sizes):
 
 @pytest.mark.parametrize("limit, seeds", [(3, [0, 3, 6]), (1, [0, 1, 2, 3, 4, 5, 6])])
 def test_a_split_request_without_a_seed_gets_the_in_process_seeds(limit, seeds):
-    # In-process, sequence i of an unseeded request gets seed 0 + i.
+    # In-process, sequence i of an unseeded request for n > 1 gets seed 0 + i.
     requests = _map(_sampled(n=7), _caps(max_num_sequences=limit))
     assert [r.sampling["seed"] for r in requests] == seeds
     # One call is left to the engine, which seeds it as in-process.
@@ -247,7 +247,7 @@ def test_stop_token_ids_are_not_checked_against_the_vocabulary():
 
 
 def test_prompt_token_ids_beyond_the_field_range_are_rejected():
-    with pytest.raises(ValueError, match=r"prompt token id 4294967296 .*\[0, 4294967296\)"):
+    with pytest.raises(ValueError, match=r"prompt token id 4294967296 .*\[0, 2\*\*32\)"):
         _one(caps=_caps(tokenizer_fingerprint=None), prompt=[1, 1 << 32])
 
 
@@ -299,8 +299,8 @@ def test_prompt_checks():
     caps = _caps(tokenizer_fingerprint=conv.TokenizerFingerprint(10, (1,), None))
     with pytest.raises(ValueError, match="at least one token"):
         _one(caps=caps, prompt=[])
-    with pytest.raises(ValueError, match="token id 10"):
-        _one(caps=caps, prompt=[1, 10])
+    # Not the tokenizer's vocabulary: the engine checks the model's, as in-process.
+    assert _one(caps=caps, prompt=[1, 10]).prompt_token_ids == [1, 10]
     with pytest.raises(ValueError, match="token id -1"):
         _one(caps=caps, prompt=[-1])
     with pytest.raises(ValueError, match="maximum context length"):
@@ -523,8 +523,8 @@ def test_kv_hints_conversation_and_scheduling():
     }
     assert _one(options=each["kv_hints"]).extra[conv.REQ_KV_HINTS] == hints.model_dump(mode="json")
     assert _one(options=conversation).extra[conv.REQ_CONVERSATION_ID] == "c1"
-    # A routing hint (OpenAIServer also takes it from gateway headers): not sent
-    # to an engine without it, as in-process ignores it without conversation routing.
+    # A routing and cache-retention hint (OpenAIServer also takes it from gateway
+    # headers) that does not change the output: not sent to an engine without it.
     assert conv.REQ_CONVERSATION_ID not in _one(caps=_caps("glm"), options=conversation).extra
     assert _one(options=each["scheduling_params"]).extra[conv.REQ_SCHEDULING] == {
         "attention_dp_relax": False,
@@ -533,6 +533,9 @@ def test_kv_hints_conversation_and_scheduling():
     for name, options in each.items():
         with pytest.raises(ValueError, match=name):
             _one(caps=_caps("glm"), options=options)
+    # The rejection names the fields the request set.
+    with pytest.raises(ValueError, match="scheduling_params.attention_dp_relax/agent_hierarchy="):
+        _one(caps=_caps("glm"), options=each["scheduling_params"])
 
 
 @pytest.mark.parametrize("value", [2**53 + 1, -(2**53) - 1, 2**64 - 1])
