@@ -177,6 +177,8 @@ def _git(repo, *args):
         GIT_AUTHOR_EMAIL="t@t",
         GIT_COMMITTER_NAME="t",
         GIT_COMMITTER_EMAIL="t@t",
+        GIT_CONFIG_GLOBAL=os.devnull,
+        GIT_CONFIG_NOSYSTEM="1",
     )
     return subprocess.run(
         ["git", "-C", str(repo), *args], check=True, capture_output=True, text=True, env=env

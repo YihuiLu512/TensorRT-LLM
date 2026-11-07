@@ -131,7 +131,9 @@ def resolve_slot(name: str) -> tuple[Callable[..., Any], str]:
             raise
     else:
         found = getattr(module, slot.attribute, None)
-        if found is not None:
+        # A module that only re-exports this module's public function of the
+        # same name has not implemented the slot (calling it would recurse).
+        if found is not None and found is not globals().get(slot.name):
             impl, source = found, f"{slot.module}:{slot.attribute}"
         elif getattr(getattr(module, "__spec__", None), "_initializing", False):
             # The slot module is still being imported (it called its own slot

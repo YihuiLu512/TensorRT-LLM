@@ -92,6 +92,14 @@ def test_slot_uses_the_module_once_it_defines_the_function(monkeypatch):
     assert contracts.resolve_slot("map_media")[1] == f"{PACKAGE}.media:map_media"
 
 
+def test_a_module_that_only_reexports_the_public_function_uses_the_default(monkeypatch):
+    module = types.ModuleType(f"{PACKAGE}.media")
+    module.map_media = contracts.map_media
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    slot = contracts.slots()["map_media"]
+    assert contracts.resolve_slot("map_media") == (slot.default, "default")
+
+
 def test_slot_lookup_is_logged_once(monkeypatch):
     lines = []
     monkeypatch.setattr(contracts.logger, "info", lines.append)

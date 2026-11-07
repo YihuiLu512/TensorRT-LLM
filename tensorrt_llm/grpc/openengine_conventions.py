@@ -10,9 +10,9 @@ protocol's ``extra`` fields (``ServerInfo.extra``, ``ModelInfo.extra``,
 ``GenerateRequest.extra``) and in ``LoadInfo.attributes``. They bind only an
 engine that reports :data:`CONVENTIONS_VERSION_KEY`.
 
-The client library, the serving side and the engines all import this module, so
-it must not import ``tensorrt_llm.serve``; protobuf is imported only by the
-functions that read protobuf messages.
+The serving side and the engines both import this module, so it must not import
+``tensorrt_llm.serve``; protobuf is imported only by the functions that read
+protobuf messages.
 """
 
 from __future__ import annotations

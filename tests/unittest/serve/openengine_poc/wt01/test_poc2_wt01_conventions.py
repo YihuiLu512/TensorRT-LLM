@@ -246,8 +246,8 @@ def test_the_harness_copies_match_the_conventions():
 
 
 def test_module_does_not_import_the_serving_side():
-    # The client library imports this module, so it must not add serving modules
-    # to what importing the package already loads.
+    # Engines import this module too, so it must not add serving modules to what
+    # importing the package already loads.
     code = (
         "import sys, tensorrt_llm; before = set(sys.modules); "
         "import tensorrt_llm.grpc.openengine_conventions; "

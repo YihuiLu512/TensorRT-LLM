@@ -75,8 +75,10 @@ from tensorrt_llm.grpc.openengine.bindings import (
     server_pb2,
 )
 
-# The trtllm.* `extra` conventions, under the names this module uses.
+# The OpenEngine conventions (extra and metadata keys, capability tables, limits),
+# under the names this module uses.
 from tensorrt_llm.grpc.openengine_conventions import (
+    BOOL_CAPABILITY_KEYS,
     CAP_FREQUENCY_PENALTY,
     CAP_MIN_P,
     CAP_PRESENCE_PENALTY,
@@ -100,6 +102,8 @@ from tensorrt_llm.grpc.openengine_conventions import (
     REQ_LOGIT_BIAS,
     REQ_SCHEDULING,
     REQ_THINKING_TOKEN_BUDGET,
+    REQUEST_KEY_CAPABILITY,
+    SAMPLING_FIELD_CAPABILITY,
 )
 from tensorrt_llm.grpc.openengine_conventions import CAP_REQ_BEST_OF as CAP_BEST_OF
 from tensorrt_llm.grpc.openengine_conventions import CAP_REQ_CONVERSATION_ID as CAP_CONVERSATION_ID
@@ -180,29 +184,11 @@ __all__ = [
 ]
 
 
-# Request extra keys and the capability key that admits each.
-_REQUEST_KEY_CAPABILITY = {
-    REQ_CONVERSATION_ID: CAP_CONVERSATION_ID,
-    REQ_THINKING_TOKEN_BUDGET: CAP_THINKING_TOKEN_BUDGET,
-    REQ_LOGIT_BIAS: CAP_LOGIT_BIAS,
-    REQ_KV_HINTS: CAP_KV_HINTS,
-    REQ_SCHEDULING: CAP_SCHEDULING,
-    REQ_BEST_OF: CAP_BEST_OF,
-}
-_SAMPLING_FIELD_CAPABILITY = {
-    "min_p": CAP_MIN_P,
-    "frequency_penalty": CAP_FREQUENCY_PENALTY,
-    "presence_penalty": CAP_PRESENCE_PENALTY,
-    "repetition_penalty": CAP_REPETITION_PENALTY,
-}
-_BOOLEAN_CAPABILITIES = (
-    CAP_MIN_P,
-    CAP_FREQUENCY_PENALTY,
-    CAP_PRESENCE_PENALTY,
-    CAP_REPETITION_PENALTY,
-    CAP_STOP_TEXT,
-    *_REQUEST_KEY_CAPABILITY.values(),
-)
+# The capability that admits each request extra key and sampling field, and every
+# boolean capability the fake reports.
+_REQUEST_KEY_CAPABILITY = REQUEST_KEY_CAPABILITY
+_SAMPLING_FIELD_CAPABILITY = SAMPLING_FIELD_CAPABILITY
+_BOOLEAN_CAPABILITIES = BOOL_CAPABILITY_KEYS
 
 # -- Protocol limits ---------------------------------------------------------------
 
