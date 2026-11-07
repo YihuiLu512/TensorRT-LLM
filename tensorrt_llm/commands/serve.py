@@ -1362,6 +1362,21 @@ def launch_visual_gen_server(
     "engine to become ready (default: 1800).",
     status="prototype")
 @stability_option(
+    "--openengine-control-timeout",
+    type=float,
+    default=None,
+    help="With --openengine-endpoint: seconds allowed for each Control RPC "
+    "to the engine (health, server and model info, load; default: 5).",
+    status="prototype")
+@stability_option(
+    "--openengine-allow-newer-schema",
+    is_flag=True,
+    default=False,
+    help="With --openengine-endpoint: accept an engine whose OpenEngine "
+    "schema revision is newer than this client's, as long as the engine's "
+    "minimum client revision allows this client.",
+    status="prototype")
+@stability_option(
     "--grpc",
     is_flag=True,
     default=False,
@@ -1503,19 +1518,26 @@ def serve(
     enable_sleep_mode: bool,
     openengine_endpoint: Optional[str],
     openengine_ready_timeout: Optional[float],
+    openengine_control_timeout: Optional[float],
+    openengine_allow_newer_schema: bool,
 ) -> None:
     """Running an OpenAI API compatible server
 
     MODEL: model name or Hugging Face checkpoint path
     """
     logger.set_level(log_level)
-    if openengine_ready_timeout is not None:
-        if openengine_endpoint is None:
-            raise click.UsageError(
-                "--openengine-ready-timeout requires --openengine-endpoint")
-        if not openengine_ready_timeout > 0:
-            raise click.UsageError(
-                "--openengine-ready-timeout must be greater than 0")
+    for flag, timeout in (("--openengine-ready-timeout",
+                           openengine_ready_timeout),
+                          ("--openengine-control-timeout",
+                           openengine_control_timeout)):
+        if timeout is not None:
+            if openengine_endpoint is None:
+                raise click.UsageError(f"{flag} requires --openengine-endpoint")
+            if not timeout > 0:
+                raise click.UsageError(f"{flag} must be greater than 0")
+    if openengine_allow_newer_schema and openengine_endpoint is None:
+        raise click.UsageError(
+            "--openengine-allow-newer-schema requires --openengine-endpoint")
     if openengine_endpoint is not None:
         conflicting = {
             "--grpc": grpc,
@@ -1525,8 +1547,6 @@ def serve(
             "--disagg_cluster_uri": disagg_cluster_uri,
             "--visual_gen_args": visual_gen_args,
             "--enable_visual_gen": enable_visual_gen,
-            "--report_addr": report_addr,
-            "--port 0": port == 0,
         }
         used = [name for name, value in conflicting.items() if value]
         if used:
@@ -1906,7 +1926,10 @@ def serve(
                     multimodal_server_config=multimodal_server_config,
                     num_input_processor_workers=num_input_processor_workers,
                     num_media_load_workers=num_media_load_workers,
-                    ready_timeout=openengine_ready_timeout))
+                    ready_timeout=openengine_ready_timeout,
+                    report_addr=report_addr,
+                    allow_newer_schema=openengine_allow_newer_schema,
+                    control_timeout=openengine_control_timeout))
         else:
             # Default: launch OpenAI HTTP server
             launch_server(

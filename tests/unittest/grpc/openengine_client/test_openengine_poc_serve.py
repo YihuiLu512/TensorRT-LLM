@@ -911,8 +911,6 @@ def test_cli_launches_one_openengine_frontend_without_a_gpu(tmp_path) -> None:
 @pytest.mark.parametrize(
     "args, name",
     [
-        (["--port", "0"], "--port 0"),
-        (["--report_addr", "/tmp/addr"], "--report_addr"),
         (["--grpc"], "--grpc"),
         (["--server_role", "context"], "--server_role"),
         (["--disagg_cluster_uri", "http://localhost:1"], "--disagg_cluster_uri"),
@@ -961,11 +959,32 @@ def test_cli_passes_the_ready_timeout(tmp_path) -> None:
     assert "ready_timeout" not in _run_cli(tmp_path).call_args.kwargs
 
 
+def test_cli_passes_the_engine_options_and_the_report_address(tmp_path) -> None:
+    launch = _run_cli(
+        tmp_path,
+        "--openengine-control-timeout",
+        "2.5",
+        "--openengine-allow-newer-schema",
+        "--port",
+        "0",
+        "--report_addr",
+        str(tmp_path / "addr"),
+    )
+    assert launch.call_args.args[1] == 0
+    kwargs = launch.call_args.kwargs
+    assert kwargs["control_timeout"] == 2.5
+    assert kwargs["allow_newer_schema"] is True
+    assert kwargs["report_addr"] == str(tmp_path / "addr")
+    defaults = _run_cli(tmp_path).call_args.kwargs
+    assert not {"control_timeout", "allow_newer_schema", "report_addr"} & set(defaults)
+
+
 @pytest.mark.parametrize(
     "args, message",
     [
         (["--openengine-ready-timeout", "0"], "greater than 0"),
         (["--openengine-ready-timeout", "-1"], "greater than 0"),
+        (["--openengine-control-timeout", "0"], "greater than 0"),
     ],
 )
 def test_cli_rejects_a_bad_ready_timeout(tmp_path, args, message) -> None:
@@ -973,11 +992,17 @@ def test_cli_rejects_a_bad_ready_timeout(tmp_path, args, message) -> None:
         _run_cli(tmp_path, *args)
 
 
-def test_cli_rejects_a_ready_timeout_without_an_endpoint(tmp_path) -> None:
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["--openengine-ready-timeout", "5"],
+        ["--openengine-control-timeout", "5"],
+        ["--openengine-allow-newer-schema"],
+    ],
+)
+def test_cli_rejects_engine_options_without_an_endpoint(tmp_path, args) -> None:
     with pytest.raises(click.UsageError, match="requires --openengine-endpoint"):
-        serve_cmd.main(
-            args=[str(tmp_path), "--openengine-ready-timeout", "5"], standalone_mode=False
-        )
+        serve_cmd.main(args=[str(tmp_path), *args], standalone_mode=False)
 
 
 @pytest.mark.parametrize(

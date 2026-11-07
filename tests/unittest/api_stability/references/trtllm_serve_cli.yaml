@@ -369,6 +369,24 @@ commands:
         is_flag: false
         flags:
         - "--num_media_load_workers"
+      openengine_allow_newer_schema:
+        type: bool
+        default: false
+        status: prototype
+        required: false
+        multiple: false
+        is_flag: true
+        flags:
+        - "--openengine-allow-newer-schema"
+      openengine_control_timeout:
+        type: float
+        default: null
+        status: prototype
+        required: false
+        multiple: false
+        is_flag: false
+        flags:
+        - "--openengine-control-timeout"
       openengine_enable_load_metrics:
         type: bool
         default: false
