@@ -13,6 +13,7 @@ calls the slot.
 | :func:`map_request` | ``openengine_poc.mapping:map_request`` |
 | :func:`create_response_assembler` | ``openengine_poc.response:create_response_assembler`` |
 | :func:`create_postproc_dispatch` | ``openengine_poc.postproc_pool:create_postproc_dispatch`` |
+| :func:`create_postproc_pool` | ``openengine_poc.postproc_pool:create_postproc_pool`` |
 | :func:`launch_frontends` | ``openengine_poc.multi_frontend:launch_frontends`` |
 | :func:`create_metrics_recorder` | ``openengine_poc.metrics:create_metrics_recorder`` |
 | :func:`map_media` | ``openengine_poc.media:map_media`` |
@@ -28,8 +29,8 @@ the slot's function, uses the default for that call and is looked up again on
 the next one.
 
 The module also holds the messages between a frontend and its postprocessing
-processes, the plain-data check for what crosses into them, and the frontend's
-count of Generate calls.
+processes, the plain-data check for what crosses into them, the interface of
+those processes, and the frontend's count of Generate calls.
 
 This module is imported by ``OpenAIServer``, so at module level it imports only
 the standard library, the logger, :mod:`tensorrt_llm.grpc.openengine_conventions`
@@ -48,10 +49,10 @@ import sys
 import tempfile
 import threading
 import uuid
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, cast
 
 from tensorrt_llm.grpc.openengine_conventions import (
     REQ_DETOKENIZE,
@@ -79,7 +80,7 @@ if TYPE_CHECKING:
 
 # Bump on any change to a signature, type or message in this module or in
 # engine_client.py, in a commit of its own.
-POC2_CONTRACT_VERSION = 1
+POC2_CONTRACT_VERSION = 2
 
 _PACKAGE = "tensorrt_llm.serve.openengine_poc"
 
@@ -592,7 +593,11 @@ class PostprocDispatch(Protocol):
 
 @dataclass(frozen=True)
 class DefaultPostprocDispatch:
-    """Postprocess in the LLM's postprocessing workers when there are any, else in the handler."""
+    """Postprocess outside the handler when ``enabled``, else in the handler.
+
+    Outside the handler means the in-process ``LLM``'s postprocessing workers,
+    or the OpenEngine facade's postprocessing pool.
+    """
 
     enabled: bool
 
@@ -617,8 +622,11 @@ def create_postproc_dispatch(generator: Any, *, is_visual_gen: bool) -> Postproc
 
     An implementation must return :class:`DefaultPostprocDispatch` semantics for
     every generator other than the OpenEngine facade, in-process ``LLM`` included.
-    Every ``OpenAIServer`` looks this slot up, so its module must import without
-    the gRPC stack.
+    The facade is the generator whose class sets ``postproc_host = True``
+    (:class:`PostprocHost`); unless ``is_visual_gen``, its dispatch is enabled
+    when its ``postproc_pool`` is not None. Every ``OpenAIServer`` looks this
+    slot up, so its module must import without the gRPC stack, and imports
+    what the pool runs on (ZeroMQ, the tokenizer) only inside functions.
     """
     impl, _ = resolve_slot("create_postproc_dispatch")
     return cast(PostprocDispatch, impl(generator, is_visual_gen=is_visual_gen))
@@ -628,6 +636,9 @@ def create_postproc_dispatch(generator: Any, *, is_visual_gen: bool) -> Postproc
 def default_create_postproc_dispatch(generator: Any, *, is_visual_gen: bool) -> PostprocDispatch:
     if is_visual_gen:
         return DefaultPostprocDispatch(enabled=False)
+    # Read from the class, so that a mock or a delegating object is not taken for the facade.
+    if getattr(type(generator), "postproc_host", False) is True:
+        return DefaultPostprocDispatch(enabled=generator.postproc_pool is not None)
     return DefaultPostprocDispatch(enabled=generator.args.num_postprocess_workers > 0)
 
 
@@ -652,6 +663,11 @@ class PPOpen:
     Attributes:
         post_processor: Dotted import path of the postprocessor, see :func:`post_processor_path`.
         postproc_args: ``PostprocArgs`` holding plain data only, see :func:`check_plain_data`.
+        n: The number of outputs, the ``num_outputs`` given to :meth:`PostprocPool.open`.
+        detok: Derived from ``sampling_params`` by the pool, so the two agree.
+        num_prompt_tokens: The prompt's length in tokens.
+        sampling_params: A copy of the request's ``SamplingParams`` with
+            ``logits_processor`` and ``embedding_bias`` unset, holding plain data only.
     """
 
     request_id: str
@@ -660,6 +676,8 @@ class PPOpen:
     post_processor: str
     postproc_args: Any
     detok: DetokOptions
+    num_prompt_tokens: int
+    sampling_params: Any
 
 
 @dataclass(frozen=True)
@@ -684,7 +702,8 @@ class PPResult:
 
     Attributes:
         chunks: SSE strings for a streaming request, else the response object.
-        stop_hit: Indices of the outputs a stop string ended; the frontend cancels their calls.
+        stop_hit: Indices of the outputs a stop string ended; the frontend may
+            cancel a call once every output it serves is listed.
         usage_fix: Corrected token counts after a serving-side stop.
     """
 
@@ -845,6 +864,184 @@ def check_plain_data(value: Any, *, path: str = "postproc_args") -> None:
         raise PostprocDataError(f"{where} is a {type(item).__qualname__}, which is not plain data")
 
     check(value, path)
+
+
+# The postprocessing processes of a frontend.
+
+# Events of one request (over all its Generate calls) that are not postprocessed yet, at most.
+POSTPROC_PENDING_EVENT_LIMIT = 4096
+
+
+class PostprocError(RuntimeError):
+    """Postprocessing a request failed.
+
+    When postprocessing the request raises in its process (in the
+    postprocessor, the hook, the detokenizer or the response assembler, for
+    example), the session raises this class, not the original exception. The
+    message says what failed, without the request's content.
+
+    The frontend cancels the request's calls still running, and the facade
+    ends the request with ``http_status`` the way it ends a request on its own
+    errors, including a response that has already started.
+    """
+
+    http_status: ClassVar[int] = 500
+
+
+class PostprocWorkerError(PostprocError):
+    """The process holding the request exited, or the pool was closed, before the final result."""
+
+
+class PostprocOverflowError(PostprocError):
+    """The request already had :data:`POSTPROC_PENDING_EVENT_LIMIT` events not postprocessed yet."""
+
+    http_status: ClassVar[int] = 503
+
+
+class PostprocSession(Protocol):
+    """One request postprocessed in one process of the pool.
+
+    The frontend sends the events of every Generate call serving the request,
+    in arrival order, with ``output_index`` counted over the request's outputs,
+    then closes the session. Iterating the session yields the results in order;
+    the last one has ``is_final`` set, and the iteration ends after it.
+
+    The final result comes once every output has finished (by the engine, by
+    a stop string, or by the ``post_processor_hook`` terminating the request),
+    or after :meth:`close`, whichever is first. When the final result comes
+    before the frontend closed the session, the frontend cancels the calls
+    still running, if any, then closes the session. The frontend may also
+    cancel a call once every output it serves is in some result's ``stop_hit``.
+
+    The session is over after its final result, or once :meth:`send` or the
+    iteration raised a :class:`PostprocError`. Then the pool has forgotten the
+    request, and :meth:`send` and :meth:`close` do nothing; the frontend still
+    calls :meth:`close`, as it does for every session. Nobody has to read the
+    results of a session closed with ``"cancelled"``.
+    """
+
+    def send(self, event: EngineEvent) -> None:
+        """Queue one event without blocking; does nothing once the session is over.
+
+        Raises:
+            PostprocOverflowError: The request already has
+                :data:`POSTPROC_PENDING_EVENT_LIMIT` events not postprocessed
+                yet. The event is not queued, the session is over, and its
+                iteration raises the same error.
+        """
+        ...
+
+    def close(self, reason: Literal["done", "cancelled"]) -> None:
+        """No more events will come.
+
+        ``"cancelled"``: the serving side stopped the request (a client that
+        went away, an abort, an error), and the outputs not finished end as
+        :meth:`ResponseAssembler.finish_cancelled` ends them.
+        """
+        ...
+
+    def __aiter__(self) -> AsyncIterator[PPResult]:
+        """The results in order.
+
+        Raises:
+            PostprocError: Postprocessing failed; see its subclasses.
+        """
+        ...
+
+
+class PostprocPool(Protocol):
+    """The postprocessing processes of one frontend."""
+
+    @property
+    def size(self) -> int:
+        """The number of processes."""
+        ...
+
+    def open(
+        self,
+        request_id: str,
+        postproc_params: Any,
+        sampling_params: SamplingParams,
+        *,
+        streaming: bool,
+        num_outputs: int,
+        num_prompt_tokens: int,
+    ) -> PostprocSession:
+        """Start postprocessing a request in the process ``request_id`` routes to.
+
+        Args:
+            request_id: The ``id`` of the output object the facade yields for
+                this request (postprocessors read it as ``rsp.id``); unique
+                over the life of the pool.
+            postproc_params: The ``PostprocParams`` the handler passed to ``generate_async``.
+            sampling_params: The request's sampling parameters, as given to
+                ``generate_async``; detokenization and stop strings follow them.
+                The pool sends the copy described in :class:`PPOpen`.
+            num_prompt_tokens: The prompt's length in tokens, for the usage the
+                postprocessor reports.
+
+        Raises:
+            PostprocDataError: ``postproc_params``, or a field of
+                ``sampling_params`` other than those :class:`PPOpen` unsets,
+                cannot cross into a process (see :func:`post_processor_path`
+                and :func:`check_plain_data`); a program error, and the facade
+                ends the request with HTTP 500.
+            PostprocWorkerError: The pool is closed.
+        """
+        ...
+
+    async def aclose(self) -> None:
+        """Stop the processes; sessions without a final result fail with :class:`PostprocWorkerError`."""
+        ...
+
+
+class PostprocHost(Protocol):
+    """What the OpenEngine facade exposes about postprocessing.
+
+    The facade's class sets ``postproc_host = True``. Its ``postproc_pool`` is
+    the pool from :func:`create_postproc_pool`, or None; it is set before the
+    facade is handed to ``OpenAIServer``, which decides where postprocessing
+    runs from it once, and is never replaced, closing the pool included.
+    ``OpenAIServer`` recognizes the facade by its class, so it must be handed
+    the facade itself, not an object wrapping it.
+
+    With a pool, ``generate_async`` postprocesses in it every request given
+    ``_postproc_params`` and sets ``outputs[0]._postprocess_result`` of each
+    output it yields to the ``chunks`` of the next result; without one, it
+    ignores ``_postproc_params``.
+    """
+
+    postproc_host: ClassVar[bool]
+    postproc_pool: PostprocPool | None
+
+
+def create_postproc_pool(args: Any, *, num_workers: int, tokenizer_dir: str) -> PostprocPool | None:
+    """The postprocessing pool of a frontend serving with ``args`` (its ``TorchLlmArgs``).
+
+    The facade calls this once, when it is constructed (see :class:`PostprocHost`).
+
+    Args:
+        args: The arguments as the user configured them, before the facade
+            overrides any; the pool reads ``post_processor_hook`` from them.
+        num_workers: This frontend's share of ``num_postprocess_workers``, the
+            number of processes to start; 0 for no pool.
+        tokenizer_dir: The local directory the frontend loads its tokenizer from.
+
+    Returns:
+        None when the frontend postprocesses in its own process.
+    """
+    impl, _ = resolve_slot("create_postproc_pool")
+    return cast(
+        "PostprocPool | None", impl(args, num_workers=num_workers, tokenizer_dir=tokenizer_dir)
+    )
+
+
+@_slot("create_postproc_pool", "postproc_pool", owner="WT-13")
+def default_create_postproc_pool(
+    args: Any, *, num_workers: int, tokenizer_dir: str
+) -> PostprocPool | None:
+    """No pool: the handlers postprocess in the frontend process."""
+    return None
 
 
 # --- Frontends ----------------------------------------------------------------

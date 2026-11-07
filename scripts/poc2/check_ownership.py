@@ -214,6 +214,22 @@ OWNERSHIP: dict[str, list[Rule]] = {
         "tensorrt_llm/serve/openai_server.py",
     )
     + [
+        Rule(
+            f"{POC}/contracts.py",
+            "exception",
+            "only contract v2: the postprocessing pool interface, PPOpen and the default"
+            " dispatch's check for the facade",
+        ),
+        Rule(
+            "tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_contracts.py",
+            "exception",
+            "only the contract v2 version, slot table, postprocessing defaults, error statuses and PPOpen fields",
+        ),
+        Rule(
+            "scripts/poc2/check_ownership.py",
+            "exception",
+            "only the contract v2 exceptions of WT-13",
+        ),
         _shared(
             "tensorrt_llm/serve/postprocess_handlers.py", "making PostprocArgs plain data only"
         ),

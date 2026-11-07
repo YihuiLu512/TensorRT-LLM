@@ -49,7 +49,7 @@ def _fresh_slots():
 
 
 def test_contract_version():
-    assert contracts.POC2_CONTRACT_VERSION == 1
+    assert contracts.POC2_CONTRACT_VERSION == 2
 
 
 def test_slot_table():
@@ -68,6 +68,7 @@ def test_slot_table():
             "create_postproc_dispatch",
             "WT-13",
         ),
+        "create_postproc_pool": (f"{PACKAGE}.postproc_pool", "create_postproc_pool", "WT-13"),
         "launch_frontends": (f"{PACKAGE}.multi_frontend", "launch_frontends", "WT-14"),
         "create_metrics_recorder": (f"{PACKAGE}.metrics", "create_metrics_recorder", "WT-15"),
         "map_media": (f"{PACKAGE}.media", "map_media", "WT-16"),
@@ -576,6 +577,52 @@ def test_visual_gen_needs_no_args():
     assert not dispatch.enabled
 
 
+class _Facade:
+    postproc_host = True
+
+    def __init__(self, workers, pool):
+        self.args = SimpleNamespace(num_postprocess_workers=workers)
+        self.postproc_pool = pool
+
+
+@pytest.mark.parametrize("workers", [0, 2])
+def test_default_dispatch_follows_the_facade_pool(workers):
+    # The facade's pool, not num_postprocess_workers, says where postprocessing runs.
+    dispatch = contracts.default_create_postproc_dispatch
+    assert not dispatch(_Facade(workers, None), is_visual_gen=False).enabled
+    assert dispatch(_Facade(workers, object()), is_visual_gen=False).enabled
+    assert not dispatch(_Facade(workers, object()), is_visual_gen=True).enabled
+
+
+@pytest.mark.parametrize("workers, enabled", [(0, False), (2, True)])
+def test_default_dispatch_does_not_take_a_mock_for_the_facade(workers, enabled):
+    generator = mock.MagicMock()
+    generator.args.num_postprocess_workers = workers
+    dispatch = contracts.default_create_postproc_dispatch(generator, is_visual_gen=False)
+    assert dispatch.enabled is enabled
+    # An instance attribute is not the class marker either.
+    generator = SimpleNamespace(
+        args=SimpleNamespace(num_postprocess_workers=workers),
+        postproc_host=True,
+        postproc_pool=None,
+    )
+    assert (
+        contracts.default_create_postproc_dispatch(generator, is_visual_gen=False).enabled
+        is enabled
+    )
+
+
+def test_default_postproc_pool_is_none():
+    args = SimpleNamespace(num_postprocess_workers=2)
+    assert contracts.default_create_postproc_pool(args, num_workers=2, tokenizer_dir="/m") is None
+
+
+def test_postproc_errors_name_their_http_status():
+    assert contracts.PostprocError.http_status == 500
+    assert contracts.PostprocWorkerError.http_status == 500
+    assert contracts.PostprocOverflowError.http_status == 503
+
+
 # --- launch_frontends -----------------------------------------------------------
 
 
@@ -820,6 +867,8 @@ def test_pp_messages_hold_plain_data():
             contracts.post_processor_path(chat_stream_post_processor),
             PostprocArgs(),
             detok,
+            3,
+            SamplingParams(max_tokens=4, stop=["x"], min_tokens=2),
         ),
         contracts.PPEvent("r", TokenDelta(0, (1, 2))),
         contracts.PPClose("r", "done"),
