@@ -2,9 +2,11 @@
 # SPDX-License-Identifier: Apache-2.0
 """Tests of the OpenEngine conventions module (capabilities, fingerprint, counters, priority)."""
 
+import importlib.util
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -218,6 +220,29 @@ def test_unset_messages_mean_unsupported():
         server_pb2.ServerInfo(engine_name="other"), model_pb2.ModelInfo(served_model_name="m")
     )
     assert caps == conv.ModelCapabilities(served_model_name="m")
+
+
+def test_fingerprint_reads_a_list_of_tokenizer_eos_ids():
+    class Tokenizer:
+        eos_token_id = [5, 2]
+        bos_token_id = None
+
+        def __len__(self):
+            return 9
+
+    tokenizer = Tokenizer()
+    assert conv.compute_tokenizer_fingerprint(tokenizer, None).eos_token_ids == (2, 5)
+
+
+def test_the_harness_copies_match_the_conventions():
+    # The harness keeps its own copies so it imports without TensorRT-LLM.
+    path = Path(__file__).parents[4] / "integration/defs/openengine_chain/conventions.py"
+    spec = importlib.util.spec_from_file_location("_poc2_wt01_harness_conventions", path)
+    harness = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(harness)
+    assert harness.ENV_COUNTER_DIR == conv.SERVE_COUNTER_DIR_ENV
+    assert harness.FRONTEND_COUNTER_FIELD == conv.SERVE_COUNTER_GENERATE_SENT
+    assert harness.ENGINE_COUNTER_KEY == conv.COUNTER_GENERATE_RECEIVED
 
 
 def test_module_does_not_import_the_serving_side():

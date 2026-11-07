@@ -98,7 +98,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
         Rule(
             f"{CHAIN}/conventions.py",
             "exception",
-            "only to switch WT-03's local convention constants to openengine_conventions",
+            "only the note on its local copies of the convention constants",
         ),
         Rule(
             f"{OE_SERVER}/control.py",

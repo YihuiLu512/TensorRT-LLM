@@ -75,6 +75,47 @@ from tensorrt_llm.grpc.openengine.bindings import (
     server_pb2,
 )
 
+# The trtllm.* `extra` conventions, under the names this module uses.
+from tensorrt_llm.grpc.openengine_conventions import (
+    CAP_FREQUENCY_PENALTY,
+    CAP_MIN_P,
+    CAP_PRESENCE_PENALTY,
+    CAP_REPETITION_PENALTY,
+    CAP_SEED_SCOPE,
+    CAP_STOP_TEXT,
+    CONVENTIONS_VERSION,
+    COUNTER_GENERATE_ACCEPTED,
+    COUNTER_GENERATE_RECEIVED,
+    FP_BOS_TOKEN_ID,
+    FP_EOS_TOKEN_IDS,
+    FP_FILES_SHA256,
+    FP_VOCAB_SIZE,
+    REQ_BEST_OF,
+    REQ_CONVERSATION_ID,
+    REQ_DETOKENIZE,
+    REQ_KV_HINTS,
+    REQ_LOGIT_BIAS,
+    REQ_SCHEDULING,
+    REQ_THINKING_TOKEN_BUDGET,
+)
+from tensorrt_llm.grpc.openengine_conventions import CAP_REQ_BEST_OF as CAP_BEST_OF
+from tensorrt_llm.grpc.openengine_conventions import CAP_REQ_CONVERSATION_ID as CAP_CONVERSATION_ID
+from tensorrt_llm.grpc.openengine_conventions import CAP_REQ_KV_HINTS as CAP_KV_HINTS
+from tensorrt_llm.grpc.openengine_conventions import CAP_REQ_LOGIT_BIAS as CAP_LOGIT_BIAS
+from tensorrt_llm.grpc.openengine_conventions import CAP_REQ_SCHEDULING as CAP_SCHEDULING
+from tensorrt_llm.grpc.openengine_conventions import (
+    CAP_REQ_THINKING_TOKEN_BUDGET as CAP_THINKING_TOKEN_BUDGET,
+)
+from tensorrt_llm.grpc.openengine_conventions import (
+    CONVENTIONS_VERSION_KEY as KEY_CONVENTIONS_VERSION,
+)
+from tensorrt_llm.grpc.openengine_conventions import (
+    MODEL_SUPPORTED_MODALITIES_KEY as SUPPORTED_MODALITIES,
+)
+from tensorrt_llm.grpc.openengine_conventions import (
+    SERVER_DP_RANK_TARGETING_KEY as DP_RANK_TARGETING,
+)
+
 __all__ = [
     "Admitted",
     "CAP_BEST_OF",
@@ -130,44 +171,6 @@ __all__ = [
     "running_in_thread",
 ]
 
-
-# -- trtllm.* conventions ------------------------------------------------------
-# TODO: import these from tensorrt_llm.grpc.openengine_conventions when it is added.
-
-CONVENTIONS_VERSION = 2
-KEY_CONVENTIONS_VERSION = "trtllm.conventions_version"
-
-CAP_MIN_P = "trtllm.sampling.min_p"
-CAP_FREQUENCY_PENALTY = "trtllm.sampling.frequency_penalty"
-CAP_PRESENCE_PENALTY = "trtllm.sampling.presence_penalty"
-CAP_REPETITION_PENALTY = "trtllm.sampling.repetition_penalty"
-CAP_SEED_SCOPE = "trtllm.sampling.seed_scope"
-CAP_STOP_TEXT = "trtllm.stopping.stop_text"
-CAP_CONVERSATION_ID = "trtllm.request.conversation_id"
-CAP_THINKING_TOKEN_BUDGET = "trtllm.request.thinking_token_budget"
-CAP_LOGIT_BIAS = "trtllm.request.logit_bias"
-CAP_KV_HINTS = "trtllm.request.kv_hints"
-CAP_SCHEDULING = "trtllm.request.scheduling"
-CAP_BEST_OF = "trtllm.request.best_of"
-
-REQ_DETOKENIZE = "detokenize"
-REQ_CONVERSATION_ID = "conversation_id"
-REQ_THINKING_TOKEN_BUDGET = "trtllm.thinking_token_budget"
-REQ_LOGIT_BIAS = "trtllm.logit_bias"
-REQ_KV_HINTS = "trtllm.kv_hints"
-REQ_SCHEDULING = "trtllm.scheduling"
-REQ_BEST_OF = "trtllm.best_of"
-
-FP_VOCAB_SIZE = "trtllm.tokenizer.vocab_size"
-FP_EOS_TOKEN_IDS = "trtllm.tokenizer.eos_token_ids"
-FP_BOS_TOKEN_ID = "trtllm.tokenizer.bos_token_id"
-FP_FILES_SHA256 = "trtllm.tokenizer.files_sha256"
-
-COUNTER_GENERATE_RECEIVED = "trtllm.counters.generate_received"
-COUNTER_GENERATE_ACCEPTED = "trtllm.counters.generate_accepted"
-
-DP_RANK_TARGETING = "trtllm_supports_dp_rank_targeting"
-SUPPORTED_MODALITIES = "trtllm_supported_modalities"
 
 # Request extra keys and the capability key that admits each.
 _REQUEST_KEY_CAPABILITY = {

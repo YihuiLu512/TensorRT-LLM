@@ -310,6 +310,12 @@ class TokenizerFingerprint:
         )
 
 
+def _token_ids(value: Any) -> list[int]:
+    """The integer token ids in an unset, scalar or list token-id setting."""
+    values = value if isinstance(value, list) else [value]
+    return [v for v in values if isinstance(v, int) and not isinstance(v, bool)]
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as file:
@@ -325,8 +331,8 @@ def compute_tokenizer_fingerprint(
 
     - ``vocab_size``: ``len()`` of the Hugging Face tokenizer, which counts added tokens.
     - ``eos_token_ids``: the tokenizer's ``eos_token_id`` together with the
-      ``eos_token_id`` (a number or a list) of ``generation_config.json`` in
-      ``model_dir`` when that file holds a JSON object, without duplicates, ascending.
+      ``eos_token_id`` of ``generation_config.json`` in ``model_dir`` when that
+      file holds a JSON object (each a number or a list), without duplicates, ascending.
     - ``bos_token_id``: the tokenizer's ``bos_token_id``.
     - ``files_sha256``: sha256 of each of :data:`FINGERPRINT_FILES` present in ``model_dir``.
 
@@ -335,31 +341,34 @@ def compute_tokenizer_fingerprint(
             ``tokenizer`` attribute holds one.
         model_dir: The model directory, or None to hash no files and read no
             generation config.
+
+    Raises:
+        TypeError: The tokenizer does not report a vocabulary size.
+        NotImplementedError: The tokenizer derives from Hugging Face's
+            ``PreTrainedTokenizerBase`` without implementing ``__len__``.
+        OSError: A file in ``model_dir`` cannot be read.
+        ValueError: ``generation_config.json`` is not valid JSON.
     """
     hf_tokenizer = getattr(tokenizer, "tokenizer", None)
     if hf_tokenizer is None:
         hf_tokenizer = tokenizer
-    eos_ids: set[int] = set()
-    eos = getattr(hf_tokenizer, "eos_token_id", None)
-    if isinstance(eos, int) and not isinstance(eos, bool):
-        eos_ids.add(eos)
+    vocab_size = len(hf_tokenizer)
+    eos_ids = set(_token_ids(getattr(hf_tokenizer, "eos_token_id", None)))
     files: dict[str, str] = {}
     if model_dir is not None:
         directory = Path(model_dir)
         generation_config = directory / "generation_config.json"
         if generation_config.is_file():
-            config = json.loads(generation_config.read_text())
-            config_eos = config.get("eos_token_id") if isinstance(config, dict) else None
-            for token_id in config_eos if isinstance(config_eos, list) else [config_eos]:
-                if isinstance(token_id, int) and not isinstance(token_id, bool):
-                    eos_ids.add(token_id)
+            config = json.loads(generation_config.read_text(encoding="utf-8"))
+            if isinstance(config, dict):
+                eos_ids.update(_token_ids(config.get("eos_token_id")))
         for name in FINGERPRINT_FILES:
             path = directory / name
             if path.is_file():
                 files[name] = _sha256(path)
     bos = getattr(hf_tokenizer, "bos_token_id", None)
     return TokenizerFingerprint(
-        vocab_size=len(hf_tokenizer),
+        vocab_size=vocab_size,
         eos_token_ids=tuple(sorted(eos_ids)),
         bos_token_id=bos if isinstance(bos, int) and not isinstance(bos, bool) else None,
         files_sha256=tuple(sorted(files.items())),

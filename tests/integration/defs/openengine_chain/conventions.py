@@ -15,7 +15,8 @@ ENV_GLM_SERVE_CMD = "TRTLLM_TEST_GLM_SERVE_CMD"
 # Where the harness writes the inner pytest junit files and per-process logs.
 ENV_RESULTS_DIR = "TRTLLM_OPENENGINE_RESULTS_DIR"
 
-# TODO: import the three names below from tensorrt_llm/grpc/openengine_conventions.py.
+# The three names below repeat tensorrt_llm/grpc/openengine_conventions.py, so the
+# harness imports without TensorRT-LLM; a WT-01 unit test checks that they match.
 # Directory where each front-end process writes <pid>.json with its counter.
 ENV_COUNTER_DIR = "TRTLLM_OPENENGINE_COUNTER_DIR"
 # Field of <pid>.json and of /server_info's "engine" block.
