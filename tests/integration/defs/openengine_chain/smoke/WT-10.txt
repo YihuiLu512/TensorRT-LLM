@@ -1,0 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+unittest/llmapi/apps/_test_openengine_wt10_frontend.py::test_server_info_engine_block
+unittest/llmapi/apps/_test_openengine_wt10_frontend.py::test_chat_template_kwargs[False]
