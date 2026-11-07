@@ -152,7 +152,14 @@ def test_penalties(client: openai.OpenAI, model_name: str, tokenizer):
 # ---------------------------------------------------------------------------- F-19
 
 
-@pytest.mark.parametrize("n", [3, MAX_BATCH_SIZE + 1], ids=["native", "split"])
+@pytest.mark.parametrize(
+    "n",
+    [
+        pytest.param(3, id="native"),
+        # In-process, more sequences than --max_batch_size may never be scheduled.
+        pytest.param(MAX_BATCH_SIZE + 1, id="split", marks=chain_only),
+    ],
+)
 def test_n_choices(client: openai.OpenAI, model_name: str, n: int):
     response = client.completions.create(
         model=model_name, prompt=GREEDY_PROMPT, max_tokens=8, temperature=1.0, n=n, seed=7

@@ -206,11 +206,41 @@ def test_n_beyond_the_limit_is_split(n, limit, sizes):
     assert len({r.request_id for r in requests}) == len(sizes)
 
 
-def test_split_calls_without_a_seed_continue_the_in_process_seeds():
-    # TRT-LLM seeds sequence i of a request with its seed plus i, and 0 when unset.
+def test_a_split_request_without_a_seed_gets_a_random_one():
     requests = _map(_sampled(n=7), _caps(max_num_sequences=3))
-    assert ["seed" in r.sampling for r in requests] == [False, True, True]
-    assert [r.sampling["seed"] for r in requests[1:]] == [3, 6]
+    base = requests[0].sampling["seed"]
+    assert [r.sampling["seed"] for r in requests] == [
+        (base + start) % (1 << 64) for start in (0, 3, 6)
+    ]
+    again = _map(_sampled(n=7), _caps(max_num_sequences=3))
+    assert again[0].sampling["seed"] != base
+    # One call is left to the engine's own seeding.
+    assert "seed" not in _one(_sampled(n=3), _caps(max_num_sequences=3)).sampling
+
+
+@pytest.mark.parametrize(
+    "name, value, message",
+    [
+        ("top_k", 1 << 31, "top_k must be in"),
+        ("max_tokens", 1 << 32, "max_tokens must be in"),
+        ("min_tokens", 1 << 32, "min_tokens must be in"),
+        ("stop_token_ids", [1 << 32], "stop token id"),
+        ("stop_token_ids", [-1], "stop token id"),
+    ],
+)
+def test_integers_outside_the_request_field_ranges_are_rejected(name, value, message):
+    params = SamplingParams()
+    setattr(params, name, value)
+    params = _explicit(params, name)
+    with pytest.raises(ValueError, match=message):
+        _map(params, _caps(tokenizer_fingerprint=None))
+
+
+def test_a_stop_token_id_beyond_the_vocabulary_is_rejected():
+    caps = _caps(tokenizer_fingerprint=conv.TokenizerFingerprint(10, (1,), None))
+    assert _one(SamplingParams(stop_token_ids=[9]), caps).stop_token_ids == [9]
+    with pytest.raises(ValueError, match=r"stop token id 10 is out of range.*\[0, 10\)"):
+        _one(SamplingParams(stop_token_ids=[10]), caps)
 
 
 @pytest.mark.parametrize("n", [0, -1])

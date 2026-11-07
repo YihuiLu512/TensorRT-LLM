@@ -241,8 +241,8 @@ _UNSUPPORTED_DEFAULTS: dict[str, Any] = {
     "logprobs": None,
     "prompt_logprobs": None,
     "guided_decoding": None,
-    # Before logits_processor: OpenAIServer turns a thinking budget into a
-    # logits processor, and the budget is what the request asked for.
+    # Before logits_processor: OpenAIServer may also turn a thinking budget into
+    # a logits processor, and the budget is what the request asked for.
     "thinking_token_budget": None,
     "logits_processor": None,
     "embedding_bias": None,

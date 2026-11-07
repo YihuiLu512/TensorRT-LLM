@@ -7,7 +7,7 @@ models must be classified; a mapped field set to a non-default value must reach
 the engine's request when the engine declares what it needs and be rejected (or
 fall back to the serving side, where the table says so) when it does not; a
 rejected field must be rejected; a field the serving side handles must not be
-rejected and must name its test.
+rejected and must name the feature row whose tests verify it.
 """
 
 import dataclasses

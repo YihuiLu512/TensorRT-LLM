@@ -7,8 +7,9 @@ Every field of ``SamplingParams`` and ``GenerateOptions`` is classified in
 :mod:`.field_classes`. A mapped field reaches the engine when the engine
 declares what it needs; otherwise it is rejected, or, where the table names a
 fallback (stop strings), left to the serving side. A field the serving side
-handles, and an input of the mapping itself, is not sent. Any other field that
-is set, including one missing from the tables, is rejected. A rejection is a
+handles, and an internal field (state derived from other fields, or an input of
+the mapping itself), is not sent. A field classified as rejected, or missing
+from the tables, is rejected when it is set. A rejection is a
 ``ValueError`` raised before anything is sent, which ``OpenAIServer`` returns
 as HTTP 400.
 
@@ -23,6 +24,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import math
+import secrets
 import threading
 from collections.abc import Collection, Mapping
 from typing import Any
@@ -96,6 +98,9 @@ _SAMPLING_DEFAULTS = {
 _SEED_LIMIT = 1 << 64
 # A protobuf Struct holds numbers as doubles, exact for integers up to 2**53.
 _STRUCT_EXACT_INT = 1 << 53
+# Ranges of the GenerateRequest fields that take request integers.
+_UINT32_LIMIT = 1 << 32
+_INT32_MAX = (1 << 31) - 1
 # OpenAIServer sends 0 for "not set".
 _ZERO_IS_UNSET = frozenset({"prompt_ignore_length"})
 # GuidedDecodingParams field -> OpenEngine guided mode.
@@ -127,7 +132,7 @@ def _not_supported(name: str, value: Any, engine_name: str, why: str = "") -> Va
 
 
 def _check_struct_ints(name: str, value: Any, engine_name: str) -> None:
-    # Applied to every value of GenerateRequest.extra, which is a Struct.
+    # GenerateRequest.extra is a Struct; values that can hold request integers pass here.
     """Reject integers a ``Struct`` would round, rather than send a different value."""
     if isinstance(value, Mapping):
         for item in value.values():
@@ -232,6 +237,8 @@ def _sampling(
         capability = SAMPLING_FIELD_CAPABILITY.get(name)
         if capability is not None and not capabilities.supports(capability):
             raise _not_supported(name, value, engine_name)
+        if name == "top_k" and not 0 <= value <= _INT32_MAX:
+            raise ValueError(f"top_k must be in [0, {_INT32_MAX}], got {value}")
         sampling[name] = value
     if sampling_params.seed is not None:
         if not 0 <= sampling_params.seed < _SEED_LIMIT:
@@ -272,8 +279,8 @@ def _max_tokens(
         limits.append(capabilities.max_output_tokens)
     limit = min(limits) if limits else None
     max_tokens = sampling_params.max_tokens
-    if max_tokens is not None and max_tokens <= 0:
-        raise ValueError(f"max_tokens must be greater than 0, got {max_tokens}")
+    if max_tokens is not None and not 0 < max_tokens < _UINT32_LIMIT:
+        raise ValueError(f"max_tokens must be in [1, 2**32), got {max_tokens}")
     if max_tokens is None:
         return limit
     if limit is not None and max_tokens > limit:
@@ -302,6 +309,13 @@ def _stopping(
     """``(stop_texts, stop_token_ids, include_stop_in_output)`` for the engine."""
     stops = _stop_strings(sampling_params)
     stop_token_ids = list(dict.fromkeys(sampling_params.stop_token_ids or ()))
+    fingerprint = capabilities.tokenizer_fingerprint
+    high = fingerprint.vocab_size if fingerprint is not None else _UINT32_LIMIT
+    for token_id in stop_token_ids:
+        if not 0 <= token_id < high:
+            raise ValueError(
+                f"stop token id {token_id} is out of range: token ids must be [0, {high})"
+            )
     include = bool(sampling_params.include_stop_str_in_output)
     engine_stops = capabilities.supports(CAP_STOP_TEXT) and (
         not include or capabilities.supports_stop_in_output
@@ -406,6 +420,11 @@ def _logit_bias(
     """EX-REQ-4: canonical decimal token ids, biases in range, at most the conventions' count."""
     if not capabilities.supports(CAP_REQ_LOGIT_BIAS):
         raise _not_supported("logit_bias", dict(logit_bias), engine_name)
+    if len(logit_bias) > LOGIT_BIAS_MAX_ENTRIES:
+        raise ValueError(
+            f"logit_bias has {len(logit_bias)} entries; at most {LOGIT_BIAS_MAX_ENTRIES} are "
+            f"supported when serving through the OpenEngine engine {engine_name!r}"
+        )
     fingerprint = capabilities.tokenizer_fingerprint
     out: dict[str, float] = {}
     for key, bias in logit_bias.items():
@@ -427,11 +446,6 @@ def _logit_bias(
                 f"[{LOGIT_BIAS_MIN:g}, {LOGIT_BIAS_MAX:g}]"
             )
         out[str(token_id)] = bias
-    if len(out) > LOGIT_BIAS_MAX_ENTRIES:
-        raise ValueError(
-            f"logit_bias has {len(out)} entries; at most {LOGIT_BIAS_MAX_ENTRIES} are supported "
-            f"when serving through the OpenEngine engine {engine_name!r}"
-        )
     return out
 
 
@@ -521,10 +535,11 @@ def map_request(
     ``n`` up to the engine's ``max_num_sequences`` (M) is one call; above that
     the request is split into ceil(n / M) calls of M sequences, the last one
     taking the rest, and only the first call asks for prompt logprobs. TRT-LLM
-    seeds sequence i of a request with its seed plus i (seed 0 when unset), so
-    each call after the first is sent the seed (0 when unset) plus the number of
-    sequences before it: the n sequences get the seeds one in-process request
-    with n sequences gives them.
+    seeds sequence i of a request with its seed plus i, so each call is sent the
+    request's seed plus the number of sequences before it: the n sequences get
+    the seeds one in-process request with that seed gives them. A split request
+    without a seed gets a random one, so that its calls differ from each other
+    and from those of other requests.
 
     ``priority``, ``trace_headers`` and ``scheduling_params.attention_dp_rank``
     become metadata, which the caller adds (OE-META).
@@ -556,6 +571,8 @@ def map_request(
     n = sampling_params.n
     if n < 1:
         raise ValueError(f"n must be at least 1, got {n}")
+    if not 0 <= (sampling_params.min_tokens or 0) < _UINT32_LIMIT:
+        raise ValueError(f"min_tokens must be in [0, 2**32), got {sampling_params.min_tokens}")
     limit = max(1, capabilities.max_num_sequences)
     sizes = [limit] * (n // limit) + ([n % limit] if n % limit else [])
     best_of = sampling_params.best_of
@@ -568,17 +585,18 @@ def map_request(
             raise _not_supported(
                 "best_of", best_of, engine_name, f"one Generate call returns at most {limit}"
             )
-        _check_struct_ints("best_of", best_of, engine_name)
         extra[REQ_BEST_OF] = best_of
     if len(sizes) > 1:
         logger.debug(f"n={n} is served by {len(sizes)} Generate calls of at most {limit}")
 
+    if len(sizes) > 1 and "seed" not in sampling:
+        sampling["seed"] = secrets.randbits(64)
     requests = []
     offset = 0
     for k, size in enumerate(sizes):
         call_sampling = dict(sampling)
         if offset:
-            call_sampling["seed"] = (int(sampling.get("seed", 0)) + offset) % _SEED_LIMIT
+            call_sampling["seed"] = (int(sampling["seed"]) + offset) % _SEED_LIMIT
         offset += size
         requests.append(
             EngineRequest(

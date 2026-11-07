@@ -163,7 +163,7 @@ GENERATE_OPTIONS: dict[str, FieldClass] = {
     "streaming": _serve("every Generate call streams; the handler decides", "row F-01+F-02"),
     "lora_request": _mapped("lora_name, once the LoRA registry resolves it", "LoRA"),
     "lora_name": _mapped("lora_name", "LoRA"),
-    "disaggregated_params": _rejected("disaggregated serving is deferred in this stage"),
+    "disaggregated_params": _rejected("disaggregated serving is not supported through OpenEngine"),
     "cache_salt": _mapped("kv.cache_salt", "supports_cache_salt"),
     "kv_hints": _mapped("extra[trtllm.kv_hints]", "trtllm.request.kv_hints"),
     "conversation_params": _mapped("extra[conversation_id]", "trtllm.request.conversation_id"),
