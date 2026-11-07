@@ -600,6 +600,9 @@ def _checked_metadata(metadata: Mapping[str, str]) -> tuple[tuple[str, str], ...
             raise ValueError(f"invalid gRPC metadata key {key!r}")
         if not isinstance(value, str):
             raise ValueError(f"metadata {key!r} must be a string, got {type(value).__name__}")
+        if not all(" " <= char <= "~" for char in value):
+            # gRPC takes printable ASCII in text metadata values.
+            raise ValueError(f"metadata {key!r} must be printable ASCII")
         pairs.append((key, value))
     return tuple(pairs)
 

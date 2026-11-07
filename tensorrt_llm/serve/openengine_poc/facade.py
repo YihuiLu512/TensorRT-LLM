@@ -88,7 +88,8 @@ DEFAULT_CONTROL_TIMEOUT_S = 5.0
 DEFAULT_ENGINE_LOST_TIMEOUT_S = 30.0
 HEALTH_POLL_SECONDS = 5.0
 LOG_PROMPT_IDS_ENV = "TRTLLM_OPENENGINE_POC_LOG_PROMPT_IDS"
-# Events a request may hold unread; past this the request is cancelled and answered 503.
+# Events a request may hold unread (results, when it is postprocessed in the pool); past
+# this its calls are cancelled and it is answered 503.
 MAX_BUFFERED_EVENTS = 4096
 
 # Endpoints that need the engine in this process; answered with 501.
@@ -142,6 +143,13 @@ def _without_addresses(text: str, target: str) -> str:
     if target:
         text = text.replace(target, "<engine>")
     return _GRPC_ADDRESS.sub("<engine>", text)
+
+
+def _tokenizer_dir(tokenizer: Any, model_dir: Path) -> str:
+    """The local directory the tokenizer files are in: ``tokenizer`` if it names one."""
+    if isinstance(tokenizer, (str, Path)) and Path(tokenizer).is_dir():
+        return str(tokenizer)
+    return str(model_dir)
 
 
 def request_error(error: OpenEngineClientError, engine_name: str) -> Exception:
@@ -231,7 +239,9 @@ class OpenEngineLLM:
             serving options from it.
         tokenizer: The Hugging Face tokenizer matching the engine's model.
         input_processor: Tokenizes text prompts, as for ``LLM``.
-        hf_model_dir: The local model directory holding the config and tokenizer files.
+        hf_model_dir: The local model directory holding the config.
+        tokenizer_dir: The local directory holding the tokenizer files, for the
+            fingerprint and the postprocessing pool; None for ``hf_model_dir``.
         endpoint: The engine's ``host:port``.
         ready_timeout: Seconds to wait at startup for the engine to be ready.
         control_timeout: Seconds allowed for each Control RPC.
@@ -260,6 +270,7 @@ class OpenEngineLLM:
         input_processor: Any,
         hf_model_dir: str,
         endpoint: str,
+        tokenizer_dir: str | None = None,
         ready_timeout: float = DEFAULT_READY_TIMEOUT_S,
         control_timeout: float = DEFAULT_CONTROL_TIMEOUT_S,
         allow_newer_schema: bool = False,
@@ -280,6 +291,7 @@ class OpenEngineLLM:
         self.tokenizer = tokenizer
         self.input_processor = input_processor
         self._hf_model_dir = hf_model_dir
+        self._tokenizer_dir = tokenizer_dir or hf_model_dir
         self._executor = _FacadeExecutor()
         self.disaggregated_params = None
         self._endpoint = endpoint
@@ -309,7 +321,7 @@ class OpenEngineLLM:
         if postproc_workers is None:
             postproc_workers = getattr(args, "num_postprocess_workers", 0) or 0
         self.postproc_pool: contracts.PostprocPool | None = contracts.create_postproc_pool(
-            args, num_workers=postproc_workers, tokenizer_dir=hf_model_dir
+            args, num_workers=postproc_workers, tokenizer_dir=self._tokenizer_dir
         )
 
     # -- Construction --------------------------------------------------------
@@ -363,6 +375,7 @@ class OpenEngineLLM:
             tokenizer=tokenizer,
             input_processor=input_processor,
             hf_model_dir=str(model_dir),
+            tokenizer_dir=_tokenizer_dir(llm_args.get("tokenizer"), model_dir),
             endpoint=endpoint,
             **kwargs,
         )
@@ -468,7 +481,7 @@ class OpenEngineLLM:
         if self._local_fingerprint is None:
             # Hashed once, at startup or (off the event loop) at a restart; see _follow_restart.
             self._local_fingerprint = compute_tokenizer_fingerprint(
-                self.tokenizer, self._hf_model_dir
+                self.tokenizer, self._tokenizer_dir
             )
         mismatches = compare_tokenizer_fingerprints(self._local_fingerprint, engine_fingerprint)
         if mismatches:
@@ -547,7 +560,7 @@ class OpenEngineLLM:
         if self._local_fingerprint is None and caps.tokenizer_fingerprint is not None:
             # Hashing the tokenizer files takes a moment; the frontend is serving meanwhile.
             self._local_fingerprint = await asyncio.to_thread(
-                compute_tokenizer_fingerprint, self.tokenizer, self._hf_model_dir
+                compute_tokenizer_fingerprint, self.tokenizer, self._tokenizer_dir
             )
         try:
             self._check_engine(info, caps)
@@ -783,6 +796,10 @@ class OpenEngineLLM:
             OpenEngineServeError: The pool cannot take the request.
         """
         sampling_params = sampling_params or SamplingParams()
+        if lora_request is not None and not self._lora_supported:
+            raise ValueError(
+                "lora_request is not supported when serving through an OpenEngine engine"
+            )
         engine_name = self.client.server_info().engine_name
         media = self._media(inputs)
         prompt_token_ids = self._prompt_token_ids(inputs, sampling_params, media)
@@ -798,10 +815,6 @@ class OpenEngineLLM:
             trace_headers=trace_headers,
             media=media,
         )
-        if lora_request is not None and not self._lora_supported:
-            raise ValueError(
-                "lora_request is not supported when serving through an OpenEngine engine"
-            )
         if lora_request is None:
             requests: list[EngineRequest] | None = self._map(
                 prompt_token_ids, sampling_params, options
@@ -860,8 +873,10 @@ class OpenEngineLLM:
             return future.result(max(timeout, 0) + self._control_timeout)
         except (TimeoutError, concurrent.futures.TimeoutError):
             # Before Python 3.11 the future raises its own TimeoutError class.
+            # As in-process, no stats are reported rather than an error.
             future.cancel()
-            raise
+            logger.warning("Reading the OpenEngine engine's load for the stats timed out")
+            return []
 
     async def get_stats_async(self, timeout: float | None = None):
         for stat in await self._iteration_stats():
@@ -913,6 +928,8 @@ class OpenEngineRequestOutput:
     When the request is postprocessed in the pool, the events go to its
     session instead of the assembler, and each yield carries the next result's
     ``chunks`` in ``outputs[0]._postprocess_result``; the last one is final.
+    A final result cancels the calls still running as soon as it arrives, and
+    at most :data:`MAX_BUFFERED_EVENTS` results wait for the reader.
     """
 
     def __init__(
@@ -969,7 +986,7 @@ class OpenEngineRequestOutput:
                 num_prompt_tokens=len(self.prompt_token_ids),
             )
         except contracts.PostprocError as error:
-            raise _postproc_failure(error) from error
+            raise self._stopping_error(_postproc_failure(error)) from error
         except contracts.PostprocDataError as error:
             raise OpenEngineServeError(
                 f"the request cannot be postprocessed: {error}", HTTPStatus.INTERNAL_SERVER_ERROR
@@ -1072,16 +1089,7 @@ class OpenEngineRequestOutput:
                 count()
                 if queue.qsize() >= MAX_BUFFERED_EVENTS:
                     stream.cancel()
-                    queue.put_nowait(
-                        (
-                            offset,
-                            OpenEngineServeError(
-                                f"the response of the OpenEngine engine {self._engine_name!r} "
-                                f"was not read fast enough ({MAX_BUFFERED_EVENTS} events waiting)",
-                                HTTPStatus.SERVICE_UNAVAILABLE,
-                            ),
-                        )
-                    )
+                    queue.put_nowait((offset, self._overflow_error()))
                     return
                 queue.put_nowait((offset, event))
         except asyncio.CancelledError:
@@ -1162,7 +1170,15 @@ class OpenEngineRequestOutput:
         assert results is not None and session is not None
         try:
             async for result in session:
+                if results.qsize() >= MAX_BUFFERED_EVENTS:
+                    # As for unread events: the calls stop at once, and the reader fails.
+                    self._cancel_calls()
+                    results.put_nowait(self._overflow_error())
+                    return
                 results.put_nowait(result)
+                if result.is_final:
+                    # The calls still running are not needed any more.
+                    self._cancel_calls()
         except contracts.PostprocError as error:
             results.put_nowait(_postproc_failure(error))
             return
@@ -1180,6 +1196,11 @@ class OpenEngineRequestOutput:
         results = self._results
         assert results is not None
         item = await results.get()
+        if item is _END and self._aborted:
+            # A session closed as cancelled need not give a final result.
+            self.outputs[0]._postprocess_result = []
+            self.finished = True
+            return self
         if item is _END:
             raise self._fail(
                 OpenEngineServeError(
@@ -1192,24 +1213,35 @@ class OpenEngineRequestOutput:
         self.outputs[0]._postprocess_result = item.chunks
         if item.is_final:
             self.finished = True
-            # The calls still running are not needed any more (SV-PP-6).
             self._cancel_calls()
         return self
 
+    def _stopping_error(self, error: Exception) -> Exception:
+        """``error``, or a 503 when the frontend is stopping and that caused it."""
+        if isinstance(error, ValueError):
+            return error
+        if self._facade._executor._fatal_error is not None:
+            # The calls were cancelled because the engine was declared lost.
+            return OpenEngineServeError(
+                f"the OpenEngine engine {self._engine_name!r} is lost; this frontend is stopping",
+                HTTPStatus.SERVICE_UNAVAILABLE,
+            )
+        if self._facade._closing:
+            # Closing the frontend cancels its calls; that is not the engine's failure.
+            return OpenEngineServeError(
+                "this frontend is shutting down", HTTPStatus.SERVICE_UNAVAILABLE
+            )
+        return error
+
+    def _overflow_error(self) -> OpenEngineServeError:
+        return OpenEngineServeError(
+            f"the response of the OpenEngine engine {self._engine_name!r} was not read fast "
+            f"enough ({MAX_BUFFERED_EVENTS} waiting)",
+            HTTPStatus.SERVICE_UNAVAILABLE,
+        )
+
     def _fail(self, error: Exception) -> Exception:
-        if not isinstance(error, ValueError):
-            if self._facade._executor._fatal_error is not None:
-                # The calls were cancelled because the engine was declared lost.
-                error = OpenEngineServeError(
-                    f"the OpenEngine engine {self._engine_name!r} is lost; this frontend "
-                    "is stopping",
-                    HTTPStatus.SERVICE_UNAVAILABLE,
-                )
-            elif self._facade._closing:
-                # Closing the frontend cancels its calls; that is not the engine's failure.
-                error = OpenEngineServeError(
-                    "this frontend is shutting down", HTTPStatus.SERVICE_UNAVAILABLE
-                )
+        error = self._stopping_error(error)
         self.error = str(error)
         self.finished = True
         self._cancel_calls()
@@ -1405,11 +1437,11 @@ def adapt_server(server: Any, facade: OpenEngineLLM) -> None:
     def replace_route(path: str, method: str, endpoint: Callable[..., Any]) -> None:
         routes = app.router.routes
         include_in_schema = False
-        for index, route in enumerate(routes):
+        # Every route for the path and method goes, so none is matched before the new one.
+        for route in list(routes):
             if isinstance(route, APIRoute) and route.path == path and method in route.methods:
-                include_in_schema = route.include_in_schema
-                del routes[index]
-                break
+                include_in_schema = include_in_schema or route.include_in_schema
+                routes.remove(route)
         app.add_api_route(path, endpoint, methods=[method], include_in_schema=include_in_schema)
 
     def unsupported_endpoint(path: str) -> Callable[[], Any]:

@@ -217,6 +217,16 @@ def test_invalid_metadata_key_is_refused_locally(key: str) -> None:
     assert _run(FakeEngine(), body) == 0
 
 
+@pytest.mark.parametrize("value", ["\u00e9t\u00e9", "line\nbreak"])
+def test_metadata_value_that_is_not_printable_ascii_is_refused_locally(value: str) -> None:
+    async def body(engine, client):
+        with pytest.raises(ValueError, match="printable ASCII"):
+            client.generate(_request(metadata={"traceparent": value}))
+        return engine.counters[COUNTER_GENERATE_RECEIVED]
+
+    assert _run(FakeEngine(), body) == 0
+
+
 def test_engine_error_after_acceptance_is_raised_while_iterating() -> None:
     error = generation_pb2.GenerateResponse()
     error.error.code = 1

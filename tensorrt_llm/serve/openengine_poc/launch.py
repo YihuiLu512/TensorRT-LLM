@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import gc
 import os
 import socket
@@ -95,31 +96,36 @@ def launch_openengine_server(
         )
     except ValueError as error:
         raise click.UsageError(str(error)) from error
-    server = OpenAIServer(
-        generator=facade,
-        model=served_model_name or llm_args["model"],
-        tool_parser=tool_parser,
-        server_role=None,
-        metadata_server_cfg=None,
-        multimodal_server_config=multimodal_server_config,
-        chat_template=chat_template,
-        allow_request_chat_template=allow_request_chat_template,
-        input_processor_workers=num_input_processor_workers,
-        media_load_workers=num_media_load_workers,
-    )
-    adapt_server(server, facade)
-    _apply_fastapi_middlewares(server.app, middleware)
+    try:
+        server = OpenAIServer(
+            generator=facade,
+            model=served_model_name or llm_args["model"],
+            tool_parser=tool_parser,
+            server_role=None,
+            metadata_server_cfg=None,
+            multimodal_server_config=multimodal_server_config,
+            chat_template=chat_template,
+            allow_request_chat_template=allow_request_chat_template,
+            input_processor_workers=num_input_processor_workers,
+            media_load_workers=num_media_load_workers,
+        )
+        adapt_server(server, facade)
+        _apply_fastapi_middlewares(server.app, middleware)
 
-    sockets = None
-    if report_addr:
-        sock = _bind(host, port)
-        try:
-            port = sock.getsockname()[1]
-            _publish_bound_address(report_addr, host, port)
-        except BaseException:
-            sock.close()
-            raise
-        sockets = [sock]
+        sockets = None
+        if report_addr:
+            sock = _bind(host, port)
+            try:
+                port = sock.getsockname()[1]
+                _publish_bound_address(report_addr, host, port)
+            except BaseException:
+                sock.close()
+                raise
+            sockets = [sock]
+    except BaseException:
+        # The facade may already hold a postprocessing pool.
+        asyncio.run(facade.aclose())
+        raise
 
     async def run() -> None:
         # As launch_server does.

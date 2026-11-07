@@ -1682,7 +1682,13 @@ def test_launch_closes_the_socket_when_publishing_the_address_fails(tmp_path, mo
     def publish(report_addr, host, port):
         raise OSError("read-only file system")
 
-    monkeypatch.setattr(launch_module.OpenEngineLLM, "from_llm_args", lambda *a, **k: object())
+    closed = []
+
+    class Facade:
+        async def aclose(self):
+            closed.append(True)
+
+    monkeypatch.setattr(launch_module.OpenEngineLLM, "from_llm_args", lambda *a, **k: Facade())
     monkeypatch.setattr(launch_module, "adapt_server", lambda server, facade: None)
     monkeypatch.setattr(
         "tensorrt_llm.serve.openai_server.OpenAIServer",
@@ -1696,6 +1702,8 @@ def test_launch_closes_the_socket_when_publishing_the_address_fails(tmp_path, mo
             "127.0.0.1", 0, {"model": str(tmp_path)}, "x:1", report_addr=str(tmp_path / "addr")
         )
     assert bound[0].fileno() == -1
+    # The facade, which may hold a postprocessing pool, is closed too.
+    assert closed == [True]
 
 
 # -- Postprocessing pool ----------------------------------------------------------
@@ -1704,8 +1712,18 @@ def test_launch_closes_the_socket_when_publishing_the_address_fails(tmp_path, mo
 class _FakeSession:
     """Answers every event with one result; the result for a finished output is final."""
 
-    def __init__(self, request_id: str, *, overflow_after: int | None, fail_iteration: bool):
+    def __init__(
+        self,
+        request_id: str,
+        *,
+        overflow_after: int | None,
+        fail_iteration: bool,
+        final_after: int | None = None,
+        final_on_cancel: bool = True,
+    ):
         self.request_id = request_id
+        self._final_after = final_after
+        self._final_on_cancel = final_on_cancel
         self.events: list[Any] = []
         self.closed: list[str] = []
         self._overflow_after = overflow_after
@@ -1723,18 +1741,29 @@ class _FakeSession:
         if self._over:
             return
         if self._overflow_after is not None and len(self.events) >= self._overflow_after:
+            # As the contract says: the session is over and its iteration raises the same error.
             self._over = True
-            raise contracts.PostprocOverflowError("too many events")
+            error = contracts.PostprocOverflowError("too many events")
+            self._results.put_nowait(error)
+            raise error
         self.events.append(event)
-        self._result([f"chunk-{len(self.events)}"], isinstance(event, OutputFinished))
+        final = isinstance(event, OutputFinished) or len(self.events) == self._final_after
+        self._result([f"chunk-{len(self.events)}"], final)
 
     def close(self, reason: str) -> None:
         self.closed.append(reason)
+        if reason == "cancelled" and not self._final_on_cancel:
+            # Nobody has to read a cancelled session: it may end without a final result.
+            self._over = True
+            self._results.put_nowait(None)
+            return
         self._result([f"closed-{reason}"], True)
 
     async def _iterate(self):
         while True:
             result = await self._results.get()
+            if result is None:
+                return
             if isinstance(result, Exception):
                 raise result
             yield result
@@ -1752,7 +1781,13 @@ class _FakePool:
         self.sessions: list[_FakeSession] = []
         self.opened: list[dict[str, Any]] = []
         self.closed = False
-        self._behaviour = {"overflow_after": None, "fail_iteration": False, "open_error": None}
+        self._behaviour = {
+            "overflow_after": None,
+            "fail_iteration": False,
+            "open_error": None,
+            "final_after": None,
+            "final_on_cancel": True,
+        }
         self._behaviour.update(behaviour)
 
     def open(self, request_id, postproc_params, sampling_params, **kwargs):
@@ -1763,6 +1798,8 @@ class _FakePool:
             request_id,
             overflow_after=self._behaviour["overflow_after"],
             fail_iteration=self._behaviour["fail_iteration"],
+            final_after=self._behaviour["final_after"],
+            final_on_cancel=self._behaviour["final_on_cancel"],
         )
         self.sessions.append(session)
         return session
@@ -1907,3 +1944,96 @@ def test_an_aborted_postprocessed_request_closes_its_session(tmp_path, monkeypat
         assert pools[0].sessions[0].closed == ["cancelled"]
 
     _serve(engine, tmp_path, body, postproc_workers=1)
+
+
+def test_an_aborted_session_without_a_final_result_ends_the_request(tmp_path, monkeypatch) -> None:
+    _with_pool(monkeypatch, final_on_cancel=False)
+    engine = _engine(token(0, HE), Hang())
+
+    async def body(engine, facade, http):
+        output = facade.generate_async(
+            PROMPT_IDS, SamplingParams(max_tokens=8), _postproc_params=object()
+        )
+        await output.__anext__()
+        output.abort()
+        result = await asyncio.wait_for(output.aresult(), WAIT_SECONDS)
+        assert result.finished and result.error is None
+        assert result.outputs[0]._postprocess_result == []
+
+    _serve(engine, tmp_path, body, postproc_workers=1)
+
+
+def test_a_final_result_cancels_the_calls_before_it_is_read(tmp_path, monkeypatch) -> None:
+    pools = _with_pool(monkeypatch, final_after=1)
+    engine = _engine(token(0, HE), Hang())
+
+    async def body(engine, facade, http):
+        output = facade.generate_async(
+            PROMPT_IDS, SamplingParams(max_tokens=8), _postproc_params=object()
+        )
+        # Reading starts the calls; the final result then cancels them by itself.
+        reading = asyncio.create_task(output.__anext__())
+        await asyncio.wait_for(engine.cancel_seen.wait(), WAIT_SECONDS)
+        result = await asyncio.wait_for(reading, WAIT_SECONDS)
+        assert result.finished and result.outputs[0]._postprocess_result == ["chunk-1"]
+        assert pools[0].sessions[0].closed == ["cancelled"]
+
+    _serve(engine, tmp_path, body, postproc_workers=1)
+
+
+def test_unread_results_past_the_limit_end_the_request_with_503(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(facade_module, "MAX_BUFFERED_EVENTS", 2)
+    _with_pool(monkeypatch)
+    engine = _engine(*(token(0, HE) for _ in range(6)), Hang())
+
+    async def body(engine, facade, http):
+        output = facade.generate_async(
+            PROMPT_IDS, SamplingParams(max_tokens=8), _postproc_params=object()
+        )
+        await output.__anext__()
+        # The reader does not keep up; results wait until the limit is reached.
+        await asyncio.wait_for(engine.cancel_seen.wait(), WAIT_SECONDS)
+        with pytest.raises(OpenEngineServeError, match="not read fast enough") as error:
+            await asyncio.wait_for(output.aresult(), WAIT_SECONDS)
+        assert error.value.status_code == 503
+
+    _serve(engine, tmp_path, body, postproc_workers=1)
+
+
+def test_a_failed_call_ends_a_postprocessed_request(tmp_path, monkeypatch) -> None:
+    pools = _with_pool(monkeypatch)
+    engine = _engine(engine_error(error_pb2.ERROR_CODE_INTERNAL, retryable=False))
+
+    async def body(engine, facade, http):
+        output = facade.generate_async(
+            PROMPT_IDS, SamplingParams(max_tokens=8), _postproc_params=object()
+        )
+        with pytest.raises(OpenEngineServeError, match="engine gave up") as error:
+            await asyncio.wait_for(output.aresult(), WAIT_SECONDS)
+        assert error.value.status_code == 500
+        assert pools[0].sessions[0].closed == ["cancelled"]
+
+    _serve(engine, tmp_path, body, postproc_workers=1)
+
+
+def test_the_stats_are_empty_when_reading_the_load_times_out(tmp_path) -> None:
+    engine = _engine()
+
+    async def body(engine, facade, http):
+        async def slow_stats():
+            await asyncio.sleep(WAIT_SECONDS)
+            return [{"never": True}]
+
+        facade._iteration_stats = slow_stats
+        facade._control_timeout = 0.05
+        assert await asyncio.to_thread(facade.get_stats, 0) == []
+
+    _serve(engine, tmp_path, body)
+
+
+def test_the_tokenizer_directory_is_the_tokenizer_path_when_it_is_one(tmp_path) -> None:
+    tokenizer_dir = tmp_path / "tokenizer"
+    tokenizer_dir.mkdir()
+    assert facade_module._tokenizer_dir(str(tokenizer_dir), tmp_path) == str(tokenizer_dir)
+    assert facade_module._tokenizer_dir("org/hub-name", tmp_path) == str(tmp_path)
+    assert facade_module._tokenizer_dir(None, tmp_path) == str(tmp_path)

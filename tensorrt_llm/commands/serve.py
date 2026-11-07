@@ -1366,7 +1366,7 @@ def launch_visual_gen_server(
     type=float,
     default=None,
     help="With --openengine-endpoint: seconds allowed for each Control RPC "
-    "to the engine (health, server and model info, load; default: 5).",
+    "to the engine (default: 5).",
     status="prototype")
 @stability_option(
     "--openengine-allow-newer-schema",
