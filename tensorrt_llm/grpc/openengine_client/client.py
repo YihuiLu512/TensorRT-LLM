@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import re
 import uuid
 import weakref
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from types import TracebackType
 from typing import Any, TypeVar
 
@@ -20,6 +21,7 @@ from tensorrt_llm.grpc.openengine.bindings import (
     generation_pb2,
     kv_pb2,
     lifecycle_pb2,
+    lora_pb2,
     model_pb2,
     openengine_pb2_grpc,
     server_pb2,
@@ -44,6 +46,9 @@ _READY_POLL_INTERVAL_SECONDS = 0.5
 _NOT_READY_CODES = frozenset({grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED})
 
 _ResponseT = TypeVar("_ResponseT")
+
+# gRPC metadata keys are lowercase; a key ending in "-bin" would carry bytes.
+_METADATA_KEY = re.compile(r"[0-9a-z_.-]+")
 
 
 def new_request_id() -> str:
@@ -323,6 +328,7 @@ class OpenEngineClient:
         request: generation_pb2.GenerateRequest,
         *,
         timeout: float | None = None,
+        metadata: Mapping[str, str] | None = None,
     ) -> GenerateStream:
         """Prepare a Generate call. The RPC is sent on the first iteration of the returned stream.
 
@@ -333,11 +339,18 @@ class OpenEngineClient:
                 modified.
             timeout: Deadline in seconds for the RPC, counted from the first
                 iteration; ``None`` means no deadline.
+            metadata: gRPC metadata to send with the call, such as
+                ``traceparent`` or ``openengine-priority``. Each key is sent once.
 
         Returns:
             The response stream. Use it as an async context manager.
+
+        Raises:
+            ValueError: A metadata key is not a lowercase ASCII gRPC key, ends in
+                ``-bin``, or a value is not a string.
         """
         self._ensure_open()
+        sent_metadata = _checked_metadata(metadata or {})
         sent = generation_pb2.GenerateRequest()
         sent.CopyFrom(request)
         if not sent.request_id:
@@ -348,9 +361,65 @@ class OpenEngineClient:
             timeout=timeout,
             target=self._target,
             on_done=self._streams.discard,
+            metadata=sent_metadata,
         )
         self._streams.add(stream)
         return stream
+
+    async def load_lora(
+        self, adapter: lora_pb2.LoraAdapter, *, timeout: float | None = None
+    ) -> lora_pb2.LoadLoraResponse:
+        """Register a LoRA adapter with the engine.
+
+        Args:
+            adapter: The adapter's id, name and ``source_path`` on the engine's machine.
+            timeout: Deadline in seconds; ``None`` means ``control_timeout``.
+
+        Raises:
+            OpenEngineRpcError: The LoadLora RPC failed, for example with
+                ``UNIMPLEMENTED`` when the engine does not support LoRA.
+        """
+        return await self._call_control(
+            self._control.LoadLora,
+            lora_pb2.LoadLoraRequest(adapter=adapter),
+            rpc="LoadLora",
+            timeout=timeout,
+        )
+
+    async def list_loras(self, *, timeout: float | None = None) -> list[lora_pb2.LoraAdapter]:
+        """Return the LoRA adapters the engine has registered.
+
+        Args:
+            timeout: Deadline in seconds; ``None`` means ``control_timeout``.
+
+        Raises:
+            OpenEngineRpcError: The ListLoras RPC failed.
+        """
+        response = await self._call_control(
+            self._control.ListLoras, lora_pb2.ListLorasRequest(), rpc="ListLoras", timeout=timeout
+        )
+        return list(response.adapters)
+
+    async def get_kv_event_sources(
+        self, *, data_parallel_ranks: Sequence[int] = (), timeout: float | None = None
+    ) -> list[kv_pb2.KvEventSource]:
+        """Return where the engine publishes KV-cache events.
+
+        Args:
+            data_parallel_ranks: Ranks to ask about; empty for every rank.
+            timeout: Deadline in seconds; ``None`` means ``control_timeout``.
+
+        Raises:
+            OpenEngineRpcError: The GetKvEventSources RPC failed, for example
+                with ``UNIMPLEMENTED`` when the engine publishes no KV events.
+        """
+        response = await self._call_control(
+            self._control.GetKvEventSources,
+            kv_pb2.GetKvEventSourcesRequest(data_parallel_ranks=list(data_parallel_ranks)),
+            rpc="GetKvEventSources",
+            timeout=timeout,
+        )
+        return list(response.sources)
 
     async def close(self) -> None:
         """Cancel every stream that has not reached its terminal event and close the channel.
@@ -502,6 +571,18 @@ class OpenEngineClient:
     def _ensure_open(self) -> None:
         if self._closed:
             raise OpenEngineClientError("the client is closed", target=self._target)
+
+
+def _checked_metadata(metadata: Mapping[str, str]) -> tuple[tuple[str, str], ...]:
+    """The metadata as gRPC pairs, after checking keys and values."""
+    pairs = []
+    for key, value in metadata.items():
+        if not isinstance(key, str) or not _METADATA_KEY.fullmatch(key) or key.endswith("-bin"):
+            raise ValueError(f"invalid gRPC metadata key {key!r}")
+        if not isinstance(value, str):
+            raise ValueError(f"metadata {key!r} must be a string, got {type(value).__name__}")
+        pairs.append((key, value))
+    return tuple(pairs)
 
 
 __all__ = [

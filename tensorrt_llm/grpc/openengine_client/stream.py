@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from types import TracebackType
 from typing import Any
 
@@ -76,10 +76,12 @@ class GenerateStream:
         timeout: float | None,
         target: str,
         on_done: Callable[[GenerateStream], None] | None = None,
+        metadata: Sequence[tuple[str, str]] = (),
     ) -> None:
         self._stub = stub
         self._request = request
         self._timeout = timeout
+        self._metadata = tuple(metadata)
         self._target = target
         self._on_done = on_done
         sampling = request.sampling
@@ -169,7 +171,9 @@ class GenerateStream:
             raise StopAsyncIteration
         if self._call is None:
             try:
-                self._call = self._stub.Generate(self._request, timeout=self._timeout)
+                self._call = self._stub.Generate(
+                    self._request, timeout=self._timeout, metadata=self._metadata or None
+                )
             except BaseException:
                 self._finish()
                 raise
