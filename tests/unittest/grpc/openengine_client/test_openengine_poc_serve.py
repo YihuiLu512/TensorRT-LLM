@@ -1166,7 +1166,9 @@ def test_a_restarted_engine_with_an_unusable_schema_is_lost_at_once(tmp_path, mo
 
     async def body(engine, facade, http):
         async def refresh():
-            raise OpenEngineIncompatibleServerError("schema revision 99 is newer")
+            raise OpenEngineIncompatibleServerError(
+                "schema revision 99 is newer", target=engine.target
+            )
 
         monkeypatch.setattr(facade.client, "refresh", refresh)
         engine.instance_id = "fake-restarted"
@@ -1252,6 +1254,7 @@ def test_a_lora_request_is_known_by_its_first_call_id(tmp_path, monkeypatch) -> 
 
     async def body(engine, facade, http):
         facade._lora = Registry()
+        facade._lora_supported = True
         output = await facade.generate_async(
             PROMPT_IDS, SamplingParams(max_tokens=1), lora_request=object()
         )
@@ -1337,6 +1340,54 @@ def test_a_request_cut_off_by_closing_the_frontend_is_503(tmp_path) -> None:
     _serve(engine, tmp_path, body)
 
 
+def test_a_lost_engine_ends_the_requests_still_running_with_503(tmp_path) -> None:
+    lost = []
+    engine = _engine(token(0, HE), Hang())
+
+    async def body(engine, facade, http):
+        output = facade.generate_async(PROMPT_IDS, SamplingParams(max_tokens=8))
+        await output.__anext__()
+        facade._engine_lost("test")
+        with pytest.raises(OpenEngineServeError, match="is lost") as error:
+            await asyncio.wait_for(output.aresult(), WAIT_SECONDS)
+        assert error.value.status_code == 503
+        assert lost == [facade]
+
+    _serve(engine, tmp_path, body, on_engine_lost=_lost_recorder(lost))
+
+
+def test_a_call_failing_after_abort_ends_the_request_as_cancelled(tmp_path) -> None:
+    engine = _engine(token(0, HE), Hang())
+
+    async def body(engine, facade, http):
+        output = facade.generate_async(PROMPT_IDS, SamplingParams(max_tokens=8))
+        await output.__anext__()
+        output._aborted = True
+        output._queue.put_nowait((0, RuntimeError("late failure")))
+        result = await asyncio.wait_for(output.__anext__(), WAIT_SECONDS)
+        assert result.finished and result.error is None
+        assert result.outputs[0].finish_reason == "cancelled"
+        output.abort()
+
+    _serve(engine, tmp_path, body)
+
+
+def test_stats_when_the_engine_load_cannot_be_read_are_empty(tmp_path, monkeypatch) -> None:
+    engine = _engine()
+
+    async def body(engine, facade, http):
+        async def load():
+            raise OpenEngineRpcError(
+                grpc.StatusCode.UNAVAILABLE, "down", rpc="GetLoad", target=engine.target
+            )
+
+        facade._metrics_use_load = True
+        monkeypatch.setattr(facade.client, "load", load)
+        assert await facade._iteration_stats() == []
+
+    _serve(engine, tmp_path, body)
+
+
 def test_generate_sent_is_written_to_the_counter_dir(tmp_path, monkeypatch) -> None:
     counter_dir = tmp_path / "counters"
     monkeypatch.setenv(SERVE_COUNTER_DIR_ENV, str(counter_dir))
@@ -1367,6 +1418,31 @@ def test_generate_sent_is_written_to_the_counter_dir(tmp_path, monkeypatch) -> N
 
     _serve(engine, tmp_path, body)
     assert contracts.read_generate_sent(counter_dir) == 2
+
+
+def test_a_lora_request_without_a_lora_registry_is_refused_at_once(tmp_path) -> None:
+    engine = _engine()
+
+    async def body(engine, facade, http):
+        with pytest.raises(ValueError, match="lora_request"):
+            facade.generate_async(PROMPT_IDS, SamplingParams(max_tokens=1), lora_request=object())
+        assert engine.requests == []
+
+    _serve(engine, tmp_path, body)
+
+
+def test_trace_headers_that_are_not_ascii_are_not_sent(tmp_path) -> None:
+    engine = _engine()
+
+    async def body(engine, facade, http):
+        await facade.generate_async(
+            PROMPT_IDS,
+            SamplingParams(max_tokens=1),
+            trace_headers={META_TRACEPARENT: "00-\u00e9-01"},
+        )
+        assert engine.accepted[0].metadata_value(META_TRACEPARENT) is None
+
+    _serve(engine, tmp_path, body)
 
 
 def test_request_metadata_reaches_the_engine(tmp_path) -> None:

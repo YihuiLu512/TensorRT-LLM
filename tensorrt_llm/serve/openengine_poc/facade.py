@@ -289,6 +289,9 @@ class OpenEngineLLM:
         self._metrics_use_load = contracts.resolve_slot("create_metrics_recorder")[1] != "default"
         self._lora: contracts.LoraRegistry | None = None
         self._local_fingerprint: Any = None
+        self._lost_close: asyncio.Task[None] | None = None
+        # The default registry refuses every adapter; such requests fail before they start.
+        self._lora_supported = contracts.resolve_slot("create_lora_registry")[1] != "default"
 
     # -- Construction --------------------------------------------------------
 
@@ -444,7 +447,7 @@ class OpenEngineLLM:
             )
             return
         if self._local_fingerprint is None:
-            # Hashing the tokenizer files takes a moment; the tokenizer does not change.
+            # Hashed once, at startup or (off the event loop) at a restart; see _follow_restart.
             self._local_fingerprint = compute_tokenizer_fingerprint(
                 self.tokenizer, self._hf_model_dir
             )
@@ -522,6 +525,11 @@ class OpenEngineLLM:
             f"OpenEngine engine at {self._endpoint} restarted: instance {before_info.instance_id} "
             f"-> {info.instance_id}"
         )
+        if self._local_fingerprint is None and caps.tokenizer_fingerprint is not None:
+            # Hashing the tokenizer files takes a moment; the frontend is serving meanwhile.
+            self._local_fingerprint = await asyncio.to_thread(
+                compute_tokenizer_fingerprint, self.tokenizer, self._hf_model_dir
+            )
         try:
             self._check_engine(info, caps)
         except OpenEngineStartupError as error:
@@ -540,6 +548,9 @@ class OpenEngineLLM:
         logger.error(f"{reason}; stopping this frontend")
         self._healthy = False
         self._executor._set_fatal_error(RuntimeError(reason))
+        if self._client is not None and self._loop is not None:
+            # Calls to a lost engine may never end; the server only stops once its requests do.
+            self._lost_close = self._loop.create_task(self._client.close())
         self._on_engine_lost(self)
 
     def _check_health(self) -> bool:
@@ -571,6 +582,8 @@ class OpenEngineLLM:
                 await task
             except asyncio.CancelledError:
                 pass
+        if self._lost_close is not None:
+            await self._lost_close
         if self._client is not None:
             await self._client.close()
         if self._counter_writer is not None:
@@ -677,7 +690,8 @@ class OpenEngineLLM:
         metadata: dict[str, str] = {}
         for key in (META_TRACEPARENT, META_TRACESTATE):
             value = (options.trace_headers or {}).get(key)
-            if value:
+            # The W3C trace headers are printable ASCII; others are dropped, not sent.
+            if isinstance(value, str) and value and value.isascii() and value.isprintable():
                 metadata[key] = value
         priority = options.priority
         if priority is not None and priority != DEFAULT_REQUEST_PRIORITY:
@@ -757,6 +771,10 @@ class OpenEngineLLM:
             trace_headers=trace_headers,
             media=media,
         )
+        if lora_request is not None and not self._lora_supported:
+            raise ValueError(
+                "lora_request is not supported when serving through an OpenEngine engine"
+            )
         if lora_request is None:
             requests: list[EngineRequest] | None = self._map(
                 prompt_token_ids, sampling_params, options
@@ -790,7 +808,14 @@ class OpenEngineLLM:
     # -- Stats and events ----------------------------------------------------
 
     async def _iteration_stats(self) -> list[dict[str, Any]]:
-        load: EngineLoad | None = await self.client.load() if self._metrics_use_load else None
+        load: EngineLoad | None = None
+        if self._metrics_use_load:
+            try:
+                load = await self.client.load()
+            except OpenEngineClientError as error:
+                # As in-process, /metrics answers with no entry rather than an error.
+                logger.warning(f"Could not read the load of the OpenEngine engine: {error}")
+                return []
         stat = self._metrics.iteration_stats(load)
         return [] if stat is None else [stat]
 
@@ -941,8 +966,8 @@ class OpenEngineRequestOutput:
         """Read one call to its end into the queue.
 
         The call is counted as sent when its first read returns an event, or
-        when reading it ends, provided the call reached the engine
-        (``stream.sent``). The pump keeps reading after the request finished,
+        when reading it ends, provided the call was started (``stream.sent``),
+        whether or not the engine accepted it. The pump keeps reading after the request finished,
         so a call the engine ends itself is closed by the engine;
         ``stream.cancel()`` only takes effect before the engine's last event.
         When the request holds :data:`MAX_BUFFERED_EVENTS` unread events, the
@@ -992,11 +1017,19 @@ class OpenEngineRequestOutput:
             stream.cancel()
 
     def _fail(self, error: Exception) -> Exception:
-        if self._facade._closing and not isinstance(error, ValueError):
-            # Closing the frontend cancels its calls; that is not the engine's failure.
-            error = OpenEngineServeError(
-                "this frontend is shutting down", HTTPStatus.SERVICE_UNAVAILABLE
-            )
+        if not isinstance(error, ValueError):
+            if self._facade._executor._fatal_error is not None:
+                # The calls were cancelled because the engine was declared lost.
+                error = OpenEngineServeError(
+                    f"the OpenEngine engine {self._engine_name!r} is lost; this frontend "
+                    "is stopping",
+                    HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+            elif self._facade._closing:
+                # Closing the frontend cancels its calls; that is not the engine's failure.
+                error = OpenEngineServeError(
+                    "this frontend is shutting down", HTTPStatus.SERVICE_UNAVAILABLE
+                )
         self.error = str(error)
         self.finished = True
         self._cancel_calls()
@@ -1042,6 +1075,14 @@ class OpenEngineRequestOutput:
                         HTTPStatus.INTERNAL_SERVER_ERROR,
                     )
                 )
+            if isinstance(item, BaseException) and self._aborted:
+                # The request was aborted; a call failing after that ends it as cancelled.
+                self._open_calls -= 1
+                if self._open_calls > 0:
+                    continue
+                self._assembler.finish_cancelled()
+                self.finished = True
+                return self
             if isinstance(item, BaseException):
                 if isinstance(item, OpenEngineClientError):
                     raise self._fail(request_error(item, self._engine_name)) from item
@@ -1172,9 +1213,11 @@ def adapt_server(server: Any, facade: OpenEngineLLM) -> None:
     - the endpoints in :data:`UNSUPPORTED_ENDPOINTS` answer 501, as does a
       request whose handler lets ``OpenEngineUnsupportedError`` propagate;
     - when a handler reports an :class:`OpenEngineServeError` as a 400 error
-      response, the response carries that error's HTTP status instead; once a
-      streaming response has started, the error is a stream event and the
-      status stays 200.
+      response, the response carries that error's HTTP status instead. A
+      streaming request's Generate calls start at its first read, after the
+      response has started, so its status stays 200 and the handler decides
+      how the error reaches the client (``/v1/completions`` sends an error
+      event; ``/v1/chat/completions`` ends the stream).
     """
     import sys
 

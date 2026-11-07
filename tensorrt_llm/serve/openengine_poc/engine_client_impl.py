@@ -302,15 +302,21 @@ class OpenEngineEngineClient:
             control_timeout=control_timeout,
             allow_newer_schema=allow_newer_schema,
         )
-        return cls(client)
+        try:
+            return cls(client)
+        except BaseException:
+            await client.close()
+            raise
 
     @property
     def endpoint(self) -> str:
         return self._client.target
 
     def _cache(self, server_info: server_pb2.ServerInfo, model_info: model_pb2.ModelInfo) -> None:
-        self._server_info = _engine_info(server_info)
-        self._model_info = model_capabilities_from_proto(server_info, model_info)
+        # Both are built before either is replaced, so a failure keeps the previous pair.
+        engine_info = _engine_info(server_info)
+        capabilities = model_capabilities_from_proto(server_info, model_info)
+        self._server_info, self._model_info = engine_info, capabilities
 
     async def refresh(self) -> None:
         """Read the engine's identity and capabilities again.
