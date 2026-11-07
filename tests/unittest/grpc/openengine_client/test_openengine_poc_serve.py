@@ -1720,17 +1720,18 @@ class _FakeSession:
         fail_iteration: bool,
         final_after: int | None = None,
         final_on_cancel: bool = True,
+        fail_on_cancel: bool = False,
     ):
         self.request_id = request_id
         self._final_after = final_after
         self._final_on_cancel = final_on_cancel
+        self._fail_on_cancel = fail_on_cancel
         self.events: list[Any] = []
         self.closed: list[str] = []
         self._overflow_after = overflow_after
         self._results: asyncio.Queue = asyncio.Queue()
         self._over = False
-        if fail_iteration:
-            self._results.put_nowait(contracts.PostprocError("the postprocessor raised"))
+        self._fail_iteration = fail_iteration
 
     def _result(self, chunks: Any, final: bool) -> None:
         if not self._over:
@@ -1747,11 +1748,20 @@ class _FakeSession:
             self._results.put_nowait(error)
             raise error
         self.events.append(event)
+        if self._fail_iteration:
+            # Failing on the first event: the call has reached the engine by then.
+            self._over = True
+            self._results.put_nowait(contracts.PostprocError("the postprocessor raised"))
+            return
         final = isinstance(event, OutputFinished) or len(self.events) == self._final_after
         self._result([f"chunk-{len(self.events)}"], final)
 
     def close(self, reason: str) -> None:
         self.closed.append(reason)
+        if reason == "cancelled" and self._fail_on_cancel and not self._over:
+            self._over = True
+            self._results.put_nowait(contracts.PostprocError("failed while cancelling"))
+            return
         if reason == "cancelled" and not self._final_on_cancel:
             # Nobody has to read a cancelled session: it may end without a final result.
             self._over = True
@@ -1787,6 +1797,7 @@ class _FakePool:
             "open_error": None,
             "final_after": None,
             "final_on_cancel": True,
+            "fail_on_cancel": False,
         }
         self._behaviour.update(behaviour)
 
@@ -1800,6 +1811,7 @@ class _FakePool:
             fail_iteration=self._behaviour["fail_iteration"],
             final_after=self._behaviour["final_after"],
             final_on_cancel=self._behaviour["final_on_cancel"],
+            fail_on_cancel=self._behaviour["fail_on_cancel"],
         )
         self.sessions.append(session)
         return session
@@ -1867,6 +1879,7 @@ def test_a_request_is_postprocessed_in_the_pool(tmp_path, monkeypatch) -> None:
             "streaming": True,
             "num_outputs": 1,
             "num_prompt_tokens": len(PROMPT_IDS),
+            "engine_stop_texts": False,
         }
         session = pools[0].sessions[0]
         assert [type(event).__name__ for event in session.events][-1] == "OutputFinished"
@@ -1964,18 +1977,19 @@ def test_an_aborted_session_without_a_final_result_ends_the_request(tmp_path, mo
 
 
 def test_a_final_result_cancels_the_calls_before_it_is_read(tmp_path, monkeypatch) -> None:
-    pools = _with_pool(monkeypatch, final_after=1)
-    engine = _engine(token(0, HE), Hang())
+    pools = _with_pool(monkeypatch, final_after=2)
+    engine = _engine(token(0, HE), token(0, LLO), Hang())
 
     async def body(engine, facade, http):
         output = facade.generate_async(
             PROMPT_IDS, SamplingParams(max_tokens=8), _postproc_params=object()
         )
-        # Reading starts the calls; the final result then cancels them by itself.
-        reading = asyncio.create_task(output.__anext__())
+        first = await asyncio.wait_for(output.__anext__(), WAIT_SECONDS)
+        assert not first.finished
+        # Nobody reads now: the final result alone must cancel the calls.
         await asyncio.wait_for(engine.cancel_seen.wait(), WAIT_SECONDS)
-        result = await asyncio.wait_for(reading, WAIT_SECONDS)
-        assert result.finished and result.outputs[0]._postprocess_result == ["chunk-1"]
+        result = await asyncio.wait_for(output.__anext__(), WAIT_SECONDS)
+        assert result.finished and result.outputs[0]._postprocess_result == ["chunk-2"]
         assert pools[0].sessions[0].closed == ["cancelled"]
 
     _serve(engine, tmp_path, body, postproc_workers=1)
@@ -2037,3 +2051,181 @@ def test_the_tokenizer_directory_is_the_tokenizer_path_when_it_is_one(tmp_path) 
     assert facade_module._tokenizer_dir(str(tokenizer_dir), tmp_path) == str(tokenizer_dir)
     assert facade_module._tokenizer_dir("org/hub-name", tmp_path) == str(tmp_path)
     assert facade_module._tokenizer_dir(None, tmp_path) == str(tmp_path)
+
+
+@pytest.mark.parametrize("stop_texts", [[], ["!"]])
+@pytest.mark.parametrize("lora", [False, True])
+def test_the_assembler_and_the_pool_learn_whether_the_engine_matches_stop_strings(
+    tmp_path, monkeypatch, stop_texts, lora
+) -> None:
+    pools = _with_pool(monkeypatch)
+    engine = _engine(token(0, HE), _finished())
+    told = []
+    create = facade_module.contracts.create_response_assembler
+    monkeypatch.setattr(
+        facade_module.contracts,
+        "create_response_assembler",
+        lambda **kwargs: told.append(kwargs["engine_stop_texts"]) or create(**kwargs),
+    )
+
+    def map_with_stop_texts(prompt_token_ids, sampling_params, caps, options, *, engine_name):
+        options = dataclasses.replace(options, lora_request=None, lora_name=None)
+        (request,) = contracts.default_map_request(
+            prompt_token_ids, sampling_params, caps, options, engine_name=engine_name
+        )
+        return [dataclasses.replace(request, stop_texts=list(stop_texts))]
+
+    monkeypatch.setattr(facade_module.contracts, "map_request", map_with_stop_texts)
+
+    class Registry:
+        async def resolve(self, lora_request):
+            return "adapter-a"
+
+    async def body(engine, facade, http):
+        facade._lora = Registry()
+        facade._lora_supported = True
+        generate = facade.client.generate
+        # The fake engine declares no stop strings; what the facade decided is checked above it.
+        monkeypatch.setattr(
+            facade.client,
+            "generate",
+            lambda request: generate(dataclasses.replace(request, stop_texts=[])),
+        )
+        output = facade.generate_async(
+            PROMPT_IDS,
+            SamplingParams(max_tokens=4),
+            lora_request=object() if lora else None,
+            _postproc_params=object(),
+        )
+        # A request with an adapter is mapped, and so assembled, at its first read.
+        assert told == ([] if lora else [bool(stop_texts)])
+        if lora:
+            assert output.outputs == []
+        await asyncio.wait_for(output.aresult(), WAIT_SECONDS)
+        assert told == [bool(stop_texts)]
+        assert pools[0].opened[0]["engine_stop_texts"] is bool(stop_texts)
+
+    _serve(engine, tmp_path, body, postproc_workers=1)
+
+
+def test_the_fingerprint_covers_the_model_directory_whatever_the_tokenizer_directory(
+    tmp_path, monkeypatch
+) -> None:
+    pools = _with_pool(monkeypatch)
+    directories = []
+    compute = facade_module.compute_tokenizer_fingerprint
+    monkeypatch.setattr(
+        facade_module,
+        "compute_tokenizer_fingerprint",
+        lambda tokenizer, directory: directories.append(directory) or compute(tokenizer, directory),
+    )
+    tokenizer_dir = tmp_path / "tokenizer"
+    tokenizer_dir.mkdir()
+    engine = _engine()
+
+    async def body(engine, facade, http):
+        # The engine hashes its model directory, so the two sides compare like with like.
+        assert directories == [str(tmp_path)]
+        assert pools[0].tokenizer_dir == str(tokenizer_dir)
+
+    _serve(engine, tmp_path, body, tokenizer_dir=str(tokenizer_dir), postproc_workers=1)
+
+
+@pytest.mark.parametrize("local", [True, False])
+def test_the_pool_takes_the_postprocess_tokenizer_directory_when_it_is_local(
+    tmp_path, monkeypatch, local
+) -> None:
+    pools = _with_pool(monkeypatch)
+    postproc_dir = tmp_path / "postproc"
+    if local:
+        postproc_dir.mkdir()
+    args = SimpleNamespace(**vars(_args()), postprocess_tokenizer_dir=str(postproc_dir))
+    OpenEngineLLM(
+        args=args,
+        tokenizer=_tokenizer(),
+        input_processor=_InputProcessor(),
+        hf_model_dir=str(tmp_path),
+        tokenizer_dir=str(tmp_path / "tokenizer"),
+        endpoint="127.0.0.1:1",
+        postproc_workers=1,
+    )
+    # trtllm-serve may set it to a Hub name; the pool is given a local directory.
+    assert pools[0].tokenizer_dir == str(postproc_dir if local else tmp_path / "tokenizer")
+
+
+def test_a_postprocessed_request_cut_off_by_closing_the_frontend_is_503(
+    tmp_path, monkeypatch
+) -> None:
+    pools = _with_pool(monkeypatch)
+    engine = _engine(token(0, HE), Hang())
+
+    async def body(engine, facade, http):
+        output = facade.generate_async(
+            PROMPT_IDS, SamplingParams(max_tokens=8), _postproc_params=object()
+        )
+        await asyncio.wait_for(output.__anext__(), WAIT_SECONDS)
+        await facade.aclose()
+        with pytest.raises(OpenEngineServeError, match="shutting down") as error:
+            await asyncio.wait_for(output.aresult(), WAIT_SECONDS)
+        assert error.value.status_code == 503
+        # The session learns that the request was stopped, not that it finished.
+        assert pools[0].sessions[0].closed == ["cancelled"]
+
+    _serve(engine, tmp_path, body, postproc_workers=1)
+
+
+def test_a_postprocessing_failure_after_an_abort_ends_the_request_as_cancelled(
+    tmp_path, monkeypatch
+) -> None:
+    _with_pool(monkeypatch, fail_on_cancel=True)
+    engine = _engine(token(0, HE), Hang())
+
+    async def body(engine, facade, http):
+        output = facade.generate_async(
+            PROMPT_IDS, SamplingParams(max_tokens=8), _postproc_params=object()
+        )
+        await asyncio.wait_for(output.__anext__(), WAIT_SECONDS)
+        output.abort()
+        result = await asyncio.wait_for(output.aresult(), WAIT_SECONDS)
+        assert result.finished and result.error is None
+        assert result.outputs[0]._postprocess_result == []
+
+    _serve(engine, tmp_path, body, postproc_workers=1)
+
+
+def test_a_request_cancelled_while_starting_is_not_sent_again(tmp_path) -> None:
+    engine = _engine()
+    resolving = asyncio.Event()
+
+    class Registry:
+        async def resolve(self, lora_request):
+            resolving.set()
+            await asyncio.Event().wait()
+
+    async def body(engine, facade, http):
+        facade._lora = Registry()
+        facade._lora_supported = True
+        output = facade.generate_async(
+            PROMPT_IDS, SamplingParams(max_tokens=1), lora_request=object()
+        )
+        reading = asyncio.create_task(output.__anext__())
+        await asyncio.wait_for(resolving.wait(), WAIT_SECONDS)
+        reading.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await reading
+        with pytest.raises(StopAsyncIteration):
+            await output.__anext__()
+        assert engine.requests == []
+
+    _serve(engine, tmp_path, body)
+
+
+def test_startup_fails_when_the_local_tokenizer_cannot_be_fingerprinted(
+    tmp_path, monkeypatch
+) -> None:
+    def unreadable(tokenizer, directory):
+        raise OSError("tokenizer.json cannot be read")
+
+    monkeypatch.setattr(facade_module, "compute_tokenizer_fingerprint", unreadable)
+    error = _start_fails(_engine(), tmp_path)
+    assert "tokenizer fingerprint" in str(error) and "cannot be read" in str(error)

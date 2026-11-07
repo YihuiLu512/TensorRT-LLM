@@ -145,8 +145,15 @@ def _without_addresses(text: str, target: str) -> str:
     return _GRPC_ADDRESS.sub("<engine>", text)
 
 
+# What compute_tokenizer_fingerprint raises for a tokenizer or model directory it cannot read.
+_FINGERPRINT_ERRORS = (NotImplementedError, OSError, TypeError, ValueError)
+
+
 def _tokenizer_dir(tokenizer: Any, model_dir: Path) -> str:
-    """The local directory the tokenizer files are in: ``tokenizer`` if it names one."""
+    """The local directory the tokenizer files are in: ``tokenizer`` if it names one.
+
+    A Hugging Face Hub name, or no ``tokenizer``, gives ``model_dir``.
+    """
     if isinstance(tokenizer, (str, Path)) and Path(tokenizer).is_dir():
         return str(tokenizer)
     return str(model_dir)
@@ -240,8 +247,13 @@ class OpenEngineLLM:
         tokenizer: The Hugging Face tokenizer matching the engine's model.
         input_processor: Tokenizes text prompts, as for ``LLM``.
         hf_model_dir: The local model directory holding the config.
-        tokenizer_dir: The local directory holding the tokenizer files, for the
-            fingerprint and the postprocessing pool; None for ``hf_model_dir``.
+        tokenizer_dir: The local directory holding the tokenizer files; None for
+            ``hf_model_dir``. The postprocessing pool loads its tokenizer from
+            ``args.postprocess_tokenizer_dir`` if that is a local directory, else
+            from this one (``trtllm-serve`` sets ``postprocess_tokenizer_dir`` to
+            ``--tokenizer`` or the model, which may be a Hugging Face Hub name).
+            The fingerprint is computed over ``hf_model_dir``, as the engine
+            computes it over its model directory.
         endpoint: The engine's ``host:port``.
         ready_timeout: Seconds to wait at startup for the engine to be ready.
         control_timeout: Seconds allowed for each Control RPC.
@@ -321,7 +333,11 @@ class OpenEngineLLM:
         if postproc_workers is None:
             postproc_workers = getattr(args, "num_postprocess_workers", 0) or 0
         self.postproc_pool: contracts.PostprocPool | None = contracts.create_postproc_pool(
-            args, num_workers=postproc_workers, tokenizer_dir=self._tokenizer_dir
+            args,
+            num_workers=postproc_workers,
+            tokenizer_dir=_tokenizer_dir(
+                getattr(args, "postprocess_tokenizer_dir", None), Path(self._tokenizer_dir)
+            ),
         )
 
     # -- Construction --------------------------------------------------------
@@ -480,9 +496,14 @@ class OpenEngineLLM:
             return
         if self._local_fingerprint is None:
             # Hashed once, at startup or (off the event loop) at a restart; see _follow_restart.
-            self._local_fingerprint = compute_tokenizer_fingerprint(
-                self.tokenizer, self._tokenizer_dir
-            )
+            try:
+                self._local_fingerprint = compute_tokenizer_fingerprint(
+                    self.tokenizer, self._hf_model_dir
+                )
+            except _FINGERPRINT_ERRORS as error:
+                raise self._startup_error(
+                    "tokenizer fingerprint", f"cannot fingerprint the local tokenizer: {error!r}"
+                ) from error
         mismatches = compare_tokenizer_fingerprints(self._local_fingerprint, engine_fingerprint)
         if mismatches:
             raise self._startup_error(
@@ -559,9 +580,16 @@ class OpenEngineLLM:
         )
         if self._local_fingerprint is None and caps.tokenizer_fingerprint is not None:
             # Hashing the tokenizer files takes a moment; the frontend is serving meanwhile.
-            self._local_fingerprint = await asyncio.to_thread(
-                compute_tokenizer_fingerprint, self.tokenizer, self._tokenizer_dir
-            )
+            try:
+                self._local_fingerprint = await asyncio.to_thread(
+                    compute_tokenizer_fingerprint, self.tokenizer, self._hf_model_dir
+                )
+            except _FINGERPRINT_ERRORS as error:
+                self._engine_lost(
+                    f"the restarted OpenEngine engine cannot be checked: cannot fingerprint the "
+                    f"local tokenizer: {error!r}"
+                )
+                return False
         try:
             self._check_engine(info, caps)
         except OpenEngineStartupError as error:
@@ -617,15 +645,21 @@ class OpenEngineLLM:
                 await task
             except asyncio.CancelledError:
                 pass
-        if self._lost_close is not None:
-            await self._lost_close
-        if self._client is not None:
-            await self._client.close()
-        if self.postproc_pool is not None:
-            await self.postproc_pool.aclose()
-        if self._counter_writer is not None:
-            # The last writes may go to a slow file system; the loop keeps running meanwhile.
-            await asyncio.to_thread(self._counter_writer.shutdown, True)
+        try:
+            if self._lost_close is not None:
+                # Its failure was logged by the task; the connection is closed again below.
+                await asyncio.gather(self._lost_close, return_exceptions=True)
+            if self._client is not None:
+                await self._client.close()
+        finally:
+            # The pool and the writer thread are closed whatever happened to the connection.
+            try:
+                if self.postproc_pool is not None:
+                    await self.postproc_pool.aclose()
+            finally:
+                if self._counter_writer is not None:
+                    # The last writes may go to a slow file system; the loop keeps running.
+                    await asyncio.to_thread(self._counter_writer.shutdown, True)
 
     # -- Counting ------------------------------------------------------------
 
@@ -833,22 +867,27 @@ class OpenEngineLLM:
             # Opt-in, for comparing prompt rendering with another server; the ids
             # encode the prompt, so this is off by default.
             logger.info(f"OpenEngine request prompt_token_ids={prompt_token_ids}")
-        assembler = contracts.create_response_assembler(
-            sampling_params=sampling_params, tokenizer=self.tokenizer, num_outputs=sampling_params.n
-        )
-        output = OpenEngineRequestOutput(
+
+        def create_assembler(engine_stop_texts: bool) -> contracts.ResponseAssembler:
+            return contracts.create_response_assembler(
+                sampling_params=sampling_params,
+                tokenizer=self.tokenizer,
+                num_outputs=sampling_params.n,
+                engine_stop_texts=engine_stop_texts,
+            )
+
+        postproc = None
+        if self.postproc_pool is not None and _postproc_params is not None:
+            postproc = _Postproc(self.postproc_pool, _postproc_params, sampling_params, streaming)
+        return OpenEngineRequestOutput(
             self,
             prompt_token_ids,
-            assembler,
+            create_assembler,
             requests=requests,
             prepare=prepare,
+            postproc=postproc,
             engine_name=engine_name,
         )
-        if self.postproc_pool is not None and _postproc_params is not None:
-            output._open_session(
-                self.postproc_pool, _postproc_params, sampling_params, streaming=streaming
-            )
-        return output
 
     # -- Stats and events ----------------------------------------------------
 
@@ -910,6 +949,21 @@ def _keep(task: asyncio.Task[None]) -> None:
     task.add_done_callback(_RUNNING_PUMPS.discard)
 
 
+@dataclasses.dataclass(frozen=True)
+class _Postproc:
+    """What :meth:`PostprocPool.open` is given for one request, besides what its calls decide."""
+
+    pool: contracts.PostprocPool
+    params: Any
+    sampling_params: SamplingParams
+    streaming: bool
+
+
+def _engine_stop_texts(requests: list[EngineRequest]) -> bool:
+    """Whether the stop strings went to the engine, which then matches them."""
+    return any(request.stop_texts for request in requests)
+
+
 def _postproc_failure(error: Exception) -> OpenEngineServeError:
     """The error a request ends with when postprocessing it failed."""
     status = getattr(error, "http_status", HTTPStatus.INTERNAL_SERVER_ERROR)
@@ -925,6 +979,10 @@ class OpenEngineRequestOutput:
     relative to the previous yield. When the request is served by several calls,
     output ``i`` of call ``k`` is request output ``offset_k + i``.
 
+    The assembler, and the pool session when there is one, are created once
+    the calls are known (at once, or for a request with a LoRA adapter, at the
+    first read), since they are told whether the engine matches the stop strings.
+
     When the request is postprocessed in the pool, the events go to its
     session instead of the assembler, and each yield carries the next result's
     ``chunks`` in ``outputs[0]._postprocess_result``; the last one is final.
@@ -936,14 +994,17 @@ class OpenEngineRequestOutput:
         self,
         facade: OpenEngineLLM,
         prompt_token_ids: list[int],
-        assembler: contracts.ResponseAssembler,
+        create_assembler: Callable[[bool], contracts.ResponseAssembler],
         *,
         requests: list[EngineRequest] | None,
         prepare: Callable[[], Any] | None,
+        postproc: _Postproc | None,
         engine_name: str,
     ) -> None:
         self._facade = facade
-        self._assembler = assembler
+        self._create_assembler = create_assembler
+        self._assembler: contracts.ResponseAssembler | None = None
+        self._postproc = postproc
         self._requests = requests
         self._prepare = prepare
         self._engine_name = engine_name
@@ -966,24 +1027,27 @@ class OpenEngineRequestOutput:
         self._session: contracts.PostprocSession | None = None
         self._session_closed = False
         self._results: asyncio.Queue[Any] | None = None
+        if requests is not None:
+            self._calls_known(requests)
 
-    def _open_session(
-        self,
-        pool: contracts.PostprocPool,
-        postproc_params: Any,
-        sampling_params: SamplingParams,
-        *,
-        streaming: bool,
-    ) -> None:
-        """Postprocess this request in ``pool``."""
+    def _calls_known(self, requests: list[EngineRequest]) -> None:
+        """Create the assembler and open the pool session for these calls."""
+        engine_stop_texts = _engine_stop_texts(requests)
+        self._assembler = self._create_assembler(engine_stop_texts)
+        if self._postproc is not None:
+            self._open_session(self._postproc, engine_stop_texts)
+
+    def _open_session(self, postproc: _Postproc, engine_stop_texts: bool) -> None:
+        """Postprocess this request in the pool."""
         try:
-            self._session = pool.open(
+            self._session = postproc.pool.open(
                 self.id,
-                postproc_params,
-                sampling_params,
-                streaming=streaming,
-                num_outputs=sampling_params.n,
+                postproc.params,
+                postproc.sampling_params,
+                streaming=postproc.streaming,
+                num_outputs=postproc.sampling_params.n,
                 num_prompt_tokens=len(self.prompt_token_ids),
+                engine_stop_texts=engine_stop_texts,
             )
         except contracts.PostprocError as error:
             raise self._stopping_error(_postproc_failure(error)) from error
@@ -999,11 +1063,12 @@ class OpenEngineRequestOutput:
 
     @property
     def outputs(self) -> list[Any]:
-        return self._assembler.outputs
+        # Empty until a request with a LoRA adapter is first read.
+        return [] if self._assembler is None else self._assembler.outputs
 
     @property
     def cached_tokens(self) -> int:
-        return self._assembler.cached_tokens
+        return 0 if self._assembler is None else self._assembler.cached_tokens
 
     @property
     def metrics_dict(self) -> dict[str, Any]:
@@ -1043,6 +1108,7 @@ class OpenEngineRequestOutput:
                 raise _no_calls(self._engine_name)
             # As on the other path, the request is known by its first call's id.
             self._requests[0] = dataclasses.replace(self._requests[0], request_id=self.request_id)
+            self._calls_known(self._requests)
         if not self._requests:
             raise _no_calls(self._engine_name)
         self._queue = asyncio.Queue()
@@ -1139,10 +1205,17 @@ class OpenEngineRequestOutput:
                 offset, item = await queue.get()
                 if item is _END or (isinstance(item, BaseException) and self._aborted):
                     self._open_calls -= 1
-                    if self._open_calls == 0:
-                        self._close_session("cancelled" if self._aborted else "done")
-                        return
-                    continue
+                    if self._open_calls > 0:
+                        continue
+                    if self._aborted:
+                        self._close_session("cancelled")
+                    elif self._facade._closing or self._facade._executor._fatal_error is not None:
+                        # The frontend cut the calls off: the request did not finish.
+                        self._close_session("cancelled")
+                        results.put_nowait(self._stopping_error(_ended_early(self._engine_name)))
+                    else:
+                        self._close_session("done")
+                    return
                 if isinstance(item, BaseException):
                     results.put_nowait(self._call_failure(item))
                     return
@@ -1196,8 +1269,9 @@ class OpenEngineRequestOutput:
         results = self._results
         assert results is not None
         item = await results.get()
-        if item is _END and self._aborted:
-            # A session closed as cancelled need not give a final result.
+        if self._aborted and (item is _END or isinstance(item, BaseException)):
+            # A session closed as cancelled need not give a final result, and a failure
+            # after the abort ends the request as cancelled, as without the pool.
             self.outputs[0]._postprocess_result = []
             self.finished = True
             return self
@@ -1266,10 +1340,12 @@ class OpenEngineRequestOutput:
                     )
                 ) from error
             except BaseException:
-                # Cancelled while starting: the calls already sent must not keep running.
+                # Cancelled while starting: the calls already sent must not keep running,
+                # and reading again must not send the request a second time.
+                self.finished = True
                 self._cancel_calls()
                 raise
-        assert self._queue is not None
+        assert self._queue is not None and self._assembler is not None
         if self._session is not None:
             return await self._next_postprocessed()
         while True:
@@ -1282,13 +1358,7 @@ class OpenEngineRequestOutput:
                     self._assembler.finish_cancelled()
                     self.finished = True
                     return self
-                raise self._fail(
-                    OpenEngineServeError(
-                        f"the OpenEngine engine {self._engine_name!r} ended a call before the "
-                        "request finished",
-                        HTTPStatus.INTERNAL_SERVER_ERROR,
-                    )
-                )
+                raise self._fail(_ended_early(self._engine_name))
             if isinstance(item, BaseException) and self._aborted:
                 # The request was aborted; a call failing after that ends it as cancelled.
                 self._open_calls -= 1
@@ -1325,6 +1395,13 @@ class OpenEngineRequestOutput:
                 # the calls aborts them on the engine; calls it ended are not affected.
                 self._cancel_calls()
             return self
+
+
+def _ended_early(engine_name: str) -> OpenEngineServeError:
+    return OpenEngineServeError(
+        f"the OpenEngine engine {engine_name!r} ended a call before the request finished",
+        HTTPStatus.INTERNAL_SERVER_ERROR,
+    )
 
 
 def _no_calls(engine_name: str) -> OpenEngineServeError:
@@ -1442,7 +1519,15 @@ def adapt_server(server: Any, facade: OpenEngineLLM) -> None:
             if isinstance(route, APIRoute) and route.path == path and method in route.methods:
                 include_in_schema = include_in_schema or route.include_in_schema
                 routes.remove(route)
-        app.add_api_route(path, endpoint, methods=[method], include_in_schema=include_in_schema)
+        # The handlers build their own responses: FastAPI is not to derive a
+        # response model from their return annotations.
+        app.add_api_route(
+            path,
+            endpoint,
+            methods=[method],
+            include_in_schema=include_in_schema,
+            response_model=None,
+        )
 
     def unsupported_endpoint(path: str) -> Callable[[], Any]:
         async def unsupported() -> JSONResponse:
