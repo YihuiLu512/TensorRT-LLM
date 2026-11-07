@@ -7,8 +7,11 @@
 tokens when not streaming, ``decode_incrementally`` when streaming. Its engine
 matches stop strings on their token ids and drops those tokens unless they are
 kept (``GenerationResultBase._handle_sequence``); the text is then cut at the
-first occurrence of the first stop string, in request order, that it holds.
-:func:`_llm_output` restates those steps.
+first occurrence of the first stop string, in request order, that it holds,
+whatever ended the output. :func:`_llm_output` restates those steps.
+``min_tokens`` only bans single-token stop strings' tokens until the output is
+that long, so for token ids holding no such token that early, ``LLM``'s output
+does not depend on it.
 
 The cases are built from pieces of text, so they contain the multi-byte
 characters, special tokens and whitespace runs real outputs do.
@@ -92,26 +95,43 @@ def _cases(tokenizer):
 
 
 def _llm_output(tokenizer, token_ids, stop, include, skip):
-    """The tokens, text and stop string ``LLM`` ends with for an engine that generated ``token_ids``."""
-    kept, reason = list(token_ids), None
+    """What ``LLM`` ends with for an engine that generated ``token_ids``.
+
+    Returns the tokens it keeps, its text, its ``stop_reason`` and the stop
+    string its engine matched on token ids (None when the engine did not stop).
+    """
+    kept, engine_stop = list(token_ids), None
     words = [(s, tokenizer.encode(s, add_special_tokens=False)) for s in stop]
     for end in range(1, len(token_ids) + 1):
         for stop_str, word in words:
             if word and token_ids[max(0, end - len(word)) : end] == word:
-                kept, reason = (
+                kept, engine_stop = (
                     token_ids[:end] if include else token_ids[: end - len(word)],
                     stop_str,
                 )
                 break
-        if reason is not None:
+        if engine_stop is not None:
             break
-    text = tokenizer.decode(kept, skip_special_tokens=skip)
+    text, reason = tokenizer.decode(kept, skip_special_tokens=skip), engine_stop
     for stop_str in stop:
         position = text.find(stop_str)
         if position >= 0:
             text, reason = text[: position + (len(stop_str) if include else 0)], stop_str
             break
-    return kept, text, reason
+    return kept, text, reason, engine_stop
+
+
+def _banned_before(tokenizer, token_ids, stop, min_tokens):
+    """Whether a single-token stop string's token comes before ``min_tokens``.
+
+    ``LLM`` could not have generated such token ids.
+    """
+    banned = set()
+    for stop_str in stop:
+        word = tokenizer.encode(stop_str, add_special_tokens=False)
+        if len(word) == 1:
+            banned.add(word[0])
+    return any(token_id in banned for token_id in token_ids[:min_tokens])
 
 
 def _assembled_text(tokenizer, params, token_ids, chunks, finished, *, engine_stop_texts):
@@ -164,40 +184,50 @@ def test_text_without_stop_strings(tokenizer, skip_special_tokens):
 
 
 def test_engine_matched_stop_strings(tokenizer):
-    """The engine (LLM) sends the tokens it kept and the stop string; the text is LLM's."""
+    """The engine (LLM's) sends the tokens it kept and how it stopped; the text is LLM's."""
     for token_ids, stop, include, skip, chunks in _cases(tokenizer):
-        kept, text, reason = _llm_output(tokenizer, token_ids, stop, include, skip)
+        kept, text, reason, engine_stop = _llm_output(tokenizer, token_ids, stop, include, skip)
         params = SamplingParams(
             stop=stop, include_stop_str_in_output=include, skip_special_tokens=skip
         )
         finished = OutputFinished(
-            output_index=0, reason="stop" if reason else "length", stop_text=reason
+            output_index=0, reason="stop" if engine_stop else "length", stop_text=engine_stop
         )
 
         output = _assembled_text(tokenizer, params, kept, chunks, finished, engine_stop_texts=True)
 
-        assert (output.text, output.token_ids, output.stop_reason) == (text, kept, reason), (
-            token_ids,
-            stop,
-            include,
-        )
+        assert (output.text, output.token_ids, output.stop_reason, output.finish_reason) == (
+            text,
+            kept,
+            reason,
+            "stop" if reason else "length",
+        ), (token_ids, stop, include)
 
 
 def test_serving_side_stop_strings(tokenizer):
-    """With one stop string, the serving side ends where LLM does and keeps the same tokens.
+    """With one stop string, the serving side ends with LLM's text and stop string.
 
-    With several, LLM's non-streaming path picks the first one in request order
-    that the text holds, while its streaming path, like this one, ends at the
-    match that ends first; those cases are not compared.
+    With several, LLM picks the first one in request order that the text holds,
+    while this one ends at the match that ends first (and so does LLM's
+    streaming path when the matches complete in different steps); those cases
+    are not compared. ``min_tokens`` is drawn too, for token ids LLM could have
+    generated with it.
     """
     compared = 0
+    rng = random.Random(7)
     for token_ids, stop, include, skip, chunks in _cases(tokenizer):
-        if len(stop) != 1:
+        min_tokens = rng.choice([None, 2, 5])
+        if len(stop) != 1 or (
+            min_tokens and _banned_before(tokenizer, token_ids, stop, min_tokens)
+        ):
             continue
         compared += 1
-        kept, text, reason = _llm_output(tokenizer, token_ids, stop, include, skip)
+        kept, text, reason, engine_stop = _llm_output(tokenizer, token_ids, stop, include, skip)
         params = SamplingParams(
-            stop=stop, include_stop_str_in_output=include, skip_special_tokens=skip
+            stop=stop,
+            include_stop_str_in_output=include,
+            skip_special_tokens=skip,
+            min_tokens=min_tokens,
         )
 
         output = _assembled_text(
@@ -210,8 +240,14 @@ def test_serving_side_stop_strings(tokenizer):
         )
 
         assert (output.text, output.stop_reason) == (text, reason), (token_ids, stop, include)
-        if reason is not None and output.token_ids == kept:
-            continue
-        # A match found only in the text keeps the tokens up to the one that completed it.
-        assert reason is None or len(output.token_ids) <= len(token_ids)
+        if reason is None:
+            assert output.token_ids == token_ids
+        elif engine_stop is not None:
+            assert output.token_ids == kept
+        else:
+            # LLM's engine would have gone on: the output ends with the token whose text completed the match.
+            count = len(output.token_ids)
+            assert output.token_ids == token_ids[:count]
+            assert reason in tokenizer.decode(token_ids[:count], skip_special_tokens=skip)
+            assert reason not in tokenizer.decode(token_ids[: count - 1], skip_special_tokens=skip)
     assert compared > _CASES // 4

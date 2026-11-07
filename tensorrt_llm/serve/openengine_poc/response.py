@@ -10,9 +10,11 @@ token ids: the text, ``token_ids``, ``logprobs``, ``prompt_logprobs``,
 Who matches stop strings decides how the output ends:
 
 - the engine (``engine_stop_texts``: the request's stop strings were sent as
-  ``EngineRequest.stop_texts``): its tokens are kept as they come, and when it
-  reports the stop string, the text is cut as ``LLM`` cuts it. The usage the
-  engine sends with its last event is complete;
+  ``EngineRequest.stop_texts``): its tokens are kept as they come, and when the
+  output finishes, its text is cut as ``LLM`` cuts it, at the first stop string
+  in request order that it holds (``stop_reason`` is then that string, and
+  ``finish_reason`` is ``stop``). The usage the engine sends with its last
+  event is complete;
 - the serving side (the fallback): each output's
   :class:`~tensorrt_llm.serve.detokenize.IncrementalDetokenizer` matches the
   stop strings and ends the output at the first match; the output's tokens
@@ -55,7 +57,7 @@ def create_response_assembler(
 
     Raises:
         TypeError: The outputs need the tokenizer and it is not a
-            ``TransformersTokenizer``.
+            ``TransformersTokenizer``, or a stop string is not a ``str``.
         ValueError: A stop string is empty; reported as HTTP 400.
     """
     return OpenEngineResponseAssembler(
@@ -128,7 +130,11 @@ class OpenEngineResponseAssembler:
         return all(output.finish_reason is not None for output in self.outputs)
 
     def apply(self, event: EngineEvent) -> bool:
-        """Apply one event; return whether any output changed."""
+        """Apply one event; return whether an output's text, tokens, logprobs or finish changed.
+
+        A ``PromptInfo`` event sets ``prompt_logprobs`` and returns False: it
+        carries nothing to send by itself.
+        """
         if isinstance(event, TokenDelta):
             return self._apply_tokens(event)
         if isinstance(event, OutputFinished):
@@ -143,8 +149,9 @@ class OpenEngineResponseAssembler:
     def finish_cancelled(self) -> None:
         """End the outputs that have not finished, after the serving side cancelled the request.
 
-        As with ``LLM``, they end with ``cancelled``, unless the text a
-        detokenizer still holds completes a stop string.
+        As with ``LLM``, they end with ``cancelled``, unless the serving side
+        matches the stop strings and the text a detokenizer still holds
+        completes one.
         """
         self._start_step()
         for output, detokenizer in zip(self.outputs, self._detokenizers):
@@ -153,7 +160,7 @@ class OpenEngineResponseAssembler:
             if detokenizer is not None:
                 delta = detokenizer.finish()
                 output.text += delta.text
-                if delta.stop is not None:
+                if delta.stop is not None and not self._engine_stop:
                     self._end_at_stop(output, delta.stop)
                     continue
             output.finish_reason = "cancelled"
@@ -189,7 +196,7 @@ class OpenEngineResponseAssembler:
         self._start_step()
         detokenizer = self._detokenizers[event.output_index]
         if detokenizer is not None:
-            delta = detokenizer.finish(stop_text=event.stop_text)
+            delta = detokenizer.finish()
             output.text += delta.text
             if delta.stop is not None:
                 self._end_at_stop(output, delta.stop)
@@ -202,21 +209,19 @@ class OpenEngineResponseAssembler:
         return True
 
     def _end_at_stop(self, output: CompletionOutput, stop: Any) -> None:
-        """End ``output`` at a stop string the serving side matched.
+        """End ``output`` at a stop string its detokenizer found.
 
         The output keeps the tokens up to the one that completed the match,
         without the stop string's own tokens when they matched and are not to
-        be kept; its logprobs are cut at the same place.
+        be kept; its logprobs are cut at the same place. A match the
+        detokenizer reports at :meth:`~IncrementalDetokenizer.finish` with
+        ``engine_stop`` ends at the last token, so the engine's tokens stay.
         """
         keep = stop.token_index + 1
         if not self._include_stop:
             keep -= stop.num_stop_tokens
-        if keep < len(output.token_ids):
-            del output.token_ids[keep:]
-            output._last_token_ids_len = min(output._last_token_ids_len, keep)
-        if keep < len(output.logprobs):
-            del output.logprobs[keep:]
-            output._last_logprobs_len = min(output._last_logprobs_len, keep)
+        del output.token_ids[keep:]
+        del output.logprobs[keep:]
         output.finish_reason = "stop"
         output.stop_reason = stop.stop_str
 

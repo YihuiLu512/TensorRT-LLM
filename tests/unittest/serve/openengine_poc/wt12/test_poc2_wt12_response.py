@@ -5,9 +5,10 @@
 import asyncio
 
 import pytest
-from tokenizers import Tokenizer
+from tokenizers import Regex, Tokenizer
 from tokenizers.decoders import ByteFallback, Fuse, Sequence
 from tokenizers.models import WordLevel
+from tokenizers.pre_tokenizers import Split
 from transformers import PreTrainedTokenizerFast
 
 from tensorrt_llm.executor.result import Logprob
@@ -48,15 +49,33 @@ _VOCAB = {
 C2, BB, HE, LLO, CLOSE, ANS, GT, WORLD, A, B, C, _, EOS, NEWLINE, C_DOT = range(15)
 
 
-@pytest.fixture(scope="module")
-def tokenizer() -> TransformersTokenizer:
-    """Word-level pieces that decode by concatenation; ``<0xC2>`` ``<0xBB>`` make up ``»``."""
+def _word_level(*, split: bool) -> TransformersTokenizer:
     backend = Tokenizer(WordLevel(_VOCAB, unk_token="<unk>"))
     backend.decoder = Sequence([ByteFallback(), Fuse()])
     backend.add_special_tokens(["</s>"])
+    if split:
+        backend.pre_tokenizer = Split(
+            Regex(r"</|ans|>|He|llo| world|c\.|a|b|c|\n"), behavior="isolated"
+        )
     return TransformersTokenizer(
         PreTrainedTokenizerFast(tokenizer_object=backend, eos_token="</s>")
     )
+
+
+@pytest.fixture(scope="module")
+def tokenizer() -> TransformersTokenizer:
+    """Word-level pieces that decode by concatenation; ``<0xC2>`` ``<0xBB>`` make up ``»``.
+
+    A stop string encodes to one token when it is one piece, else to ``<unk>``,
+    so only single-piece stop strings match on their token ids.
+    """
+    return _word_level(split=False)
+
+
+@pytest.fixture(scope="module")
+def split_tokenizer() -> TransformersTokenizer:
+    """The same vocabulary, encoding text piece by piece: ``</ans>`` is ``</`` ``ans`` ``>``."""
+    return _word_level(split=True)
 
 
 def _usage(cached: int | None = 3, completion: int = 0) -> Usage:
@@ -174,6 +193,38 @@ def test_engine_stop_does_not_end_the_output_early(tokenizer):
     assert assembler.cached_tokens == 5
 
 
+def test_engine_stop_cuts_the_text_whatever_ended_the_output(tokenizer):
+    """As LLM: an output that ends by length with a stop string in its text ends there, with ``stop``."""
+    params = SamplingParams(stop=["b"])
+    steps = [
+        TokenDelta(output_index=0, token_ids=(A, B, C)),
+        OutputFinished(output_index=0, reason="length", usage=_usage()),
+    ]
+
+    assembler, diffs = _assemble(tokenizer, params, steps, engine_stop_texts=True)
+
+    output = assembler.outputs[0]
+    assert (output.text, output.finish_reason, output.stop_reason) == ("a", "stop", "b")
+    assert "".join(diff[0] for diff in diffs) == "a"
+    assert output.token_ids == [A, B, C]
+
+
+def test_engine_stop_cancelled_by_the_serving_side(tokenizer):
+    """A cancelled output stays cancelled; its text is cut at the stop string all the same."""
+    assembler = response.create_response_assembler(
+        sampling_params=SamplingParams(stop=["b"]),
+        tokenizer=tokenizer,
+        num_outputs=1,
+        engine_stop_texts=True,
+    )
+    assembler.apply(TokenDelta(output_index=0, token_ids=(A, B, C)))
+
+    assembler.finish_cancelled()
+
+    output = assembler.outputs[0]
+    assert (output.text, output.finish_reason, output.stop_reason) == ("a", "cancelled", None)
+
+
 @pytest.mark.parametrize(
     "finished, expected",
     [
@@ -261,36 +312,71 @@ def test_fallback_stop_string_of_special_tokens(tokenizer, include, expected_tok
     assert [list(entry) for entry in output.logprobs] == [[t] for t in expected_tokens]
 
 
-def test_fallback_stop_spanning_events_trims_earlier_tokens(tokenizer):
-    """The stop tokens may have arrived in earlier events; the diff views stay consistent."""
-    tokenizer_stop = "</ans>"
-    params = SamplingParams(stop=[tokenizer_stop])
+def test_fallback_stop_spanning_events_trims_earlier_tokens(split_tokenizer):
+    """The stop tokens may have arrived in earlier events; they are all left out."""
+    params = SamplingParams(stop=["</ans>"], logprobs=0)
+    tokens = (HE, CLOSE, ANS, GT)
     steps = [
-        TokenDelta(output_index=0, token_ids=(HE,)),
-        TokenDelta(output_index=0, token_ids=(CLOSE,)),
-        TokenDelta(output_index=0, token_ids=(ANS, GT)),
-        OutputFinished(output_index=0, reason="length", usage=_usage()),
-    ]
+        TokenDelta(
+            output_index=0,
+            token_ids=(token_id,),
+            logprobs=(TokenLogprob(token_id=token_id, logprob=-0.5, rank=1),),
+        )
+        for token_id in tokens
+    ] + [OutputFinished(output_index=0, reason="length", usage=_usage())]
 
-    assembler, diffs = _assemble(tokenizer, params, steps)
+    assembler, diffs = _assemble(split_tokenizer, params, steps)
 
     output = assembler.outputs[0]
     assert "".join(diff[0] for diff in diffs) == output.text == "He"
-    assert output.token_ids == [HE, CLOSE, ANS, GT]
-    assert output.token_ids_diff == [ANS, GT]
+    assert (output.token_ids, output.stop_reason) == ([HE], "</ans>")
+    assert len(output.logprobs) == 1
+    assert output.token_ids_diff == []
 
 
-def test_fallback_min_tokens(tokenizer):
-    params = SamplingParams(stop=["b"], min_tokens=3)
+@pytest.mark.parametrize(
+    "last, expected_diffs, expected_tokens",
+    [
+        pytest.param(B, ["a", ""], [A], id="stop_tokens_follow"),
+        pytest.param(C, ["a", "\nc"], [A, EOS, NEWLINE, C], id="they_do_not"),
+    ],
+)
+def test_fallback_holds_back_tokens_that_may_start_stop_tokens(
+    split_tokenizer, last, expected_diffs, expected_tokens
+):
+    """``</s>`` is left out of the text, so only the token ids show that the newline may be a stop's."""
+    params = SamplingParams(stop=["</s>\nb"])
     steps = [
-        TokenDelta(output_index=0, token_ids=(A, B, C, B, A)),
+        TokenDelta(output_index=0, token_ids=(A, EOS, NEWLINE)),
+        TokenDelta(output_index=0, token_ids=(last,)),
         OutputFinished(output_index=0, reason="length", usage=_usage()),
     ]
 
-    assembler, _ = _assemble(tokenizer, params, steps)
+    assembler, diffs = _assemble(split_tokenizer, params, steps)
+
+    assert ["".join(diff) for diff in diffs][:2] == expected_diffs
+    assert assembler.outputs[0].token_ids == expected_tokens
+
+
+@pytest.mark.parametrize(
+    "stop, tokens, expected",
+    [
+        pytest.param(["b"], (A, B, C, B, A), ("abc", [A, B, C], "b"), id="single_token"),
+        pytest.param(["</ans>"], (HE, CLOSE, ANS, GT, A), ("He", [HE], "</ans>"), id="multi_token"),
+    ],
+)
+def test_fallback_min_tokens(split_tokenizer, stop, tokens, expected):
+    """As LLM: only a single-token stop string waits for ``min_tokens``."""
+    params = SamplingParams(stop=stop, min_tokens=3)
+    steps = [
+        TokenDelta(output_index=0, token_ids=tokens),
+        OutputFinished(output_index=0, reason="length", usage=_usage()),
+    ]
+
+    assembler, _ = _assemble(split_tokenizer, params, steps)
 
     output = assembler.outputs[0]
-    assert (output.text, output.token_ids, output.stop_reason) == ("abc", [A, B, C], "b")
+    assert (output.text, output.token_ids, output.stop_reason) == expected
 
 
 def test_fallback_without_detokenizing_matches_token_ids(tokenizer):

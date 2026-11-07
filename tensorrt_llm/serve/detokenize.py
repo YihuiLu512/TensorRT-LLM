@@ -47,8 +47,10 @@ class StopMatch:
         stop_str: The stop string that matched.
         token_index: Index, within this output, of the token that completed
             the match. For a match found in the text, that is the token that
-            released the text completing it (see :class:`IncrementalDetokenizer`).
-            Tokens after it were generated past the stop.
+            released the text completing it (see :class:`IncrementalDetokenizer`);
+            for the cut :meth:`IncrementalDetokenizer.finish` makes with
+            ``engine_stop``, the last token. Tokens after it were generated
+            past the stop.
         num_stop_tokens: For a match found as the stop string's own token ids
             (the way ``LLM`` matches stop strings), the number of those ids,
             which end at ``token_index``; 0 for a match found in the text.
@@ -79,14 +81,16 @@ class IncrementalDetokenizer:
 
     Use one instance per output sequence. The text released over all calls is
     the text ``LLM`` gives for the same token ids: the tokenizer's ``decode``
-    of the output tokens, cut at the stop string.
+    of the output tokens, cut at the stop string (except where noted below
+    for several stop strings).
 
-    **Who matches stop strings.** With ``engine_stop`` the engine matches them,
-    and :meth:`finish` takes the stop string the engine reported. The text is
-    then cut as ``LLM`` cuts it: at the first occurrence of that stop string,
-    keeping it when ``include_stop_str_in_output`` is set. Until then, text
-    that could start a stop string is held back, and once the text holds a
-    complete stop string nothing more is released before :meth:`finish`.
+    **Who matches stop strings.** With ``engine_stop`` the engine matches them
+    and ends the output. :meth:`finish` then cuts the text as ``LLM`` does,
+    whatever ended the output: at the first occurrence of the first stop
+    string, in request order, that the text holds, keeping it when
+    ``include_stop_str_in_output`` is set. Until then, text that could start a
+    stop string is held back, and once the text holds a complete stop string
+    nothing more is released before :meth:`finish`.
 
     Without ``engine_stop`` this class matches them and ends the output at the
     first match, found in either of the two ways ``LLM`` finds one:
@@ -99,10 +103,15 @@ class IncrementalDetokenizer:
     - the decoded text contains the stop string. When several stop strings
       occur, the one whose match ends first wins, and among those the longest;
       the result therefore does not depend on how the token ids are split
-      across calls.
+      across calls. ``LLM`` instead takes the first stop string, in request
+      order, that its text holds: when not streaming, that text is the whole
+      output, so a later match of an earlier stop string can win there.
 
-    A match completed while the output has fewer than ``min_tokens`` tokens
-    does not count. Unless the stop string is to be kept in the output, text
+    As with ``LLM``, ``min_tokens`` only keeps a stop string made of a single
+    token from ending the output: a match completed by such a token generated
+    while the output had fewer than ``min_tokens`` tokens does not count
+    (``LLM``'s sampler bans those tokens until then). Unless the stop string is
+    to be kept in the output, text
     that could be the start of a stop string is held back until later text
     rules the match in or out, or until :meth:`finish` releases it.
 
@@ -128,8 +137,8 @@ class IncrementalDetokenizer:
         skip_special_tokens: Leave special tokens out of the decoded text.
         spaces_between_special_tokens: Passed to ``trtllm_decode_incrementally``;
             ``DecodeStream`` ignores it.
-        min_tokens: Matches completed before the output has this many tokens
-            do not count.
+        min_tokens: A single-token stop string's token generated before the
+            output has this many tokens does not end it; see above.
         engine_stop: The engine matches the stop strings; see above.
         detokenize: Decode text. Without it no text is released, and stop
             strings are only matched on their token ids, as ``LLM`` does when
@@ -158,7 +167,7 @@ class IncrementalDetokenizer:
                 f"tokenizer must be a TransformersTokenizer, got {type(tokenizer).__name__}"
             )
         self._tokenizer = tokenizer
-        # trtllm_decode_incrementally also requires this attribute for its HF backend.
+        # DecodeStream works on the Hugging Face tokenizers backend in this attribute.
         self._use_decode_stream = DecodeStream is not None and hasattr(
             tokenizer.tokenizer, "_tokenizer"
         )
@@ -172,12 +181,18 @@ class IncrementalDetokenizer:
         self._stop_strs = stop_strs
         self._matcher = _StopMatcher(stop_strs) if stop_strs and detokenize else None
         # The token ids of each stop string, for matching the way LLM's engine does.
-        self._stop_words: list[tuple[str, tuple[int, ...]]] = []
+        words: list[tuple[str, tuple[int, ...]]] = []
         if not engine_stop:
             for stop_str in stop_strs:
                 token_ids = tuple(tokenizer.encode(stop_str, add_special_tokens=False))
                 if token_ids:
-                    self._stop_words.append((stop_str, token_ids))
+                    words.append((stop_str, token_ids))
+        self._token_matcher = _TokenStopMatcher(words) if words else None
+        # Tokens LLM's sampler bans until the output has min_tokens tokens.
+        self._banned_before_min = {ids[0] for _, ids in words if len(ids) == 1}
+        # Only text completing a stop string that ends in whitespace can be held back
+        # by trtllm_decode_incrementally (see _whitespace_completing_a_stop).
+        self._stops_end_in_space = any(stop_str[-1].isspace() for stop_str in stop_strs)
         self._ids: list[int] = []
         # Text length (released and held) after each token; index -1 - k is
         # the length before the last k tokens.
@@ -233,22 +248,21 @@ class IncrementalDetokenizer:
                 break
         return DetokenizeDelta("".join(self._delta), self._stop_match if self._finished else None)
 
-    def finish(self, stop_text: str | None = None) -> DetokenizeDelta:
+    def finish(self) -> DetokenizeDelta:
         """Ends the output and releases all text still held back.
 
-        Call it when the engine reports that the output finished. Text that the
-        tokenizer was still holding (for example, an incomplete multi-byte
-        character) is decoded first; it counts as text of the last token.
-
-        Args:
-            stop_text: With ``engine_stop``, the stop string the engine
-                reported; the text is cut at its first occurrence. Ignored
-                otherwise.
+        Call it when the output finished, or when the serving side gave up on
+        it. Text that the tokenizer was still holding (for example, an
+        incomplete multi-byte character) is decoded first; it counts as text of
+        the last token. With ``engine_stop``, the text is then cut as ``LLM``
+        cuts it (see the class description).
 
         Returns:
             The remaining text, with the stop match if that text completed one
-            (only without ``engine_stop``). Once the output has ended, the delta
-            is empty and carries no match.
+            or, with ``engine_stop``, if the text was cut at a stop string; such
+            a match has ``num_stop_tokens`` 0 and ``token_index`` of the last
+            token. Once the output has ended, the delta is empty and carries no
+            match.
         """
         if self._finished:
             return DetokenizeDelta("")
@@ -256,12 +270,14 @@ class IncrementalDetokenizer:
         new_text = self._decode([], flush=True) if self._num_tokens and self._detokenize else ""
         if self._engine_stop:
             self._unreleased += new_text
-            end = self._released_len + len(self._unreleased)
-            if stop_text:
-                full = self.text + self._unreleased
-                position = full.find(stop_text)
+            full = self.text + self._unreleased
+            end = len(full)
+            for stop_str in self._stop_strs:
+                position = full.find(stop_str)
                 if position >= 0:
-                    end = position + (len(stop_text) if self._include_stop_str_in_output else 0)
+                    end = position + (len(stop_str) if self._include_stop_str_in_output else 0)
+                    self._stop_match = StopMatch(stop_str, self._num_tokens - 1)
+                    break
             self._release_to(end)
         else:
             self._consume_text(new_text, self._num_tokens - 1)
@@ -277,8 +293,9 @@ class IncrementalDetokenizer:
         index = self._num_tokens
         self._num_tokens += 1
         self._ids.append(token_id)
-        word = self._token_level_match() if self._counts(index) else None
-        if word is not None:
+        counts = index >= self._min_tokens or token_id not in self._banned_before_min
+        word = self._token_matcher.feed(token_id) if self._token_matcher is not None else None
+        if word is not None and counts:
             stop_str, num_stop_tokens = word
             end, stop_str = self._text_as_llm(stop_str, num_stop_tokens)
             self._end_at(StopMatch(stop_str, index, num_stop_tokens), end)
@@ -286,9 +303,9 @@ class IncrementalDetokenizer:
         if not self._detokenize:
             return
         new_text = self._decode([token_id], flush=False)
-        if not new_text and self._counts(index):
+        if not new_text and counts:
             new_text = self._whitespace_completing_a_stop()
-        self._consume_text(new_text, index)
+        self._consume_text(new_text, index, counts=counts)
 
     def _text_as_llm(self, stop_str: str, num_stop_tokens: int) -> tuple[int, str]:
         """Where ``LLM`` ends the text after matching ``stop_str`` on its token ids, and the stop it reports.
@@ -310,8 +327,12 @@ class IncrementalDetokenizer:
         )
         released = self.text
         if not full.startswith(released):
-            # The incremental decode disagrees with the full one; keep what was released.
-            return self._released_len, stop_str
+            # The incremental decode disagrees with the full one: cut the incremental text.
+            full = released + self._unreleased
+            if self._include_stop_str_in_output:
+                full += self._decode([self._ids[-1]], flush=True)
+            else:
+                full = full[: max(self._token_ends[-num_stop_tokens], len(released))]
         for candidate in self._stop_strs:
             position = full.find(candidate)
             if position >= 0:
@@ -322,25 +343,11 @@ class IncrementalDetokenizer:
         self._unreleased = full[len(released) :]
         return len(full), stop_str
 
-    def _counts(self, index: int) -> bool:
-        """Whether a match completed by token ``index`` counts.
+    def _consume_text(self, new_text: str, index: int, *, counts: bool = True) -> None:
+        """Adds text of token ``index`` and releases what is safe.
 
-        With ``engine_stop`` a match only stops the release of text, so any match does.
+        Without ``counts``, a stop string the text completes does not count.
         """
-        return self._engine_stop or index + 1 >= self._min_tokens
-
-    def _token_level_match(self) -> tuple[str, int] | None:
-        """The first stop string, in request order, whose token ids end the output."""
-        for stop_str, token_ids in self._stop_words:
-            if (
-                len(token_ids) <= len(self._ids)
-                and tuple(self._ids[-len(token_ids) :]) == token_ids
-            ):
-                return stop_str, len(token_ids)
-        return None
-
-    def _consume_text(self, new_text: str, index: int) -> None:
-        """Adds text of token ``index`` and releases what is safe."""
         before = self._released_len + len(self._unreleased)
         self._unreleased += new_text
         if index >= 0:
@@ -348,7 +355,7 @@ class IncrementalDetokenizer:
         if self._frozen:
             return
         if new_text and self._matcher is not None:
-            match = self._matcher.feed(new_text, counts=self._counts(index))
+            match = self._matcher.feed(new_text, counts=counts)
             if match is not None:
                 end_in_new_text, stop_str = match
                 if self._engine_stop:
@@ -363,26 +370,13 @@ class IncrementalDetokenizer:
         end = self._released_len + len(self._unreleased)
         if self._matcher is not None and not self._include_stop_str_in_output:
             end -= self._matcher.held_length
-        held_tokens = self._held_tokens()
-        if held_tokens:
-            end = min(end, self._token_ends[-1 - held_tokens])
+        if self._token_matcher is not None and not self._include_stop_str_in_output:
+            # The text of the latest tokens that could start a stop string's token
+            # ids: if the rest of them follows, LLM drops these tokens, text included.
+            held_tokens = self._token_matcher.held_length
+            if held_tokens:
+                end = min(end, self._token_ends[-1 - held_tokens])
         self._release_to(end)
-
-    def _held_tokens(self) -> int:
-        """How many of the latest tokens could start a stop string's token ids.
-
-        Their text is held back: if the stop tokens follow, ``LLM`` drops them
-        from the output, text included.
-        """
-        if self._include_stop_str_in_output:
-            return 0
-        held = 0
-        for _, token_ids in self._stop_words:
-            for length in range(min(len(token_ids) - 1, len(self._ids)), held, -1):
-                if tuple(self._ids[-length:]) == token_ids[:length]:
-                    held = length
-                    break
-        return held
 
     def _end_at(self, match: StopMatch, end: int) -> None:
         self._release_to(end)
@@ -431,7 +425,12 @@ class IncrementalDetokenizer:
         whitespace. When that text completes a stop string, it is released
         now; the decoder state then continues from the flushed state.
         """
-        if self._use_decode_stream or self._matcher is None or self._frozen:
+        if (
+            self._use_decode_stream
+            or self._matcher is None
+            or self._frozen
+            or not self._stops_end_in_space
+        ):
             return ""
         states = copy.deepcopy(self._decode_states)
         text, flushed_states = self._tokenizer.trtllm_decode_incrementally(
@@ -501,7 +500,46 @@ class _StopMatcher:
         return None
 
 
-def _kmp_failure_table(pattern: str) -> list[int]:
+class _TokenStopMatcher:
+    """Finds stop strings' token ids at the end of a stream of token ids.
+
+    Keeps, for every stop string, the length of the longest suffix of the ids
+    seen so far that is a prefix of its token ids (Knuth-Morris-Pratt), so each
+    id costs one amortized step per stop string.
+    """
+
+    def __init__(self, words: list[tuple[str, tuple[int, ...]]]) -> None:
+        self._words = words
+        self._failure = [_kmp_failure_table(token_ids) for _, token_ids in words]
+        self._matched = [0] * len(words)
+
+    @property
+    def held_length(self) -> int:
+        """Length of the longest suffix of the ids that is a proper prefix of some stop string's ids."""
+        return max(self._matched, default=0)
+
+    def feed(self, token_id: int) -> tuple[str, int] | None:
+        """Adds one id.
+
+        Returns ``(stop_str, number of its ids)`` for the first stop string, in
+        request order, whose ids now end the stream, or None.
+        """
+        found = None
+        for index, (stop_str, token_ids) in enumerate(self._words):
+            matched = self._matched[index]
+            while matched and token_id != token_ids[matched]:
+                matched = self._failure[index][matched - 1]
+            if token_id == token_ids[matched]:
+                matched += 1
+            if matched == len(token_ids):
+                if found is None:
+                    found = (stop_str, matched)
+                matched = self._failure[index][matched - 1]
+            self._matched[index] = matched
+        return found
+
+
+def _kmp_failure_table(pattern: Sequence[Any]) -> list[int]:
     """``table[i]``: length of the longest proper prefix of ``pattern[:i + 1]`` that is its suffix."""
     table = [0] * len(pattern)
     matched = 0
