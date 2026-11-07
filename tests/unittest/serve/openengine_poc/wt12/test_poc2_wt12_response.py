@@ -209,6 +209,20 @@ def test_engine_stop_cuts_the_text_whatever_ended_the_output(tokenizer):
     assert output.token_ids == [A, B, C]
 
 
+def test_engine_stop_cancelled_by_the_engine(tokenizer):
+    """As LLM, a cancelled output gets no stop_reason from its text."""
+    steps = [
+        TokenDelta(output_index=0, token_ids=(A, B, C)),
+        OutputFinished(output_index=0, reason="cancelled", usage=_usage()),
+    ]
+
+    assembler, _ = _assemble(tokenizer, SamplingParams(stop=["b"]), steps, engine_stop_texts=True)
+
+    output = assembler.outputs[0]
+    assert (output.text, output.finish_reason, output.stop_reason) == ("a", "cancelled", None)
+    assert output.token_ids == [A, B, C]
+
+
 def test_engine_stop_cancelled_by_the_serving_side(tokenizer):
     """A cancelled output stays cancelled; its text is cut at the stop string all the same."""
     assembler = response.create_response_assembler(
@@ -332,6 +346,79 @@ def test_fallback_stop_spanning_events_trims_earlier_tokens(split_tokenizer):
     assert (output.token_ids, output.stop_reason) == ([HE], "</ans>")
     assert len(output.logprobs) == 1
     assert output.token_ids_diff == []
+
+
+@pytest.mark.parametrize(
+    "last, expected_tokens",
+    [
+        pytest.param(GT, [HE], id="stop_completed"),
+        pytest.param(WORLD, [HE, CLOSE, ANS, WORLD], id="not"),
+    ],
+)
+def test_fallback_streams_no_token_it_takes_back(split_tokenizer, last, expected_tokens):
+    """Token ids and logprobs that may start a stop string wait, as their text does, until it is decided."""
+    assembler = response.create_response_assembler(
+        sampling_params=SamplingParams(stop=["</ans>"], logprobs=0),
+        tokenizer=split_tokenizer,
+        num_outputs=1,
+    )
+    streamed_ids, streamed_logprobs = [], []
+    for token_id in (HE, CLOSE, ANS, last):
+        assembler.apply(
+            TokenDelta(
+                output_index=0,
+                token_ids=(token_id,),
+                logprobs=(TokenLogprob(token_id=token_id, logprob=-0.5, rank=1),),
+            )
+        )
+        output = assembler.outputs[0]
+        streamed_ids += output.token_ids_diff
+        streamed_logprobs += output.logprobs_diff
+        if output.finish_reason is None:
+            assert len(output.logprobs) == len(output.token_ids)
+    if assembler.outputs[0].finish_reason is None:
+        assembler.apply(OutputFinished(output_index=0, reason="length", usage=_usage()))
+        streamed_ids += assembler.outputs[0].token_ids_diff
+        streamed_logprobs += assembler.outputs[0].logprobs_diff
+
+    assert streamed_ids == assembler.outputs[0].token_ids == expected_tokens
+    assert len(streamed_logprobs) == len(expected_tokens)
+
+
+@pytest.mark.parametrize(
+    "stop, expected",
+    [
+        pytest.param(["ab", "b"], ("c", [C], "ab"), id="longer_first"),
+        pytest.param(["b", "ab"], ("ca", [C, A], "b"), id="shorter_first"),
+    ],
+)
+def test_fallback_token_id_matches_on_one_token_taken_in_request_order(
+    split_tokenizer, stop, expected
+):
+    """As LLM's engine: of the stop strings whose token ids end on the same token, the first requested wins."""
+    steps = [
+        TokenDelta(output_index=0, token_ids=(C, A, B)),
+        OutputFinished(output_index=0, reason="length", usage=_usage()),
+    ]
+
+    assembler, _ = _assemble(split_tokenizer, SamplingParams(stop=stop), steps)
+
+    output = assembler.outputs[0]
+    assert (output.text, output.token_ids, output.stop_reason) == expected
+
+
+def test_fallback_without_detokenizing_finishes_holding_part_of_a_stop(split_tokenizer):
+    steps = [
+        TokenDelta(output_index=0, token_ids=(HE, CLOSE, ANS)),
+        OutputFinished(output_index=0, reason="length", usage=_usage()),
+    ]
+
+    assembler, _ = _assemble(
+        split_tokenizer, SamplingParams(stop=["</ans>"], detokenize=False), steps
+    )
+
+    output = assembler.outputs[0]
+    assert (output.text, output.token_ids, output.finish_reason) == ("", [HE, CLOSE, ANS], "length")
 
 
 @pytest.mark.parametrize(

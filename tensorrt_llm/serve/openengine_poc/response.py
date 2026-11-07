@@ -3,9 +3,10 @@
 """Builds the ``CompletionOutput`` objects of a request from its OpenEngine events.
 
 This module implements the ``create_response_assembler`` slot of
-:mod:`.contracts`. The outputs it builds are those ``LLM`` gives for the same
-token ids: the text, ``token_ids``, ``logprobs``, ``prompt_logprobs``,
-``finish_reason`` and ``stop_reason``, and the request's ``cached_tokens``.
+:mod:`.contracts`. It builds the text, ``token_ids``, ``logprobs``,
+``prompt_logprobs``, ``finish_reason`` and ``stop_reason`` of each output, and
+the request's ``cached_tokens``, as ``LLM`` does for the same token ids, except
+for the differences listed at the end.
 
 Who matches stop strings decides how the output ends:
 
@@ -21,7 +22,26 @@ Who matches stop strings decides how the output ends:
   and logprobs are cut at the token that completed it (without the stop
   string's own tokens when they matched, as ``LLM`` drops them), so the
   completion token count the handlers derive from ``token_ids`` counts no
-  token generated past the stop.
+  token generated past the stop. Tokens that may start a stop string's
+  token ids are held back, text, ids and logprobs alike, until the match is
+  decided, so nothing streamed is taken back.
+
+Differences from ``LLM``:
+
+- with the engine matching: a stop string found only in the text (its token
+  ids are not the ones generated) ends ``LLM``'s streamed output at once,
+  while here the output waits for the engine to end it, as ``LLM``'s
+  non-streamed output does; its text is the same. A cancelled output
+  has its text cut at a stop string it holds, as the text
+  streamed so far was; ``LLM`` does not cut a cancelled output;
+- with the serving side matching: several stop strings, a match found only
+  in the text, and stop token ids that start in the prompt; see
+  :class:`~tensorrt_llm.serve.detokenize.IncrementalDetokenizer`. ``LLM``'s
+  non-streamed output keeps the tokens generated past a match found only in
+  the text;
+- ``prompt_logprobs`` lacks ``LLM``'s entry for the first generated token;
+- the text, where the detokenizer's decoding differs from ``decode``; see
+  :class:`~tensorrt_llm.serve.detokenize.IncrementalDetokenizer`.
 
 The module is imported in postprocessing processes as well, so it does not
 import the gRPC stack or the facade.
@@ -94,6 +114,8 @@ class OpenEngineResponseAssembler:
         self.outputs: list[CompletionOutput] = [
             CompletionOutput(index=i) for i in range(num_outputs)
         ]
+        # Per output, the token ids and logprobs held back (see the module docstring).
+        self._held: list[tuple[list[int], list[Any]]] = [([], []) for _ in range(num_outputs)]
         self.cached_tokens = 0
         self._usage_seen = False
         self._engine_stop = engine_stop_texts
@@ -151,18 +173,20 @@ class OpenEngineResponseAssembler:
 
         As with ``LLM``, they end with ``cancelled``, unless the serving side
         matches the stop strings and the text a detokenizer still holds
-        completes one.
+        completes one. With the engine matching, the text is still cut at the
+        stop string it holds, as the text streamed so far was.
         """
         self._start_step()
-        for output, detokenizer in zip(self.outputs, self._detokenizers):
+        for index, (output, detokenizer) in enumerate(zip(self.outputs, self._detokenizers)):
             if output.finish_reason is not None:
                 continue
             if detokenizer is not None:
                 delta = detokenizer.finish()
                 output.text += delta.text
                 if delta.stop is not None and not self._engine_stop:
-                    self._end_at_stop(output, delta.stop)
+                    self._end_at_stop(index, delta.stop)
                     continue
+            self._release_tokens(index, 0)
             output.finish_reason = "cancelled"
 
     # -- events --------------------------------------------------------------
@@ -178,15 +202,20 @@ class OpenEngineResponseAssembler:
         if output.finish_reason is not None:
             return False
         self._start_step()
-        output.token_ids.extend(event.token_ids)
+        held_ids, held_logprobs = self._held[event.output_index]
+        held_ids.extend(event.token_ids)
         if self._logprobs is not None and event.logprobs is not None:
-            output.logprobs.extend(self._output_logprob(info) for info in event.logprobs)
+            held_logprobs.extend(self._output_logprob(info) for info in event.logprobs)
         detokenizer = self._detokenizers[event.output_index]
+        hold = 0
         if detokenizer is not None:
             delta = detokenizer.step(event.token_ids)
             output.text += delta.text
             if delta.stop is not None:
-                self._end_at_stop(output, delta.stop)
+                self._end_at_stop(event.output_index, delta.stop)
+                return True
+            hold = detokenizer.held_tokens
+        self._release_tokens(event.output_index, hold)
         return True
 
     def _apply_finished(self, event: OutputFinished) -> bool:
@@ -198,9 +227,11 @@ class OpenEngineResponseAssembler:
         if detokenizer is not None:
             delta = detokenizer.finish()
             output.text += delta.text
-            if delta.stop is not None:
-                self._end_at_stop(output, delta.stop)
+            # As LLM: a cancelled output gets no stop_reason from its text.
+            if delta.stop is not None and not (self._engine_stop and event.reason == "cancelled"):
+                self._end_at_stop(event.output_index, delta.stop)
                 return True
+        self._release_tokens(event.output_index, 0)
         output.finish_reason = event.reason
         if event.stop_token_id is not None:
             output.stop_reason = event.stop_token_id
@@ -208,8 +239,17 @@ class OpenEngineResponseAssembler:
             output.stop_reason = event.stop_text
         return True
 
-    def _end_at_stop(self, output: CompletionOutput, stop: Any) -> None:
-        """End ``output`` at a stop string its detokenizer found.
+    def _release_tokens(self, index: int, hold: int) -> None:
+        """Move the held token ids and logprobs of output ``index`` into it, all but the last ``hold``."""
+        output = self.outputs[index]
+        for held, released in zip(self._held[index], (output.token_ids, output.logprobs)):
+            count = len(held) - hold
+            if count > 0:
+                released.extend(held[:count])
+                del held[:count]
+
+    def _end_at_stop(self, index: int, stop: Any) -> None:
+        """End output ``index`` at a stop string its detokenizer found.
 
         The output keeps the tokens up to the one that completed the match,
         without the stop string's own tokens when they matched and are not to
@@ -217,6 +257,8 @@ class OpenEngineResponseAssembler:
         detokenizer reports at :meth:`~IncrementalDetokenizer.finish` with
         ``engine_stop`` ends at the last token, so the engine's tokens stay.
         """
+        self._release_tokens(index, 0)
+        output = self.outputs[index]
         keep = stop.token_index + 1
         if not self._include_stop:
             keep -= stop.num_stop_tokens

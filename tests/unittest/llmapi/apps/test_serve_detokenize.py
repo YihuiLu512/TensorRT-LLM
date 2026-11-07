@@ -15,9 +15,10 @@
 """CPU tests for the serving-side incremental detokenizer and stop-string matcher."""
 
 import pytest
-from tokenizers import Tokenizer
+from tokenizers import Regex, Tokenizer
 from tokenizers.decoders import ByteFallback, Fuse, Metaspace, Sequence
 from tokenizers.models import WordLevel
+from tokenizers.pre_tokenizers import Split
 from transformers import PreTrainedTokenizerFast
 
 from tensorrt_llm.serve.detokenize import DetokenizeDelta, IncrementalDetokenizer, StopMatch
@@ -46,15 +47,32 @@ _VOCAB = {
 C2, BB, HE, LLO, CLOSE, ANS, GT, WORLD, A, B, C, _, EOS, NEWLINE = range(14)
 
 
-@pytest.fixture(scope="module")
-def tokenizer() -> TransformersTokenizer:
-    """Word-level pieces that decode by concatenation; ``<0xC2>`` ``<0xBB>`` make up ``»``."""
+def _word_level(*, split: bool) -> TransformersTokenizer:
     backend = Tokenizer(WordLevel(_VOCAB, unk_token="<unk>"))
     backend.decoder = Sequence([ByteFallback(), Fuse()])
     backend.add_special_tokens(["</s>"])
+    if split:
+        backend.pre_tokenizer = Split(
+            Regex(r"</|ans|>|He|llo| world|a|b|c|\n"), behavior="isolated"
+        )
     return TransformersTokenizer(
         PreTrainedTokenizerFast(tokenizer_object=backend, eos_token="</s>")
     )
+
+
+@pytest.fixture(scope="module")
+def tokenizer() -> TransformersTokenizer:
+    """Word-level pieces that decode by concatenation; ``<0xC2>`` ``<0xBB>`` make up ``»``.
+
+    A stop string encodes to one token when it is one piece, else to ``<unk>``.
+    """
+    return _word_level(split=False)
+
+
+@pytest.fixture(scope="module")
+def split_tokenizer() -> TransformersTokenizer:
+    """The same vocabulary, encoding text piece by piece: ``</ans>`` is ``</`` ``ans`` ``>``."""
+    return _word_level(split=True)
 
 
 @pytest.fixture(params=["decode_stream", "fallback"], autouse=True)
@@ -397,6 +415,16 @@ def test_token_ids_match_before_text_match_on_the_same_token(
     assert detokenizer.stop_match == StopMatch("b", 2, num_stop_tokens=1)
 
 
+def test_kept_stop_string_reported_as_llm_does(tokenizer: TransformersTokenizer) -> None:
+    """With the stop string kept, LLM's text check reports the first stop string, in request order, the text holds."""
+    detokenizer = IncrementalDetokenizer(
+        tokenizer, stop=["ab", "b"], include_stop_str_in_output=True
+    )
+
+    assert "".join(_run(detokenizer, [[C, A, B]])) == "cab"
+    assert detokenizer.stop_match == StopMatch("ab", 2, num_stop_tokens=1)
+
+
 def test_token_ids_match_without_detokenizing(tokenizer: TransformersTokenizer) -> None:
     """Without text, stop strings are still matched on their token ids, as in LLM."""
     detokenizer = IncrementalDetokenizer(tokenizer, stop=["b", "</ans>"], detokenize=False)
@@ -436,6 +464,14 @@ def test_min_tokens_only_holds_back_single_token_stop_strings(
 
     assert "".join(_run(detokenizer, chunks)) == expected_text
     assert detokenizer.stop_match == expected_match
+
+
+def test_min_tokens_holds_when_finish_releases_the_text(tokenizer: TransformersTokenizer) -> None:
+    """Text released only by :meth:`finish` completes no match when its last token is banned."""
+    detokenizer = IncrementalDetokenizer(tokenizer, stop=["\n"], min_tokens=5)
+
+    assert "".join(_run(detokenizer, [[A, NEWLINE]])) == "a\n"
+    assert detokenizer.stop_match is None
 
 
 # -- engine_stop: the engine matches the stop strings ------------------------------
@@ -511,3 +547,26 @@ def test_token_ids_match_when_the_full_decode_disagrees(
     monkeypatch.setattr(tokenizer, "decode", lambda *args, **kwargs: "zz")
     assert detokenizer.step([B]) == DetokenizeDelta("c", StopMatch("b", 2, num_stop_tokens=1))
     assert detokenizer.text == "ac"
+
+
+def test_multi_token_stop_cut_when_the_full_decode_disagrees(
+    split_tokenizer: TransformersTokenizer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """All the stop string's tokens are cut from the text held back, not just the last."""
+    detokenizer = IncrementalDetokenizer(split_tokenizer, stop=["</ans>"])
+
+    assert detokenizer.step([HE, CLOSE, ANS]) == DetokenizeDelta("He")
+    monkeypatch.setattr(split_tokenizer, "decode", lambda *args, **kwargs: "zz")
+    assert detokenizer.step([GT]) == DetokenizeDelta("", StopMatch("</ans>", 3, num_stop_tokens=3))
+    assert detokenizer.text == "He"
+
+
+def test_finish_without_detokenizing_holding_part_of_a_stop(
+    split_tokenizer: TransformersTokenizer,
+) -> None:
+    detokenizer = IncrementalDetokenizer(split_tokenizer, stop=["</ans>"], detokenize=False)
+
+    assert detokenizer.step([HE, CLOSE, ANS]) == DetokenizeDelta("")
+    assert detokenizer.held_tokens == 2
+    assert detokenizer.finish() == DetokenizeDelta("")
+    assert detokenizer.stop_match is None
