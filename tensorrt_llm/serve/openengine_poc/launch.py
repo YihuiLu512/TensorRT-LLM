@@ -18,7 +18,13 @@ from .facade import DEFAULT_CONTROL_TIMEOUT_S, DEFAULT_READY_TIMEOUT_S, OpenEngi
 
 
 def _bind(host: str, port: int) -> socket.socket:
-    """Bind the listening socket now, so ``port=0`` resolves to the port the kernel picked."""
+    """Bind the listening socket now, so ``port=0`` resolves to the port the kernel picked.
+
+    Raises:
+        RuntimeError: The address is taken; the message names the holder when it can.
+    """
+    from tensorrt_llm.commands.serve import _diagnose_port_in_use
+
     addr_info = socket.getaddrinfo(host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
     family = (
         socket.AF_INET6 if all(info[0] == socket.AF_INET6 for info in addr_info) else socket.AF_INET
@@ -28,6 +34,12 @@ def _bind(host: str, port: int) -> socket.socket:
         # As launch_server does: a restart is not refused during TIME_WAIT.
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind((host, port))
+    except OSError as error:
+        sock.close()
+        holder = _diagnose_port_in_use(port)
+        raise RuntimeError(
+            f"Failed to bind socket to {host}:{port}: {error}. Port holder(s): {holder}"
+        ) from error
     except BaseException:
         sock.close()
         raise
@@ -58,26 +70,31 @@ def launch_openengine_server(
     No model weights are loaded and no executor is started. The tokenizer is
     the one in ``llm_args``, else the model directory's. ``/health`` follows the
     engine; endpoints that need an in-process engine answer 501. With
-    ``port=0`` or ``report_addr``, the socket is bound before the engine is
-    awaited and the bound address is written to ``report_addr``, as the
-    in-process server does.
+    ``report_addr``, the socket is bound before the engine is awaited and the
+    bound address is written to ``report_addr``, as the in-process server
+    does; ``port=0`` (the kernel picks the port) needs ``report_addr``.
 
     Raises:
-        ValueError: The configuration asks for something this frontend cannot do.
+        click.UsageError: The configuration asks for something this frontend cannot do.
         OpenEngineStartupError: The engine is not usable; the message names the step.
     """
+    import click
+
     from tensorrt_llm.commands.serve import _apply_fastapi_middlewares, _publish_bound_address
     from tensorrt_llm.serve.openai_server import OpenAIServer
 
     if port == 0 and not report_addr:
-        raise ValueError("port 0 needs --report_addr to tell clients the port")
-    facade = OpenEngineLLM.from_llm_args(
-        llm_args,
-        endpoint,
-        ready_timeout=ready_timeout,
-        control_timeout=control_timeout,
-        allow_newer_schema=allow_newer_schema,
-    )
+        raise click.UsageError("--port 0 needs --report_addr to tell clients the port")
+    try:
+        facade = OpenEngineLLM.from_llm_args(
+            llm_args,
+            endpoint,
+            ready_timeout=ready_timeout,
+            control_timeout=control_timeout,
+            allow_newer_schema=allow_newer_schema,
+        )
+    except ValueError as error:
+        raise click.UsageError(str(error)) from error
     server = OpenAIServer(
         generator=facade,
         model=served_model_name or llm_args["model"],

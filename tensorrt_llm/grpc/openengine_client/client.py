@@ -47,7 +47,8 @@ _NOT_READY_CODES = frozenset({grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADL
 
 _ResponseT = TypeVar("_ResponseT")
 
-# gRPC metadata keys are lowercase; a key ending in "-bin" would carry bytes.
+# gRPC metadata keys are lowercase; a key ending in "-bin" would carry bytes, and
+# keys starting with "grpc-" are reserved for gRPC itself.
 _METADATA_KEY = re.compile(r"[0-9a-z_.-]+")
 
 
@@ -360,7 +361,7 @@ class OpenEngineClient:
 
         Raises:
             ValueError: A metadata key is not a lowercase ASCII gRPC key, ends in
-                ``-bin``, or a value is not a string.
+                ``-bin`` or starts with ``grpc-``, or a value is not a string.
         """
         self._ensure_open()
         sent_metadata = _checked_metadata(metadata or {})
@@ -590,7 +591,12 @@ def _checked_metadata(metadata: Mapping[str, str]) -> tuple[tuple[str, str], ...
     """The metadata as gRPC pairs, after checking keys and values."""
     pairs = []
     for key, value in metadata.items():
-        if not isinstance(key, str) or not _METADATA_KEY.fullmatch(key) or key.endswith("-bin"):
+        if (
+            not isinstance(key, str)
+            or not _METADATA_KEY.fullmatch(key)
+            or key.endswith("-bin")
+            or key.startswith("grpc-")
+        ):
             raise ValueError(f"invalid gRPC metadata key {key!r}")
         if not isinstance(value, str):
             raise ValueError(f"metadata {key!r} must be a string, got {type(value).__name__}")

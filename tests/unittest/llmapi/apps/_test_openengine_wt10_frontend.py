@@ -29,9 +29,9 @@ chain_only = pytest.mark.skipif(
 )
 
 # How long the frontend waits before giving up on an engine that does not
-# answer (SV-FAC-4: polled every 5 s, lost after 30 s), plus room for shutdown.
+# answer (health polled every 5 s, lost after 30 s), plus room for shutdown.
 ENGINE_LOST_STOP_S = 5 + 30 + 60
-# The endpoints that need an engine in the frontend's process (SV-FAC-6).
+# Endpoints that need an engine in the frontend's process; the frontend answers 501.
 UNSUPPORTED_ENDPOINTS = (
     ("POST", "/start_profile"),
     ("POST", "/stop_profile"),
@@ -129,10 +129,12 @@ def test_chat_template_kwargs(
         )
         from tensorrt_llm.tokenizer import TransformersTokenizer
 
-        model_info = _engine_control(server).GetModelInfo(
-            model_pb2.GetModelInfoRequest(), timeout=30
-        )
-        engine_fingerprint = model_capabilities_from_proto(model_info).tokenizer_fingerprint
+        control = _engine_control(server)
+        server_info = control.GetServerInfo(server_pb2.GetServerInfoRequest(), timeout=30)
+        model_info = control.GetModelInfo(model_pb2.GetModelInfoRequest(), timeout=30)
+        engine_fingerprint = model_capabilities_from_proto(
+            server_info, model_info
+        ).tokenizer_fingerprint
         assert engine_fingerprint is not None
         local = compute_tokenizer_fingerprint(TransformersTokenizer(tokenizer), model_path)
         assert compare_tokenizer_fingerprints(local, engine_fingerprint) == []

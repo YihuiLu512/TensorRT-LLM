@@ -21,8 +21,10 @@ and answers the endpoints this path does not support with 501.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 import os
+import re
 import signal
 import time
 from collections.abc import Callable
@@ -101,6 +103,13 @@ _BAD_REQUEST_CODES = (
     error_pb2.ERROR_CODE_INVALID_ARGUMENT,
     error_pb2.ERROR_CODE_UNSUPPORTED_FEATURE,
 )
+# gRPC's own status details name the peer, e.g. "ipv4:10.0.0.1:50051".
+_GRPC_ADDRESS = re.compile(r"\b(?:ipv4|ipv6|unix|unix-abstract|dns|vsock):\S+")
+_ERROR_TYPES = {
+    HTTPStatus.SERVICE_UNAVAILABLE: "ServiceUnavailableError",
+    HTTPStatus.GATEWAY_TIMEOUT: "GatewayTimeoutError",
+    HTTPStatus.INTERNAL_SERVER_ERROR: "InternalServerError",
+}
 # Options the facade cannot honour at all; the frontend refuses to start with them.
 _ENGINE_ONLY_OPTIONS = {
     "enable_energy_metrics": "energy metrics are measured where the engine runs",
@@ -120,15 +129,26 @@ class OpenEngineServeError(RuntimeError):
         self.status_code = status_code
 
 
+def _without_addresses(text: str, target: str) -> str:
+    if target:
+        text = text.replace(target, "<engine>")
+    return _GRPC_ADDRESS.sub("<engine>", text)
+
+
 def request_error(error: OpenEngineClientError, engine_name: str) -> Exception:
-    """The exception a handler reports for a failed engine call (SV-ERR-1, SV-ERR-2).
+    """The exception a handler reports for a failed engine call.
 
     ``ValueError`` (HTTP 400) when the request was at fault, else
     :class:`OpenEngineServeError` with the HTTP status. The message names the
-    engine and repeats what it said, but not its address.
+    engine and repeats what it said, with the engine's address and any gRPC
+    peer address replaced by ``<engine>``; the error as raised goes to the log.
     """
+    logger.warning(f"OpenEngine engine {engine_name!r} failed a request: {error}")
     if isinstance(error, OpenEngineRpcError):
-        message = f"OpenEngine engine {engine_name!r} failed the request ({error.code.name}): {error.details}"
+        details = _without_addresses(error.details, error.target)
+        message = (
+            f"OpenEngine engine {engine_name!r} failed the request ({error.code.name}): {details}"
+        )
         if error.code in _BAD_REQUEST_STATUSES:
             return ValueError(message)
         if error.code in _UNAVAILABLE_STATUSES:
@@ -142,16 +162,14 @@ def request_error(error: OpenEngineClientError, engine_name: str) -> Exception:
             if error.code in error_pb2.ErrorCode.values()
             else error.code
         )
-        message = (
-            f"OpenEngine engine {engine_name!r} failed the request ({name}): {error.engine_message}"
-        )
+        engine_message = _without_addresses(error.engine_message, error.target)
+        message = f"OpenEngine engine {engine_name!r} failed the request ({name}): {engine_message}"
         if error.code in _BAD_REQUEST_CODES:
             return ValueError(message)
         if error.code == error_pb2.ERROR_CODE_OVERLOADED:
             return OpenEngineServeError(message, HTTPStatus.SERVICE_UNAVAILABLE)
         return OpenEngineServeError(message, HTTPStatus.INTERNAL_SERVER_ERROR)
     if isinstance(error, OpenEngineProtocolError):
-        logger.error(f"OpenEngine protocol violation: {error}")
         return OpenEngineServeError(
             f"OpenEngine engine {engine_name!r} broke the OpenEngine protocol",
             HTTPStatus.INTERNAL_SERVER_ERROR,
@@ -164,9 +182,10 @@ def request_error(error: OpenEngineClientError, engine_name: str) -> Exception:
 class _FacadeExecutor:
     """The part of ``LLM._executor`` that ``OpenAIServer`` reads.
 
-    ``_fatal_error`` is set when the engine is lost; ``OpenAIServer`` then
-    reports 503 from ``/health`` and stops, as it does for an in-process
-    executor that failed.
+    ``_fatal_error`` is set when the engine is lost, so ``/health`` answers 503
+    as it does for an in-process executor that failed. The facade then stops
+    the frontend itself (``on_engine_lost``) and sets ``doing_shutdown``, which
+    keeps ``OpenAIServer`` from sending a second SIGINT.
     """
 
     resource_governor_queue = None
@@ -262,6 +281,7 @@ class OpenEngineLLM:
         self._counter_writer: ThreadPoolExecutor | None = None
         self._metrics = contracts.create_metrics_recorder(args)
         self._lora: contracts.LoraRegistry | None = None
+        self._local_fingerprint: Any = None
 
     # -- Construction --------------------------------------------------------
 
@@ -341,7 +361,10 @@ class OpenEngineLLM:
         )
 
     async def start(self) -> None:
-        """Connect and check the engine (SV-EC-7), then start watching its health.
+        """Connect to and check the engine, then start watching its health.
+
+        The checks: the schema revision, the conventions version, token-id
+        input and the tokenizer fingerprint.
 
         Raises:
             OpenEngineStartupError: A step failed; the message names the step.
@@ -381,7 +404,7 @@ class OpenEngineLLM:
         self._health_task.add_done_callback(self._health_watch_ended)
 
     def _check_engine(self, info: EngineInfo, caps: ModelCapabilities) -> None:
-        """Steps 2 to 5 of SV-EC-7 on what the engine reported."""
+        """Check the conventions version, token-id input and the tokenizer fingerprint."""
         version = conventions_version(info.extra)
         if version is None:
             logger.warning(
@@ -406,19 +429,25 @@ class OpenEngineLLM:
                 "fingerprint; the tokenizers are not compared"
             )
             return
-        local = compute_tokenizer_fingerprint(self.tokenizer, self._hf_model_dir)
-        mismatches = compare_tokenizer_fingerprints(local, engine_fingerprint)
+        if self._local_fingerprint is None:
+            # Hashing the tokenizer files takes a moment; the tokenizer does not change.
+            self._local_fingerprint = compute_tokenizer_fingerprint(
+                self.tokenizer, self._hf_model_dir
+            )
+        mismatches = compare_tokenizer_fingerprints(self._local_fingerprint, engine_fingerprint)
         if mismatches:
             raise self._startup_error(
                 "tokenizer fingerprint", "; ".join(str(mismatch) for mismatch in mismatches)
             )
 
     def _health_watch_ended(self, task: asyncio.Task[None]) -> None:
-        if not task.cancelled() and task.exception() is not None:
-            logger.error(
-                f"Stopped watching the health of the OpenEngine engine at {self._endpoint}; "
-                f"reporting it unhealthy: {task.exception()!r}"
-            )
+        if task.cancelled() or task.exception() is None or self._closing:
+            return
+        # Without the watcher the engine's state is unknown: stop rather than linger.
+        self._engine_lost(
+            f"watching the health of the OpenEngine engine at {self._endpoint} failed: "
+            f"{task.exception()!r}"
+        )
 
     async def _watch_health(self) -> None:
         loop = asyncio.get_running_loop()
@@ -434,7 +463,8 @@ class OpenEngineLLM:
                 problem = str(error)
             if problem is None:
                 try:
-                    await self._follow_restart()
+                    if not await self._follow_restart():
+                        return
                 except OpenEngineClientError as error:
                     problem = str(error)
             healthy = problem is None
@@ -456,13 +486,18 @@ class OpenEngineLLM:
                 )
                 return
 
-    async def _follow_restart(self) -> None:
-        """Re-read the engine's identity and capabilities if it restarted (SV-EC-4)."""
+    async def _follow_restart(self) -> bool:
+        """Re-read the engine's identity and capabilities if it restarted.
+
+        Returns:
+            False if the restarted engine cannot be served from; it is then
+            declared lost.
+        """
         client = self.client
         before_info, before_caps = client.server_info(), client.model_info()
         current = await client.current_instance_id()
         if current == before_info.instance_id:
-            return
+            return True
         await client.refresh()
         info, caps = client.server_info(), client.model_info()
         logger.warning(
@@ -473,13 +508,15 @@ class OpenEngineLLM:
             self._check_engine(info, caps)
         except OpenEngineStartupError as error:
             self._engine_lost(f"the restarted OpenEngine engine is not usable: {error}")
-            return
+            return False
         if caps != before_caps:
             logger.error(
                 f"The capabilities of the OpenEngine engine at {self._endpoint} changed when it "
                 "restarted; requests are checked against the new ones"
             )
-            self._lora = contracts.create_lora_registry(client, caps)
+        # A restarted engine has none of the adapters registered before.
+        self._lora = contracts.create_lora_registry(client, caps)
+        return True
 
     def _engine_lost(self, reason: str) -> None:
         logger.error(f"{reason}; stopping this frontend")
@@ -526,8 +563,12 @@ class OpenEngineLLM:
     def _record_sent(self, count: int) -> None:
         """Count ``count`` more Generate calls; the count file is written off the event loop."""
         self._generate_sent += count
-        if self._counter_dir is None:
-            self._counter.increment(count)
+        if self._counter_dir is None or self._closing:
+            # Calls that end while the frontend closes are written here, after the writer stopped.
+            try:
+                self._counter.increment(count)
+            except OSError as error:
+                logger.warning(f"Could not write the OpenEngine generate_sent count: {error}")
             return
         if self._counter_writer is None:
             # One thread keeps the writes in order, so the last one holds the total.
@@ -536,7 +577,7 @@ class OpenEngineLLM:
         future.add_done_callback(_log_counter_failure)
 
     def engine_block(self) -> dict[str, Any]:
-        """The ``engine`` block of ``/server_info`` (SV-FAC-5)."""
+        """The ``engine`` block of ``/server_info``."""
         info = self.client.server_info()
         return {
             "kind": "openengine",
@@ -575,14 +616,20 @@ class OpenEngineLLM:
             raise ValueError(
                 "disaggregated_params is not supported when serving through an OpenEngine engine"
             )
-        return {
+        prompt = prompt_inputs(inputs)
+        tokenized: dict[str, Any] = {
             "prompt_token_ids": self._prompt_token_ids(inputs, sampling_params or SamplingParams())
         }
+        # Media stay with the prompt, so generate_async maps or refuses them.
+        for key in contracts._MULTIMODAL_KEYS:
+            if prompt.get(key) is not None:
+                tokenized[key] = prompt[key]
+        return tokenized
 
     def _metadata(
         self, options: contracts.GenerateOptions, caps: ModelCapabilities
     ) -> dict[str, str]:
-        """The gRPC metadata of a request's calls (OE-META)."""
+        """The gRPC metadata of a request's calls: trace headers, priority, DP rank."""
         from tensorrt_llm.executor.request import DEFAULT_REQUEST_PRIORITY
 
         engine_name = self.client.server_info().engine_name
@@ -714,7 +761,11 @@ class OpenEngineLLM:
         if self._loop is None or self._closing:
             return []
         future = asyncio.run_coroutine_threadsafe(self._iteration_stats(), self._loop)
-        return future.result(max(timeout, 0) + self._control_timeout)
+        try:
+            return future.result(max(timeout, 0) + self._control_timeout)
+        except TimeoutError:
+            future.cancel()
+            raise
 
     async def get_stats_async(self, timeout: float | None = None):
         for stat in await self._iteration_stats():
@@ -825,6 +876,8 @@ class OpenEngineRequestOutput:
         if self._requests is None:
             assert self._prepare is not None
             self._requests = await self._prepare()
+            # As on the other path, the request is known by its first call's id.
+            self._requests[0] = dataclasses.replace(self._requests[0], request_id=self.request_id)
         self._queue = asyncio.Queue()
         client = self._facade.client
         offset = 0
@@ -843,13 +896,24 @@ class OpenEngineRequestOutput:
     async def _pump(self, stream: EngineEventStream, offset: int) -> None:
         """Read one call to its end into the queue.
 
-        It keeps reading after the request finished, so the engine can close
-        the call itself instead of seeing it cancelled.
+        The call counts as sent once its first read returns. The pump keeps
+        reading after the request finished, so a call the engine ends itself
+        is closed by the engine; ``stream.cancel()`` only takes effect before
+        the engine's last event.
         """
         queue = self._queue
         assert queue is not None
+        counted = False
+
+        def count() -> None:
+            nonlocal counted
+            if not counted and stream.sent:
+                counted = True
+                self._facade._record_sent(1)
+
         try:
             async for event in stream:
+                count()
                 queue.put_nowait((offset, event))
         except asyncio.CancelledError:
             stream.cancel()
@@ -858,8 +922,7 @@ class OpenEngineRequestOutput:
             queue.put_nowait((offset, error))
             return
         finally:
-            if stream.sent:
-                self._facade._record_sent(1)
+            count()
             await stream.aclose()
         queue.put_nowait((offset, _END))
 
@@ -925,8 +988,8 @@ class OpenEngineRequestOutput:
                 continue
             if self._assembler.finished:
                 self.finished = True
-                # Tokens past a serving-side stop string are not needed:
-                # cancelling the calls aborts them on the engine.
+                # Tokens past a serving-side stop string are not needed: cancelling
+                # the calls aborts them on the engine; calls it ended are not affected.
                 self._cancel_calls()
             return self
 
@@ -939,10 +1002,13 @@ def _shifted(event: Any, offset: int) -> Any:
 
 
 def check_frontend_options(args: Any) -> None:
-    """Refuse options this frontend cannot honour, instead of ignoring them (SV-FAC-3).
+    """Refuse options this frontend cannot honour, instead of ignoring them.
 
-    Options a later serving component implements are accepted once that
-    component is present, and refused with the reason until then.
+    ``post_processor_hook`` and the metrics options are accepted once the slot
+    of the component that implements them (the postprocessing dispatch, the
+    metrics recorder) has an implementation, and refused with the reason
+    until then. ``num_postprocess_workers`` is refused until the
+    postprocessing pool is wired into the facade.
 
     Raises:
         ValueError: An option cannot be honoured.
@@ -1005,11 +1071,11 @@ def check_frontend_options(args: Any) -> None:
 def adapt_server(server: Any, facade: OpenEngineLLM) -> None:
     """Adapt an ``OpenAIServer`` built on ``facade`` to the OpenEngine path.
 
-    - ``/server_info`` gains the ``engine`` block (SV-FAC-5);
-    - the endpoints in :data:`UNSUPPORTED_ENDPOINTS` answer 501 (SV-FAC-6), as
-      does any request that raises ``OpenEngineUnsupportedError``;
+    - ``/server_info`` gains the ``engine`` block;
+    - the endpoints in :data:`UNSUPPORTED_ENDPOINTS` answer 501, as does a
+      request whose handler lets ``OpenEngineUnsupportedError`` propagate;
     - a request that fails with :class:`OpenEngineServeError` is reported with
-      that error's HTTP status rather than 400 (SV-ERR-1).
+      that error's HTTP status rather than 400.
     """
     import sys
 
@@ -1067,7 +1133,7 @@ def adapt_server(server: Any, facade: OpenEngineLLM) -> None:
         error = sys.exc_info()[1]
         if isinstance(error, OpenEngineServeError) and status_code == HTTPStatus.BAD_REQUEST:
             status_code = error.status_code
-            err_type = status_code.phrase.replace(" ", "") + "Error"
+            err_type = _ERROR_TYPES.get(status_code, "InternalServerError")
         return create_error_response(message, err_type, status_code)
 
     server.create_error_response = create_status_error_response

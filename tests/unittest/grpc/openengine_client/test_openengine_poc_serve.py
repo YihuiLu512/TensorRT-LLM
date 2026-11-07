@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -32,6 +33,7 @@ from tensorrt_llm.grpc.openengine.bindings import (
     model_pb2,
     server_pb2,
 )
+from tensorrt_llm.grpc.openengine_client import OpenEngineRpcError
 from tensorrt_llm.grpc.openengine_conventions import (
     CONVENTIONS_VERSION,
     CONVENTIONS_VERSION_KEY,
@@ -145,6 +147,8 @@ def _args() -> SimpleNamespace:
         enable_iter_perf_stats=False,
         max_beam_width=1,
         custom_tokenizer=None,
+        max_batch_size=None,
+        kv_cache_config=None,
     )
 
 
@@ -504,7 +508,7 @@ def test_engine_refusal_fails_the_request(tmp_path, code, error, status) -> None
 
     The request was at fault for INVALID_ARGUMENT and UNIMPLEMENTED, so those
     become ``ValueError`` and HTTP 400; the other statuses keep their own HTTP
-    status (SV-ERR-1).
+    status.
     """
     engine = _engine(Fail(code, "engine refused it"))
 
@@ -537,8 +541,36 @@ def test_engine_error_fails_the_request(tmp_path, code: int, status: int) -> Non
         response = await http.post("/v1/chat/completions", json=_chat(False))
         assert response.status_code == status
         assert "engine gave up" in response.text
+        expected_type = {
+            400: "BadRequestError",
+            503: "ServiceUnavailableError",
+            500: "InternalServerError",
+        }[status]
+        assert response.json()["type"] == expected_type
 
     _serve(engine, tmp_path, body)
+
+
+def test_a_grpc_peer_address_is_not_reported_to_the_client() -> None:
+    details = "failed to connect to all addresses; last error: UNKNOWN: ipv4:10.1.2.3:4567: refused"
+    error = facade_module.request_error(
+        OpenEngineRpcError(
+            grpc.StatusCode.UNAVAILABLE, details, rpc="Generate", target="engine-host:4567"
+        ),
+        "tensorrt_llm",
+    )
+    assert isinstance(error, OpenEngineServeError) and error.status_code == 503
+    assert "10.1.2.3" not in str(error) and "<engine>" in str(error)
+    error = facade_module.request_error(
+        OpenEngineRpcError(
+            grpc.StatusCode.INTERNAL,
+            "lost engine-host:4567",
+            rpc="Generate",
+            target="engine-host:4567",
+        ),
+        "tensorrt_llm",
+    )
+    assert "engine-host" not in str(error)
 
 
 def test_abort_cancels_the_engine_request(tmp_path) -> None:
@@ -637,7 +669,17 @@ def test_health_follows_the_engine(tmp_path) -> None:
     _serve(engine, tmp_path, body, health_poll_interval=0.01)
 
 
-def test_health_is_lost_when_the_watcher_fails(tmp_path, monkeypatch) -> None:
+def _lost_recorder(lost: list) -> Any:
+    def on_engine_lost(facade) -> None:
+        lost.append(facade)
+        # As the default handler does, so /health does not send SIGINT itself.
+        facade._executor.doing_shutdown = True
+
+    return on_engine_lost
+
+
+def test_a_failed_health_watcher_stops_the_frontend(tmp_path, monkeypatch) -> None:
+    lost = []
     engine = _engine()
 
     async def body(engine, facade, http):
@@ -645,12 +687,19 @@ def test_health_is_lost_when_the_watcher_fails(tmp_path, monkeypatch) -> None:
             raise TypeError("unexpected")
 
         monkeypatch.setattr(facade.client, "health", broken_health)
-        while not facade._health_task.done():
+        while not lost:
             await asyncio.sleep(0.01)
         assert not facade._check_health()
-        assert (await http.get("/health")).status_code != 200
+        assert "TypeError" in str(facade._executor._fatal_error)
+        assert (await http.get("/health")).status_code == 503
 
-    _serve(engine, tmp_path, body, health_poll_interval=0.01)
+    _serve(
+        engine,
+        tmp_path,
+        body,
+        health_poll_interval=0.01,
+        on_engine_lost=_lost_recorder(lost),
+    )
 
 
 def test_two_sequences_are_detokenized_separately(tmp_path) -> None:
@@ -998,12 +1047,6 @@ def test_startup_continues_with_a_warning_without_the_conventions(tmp_path, monk
 
 def test_a_lost_engine_stops_the_frontend_after_the_timeout(tmp_path) -> None:
     lost = []
-
-    def on_engine_lost(facade) -> None:
-        lost.append(facade)
-        # As the default handler does, so /health does not send SIGINT itself.
-        facade._executor.doing_shutdown = True
-
     engine = _engine()
 
     async def body(engine, facade, http):
@@ -1029,7 +1072,7 @@ def test_a_lost_engine_stops_the_frontend_after_the_timeout(tmp_path) -> None:
         body,
         health_poll_interval=0.01,
         engine_lost_timeout=2.0,
-        on_engine_lost=on_engine_lost,
+        on_engine_lost=_lost_recorder(lost),
     )
 
 
@@ -1043,20 +1086,104 @@ def test_the_default_engine_lost_handler_sends_one_sigint(monkeypatch) -> None:
     assert facade._executor.doing_shutdown
 
 
-def test_a_restarted_engine_is_followed(tmp_path) -> None:
+def test_a_restarted_engine_is_followed(tmp_path, monkeypatch) -> None:
+    fingerprints = []
+    compute = facade_module.compute_tokenizer_fingerprint
+    monkeypatch.setattr(
+        facade_module,
+        "compute_tokenizer_fingerprint",
+        lambda *args: fingerprints.append(args) or compute(*args),
+    )
     engine = _engine()
 
     async def body(engine, facade, http):
         before = facade.client.server_info().instance_id
+        lora_before = facade._lora
         engine.instance_id = "fake-restarted"
         while facade.client.server_info().instance_id == before:
             await asyncio.sleep(0.01)
         assert facade.client.server_info().instance_id == "fake-restarted"
         assert facade.check_health()
+        # The restarted engine lost its adapters; the local fingerprint is reused.
+        assert facade._lora is not lora_before
+        assert len(fingerprints) == 1
         response = await http.post("/v1/completions", json={"model": MODEL, "prompt": PROMPT_IDS})
         assert response.status_code == 200, response.text
 
     _serve(engine, tmp_path, body, health_poll_interval=0.01)
+
+
+def test_an_unusable_restarted_engine_is_lost(tmp_path) -> None:
+    lost = []
+    engine = _engine()
+
+    async def body(engine, facade, http):
+        engine.profile = engine.profile.replace(vocab_size=99)
+        engine.instance_id = "fake-restarted"
+        while not lost:
+            await asyncio.sleep(0.01)
+        assert "vocab_size" in str(facade._executor._fatal_error)
+        await asyncio.wait_for(facade._health_task, WAIT_SECONDS)
+        assert not facade._check_health()
+
+    _serve(
+        engine,
+        tmp_path,
+        body,
+        health_poll_interval=0.01,
+        on_engine_lost=_lost_recorder(lost),
+    )
+
+
+def test_counting_after_close_writes_the_file_directly(tmp_path, monkeypatch) -> None:
+    counter_dir = tmp_path / "counters"
+    monkeypatch.setenv(SERVE_COUNTER_DIR_ENV, str(counter_dir))
+    facade = _facade(SimpleNamespace(target="127.0.0.1:1"), tmp_path)
+    facade._record_sent(1)
+    facade.shutdown()
+    facade._counter_writer.shutdown(wait=True)
+    facade._record_sent(1)
+    assert facade.generate_sent == 2
+    assert contracts.read_generate_sent(counter_dir) == 2
+
+
+def test_media_survive_preprocess_and_are_refused(tmp_path) -> None:
+    engine = _engine()
+
+    async def body(engine, facade, http):
+        prompt = {"prompt": "Hi", "multi_modal_data": {"image": [object()]}}
+        tokenized = facade.preprocess(prompt)
+        assert tokenized["multi_modal_data"] is prompt["multi_modal_data"]
+        with pytest.raises(ValueError, match="multimodal"):
+            facade.generate_async(tokenized, SamplingParams(max_tokens=1))
+        assert engine.requests == []
+
+    _serve(engine, tmp_path, body)
+
+
+def test_a_lora_request_is_known_by_its_first_call_id(tmp_path, monkeypatch) -> None:
+    engine = _engine()
+
+    class Registry:
+        async def resolve(self, lora_request):
+            return "adapter-a"
+
+    def map_without_lora(prompt_token_ids, sampling_params, caps, options, *, engine_name):
+        options = dataclasses.replace(options, lora_request=None, lora_name=None)
+        return contracts.default_map_request(
+            prompt_token_ids, sampling_params, caps, options, engine_name=engine_name
+        )
+
+    monkeypatch.setattr(facade_module.contracts, "map_request", map_without_lora)
+
+    async def body(engine, facade, http):
+        facade._lora = Registry()
+        output = await facade.generate_async(
+            PROMPT_IDS, SamplingParams(max_tokens=1), lora_request=object()
+        )
+        assert engine.requests[0].request_id == output.request_id == output.id
+
+    _serve(engine, tmp_path, body)
 
 
 def test_generate_sent_is_written_to_the_counter_dir(tmp_path, monkeypatch) -> None:
@@ -1221,5 +1348,48 @@ def test_from_llm_args_refuses_an_option_it_cannot_honour(tmp_path) -> None:
 
 
 def test_port_zero_needs_a_report_addr(tmp_path) -> None:
-    with pytest.raises(ValueError, match="report_addr"):
+    with pytest.raises(click.UsageError, match="report_addr"):
         launch_module.launch_openengine_server("127.0.0.1", 0, {"model": str(tmp_path)}, "x:1")
+
+
+def test_launch_reports_a_configuration_error_as_a_usage_error(tmp_path) -> None:
+    _hf_tokenizer().save_pretrained(tmp_path)
+    with pytest.raises(click.UsageError, match="num_postprocess_workers"):
+        launch_module.launch_openengine_server(
+            "127.0.0.1", 8000, {"model": str(tmp_path), "num_postprocess_workers": 2}, "x:1"
+        )
+
+
+def test_launch_binds_before_the_engine_and_reports_the_address(tmp_path, monkeypatch) -> None:
+    """With report_addr, the port the kernel picked is published before the engine is awaited."""
+    report = tmp_path / "addr"
+    events = []
+
+    class Facade:
+        async def start(self):
+            events.append(("start", report.read_text().strip()))
+
+        async def aclose(self):
+            events.append(("aclose",))
+
+    class Server:
+        def __init__(self, **kwargs):
+            self.app = SimpleNamespace()
+
+        async def __call__(self, host, port, sockets=None):
+            events.append(("serve", host, port, [s.getsockname()[1] for s in sockets]))
+
+    monkeypatch.setattr(launch_module.OpenEngineLLM, "from_llm_args", lambda *a, **k: Facade())
+    monkeypatch.setattr(launch_module, "adapt_server", lambda server, facade: None)
+    monkeypatch.setattr("tensorrt_llm.serve.openai_server.OpenAIServer", Server)
+    monkeypatch.setattr(launch_module.uvloop, "run", asyncio.run)
+
+    launch_module.launch_openengine_server(
+        "127.0.0.1", 0, {"model": str(tmp_path)}, "x:1", report_addr=str(report)
+    )
+
+    (start, published), serve, close = events
+    host, _, port = published.rpartition(":")
+    assert (start, host) == ("start", "127.0.0.1") and int(port) > 0
+    assert serve == ("serve", "127.0.0.1", int(port), [int(port)])
+    assert close == ("aclose",)

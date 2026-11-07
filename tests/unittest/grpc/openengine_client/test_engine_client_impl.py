@@ -207,10 +207,11 @@ def test_undeclared_protocol_metadata_is_refused_before_acceptance() -> None:
     assert counters[COUNTER_GENERATE_ACCEPTED] == 0
 
 
-def test_invalid_metadata_key_is_refused_locally() -> None:
+@pytest.mark.parametrize("key", ["Bad Key", "trace-bin", "grpc-timeout"])
+def test_invalid_metadata_key_is_refused_locally(key: str) -> None:
     async def body(engine, client):
         with pytest.raises(ValueError, match="metadata key"):
-            client.generate(_request(metadata={"Bad Key": "x"}))
+            client.generate(_request(metadata={key: "x"}))
         return engine.counters[COUNTER_GENERATE_RECEIVED]
 
     assert _run(FakeEngine(), body) == 0

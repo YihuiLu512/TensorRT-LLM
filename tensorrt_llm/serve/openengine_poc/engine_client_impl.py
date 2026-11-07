@@ -241,7 +241,6 @@ class EngineEventStream:
             )
         if kind == "prefill_ready":
             # Requests from this client never ask for prefill only.
-            self._stream.cancel()
             raise OpenEngineProtocolError(
                 f"OpenEngine engine sent prefill_ready for request {self.request_id}, "
                 "which did not ask for prefill only",
