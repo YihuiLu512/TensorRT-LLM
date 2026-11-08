@@ -1,0 +1,49 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Cases of WT-16's rows that are not listed, and why:
+# - T33 (_test_openai_chat_multimodal.py::test_single_chat_session_image_embeds -m needs_l40s):
+#   its fixture starts `trtllm-serve mm_embedding_serve`, which did not come up on 1xB200 with or
+#   without the chain (1500 s timeouts), so the expected HTTP 400 (expectations/WT-16.py) could
+#   not be reached. CI runs it on L40S.
+# - T15's test_chat_streaming_image: fails on the chain in every run because the facade sends the
+#   last token and its finish_reason in two chunks (the last empty, finish_reason "length"); the
+#   text-only test_chat_streaming of T2 fails the same way, a facade follow-up for WT-10.
+# The runs installed opencv-python-headless into the shared image, which lacks it; without
+# OpenCV the engine declares no video modality.
+entries:
+  - row: F-10
+    features: [F-10]
+    cases:
+      - unittest/llmapi/apps/_test_trtllm_serve_multimodal_example.py::test_trtllm_serve_examples[python3-openai_chat_client_for_multimodal.py]
+      - unittest/llmapi/apps/_test_trtllm_serve_multimodal_example.py::test_trtllm_serve_examples[bash-aiperf_client_for_multimodal.sh]
+      - unittest/llmapi/apps/_test_openai_chat_multimodal.py::test_single_chat_session_image
+      - unittest/llmapi/apps/_test_openai_chat_multimodal.py::test_responses_image_input[message]
+      - unittest/llmapi/apps/_test_openai_chat_multimodal.py::test_responses_image_input[untyped]
+      - unittest/llmapi/apps/_test_openai_chat_multimodal.py::test_single_chat_session_multi_image
+      - unittest/llmapi/apps/_test_openai_chat_multimodal.py::test_single_chat_session_video
+      - unittest/llmapi/apps/_test_openai_chat_multimodal.py::test_single_chat_session_image_embed
+    commit: 5228148f51163aa8c09435172e985817f999ca32
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p1-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p1-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p2-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p2-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p3-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p3-r0/obligations/junit/
+    result: passed
+    chain_proof: ok
+  - row: F-46
+    features: [F-46]
+    cases:
+      - unittest/llmapi/apps/_test_openai_lora.py::test_lora
+      - unittest/llmapi/apps/_test_trtllm_serve_lora.py::test_trtllm_serve_lora_completion
+    commit: 5228148f51163aa8c09435172e985817f999ca32
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p1-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p1-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p2-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p2-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p3-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p3-r0/obligations/junit/
+    result: passed
+    chain_proof: ok
