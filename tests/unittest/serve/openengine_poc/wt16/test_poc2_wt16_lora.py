@@ -78,7 +78,11 @@ def test_first_use_registers_and_later_uses_reuse_it():
         )
         # The Generate call names the registered adapter, and the engine takes it.
         request = EngineRequest(
-            request_id="trtllm-lora", prompt_token_ids=[5, 6], max_tokens=1, lora_name="adapter-a"
+            request_id="trtllm-lora",
+            prompt_token_ids=[5, 6],
+            max_tokens=1,
+            lora_name="adapter-a",
+            model=LORA_PROFILE.model,
         )
         async for _ in clients[0].generate(request):
             pass

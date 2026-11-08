@@ -320,7 +320,11 @@ def test_the_engine_receives_each_source_as_its_media_item(media_dir):
             client = await OpenEngineEngineClient.connect(engine.target, ready_timeout=10)
             try:
                 request = EngineRequest(
-                    request_id="trtllm-media", prompt_token_ids=[5, 6, 7], max_tokens=1, media=specs
+                    request_id="trtllm-media",
+                    prompt_token_ids=[5, 6, 7],
+                    max_tokens=1,
+                    media=specs,
+                    model=profile.model,
                 )
                 async for _ in client.generate(request):
                     pass

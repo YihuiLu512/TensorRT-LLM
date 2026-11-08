@@ -60,7 +60,7 @@ def _profile(**changes):
         max_context_length=64,
         vocab_size=len(_VOCAB),
         eos_token_ids=(EOS,),
-        bos_token_id=None,
+        bos_token_id=BOS,
         modalities=frozenset({"image", "video"}),
         supports_lora=True,
         capabilities={
