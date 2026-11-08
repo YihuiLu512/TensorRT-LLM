@@ -1,24 +1,31 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""WT-11's table: serve tests whose server asks for beam search.
+"""WT-11's table: serve tests that send requests the request mapping refuses.
 
-The chain has no beam search, so a front end started with ``--max_beam_width``
-above 1 refuses to start, and every test that uses such a server fails at startup.
+The harness starts the engine, not the front end, with ``--max_beam_width``, so
+a server that asks for beam search starts. OpenEngine has no beam search: a
+request with ``use_beam_search`` gets HTTP 400 from the front end and never
+reaches the engine.
 """
 
-from openengine_chain.expectations import STARTUP_REJECTED, Expectation
+from openengine_chain.expectations import HTTP_STATUS, NO_ENGINE_TRAFFIC, Expectation
 
-_REASON = "the server is started with --max_beam_width > 1; OpenEngine has no beam search"
-_LOG = "max_beam_width > 1 is not supported"
+_BEAM_REASON = "use_beam_search=True: OpenEngine has no beam search"
 
-_BEAM_SERVERS = (
+_BEAM_REQUESTS = (
     "_test_openai_completions.py::test_batch_completions_beam_search*",
     "_test_openai_chat.py::test_multiple_responses_with_beam_search*",
-    "_test_openai_reasoning.py::*with_beam_search*",
-    "_test_openai_misc.py::*with_beam_search*",
+    "_test_openai_reasoning.py::test_reasoning_parser[*with_beam_search-True]",
+    "_test_openai_misc.py::test_request_cancellation[*with_beam_search*-True]",
 )
 
 EXPECTATIONS = [
-    Expectation("WT-11", match, STARTUP_REJECTED, _REASON, log_contains=_LOG)
-    for match in _BEAM_SERVERS
+    Expectation("WT-11", match, HTTP_STATUS, _BEAM_REASON, status=400) for match in _BEAM_REQUESTS
+] + [
+    Expectation(
+        "WT-11",
+        "_test_openengine_wt11_mapping.py::test_unsupported_fields_rejected*",
+        NO_ENGINE_TRAFFIC,
+        "it sends only a request the front end rejects",
+    ),
 ]
