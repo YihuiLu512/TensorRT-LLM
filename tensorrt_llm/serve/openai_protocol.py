@@ -1793,11 +1793,15 @@ class ResponsesRequest(OpenAIBaseModel):
             guided_decoding = _response_format_text_config_to_guided_decoding_params(
                 self.text.format, reasoning_parser=reasoning_parser)
 
+        # Responses output carries no logprobs: leave them unset unless the
+        # request asks for them with top_logprobs.
+        logprobs = (self.top_logprobs
+                    if "top_logprobs" in self.model_fields_set else None)
         sampling_params = SamplingParams(
             temperature=temperature,
             top_p=top_p,
             max_tokens=max_tokens,
-            logprobs=self.top_logprobs,
+            logprobs=logprobs,
             stop_token_ids=stop_token_ids,
             guided_decoding=guided_decoding,
             thinking_token_budget=self.thinking_token_budget,
@@ -2004,7 +2008,7 @@ class ResponsesResponse(OpenAIBaseModel):
             service_tier=request.service_tier,
             status=status,
             text=request.text,
-            top_logprobs=sampling_params.logprobs,
+            top_logprobs=sampling_params.logprobs or 0,
             truncation=request.truncation,
             user=request.user,
             usage=usage,

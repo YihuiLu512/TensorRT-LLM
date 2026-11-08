@@ -307,6 +307,20 @@ OWNERSHIP: dict[str, list[Rule]] = {
         ),
     ],
     "WT-11": _own(f"{POC}/mapping.py", f"{POC}/field_classes.py")
+    + [
+        Rule(
+            "scripts/poc2/check_ownership.py",
+            "exception",
+            "only the exceptions of WT-11, WT-11-fix1 and WT-11-fix2",
+        ),
+        Rule(
+            "tensorrt_llm/serve/openai_protocol.py",
+            "exception",
+            "only the request-data contract's switch that does not materialize (WT-11), and"
+            " Responses logprobs only when the request gives top_logprobs, with the"
+            " top_logprobs the response reports (WT-11-fix1)",
+        ),
+    ]
     # WT-11-fix2 (spec 06, CAP-*): sampling capabilities as accepted values, on both sides.
     + [
         Rule(path, "exception", f"WT-11-fix2 only: {what}")
@@ -355,7 +369,6 @@ OWNERSHIP: dict[str, list[Rule]] = {
                 "tests/unittest/grpc/openengine_client/test_openengine_poc_serve.py",
                 "the PoC-S1 mapping's and the facade's priority tests",
             ),
-            ("scripts/poc2/check_ownership.py", "these WT-11-fix2 exceptions"),
         )
     ]
     + [
@@ -374,13 +387,11 @@ OWNERSHIP: dict[str, list[Rule]] = {
                 "no thinking-budget processor or bias tensor for a generator that takes"
                 " request data, and logit_bias, the reasoning parser and the tokenizer passed to it",
             ),
-            ("tensorrt_llm/serve/openai_protocol.py", "the switch that does not materialize"),
             ("tensorrt_llm/serve/responses_utils.py", "the thinking-budget processor switch"),
             (
                 "tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_contracts.py",
                 "the version",
             ),
-            ("scripts/poc2/check_ownership.py", "these WT-11 exceptions"),
         )
     ]
     + [

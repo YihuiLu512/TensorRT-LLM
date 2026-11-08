@@ -270,3 +270,26 @@ def test_thinking_token_budget_anthropic(server: RemoteOpenAIServer, model_name:
     assert thinking, response.json()
     limit = budget + len(tokenizer.encode(REASONING_END, add_special_tokens=False))
     assert _token_count(tokenizer, thinking[0]) <= limit
+
+
+# ---------------------------------------------------------- Responses top_logprobs
+
+
+@pytest.mark.parametrize("top_logprobs", [None, 2], ids=["absent", "given"])
+def test_responses_top_logprobs(client: openai.OpenAI, model_name: str, top_logprobs):
+    """A Responses request is served with and without ``top_logprobs`` and reports it (0 if absent).
+
+    A non-regression check: this server can return logprobs, so it serves the request either way.
+    What the engine is asked for is checked on CPU, including against an engine that declares no
+    output logprobs.
+    """
+    extra_body = {} if top_logprobs is None else {"top_logprobs": top_logprobs}
+    response = client.responses.create(
+        model=model_name,
+        input=GREEDY_PROMPT,
+        max_output_tokens=16,
+        temperature=0.0,
+        extra_body=extra_body,
+    )
+    assert response.output, response
+    assert response.top_logprobs == (top_logprobs or 0)

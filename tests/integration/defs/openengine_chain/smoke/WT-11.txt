@@ -4,3 +4,4 @@ unittest/llmapi/apps/_test_openengine_wt11_mapping.py::test_sampling_knobs_reach
 unittest/llmapi/apps/_test_openengine_wt11_mapping.py::test_n_engine_call_count[split]
 unittest/llmapi/apps/_test_openengine_wt11_mapping.py::test_unsupported_fields_rejected
 unittest/llmapi/apps/_test_openengine_wt11_value_sets.py::test_an_explicit_no_effect_value_is_served[plain-repetition_penalty]
+unittest/llmapi/apps/_test_openengine_wt11_mapping.py::test_responses_top_logprobs[absent]
