@@ -372,7 +372,13 @@ def test_prepare_server_refuses_what_the_frontend_refuses(arms, tmp_path, monkey
     assert seen[0]["num_postprocess_workers"] == 0, "the check sees the arm's settings"
 
 
-def test_prepare_server_uses_the_frontend_check(arms, tmp_path, facade):
+def test_prepare_server_uses_the_frontend_check(arms, tmp_path, facade, monkeypatch):
+    # As when no metrics recorder is installed, so enable_iter_perf_stats is refused.
+    monkeypatch.setattr(
+        facade.contracts,
+        "resolve_slot",
+        lambda name: (facade.contracts.slots()[name].default, "default"),
+    )
     source = _write_config(tmp_path, {**CONFIG, "enable_iter_perf_stats": True}, "iter.yml")
     with pytest.raises(arms.ArmError, match="enable_iter_perf_stats"):
         arms.prepare_server(_serve_cmd(source), arms.ARMS["B-s1"], str(tmp_path))

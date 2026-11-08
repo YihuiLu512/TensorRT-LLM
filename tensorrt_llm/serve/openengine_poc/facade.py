@@ -1010,6 +1010,8 @@ class OpenEngineLLM:
             prepare=prepare,
             postproc=postproc,
             engine_name=engine_name,
+            sampling_params=sampling_params,
+            trace_headers=trace_headers,
         )
 
     # -- Stats and events ----------------------------------------------------
@@ -1123,6 +1125,8 @@ class OpenEngineRequestOutput:
         prepare: Callable[[], Any] | None,
         postproc: _Postproc | None,
         engine_name: str,
+        sampling_params: SamplingParams | None = None,
+        trace_headers: Mapping[str, str] | None = None,
     ) -> None:
         self._facade = facade
         self._create_assembler = create_assembler
@@ -1144,9 +1148,19 @@ class OpenEngineRequestOutput:
         self.finished = False
         self.error: str | None = None
         self.context_logits = None
-        self.candidate_metrics = None
         self.disaggregated_params = None
-        self._request_metrics = facade._metrics.start_request(self.request_id, time.time())
+        self._metrics_failed = False
+        self._request_metrics: contracts.RequestMetrics | None = None
+        try:
+            self._request_metrics = facade._metrics.start_request(
+                self.request_id,
+                time.time(),
+                sampling_params=sampling_params,
+                trace_headers=trace_headers,
+            )
+        except Exception as error:  # noqa: BLE001 - a recorder failure is logged, not served
+            self._metrics_failed = True
+            logger.warning(f"Could not start measuring request {self.request_id}: {error}")
         self._session: contracts.PostprocSession | None = None
         self._session_closed = False
         self._results: asyncio.Queue[Any] | None = None
@@ -1194,8 +1208,26 @@ class OpenEngineRequestOutput:
         return 0 if self._assembler is None else self._assembler.cached_tokens
 
     @property
-    def metrics_dict(self) -> dict[str, Any]:
-        return self._request_metrics.metrics_dict()
+    def metrics_dict(self) -> dict[Any, Any]:
+        if self._metrics_failed or self._request_metrics is None:
+            return {}
+        try:
+            return self._request_metrics.metrics_dict()
+        except Exception as error:  # noqa: BLE001 - a recorder failure is logged, not served
+            self._metrics_failed = True
+            logger.warning(f"Could not read the metrics of request {self.request_id}: {error}")
+            return {}
+
+    @property
+    def candidate_metrics(self) -> list[dict[Any, Any]]:
+        if self._metrics_failed or self._request_metrics is None:
+            return []
+        try:
+            return self._request_metrics.candidate_metrics()
+        except Exception as error:  # noqa: BLE001 - a recorder failure is logged, not served
+            self._metrics_failed = True
+            logger.warning(f"Could not read the metrics of request {self.request_id}: {error}")
+            return []
 
     @property
     def _done(self) -> bool:
@@ -1280,6 +1312,7 @@ class OpenEngineRequestOutput:
                     stream.cancel()
                     queue.put_nowait((offset, self._overflow_error()))
                     return
+                self._measure(event, offset)
                 queue.put_nowait((offset, event))
         except asyncio.CancelledError:
             stream.cancel()
@@ -1353,7 +1386,6 @@ class OpenEngineRequestOutput:
                 event = _shifted(item, offset) if offset and hasattr(item, "output_index") else item
                 if isinstance(event, OutputFinished):
                     finished_outputs.add(event.output_index)
-                self._request_metrics.on_event(event, time.time())
                 if not self._session_closed:
                     session.send(event)
         except contracts.PostprocError as error:
@@ -1403,6 +1435,9 @@ class OpenEngineRequestOutput:
             # after the abort ends the request as cancelled, as without the pool.
             self.outputs[0]._postprocess_result = []
             self.finished = True
+            # The outputs end as cancelled for the metrics, as without the pool.
+            self._assembler.finish_cancelled()
+            self._finish_metrics()
             return self
         if item is _END:
             raise self._fail(
@@ -1417,7 +1452,36 @@ class OpenEngineRequestOutput:
         if item.is_final:
             self.finished = True
             self._cancel_calls()
+            self._finish_metrics()
         return self
+
+    def _measure(self, event: Any, offset: int) -> None:
+        """Give the metrics recorder an event as it arrives; its failure does not fail the request."""
+        if self._metrics_failed or self._request_metrics is None:
+            return
+        try:
+            self._request_metrics.on_event(
+                _shifted(event, offset) if offset and hasattr(event, "output_index") else event,
+                time.time(),
+            )
+        except Exception as error:  # noqa: BLE001 - a recorder failure is logged, not served
+            self._metrics_failed = True
+            logger.warning(f"Could not measure request {self.request_id}: {error}")
+
+    def _finish_metrics(self) -> None:
+        """Tell the metrics recorder the request has ended; its failure does not fail the request."""
+        if self._metrics_failed or self._request_metrics is None:
+            return
+        try:
+            self._request_metrics.finish(
+                self.outputs,
+                time.time(),
+                prompt_tokens=len(self.prompt_token_ids or ()),
+                # With the postprocessing pool the assembler sees no events.
+                assembled=self._session is None,
+            )
+        except Exception as error:  # noqa: BLE001 - a recorder failure is logged, not served
+            logger.warning(f"Could not record the metrics of request {self.request_id}: {error}")
 
     def _stopping_error(self, error: Exception) -> Exception:
         """``error``, or a 503 when the frontend is stopping and that caused it."""
@@ -1486,6 +1550,7 @@ class OpenEngineRequestOutput:
                 if self._aborted:
                     self._assembler.finish_cancelled()
                     self.finished = True
+                    self._finish_metrics()
                     return self
                 raise self._fail(_ended_early(self._engine_name))
             if isinstance(item, BaseException) and self._aborted:
@@ -1495,6 +1560,7 @@ class OpenEngineRequestOutput:
                     continue
                 self._assembler.finish_cancelled()
                 self.finished = True
+                self._finish_metrics()
                 return self
             if isinstance(item, BaseException):
                 raise self._fail(self._call_failure(item)) from item
@@ -1505,7 +1571,6 @@ class OpenEngineRequestOutput:
                 raise self._fail(cancelled)
             if offset and hasattr(event, "output_index"):
                 event = _shifted(event, offset)
-            self._request_metrics.on_event(event, time.time())
             try:
                 changed = self._assembler.apply(event)
             except Exception as error:
@@ -1523,6 +1588,7 @@ class OpenEngineRequestOutput:
                 # Tokens past a serving-side stop string are not needed: cancelling
                 # the calls aborts them on the engine; calls it ended are not affected.
                 self._cancel_calls()
+                self._finish_metrics()
             return self
 
 

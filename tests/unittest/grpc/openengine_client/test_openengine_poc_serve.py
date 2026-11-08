@@ -1561,7 +1561,17 @@ def test_an_unsupported_error_from_a_handler_answers_501(tmp_path) -> None:
     _serve(engine, tmp_path, body)
 
 
-def test_stats_without_a_metrics_recorder_do_not_query_the_engine(tmp_path) -> None:
+def _without_components(monkeypatch) -> None:
+    """Resolve every slot to its default, as when no component is installed."""
+    monkeypatch.setattr(
+        facade_module.contracts,
+        "resolve_slot",
+        lambda name: (contracts.slots()[name].default, "default"),
+    )
+
+
+def test_stats_without_a_metrics_recorder_do_not_query_the_engine(tmp_path, monkeypatch) -> None:
+    _without_components(monkeypatch)
     engine = _engine()
 
     async def body(engine, facade, http):
@@ -1599,7 +1609,8 @@ def _options(**changes: Any) -> SimpleNamespace:
         ({"otlp_traces_endpoint": "http://localhost:4318"}, "otlp_traces_endpoint"),
     ],
 )
-def test_options_the_frontend_cannot_honour_are_refused(changes, name) -> None:
+def test_options_the_frontend_cannot_honour_are_refused(changes, name, monkeypatch) -> None:
+    _without_components(monkeypatch)
     with pytest.raises(ValueError, match=name):
         check_frontend_options(_options(**changes))
 
