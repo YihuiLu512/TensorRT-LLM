@@ -24,16 +24,10 @@ Built-in profiles (:data:`PROFILES`):
 
 ``trtllm-like``
     The TensorRT-LLM OpenEngine server following the ``trtllm.*`` conventions.
-``trtllm-current``
-    The TensorRT-LLM OpenEngine server without the conventions: no convention
-    keys in ``ServerInfo``/``ModelInfo``, no counters in ``GetLoad``, sampling
-    extensions accepted without declaration, unknown ``extra`` keys ignored,
-    and usage that counts only the tokens returned.
+    It declares the guided decoding modes of an engine started with
+    ``guided_decoding_backend: xgrammar``.
 ``glm-like``
     The glm-5.3-flash OpenEngine server following the conventions.
-
-The two TensorRT-LLM profiles declare the guided decoding modes of an engine
-started with ``guided_decoding_backend: xgrammar``.
 
 Run as a script to serve a profile from its own process::
 
@@ -236,9 +230,6 @@ class FakeProfile:
             that ``capabilities`` marks true without declaring them, and
             ignores the other ``extra`` keys except ``detokenize``.
         capabilities: Values of the capability keys, by key.
-        usage_counts_withheld_stop_tokens: Whether ``completion_tokens``
-            counts every sampled token, including stop tokens left out of the
-            output; otherwise it counts only the tokens returned.
         reject_kv_session: Reject ``kv.session``; otherwise it is ignored.
         eos_token_ids: Tokens that end an output unless ``ignore_eos`` is set;
             the one sampled is reported in ``stop_match.eos_token_id``.
@@ -278,7 +269,6 @@ class FakeProfile:
     follows_conventions: bool = True
     # Mappings and protobuf messages are unhashable, so they stay out of hash().
     capabilities: Mapping[str, bool | str] = field(default_factory=dict, hash=False)
-    usage_counts_withheld_stop_tokens: bool = True
     reject_kv_session: bool = False
     eos_token_ids: tuple[int, ...] = (2,)
     bos_token_id: int | None = 1
@@ -419,23 +409,6 @@ PROFILES: dict[str, FakeProfile] = {
         engine_name="tensorrt_llm",
         capabilities=_TRTLLM_CAPABILITIES,
         server_info_extra=_TRTLLM_SERVER_INFO_EXTRA,
-    ),
-    "trtllm-current": FakeProfile(
-        name="trtllm-current",
-        engine_name="tensorrt_llm",
-        server_info_extra=_TRTLLM_SERVER_INFO_EXTRA,
-        max_num_sequences=None,
-        follows_conventions=False,
-        usage_counts_withheld_stop_tokens=False,
-        # What the server accepts without declaring it.
-        capabilities={
-            CAP_MIN_P: True,
-            CAP_FREQUENCY_PENALTY: True,
-            CAP_PRESENCE_PENALTY: True,
-            CAP_REPETITION_PENALTY: True,
-            CAP_STOP_TEXT: True,
-            CAP_CONVERSATION_ID: True,
-        },
     ),
     "glm-like": FakeProfile(
         name="glm-like",
@@ -1127,10 +1100,7 @@ class _Generator:
 
     def usage(self, cached_prompt_tokens: int) -> generation_pb2.Usage:
         prompt_tokens = len(self.admitted.prompt_token_ids)
-        if self.profile.usage_counts_withheld_stop_tokens:
-            completion_tokens = sum(output.sampled for output in self.outputs)
-        else:
-            completion_tokens = sum(len(output.tokens) for output in self.outputs)
+        completion_tokens = sum(len(output.tokens) for output in self.outputs)
         return generation_pb2.Usage(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
@@ -1560,10 +1530,10 @@ class FakeEngine:
       come in one ``prompt`` event first; the first prompt token has none.
     * ``TokenInfo.token`` is set only on tokens that carry a logprob, and
       ``TokenOutput.text`` is never set.
-    * Usage is on the last response only. ``completion_tokens`` counts every
-      sampled token, or only the returned ones if the profile's
-      ``usage_counts_withheld_stop_tokens`` is false; ``cached_prompt_tokens``
-      is the attribute of the same name.
+    * Usage is on the last response only. ``completion_tokens`` counts the
+      returned tokens, so an EOS, stop token or stop string left out of the
+      output is not counted; ``cached_prompt_tokens`` is the attribute of the same
+      name.
 
     ``Abort`` (or :meth:`abort`) ends the unfinished outputs of a running call
     with ``CANCELLED`` after sending the tokens they held back. ``Generate``

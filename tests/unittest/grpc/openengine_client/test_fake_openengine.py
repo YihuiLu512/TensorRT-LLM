@@ -71,6 +71,10 @@ pytestmark = [pytest.mark.cpu_only, pytest.mark.threadleak(enabled=False)]
 WAIT_SECONDS = 10.0
 PROMPT = [5, 6, 7]
 EOS = PROFILES["trtllm-like"].eos_token_ids[0]
+# A TensorRT-LLM engine that does not follow the trtllm.* conventions.
+NO_CONVENTIONS = PROFILES["trtllm-like"].replace(
+    name="no-conventions", follows_conventions=False, max_num_sequences=None
+)
 CAPABILITY_KEYS = (
     CAP_MIN_P,
     CAP_FREQUENCY_PENALTY,
@@ -216,12 +220,14 @@ def check_stream(
 # -- Declared capabilities --------------------------------------------------------------
 
 
-@pytest.mark.parametrize("name", sorted(PROFILES))
-def test_profile_declares_every_capability_explicitly(name: str) -> None:
-    profile = PROFILES[name]
-
+@pytest.mark.parametrize(
+    "profile",
+    [*(PROFILES[name] for name in sorted(PROFILES)), NO_CONVENTIONS],
+    ids=lambda p: p.name,
+)
+def test_profile_declares_every_capability_explicitly(profile: FakeProfile) -> None:
     async def main() -> None:
-        async with connected(FakeEngine(name)) as client:
+        async with connected(FakeEngine(profile)) as client:
             info = client.model_info
             server = client.server_info
         for field in (
@@ -289,8 +295,8 @@ def test_profiles_report_the_planned_engine_capabilities() -> None:
     assert trtllm_extra[CAP_SEED_SCOPE] == glm_extra[CAP_SEED_SCOPE] == "batch_dependent"
 
 
-def test_trtllm_current_has_no_sequence_limit_and_no_counters() -> None:
-    engine = FakeEngine("trtllm-current")
+def test_profile_without_conventions_has_no_sequence_limit_and_no_counters() -> None:
+    engine = FakeEngine(NO_CONVENTIONS)
 
     async def main() -> None:
         async with connected(engine) as client:
@@ -307,18 +313,6 @@ def test_trtllm_current_has_no_sequence_limit_and_no_counters() -> None:
         assert not sources.sources
 
     run(main())
-
-
-def test_trtllm_current_usage_counts_only_returned_tokens() -> None:
-    message = request(stopping={"maxTokens": 9, "conditions": [{"stopTokenId": 7}]})
-
-    async def main() -> list[generation_pb2.GenerateResponse]:
-        async with connected(FakeEngine("trtllm-current")) as client:
-            return await collect(client, message)
-
-    responses = run(main())
-    assert tokens_by_output(responses) == {0: [5, 6]}
-    assert responses[-1].usage.completion_tokens == 2
 
 
 def test_profile_mappings_are_read_only() -> None:
@@ -419,41 +413,37 @@ _LENGTH = {"reason": "LENGTH"}
 
 
 @pytest.mark.parametrize(
-    "stopping,prompt,expected_tokens,expected_finish,sampled",
+    "stopping,prompt,expected_tokens,expected_finish",
     [
-        ({"maxTokens": 5}, PROMPT, [5, 6, 7, 5, 6], _LENGTH, 5),
-        ({"maxTokens": 9}, [5, EOS, 7], [5], {"eosTokenId": EOS}, 2),
-        ({"maxTokens": 4, "ignoreEos": True}, [5, EOS, 7], [5, EOS, 7, 5], _LENGTH, 4),
+        ({"maxTokens": 5}, PROMPT, [5, 6, 7, 5, 6], _LENGTH),
+        ({"maxTokens": 9}, [5, EOS, 7], [5], {"eosTokenId": EOS}),
+        ({"maxTokens": 4, "ignoreEos": True}, [5, EOS, 7], [5, EOS, 7, 5], _LENGTH),
         (
             {"maxTokens": 9, "conditions": [{"stopTokenId": 7}]},
             PROMPT,
             [5, 6],
             {"stopTokenId": 7},
-            3,
         ),
         (
             {"maxTokens": 9, "conditions": [{"stopTokenId": 7}], "includeStopInOutput": True},
             PROMPT,
             [5, 6, 7],
             {"stopTokenId": 7},
-            3,
         ),
         # Until min_tokens tokens are sampled, EOS and stop tokens are skipped.
-        ({"maxTokens": 9, "minTokens": 3}, [5, EOS, 7], [5, 7, 5], {"eosTokenId": EOS}, 4),
+        ({"maxTokens": 9, "minTokens": 3}, [5, EOS, 7], [5, 7, 5], {"eosTokenId": EOS}),
         # Both tokens of a two-token stop string are left out.
         (
             {"maxTokens": 9, "conditions": [{"stopText": "<6><7>"}]},
             PROMPT,
             [5],
             {"stopText": "<6><7>"},
-            3,
         ),
         (
             {"maxTokens": 9, "conditions": [{"stopText": "<6><7>"}], "includeStopInOutput": True},
             PROMPT,
             [5, 6, 7],
             {"stopText": "<6><7>"},
-            3,
         ),
         # The first "<6>" is within min_tokens; the next one stops the output.
         (
@@ -461,7 +451,6 @@ _LENGTH = {"reason": "LENGTH"}
             PROMPT,
             [5, 6, 7, 5],
             {"stopText": "<6>"},
-            5,
         ),
     ],
     ids=[
@@ -481,7 +470,6 @@ def test_generator_applies_the_stopping_options(
     prompt: list[int],
     expected_tokens: list[int],
     expected_finish: dict[str, Any],
-    sampled: int,
 ) -> None:
     message = request(prompt, stopping=stopping)
 
@@ -499,8 +487,8 @@ def test_generator_applies_the_stopping_options(
     else:
         assert finished.reason == generation_pb2.FINISH_REASON_STOP
         assert json_format.MessageToDict(finished.stop_match) == expected_finish
-    # Every sampled token counts, including a stop token left out of the output.
-    assert responses[-1].usage.completion_tokens == sampled
+    # Only returned tokens count: an EOS, stop token or stop string left out does not.
+    assert responses[-1].usage.completion_tokens == len(expected_tokens)
 
 
 def test_generator_streams_several_outputs_with_logprobs() -> None:
@@ -620,7 +608,7 @@ _REJECTIONS = [
     ("trtllm-like", {}, {"trtllm.logit_bias": {"5": 101}}, (), "INVALID_ARGUMENT"),
     ("trtllm-like", {}, {"trtllm.logit_bias": {"x": 1}}, (), "INVALID_ARGUMENT"),
     ("trtllm-like", {}, {"trtllm.logit_bias": {"\uff15": 1}}, (), "INVALID_ARGUMENT"),
-    ("trtllm-current", {}, {"conversation_id": "  "}, (), "INVALID_ARGUMENT"),
+    (NO_CONVENTIONS, {}, {"conversation_id": "  "}, (), "INVALID_ARGUMENT"),
     ("trtllm-like", {"sampling": {"repetitionPenalty": "NaN"}}, None, (), "INVALID_ARGUMENT"),
     (
         "trtllm-like",
@@ -786,7 +774,7 @@ def test_text_prompt_and_declared_media_are_accepted() -> None:
     run(main())
 
 
-def test_trtllm_current_accepts_undeclared_extensions_and_ignores_unknown_keys() -> None:
+def test_profile_without_conventions_ignores_undeclared_and_unknown_keys() -> None:
     message = request(
         sampling={"presencePenalty": 0.5, "minP": 0.1},
         stopping={"maxTokens": 2, "conditions": [{"stopText": "x"}]},
@@ -794,7 +782,7 @@ def test_trtllm_current_accepts_undeclared_extensions_and_ignores_unknown_keys()
     )
 
     async def main() -> None:
-        async with FakeEngine("trtllm-current") as engine:
+        async with FakeEngine(NO_CONVENTIONS) as engine:
             responses, code, details = await raw_generate(engine, message)
             assert code == grpc.StatusCode.OK, details
             assert finished_by_output(responses)[0].reason == generation_pb2.FINISH_REASON_LENGTH
