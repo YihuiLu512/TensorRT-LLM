@@ -1,0 +1,85 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+entries:
+  - row: F-38
+    features: [F-38]
+    cases:
+      - unittest/llmapi/apps/_test_openai_chat.py::test_chat_cached_tokens[pytorch-extra_options-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_chat.py::test_chat_cached_tokens[pytorch-no_extra_options-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_chat.py::test_multi_turn_dialogue[pytorch-extra_options-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_chat.py::test_multi_turn_dialogue[pytorch-no_extra_options-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_chat_harmony.py::test_prompt_token_ids_skips_retokenization[enable_processpool]
+      - unittest/llmapi/apps/_test_openai_completions.py::test_batch_completions[pytorch-enable_processpool-prompts0]
+      - unittest/llmapi/apps/_test_openai_completions.py::test_batch_completions[pytorch-enable_processpool-prompts1]
+      - unittest/llmapi/apps/_test_openai_completions.py::test_batch_completions_streaming[pytorch-enable_processpool-prompts0]
+      - unittest/llmapi/apps/_test_openai_completions.py::test_batch_completions_streaming[pytorch-enable_processpool-prompts1]
+      - unittest/llmapi/apps/_test_openai_completions.py::test_completion_cached_tokens[pytorch-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_completions.py::test_completion_streaming[pytorch-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_completions.py::test_single_completion[pytorch-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_completions.py::test_single_completion_with_too_long_prompt[pytorch-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_responses.py::test_chat[Qwen3/Qwen3-0.6B-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_responses.py::test_reasoning[Qwen3/Qwen3-0.6B-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_responses.py::test_reasoning_effort[Qwen3/Qwen3-0.6B-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_responses.py::test_streaming[Qwen3/Qwen3-0.6B-enable_processpool]
+      - unittest/llmapi/apps/_test_openengine_wt13_postproc_pool.py::test_the_pool_processes_do_the_postprocessing
+    moved:
+      - to_row: F-20+F-21
+        why: they request logprobs, which the response assembler fills only once WT-12's lands; until then the chat postprocessor fails on them with and without the pool
+        cases:
+          - unittest/llmapi/apps/_test_openai_chat.py::test_chat_streaming[pytorch-extra_options-enable_processpool]
+          - unittest/llmapi/apps/_test_openai_chat.py::test_chat_streaming[pytorch-no_extra_options-enable_processpool]
+          - unittest/llmapi/apps/_test_openai_chat.py::test_single_chat_session[pytorch-extra_options-enable_processpool]
+          - unittest/llmapi/apps/_test_openai_chat.py::test_single_chat_session[pytorch-no_extra_options-enable_processpool]
+    commit: 30effc7b33e390bf7569be683c89a3ade61d8ae8
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p1-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p1-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p2-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p2-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p3-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p3-r0/obligations/junit/
+    result: passed
+    chain_proof: ok
+  - row: F-40
+    features: [F-40]
+    cases:
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_chat_non_streaming[suppress-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_chat_non_streaming[suppress-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_chat_non_streaming[terminate-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_chat_non_streaming[terminate-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_chat_non_streaming[uppercase-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_chat_non_streaming[uppercase-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_chat_streaming[suppress-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_chat_streaming[suppress-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_chat_streaming[terminate-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_chat_streaming[terminate-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_chat_streaming[uppercase-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_chat_streaming[uppercase-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_completions_detokenize_false_does_not_bypass_hook[suppress-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_completions_detokenize_false_does_not_bypass_hook[suppress-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_completions_detokenize_false_does_not_bypass_hook[terminate-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_completions_detokenize_false_does_not_bypass_hook[terminate-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_completions_detokenize_false_does_not_bypass_hook[uppercase-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_completions_detokenize_false_does_not_bypass_hook[uppercase-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_completions_non_streaming[suppress-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_completions_non_streaming[suppress-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_completions_non_streaming[terminate-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_completions_non_streaming[terminate-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_completions_non_streaming[uppercase-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_completions_non_streaming[uppercase-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_completions_streaming[suppress-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_completions_streaming[suppress-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_completions_streaming[terminate-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_completions_streaming[terminate-enable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_completions_streaming[uppercase-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_post_processor.py::test_completions_streaming[uppercase-enable_processpool]
+    commit: 30effc7b33e390bf7569be683c89a3ade61d8ae8
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p1-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p1-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p2-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p2-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p3-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p3-r0/obligations/junit/
+    result: passed
+    chain_proof: ok
