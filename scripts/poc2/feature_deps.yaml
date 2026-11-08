@@ -191,7 +191,7 @@ rows:
     features: [F-39]
     cases: "T24; the smoke set again with the default 8 frontends and the postproc pool"
     author: WT-14
-    deps: [link, WT-13, WT-14]
+    deps: [link, WT-13, WT-14, WT-15]
   - id: F-10
     features: [F-10]
     cases: "T14, T15; T33 (expected to be rejected)"

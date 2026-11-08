@@ -586,14 +586,10 @@ def _share_prometheus_multiproc_dir(llm, ipc_dir: str) -> None:
             f"Shared PROMETHEUS_MULTIPROC_DIR for all frontends: {path}")
 
 
-def _resolve_default_num_serve_frontends(llm_args: dict,
-                                         *,
-                                         requested: bool,
-                                         port: int,
-                                         grpc: bool,
+def _resolve_default_num_serve_frontends(llm_args: dict, *, requested: bool,
+                                         port: int, grpc: bool,
                                          report_addr: Optional[str],
-                                         enable_sleep_mode: bool,
-                                         openengine: bool = False) -> None:
+                                         enable_sleep_mode: bool) -> None:
     """Fall back to one frontend where the default count cannot run.
 
     An explicit count (CLI, --config YAML or --set) is left alone, so the
@@ -613,8 +609,6 @@ def _resolve_default_num_serve_frontends(llm_args: dict,
         reason = "enable_resource_governor"
     elif enable_sleep_mode:
         reason = "--enable_sleep_mode"
-    elif openengine:
-        reason = "--openengine-endpoint"
     else:
         return
     logger.info(
@@ -1761,8 +1755,7 @@ def serve(
             port=port,
             grpc=grpc,
             report_addr=report_addr,
-            enable_sleep_mode=enable_sleep_mode,
-            openengine=openengine_endpoint is not None)
+            enable_sleep_mode=enable_sleep_mode)
 
         _apply_effective_telemetry_config(llm_args, telemetry=telemetry)
         # Preserve requested settings for failures before entering the LLM constructor.

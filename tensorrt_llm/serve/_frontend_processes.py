@@ -105,8 +105,32 @@ def _spawn_attached_frontends(
         )
     # Carries the executor HMAC keys; the child deletes it from its env
     # once consumed (GenerationExecutor.create).
-    attach_env = json.dumps(attach_info)
+    child_env = dict(extra_env or {})
+    child_env["TLLM_EXECUTOR_ATTACH_INFO"] = json.dumps(attach_info)
+    return _spawn_frontend_group(
+        num_frontends,
+        extra_env=child_env,
+        cancelled=cancelled,
+        report_failure=report_failure,
+        affinity_sockets=affinity_sockets,
+    )
 
+
+def _spawn_frontend_group(
+    num_frontends: int,
+    *,
+    extra_env: dict[str, str] | None = None,
+    cancelled: threading.Event | None = None,
+    report_failure: Callable[[int, str, str], None] | None = None,
+    affinity_sockets: dict[int, socket.socket] | None = None,
+) -> list:
+    """Spawn num_frontends - 1 frontend processes and wait until each is READY.
+
+    Each child re-execs this trtllm-serve command line with ``extra_env`` and
+    its frontend id (TLLM_EXECUTOR_FRONTEND_ID); what makes it an attached
+    frontend is up to ``extra_env``. Readiness, failure handling and
+    affinity_sockets work as described in _spawn_attached_frontends.
+    """
     children, ready_fds = [], []
     try:
         for frontend_id in range(1, num_frontends):
@@ -114,7 +138,6 @@ def _spawn_attached_frontends(
             # make the child's mpi4py try to (re-)join the launcher's job.
             env, _ = split_mpi_env()
             env.update(extra_env or {})
-            env["TLLM_EXECUTOR_ATTACH_INFO"] = attach_env
             env["TLLM_EXECUTOR_FRONTEND_ID"] = str(frontend_id)
             env["TLLM_DISABLE_MPI"] = "1"
             read_fd, write_fd = os.pipe()

@@ -402,7 +402,30 @@ OWNERSHIP: dict[str, list[Rule]] = {
         ),
         _shared("tensorrt_llm/executor/postproc_worker.py", "making PostprocArgs plain data only"),
     ],
-    "WT-14": _own(f"{POC}/multi_frontend.py", "tensorrt_llm/serve/_frontend_processes.py"),
+    "WT-14": _own(f"{POC}/multi_frontend.py", "tensorrt_llm/serve/_frontend_processes.py")
+    + [
+        Rule(
+            "tensorrt_llm/commands/serve.py",
+            "exception",
+            "only dropping the single-frontend default of --openengine-endpoint (SV-MF-1)",
+        ),
+        Rule(
+            f"{CLIENT_TESTS}/test_openengine_poc_serve.py",
+            "exception",
+            "only the CLI tests that assumed a single OpenEngine frontend",
+        ),
+        Rule(
+            "tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_contracts.py",
+            "exception",
+            "only calling the default launch_frontends directly",
+        ),
+        Rule(
+            "scripts/poc2/feature_deps.yaml",
+            "exception",
+            "only adding WT-15 to the dependencies of F-39",
+        ),
+        Rule("scripts/poc2/check_ownership.py", "exception", "only the exceptions of WT-14"),
+    ],
     "WT-15": _own(f"{POC}/metrics.py"),
     "WT-16": _own(f"{POC}/media.py", f"{POC}/lora.py"),
     "WT-20-R2": [],

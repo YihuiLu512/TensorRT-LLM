@@ -680,7 +680,7 @@ def test_default_launch_calls_the_single_frontend_launcher():
         host="h", port=1, llm_args={"model": "m"}, endpoint="e:2", tool_parser="t"
     )
     with mock.patch.object(launch, "launch_openengine_server") as launcher:
-        contracts.launch_frontends(config)
+        contracts.default_launch_frontends(config)
     launcher.assert_called_once_with(
         "h",
         1,
@@ -696,10 +696,10 @@ def test_default_launch_calls_the_single_frontend_launcher():
         num_media_load_workers=8,
     )
     with mock.patch.object(launch, "launch_openengine_server") as launcher:
-        contracts.launch_frontends(dataclasses.replace(config, ready_timeout=5.0))
+        contracts.default_launch_frontends(dataclasses.replace(config, ready_timeout=5.0))
     assert launcher.call_args.kwargs["ready_timeout"] == 5.0
     with mock.patch.object(launch, "launch_openengine_server") as launcher:
-        contracts.launch_frontends(
+        contracts.default_launch_frontends(
             dataclasses.replace(
                 config, report_addr="/tmp/addr", allow_newer_schema=True, control_timeout=2.0
             )
@@ -715,7 +715,7 @@ def test_default_launch_rejects_several_frontends():
         host="h", port=1, llm_args={"num_serve_frontends": 2}, endpoint="e:2"
     )
     with pytest.raises(click.UsageError, match="single serving frontend"):
-        contracts.launch_frontends(config)
+        contracts.default_launch_frontends(config)
 
 
 # --- metrics, media, LoRA -------------------------------------------------------

@@ -889,6 +889,7 @@ def test_from_llm_args_needs_a_local_model_directory(tmp_path) -> None:
 
 
 def _run_cli(tmp_path, *args: str, diffusion_only: bool = False, endpoint: str = "localhost:1"):
+    """Run the CLI with one frontend (unless ``args`` set another count); returns the launch mock."""
     with (
         mock.patch.object(serve_cmd, "get_is_diffusion_only_model", return_value=diffusion_only),
         mock.patch.object(serve_cmd, "device_count", side_effect=AssertionError("no GPU here")),
@@ -898,7 +899,14 @@ def _run_cli(tmp_path, *args: str, diffusion_only: bool = False, endpoint: str =
         mock.patch.object(usage_lib, "_capture_startup_context") as capture_startup,
     ):
         serve_cmd.main(
-            args=[str(tmp_path), "--openengine-endpoint", endpoint, *args],
+            args=[
+                str(tmp_path),
+                "--openengine-endpoint",
+                endpoint,
+                "--num_serve_frontends",
+                "1",
+                *args,
+            ],
             standalone_mode=False,
         )
     launch_server.assert_not_called()
@@ -923,7 +931,6 @@ def test_cli_launches_one_openengine_frontend_without_a_gpu(tmp_path) -> None:
         (["--server_role", "context"], "--server_role"),
         (["--disagg_cluster_uri", "http://localhost:1"], "--disagg_cluster_uri"),
         (["--enable_visual_gen"], "--enable_visual_gen"),
-        (["--num_serve_frontends", "2"], "single serving frontend"),
     ],
 )
 def test_cli_rejects_options_the_openengine_path_cannot_serve(tmp_path, args, name) -> None:
