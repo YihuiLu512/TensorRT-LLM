@@ -33,7 +33,8 @@ class MultiFrontendMode(NamedTuple):
 
     @property
     def is_launcher(self) -> bool:
-        """Owns the engine and spawns/cleans the attached frontends."""
+        """Frontend 0: spawns and cleans up the attached frontends (and, on the classic
+        IPC executor path, owns the engine)."""
         return self.num_frontends > 1 and not self.is_attached_frontend
 
 

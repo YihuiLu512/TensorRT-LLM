@@ -34,9 +34,10 @@ import os
 import shutil
 import signal
 import socket
+import sys
 import tempfile
 import threading
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 import click
@@ -95,7 +96,9 @@ def launch_frontends(config: FrontendLaunchConfig) -> None:
     Raises:
         click.UsageError: The configuration asks for something these frontends cannot do.
         OpenEngineStartupError: The engine is not usable; the message names the step.
-        RuntimeError: The port is taken, or a frontend failed to start.
+        RuntimeError: The port cannot be bound, the launcher's socket path is too
+            long, or a frontend failed to start.
+        OSError: The temporary directory or a socket could not be created.
     """
     launcher_uds = os.environ.pop(LAUNCHER_UDS_ENV, None)
     num_frontends = _num_frontends(config.llm_args)
@@ -144,12 +147,13 @@ def _attached_frontend_id(num_frontends: int) -> int:
 class _Sigterm:
     """Turns SIGTERM into an orderly stop of this frontend.
 
-    Until the frontend serves, the handler cancels its main task, also for a
-    SIGTERM received before the task starts. While it serves, uvicorn handles
-    SIGTERM and, once it has shut down, raises it again into this handler.
-    The handler does not raise: uvloop logs and drops an exception raised by
-    a signal handler. A process forked from this one (a postprocessing worker,
-    say) inherits the handler and dies of SIGTERM as by default.
+    Until uvicorn takes SIGTERM over, the handler cancels the frontend's main
+    task, also for a SIGTERM received before the task starts. Once uvicorn has
+    shut down, it raises SIGTERM again into this handler. The handler does not
+    raise: under uvloop an exception raised by a signal handler is logged and
+    dropped while the loop is idle. A process forked from this one (a
+    postprocessing worker, say) inherits the handler and dies of SIGTERM as by
+    default.
     """
 
     def __init__(self) -> None:
@@ -166,6 +170,9 @@ class _Sigterm:
     def stop_cancelling(self) -> None:
         """From now on only record SIGTERM: uvicorn handles it, or the cleanup runs."""
         self._task = None
+
+    def installed(self) -> bool:
+        return signal.getsignal(signal.SIGTERM) == self._handle
 
     def _handle(self, signum: int, frame: Any) -> None:
         if os.getpid() != self._pid:
@@ -195,7 +202,53 @@ def _stopped_by_sigterm():
     finally:
         sigterm.restore()
     if sigterm.received:
+        # Ending by the signal skips the buffered output otherwise.
+        for stream in (sys.stdout, sys.stderr):
+            with contextlib.suppress(AttributeError, OSError, ValueError):
+                stream.flush()
         signal.raise_signal(signal.SIGTERM)
+
+
+async def _serve(
+    server: OpenAIServer,
+    config: FrontendLaunchConfig,
+    sockets: list[socket.socket],
+    sigterm: _Sigterm,
+) -> None:
+    """Serve until uvicorn stops, cancelled by a SIGTERM that comes before uvicorn takes it over."""
+    serving = asyncio.ensure_future(server(config.host, config.port, sockets=sockets))
+    try:
+        # uvicorn replaces the SIGTERM handler in the task's first step.
+        while not serving.done() and sigterm.installed():
+            await asyncio.sleep(0)
+    except BaseException:
+        serving.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await serving
+        raise
+    sigterm.stop_cancelling()
+    await serving
+
+
+async def _finish(cleanup: Awaitable[None]) -> None:
+    """Await ``cleanup`` to its end even if this task is cancelled meanwhile, then pass that on.
+
+    Once uvicorn has shut down after a SIGINT, it raises SIGINT again, and the
+    event loop's runner cancels the main task while it cleans up.
+    """
+    task = asyncio.ensure_future(cleanup)
+    cancelled = False
+    while True:
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if task.done():
+                raise
+            cancelled = True
+        else:
+            break
+    if cancelled:
+        raise asyncio.CancelledError
 
 
 def _disable_responses_store(*, warn: bool) -> None:
@@ -222,7 +275,8 @@ def _bind_shared_port(host: str, port: int, family: socket.AddressFamily) -> soc
     """This frontend's listening socket on the port all the frontends share.
 
     Raises:
-        RuntimeError: The address is taken; the message names the holder when it can.
+        RuntimeError: The address cannot be bound; the message names the port's
+            holder when it can.
     """
     from tensorrt_llm.commands.serve import _diagnose_port_in_use
 
@@ -276,13 +330,13 @@ def _build_frontend(
     postproc_workers: int,
     serving: MultiFrontendServing,
     before_server: Callable[[OpenEngineLLM], None] | None = None,
+    after_server: Callable[[OpenEngineLLM, OpenAIServer], None] | None = None,
 ) -> tuple[OpenEngineLLM, OpenAIServer]:
     """This process's facade and the ``OpenAIServer`` on it.
 
     Built with the arguments ``launch_openengine_server`` uses, plus
     ``postproc_workers`` and ``serving``. ``before_server`` runs on the facade
-    before the server is built. A ``TypeError`` from the facade's arguments is
-    a usage error too.
+    before the server is built, ``after_server`` on both once it is.
     """
     from tensorrt_llm.commands.serve import _apply_fastapi_middlewares
     from tensorrt_llm.serve.openai_server import OpenAIServer
@@ -309,7 +363,7 @@ def _build_frontend(
             allow_newer_schema=config.allow_newer_schema,
             postproc_workers=postproc_workers,
         )
-    except (ValueError, TypeError) as error:
+    except ValueError as error:
         raise click.UsageError(str(error)) from error
     try:
         if before_server is not None:
@@ -329,6 +383,8 @@ def _build_frontend(
         )
         adapt_server(server, facade)
         _apply_fastapi_middlewares(server.app, config.middleware)
+        if after_server is not None:
+            after_server(facade, server)
     except BaseException:
         # The facade may already hold a postprocessing pool.
         _close_facade(facade)
@@ -357,6 +413,12 @@ def _serve_launcher(config: FrontendLaunchConfig, num_frontends: int) -> None:
             f"frontend, but num_serve_frontends={num_frontends}."
         )
     postproc_total = _postproc_total(config.llm_args)
+    if 0 < postproc_total < num_frontends:
+        logger.warning(
+            f"num_postprocess_workers={postproc_total} is less than "
+            f"num_serve_frontends={num_frontends}: every frontend runs one "
+            f"postprocessing worker, {num_frontends} in all."
+        )
     _disable_responses_store(warn=True)
     family = _address_family(host, port)
     mode = MultiFrontendMode(num_frontends, is_attached_frontend=False)
@@ -438,23 +500,29 @@ async def _run_launcher(
             f"All {num_frontends} serving frontends are connected to the OpenEngine engine "
             f"at {config.endpoint}; serving on {config.host}:{config.port}"
         )
-        sigterm.stop_cancelling()
-        await server(config.host, config.port, sockets=sockets)
+        await _serve(server, config, sockets, sigterm)
     finally:
         sigterm.stop_cancelling()
         # Stops a spawn still waiting for READY; it then reaps its own children.
         cancelled.set()
         if stop_watching is not None:
             stop_watching.set()
-        try:
-            if spawn is not None and not children:
-                await asyncio.wait([spawn])
-                if spawn.exception() is None:
-                    children = spawn.result()
-            if children:
-                await asyncio.to_thread(_terminate_attached_frontends, children)
-        finally:
-            await facade.aclose()
+        await _finish(_stop_launcher(facade, spawn, children))
+
+
+async def _stop_launcher(
+    facade: OpenEngineLLM, spawn: asyncio.Future | None, children: list
+) -> None:
+    """Stop the attached frontends, including those of a spawn that was cancelled, then the facade."""
+    try:
+        if spawn is not None and not children:
+            await asyncio.wait([spawn])
+            if spawn.exception() is None:
+                children = spawn.result()
+        if children:
+            await asyncio.to_thread(_terminate_attached_frontends, children)
+    finally:
+        await facade.aclose()
 
 
 def _serve_attached(config: FrontendLaunchConfig, num_frontends: int, launcher_uds: str) -> None:
@@ -491,8 +559,8 @@ def _serve_attached(config: FrontendLaunchConfig, num_frontends: int, launcher_u
             serving=MultiFrontendServing(
                 launcher_uds=launcher_uds, is_launcher=False, launcher_pid=launcher_pid
             ),
+            after_server=_follow_launcher,
         )
-        _watch_launcher_liveness_only(server)
         sockets = [sock]
         if affinity_socket is not None:
             sockets.append(affinity_socket)
@@ -503,14 +571,19 @@ def _serve_attached(config: FrontendLaunchConfig, num_frontends: int, launcher_u
         )
 
 
-def _watch_launcher_liveness_only(server: OpenAIServer) -> None:
-    """Make the attached frontend's launcher watchdog count any answer as alive.
+def _follow_launcher(facade: OpenEngineLLM, server: OpenAIServer) -> None:
+    """Adapt the attached frontend's launcher watchdog to this path.
 
     The watchdog stops this frontend after the launcher's ``/health`` fails
     several times in a row. On this path ``/health`` reports the launcher's
-    connection to the engine, which this frontend watches itself, so only an
-    unreachable launcher counts as a failure.
+    connection to the engine, which this frontend watches itself, so any
+    answer counts as alive and only an unreachable launcher as a failure.
+    When the launcher is lost, the frontend stops as the facade stops it on a
+    lost engine: one SIGINT, with ``doing_shutdown`` set so that ``/health``
+    sends no second one.
     """
+    from .facade import _stop_frontend
+
     forwarder = server._launcher_forwarder
     get_status = forwarder.get_status
 
@@ -518,7 +591,12 @@ def _watch_launcher_liveness_only(server: OpenAIServer) -> None:
         status = await get_status(path, timeout_s)
         return None if status is None else 200
 
+    def launcher_lost(error: BaseException) -> None:
+        facade._executor._set_fatal_error(error)
+        _stop_frontend(facade)
+
     forwarder.get_status = answered
+    server._on_launcher_lost = launcher_lost
 
 
 async def _wait_for_launcher(launcher_uds: str, launcher_pid: int, interval_s: float = 0.2) -> None:
@@ -561,8 +639,7 @@ async def _run_attached(
         # Only a frontend connected to the engine counts as started.
         _signal_frontend_ready(mode)
         await _wait_for_launcher(launcher_uds, launcher_pid)
-        sigterm.stop_cancelling()
-        await server(config.host, config.port, sockets=sockets)
+        await _serve(server, config, sockets, sigterm)
     finally:
         sigterm.stop_cancelling()
-        await facade.aclose()
+        await _finish(facade.aclose())

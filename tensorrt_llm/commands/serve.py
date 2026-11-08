@@ -599,7 +599,8 @@ def _resolve_default_num_serve_frontends(llm_args: dict, *, requested: bool,
     if requested or num_frontends <= 1:
         return
     if grpc:
-        # The gRPC server supports several frontends, but only when asked to.
+        # --grpc supports several frontends with the OpenEngine protocol only,
+        # and only when asked to.
         reason = "--grpc"
     elif port == 0 or report_addr:
         reason = "--port 0 / --report_addr"

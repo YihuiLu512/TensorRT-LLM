@@ -39,6 +39,7 @@ from tensorrt_llm.grpc.openengine_conventions import (
 from tensorrt_llm.serve.multi_frontend import AttachedFrontendWatchdog
 from tensorrt_llm.serve.openengine_poc import contracts, multi_frontend
 from tensorrt_llm.serve.openengine_poc import launch as launch_module
+from tensorrt_llm.serve.openengine_poc.facade import _FacadeExecutor
 from tensorrt_llm.usage import usage_lib
 
 _CLIENT_TESTS = Path(__file__).resolve().parents[3] / "grpc" / "openengine_client"
@@ -208,7 +209,7 @@ def _watchdog_verdict(statuses: list[int | None]) -> list[BaseException]:
             return self.last
 
     server = SimpleNamespace(_launcher_forwarder=Forwarder())
-    multi_frontend._watch_launcher_liveness_only(server)
+    multi_frontend._follow_launcher(SimpleNamespace(_executor=_FacadeExecutor()), server)
     dead: list[BaseException] = []
     watchdog = AttachedFrontendWatchdog(
         server._launcher_forwarder,
@@ -242,6 +243,39 @@ def test_an_attached_frontend_stops_when_the_launcher_no_longer_answers():
     assert "failed 3 consecutive times" in str(dead[0])
 
 
+def test_a_lost_launcher_stops_an_attached_frontend_once():
+    facade = SimpleNamespace(_executor=_FacadeExecutor())
+    server = SimpleNamespace(_launcher_forwarder=SimpleNamespace(get_status=None))
+    multi_frontend._follow_launcher(facade, server)
+    with mock.patch("signal.raise_signal") as raise_signal:
+        server._on_launcher_lost(RuntimeError("launcher gone"))
+        server._on_launcher_lost(RuntimeError("launcher gone again"))
+    raise_signal.assert_called_once_with(signal.SIGINT)
+    # /health answers 503 and, with doing_shutdown set, sends no second SIGINT.
+    assert facade._executor.doing_shutdown
+    assert "launcher gone" == str(facade._executor._fatal_error)
+
+
+def test_the_cleanup_runs_to_its_end_when_cancelled():
+    steps = []
+
+    async def cleanup() -> None:
+        await asyncio.sleep(0.05)
+        steps.append("first")
+        await asyncio.sleep(0.05)
+        steps.append("second")
+
+    async def scenario() -> None:
+        task = asyncio.create_task(multi_frontend._finish(cleanup()))
+        await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    assert steps == ["first", "second"]
+
+
 def test_an_attached_frontend_listens_only_once_the_launcher_listens():
     async def scenario(path: str) -> None:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
@@ -266,14 +300,23 @@ def test_an_attached_frontend_stops_waiting_when_the_launcher_is_gone(tmp_path):
 
 _SIGTERM_SCRIPT = """
 import asyncio, os, signal, sys
+from types import SimpleNamespace
 import uvloop
 from tensorrt_llm.serve.openengine_poc import multi_frontend
+
+async def server(host, port, sockets):
+    # A server that has not taken SIGTERM over yet.
+    os.kill(os.getpid(), signal.SIGTERM)
+    await asyncio.sleep(60)
 
 async def main(sigterm):
     sigterm.cancel_on_signal(asyncio.current_task())
     try:
         if sys.argv[1] == "while-starting":
             os.kill(os.getpid(), signal.SIGTERM)
+        if sys.argv[1] == "before-the-server-takes-it-over":
+            config = SimpleNamespace(host="127.0.0.1", port=0)
+            await multi_frontend._serve(server, config, [], sigterm)
         await asyncio.sleep(60)
     finally:
         await asyncio.sleep(0)
@@ -287,7 +330,9 @@ print("not ended", flush=True)
 """
 
 
-@pytest.mark.parametrize("when", ["before-the-loop", "while-starting"])
+@pytest.mark.parametrize(
+    "when", ["before-the-loop", "while-starting", "before-the-server-takes-it-over"]
+)
 def test_sigterm_before_serving_cleans_up_then_ends_the_process(when):
     result = subprocess.run(  # nosec B603
         [sys.executable, "-c", _SIGTERM_SCRIPT, when],
@@ -487,9 +532,14 @@ class _Serve:
         env = {**os.environ, **(env or {})}
         env[SERVE_COUNTER_DIR_ENV] = str(self.counter_dir)
         env.pop(multi_frontend.LAUNCHER_UDS_ENV, None)
-        # The attached frontends re-exec the command line, so start it as users do.
-        entry = shutil.which("trtllm-serve")
-        prefix = [entry] if entry else [sys.executable, "-m", "tensorrt_llm.commands.serve"]
+        # The attached frontends re-exec the command line, so start it as users do,
+        # with the entry point of the interpreter running the tests.
+        entry = Path(sys.executable).parent / "trtllm-serve"
+        prefix = (
+            [str(entry)]
+            if entry.is_file()
+            else [sys.executable, "-m", "tensorrt_llm.commands.serve"]
+        )
         cmd = [
             *prefix,
             str(model_dir),
@@ -551,6 +601,16 @@ class _Serve:
                 process.kill()
         self._log.close()
         assert not alive, f"frontends still running after the launcher stopped: {alive}"
+
+
+@contextlib.contextmanager
+def _short_tmpdir():
+    """A private TMPDIR, short enough for the launcher's Unix socket path."""
+    path = Path(tempfile.mkdtemp(prefix="wt14-"))
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def _complete(url: str, index: int) -> requests.Response:
@@ -637,8 +697,9 @@ def test_a_killed_frontend_is_handled_as_in_process(tmp_path):
     """An attached frontend that dies is logged and the others serve; the launcher's death stops them."""
     model_dir = _model_dir(tmp_path / "model")
     engine = _engine(model_dir)
-    with running_in_thread(engine):
-        serve = _Serve(tmp_path, model_dir, engine, 3)
+    # The launcher killed by SIGKILL leaves its temporary directory behind.
+    with _short_tmpdir() as tmpdir, running_in_thread(engine):
+        serve = _Serve(tmp_path, model_dir, engine, 3, env={"TMPDIR": str(tmpdir)})
         try:
             _wait(
                 lambda: serve.listeners() == 3,
@@ -666,25 +727,20 @@ def test_a_killed_frontend_is_handled_as_in_process(tmp_path):
 def test_sigterm_stops_every_frontend_and_removes_the_launchers_directory(tmp_path):
     model_dir = _model_dir(tmp_path / "model")
     engine = _engine(model_dir)
-    # Short, for the launcher's Unix socket path.
-    tmpdir = Path(tempfile.mkdtemp(prefix="wt14-"))
-    try:
-        with running_in_thread(engine):
-            serve = _Serve(tmp_path, model_dir, engine, 2, env={"TMPDIR": str(tmpdir)})
-            try:
-                _wait(
-                    lambda: serve.listeners() == 2,
-                    "every frontend to listen",
-                    STARTUP_SECONDS,
-                    serve.proc,
-                )
-                assert len(list(tmpdir.glob("tllm-oe-frontends-*"))) == 1
-                attached = serve.attached()
-                serve.proc.send_signal(signal.SIGTERM)
-                assert serve.proc.wait(timeout=60) == -signal.SIGTERM, serve.log()
-                assert not _still_running(attached, 30), serve.log()
-                assert not list(tmpdir.glob("tllm-oe-frontends-*")), serve.log()
-            finally:
-                serve.stop()
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+    with _short_tmpdir() as tmpdir, running_in_thread(engine):
+        serve = _Serve(tmp_path, model_dir, engine, 2, env={"TMPDIR": str(tmpdir)})
+        try:
+            _wait(
+                lambda: serve.listeners() == 2,
+                "every frontend to listen",
+                STARTUP_SECONDS,
+                serve.proc,
+            )
+            assert len(list(tmpdir.glob("tllm-oe-frontends-*"))) == 1
+            attached = serve.attached()
+            serve.proc.send_signal(signal.SIGTERM)
+            assert serve.proc.wait(timeout=60) == -signal.SIGTERM, serve.log()
+            assert not _still_running(attached, 30), serve.log()
+            assert not list(tmpdir.glob("tllm-oe-frontends-*")), serve.log()
+        finally:
+            serve.stop()
