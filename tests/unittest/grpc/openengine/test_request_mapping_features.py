@@ -29,6 +29,7 @@ from tensorrt_llm.grpc.openengine.request_mapping import (  # noqa: E402
     PORTABLE_REQUEST_CAPABILITIES,
     RequestCapabilities,
     _metadata_from_context,
+    accepted_sampling_values,
     extra_options_from_request,
     max_num_sequences_for,
     request_capabilities_for_model,
@@ -541,8 +542,6 @@ SPECULATIVE_CONFIGS = [
 @pytest.mark.parametrize(("make_config", "supported"), SPECULATIVE_CONFIGS)
 def test_speculation_limits_the_request_keys(make_config, supported):
     """The one-model speculative sampler rejects every request with an embedding_bias."""
-    from tensorrt_llm.grpc.openengine.control import _speculative_sampling_capabilities
-
     speculative_config = make_config()
     args = _llm(speculative_config=speculative_config).args
     capabilities = request_capabilities_for_model(
@@ -552,8 +551,103 @@ def test_speculation_limits_the_request_keys(make_config, supported):
     assert capabilities.supports_logit_bias is supported
     # The thinking budget is declared only without speculative decoding.
     assert capabilities.supports_thinking_token_budget is (speculative_config is None)
-    # The same one-model test that turns min_p and the penalties off.
-    assert _speculative_sampling_capabilities(args).get("trtllm.sampling.min_p", True) is supported
+    # The same one-model test that limits min_p and the penalties to their no-effect values.
+    assert (capabilities.sampling["min_p"].accept == "any") is supported
+
+
+NO_EFFECT_VALUES = {
+    "min_p": 0.0,
+    "frequency_penalty": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+}
+# A value of each sampling field that changes sampling.
+EFFECTIVE_VALUES = {
+    "temperature": 0.7,
+    "top_p": 0.9,
+    "top_k": 5,
+    "min_p": 0.1,
+    "frequency_penalty": 0.5,
+    "presence_penalty": 0.5,
+    "repetition_penalty": 1.2,
+    "seed": 7,
+}
+
+
+def _speculative_capabilities():
+    return request_capabilities_for_model(
+        _llm(speculative_config=MTPDecodingConfig(max_draft_len=3))
+    )
+
+
+def test_one_model_speculation_accepts_only_the_no_effect_values():
+    capabilities = _speculative_capabilities()
+    for name, value in EFFECTIVE_VALUES.items():
+        if name in NO_EFFECT_VALUES:
+            accepted = capabilities.sampling[name]
+            assert (accepted.accept, accepted.values) == ("values", (NO_EFFECT_VALUES[name],))
+        else:
+            assert capabilities.sampling[name].accept == "any", name
+
+
+@pytest.mark.parametrize("name", sorted(EFFECTIVE_VALUES))
+def test_generate_rejects_a_sampling_value_outside_the_declared_set(name):
+    """Declaration and check come from one table (CAP-GEN-3): an undeclared value is UNIMPLEMENTED."""
+    capabilities = _speculative_capabilities()
+    request = _request(sampling=generation_pb2.SamplingParams(**{name: EFFECTIVE_VALUES[name]}))
+    if name in NO_EFFECT_VALUES:
+        with pytest.raises(UnsupportedFeatureError, match=f"sampling.{name}=.*accepts only"):
+            sampling_params_from_request(request, None, capabilities)
+        no_effect = _request(
+            sampling=generation_pb2.SamplingParams(**{name: NO_EFFECT_VALUES[name]})
+        )
+        params = sampling_params_from_request(no_effect, None, capabilities)
+        assert getattr(params, name) == NO_EFFECT_VALUES[name]
+    else:
+        params = sampling_params_from_request(request, None, capabilities)
+        assert getattr(params, name) == pytest.approx(EFFECTIVE_VALUES[name])
+    # Without speculation every value is accepted.
+    sampling_params_from_request(request, None, request_capabilities_for_model(_llm()))
+
+
+def test_a_sampling_field_missing_from_the_declaration_accepts_nothing():
+    capabilities = dataclasses.replace(FULL, sampling={"temperature": FULL.sampling["temperature"]})
+    sampling_params_from_request(
+        _request(sampling=generation_pb2.SamplingParams(temperature=0.5)), None, capabilities
+    )
+    with pytest.raises(UnsupportedFeatureError, match="sampling.top_k=5 .*accepts no value"):
+        sampling_params_from_request(
+            _request(sampling=generation_pb2.SamplingParams(top_k=5)), None, capabilities
+        )
+
+
+def test_the_declaration_reports_the_version_2_keys_from_the_same_table():
+    declaration = _speculative_capabilities().sampling_declaration()
+    assert declaration["trtllm.params"]["repetition_penalty"]["values"] == [1.0]
+    assert declaration["trtllm.params"]["temperature"]["accept"] == "any"
+    assert {key: value for key, value in declaration.items() if key != "trtllm.params"} == {
+        "trtllm.sampling.min_p": False,
+        "trtllm.sampling.frequency_penalty": False,
+        "trtllm.sampling.presence_penalty": False,
+        "trtllm.sampling.repetition_penalty": False,
+    }
+    plain = request_capabilities_for_model(_llm()).sampling_declaration()
+    assert all(plain[key] is True for key in plain if key != "trtllm.params")
+
+
+@pytest.mark.parametrize(("backend", "generation_config"), [("pytorch", "auto"), ("pytorch", None)])
+def test_the_declared_defaults_name_the_generation_config_when_the_llm_applies_it(
+    backend, generation_config
+):
+    accepted = accepted_sampling_values(
+        SimpleNamespace(backend=backend, generation_config=generation_config)
+    )
+    from_config = {"temperature", "top_p", "top_k", "min_p", "repetition_penalty"}
+    for name, values in accepted.items():
+        if generation_config == "auto" and name in from_config:
+            assert values.default == "generation_config", name
+        else:
+            assert values.default != "generation_config", name
 
 
 def test_vocab_size_comes_from_the_model_config():

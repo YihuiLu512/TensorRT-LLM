@@ -10,7 +10,8 @@ import math
 import threading
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
@@ -18,6 +19,17 @@ import grpc
 from google.protobuf import struct_pb2
 
 from tensorrt_llm.conversation_params import ConversationParams
+from tensorrt_llm.grpc.openengine_conventions import (
+    ACCEPT_ANY,
+    ANY_VALUE,
+    DEFAULT_FROM_GENERATION_CONFIG,
+    NO_VALUE,
+    PARAMS_KEY,
+    SAMPLING_FIELD_CAPABILITY,
+    SAMPLING_PARAM_NAMES,
+    AcceptedValues,
+    decode_priority,
+)
 from tensorrt_llm.grpc.openengine_conventions import LOGIT_BIAS_MAX as _LOGIT_BIAS_MAX
 from tensorrt_llm.grpc.openengine_conventions import (
     LOGIT_BIAS_MAX_ENTRIES as _LOGIT_BIAS_MAX_ENTRIES,
@@ -31,7 +43,6 @@ from tensorrt_llm.grpc.openengine_conventions import REQ_SCHEDULING as _SCHEDULI
 from tensorrt_llm.grpc.openengine_conventions import (
     REQ_THINKING_TOKEN_BUDGET as _THINKING_TOKEN_BUDGET_EXTRA_KEY,
 )
-from tensorrt_llm.grpc.openengine_conventions import decode_priority
 from tensorrt_llm.inputs.media_io import (
     AudioMediaIO,
     ImageMediaIO,
@@ -41,7 +52,11 @@ from tensorrt_llm.inputs.media_io import (
 )
 from tensorrt_llm.inputs.multimodal_data import AudioData
 from tensorrt_llm.inputs.registry import BaseMultimodalInputProcessor
-from tensorrt_llm.sampling_params import GuidedDecodingParams, SamplingParams
+from tensorrt_llm.sampling_params import (
+    _GENERATION_CONFIG_SAMPLING_FIELDS,
+    GuidedDecodingParams,
+    SamplingParams,
+)
 
 from .bindings import generation_pb2
 from .capabilities import (
@@ -124,10 +139,16 @@ class RequestCapabilities:
     """str | None: Checkpoint format of LoRA adapters; None when LoRA is not supported."""
     max_loras: int | None
     """int | None: Adapters the LoRA cache keeps on the GPU; None when unknown or unsupported."""
+    sampling: Mapping[str, AcceptedValues] = field(
+        default_factory=lambda: dict.fromkeys(SAMPLING_PARAM_NAMES, ANY_VALUE), hash=False
+    )
+    """Mapping[str, AcceptedValues]: The values accepted for each ``sampling`` field;
+    a field missing here accepts none."""
 
     def __post_init__(self) -> None:
         if self.supports_logit_bias and self.vocab_size is None:
             raise ValueError("supports_logit_bias requires vocab_size")
+        object.__setattr__(self, "sampling", MappingProxyType(dict(self.sampling)))
 
     @property
     def supports_lora(self) -> bool:
@@ -141,6 +162,31 @@ class RequestCapabilities:
             REQUEST_KV_HINTS_KEY: self.supports_kv_hints,
             REQUEST_SCHEDULING_KEY: self.supports_scheduling,
         }
+
+    def sampling_declaration(self) -> dict[str, Any]:
+        """``trtllm.params`` and the version 2 sampling keys, both from :attr:`sampling`.
+
+        A version 2 key is true exactly when its field accepts any value.
+        """
+        declaration: dict[str, Any] = {
+            PARAMS_KEY: {name: accepted.to_extra() for name, accepted in self.sampling.items()}
+        }
+        for name, key in SAMPLING_FIELD_CAPABILITY.items():
+            declaration[key] = self.sampling.get(name, NO_VALUE).accept == ACCEPT_ANY
+        return declaration
+
+    def check_sampling_value(self, name: str, value: float) -> None:
+        """Reject a ``sampling`` value outside the declared set.
+
+        Raises:
+            UnsupportedFeatureError: ``value`` is not accepted for ``name``.
+        """
+        accepted = self.sampling.get(name, NO_VALUE)
+        if not accepted.accepts(value):
+            raise UnsupportedFeatureError(
+                f"sampling.{name}={value!r} is not supported by this engine: "
+                f"{PARAMS_KEY}.{name} accepts {accepted.describe()}"
+            )
 
     def accepted_extra_keys(self) -> frozenset[str]:
         """The ``trtllm.*`` request keys ``Generate`` accepts."""
@@ -225,6 +271,62 @@ def uses_one_model_speculation(llm_args: Any) -> bool:
     return bool(spec_config.spec_dec_mode.use_one_engine())
 
 
+# The values of the parameters one-model speculation does not always apply that
+# leave sampling unchanged; under one-model speculation they are the only ones accepted.
+_NO_EFFECT_UNDER_SPECULATION = {
+    "min_p": 0.0,
+    "frequency_penalty": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+}
+# The value used for a sampling field the request does not set: Generate fills
+# in temperature, top_p and top_k (sampling_params_from_request); for the others
+# the executor's own default applies, which leaves sampling unchanged. The seed's
+# is not reported.
+_SAMPLING_DEFAULTS: dict[str, Any] = {
+    "temperature": 1.0,
+    "top_p": 1.0,
+    "top_k": 0,
+    "min_p": 0.0,
+    "frequency_penalty": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+    "seed": None,
+}
+
+
+def accepted_sampling_values(llm_args: Any) -> dict[str, AcceptedValues]:
+    """The values ``Generate`` accepts for each ``sampling`` field.
+
+    Every value, except under one-model speculation: its draft and acceptance
+    paths apply min_p and the occurrence penalties only on some paths, chosen by
+    settings such as ``advanced_sampling_mode``, ``enable_penalty``, the dynamic
+    tree, relaxed acceptance and the checkpoint's MTP layer count, which the
+    server process cannot all see. Only the values that leave sampling
+    unchanged are then accepted.
+
+    A field's default is ``generation_config`` when the LLM applies the model's
+    generation config to it, else the value Generate uses.
+    """
+    from_generation_config = (
+        getattr(llm_args, "backend", None) == "pytorch"
+        and getattr(llm_args, "generation_config", None) == "auto"
+    )
+    speculative = uses_one_model_speculation(llm_args)
+    accepted = {}
+    for name in SAMPLING_PARAM_NAMES:
+        default = _SAMPLING_DEFAULTS[name]
+        if from_generation_config and name in _GENERATION_CONFIG_SAMPLING_FIELDS:
+            default = DEFAULT_FROM_GENERATION_CONFIG
+        if speculative and name in _NO_EFFECT_UNDER_SPECULATION:
+            accepted[name] = AcceptedValues(
+                "values", values=(_NO_EFFECT_UNDER_SPECULATION[name],), default=default
+            )
+        else:
+            accepted[name] = AcceptedValues(ACCEPT_ANY, default=default)
+    return accepted
+
+
 def _agent_tree_scheduling_enabled(llm_args: Any) -> bool:
     """Whether the configuration asks for the agent-tree reorder policy.
 
@@ -298,6 +400,7 @@ def request_capabilities_for_model(llm: Any) -> RequestCapabilities:
             str(getattr(lora_config, "lora_ckpt_source", "hf")) if lora_enabled else None
         ),
         max_loras=_positive_int(lora_config.max_loras) if lora_enabled else None,
+        sampling=accepted_sampling_values(args),
     )
 
 
@@ -761,8 +864,8 @@ def sampling_params_from_request(
 ) -> SamplingParams:
     """Translate OpenEngine generation options to TensorRT-LLM.
 
-    ``capabilities`` decides which ``trtllm.*`` request keys are accepted and
-    the ``num_sequences`` limit.
+    ``capabilities`` decides which ``trtllm.*`` request keys and ``sampling``
+    values are accepted, and the ``num_sequences`` limit.
     """
     _check_extra_keys(request, capabilities)
     kwargs: dict[str, Any] = {}
@@ -771,21 +874,12 @@ def sampling_params_from_request(
 
     if request.HasField("sampling"):
         sampling = request.sampling
-        sampling_fields = (
-            "temperature",
-            "top_p",
-            "top_k",
-            "min_p",
-            "frequency_penalty",
-            "presence_penalty",
-            "repetition_penalty",
-            "seed",
-        )
-        for name in sampling_fields:
+        for name in SAMPLING_PARAM_NAMES:
             if sampling.HasField(name):
                 value = getattr(sampling, name)
                 if name in _FLOAT_SAMPLING_FIELDS and not math.isfinite(value):
                     raise ValueError(f"sampling.{name} must be finite, got {value}")
+                capabilities.check_sampling_value(name, value)
                 kwargs[name] = value
                 provided_fields.add(name)
         if sampling.HasField("num_sequences"):
@@ -1378,4 +1472,5 @@ __all__ = [
     "sampling_params_from_request",
     "token_ids_input_supported",
     "uses_one_model_speculation",
+    "accepted_sampling_values",
 ]

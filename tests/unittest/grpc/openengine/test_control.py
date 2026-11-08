@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from google.protobuf import json_format
 
 grpc = pytest.importorskip(  # noqa: E402
     "grpc", reason='gRPC runtime not installed (pip install "grpcio>=1.73.1,<2")'
@@ -974,7 +975,8 @@ async def test_subscribe_kv_events_is_unimplemented(enabled):
 
 RECEIVED = "trtllm.counters.generate_received"
 ACCEPTED = "trtllm.counters.generate_accepted"
-# Every capability key a conforming engine must report, with this server's value.
+# Every capability key a conforming engine must report, with this server's value;
+# the sampling keys are true exactly when trtllm.params accepts any value.
 EXPECTED_EXTRA_CAPABILITIES = {
     "trtllm.sampling.min_p": True,
     "trtllm.sampling.frequency_penalty": True,
@@ -991,6 +993,20 @@ EXPECTED_EXTRA_CAPABILITIES = {
     "trtllm.request.scheduling": False,
     "trtllm.request.best_of": False,
 }
+PARAMS_KEY = "trtllm.params"
+# Without speculation every sampling field accepts any value. Each default is
+# the value Generate fills in, or the executor's; the seed's is not reported.
+EXPECTED_PARAMS = {
+    "temperature": {"accept": "any", "default": 1.0},
+    "top_p": {"accept": "any", "default": 1.0},
+    "top_k": {"accept": "any", "default": 0},
+    "min_p": {"accept": "any", "default": 0.0},
+    "frequency_penalty": {"accept": "any", "default": 0.0},
+    "presence_penalty": {"accept": "any", "default": 0.0},
+    "repetition_penalty": {"accept": "any", "default": 1.0},
+    "seed": {"accept": "any", "default": None},
+}
+CAPABILITY_KEYS = set(EXPECTED_EXTRA_CAPABILITIES) | {PARAMS_KEY}
 FINGERPRINT_KEYS = {
     "trtllm.tokenizer.vocab_size",
     "trtllm.tokenizer.eos_token_ids",
@@ -1070,12 +1086,11 @@ async def test_model_info_reports_exactly_the_convention_keys_with_their_types(m
         model_pb2.GetModelInfoRequest(model=MODEL), FakeServicerContext()
     )
 
-    assert set(info.extra.keys()) == (
-        set(EXPECTED_EXTRA_CAPABILITIES) | FINGERPRINT_KEYS | {MODALITIES_KEY}
-    )
+    assert set(info.extra.keys()) == (CAPABILITY_KEYS | FINGERPRINT_KEYS | {MODALITIES_KEY})
     for key, expected in EXPECTED_EXTRA_CAPABILITIES.items():
         assert type(info.extra[key]) is type(expected), key
         assert info.extra[key] == expected, key
+    assert _params(info) == EXPECTED_PARAMS
 
 
 @pytest.mark.asyncio
@@ -1084,7 +1099,7 @@ async def test_model_info_without_a_tokenizer_reports_capabilities_but_no_finger
         model_pb2.GetModelInfoRequest(), FakeServicerContext()
     )
 
-    assert set(info.extra.keys()) == set(EXPECTED_EXTRA_CAPABILITIES) | {MODALITIES_KEY}
+    assert set(info.extra.keys()) == CAPABILITY_KEYS | {MODALITIES_KEY}
     assert {key: info.extra[key] for key in EXPECTED_EXTRA_CAPABILITIES} == {
         **EXPECTED_EXTRA_CAPABILITIES,
         "trtllm.stopping.stop_text": False,
@@ -1097,7 +1112,19 @@ SPECULATIVE_SAMPLING_KEYS = (
     "trtllm.sampling.presence_penalty",
     "trtllm.sampling.repetition_penalty",
 )
+# Under one-model speculation these accept only the value that leaves sampling unchanged.
+NO_EFFECT_VALUES = {
+    "min_p": 0.0,
+    "frequency_penalty": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+}
 DRAFT = "/models/draft"
+
+
+def _params(info) -> dict:
+    """``trtllm.params`` of a ModelInfo, as plain data."""
+    return json_format.MessageToDict(info.extra)[PARAMS_KEY]
 
 
 @pytest.mark.asyncio
@@ -1116,7 +1143,7 @@ DRAFT = "/models/draft"
         (lambda: AutoDecodingConfig(), False),
     ],
 )
-async def test_model_info_reports_no_min_p_or_penalties_under_one_model_speculation(
+async def test_model_info_reports_only_no_effect_min_p_and_penalties_under_one_model_speculation(
     make_config, supported
 ):
     # Built in the test so that a config that fails validation fails only its own case.
@@ -1131,6 +1158,11 @@ async def test_model_info_reports_no_min_p_or_penalties_under_one_model_speculat
     assert {key: info.extra[key] for key in other_keys} == {
         key: EXPECTED_EXTRA_CAPABILITIES[key] for key in other_keys
     }
+    expected = dict(EXPECTED_PARAMS)
+    if not supported:
+        for name, value in NO_EFFECT_VALUES.items():
+            expected[name] = {"accept": "values", "values": [value], "default": value}
+    assert _params(info) == expected
 
 
 @pytest.mark.asyncio
@@ -1203,7 +1235,7 @@ async def test_a_tokenizer_that_cannot_be_fingerprinted_is_left_out(model_dir, f
 
     for _ in range(2):
         info = await servicer.GetModelInfo(model_pb2.GetModelInfoRequest(), FakeServicerContext())
-        assert set(info.extra.keys()) == set(EXPECTED_EXTRA_CAPABILITIES) | {MODALITIES_KEY}
+        assert set(info.extra.keys()) == CAPABILITY_KEYS | {MODALITIES_KEY}
 
 
 @pytest.mark.asyncio

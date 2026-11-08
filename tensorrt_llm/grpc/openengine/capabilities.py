@@ -9,8 +9,8 @@ from types import MappingProxyType
 from typing import Any, Collection, Mapping
 
 # OpenEngine v1 has no fields for some capabilities, for a tokenizer
-# fingerprint, or for request counters. The `extra` conventions (version 2)
-# carry them as flat `trtllm.*` keys in ServerInfo.extra, ModelInfo.extra and
+# fingerprint, or for request counters. The `extra` conventions carry them as
+# `trtllm.*` keys in ServerInfo.extra, ModelInfo.extra and
 # LoadInfo.attributes; this module re-exports them under its own names.
 from tensorrt_llm.grpc.openengine_conventions import (
     CAP_FREQUENCY_PENALTY as SAMPLING_FREQUENCY_PENALTY_KEY,
