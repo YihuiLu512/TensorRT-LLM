@@ -67,6 +67,11 @@ from tensorrt_llm.grpc.openengine_client import (
     OpenEngineEngineError,
     OpenEngineRpcError,
 )
+from tensorrt_llm.grpc.openengine_conventions import (
+    SAMPLING_PARAM_NAMES,
+    AcceptedValues,
+    parse_params,
+)
 
 pytestmark = [pytest.mark.cpu_only, pytest.mark.threadleak(enabled=False)]
 
@@ -76,6 +81,20 @@ EOS = PROFILES["trtllm-like"].eos_token_ids[0]
 # A TensorRT-LLM engine that does not follow the trtllm.* conventions.
 NO_CONVENTIONS = PROFILES["trtllm-like"].replace(
     name="no-conventions", follows_conventions=False, max_num_sequences=None
+)
+# The TensorRT-LLM server under one-model speculative decoding: min_p and the
+# penalties only at the values that leave sampling unchanged.
+SPECULATIVE = PROFILES["trtllm-like"].replace(
+    name="speculative",
+    params={
+        name: AcceptedValues("values", values=(no_effect,), default=no_effect)
+        for name, no_effect in (
+            ("min_p", 0.0),
+            ("frequency_penalty", 0.0),
+            ("presence_penalty", 0.0),
+            ("repetition_penalty", 1.0),
+        )
+    },
 )
 # A KV hints envelope that the protocol's admission keeps.
 KV_HINTS = {
@@ -264,6 +283,7 @@ def test_profile_declares_every_capability_explicitly(profile: FakeProfile) -> N
             )
             for key in CAPABILITY_KEYS:
                 assert isinstance(extra[key], bool), key
+            assert set(parse_params(extra)) == set(SAMPLING_PARAM_NAMES)
             assert extra[CAP_SEED_SCOPE] in ("none", "batch_dependent", "per_request")
             for key in (FP_VOCAB_SIZE, FP_EOS_TOKEN_IDS, FP_BOS_TOKEN_ID, FP_FILES_SHA256):
                 assert key in extra, key
@@ -303,6 +323,69 @@ def test_profiles_report_the_planned_engine_capabilities() -> None:
         glm_extra[key] for key in CAPABILITY_KEYS if key not in (CAP_MIN_P, CAP_STOP_TEXT)
     )
     assert trtllm_extra[CAP_SEED_SCOPE] == glm_extra[CAP_SEED_SCOPE] == "batch_dependent"
+    assert parse_params(trtllm_extra) == PROFILES["trtllm-like"].params
+    glm_params = parse_params(glm_extra)
+    for name, no_effect in (
+        ("frequency_penalty", 0.0),
+        ("presence_penalty", 0.0),
+        ("repetition_penalty", 1.0),
+    ):
+        assert glm_params[name].accepts(no_effect) and not glm_params[name].accepts(0.5), name
+    assert glm_params["top_p"].accepts(1.0) and not glm_params["top_p"].accepts(0.0)
+    # min_p's range is all the protocol allows, so its version 2 key is true (asserted above).
+    assert glm_params["min_p"].accept == "range"
+
+
+def test_a_sampling_key_in_capabilities_overrides_the_declared_values() -> None:
+    async def model_extra(profile: FakeProfile) -> dict[str, Any]:
+        async with connected(FakeEngine(profile)) as client:
+            return json_format.MessageToDict(client.model_info.extra)
+
+    extra = run(
+        model_extra(
+            PROFILES["glm-like"].replace(
+                capabilities={CAP_PRESENCE_PENALTY: True, CAP_MIN_P: False}
+            )
+        )
+    )
+    params = parse_params(extra)
+    assert params["presence_penalty"].accept == "any" and extra[CAP_PRESENCE_PENALTY] is True
+    assert params["min_p"].accept == "none" and extra[CAP_MIN_P] is False
+    # Narrowed by params, min_p's version 2 key turns false; the others keep theirs.
+    narrowed = AcceptedValues("values", values=(0.0,), default=0.0)
+    extra = run(model_extra(PROFILES["trtllm-like"].replace(params={"min_p": narrowed})))
+    assert extra[CAP_MIN_P] is False and extra[CAP_REPETITION_PENALTY] is True
+    assert parse_params(extra)["min_p"].values == (0.0,)
+    # A range short of the protocol's bounds by an excluded end is not every value.
+    for open_end in (
+        AcceptedValues("range", min=0.0, max=1.0, max_exclusive=True),
+        AcceptedValues("range", min=0.0, min_exclusive=True, max=1.0),
+    ):
+        extra = run(model_extra(PROFILES["trtllm-like"].replace(params={"min_p": open_end})))
+        assert extra[CAP_MIN_P] is False, open_end
+    # An override keeps the declared default.
+    overridden = PROFILES["trtllm-like"].replace(capabilities={CAP_REPETITION_PENALTY: False})
+    assert overridden.accepted("repetition_penalty").default == 1.0
+
+
+def test_trtllm_like_declares_the_servers_sampling_values() -> None:
+    from types import SimpleNamespace
+
+    from tensorrt_llm.grpc.openengine.request_mapping import accepted_sampling_values
+
+    # A server without speculative decoding and with the default generation_config.
+    llm_args = SimpleNamespace(
+        backend="pytorch", generation_config="trtllm", speculative_config=None
+    )
+    assert dict(PROFILES["trtllm-like"].params) == accepted_sampling_values(llm_args)
+    # The same server under a one-model speculative mode that applies top_k and top_p.
+    one_model = SimpleNamespace(
+        decoding_type="MTP",
+        spec_dec_mode=SimpleNamespace(use_one_engine=lambda: True),
+        advanced_sampling_mode=None,
+    )
+    llm_args.speculative_config = one_model
+    assert dict(SPECULATIVE.params) == accepted_sampling_values(llm_args)
 
 
 def test_profile_without_conventions_has_no_sequence_limit_and_no_counters() -> None:
@@ -759,6 +842,41 @@ _REJECTIONS = [
         (),
         "INVALID_ARGUMENT",
     ),
+    ("glm-like", {"sampling": {"repetitionPenalty": 1.1}}, None, (), "UNIMPLEMENTED"),
+    # glm checks a value as a 32-bit float and against the protocol's bounds before
+    # its declared values.
+    ("glm-like", {"sampling": {"topP": 2.0**-150}}, None, (), "INVALID_ARGUMENT"),
+    ("glm-like", {"sampling": {"topP": 0}}, None, (), "INVALID_ARGUMENT"),
+    ("glm-like", {"sampling": {"temperature": 3.5e38}}, None, (), "INVALID_ARGUMENT"),
+    ("glm-like", {"sampling": {"temperature": -1}}, None, (), "INVALID_ARGUMENT"),
+    ("glm-like", {"sampling": {"topK": -1}}, None, (), "INVALID_ARGUMENT"),
+    ("glm-like", {"sampling": {"minP": 1.5}}, None, (), "INVALID_ARGUMENT"),
+    ("glm-like", {"sampling": {"repetitionPenalty": 1e39}}, None, (), "INVALID_ARGUMENT"),
+    # A finite 32-bit float above the declared maximum.
+    ("glm-like", {"sampling": {"temperature": 3.4028235e38}}, None, (), "UNIMPLEMENTED"),
+    (SPECULATIVE, {"sampling": {"minP": 0.1}}, None, (), "UNIMPLEMENTED"),
+    # A value the profile does not accept is refused before the protocol's bounds are checked.
+    (SPECULATIVE, {"sampling": {"minP": 1.5}}, None, (), "UNIMPLEMENTED"),
+    (
+        PROFILES["trtllm-like"].replace(capabilities={CAP_PRESENCE_PENALTY: False}),
+        {"sampling": {"presencePenalty": 0}},
+        None,
+        (),
+        "UNIMPLEMENTED",
+    ),
+    # Within the length limit in characters, beyond it in UTF-8 bytes.
+    (
+        "trtllm-like",
+        {},
+        {
+            "trtllm.kv_hints": json.dumps(
+                {**KV_HINTS, "x": "\u4e2d" * 1000}, ensure_ascii=False
+            ).ljust(KV_HINTS_TEXT_MAX_BYTES - 1000)
+        },
+        (),
+        "INVALID_ARGUMENT",
+    ),
+    ("trtllm-like", {}, {"trtllm.kv_hints": {**KV_HINTS, "n": -(2**53)}}, (), "INVALID_ARGUMENT"),
 ]
 
 
@@ -824,6 +942,43 @@ def test_kv_hints_text_limit_is_the_servers() -> None:
 
     per_byte = request_mapping._KV_HINTS_TEXT_BYTES_PER_ENVELOPE_BYTE
     assert KV_HINTS_TEXT_MAX_BYTES == per_byte * MAX_KV_HINTS_BYTES
+
+
+@pytest.mark.parametrize(
+    "profile,sampling",
+    [
+        ("glm-like", {"repetitionPenalty": 1.0, "frequencyPenalty": 0, "presencePenalty": 0}),
+        ("glm-like", {"topP": 2.0**-149, "minP": 1, "topK": 0, "temperature": 3.4e38}),
+        (
+            SPECULATIVE,
+            {"minP": 0, "repetitionPenalty": 1.0, "frequencyPenalty": 0, "presencePenalty": 0},
+        ),
+        ("trtllm-like", {"minP": 0.5, "repetitionPenalty": 1.3, "presencePenalty": -2}),
+    ],
+    ids=["glm-no-effect-penalties", "glm-in-range", "speculative-no-effect-values", "trtllm-any"],
+)
+def test_declared_sampling_values_are_accepted(
+    profile: str | FakeProfile, sampling: dict[str, Any]
+) -> None:
+    message = request(sampling=sampling, stopping={"maxTokens": 1})
+
+    async def main() -> None:
+        async with FakeEngine(profile) as engine:
+            _, code, details = await raw_generate(engine, message)
+            assert code == grpc.StatusCode.OK, details
+
+    run(main())
+
+
+def test_command_line_overrides_accepted_values() -> None:
+    import fake_openengine
+
+    changes = {"params": {"min_p": {"accept": "values", "values": [0.0], "default": 0.0}}}
+    profile = fake_openengine._profile_from_args(
+        fake_openengine._parse_args(["--profile-json", json.dumps(changes)])
+    )
+    assert profile.accepted("min_p") == SPECULATIVE.accepted("min_p")
+    assert profile.accepted("top_k") == PROFILES["trtllm-like"].accepted("top_k")
 
 
 def test_a_request_without_input_is_invalid() -> None:

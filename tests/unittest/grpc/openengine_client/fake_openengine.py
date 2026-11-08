@@ -23,11 +23,13 @@ An admitted request is answered in one of two ways:
 Built-in profiles (:data:`PROFILES`):
 
 ``trtllm-like``
-    The TensorRT-LLM OpenEngine server following the ``trtllm.*`` conventions.
-    It declares the guided decoding modes of an engine started with
+    The TensorRT-LLM OpenEngine server following the ``trtllm.*`` conventions,
+    without speculative decoding: it accepts every sampling value. It declares
+    the guided decoding modes of an engine started with
     ``guided_decoding_backend: xgrammar``.
 ``glm-like``
-    The glm-5.3-flash OpenEngine server following the conventions.
+    The glm-5.3-flash OpenEngine server following the conventions. It accepts
+    the penalties only at the values that leave sampling unchanged.
 
 Run as a script to serve a profile from its own process::
 
@@ -44,6 +46,7 @@ import json
 import math
 import os
 import signal
+import struct
 import threading
 import time
 import uuid
@@ -72,6 +75,10 @@ from tensorrt_llm.grpc.openengine.bindings import (
 # The OpenEngine conventions (extra and metadata keys, capability tables, limits),
 # under the names this module uses.
 from tensorrt_llm.grpc.openengine_conventions import (
+    ACCEPT_ANY,
+    ACCEPT_RANGE,
+    ACCEPT_VALUES,
+    ANY_VALUE,
     BOOL_CAPABILITY_KEYS,
     CAP_FREQUENCY_PENALTY,
     CAP_MIN_P,
@@ -88,6 +95,8 @@ from tensorrt_llm.grpc.openengine_conventions import (
     FP_VOCAB_SIZE,
     LOGIT_BIAS_MAX,
     LOGIT_BIAS_MIN,
+    NO_VALUE,
+    PARAMS_KEY,
     PRIORITY_SCALE,
     REQ_BEST_OF,
     REQ_CONVERSATION_ID,
@@ -98,6 +107,8 @@ from tensorrt_llm.grpc.openengine_conventions import (
     REQ_THINKING_TOKEN_BUDGET,
     REQUEST_KEY_CAPABILITY,
     SAMPLING_FIELD_CAPABILITY,
+    SAMPLING_PARAM_NAMES,
+    AcceptedValues,
 )
 from tensorrt_llm.grpc.openengine_conventions import CAP_REQ_BEST_OF as CAP_BEST_OF
 from tensorrt_llm.grpc.openengine_conventions import CAP_REQ_CONVERSATION_ID as CAP_CONVERSATION_ID
@@ -184,6 +195,15 @@ __all__ = [
 _REQUEST_KEY_CAPABILITY = REQUEST_KEY_CAPABILITY
 _SAMPLING_FIELD_CAPABILITY = SAMPLING_FIELD_CAPABILITY
 _BOOLEAN_CAPABILITIES = BOOL_CAPABILITY_KEYS
+_SAMPLING_PARAM_BY_KEY = {key: name for name, key in SAMPLING_FIELD_CAPABILITY.items()}
+# The bounds the protocol puts on a sampling field, (low, high); None for no bound.
+_VALID_RANGE: dict[str, tuple[float | None, float | None]] = {
+    "temperature": (0, None),
+    "top_p": (0, 1),
+    "top_k": (0, None),
+    "min_p": (0, 1),
+}
+_FLOAT_SAMPLING_FIELDS = frozenset(SAMPLING_PARAM_NAMES) - {"top_k", "seed"}
 
 # -- Protocol limits ---------------------------------------------------------------
 
@@ -220,19 +240,31 @@ class FakeProfile:
     ``None`` leaves ``max_num_sequences``, ``max_loras`` and
     ``supports_token_ids_input`` unset in what the engine reports; for
     ``output_logprobs_max_top_n`` and ``prompt_logprobs_max_top_n`` it means
-    that kind of logprobs is unsupported. A capability left out of
-    ``capabilities`` counts as unsupported.
+    that kind of logprobs is unsupported. A capability key left out of
+    ``capabilities`` counts as unsupported, except a version 2 sampling key.
 
     Attributes:
         follows_conventions: Whether the engine follows the ``trtllm.*``
             conventions. When it does, it reports ``trtllm.conventions_version``,
-            every capability key and the counters, rejects undeclared
-            sampling extensions and undeclared request keys (``trtllm.*`` and
-            ``conversation_id``), and validates the request keys it declares.
-            When it does not, it reports none of these, accepts the fields
-            that ``capabilities`` marks true without declaring them, and
-            ignores the other ``extra`` keys except ``detokenize``.
-        capabilities: Values of the capability keys, by key.
+            every capability key, ``trtllm.params`` and the counters, rejects
+            undeclared request keys (``trtllm.*`` and ``conversation_id``),
+            and validates the request keys it declares. When it does not, it
+            reports none of these, accepts what ``capabilities`` marks true
+            without declaring it, and ignores the other ``extra`` keys except
+            ``detokenize``. Either way it admits sampling values by
+            :meth:`accepted`.
+        capabilities: Values of the capability keys, by key. The version 2
+            sampling keys are reported as true when the parameter accepts
+            every value the protocol allows; one set here overrides that
+            parameter (see :meth:`accepted`).
+        params: The values accepted for each sampling parameter, reported
+            under ``trtllm.params``; a parameter missing from the mapping
+            accepts none. By default every parameter accepts every value, and
+            :meth:`replace` merges new entries into the current ones.
+        float32_sampling: Whether the engine samples in 32-bit floats and,
+            as glm does, checks that a sampling value is valid before checking
+            ``params``: a float value must be finite as a 32-bit float, inside
+            the protocol's bounds, and for ``top_p`` not 0 as a 32-bit float.
         reject_kv_session: Reject ``kv.session``; otherwise it is ignored.
         eos_token_ids: Tokens that end an output unless ``ignore_eos`` is set;
             the one sampled is reported in ``stop_match.eos_token_id``.
@@ -272,6 +304,10 @@ class FakeProfile:
     follows_conventions: bool = True
     # Mappings and protobuf messages are unhashable, so they stay out of hash().
     capabilities: Mapping[str, bool | str] = field(default_factory=dict, hash=False)
+    params: Mapping[str, AcceptedValues] = field(
+        default_factory=lambda: dict.fromkeys(SAMPLING_PARAM_NAMES, ANY_VALUE), hash=False
+    )
+    float32_sampling: bool = False
     reject_kv_session: bool = False
     eos_token_ids: tuple[int, ...] = (2,)
     bos_token_id: int | None = 1
@@ -285,6 +321,7 @@ class FakeProfile:
         # Profiles are shared module constants: keep their mappings read-only.
         for name in (
             "capabilities",
+            "params",
             "fingerprint",
             "model_info_extra",
             "server_info_extra",
@@ -296,13 +333,31 @@ class FakeProfile:
         object.__setattr__(self, "kv_event_sources", tuple(self.kv_event_sources))
 
     def replace(self, **changes: Any) -> FakeProfile:
-        """A copy with ``changes`` applied; ``capabilities`` entries are merged."""
-        if "capabilities" in changes:
-            changes["capabilities"] = {**self.capabilities, **changes["capabilities"]}
+        """A copy with ``changes`` applied; ``capabilities`` and ``params`` entries are merged."""
+        for name in ("capabilities", "params"):
+            if name in changes:
+                changes[name] = {**getattr(self, name), **changes[name]}
         return dataclasses.replace(self, **changes)
 
     def capability(self, key: str) -> bool:
+        name = _SAMPLING_PARAM_BY_KEY.get(key)
+        if name is not None:
+            return _accepts_every_valid_value(name, self.accepted(name))
         return self.capabilities.get(key) is True
+
+    def accepted(self, name: str) -> AcceptedValues:
+        """The values accepted for the sampling parameter ``name``.
+
+        From ``params``, unless ``capabilities`` sets the parameter's version 2
+        key: then every value when it is true and none otherwise, keeping the
+        declared default.
+        """
+        declared = self.params.get(name, NO_VALUE)
+        key = _SAMPLING_FIELD_CAPABILITY.get(name)
+        if key is not None and key in self.capabilities:
+            accepted = ANY_VALUE if self.capabilities[key] is True else NO_VALUE
+            return dataclasses.replace(accepted, default=declared.default)
+        return declared
 
     def tokenizer_fingerprint(self) -> dict[str, Any]:
         if self.fingerprint is not None:
@@ -382,6 +437,9 @@ class FakeProfile:
         extra: dict[str, Any] = {SUPPORTED_MODALITIES: sorted(self.modalities)}
         if self.follows_conventions:
             extra.update({key: self.capability(key) for key in _BOOLEAN_CAPABILITIES})
+            extra[PARAMS_KEY] = {
+                name: self.accepted(name).to_extra() for name in SAMPLING_PARAM_NAMES
+            }
             extra[CAP_SEED_SCOPE] = str(self.capabilities.get(CAP_SEED_SCOPE, "none"))
             extra.update(self.tokenizer_fingerprint())
         extra.update(self.model_info_extra)
@@ -389,11 +447,56 @@ class FakeProfile:
         return info
 
 
+def _accepts_every_valid_value(name: str, accepted: AcceptedValues) -> bool:
+    """Whether ``accepted`` holds every value the protocol allows for ``name``."""
+    if accepted.accept == ACCEPT_ANY:
+        return True
+    if accepted.accept != ACCEPT_RANGE:
+        return False
+    low, high = _VALID_RANGE.get(name, (None, None))
+    covers_low = accepted.min is None or (
+        low is not None
+        and (accepted.min < low or (accepted.min == low and not accepted.min_exclusive))
+    )
+    covers_high = accepted.max is None or (
+        high is not None
+        and (accepted.max > high or (accepted.max == high and not accepted.max_exclusive))
+    )
+    return covers_low and covers_high
+
+
+# What the TensorRT-LLM server reports without speculative decoding and with
+# generation_config "trtllm": every value, and the value Generate uses when a
+# field is unset.
+_TRTLLM_PARAMS = {
+    name: AcceptedValues(ACCEPT_ANY, default=default)
+    for name, default in {
+        "temperature": 1.0,
+        "top_p": 1.0,
+        "top_k": 0,
+        "min_p": 0.0,
+        "frequency_penalty": 0.0,
+        "presence_penalty": 0.0,
+        "repetition_penalty": 1.0,
+        "seed": None,
+    }.items()
+}
+
+# What glm-5.3-flash reports: the penalties, which it does not apply, only at
+# their no-effect values; temperature and top_p within what its float32
+# sampling can carry out.
+_GLM_PARAMS = {
+    "temperature": AcceptedValues(ACCEPT_RANGE, min=0.0, max=3.4028234663852886e38, default=1.0),
+    "top_p": AcceptedValues(ACCEPT_RANGE, min=2.0**-150, min_exclusive=True, max=1.0, default=1.0),
+    "top_k": AcceptedValues(ACCEPT_RANGE, min=0, default=0),
+    "min_p": AcceptedValues(ACCEPT_RANGE, min=0.0, max=1.0, default=0.0),
+    "frequency_penalty": AcceptedValues(ACCEPT_VALUES, values=(0.0,), default=0.0),
+    "presence_penalty": AcceptedValues(ACCEPT_VALUES, values=(0.0,), default=0.0),
+    "repetition_penalty": AcceptedValues(ACCEPT_VALUES, values=(1.0,), default=1.0),
+    "seed": ANY_VALUE,
+}
+
 _TRTLLM_CAPABILITIES: dict[str, bool | str] = {
-    CAP_MIN_P: True,
-    CAP_FREQUENCY_PENALTY: True,
-    CAP_PRESENCE_PENALTY: True,
-    CAP_REPETITION_PENALTY: True,
     CAP_SEED_SCOPE: "batch_dependent",
     CAP_STOP_TEXT: True,
     CAP_CONVERSATION_ID: True,
@@ -411,6 +514,7 @@ PROFILES: dict[str, FakeProfile] = {
         name="trtllm-like",
         engine_name="tensorrt_llm",
         capabilities=_TRTLLM_CAPABILITIES,
+        params=_TRTLLM_PARAMS,
         server_info_extra=_TRTLLM_SERVER_INFO_EXTRA,
     ),
     "glm-like": FakeProfile(
@@ -425,11 +529,9 @@ PROFILES: dict[str, FakeProfile] = {
         supports_cache_salt=False,
         dp_rank_targeting=False,
         reject_kv_session=True,
+        params=_GLM_PARAMS,
+        float32_sampling=True,
         capabilities={
-            CAP_MIN_P: True,
-            CAP_FREQUENCY_PENALTY: False,
-            CAP_PRESENCE_PENALTY: False,
-            CAP_REPETITION_PENALTY: False,
             CAP_SEED_SCOPE: "batch_dependent",
             CAP_STOP_TEXT: True,
             CAP_CONVERSATION_ID: False,
@@ -557,30 +659,59 @@ def _admit_input(request: generation_pb2.GenerateRequest, profile: FakeProfile) 
     return ids
 
 
+def _float32(value: float) -> float:
+    """``value`` as a 32-bit float; inf when outside its range."""
+    try:
+        return struct.unpack("f", struct.pack("f", value))[0]
+    except OverflowError:
+        return math.inf
+
+
+def _check_bounds(name: str, value: float) -> None:
+    low, high = _VALID_RANGE[name]
+    if high is not None and not low <= value <= high:
+        raise _invalid(f"require {low} <= {name} <= {high}, got {name}={value}")
+    if low is not None and value < low:
+        raise _invalid(f"require {name} >= {low}, got {name}={value}")
+
+
+def _check_float32_sampling_value(name: str, value: float) -> None:
+    if name in _FLOAT_SAMPLING_FIELDS and not math.isfinite(_float32(value)):
+        raise _invalid(f"sampling.{name} must be a finite 32-bit float, got {value}")
+    if name in _VALID_RANGE:
+        _check_bounds(name, value)
+    if name == "top_p" and _float32(value) == 0:
+        raise _invalid(f"sampling.top_p must not be 0 as a 32-bit float, got {value}")
+
+
 def _admit_sampling(request: generation_pb2.GenerateRequest, profile: FakeProfile) -> int:
-    """Validate ``sampling`` and return the number of sequences."""
+    """Validate ``sampling`` and return the number of sequences.
+
+    Each value in turn: one that is not finite is invalid; then one the
+    profile does not accept is not supported; afterwards a value outside the
+    protocol's bounds is invalid. A profile with ``float32_sampling`` checks
+    each value's validity as a 32-bit float and its bounds before ``params``.
+    For a request whose only fault is one sampling value, this gives the
+    status of the TensorRT-LLM server, or of glm for ``glm-like``.
+    """
     sampling = request.sampling
-    for name, capability in _SAMPLING_FIELD_CAPABILITY.items():
-        if sampling.HasField(name) and not profile.capability(capability):
-            raise _unimplemented(f"sampling.{name} is not supported by this engine")
-    for name in (
-        "temperature",
-        "top_p",
-        "min_p",
-        "frequency_penalty",
-        "presence_penalty",
-        "repetition_penalty",
-    ):
-        if sampling.HasField(name) and not math.isfinite(getattr(sampling, name)):
+    for name in SAMPLING_PARAM_NAMES:
+        if not sampling.HasField(name):
+            continue
+        value = getattr(sampling, name)
+        if profile.float32_sampling:
+            _check_float32_sampling_value(name, value)
+        elif name in _FLOAT_SAMPLING_FIELDS and not math.isfinite(value):
             raise _invalid(f"sampling.{name} must be finite")
-    if sampling.HasField("temperature") and sampling.temperature < 0:
-        raise _invalid(f"require temperature >= 0, got temperature={sampling.temperature}")
-    if sampling.HasField("top_p") and not 0 <= sampling.top_p <= 1:
-        raise _invalid(f"require 0 <= top_p <= 1, got top_p={sampling.top_p}")
-    if sampling.HasField("top_k") and sampling.top_k < 0:
-        raise _invalid(f"require top_k >= 0, got top_k={sampling.top_k}")
-    if sampling.HasField("min_p") and not 0 <= sampling.min_p <= 1:
-        raise _invalid(f"require 0 <= min_p <= 1, got min_p={sampling.min_p}")
+        accepted = profile.accepted(name)
+        if not accepted.accepts(value):
+            raise _unimplemented(
+                f"sampling.{name}={value!r} is not supported by this engine: "
+                f"{PARAMS_KEY}.{name} accepts {accepted.describe()}"
+            )
+    for name in _VALID_RANGE:
+        if sampling.HasField(name):
+            _check_bounds(name, getattr(sampling, name))
     num_sequences = sampling.num_sequences if sampling.HasField("num_sequences") else 1
     if num_sequences == 0:
         raise _invalid("sampling.num_sequences must be greater than zero")
@@ -630,8 +761,8 @@ def _is_int(value: struct_pb2.Value, minimum: int | None = None) -> bool:
 def _json_data(value: struct_pb2.Value, key: str) -> Any:
     """A ``Struct`` value as JSON data, with integral numbers as ints.
 
-    A double of magnitude ``2**53`` or more may be a rounded integer, so it is
-    refused rather than read as a value the client did not send.
+    A finite double of magnitude ``2**53`` or more may be a rounded integer, so
+    it is refused rather than read as a value the client did not send.
     """
     kind = value.WhichOneof("kind")
     if kind == "struct_value":
@@ -1841,6 +1972,11 @@ def _profile_from_args(args: argparse.Namespace) -> FakeProfile:
                 overrides[name] = frozenset(overrides[name])
         if "eos_token_ids" in overrides:
             overrides["eos_token_ids"] = tuple(overrides["eos_token_ids"])
+        if "params" in overrides:
+            overrides["params"] = {
+                name: AcceptedValues.from_extra(name, described)
+                for name, described in overrides["params"].items()
+            }
         if "kv_event_sources" in overrides:
             overrides["kv_event_sources"] = tuple(
                 json_format.ParseDict(source, kv_pb2.KvEventSource())
