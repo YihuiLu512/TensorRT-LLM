@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# An image sent as a reference through the chat and Responses paths (about 95 s with the server start).
+unittest/llmapi/apps/_test_openai_chat_multimodal.py::test_single_chat_session_image
+unittest/llmapi/apps/_test_openai_chat_multimodal.py::test_responses_image_input[message]
