@@ -15,8 +15,8 @@ is set. A rejection is a ``ValueError`` raised before anything is sent, which
 
 ``n`` beyond the sequences one call can return is split into several calls.
 
-:func:`build_generate_request` and :func:`builtin_capabilities` at the end of
-this module serve the PoC-S1 ``OpenEngineLLMAdapter`` only.
+:func:`build_generate_request` at the end of this module serves the PoC-S1
+``OpenEngineLLMAdapter`` only.
 """
 
 from __future__ import annotations
@@ -25,13 +25,13 @@ import dataclasses
 import json
 import math
 import threading
-from collections.abc import Collection, Mapping
+from collections.abc import Mapping
 from typing import Any
 
 from google.protobuf import struct_pb2
 
 from tensorrt_llm.executor.utils import context_length_exceeded_message
-from tensorrt_llm.grpc.openengine.bindings import generation_pb2, model_pb2, server_pb2
+from tensorrt_llm.grpc.openengine.bindings import generation_pb2, model_pb2
 from tensorrt_llm.grpc.openengine_conventions import (
     CAP_REQ_BEST_OF,
     CAP_REQ_CONVERSATION_ID,
@@ -50,44 +50,23 @@ from tensorrt_llm.grpc.openengine_conventions import (
     REQ_LOGIT_BIAS,
     REQ_SCHEDULING,
     REQ_THINKING_TOKEN_BUDGET,
-    SAMPLING_FIELD_CAPABILITY,
     ModelCapabilities,
+    parse_extra_capabilities,
+    struct_to_dict,
 )
 from tensorrt_llm.logger import logger
-from tensorrt_llm.sampling_params import _GENERATION_CONFIG_SAMPLING_FIELDS, SamplingParams
+from tensorrt_llm.sampling_params import SamplingParams
 
-from .contracts import GenerateOptions, new_request_id
+from .contracts import GenerateOptions, explicit_sampling_values, new_request_id
 from .engine_client import EngineRequest, GuidedSpec
 from .field_classes import GENERATE_OPTIONS, SAMPLING_PARAMS, Kind
 
 __all__ = [
     "build_generate_request",
-    "builtin_capabilities",
     "log_sequence_capability",
     "map_request",
 ]
 
-# Values that leave sampling unchanged. OpenAIServer fills some of them in when
-# the request does not set the field; such a value is sent only when the
-# request set it explicitly (SV-MAP-2). SamplingParams records explicit values
-# only for _GENERATION_CONFIG_SAMPLING_FIELDS, so a neutral frequency_penalty or
-# presence_penalty is never sent, even when the request set it.
-_NEUTRAL: dict[str, Any] = {
-    "top_k": 0,
-    "min_p": 0.0,
-    "frequency_penalty": 0.0,
-    "presence_penalty": 0.0,
-    "repetition_penalty": 1.0,
-}
-_SAMPLING_FIELDS = (
-    "temperature",
-    "top_p",
-    "top_k",
-    "min_p",
-    "frequency_penalty",
-    "presence_penalty",
-    "repetition_penalty",
-)
 _SAMPLING_DEFAULTS = {
     f.name: f.default if f.default is not dataclasses.MISSING else f.default_factory()
     for f in dataclasses.fields(SamplingParams)
@@ -174,30 +153,13 @@ def _check_rejected(sampling_params: SamplingParams, engine_name: str) -> None:
             raise _not_supported(f.name, value, engine_name, why)
 
 
-def _explicit(sampling_params: SamplingParams, name: str) -> bool:
-    provided = sampling_params._request_provided_fields
-    return provided is not None and name in provided
-
-
-def _requested(sampling_params: SamplingParams, name: str) -> Any:
-    """The value to send for a sampling field, or None.
-
-    A value the request set explicitly is sent (OE-GEN-2: the engine's own
-    default would apply otherwise). A value ``OpenAIServer`` filled in although
-    the request did not set it is not sent. For fields whose explicitness
-    ``SamplingParams`` does not record, a value is sent when it is not neutral.
-    """
-    value = getattr(sampling_params, name)
-    if value is None:
-        return None
-    if _explicit(sampling_params, name):
-        return value
-    provided = sampling_params._request_provided_fields
-    if provided is not None and name in _GENERATION_CONFIG_SAMPLING_FIELDS:
-        return None  # Filled in by the server.
-    if _NEUTRAL.get(name, object()) == value:
-        return None
-    return value
+def _check_accepted(
+    name: str, value: Any, capabilities: ModelCapabilities, engine_name: str, why: str = ""
+) -> None:
+    """Reject a sampling value outside the set the engine accepts (CAP-SV-1)."""
+    accepted = capabilities.accepted(name)
+    if not accepted.accepts(value):
+        raise _not_supported(name, value, engine_name, f"{why}it accepts {accepted.describe()}")
 
 
 _logged_lock = threading.Lock()
@@ -227,23 +189,23 @@ def log_sequence_capability(engine_name: str, capabilities: ModelCapabilities) -
 def _sampling(
     sampling_params: SamplingParams, capabilities: ModelCapabilities, engine_name: str
 ) -> dict[str, float | int]:
+    """The sampling values the request set itself, each checked against what the engine accepts.
+
+    A value is sent as the request gave it, whatever it is; a value the
+    serving side filled in is not sent, so the engine's own default applies
+    (CAP-GEN-4, CAP-GEN-5).
+    """
     sampling: dict[str, float | int] = {}
-    for name in _SAMPLING_FIELDS:
-        value = _requested(sampling_params, name)
-        if value is None:
-            continue
-        if isinstance(value, bool) or (isinstance(value, float) and not math.isfinite(value)):
+    for name, value in explicit_sampling_values(sampling_params).items():
+        if name == "seed":
+            if not 0 <= value < _SEED_LIMIT:
+                raise ValueError(f"seed must be in [0, 2**64), got {value}")
+        elif isinstance(value, bool) or (isinstance(value, float) and not math.isfinite(value)):
             raise ValueError(f"{name} must be a finite number, got {value!r}")
-        capability = SAMPLING_FIELD_CAPABILITY.get(name)
-        if capability is not None and not capabilities.supports(capability):
-            raise _not_supported(name, value, engine_name)
+        _check_accepted(name, value, capabilities, engine_name)
         if name == "top_k" and not 0 <= value <= _INT32_MAX:
             raise ValueError(f"top_k must be in [0, {_INT32_MAX}], got {value}")
         sampling[name] = value
-    if sampling_params.seed is not None:
-        if not 0 <= sampling_params.seed < _SEED_LIMIT:
-            raise ValueError(f"seed must be in [0, 2**64), got {sampling_params.seed}")
-        sampling["seed"] = sampling_params.seed
     return sampling
 
 
@@ -608,6 +570,14 @@ def map_request(
         call_sampling = dict(sampling)
         if offset:
             call_sampling["seed"] = (int(sampling["seed"]) + offset) % _SEED_LIMIT
+        if len(sizes) > 1:
+            _check_accepted(
+                "seed",
+                call_sampling["seed"],
+                capabilities,
+                engine_name,
+                f"n={n} is split into {len(sizes)} calls, each with its own seed; ",
+            )
         offset += size
         requests.append(
             EngineRequest(
@@ -635,26 +605,6 @@ def map_request(
 
 
 # --- PoC-S1 adapter ------------------------------------------------------------
-
-# ModelInfo.extra keys that declare sampling support (TRT-LLM OpenEngine
-# conventions). A missing key means "not supported".
-CAPABILITY_KEY_PREFIX = "trtllm.sampling."
-_CAPABILITY_GATED = ("min_p", "frequency_penalty", "presence_penalty", "repetition_penalty")
-# TRT-LLM's own OpenEngine server supports every gated field but reports no
-# capability keys; without a conventions version it counts as declaring them.
-# No other engine gets a built-in table.
-CONVENTIONS_VERSION_KEY = "trtllm.conventions_version"
-_BUILTIN_CAPABILITIES = {"tensorrt_llm": frozenset(_CAPABILITY_GATED)}
-
-# Values that leave sampling unchanged. OpenAIServer always fills these fields,
-# so a neutral value is treated as "not set" and not sent.
-_S1_NEUTRAL = {
-    "top_k": 0,
-    "min_p": 0.0,
-    "frequency_penalty": 0.0,
-    "presence_penalty": 0.0,
-    "repetition_penalty": 1.0,
-}
 
 # SamplingParams fields this adapter cannot carry to the engine; each must be
 # unset or equal to the listed value.
@@ -692,41 +642,6 @@ def _s1_unsupported(field: str, value: Any, engine: str) -> ValueError:
     )
 
 
-def _s1_requested(sampling_params: SamplingParams, field: str) -> Any:
-    """Return the value to send for ``field``.
-
-    None means "do not send": the value is unset, neutral (even when the request
-    set it explicitly), or a value ``OpenAIServer`` filled in although the request
-    did not set it.
-    """
-    value = getattr(sampling_params, field)
-    if value is None or _S1_NEUTRAL.get(field, object()) == value:
-        return None
-    provided = sampling_params._request_provided_fields
-    if (
-        provided is not None
-        and field in _GENERATION_CONFIG_SAMPLING_FIELDS
-        and field not in provided
-    ):
-        return None
-    return value
-
-
-def builtin_capabilities(server_info: server_pb2.ServerInfo) -> frozenset[str]:
-    """Gated fields to treat as declared for an engine that reports no capability keys."""
-    if server_info.HasField("extra") and CONVENTIONS_VERSION_KEY in server_info.extra.fields:
-        return frozenset()
-    return _BUILTIN_CAPABILITIES.get(server_info.engine_name, frozenset())
-
-
-def _declared(model_info: model_pb2.ModelInfo, field: str) -> bool:
-    key = CAPABILITY_KEY_PREFIX + field
-    if not model_info.HasField("extra") or key not in model_info.extra.fields:
-        return False
-    value = model_info.extra.fields[key]
-    return value.WhichOneof("kind") == "bool_value" and value.bool_value
-
-
 def default_max_tokens(model_info: model_pb2.ModelInfo, prompt_len: int) -> int | None:
     """Most tokens the engine can generate after ``prompt_len`` prompt tokens; None if it sets no limit."""
     limits = []
@@ -743,7 +658,6 @@ def build_generate_request(
     model_info: model_pb2.ModelInfo,
     *,
     engine_name: str,
-    builtin: Collection[str] = (),
 ) -> generation_pb2.GenerateRequest:
     """Build the ``GenerateRequest`` for one prompt.
 
@@ -752,10 +666,13 @@ def build_generate_request(
         sampling_params: The parameters ``OpenAIServer`` built for the request.
         model_info: The engine's ``ModelInfo``.
         engine_name: The engine's name, used in error messages.
-        builtin: Gated fields to treat as declared; see ``builtin_capabilities``.
+
+    Sampling values are sent as :func:`map_request` sends them, checked against
+    ``model_info``'s declaration.
 
     Raises:
         ValueError: A parameter is not supported, or the prompt does not fit.
+        CapabilityFormatError: ``model_info`` declares ``trtllm.params`` malformed.
     """
     for field, default in _S1_UNSUPPORTED_DEFAULTS.items():
         value = getattr(sampling_params, field)
@@ -797,26 +714,19 @@ def build_generate_request(
             )
         )
 
+    model_extra = struct_to_dict(model_info.extra) if model_info.HasField("extra") else {}
+    extra_capabilities = parse_extra_capabilities(model_extra)
     sampling = generation_pb2.SamplingParams()
-    for field in (
-        "temperature",
-        "top_p",
-        "top_k",
-        "min_p",
-        "frequency_penalty",
-        "presence_penalty",
-        "repetition_penalty",
-    ):
-        value = _s1_requested(sampling_params, field)
-        if value is None:
-            continue
-        if field in _CAPABILITY_GATED and field not in builtin and not _declared(model_info, field):
-            raise _s1_unsupported(field, value, engine_name)
+    for field, value in explicit_sampling_values(sampling_params).items():
+        if field == "seed" and value < 0:
+            raise ValueError(f"seed must be non-negative, got {value}")
+        accepted = extra_capabilities.accepted(field)
+        if not accepted.accepts(value):
+            raise ValueError(
+                f"{field}={value!r} is not supported when serving through the OpenEngine engine "
+                f"{engine_name!r} (it accepts {accepted.describe()})"
+            )
         setattr(sampling, field, value)
-    if sampling_params.seed is not None:
-        if sampling_params.seed < 0:
-            raise ValueError(f"seed must be non-negative, got {sampling_params.seed}")
-        sampling.seed = sampling_params.seed
     if n > 1:
         sampling.num_sequences = n
 

@@ -96,7 +96,7 @@ def test_every_call_has_a_fresh_request_id_the_model_and_detokenize_false():
     assert a.prompt_token_ids == PROMPT
 
 
-# --- sampling (SV-MAP-2, SV-MAP-3) ------------------------------------------------
+# --- sampling (CAP-SV-1, CAP-GEN-4, CAP-GEN-5) ----------------------------------------
 
 
 def test_set_sampling_fields_are_sent():
@@ -122,36 +122,45 @@ def test_set_sampling_fields_are_sent():
     }
 
 
-def test_neutral_values_are_not_sent_unless_explicit():
-    params = SamplingParams(
-        top_k=0, min_p=0.0, repetition_penalty=1.0, frequency_penalty=0.0, presence_penalty=0.0
-    )
-    assert _one(params).sampling == {}
-    explicit = _explicit(
-        SamplingParams(top_k=0, min_p=0.0, repetition_penalty=1.0),
-        "top_k",
-        "min_p",
-        "repetition_penalty",
-    )
-    assert _one(explicit).sampling == {"top_k": 0, "min_p": 0.0, "repetition_penalty": 1.0}
-    # SamplingParams does not record whether the request set these two.
-    penalties = _explicit(
-        SamplingParams(frequency_penalty=0.0, presence_penalty=0.0),
-        "frequency_penalty",
-        "presence_penalty",
-    )
-    assert _one(penalties, _caps("glm")).sampling == {}
+NO_EFFECT = {
+    "top_k": 0,
+    "min_p": 0.0,
+    "repetition_penalty": 1.0,
+    "frequency_penalty": 0.0,
+    "presence_penalty": 0.0,
+}
+
+
+def _with_params(caps, **declared):
+    """``caps`` with a ``trtllm.params`` declaration: each name maps to its value description."""
+    params = {
+        name: conv.AcceptedValues.from_extra(name, described)
+        for name, described in declared.items()
+    }
+    return dataclasses.replace(caps, extra=dataclasses.replace(caps.extra, params=params))
+
+
+def test_explicit_values_are_sent_as_given_even_with_no_effect():
+    """No value counts as "not set" because of what it is (CAP-GEN-4)."""
+    explicit = _explicit(SamplingParams(**NO_EFFECT), *NO_EFFECT)
+    assert _one(explicit).sampling == NO_EFFECT
+    # A caller that builds SamplingParams itself sets only what it wants sent.
+    assert _one(SamplingParams(**NO_EFFECT)).sampling == NO_EFFECT
 
 
 def test_values_the_server_filled_in_are_not_sent():
-    # OpenAIServer fills temperature and top_p with 1.0 when the request has none.
-    params = _explicit(SamplingParams(temperature=1.0, top_p=1.0, top_k=3), "top_k")
+    # OpenAIServer fills fields the request does not set; whatever their values, they are not sent.
+    params = _explicit(
+        SamplingParams(temperature=1.0, top_p=1.0, top_k=3, min_p=0.0, seed=5), "top_k"
+    )
     assert _one(params).sampling == {"top_k": 3}
+    # Not sent, so an engine that accepts none of them takes the request.
+    assert _one(params, _with_params(_caps(), top_k={"accept": "any"})).sampling == {"top_k": 3}
 
 
-def test_an_explicit_neutral_gated_field_is_rejected_by_an_engine_without_it():
+def test_an_explicit_no_effect_value_is_rejected_by_an_engine_that_accepts_none():
     params = _explicit(SamplingParams(repetition_penalty=1.0), "repetition_penalty")
-    with pytest.raises(ValueError, match=r"repetition_penalty=1.0 .*'eng'"):
+    with pytest.raises(ValueError, match=r"repetition_penalty=1.0 .*'eng' \(it accepts no value\)"):
         _one(params, _caps("glm"))
 
 
@@ -161,6 +170,43 @@ def test_a_gated_field_needs_its_capability(name):
     caps = _declare(_caps(), drop=[conv.SAMPLING_FIELD_CAPABILITY[name]])
     with pytest.raises(ValueError, match=name):
         _one(params, caps)
+
+
+@pytest.mark.parametrize("name", sorted(NO_EFFECT))
+def test_an_explicit_value_is_checked_against_the_declared_values(name):
+    """The trtllm.params declaration decides alone; the version 2 keys are not read next to it."""
+    caps = _with_params(_caps(), **{name: {"accept": "values", "values": [NO_EFFECT[name]]}})
+    params = _explicit(SamplingParams(**{name: NO_EFFECT[name]}), name)
+    assert _one(params, caps).sampling == {name: NO_EFFECT[name]}
+    effective = 5 if name == "top_k" else 0.5
+    with pytest.raises(
+        ValueError, match=rf"{name}={effective} .*'eng' \(it accepts only {NO_EFFECT[name]!r}\)"
+    ):
+        _one(SamplingParams(**{name: effective}), caps)
+
+
+def test_a_parameter_missing_from_the_declaration_accepts_nothing():
+    caps = _with_params(_caps(), temperature={"accept": "range", "min": 0.0, "max": 2.0})
+    assert _one(SamplingParams(temperature=2.0), caps).sampling == {"temperature": 2.0}
+    with pytest.raises(ValueError, match=r"temperature=2.5 .*values in \[0.0, 2.0\]"):
+        _one(SamplingParams(temperature=2.5), caps)
+    with pytest.raises(ValueError, match=r"top_p=0.9 .*it accepts no value"):
+        _one(SamplingParams(top_p=0.9), caps)
+    # The seed is a sampling parameter like the others.
+    with pytest.raises(ValueError, match=r"seed=3 .*it accepts no value"):
+        _one(SamplingParams(seed=3), caps)
+
+
+def test_split_calls_check_the_seeds_they_add():
+    caps = _with_params(
+        _caps(max_num_sequences=2),
+        temperature={"accept": "any"},
+        seed={"accept": "range", "min": 0, "max": 2},
+    )
+    requests = _map(_sampled(n=4, seed=0), caps)
+    assert [r.sampling["seed"] for r in requests] == [0, 2]
+    with pytest.raises(ValueError, match=r"seed=4 .*n=6 is split into 3 calls"):
+        _map(_sampled(n=6, seed=0), caps)
 
 
 @pytest.mark.parametrize("value", [math.nan, math.inf])

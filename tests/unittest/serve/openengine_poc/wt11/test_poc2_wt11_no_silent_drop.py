@@ -81,11 +81,32 @@ def _none_declared():
     )
 
 
+# The values that leave sampling unchanged, as a TRT-LLM server under one-model
+# speculation declares them (spec 06 section 4).
+NO_EFFECT_VALUES = {
+    "min_p": 0.0,
+    "frequency_penalty": 0.0,
+    "presence_penalty": 0.0,
+    "repetition_penalty": 1.0,
+}
+
+
+def _value_sets():
+    """trtllm-like, declaring trtllm.params with only the no-effect values for four fields."""
+    params = dict.fromkeys(conv.SAMPLING_PARAM_NAMES, conv.ANY_VALUE)
+    params.update(
+        {name: conv.AcceptedValues("values", values=(v,)) for name, v in NO_EFFECT_VALUES.items()}
+    )
+    caps = trtllm_like()[1]
+    return dataclasses.replace(caps, extra=dataclasses.replace(caps.extra, params=params))
+
+
 PROFILES = {
     "trtllm-like": trtllm_like()[1],
     "glm-like": glm_like()[1],
     "all-declared": _all_declared(),
     "none-declared": _none_declared(),
+    "value-sets": _value_sets(),
 }
 
 
@@ -179,6 +200,17 @@ def _first(check):
 
 
 _BUDGET_OPTIONS = {"reasoning_parser": "qwen3", "tokenizer": CharTokenizer()}
+# A value of each sampling field that changes sampling.
+SAMPLING_VALUES = {
+    "top_k": 5,
+    "top_p": 0.5,
+    "seed": 3,
+    "temperature": 0.5,
+    "min_p": 0.5,
+    "frequency_penalty": 0.5,
+    "presence_penalty": 0.5,
+    "repetition_penalty": 0.5,
+}
 
 MAPPED_PROBES: dict[str, Probe] = {
     "max_tokens": Probe({"max_tokens": 5}, landed=_first(lambda r: r.max_tokens == 5)),
@@ -204,16 +236,12 @@ MAPPED_PROBES: dict[str, Probe] = {
         landed=_first(lambda r: r.extra[conv.REQ_BEST_OF] == 2),
     ),
     **{
-        name: Probe({name: value}, landed=_first(lambda r, n=name, v=value: r.sampling[n] == v))
-        for name, value in (("top_k", 5), ("top_p", 0.5), ("seed", 3), ("temperature", 0.5))
-    },
-    **{
         name: Probe(
-            {name: 0.5},
-            supported=_cap(conv.SAMPLING_FIELD_CAPABILITY[name]),
-            landed=_first(lambda r, n=name: r.sampling[n] == 0.5),
+            {name: value},
+            supported=lambda caps, n=name, v=value: caps.accepted(n).accepts(v),
+            landed=_first(lambda r, n=name, v=value: r.sampling.get(n) == v),
         )
-        for name in conv.SAMPLING_FIELD_CAPABILITY
+        for name, value in SAMPLING_VALUES.items()
     },
     "min_tokens": Probe({"min_tokens": 2}, landed=_first(lambda r: r.min_tokens == 2)),
     "logprobs": Probe(
@@ -381,6 +409,20 @@ def test_a_serve_field_is_not_rejected(profile, name):
     options = {name: SERVE_OPTION_VALUES[name]} if name in SERVE_OPTION_VALUES else {}
     (request,) = _run(PROFILES[profile], params, options)
     assert request.extra[conv.REQ_DETOKENIZE] is False
+
+
+@pytest.mark.parametrize("profile", PROFILES)
+@pytest.mark.parametrize("name", sorted(NO_EFFECT_VALUES))
+def test_a_value_reaches_the_engine_exactly_when_the_engine_accepts_it(profile, name):
+    """X-1 over value sets: a no-effect value is a value like any other (CAP-GEN-4, CAP-SV-1)."""
+    caps = PROFILES[profile]
+    for value in (NO_EFFECT_VALUES[name], SAMPLING_VALUES[name]):
+        if caps.accepted(name).accepts(value):
+            (request,) = _run(caps, {name: value})
+            assert request.sampling == {name: value}
+        else:
+            with pytest.raises(ValueError, match=rf"{name}={value!r} .*it accepts"):
+                _run(caps, {name: value})
 
 
 def test_an_unclassified_field_is_rejected(monkeypatch):
@@ -555,6 +597,45 @@ def test_over_grpc_a_facade_mapped_field_reaches_the_engine_or_is_rejected(profi
     _over_grpc(profile, tmp_path, check)
 
 
+@pytest.mark.parametrize("name", sorted(NO_EFFECT_VALUES))
+def test_over_grpc_an_engine_without_the_conventions_starts_and_accepts_no_min_p_or_penalty(
+    name, tmp_path
+):
+    """No built-in table: an engine that reports no conventions version declares nothing (R9)."""
+    profile = FAKE_PROFILES["trtllm-current"].replace(
+        model=_GRPC_MODEL,
+        max_context_length=64,
+        vocab_size=len(_GRPC_VOCAB),
+        eos_token_ids=(_GRPC_EOS,),
+        bos_token_id=None,
+    )
+
+    async def main():
+        async with FakeEngine(profile) as engine:
+            facade = _grpc_facade(engine, tmp_path)
+            await facade.start()
+            try:
+                assert facade.check_health()
+                caps = facade.client.model_info()
+                assert caps.extra.declared == frozenset() and caps.extra.params is None
+                # Even the value that leaves sampling unchanged: the engine does not declare it.
+                with pytest.raises(ValueError, match=rf"{name}=.* \(it accepts no value\)"):
+                    facade.generate_async(
+                        GRPC_PROMPT, _sampling({name: NO_EFFECT_VALUES[name], "max_tokens": 1})
+                    )
+                assert engine.requests == []
+                # The protocol's own sampling fields still go through.
+                await facade.generate_async(
+                    GRPC_PROMPT, _sampling({"temperature": 0.5, "max_tokens": 1})
+                )
+                (received,) = engine.requests
+                assert received.sampling.temperature == 0.5
+            finally:
+                await facade.aclose()
+
+    asyncio.run(asyncio.wait_for(main(), WAIT_SECONDS * 2))
+
+
 def _server_generate_async_keywords() -> set[str]:
     """Every keyword ``OpenAIServer`` passes to ``generate_async``, with the request data."""
     source = Path(inspect.getfile(contracts)).parents[1] / "openai_server.py"
@@ -565,11 +646,15 @@ def _server_generate_async_keywords() -> set[str]:
                 if keyword.arg is not None:
                     keywords.add(keyword.arg)
                 else:
-                    # Only the request-data helpers are spread into the call.
+                    # Only the request-data and priority helpers are spread into the call.
                     assert ast.unparse(keyword.value).startswith(
-                        ("self._request_data_kwargs(", "self._responses_request_data_kwargs(")
+                        (
+                            "self._request_data_kwargs(",
+                            "self._responses_request_data_kwargs(",
+                            "self._priority_kwargs(",
+                        )
                     ), ast.unparse(keyword.value)
-    return keywords | {"logit_bias", "reasoning_parser", "tokenizer"}
+    return keywords | {"logit_bias", "reasoning_parser", "tokenizer", "priority"}
 
 
 def test_the_facade_names_every_keyword_the_server_passes():

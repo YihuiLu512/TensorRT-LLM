@@ -31,7 +31,6 @@ from tensorrt_llm.grpc.openengine.bindings import (
     generation_pb2,
     lifecycle_pb2,
     model_pb2,
-    server_pb2,
 )
 from tensorrt_llm.grpc.openengine_client import (
     OpenEngineIncompatibleServerError,
@@ -265,11 +264,10 @@ def test_mapping_leaves_server_filled_defaults_unset() -> None:
     assert not request.stopping.conditions
 
 
-def test_mapping_sends_explicit_non_neutral_values_and_keeps_stop_strings_out() -> None:
+def test_mapping_sends_explicit_values_and_keeps_stop_strings_out() -> None:
     sampling = _chat_sampling(
         temperature=0.0,
         top_p=1.0,
-        presence_penalty=0.0,
         seed=7,
         max_completion_tokens=5,
         stop=[" world"],
@@ -278,7 +276,6 @@ def test_mapping_sends_explicit_non_neutral_values_and_keeps_stop_strings_out() 
     request = build_generate_request(PROMPT_IDS, sampling, _model_info(), engine_name="stub")
     assert request.sampling.HasField("temperature") and request.sampling.temperature == 0.0
     assert request.sampling.HasField("top_p")
-    assert not request.sampling.HasField("presence_penalty")
     assert request.sampling.seed == 7
     assert request.stopping.max_tokens == 5
     assert [c.stop_token_id for c in request.stopping.conditions] == [EOS, BANG]
@@ -314,36 +311,24 @@ def test_mapping_sends_a_declared_penalty() -> None:
     assert request.sampling.presence_penalty == 0.5
 
 
-@pytest.mark.parametrize(
-    "engine_name, conventions_version, builtin",
-    [
-        ("tensorrt_llm", None, True),
-        ("tensorrt_llm", 1, False),
-        ("other_engine", None, False),
-    ],
-)
-def test_only_trtllm_without_conventions_gets_the_builtin_capabilities(
-    engine_name, conventions_version, builtin
-) -> None:
-    server_info = server_pb2.ServerInfo(engine_name=engine_name)
-    if conventions_version is not None:
-        server_info.extra.update({mapping_module.CONVENTIONS_VERSION_KEY: conventions_version})
-    sampling = _chat_sampling(presence_penalty=0.5)
-
-    def build():
-        return build_generate_request(
-            PROMPT_IDS,
-            sampling,
-            _model_info(),
-            engine_name=engine_name,
-            builtin=mapping_module.builtin_capabilities(server_info),
-        )
-
-    if builtin:
-        assert build().sampling.presence_penalty == 0.5
+@pytest.mark.parametrize("value", [0.0, 0.5])
+def test_mapping_checks_an_explicit_penalty_against_the_declared_values(value) -> None:
+    """An explicit value is sent as given when the engine accepts it, even a neutral one."""
+    info = _model_info()
+    info.extra.update(
+        {"trtllm.params": {"presence_penalty": {"accept": "values", "values": [0.0]}}}
+    )
+    sampling = _chat_sampling(presence_penalty=value)
+    if value == 0.0:
+        request = build_generate_request(PROMPT_IDS, sampling, info, engine_name="stub")
+        assert request.sampling.HasField("presence_penalty")
+        assert request.sampling.presence_penalty == 0.0
     else:
-        with pytest.raises(ValueError, match="presence_penalty"):
-            build()
+        with pytest.raises(ValueError, match="presence_penalty=0.5 .*it accepts only 0.0"):
+            build_generate_request(PROMPT_IDS, sampling, info, engine_name="stub")
+    # Without the declaration (as from an engine that reports no conventions), nothing is accepted.
+    with pytest.raises(ValueError, match="presence_penalty.*it accepts no value"):
+        build_generate_request(PROMPT_IDS, sampling, _model_info(), engine_name="stub")
 
 
 def test_mapping_caps_max_tokens_at_the_room_left_in_the_context(monkeypatch) -> None:
@@ -1511,9 +1496,11 @@ def test_request_metadata_reaches_the_engine(tmp_path) -> None:
         assert received.metadata_value(META_PRIORITY) == str(encode_priority(0.9))
         assert received.admitted.priority == encode_priority(0.9)
         assert received.metadata_value(META_TARGET_DP_RANK) == "0"
-        # The default priority is not sent.
+        # An explicit priority is sent whatever its value; none is sent when it is not given.
         await facade.generate_async(PROMPT_IDS, SamplingParams(max_tokens=1), priority=0.5)
-        assert engine.accepted[1].metadata_value(META_PRIORITY) is None
+        assert engine.accepted[1].metadata_value(META_PRIORITY) == str(encode_priority(0.5))
+        await facade.generate_async(PROMPT_IDS, SamplingParams(max_tokens=1))
+        assert engine.accepted[2].metadata_value(META_PRIORITY) is None
 
     _serve(engine, tmp_path, body)
 
@@ -1522,6 +1509,7 @@ def test_request_metadata_reaches_the_engine(tmp_path) -> None:
     "profile_changes, options, message",
     [
         ({"supports_priority": False}, {"priority": 0.9}, "priority"),
+        ({"supports_priority": False}, {"priority": 0.5}, "priority=0.5"),
         (
             {"dp_rank_targeting": False},
             {"scheduling_params": SchedulingParams(attention_dp_rank=0)},

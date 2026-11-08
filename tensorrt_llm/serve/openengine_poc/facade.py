@@ -845,8 +845,6 @@ class OpenEngineLLM:
         self, options: contracts.GenerateOptions, caps: ModelCapabilities
     ) -> dict[str, str]:
         """The gRPC metadata of a request's calls: trace headers, priority, DP rank."""
-        from tensorrt_llm.executor.request import DEFAULT_REQUEST_PRIORITY
-
         engine_name = self.client.server_info().engine_name
         metadata: dict[str, str] = {}
         for key in (META_TRACEPARENT, META_TRACESTATE):
@@ -854,8 +852,9 @@ class OpenEngineLLM:
             # The W3C trace headers are printable ASCII; others are dropped, not sent.
             if isinstance(value, str) and value and value.isascii() and value.isprintable():
                 metadata[key] = value
+        # Sent only when the request gave it, whatever its value (CAP-GEN-4).
         priority = options.priority
-        if priority is not None and priority != DEFAULT_REQUEST_PRIORITY:
+        if priority is not None:
             if not caps.supports_priority:
                 raise ValueError(
                     f"priority={priority!r} is not supported when serving through the OpenEngine "

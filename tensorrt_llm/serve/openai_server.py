@@ -41,7 +41,6 @@ from tensorrt_llm._utils import EnergyMonitor
 # yapf: disable
 from tensorrt_llm.executor import CppExecutorError
 from tensorrt_llm.executor.postproc_worker import PostprocArgs, PostprocParams
-from tensorrt_llm.executor.request import DEFAULT_REQUEST_PRIORITY
 from tensorrt_llm.executor.rpc import RPCError
 from tensorrt_llm.executor.utils import (CONTEXT_LENGTH_EXCEEDED_CODE,
                                          is_context_length_exceeded_message)
@@ -1060,6 +1059,17 @@ class OpenAIServer(_VideoRoutesMixin):
     def _takes_request_data(self) -> bool:
         """Whether the generator takes a thinking budget and logit_bias as data (OpenEngine)."""
         return openengine_contracts.takes_request_data(self.generator)
+
+    @staticmethod
+    def _priority_kwargs(request: Any) -> dict:
+        """The request's priority for ``generate_async``, only when the request set one.
+
+        Otherwise the generator's own default applies: ``LLM``'s is
+        ``DEFAULT_REQUEST_PRIORITY``, and an OpenEngine generator sends none.
+        """
+        if request.priority is None:
+            return {}
+        return {"priority": request.priority}
 
     def _request_data_kwargs(self,
                              request: Any,
@@ -2545,8 +2555,7 @@ class OpenAIServer(_VideoRoutesMixin):
                 kv_hints=request.kv_hints,
                 trace_headers=trace_headers,
                 scheduling_params=scheduling_params,
-                priority=request.priority
-                if request.priority is not None else DEFAULT_REQUEST_PRIORITY,
+                **self._priority_kwargs(request),
                 **self._request_data_kwargs(request),
             )
             asyncio.create_task(self.await_disconnected(raw_request, promise))
@@ -3178,8 +3187,7 @@ class OpenAIServer(_VideoRoutesMixin):
                     conversation_params=conversation_params,
                     trace_headers=trace_headers,
                     kv_hints=request.kv_hints,
-                    priority=request.priority if request.priority is not None
-                    else DEFAULT_REQUEST_PRIORITY,
+                    **self._priority_kwargs(request),
                     **self._request_data_kwargs(request))
                 asyncio.create_task(
                     self.await_disconnected(raw_request, promise))
@@ -3345,8 +3353,7 @@ class OpenAIServer(_VideoRoutesMixin):
                 conversation_params=conversation_params,
                 trace_headers=trace_headers,
                 kv_hints=request.kv_hints,
-                priority=request.priority
-                if request.priority is not None else DEFAULT_REQUEST_PRIORITY,
+                **self._priority_kwargs(request),
                 **self._request_data_kwargs(request),
             )
             dispatch.prepare(postproc_args, promise)

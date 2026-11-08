@@ -8,7 +8,8 @@ these kinds:
 
 - ``MAPPED``: it reaches the engine, at ``target``. When the engine has not
   declared ``capability``, a set value is rejected, unless ``fallback`` names
-  what happens to it instead.
+  what happens to it instead. A ``trtllm.params.*`` capability is a set of
+  values: a value outside the set the engine accepts is rejected.
 - ``SERVE``: the serving side handles it; ``verified_by`` names the feature
   row (``row F-xx``) whose tests verify that handling, or says why none is
   needed (``none needed: ...``).
@@ -110,25 +111,25 @@ SAMPLING_PARAMS: dict[str, FieldClass] = {
     "best_of": _mapped("extra[trtllm.best_of]", "trtllm.request.best_of"),
     "use_beam_search": _rejected(_BEAM),
     "logprobs_mode": _rejected(f"only raw logprobs; {_NO_CARRIER}"),
-    "top_k": _mapped("sampling.top_k"),
-    "top_p": _mapped("sampling.top_p"),
+    "top_k": _mapped("sampling.top_k", "trtllm.params.top_k"),
+    "top_p": _mapped("sampling.top_p", "trtllm.params.top_p"),
     "top_p_min": _rejected(_NO_CARRIER),
     "top_p_reset_ids": _rejected(_NO_CARRIER),
     "top_p_decay": _rejected(_NO_CARRIER),
-    "seed": _mapped("sampling.seed"),
-    "temperature": _mapped("sampling.temperature"),
+    "seed": _mapped("sampling.seed", "trtllm.params.seed"),
+    "temperature": _mapped("sampling.temperature", "trtllm.params.temperature"),
     "min_tokens": _mapped("stopping.min_tokens"),
     "beam_search_diversity_rate": _rejected(_BEAM),
     "repetition_penalty": _mapped(
-        "sampling.repetition_penalty", "trtllm.sampling.repetition_penalty"
+        "sampling.repetition_penalty", "trtllm.params.repetition_penalty"
     ),
-    "presence_penalty": _mapped("sampling.presence_penalty", "trtllm.sampling.presence_penalty"),
-    "frequency_penalty": _mapped("sampling.frequency_penalty", "trtllm.sampling.frequency_penalty"),
+    "presence_penalty": _mapped("sampling.presence_penalty", "trtllm.params.presence_penalty"),
+    "frequency_penalty": _mapped("sampling.frequency_penalty", "trtllm.params.frequency_penalty"),
     "prompt_ignore_length": _rejected(_NO_CARRIER),
     "length_penalty": _rejected(_BEAM),
     "early_stopping": _rejected(_BEAM),
     "no_repeat_ngram_size": _rejected(_NO_CARRIER),
-    "min_p": _mapped("sampling.min_p", "trtllm.sampling.min_p"),
+    "min_p": _mapped("sampling.min_p", "trtllm.params.min_p"),
     "beam_width_array": _rejected(_BEAM),
     "logprobs": _mapped("response.output_candidates.top_n", "output logprobs"),
     "prompt_logprobs": _mapped("response.prompt_candidates.top_n", "prompt logprobs"),

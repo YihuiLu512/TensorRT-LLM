@@ -468,8 +468,8 @@ class SamplingParams:
             raise ValueError("logprobs_simple_format is not supported with beam search")
 
     def _set_request_provided_fields(self, field_names: Iterable[str]) -> None:
-        """Record sampler fields explicitly supplied by a serving request."""
-        self._request_provided_fields = frozenset(field_names) & _GENERATION_CONFIG_SAMPLING_FIELDS
+        """Record the fields a serving request explicitly supplied."""
+        self._request_provided_fields = frozenset(field_names)
 
     def _apply_generation_config_defaults(self, generation_config: Mapping[str, Any]) -> None:
         """Apply compatible model defaults without overriding request values."""
