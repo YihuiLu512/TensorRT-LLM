@@ -653,7 +653,7 @@ _REJECTIONS = [
     (
         "trtllm-like",
         {},
-        {"trtllm.kv_hints": json.dumps(KV_HINTS) + " " * KV_HINTS_TEXT_MAX_BYTES},
+        {"trtllm.kv_hints": json.dumps(KV_HINTS).ljust(KV_HINTS_TEXT_MAX_BYTES + 1)},
         (),
         "INVALID_ARGUMENT",
     ),
@@ -794,11 +794,18 @@ def test_refused_requests_get_the_declared_status_and_no_events(
     [
         KV_HINTS,
         json.dumps(KV_HINTS),
-        # Text keeps an integer beyond 2**53 exact, and may have whitespace.
+        # Text may hold an integer beyond 2**53, and whitespace.
         json.dumps({**KV_HINTS, "n": 2**60}, indent=2),
+        json.dumps(KV_HINTS).ljust(KV_HINTS_TEXT_MAX_BYTES),
         {**KV_HINTS, "n": 2**53 - 1},
     ],
-    ids=["object", "text", "text-large-integer", "object-largest-exact-integer"],
+    ids=[
+        "object",
+        "text",
+        "text-large-integer",
+        "text-longest",
+        "object-largest-safe-integer",
+    ],
 )
 def test_kv_hints_are_taken_as_json_text_or_as_an_object(hints: str | dict[str, Any]) -> None:
     message = request(stopping={"maxTokens": 1}, extra={"trtllm.kv_hints": hints})
@@ -809,6 +816,14 @@ def test_kv_hints_are_taken_as_json_text_or_as_an_object(hints: str | dict[str, 
             assert code == grpc.StatusCode.OK, details
 
     run(main())
+
+
+def test_kv_hints_text_limit_is_the_servers() -> None:
+    from tensorrt_llm.grpc.openengine import request_mapping
+    from tensorrt_llm.kv_hints.protocol import MAX_KV_HINTS_BYTES
+
+    per_byte = request_mapping._KV_HINTS_TEXT_BYTES_PER_ENVELOPE_BYTE
+    assert KV_HINTS_TEXT_MAX_BYTES == per_byte * MAX_KV_HINTS_BYTES
 
 
 def test_a_request_without_input_is_invalid() -> None:
@@ -836,7 +851,13 @@ def test_profile_without_conventions_ignores_undeclared_and_unknown_keys() -> No
     message = request(
         sampling={"presencePenalty": 0.5, "minP": 0.1},
         stopping={"maxTokens": 2, "conditions": [{"stopText": "x"}]},
-        extra={"conversation_id": "c", "trtllm.logit_bias": {"5": 1}, "trtllm.unknown": 1},
+        # trtllm-like's best_of capability is off, so its invalid value is ignored too.
+        extra={
+            "conversation_id": "c",
+            "trtllm.logit_bias": {"5": 1},
+            "trtllm.best_of": "x",
+            "trtllm.unknown": 1,
+        },
     )
 
     async def main() -> None:

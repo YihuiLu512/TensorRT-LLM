@@ -661,13 +661,14 @@ def _validate_kv_hints(key: str, value: struct_pb2.Value) -> None:
     ``Infinity``, and holds a JSON object. Either form is then refused when
     the KV hints protocol's admission would drop the envelope.
     """
-    # The protocol module needs pydantic, which only this key uses.
+    # Imported here: only this key needs the KV hints protocol and its dependencies.
     from tensorrt_llm.kv_hints.protocol import admit_kv_hints
 
     kind = value.WhichOneof("kind")
     if kind == "string_value":
         text = value.string_value
-        if len(text.encode("utf-8")) > KV_HINTS_TEXT_MAX_BYTES:
+        limit = KV_HINTS_TEXT_MAX_BYTES
+        if len(text) > limit or len(text.encode("utf-8")) > limit:
             raise _invalid(f"extra.{key} is longer than {KV_HINTS_TEXT_MAX_BYTES} bytes")
         try:
             envelope = json.loads(text, parse_constant=_refuse_json_constant)
