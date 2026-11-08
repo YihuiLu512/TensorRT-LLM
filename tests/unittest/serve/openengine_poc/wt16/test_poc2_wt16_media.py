@@ -11,9 +11,13 @@ from types import SimpleNamespace
 import pytest
 
 from tensorrt_llm.grpc.openengine.bindings import generation_pb2
+from tensorrt_llm.grpc.openengine_client import MAX_MESSAGE_BYTES
 from tensorrt_llm.serve.openengine_poc import contracts, media
 from tensorrt_llm.serve.openengine_poc.engine_client import EngineRequest, MediaSpec
-from tensorrt_llm.serve.openengine_poc.engine_client_impl import OpenEngineEngineClient
+from tensorrt_llm.serve.openengine_poc.engine_client_impl import (
+    OpenEngineEngineClient,
+    to_generate_request,
+)
 
 __extra_import_path__ = ["~/tests/unittest/grpc/openengine_client"]
 from fake_openengine import PROFILES, FakeEngine  # noqa: E402
@@ -213,6 +217,22 @@ def test_inline_media_beyond_the_message_budget_are_refused(monkeypatch, media_d
     )
     # URLs do not count: the engine fetches them.
     assert len(_map({"multi_modal_data": {"image": ["http://h/1.png"] * 3, "audio": [PNG]}})) == 4
+
+
+def test_a_request_that_fills_the_budget_fits_a_generate_message():
+    # Media at the budget, a long prompt of large token ids and a full sampling block.
+    data_uri = "data:video/mp4;base64," + "A" * (media.MAX_INLINE_MEDIA_BYTES - 22)
+    assert len(data_uri) == media.MAX_INLINE_MEDIA_BYTES
+    request = EngineRequest(
+        request_id="trtllm-" + "f" * 32,
+        prompt_token_ids=[(1 << 21) - 1] * 256_000,
+        max_tokens=1 << 20,
+        sampling={"temperature": 0.5, "top_p": 0.9, "top_k": 50, "seed": 1 << 62},
+        stop_token_ids=list(range(64)),
+        media=[MediaSpec(modality="video", data_uri=data_uri, uuid="u" * 64)],
+        model="m" * 256,
+    )
+    assert to_generate_request(request).ByteSize() <= MAX_MESSAGE_BYTES
 
 
 # -- Chat messages ------------------------------------------------------------

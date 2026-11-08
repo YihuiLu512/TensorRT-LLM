@@ -38,8 +38,9 @@ __all__ = ["MAX_INLINE_MEDIA_BYTES", "chat_media_references", "map_media"]
 
 _MODALITIES = ("image", "video", "audio")
 # Characters of data URIs one request may carry. A Generate message is at
-# most 64 MiB (OE-TRN-3); the rest is left for the prompt.
-MAX_INLINE_MEDIA_BYTES = 56 << 20
+# most 64 MiB (OE-TRN-3); the 2 MiB left hold the rest of the request, whose
+# token ids take at most 3 bytes each for vocabularies below 2**21.
+MAX_INLINE_MEDIA_BYTES = 62 << 20
 
 
 def _refused(what: str) -> ValueError:
