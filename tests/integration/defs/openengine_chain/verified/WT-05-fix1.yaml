@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# In these runs the TRT-LLM engine declares neither trtllm.request.scheduling (attention DP is
+# off) nor trtllm.request.best_of, so the agent_hierarchy and best_of cases pass by the front end
+# refusing them with 400 before any engine call.
+entries:
+  - row: F-44-chain
+    features: [F-44]
+    cases:
+      - unittest/llmapi/apps/_test_openengine_wt05_scheduling.py::test_priority_reorders_waiting_requests
+      - unittest/llmapi/apps/_test_openengine_wt05_scheduling.py::test_agent_hierarchy_reaches_the_engine_or_is_refused
+      - unittest/llmapi/apps/_test_openengine_wt05_scheduling.py::test_kv_hints_with_integers_beyond_double_precision
+      - unittest/llmapi/apps/_test_openengine_wt05_scheduling.py::test_option_reaches_the_engine_or_is_refused[agent_hierarchy]
+      - unittest/llmapi/apps/_test_openengine_wt05_scheduling.py::test_option_reaches_the_engine_or_is_refused[best_of]
+      - unittest/llmapi/apps/_test_openengine_wt05_scheduling.py::test_option_reaches_the_engine_or_is_refused[cache_salt]
+      - unittest/llmapi/apps/_test_openengine_wt05_scheduling.py::test_option_reaches_the_engine_or_is_refused[kv_hints]
+      - unittest/llmapi/apps/_test_openengine_wt05_scheduling.py::test_option_reaches_the_engine_or_is_refused[logit_bias]
+      - unittest/llmapi/apps/_test_openengine_wt05_scheduling.py::test_option_reaches_the_engine_or_is_refused[priority]
+      - unittest/llmapi/apps/_test_openengine_wt05_scheduling.py::test_option_reaches_the_engine_or_is_refused[thinking_token_budget]
+    commit: efca512ff2ff3ebfbf39be036f6dfab1989ee968
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17735/data/stage-00/test-00/01_selftest/results/e2e-r9-chain-5729742/chain-1/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17735/data/stage-00/test-00/01_selftest/results/e2e-r9-chain-5729742/chain-1/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17735/data/stage-00/test-00/01_selftest/results/e2e-r9-chain-5729742/chain-2/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17735/data/stage-00/test-00/01_selftest/results/e2e-r9-chain-5729742/chain-2/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17735/data/stage-00/test-00/01_selftest/results/e2e-r9-chain-5729742/chain-3/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17735/data/stage-00/test-00/01_selftest/results/e2e-r9-chain-5729742/chain-3/junit/
+    result: passed
+    chain_proof: ok

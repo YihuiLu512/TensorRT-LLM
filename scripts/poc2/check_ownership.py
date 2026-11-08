@@ -143,6 +143,8 @@ OWNERSHIP: dict[str, list[Rule]] = {
         f"{OE_SERVER_TESTS}/test_servicer.py",
         f"{OE_SERVER_TESTS}/test_request_mapping*.py",
         f"{OE_SERVER_TESTS}/test_lora_registry*.py",
+        # WT-05-fix1 verifies F-44-chain, the row of WT-05's chain cases.
+        f"{CHAIN}/verified/WT-05-fix1.yaml",
     )
     + [
         _shared(
