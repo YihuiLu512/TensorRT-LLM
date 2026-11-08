@@ -599,7 +599,7 @@ def _resolve_default_num_serve_frontends(llm_args: dict, *, requested: bool,
     if requested or num_frontends <= 1:
         return
     if grpc:
-        # OpenEngine supports several frontends, but only when asked to.
+        # The gRPC server supports several frontends, but only when asked to.
         reason = "--grpc"
     elif port == 0 or report_addr:
         reason = "--port 0 / --report_addr"
@@ -1188,10 +1188,10 @@ def launch_visual_gen_server(
     # LlmArgs keeps 1: only trtllm-serve spawns frontends.
     default=8,
     help="Number of HTTP or OpenEngine frontend processes serving one "
-    "executor; values > 1 share the serving port via "
-    "SO_REUSEPORT (classic IPC executor path only). Without an explicit "
-    "value, --grpc and configurations that support a single frontend only "
-    "use 1 and log why.",
+    "executor or engine; values > 1 share the serving port via SO_REUSEPORT "
+    "(classic IPC executor path and --openengine-endpoint only). Without "
+    "an explicit value, --grpc and configurations that support a single "
+    "frontend only use 1 and log why.",
     status="beta")
 @stability_option("--num_input_processor_workers",
                   type=click.IntRange(min=1),

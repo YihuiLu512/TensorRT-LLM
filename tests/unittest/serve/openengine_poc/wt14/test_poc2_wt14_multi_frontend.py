@@ -8,6 +8,7 @@ the attached frontends as it would in production.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import os
@@ -16,8 +17,10 @@ import signal
 import socket
 import subprocess  # nosec B404
 import sys
+import tempfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 from unittest import mock
 
@@ -33,6 +36,7 @@ from tensorrt_llm.grpc.openengine_conventions import (
     SERVE_COUNTER_GENERATE_SENT,
     compute_tokenizer_fingerprint,
 )
+from tensorrt_llm.serve.multi_frontend import AttachedFrontendWatchdog
 from tensorrt_llm.serve.openengine_poc import contracts, multi_frontend
 from tensorrt_llm.serve.openengine_poc import launch as launch_module
 from tensorrt_llm.usage import usage_lib
@@ -154,6 +158,145 @@ def test_an_attached_frontend_needs_several_frontends(monkeypatch):
         contracts.launch_frontends(_config())
     # Consumed, so the processes it starts do not inherit it.
     assert multi_frontend.LAUNCHER_UDS_ENV not in os.environ
+
+
+@pytest.mark.parametrize("value", [None, "x", "0", "2"])
+def test_an_attached_frontend_needs_its_frontend_id(monkeypatch, value):
+    monkeypatch.setenv(multi_frontend.LAUNCHER_UDS_ENV, "/tmp/launcher.sock")
+    if value is None:
+        monkeypatch.delenv("TLLM_EXECUTOR_FRONTEND_ID", raising=False)
+    else:
+        monkeypatch.setenv("TLLM_EXECUTOR_FRONTEND_ID", value)
+    config = _config(llm_args={"model": "m", "num_serve_frontends": 2})
+    with (
+        mock.patch.object(multi_frontend, "_bind_shared_port") as bind,
+        pytest.raises(click.UsageError, match="TLLM_EXECUTOR_FRONTEND_ID"),
+    ):
+        contracts.launch_frontends(config)
+    bind.assert_not_called()
+
+
+@pytest.mark.parametrize("value", [2.9, -1, True, "2"])
+def test_a_bad_postprocessing_worker_count_is_a_usage_error(value):
+    config = _config(
+        llm_args={"model": "m", "num_serve_frontends": 2, "num_postprocess_workers": value}
+    )
+    with (
+        mock.patch.object(multi_frontend, "_bind_shared_port") as bind,
+        pytest.raises(click.UsageError, match="num_postprocess_workers"),
+    ):
+        contracts.launch_frontends(config)
+    bind.assert_not_called()
+
+
+# -- How an attached frontend follows the launcher ---------------------------------
+
+
+def _watchdog_verdict(statuses: list[int | None]) -> list[BaseException]:
+    """What the launcher watchdog of an attached frontend decides on these ``/health`` answers.
+
+    The last answer repeats.
+    """
+
+    class Forwarder:
+        def __init__(self):
+            self.answers = iter(statuses)
+            self.last = None
+
+        async def get_status(self, path, timeout_s=5.0):
+            self.last = next(self.answers, self.last)
+            return self.last
+
+    server = SimpleNamespace(_launcher_forwarder=Forwarder())
+    multi_frontend._watch_launcher_liveness_only(server)
+    dead: list[BaseException] = []
+    watchdog = AttachedFrontendWatchdog(
+        server._launcher_forwarder,
+        os.getppid(),
+        dead.append,
+        ppid_interval_s=0.01,
+        health_interval_s=0.01,
+        health_failures=3,
+    )
+
+    async def run() -> None:
+        task = asyncio.create_task(watchdog.run())
+        await asyncio.sleep(0.5)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    return dead
+
+
+def test_an_attached_frontend_keeps_serving_while_the_engine_is_unhealthy():
+    # The launcher answers /health with 503 while its engine connection is down;
+    # each frontend watches the engine itself.
+    assert _watchdog_verdict([200, 503]) == []
+
+
+def test_an_attached_frontend_stops_when_the_launcher_no_longer_answers():
+    dead = _watchdog_verdict([200, 503, None])
+    assert len(dead) == 1
+    assert "failed 3 consecutive times" in str(dead[0])
+
+
+def test_an_attached_frontend_listens_only_once_the_launcher_listens():
+    async def scenario(path: str) -> None:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.bind(path)
+            waiting = asyncio.create_task(
+                multi_frontend._wait_for_launcher(path, os.getppid(), interval_s=0.01)
+            )
+            await asyncio.sleep(0.3)
+            assert not waiting.done()
+            sock.listen()
+            await asyncio.wait_for(waiting, 10)
+
+    with tempfile.TemporaryDirectory(prefix="wt14-") as directory:
+        asyncio.run(scenario(os.path.join(directory, "launcher.sock")))
+
+
+def test_an_attached_frontend_stops_waiting_when_the_launcher_is_gone(tmp_path):
+    # -1 is never the parent pid, as after the launcher has exited.
+    with pytest.raises(RuntimeError, match="exited before it started serving"):
+        asyncio.run(multi_frontend._wait_for_launcher(str(tmp_path / "launcher.sock"), -1))
+
+
+_SIGTERM_SCRIPT = """
+import asyncio, os, signal, sys
+import uvloop
+from tensorrt_llm.serve.openengine_poc import multi_frontend
+
+async def main(sigterm):
+    sigterm.cancel_on_signal(asyncio.current_task())
+    try:
+        if sys.argv[1] == "while-starting":
+            os.kill(os.getpid(), signal.SIGTERM)
+        await asyncio.sleep(60)
+    finally:
+        await asyncio.sleep(0)
+        print("cleaned up", flush=True)
+
+with multi_frontend._stopped_by_sigterm() as sigterm:
+    if sys.argv[1] == "before-the-loop":
+        os.kill(os.getpid(), signal.SIGTERM)
+    uvloop.run(main(sigterm))
+print("not ended", flush=True)
+"""
+
+
+@pytest.mark.parametrize("when", ["before-the-loop", "while-starting"])
+def test_sigterm_before_serving_cleans_up_then_ends_the_process(when):
+    result = subprocess.run(  # nosec B603
+        [sys.executable, "-c", _SIGTERM_SCRIPT, when],
+        capture_output=True,
+        text=True,
+        timeout=STARTUP_SECONDS,
+    )
+    assert result.returncode == -signal.SIGTERM, result.stderr
+    assert result.stdout.splitlines() == ["cleaned up"], result.stderr
 
 
 # -- The command line --------------------------------------------------------------
@@ -295,6 +438,24 @@ def _counts(counter_dir: Path) -> dict[int, int]:
     return counts
 
 
+def _gone(process: psutil.Process) -> bool:
+    """Exited; a zombie counts, since no one may reap an orphan in a container."""
+    try:
+        return process.status() == psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return True
+
+
+def _still_running(processes: list[psutil.Process], timeout: float) -> list[psutil.Process]:
+    """The ``processes`` that have not exited after ``timeout`` seconds."""
+    deadline = time.monotonic() + timeout
+    while True:
+        alive = [process for process in processes if not _gone(process)]
+        if not alive or time.monotonic() > deadline:
+            return alive
+        time.sleep(0.1)
+
+
 def _wait(predicate, what: str, timeout: float = 30.0, process: subprocess.Popen | None = None):
     deadline = time.monotonic() + timeout
     while True:
@@ -311,12 +472,19 @@ def _wait(predicate, what: str, timeout: float = 30.0, process: subprocess.Popen
 class _Serve:
     """``trtllm-serve --openengine-endpoint`` with several frontends, as a process."""
 
-    def __init__(self, tmp_path: Path, model_dir: Path, engine: FakeEngine, frontends: int):
+    def __init__(
+        self,
+        tmp_path: Path,
+        model_dir: Path,
+        engine: FakeEngine,
+        frontends: int,
+        env: dict[str, str] | None = None,
+    ):
         self.port = _free_port()
         self.frontends = frontends
         self.counter_dir = tmp_path / "counters"
         self.log_path = tmp_path / "serve.log"
-        env = dict(os.environ)
+        env = {**os.environ, **(env or {})}
         env[SERVE_COUNTER_DIR_ENV] = str(self.counter_dir)
         env.pop(multi_frontend.LAUNCHER_UDS_ENV, None)
         # The attached frontends re-exec the command line, so start it as users do.
@@ -377,7 +545,7 @@ class _Serve:
             except subprocess.TimeoutExpired:
                 os.killpg(self.proc.pid, signal.SIGKILL)
                 self.proc.wait()
-        _, alive = psutil.wait_procs(processes, timeout=30)
+        alive = _still_running(processes, 30)
         for process in alive:
             with contextlib.suppress(psutil.NoSuchProcess):
                 process.kill()
@@ -403,10 +571,10 @@ def serving(tmp_path_factory):
     with running_in_thread(engine):
         serve = _Serve(tmp_path, model_dir, engine, NUM_FRONTENDS)
         try:
-            # Read together with the launcher's first listening socket.
+            # Read together with the first listening socket of any frontend.
             model_info_calls = _wait(
-                lambda: _listens(serve.launcher, serve.port) and [_model_info_calls(engine)],
-                "the launcher to listen",
+                lambda: serve.listeners() > 0 and [_model_info_calls(engine)],
+                "a frontend to listen",
                 STARTUP_SECONDS,
                 serve.proc,
             )[0]
@@ -415,10 +583,10 @@ def serving(tmp_path_factory):
             serve.stop()
 
 
-def test_the_launcher_listens_only_after_every_frontend_connected(serving):
+def test_no_frontend_listens_before_every_frontend_connected(serving):
     serve, engine, model_info_calls = serving
     # Each frontend reads ModelInfo once, when it connects (SV-EC-7); all of
-    # them had connected by the time the launcher started listening.
+    # them had connected by the time the first frontend started listening.
     assert model_info_calls == NUM_FRONTENDS, serve.log()
     assert len(serve.attached()) == NUM_FRONTENDS - 1
     assert _wait(lambda: serve.listeners() == NUM_FRONTENDS, "every frontend to listen")
@@ -458,6 +626,11 @@ def test_requests_spread_over_the_frontends_and_the_counts_add_up(serving):
 def test_the_responses_store_is_off_with_several_frontends(serving):
     serve, _, _ = serving
     assert "stateful Responses API storage" in serve.log()
+    # The launcher turns it off before it spawns the attached frontends.
+    attached = serve.attached()
+    assert attached
+    for process in attached:
+        assert process.environ().get("TRTLLM_RESPONSES_API_DISABLE_STORE") == "1"
 
 
 def test_a_killed_frontend_is_handled_as_in_process(tmp_path):
@@ -483,9 +656,35 @@ def test_a_killed_frontend_is_handled_as_in_process(tmp_path):
             # Without the launcher, an attached frontend stops itself.
             serve.launcher.send_signal(signal.SIGKILL)
             serve.proc.wait(timeout=30)
-            gone, alive = psutil.wait_procs([survivor], timeout=60)
-            assert not alive, serve.log()
+            assert not _still_running([survivor], 60), serve.log()
         finally:
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(serve.proc.pid, signal.SIGKILL)
             serve.stop()
+
+
+def test_sigterm_stops_every_frontend_and_removes_the_launchers_directory(tmp_path):
+    model_dir = _model_dir(tmp_path / "model")
+    engine = _engine(model_dir)
+    # Short, for the launcher's Unix socket path.
+    tmpdir = Path(tempfile.mkdtemp(prefix="wt14-"))
+    try:
+        with running_in_thread(engine):
+            serve = _Serve(tmp_path, model_dir, engine, 2, env={"TMPDIR": str(tmpdir)})
+            try:
+                _wait(
+                    lambda: serve.listeners() == 2,
+                    "every frontend to listen",
+                    STARTUP_SECONDS,
+                    serve.proc,
+                )
+                assert len(list(tmpdir.glob("tllm-oe-frontends-*"))) == 1
+                attached = serve.attached()
+                serve.proc.send_signal(signal.SIGTERM)
+                assert serve.proc.wait(timeout=60) == -signal.SIGTERM, serve.log()
+                assert not _still_running(attached, 30), serve.log()
+                assert not list(tmpdir.glob("tllm-oe-frontends-*")), serve.log()
+            finally:
+                serve.stop()
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)

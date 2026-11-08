@@ -5,27 +5,34 @@
 With ``num_serve_frontends`` N > 1, N frontend processes share the serving port
 through ``SO_REUSEPORT``; each builds its own facade, and so opens its own
 connection to the engine (SV-MF-2). The process ``trtllm-serve`` started is
-frontend 0, the launcher. It connects to the engine, then re-execs its command
-line N - 1 times, as the in-process server does (``serve/_frontend_processes.py``),
-and starts listening only once every attached frontend has connected to the
-engine and reported READY (SV-MF-3). As with the in-process server:
+frontend 0, the launcher: it connects to the engine, then re-execs its command
+line N - 1 times (``serve/_frontend_processes.py``). No frontend listens before
+every frontend has connected to the engine (SV-MF-3): the launcher listens once
+every attached frontend has reported READY, and an attached frontend once the
+launcher listens.
 
-- the attached frontends forward the launcher-owned routes to the launcher
-  (``serve/multi_frontend.py``), and stop when the launcher is gone;
-- a frontend that exits while serving is logged, and the others keep serving;
-- the Responses API store is off, since a follow-up request may reach another
-  frontend (SV-MF-4);
+- The attached frontends forward the launcher-owned routes to the launcher
+  (``serve/multi_frontend.py``), and stop when the launcher process is gone or
+  no longer answers. Each frontend watches the engine itself.
+- An attached frontend that exits while serving is logged, and the others keep
+  serving.
+- SIGTERM stops a frontend after its cleanup: the launcher stops the attached
+  frontends, and every frontend closes its facade.
+- The Responses API store is off, since a follow-up request may reach another
+  frontend (SV-MF-4).
 - ``--port 0`` and ``--report_addr`` need a single frontend.
-
-``num_postprocess_workers`` is split between the frontends (SV-PP-1).
+- ``num_postprocess_workers`` is split between the frontends (SV-PP-1).
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import functools
 import gc
 import os
 import shutil
+import signal
 import socket
 import tempfile
 import threading
@@ -44,7 +51,11 @@ from tensorrt_llm.serve._frontend_processes import (
     _terminate_attached_frontends,
     _watch_attached_frontends,
 )
-from tensorrt_llm.serve.multi_frontend import LAUNCHER_UDS_NAME, MultiFrontendServing
+from tensorrt_llm.serve.multi_frontend import (
+    LAUNCHER_UDS_ENV,
+    LAUNCHER_UDS_NAME,
+    MultiFrontendServing,
+)
 
 from . import contracts
 from .contracts import FrontendLaunchConfig
@@ -54,8 +65,8 @@ if TYPE_CHECKING:
 
     from .facade import OpenEngineLLM
 
-# Set by the launcher for the frontends it spawns: the path of its Unix socket.
-LAUNCHER_UDS_ENV = "TLLM_OPENENGINE_LAUNCHER_UDS"
+# Set for each frontend the launcher spawns: its id, from 1.
+_FRONTEND_ID_ENV = "TLLM_EXECUTOR_FRONTEND_ID"
 
 # Longest path a Unix socket address holds, without its terminating NUL.
 _MAX_UNIX_PATH = 107
@@ -65,8 +76,9 @@ def postproc_share(total: int, num_frontends: int, frontend_id: int) -> int:
     """Frontend ``frontend_id``'s share of ``total`` postprocessing workers (SV-PP-1).
 
     The workers are split evenly, the first frontends taking one more each
-    when ``total`` does not divide; every frontend gets at least one unless
-    ``total`` is 0.
+    when ``total`` does not divide. Every frontend gets at least one unless
+    ``total`` is 0, so with fewer workers than frontends the frontends run
+    ``num_frontends`` workers in all, more than ``total``.
     """
     if total <= 0:
         return 0
@@ -105,13 +117,85 @@ def _num_frontends(llm_args: dict[str, Any]) -> int:
 
 
 def _postproc_total(llm_args: dict[str, Any]) -> int:
-    value = llm_args.get("num_postprocess_workers") or 0
-    try:
-        return int(value)
-    except (TypeError, ValueError) as error:
+    value = llm_args.get("num_postprocess_workers")
+    if value is None:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise click.UsageError(
-            f"num_postprocess_workers must be an integer, got {value!r}"
-        ) from error
+            f"num_postprocess_workers must be a non-negative integer, got {value!r}"
+        )
+    return value
+
+
+def _attached_frontend_id(num_frontends: int) -> int:
+    value = os.environ.get(_FRONTEND_ID_ENV)
+    try:
+        frontend_id = int(value) if value is not None else None
+    except ValueError:
+        frontend_id = None
+    if frontend_id is None or not 1 <= frontend_id < num_frontends:
+        raise click.UsageError(
+            f"{LAUNCHER_UDS_ENV} is set, so {_FRONTEND_ID_ENV} must be a frontend id "
+            f"from 1 to {num_frontends - 1}, got {value!r}"
+        )
+    return frontend_id
+
+
+class _Sigterm:
+    """Turns SIGTERM into an orderly stop of this frontend.
+
+    Until the frontend serves, the handler cancels its main task, also for a
+    SIGTERM received before the task starts. While it serves, uvicorn handles
+    SIGTERM and, once it has shut down, raises it again into this handler.
+    The handler does not raise: uvloop logs and drops an exception raised by
+    a signal handler. A process forked from this one (a postprocessing worker,
+    say) inherits the handler and dies of SIGTERM as by default.
+    """
+
+    def __init__(self) -> None:
+        self.received = False
+        self._pid = os.getpid()
+        self._task: asyncio.Task | None = None
+        self._previous = signal.signal(signal.SIGTERM, self._handle)
+
+    def cancel_on_signal(self, task: asyncio.Task) -> None:
+        self._task = task
+        if self.received:
+            task.cancel()
+
+    def stop_cancelling(self) -> None:
+        """From now on only record SIGTERM: uvicorn handles it, or the cleanup runs."""
+        self._task = None
+
+    def _handle(self, signum: int, frame: Any) -> None:
+        if os.getpid() != self._pid:
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+            signal.raise_signal(signal.SIGTERM)
+            return
+        self.received = True
+        if self._task is not None and not self._task.done():
+            self._task.cancel()
+
+    def restore(self) -> None:
+        signal.signal(signal.SIGTERM, signal.SIG_DFL if self._previous is None else self._previous)
+
+
+@contextlib.contextmanager
+def _stopped_by_sigterm():
+    """Handle SIGTERM in the block, then end the process by it once the block has cleaned up.
+
+    The cancellation a SIGTERM causes ends the block quietly.
+    """
+    sigterm = _Sigterm()
+    try:
+        yield sigterm
+    except asyncio.CancelledError:
+        if not sigterm.received:
+            raise
+    finally:
+        sigterm.restore()
+    if sigterm.received:
+        signal.raise_signal(signal.SIGTERM)
 
 
 def _disable_responses_store(*, warn: bool) -> None:
@@ -193,9 +277,12 @@ def _build_frontend(
     serving: MultiFrontendServing,
     before_server: Callable[[OpenEngineLLM], None] | None = None,
 ) -> tuple[OpenEngineLLM, OpenAIServer]:
-    """This process's facade and the ``OpenAIServer`` on it, as ``launch_openengine_server`` builds them.
+    """This process's facade and the ``OpenAIServer`` on it.
 
-    ``before_server`` runs on the facade before the server is built.
+    Built with the arguments ``launch_openengine_server`` uses, plus
+    ``postproc_workers`` and ``serving``. ``before_server`` runs on the facade
+    before the server is built. A ``TypeError`` from the facade's arguments is
+    a usage error too.
     """
     from tensorrt_llm.commands.serve import _apply_fastapi_middlewares
     from tensorrt_llm.serve.openai_server import OpenAIServer
@@ -269,16 +356,18 @@ def _serve_launcher(config: FrontendLaunchConfig, num_frontends: int) -> None:
             "port 0 and --report_addr are only supported with a single serving "
             f"frontend, but num_serve_frontends={num_frontends}."
         )
+    postproc_total = _postproc_total(config.llm_args)
     _disable_responses_store(warn=True)
     family = _address_family(host, port)
     mode = MultiFrontendMode(num_frontends, is_attached_frontend=False)
-    # Private to the user (mkdtemp creates it 0700); holds the launcher's
-    # socket and the shared Prometheus directory.
-    ipc_dir = tempfile.mkdtemp(prefix="tllm-oe-frontends-")
-    try:
-        with (
-            _reserve_multi_frontend_port(host, port, family),
-            _bind_shared_port(host, port, family) as sock,
+    with _stopped_by_sigterm() as sigterm, contextlib.ExitStack() as stack:
+        # Private to the user (mkdtemp creates it 0700); holds the launcher's
+        # socket and the shared Prometheus directory.
+        ipc_dir = tempfile.mkdtemp(prefix="tllm-oe-frontends-")
+        stack.callback(shutil.rmtree, ipc_dir, ignore_errors=True)
+        stack.enter_context(_reserve_multi_frontend_port(host, port, family))
+        sock = stack.enter_context(_bind_shared_port(host, port, family))
+        affinity_socket, attached_affinity_sockets = stack.enter_context(
             _frontend_affinity_sockets(
                 host,
                 port,
@@ -286,34 +375,31 @@ def _serve_launcher(config: FrontendLaunchConfig, num_frontends: int) -> None:
                 mode,
                 config.llm_args.get("serve_frontend_affinity_port_stride"),
                 _diagnose_port_in_use,
-            ) as (affinity_socket, attached_affinity_sockets),
-        ):
-            uds_sock, uds_path = _bind_launcher_socket(ipc_dir)
-            with uds_sock:
-                facade, server = _build_frontend(
-                    config,
-                    postproc_workers=postproc_share(
-                        _postproc_total(config.llm_args), num_frontends, 0
-                    ),
-                    serving=MultiFrontendServing(launcher_uds=uds_path, is_launcher=True),
-                    before_server=lambda facade: _share_prometheus_multiproc_dir(facade, ipc_dir),
-                )
-                sockets = [sock, uds_sock]
-                if affinity_socket is not None:
-                    sockets.append(affinity_socket)
-                uvloop.run(
-                    _run_launcher(
-                        config,
-                        num_frontends,
-                        facade,
-                        server,
-                        sockets,
-                        uds_path,
-                        attached_affinity_sockets,
-                    )
-                )
-    finally:
-        shutil.rmtree(ipc_dir, ignore_errors=True)
+            )
+        )
+        uds_sock, uds_path = _bind_launcher_socket(ipc_dir)
+        stack.enter_context(uds_sock)
+        facade, server = _build_frontend(
+            config,
+            postproc_workers=postproc_share(postproc_total, num_frontends, 0),
+            serving=MultiFrontendServing(launcher_uds=uds_path, is_launcher=True),
+            before_server=lambda facade: _share_prometheus_multiproc_dir(facade, ipc_dir),
+        )
+        sockets = [sock, uds_sock]
+        if affinity_socket is not None:
+            sockets.append(affinity_socket)
+        uvloop.run(
+            _run_launcher(
+                config,
+                num_frontends,
+                facade,
+                server,
+                sockets,
+                uds_path,
+                attached_affinity_sockets,
+                sigterm,
+            )
+        )
 
 
 async def _run_launcher(
@@ -324,32 +410,47 @@ async def _run_launcher(
     sockets: list[socket.socket],
     uds_path: str,
     attached_affinity_sockets: dict[int, socket.socket],
+    sigterm: _Sigterm,
 ) -> None:
+    sigterm.cancel_on_signal(asyncio.current_task())
     _maybe_disable_gc()
     cancelled = threading.Event()
+    spawn: asyncio.Future | None = None
     children: list = []
     stop_watching: threading.Event | None = None
     try:
         await facade.start()
-        children = await asyncio.to_thread(
-            _spawn_frontend_group,
-            num_frontends,
-            extra_env={LAUNCHER_UDS_ENV: uds_path},
-            cancelled=cancelled,
-            affinity_sockets=attached_affinity_sockets,
+        spawn = asyncio.get_running_loop().run_in_executor(
+            None,
+            functools.partial(
+                _spawn_frontend_group,
+                num_frontends,
+                extra_env={LAUNCHER_UDS_ENV: uds_path},
+                cancelled=cancelled,
+                affinity_sockets=attached_affinity_sockets,
+            ),
         )
+        # Shielded: if this task is cancelled, the spawn still finishes, and
+        # the cleanup below reaps whatever it started.
+        children = await asyncio.shield(spawn)
         stop_watching = _watch_attached_frontends(children)
         logger.info(
             f"All {num_frontends} serving frontends are connected to the OpenEngine engine "
             f"at {config.endpoint}; serving on {config.host}:{config.port}"
         )
+        sigterm.stop_cancelling()
         await server(config.host, config.port, sockets=sockets)
     finally:
+        sigterm.stop_cancelling()
         # Stops a spawn still waiting for READY; it then reaps its own children.
         cancelled.set()
         if stop_watching is not None:
             stop_watching.set()
         try:
+            if spawn is not None and not children:
+                await asyncio.wait([spawn])
+                if spawn.exception() is None:
+                    children = spawn.result()
             if children:
                 await asyncio.to_thread(_terminate_attached_frontends, children)
         finally:
@@ -365,35 +466,82 @@ def _serve_attached(config: FrontendLaunchConfig, num_frontends: int, launcher_u
             f"{LAUNCHER_UDS_ENV} is set, but num_serve_frontends is 1: "
             "only a multi-frontend launcher starts attached frontends"
         )
-    frontend_id = int(os.environ["TLLM_EXECUTOR_FRONTEND_ID"])
+    frontend_id = _attached_frontend_id(num_frontends)
+    postproc_total = _postproc_total(config.llm_args)
     host, port = config.host, config.port
+    launcher_pid = os.getppid()
     _disable_responses_store(warn=False)
     family = _address_family(host, port)
     mode = MultiFrontendMode(num_frontends, is_attached_frontend=True)
-    with (
-        _bind_shared_port(host, port, family) as sock,
-        _frontend_affinity_sockets(
-            host,
-            port,
-            family,
-            mode,
-            config.llm_args.get("serve_frontend_affinity_port_stride"),
-            _diagnose_port_in_use,
-        ) as (affinity_socket, _),
-    ):
+    with _stopped_by_sigterm() as sigterm, contextlib.ExitStack() as stack:
+        sock = stack.enter_context(_bind_shared_port(host, port, family))
+        affinity_socket, _ = stack.enter_context(
+            _frontend_affinity_sockets(
+                host,
+                port,
+                family,
+                mode,
+                config.llm_args.get("serve_frontend_affinity_port_stride"),
+                _diagnose_port_in_use,
+            )
+        )
         facade, server = _build_frontend(
             config,
-            postproc_workers=postproc_share(
-                _postproc_total(config.llm_args), num_frontends, frontend_id
-            ),
+            postproc_workers=postproc_share(postproc_total, num_frontends, frontend_id),
             serving=MultiFrontendServing(
-                launcher_uds=launcher_uds, is_launcher=False, launcher_pid=os.getppid()
+                launcher_uds=launcher_uds, is_launcher=False, launcher_pid=launcher_pid
             ),
         )
+        _watch_launcher_liveness_only(server)
         sockets = [sock]
         if affinity_socket is not None:
             sockets.append(affinity_socket)
-        uvloop.run(_run_attached(config, mode, facade, server, sockets))
+        uvloop.run(
+            _run_attached(
+                config, mode, facade, server, sockets, launcher_uds, launcher_pid, sigterm
+            )
+        )
+
+
+def _watch_launcher_liveness_only(server: OpenAIServer) -> None:
+    """Make the attached frontend's launcher watchdog count any answer as alive.
+
+    The watchdog stops this frontend after the launcher's ``/health`` fails
+    several times in a row. On this path ``/health`` reports the launcher's
+    connection to the engine, which this frontend watches itself, so only an
+    unreachable launcher counts as a failure.
+    """
+    forwarder = server._launcher_forwarder
+    get_status = forwarder.get_status
+
+    async def answered(path: str, timeout_s: float = 5.0) -> int | None:
+        status = await get_status(path, timeout_s)
+        return None if status is None else 200
+
+    forwarder.get_status = answered
+
+
+async def _wait_for_launcher(launcher_uds: str, launcher_pid: int, interval_s: float = 0.2) -> None:
+    """Wait until the launcher listens, which it does once every frontend is READY.
+
+    Raises:
+        RuntimeError: The launcher exited first.
+    """
+    while True:
+        if os.getppid() != launcher_pid:
+            raise RuntimeError(
+                f"The launcher frontend (pid {launcher_pid}) exited before it started serving"
+            )
+        try:
+            _, writer = await asyncio.open_unix_connection(launcher_uds)
+        except OSError:
+            # Refused while the socket is bound but not listening yet.
+            await asyncio.sleep(interval_s)
+            continue
+        writer.close()
+        with contextlib.suppress(OSError):
+            await writer.wait_closed()
+        return
 
 
 async def _run_attached(
@@ -402,12 +550,19 @@ async def _run_attached(
     facade: OpenEngineLLM,
     server: OpenAIServer,
     sockets: list[socket.socket],
+    launcher_uds: str,
+    launcher_pid: int,
+    sigterm: _Sigterm,
 ) -> None:
+    sigterm.cancel_on_signal(asyncio.current_task())
     _maybe_disable_gc()
     try:
         await facade.start()
         # Only a frontend connected to the engine counts as started.
         _signal_frontend_ready(mode)
+        await _wait_for_launcher(launcher_uds, launcher_pid)
+        sigterm.stop_cancelling()
         await server(config.host, config.port, sockets=sockets)
     finally:
+        sigterm.stop_cancelling()
         await facade.aclose()

@@ -407,7 +407,10 @@ OWNERSHIP: dict[str, list[Rule]] = {
         Rule(
             "tensorrt_llm/commands/serve.py",
             "exception",
-            "only dropping the single-frontend default of --openengine-endpoint (SV-MF-1)",
+            (
+                "only dropping the single-frontend default of --openengine-endpoint "
+                "(SV-MF-1), and the comment and --num_serve_frontends help about it"
+            ),
         ),
         Rule(
             f"{CLIENT_TESTS}/test_openengine_poc_serve.py",
