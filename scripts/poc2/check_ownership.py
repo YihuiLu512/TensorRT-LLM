@@ -325,7 +325,10 @@ OWNERSHIP: dict[str, list[Rule]] = {
                 " a malformed capability declaration fails startup or loses a restarted engine",
             ),
             ("tensorrt_llm/serve/openai_server.py", "the request's priority only when it set one"),
-            ("tensorrt_llm/sampling_params.py", "every field name a request supplied is recorded"),
+            (
+                "tensorrt_llm/sampling_params.py",
+                "the sampling fields a request supplied are recorded too",
+            ),
             (
                 f"{OE_SERVER}/request_mapping.py",
                 "the accepted sampling values, declared and checked by Generate",

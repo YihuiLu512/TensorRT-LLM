@@ -658,6 +658,8 @@ def test_startup_fails_at_the_capabilities_step_on_a_malformed_declaration(tmp_p
     asyncio.run(asyncio.wait_for(main(), WAIT_SECONDS * 2))
 
 
+# A frontend that lost its engine leaves the gRPC poller thread to process exit.
+@pytest.mark.threadleak(enabled=False)
 def test_a_restarted_engine_with_a_malformed_declaration_is_lost(tmp_path):
     lost = []
 

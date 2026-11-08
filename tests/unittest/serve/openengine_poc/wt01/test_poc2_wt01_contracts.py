@@ -380,6 +380,17 @@ def test_default_map_request_sends_an_explicit_value_in_the_declared_set(provide
         )
 
 
+def test_every_sampling_field_a_request_supplies_is_recorded():
+    params = SamplingParams()
+    params._set_request_provided_fields({*conv.SAMPLING_PARAM_NAMES, "model", "service_tier"})
+    # Only the sampler fields are kept, so SamplingParams compare as before.
+    assert params._request_provided_fields == frozenset(conv.SAMPLING_PARAM_NAMES)
+    assert contracts.explicit_sampling_values(params) == {}
+    for name in conv.SAMPLING_PARAM_NAMES:
+        setattr(params, name, 1)
+    assert set(contracts.explicit_sampling_values(params)) == set(conv.SAMPLING_PARAM_NAMES)
+
+
 def test_default_map_request_does_not_send_a_server_filled_value():
     caps = _params_caps(temperature={"accept": "any"})
     params = SamplingParams(temperature=1.0, top_k=0, repetition_penalty=1.0)

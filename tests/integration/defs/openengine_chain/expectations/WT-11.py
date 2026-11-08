@@ -31,4 +31,11 @@ EXPECTATIONS = [
         NO_ENGINE_TRAFFIC,
         "it sends only a request the front end rejects",
     ),
+    Expectation(
+        "WT-11",
+        "_test_openengine_wt11_value_sets.py::"
+        "test_a_value_the_engine_does_not_accept_is_refused_before_the_engine[speculative-*]",
+        NO_ENGINE_TRAFFIC,
+        "the speculative engine does not accept the value, so the front end refuses the request",
+    ),
 ]

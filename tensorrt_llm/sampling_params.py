@@ -42,6 +42,11 @@ _GENERATION_CONFIG_SAMPLING_FIELDS = frozenset(
         "top_p",
     }
 )
+# The request-supplied fields recorded on SamplingParams: those the generation
+# config can fill in, and the sampling fields an OpenEngine request carries.
+_RECORDED_REQUEST_FIELDS = _GENERATION_CONFIG_SAMPLING_FIELDS | frozenset(
+    {"frequency_penalty", "presence_penalty", "seed"}
+)
 
 
 def validate_thinking_token_budget(value: Optional[Union[int, float, bool]]) -> Optional[int]:
@@ -468,8 +473,8 @@ class SamplingParams:
             raise ValueError("logprobs_simple_format is not supported with beam search")
 
     def _set_request_provided_fields(self, field_names: Iterable[str]) -> None:
-        """Record the fields a serving request explicitly supplied."""
-        self._request_provided_fields = frozenset(field_names)
+        """Record which sampler fields a serving request explicitly supplied."""
+        self._request_provided_fields = frozenset(field_names) & _RECORDED_REQUEST_FIELDS
 
     def _apply_generation_config_defaults(self, generation_config: Mapping[str, Any]) -> None:
         """Apply compatible model defaults without overriding request values."""
