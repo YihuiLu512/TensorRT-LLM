@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import dataclasses
 from types import SimpleNamespace
 
@@ -13,6 +14,7 @@ import pytest
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from tokenizers.pre_tokenizers import WhitespaceSplit
+from tokenizers.processors import TemplateProcessing
 from transformers import PreTrainedTokenizerFast
 
 from tensorrt_llm.grpc.openengine.bindings import generation_pb2
@@ -35,16 +37,18 @@ pytestmark = [pytest.mark.cpu_only, pytest.mark.threadleak(enabled=False)]
 MODEL = "stub-vlm"
 MODEL_TYPE = "poc2_wt16_vlm"
 WAIT_SECONDS = 30
-_VOCAB = {"<unk>": 0, "</s>": 1, "Describe": 2, "this": 3, "<image>": 4, "<video>": 5}
-UNK, EOS, DESCRIBE, THIS, IMAGE, VIDEO = range(6)
+_VOCAB = {"<unk>": 0, "</s>": 1, "Describe": 2, "this": 3, "<image>": 4, "<video>": 5, "<s>": 6}
+UNK, EOS, DESCRIBE, THIS, IMAGE, VIDEO, BOS = range(7)
 PNG = b"\x89PNG\r\n\x1a\nfake-image"
 
 
 def _tokenizer() -> TransformersTokenizer:
     backend = Tokenizer(WordLevel(_VOCAB, unk_token="<unk>"))
     backend.pre_tokenizer = WhitespaceSplit()
-    backend.add_special_tokens(["</s>", "<image>", "<video>"])
-    hf = PreTrainedTokenizerFast(tokenizer_object=backend, eos_token="</s>")
+    backend.add_special_tokens(["<s>", "</s>", "<image>", "<video>"])
+    # Adds a BOS only when asked to add special tokens; the chat template adds none.
+    backend.post_processor = TemplateProcessing(single="<s> $A", special_tokens=[("<s>", BOS)])
+    hf = PreTrainedTokenizerFast(tokenizer_object=backend, bos_token="<s>", eos_token="</s>")
     hf.chat_template = "{% for m in messages %}{{ m['content'] }} {% endfor %}"
     return TransformersTokenizer(hf)
 
@@ -204,14 +208,14 @@ def test_chat_media_go_to_the_engine_as_references(tmp_path):
     assert [(item.modality, item.WhichOneof("source")) for item in items] == [
         (generation_pb2.MODALITY_IMAGE, "url"),
         (generation_pb2.MODALITY_VIDEO, "url"),
-        (generation_pb2.MODALITY_IMAGE, "raw_bytes"),
+        (generation_pb2.MODALITY_IMAGE, "data_uri"),
     ]
     assert items[0].url == "http://media.invalid/a.png"
-    assert items[2].raw_bytes == PNG
+    assert items[2].data_uri == "data:image/png;base64," + base64.b64encode(PNG).decode()
     # OE-MED-2: one placeholder token per item, unexpanded.
     ids = list(received.request.token_ids.ids)
     assert ids.count(IMAGE) == 2 and ids.count(VIDEO) == 1
-    assert DESCRIBE in ids and THIS in ids
+    assert DESCRIBE in ids and THIS in ids and BOS not in ids
 
 
 def test_responses_media_go_to_the_engine_as_references(tmp_path):
@@ -239,7 +243,9 @@ def test_responses_media_go_to_the_engine_as_references(tmp_path):
     [received] = _serve(tmp_path, body)
     [item] = received.request.media
     assert item.url == "http://media.invalid/a.png"
-    assert list(received.request.token_ids.ids).count(IMAGE) == 1
+    ids = list(received.request.token_ids.ids)
+    # The rendered template is not given a second BOS.
+    assert ids.count(IMAGE) == 1 and BOS not in ids
 
 
 @pytest.mark.parametrize(
@@ -261,8 +267,13 @@ def test_responses_media_go_to_the_engine_as_references(tmp_path):
             "multimodal audio inputs are not supported",
         ),
         ([_image("/etc/passwd")], {}, "Local media paths are not accepted"),
+        (
+            [_image("http://media.invalid/a.png")],
+            {"truncate_prompt_tokens": 1},
+            "truncate_prompt_tokens is not supported",
+        ),
     ],
-    ids=["embeds", "media_io_kwargs", "undeclared-modality", "outside-allowed-dir"],
+    ids=["embeds", "media_io_kwargs", "undeclared-modality", "outside-allowed-dir", "truncate"],
 )
 def test_chat_media_that_cannot_be_sent_are_bad_requests(tmp_path, content, fields, match):
     async def body(engine, http):
@@ -299,12 +310,15 @@ def test_chat_lora_is_registered_then_named(tmp_path):
     assert [r.request.lora_name for r in received] == ["adapter-a", "adapter-a"]
 
 
-def test_chat_lora_on_an_engine_without_lora_is_a_bad_request(tmp_path):
+@pytest.mark.parametrize("stream", [False, True])
+def test_chat_lora_on_an_engine_without_lora_is_a_bad_request(tmp_path, stream):
+    # Refused before a streamed response starts, too.
     lora_request = {"lora_name": "adapter-a", "lora_int_id": 3, "lora_path": "/loras/a"}
 
     async def body(engine, http):
         response = await http.post(
-            "/v1/chat/completions", json=_chat("Describe this", lora_request=lora_request)
+            "/v1/chat/completions",
+            json=_chat("Describe this", lora_request=lora_request, stream=stream),
         )
         assert response.status_code == 400, response.text
         assert "does not declare LoRA support" in response.json()["message"]

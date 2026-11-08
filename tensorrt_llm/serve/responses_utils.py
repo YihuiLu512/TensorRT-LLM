@@ -1622,6 +1622,10 @@ async def request_preprocess(
             chat_template=chat_template,
             media_references=media_references,
         )
+        if media_references is not None and isinstance(input_tokens, dict):
+            # The prompt text is the rendered chat template, which already has
+            # its special tokens; a text-only prompt is tokenized without adding them.
+            sampling_params.add_special_tokens = False
 
     if ENABLE_RESPONSES_DEBUG_MSG:  # decoding is not free; skip it otherwise
         # A multimodal prompt is submitted as text; token ids are decoded.

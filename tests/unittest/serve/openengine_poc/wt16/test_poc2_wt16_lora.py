@@ -213,3 +213,24 @@ def test_a_cancelled_waiter_does_not_cancel_the_registration():
         assert len(_load_calls(engine)) == 1
 
     _with_registries(body)
+
+
+def test_check_refuses_without_asking_the_engine():
+    async def body(engine, registries, clients):
+        [registry] = registries
+        registry.check(_request())  # Not registered by a check.
+        assert _load_calls(engine) == []
+        await registry.resolve(_request())
+        with pytest.raises(ValueError, match="conflicts"):
+            registry.check(_request(path="/loras/other"))
+        with pytest.raises(ValueError, match="lora_int_id"):
+            registry.check(_request(int_id=-1))
+        assert len(_load_calls(engine)) == 1
+
+    _with_registries(body)
+
+    async def unsupported(engine, registries, clients):
+        with pytest.raises(ValueError, match="does not declare LoRA support"):
+            registries[0].check(_request())
+
+    _with_registries(unsupported, profile=PROFILES["trtllm-like"])

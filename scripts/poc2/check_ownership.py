@@ -435,33 +435,32 @@ OWNERSHIP: dict[str, list[Rule]] = {
         Rule(
             "tensorrt_llm/serve/openai_server.py",
             "exception",
-            "only the chat and Responses paths' media-references hook for the OpenEngine facade "
-            "(user, 2026-11-08)",
+            "only the chat and Responses paths' media-references hook for the OpenEngine facade",
         ),
         Rule(
             "tensorrt_llm/serve/responses_utils.py",
             "exception",
-            "only the media-references hook of _create_input_tokens (user, 2026-11-08)",
+            "only the media-references hook of _create_input_tokens and request_preprocess",
         ),
         Rule(
             "tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_contracts.py",
             "exception",
-            "only to aim the default media and LoRA slot tests at the defaults (user, 2026-11-08)",
+            "only to aim the default media and LoRA slot tests at the defaults",
         ),
         Rule(
             f"{CLIENT_TESTS}/test_openengine_poc_serve.py",
             "exception",
-            "only the media-flow (F15-14) and default LoRA registry tests (user, 2026-11-08)",
+            "only the media-flow and default LoRA registry tests",
         ),
         Rule(
             f"{POC}/facade.py",
             "exception",
-            "only media: references, unexpanded placeholders, mapping once (F15-14) (user, 2026-11-08)",
+            "only media references, unexpanded placeholders, mapping media once, LoRA checks",
         ),
         Rule(
             f"{CHAIN}/split.py",
             "exception",
-            "only --video_pruning_rate to both sides (appendix B4; user, 2026-11-08)",
+            "only --video_pruning_rate to both sides",
         ),
         Rule(
             "scripts/poc2/check_ownership.py",

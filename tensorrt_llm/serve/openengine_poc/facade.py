@@ -769,11 +769,17 @@ class OpenEngineLLM:
             # so the prompt is only tokenized here, placeholders unexpanded (OE-MED-2).
             from tensorrt_llm.inputs.tokenization import tokenize_prompt
 
+            if sampling_params.truncate_prompt_tokens is not None:
+                # Truncating before the placeholders are expanded can drop a
+                # placeholder whose media item is still sent.
+                raise ValueError(
+                    "truncate_prompt_tokens is not supported for a prompt with media when "
+                    "serving through an OpenEngine engine"
+                )
             return tokenize_prompt(
                 self.tokenizer,
                 prompt["prompt"],
                 add_special_tokens=sampling_params.add_special_tokens,
-                truncate_prompt_tokens=sampling_params.truncate_prompt_tokens,
             )
         prompt_token_ids, extra = self.input_processor(prompt, sampling_params)
         has_media = extra and any(extra.get(key) for key in ("multimodal_data", "multimodal_input"))
@@ -789,11 +795,12 @@ class OpenEngineLLM:
         inputs: Any,
         sampling_params: SamplingParams | None = None,
         disaggregated_params: Any = None,
-    ) -> dict[str, list[int]]:
+    ) -> dict[str, Any]:
         """Tokenize a prompt; ``OpenAIServer`` calls this in its input-processing thread pool.
 
         Returns:
-            A token prompt to pass to :meth:`generate_async`.
+            A token prompt to pass to :meth:`generate_async`; with media, it
+            also holds them as the ``map_media`` slot mapped them.
         """
         if disaggregated_params is not None:
             raise ValueError(
@@ -901,10 +908,16 @@ class OpenEngineLLM:
             OpenEngineServeError: The pool cannot take the request.
         """
         sampling_params = sampling_params or SamplingParams()
-        if lora_request is not None and not self._lora_supported:
-            raise ValueError(
-                "lora_request is not supported when serving through an OpenEngine engine"
-            )
+        if lora_request is not None:
+            if not self._lora_supported:
+                raise ValueError(
+                    "lora_request is not supported when serving through an OpenEngine engine"
+                )
+            # What the registry can refuse without the engine is refused here,
+            # before a streamed response starts.
+            check = getattr(self._lora, "check", None)
+            if check is not None:
+                check(lora_request)
         engine_name = self.client.server_info().engine_name
         media = self._media(inputs)
         prompt_token_ids = self._prompt_token_ids(inputs, sampling_params, media)

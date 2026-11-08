@@ -15,7 +15,8 @@ How a reference becomes a ``MediaItem`` (OE-MED-3):
 * a ``data:`` URI is sent as ``data_uri``;
 * a local path or ``file://`` URI, which only the frontend can read, is read
   under the ``TRTLLM_MEDIA_ALLOWED_LOCAL_PATH`` policy of the in-process server
-  and sent as ``raw_bytes``; so are ``bytes`` given through the Python API.
+  and sent as a ``data_uri``; so are ``bytes`` given through the Python API.
+  ``raw_bytes`` is never sent.
 
 Media the frontend already decoded (a PIL image, a tensor), precomputed
 embeddings (OE-MED-5) and ``mm_processor_kwargs`` have no carrier and are
@@ -24,6 +25,7 @@ refused, as are modalities the engine does not declare (OE-MED-1).
 
 from __future__ import annotations
 
+import base64
 import mimetypes
 import os
 from collections.abc import Iterable, Mapping, MutableMapping, Sequence
@@ -35,8 +37,8 @@ from .engine_client import MediaSpec, ModelCapabilities
 __all__ = ["MAX_INLINE_MEDIA_BYTES", "chat_media_references", "map_media"]
 
 _MODALITIES = ("image", "video", "audio")
-# Bytes of data URIs and raw bytes one request may carry inline. A Generate
-# message is at most 64 MiB (OE-TRN-3); the rest is left for the prompt.
+# Characters of data URIs one request may carry. A Generate message is at
+# most 64 MiB (OE-TRN-3); the rest is left for the prompt.
 MAX_INLINE_MEDIA_BYTES = 56 << 20
 
 
@@ -104,13 +106,17 @@ def chat_media_references(messages: Iterable[MutableMapping[str, Any]]) -> dict[
 
 
 def _read_local(reference: str, budget: int) -> bytes:
-    """A local media file, read under the server's allowed-directory policy."""
+    """A local media file, read under the server's allowed-directory policy.
+
+    ``budget`` bounds the file's data URI, which base64 makes 4/3 as long.
+    """
     from tensorrt_llm.inputs.media_io import open_allowed_local_media
 
+    limit = budget // 4 * 3
     fd = open_allowed_local_media(reference)
     try:
         chunks: list[bytes] = []
-        remaining = budget + 1
+        remaining = limit + 1
         while remaining > 0:
             chunk = os.read(fd, min(remaining, 1 << 20))
             if not chunk:
@@ -122,16 +128,25 @@ def _read_local(reference: str, budget: int) -> bytes:
     finally:
         os.close(fd)
     data = b"".join(chunks)
-    if len(data) > budget:
+    if len(data) > limit:
         raise _too_large()
     return data
 
 
 def _too_large() -> ValueError:
     return ValueError(
-        f"the inline media of a request (data URIs and local files) exceed "
-        f"{MAX_INLINE_MEDIA_BYTES} bytes; send large media as http(s) URLs"
+        f"the inline media of a request (data URIs, local files and bytes) exceed "
+        f"{MAX_INLINE_MEDIA_BYTES} bytes as data URIs; send large media as http(s) URLs"
     )
+
+
+def _data_uri(modality: str, data: bytes, mime_type: str | None, budget: int) -> str:
+    if not data:
+        raise ValueError(f"empty {modality} data")
+    uri = f"data:{mime_type or ''};base64,{base64.b64encode(data).decode('ascii')}"
+    if len(uri) > budget:
+        raise _too_large()
+    return uri
 
 
 def _mime_type(reference: str, modality: str) -> str | None:
@@ -141,19 +156,16 @@ def _mime_type(reference: str, modality: str) -> str | None:
 
 def _media_spec(modality: str, item: Any, uuid: str | None, budget: int) -> MediaSpec:
     if isinstance(item, (bytes, bytearray, memoryview)):
-        data = bytes(item)
-        if not data:
-            raise ValueError(f"empty {modality} bytes")
-        if len(data) > budget:
-            raise _too_large()
-        return MediaSpec(modality=modality, raw_bytes=data, uuid=uuid)
+        data_uri = _data_uri(modality, bytes(item), None, budget)
+        return MediaSpec(modality=modality, data_uri=data_uri, uuid=uuid)
     if not isinstance(item, str):
         raise _refused(
             f"{modality} given as decoded {type(item).__name__} (send a URL, a data URI or bytes)"
         )
-    scheme = urlparse(item).scheme.lower()
+    parsed = urlparse(item)
+    scheme = parsed.scheme.lower()
     if scheme in ("http", "https"):
-        if not urlparse(item).hostname:
+        if not parsed.hostname:
             raise ValueError(f"{modality} URL has no host: {item!r}")
         return MediaSpec(modality=modality, url=item, uuid=uuid)
     if scheme == "data":
@@ -161,12 +173,9 @@ def _media_spec(modality: str, item: Any, uuid: str | None, budget: int) -> Medi
             raise _too_large()
         return MediaSpec(modality=modality, data_uri=item, uuid=uuid)
     if scheme in ("", "file"):
-        return MediaSpec(
-            modality=modality,
-            raw_bytes=_read_local(item, budget),
-            mime_type=_mime_type(item, modality),
-            uuid=uuid,
-        )
+        data = _read_local(item, budget)
+        data_uri = _data_uri(modality, data, _mime_type(item, modality), budget)
+        return MediaSpec(modality=modality, data_uri=data_uri, uuid=uuid)
     raise ValueError(f"unsupported {modality} URL scheme {scheme!r}")
 
 
@@ -234,6 +243,6 @@ def map_media(
             uuid if isinstance(uuid, str) and uuid else None,
             budget,
         )
-        budget -= len(spec.raw_bytes or b"") + len(spec.data_uri or "")
+        budget -= len(spec.data_uri or "")
         specs.append(spec)
     return specs

@@ -53,7 +53,8 @@ def test_the_slot_resolves_to_this_module():
 # -- The three sources --------------------------------------------------------
 
 
-def test_url_data_uri_and_raw_bytes(media_dir):
+def test_urls_stay_and_inline_media_become_data_uris(media_dir):
+    # OE-MED-3: local files and bytes go as data URIs, never as raw_bytes.
     specs = _map(
         {
             "multi_modal_data": {
@@ -65,14 +66,20 @@ def test_url_data_uri_and_raw_bytes(media_dir):
     assert specs == [
         MediaSpec("image", url="https://example.com/a.png"),
         MediaSpec("image", data_uri=DATA_URI),
-        MediaSpec("image", raw_bytes=PNG, mime_type="image/png"),
-        MediaSpec("audio", raw_bytes=b"RIFF-audio"),
+        MediaSpec("image", data_uri=DATA_URI),
+        MediaSpec("audio", data_uri="data:;base64," + base64.b64encode(b"RIFF-audio").decode()),
     ]
 
 
 def test_a_file_uri_is_read_like_a_path(media_dir):
     [spec] = _map({"multi_modal_data": {"image": [f"file://{media_dir / 'seashore.png'}"]}})
-    assert spec.raw_bytes == PNG
+    assert spec.data_uri == DATA_URI
+
+
+def test_an_empty_local_file_is_refused(media_dir):
+    (media_dir / "empty.png").write_bytes(b"")
+    with pytest.raises(ValueError, match="empty image data"):
+        _map({"multi_modal_data": {"image": [str(media_dir / "empty.png")]}})
 
 
 @pytest.mark.parametrize("allowed", [None, "elsewhere"])
@@ -145,7 +152,7 @@ def test_media_the_engine_does_not_declare_are_refused(caps):
         ({"multi_modal_embeddings": {"image": [object()]}}, "multi_modal_embeddings"),
         ({"mm_processor_kwargs": {"fps": 2}}, "mm_processor_kwargs"),
         ({"multi_modal_data": {"image": [object()]}}, "decoded object"),
-        ({"multi_modal_data": {"image": [b""]}}, "empty image bytes"),
+        ({"multi_modal_data": {"image": [b""]}}, "empty image data"),
         ({"multi_modal_data": {"image": ["ftp://h/1.png"]}}, "scheme 'ftp'"),
         ({"multi_modal_data": {"image": ["https:///no-host"]}}, "no host"),
         ({"multi_modal_data": {"text": ["x"]}}, "unsupported multimodal modality"),
@@ -157,9 +164,17 @@ def test_what_has_no_carrier_is_refused(inputs, match):
 
 
 def test_inline_media_beyond_the_message_budget_are_refused(monkeypatch, media_dir):
-    monkeypatch.setattr(media, "MAX_INLINE_MEDIA_BYTES", len(PNG) + len(DATA_URI) - 1)
+    # The local file counts as its data URI, as long as DATA_URI.
+    monkeypatch.setattr(media, "MAX_INLINE_MEDIA_BYTES", 2 * len(DATA_URI) - 1)
     with pytest.raises(ValueError, match="exceed"):
         _map({"multi_modal_data": {"image": [str(media_dir / "seashore.png"), DATA_URI]}})
+    monkeypatch.setattr(media, "MAX_INLINE_MEDIA_BYTES", len(DATA_URI))
+    with pytest.raises(ValueError, match="exceed"):
+        _map({"multi_modal_data": {"image": [DATA_URI, PNG]}})
+    monkeypatch.setattr(media, "MAX_INLINE_MEDIA_BYTES", 2 * len(DATA_URI))
+    assert (
+        len(_map({"multi_modal_data": {"image": [str(media_dir / "seashore.png"), DATA_URI]}})) == 2
+    )
     # URLs do not count: the engine fetches them.
     assert len(_map({"multi_modal_data": {"image": ["http://h/1.png"] * 3, "audio": [PNG]}})) == 4
 
@@ -275,8 +290,8 @@ def test_the_engine_receives_each_source_as_its_media_item(media_dir):
     assert [item.modality for item in items] == [generation_pb2.MODALITY_IMAGE] * 3 + [
         generation_pb2.MODALITY_VIDEO
     ]
-    assert [item.WhichOneof("source") for item in items] == ["url", "data_uri", "raw_bytes", "url"]
+    assert [item.WhichOneof("source") for item in items] == ["url", "data_uri", "data_uri", "url"]
     assert items[0].url == "https://example.com/a.png" and items[0].uuid == "u0"
     assert items[1].data_uri == DATA_URI
-    assert items[2].raw_bytes == PNG and items[2].mime_type == "image/png"
+    assert items[2].data_uri == DATA_URI
     assert items[3].url == "http://h/v.mp4"

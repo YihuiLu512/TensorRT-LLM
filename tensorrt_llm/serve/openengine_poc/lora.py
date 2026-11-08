@@ -6,9 +6,11 @@ A frontend keeps one registry per engine instance. The first request naming an
 adapter registers it with ``Control.LoadLora`` (``lora_id`` and ``source_path``
 taken from the request's ``lora_request``); later requests for the same name
 reuse the registration. The id is the client's ``lora_int_id``, never one this
-registry assigns, so every frontend of an engine sends the same id for the same
-adapter, and the engine refuses a name or an id already bound to another
-adapter.
+registry assigns, so frontends agree on an adapter's id whenever their clients
+do; the engine refuses a name or an id already bound to another adapter.
+
+:meth:`check` refuses, without a call, what the registry can tell is wrong, so
+the facade reports it before a streamed response starts.
 
 ``lora_request.lora_ckpt_source`` is not sent: ``LoadLora`` has no field for it,
 and the engine reads every adapter in the format it was started with.
@@ -66,11 +68,18 @@ class _EngineLoraRegistry:
         # name -> (fields, task) of a LoadLora in flight, shared by the requests that wait on it.
         self._loading: dict[str, tuple[tuple[str, int, str], asyncio.Task[None]]] = {}
 
-    async def resolve(self, lora_request: Any) -> str | None:
-        if lora_request is None:
-            return None
+    def check(self, lora_request: Any) -> None:
+        """Refuse ``lora_request`` if it cannot be registered, without asking the engine.
+
+        Raises:
+            ValueError: The engine does not declare LoRA support (OE-LORA-1), a
+                field is malformed, or the name or id is bound, or being
+                bound, to another adapter (OE-LORA-3).
+        """
+        self._checked(lora_request)
+
+    def _checked(self, lora_request: Any) -> tuple[str, int, str]:
         if not self._supported:
-            # OE-LORA-1.
             raise ValueError(
                 "lora_request is not supported: the OpenEngine engine "
                 f"{self._engine_name!r} does not declare LoRA support"
@@ -79,20 +88,25 @@ class _EngineLoraRegistry:
         name, int_id, _ = fields
         for known in (self._by_name.get(name), self._by_id.get(int_id)):
             if known is not None and known != fields:
-                # OE-LORA-3: the registration stays as it is.
+                # The registration stays as it is.
                 raise _conflict(*fields, known)
+        for other, _task in self._loading.values():
+            if other != fields and (other[0] == name or other[1] == int_id):
+                raise _conflict(*fields, other)
+        return fields
+
+    async def resolve(self, lora_request: Any) -> str | None:
+        if lora_request is None:
+            return None
+        fields = self._checked(lora_request)
+        name = fields[0]
         if self._by_name.get(name) == fields:
             return name
         loading = self._loading.get(name)
         if loading is None:
-            for other, _task in self._loading.values():
-                if other[1] == int_id:
-                    raise _conflict(*fields, other)
             task = asyncio.ensure_future(self._load(fields))
             self._loading[name] = (fields, task)
             task.add_done_callback(self._loaded)
-        elif loading[0] != fields:
-            raise _conflict(*fields, loading[0])
         else:
             task = loading[1]
         # One request giving up does not cancel the registration others wait on.
@@ -117,14 +131,14 @@ class _EngineLoraRegistry:
         except OpenEngineRpcError as error:
             import grpc
 
-            # The adapter itself is at fault: a bad path, a name or id bound to
-            # another adapter, or more ids than the engine keeps. Other failures
+            # The engine refused this adapter: malformed fields, a path without
+            # an adapter, a name or id bound to another adapter, more ids than
+            # it keeps, or no LoRA support after all. Other failures
             # (unavailable, timed out) keep their own status.
             if error.code in (
                 grpc.StatusCode.INVALID_ARGUMENT,
                 grpc.StatusCode.FAILED_PRECONDITION,
                 grpc.StatusCode.ALREADY_EXISTS,
-                grpc.StatusCode.NOT_FOUND,
                 grpc.StatusCode.UNIMPLEMENTED,
                 grpc.StatusCode.RESOURCE_EXHAUSTED,
             ):
