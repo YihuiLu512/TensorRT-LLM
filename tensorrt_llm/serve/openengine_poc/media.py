@@ -162,6 +162,8 @@ def _media_spec(modality: str, item: Any, uuid: str | None, budget: int) -> Medi
         raise _refused(
             f"{modality} given as decoded {type(item).__name__} (send a URL, a data URI or bytes)"
         )
+    if not item:
+        raise ValueError(f"empty {modality} reference")
     parsed = urlparse(item)
     scheme = parsed.scheme.lower()
     if scheme in ("http", "https"):
@@ -217,6 +219,11 @@ def map_media(
         return []
     if not isinstance(data, Mapping):
         raise ValueError("multi_modal_data must map each modality to its items")
+    for modality, items in data.items():
+        if isinstance(items, (str, bytes, bytearray, memoryview)) or not isinstance(
+            items, Iterable
+        ):
+            raise ValueError(f"multi_modal_data[{modality!r}] must list its items")
     data = {modality: list(items) for modality, items in data.items() if items}
     for modality in data:
         if modality not in _MODALITIES:

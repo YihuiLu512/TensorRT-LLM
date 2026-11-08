@@ -9,6 +9,7 @@ import base64
 import dataclasses
 from types import SimpleNamespace
 
+import click
 import httpx
 import pytest
 from tokenizers import Tokenizer
@@ -17,6 +18,7 @@ from tokenizers.pre_tokenizers import WhitespaceSplit
 from tokenizers.processors import TemplateProcessing
 from transformers import PreTrainedTokenizerFast
 
+from tensorrt_llm.commands import serve as serve_cmd
 from tensorrt_llm.grpc.openengine.bindings import generation_pb2
 from tensorrt_llm.inputs.media_io import BaseMediaIO
 from tensorrt_llm.inputs.registry import (
@@ -218,6 +220,41 @@ def test_chat_media_go_to_the_engine_as_references(tmp_path):
     assert DESCRIBE in ids and THIS in ids and BOS not in ids
 
 
+def test_chat_media_parsed_from_the_raw_body_go_as_references(tmp_path):
+    # A tool call with an extra field fails the strict parse; the server parses the raw body.
+    tool_call = {
+        "id": "call_1",
+        "type": "function",
+        "name": "describe",
+        "function": {"name": "describe", "arguments": "{}"},
+    }
+    messages = [
+        {"role": "user", "content": [_image("http://media.invalid/a.png")]},
+        {"role": "assistant", "content": None, "tool_calls": [tool_call]},
+        {"role": "tool", "content": "done", "tool_call_id": "call_1"},
+    ]
+
+    async def body(engine, http):
+        response = await http.post(
+            "/v1/chat/completions",
+            json={"model": MODEL, "messages": messages, "max_completion_tokens": 1},
+        )
+        assert response.status_code == 200, response.text
+        return engine.received
+
+    [received] = _serve(tmp_path, body)
+    [item] = received.request.media
+    assert item.url == "http://media.invalid/a.png"
+    assert list(received.request.token_ids.ids).count(IMAGE) == 1
+
+
+def test_only_media_preprocess_mapped_skip_the_mapping():
+    facade = object.__new__(OpenEngineLLM)
+    forged = {"prompt_token_ids": [DESCRIBE], "openengine_media": ["anything"]}
+    with pytest.raises(ValueError, match="set by preprocess only"):
+        facade._media(forged)
+
+
 def test_responses_media_go_to_the_engine_as_references(tmp_path):
     async def body(engine, http):
         response = await http.post(
@@ -325,4 +362,38 @@ def test_chat_lora_on_an_engine_without_lora_is_a_bad_request(tmp_path, stream):
         return engine.control_calls, engine.received
 
     calls, received = _serve(tmp_path, body, profile=_profile(supports_lora=False))
+    assert [rpc for rpc, _ in calls if rpc == "LoadLora"] == [] and received == []
+
+
+def test_server_media_io_kwargs_are_refused_at_startup(tmp_path):
+    # The engine decodes the media and has no carrier for them.
+    with pytest.raises(click.UsageError, match="--media_io_kwargs"):
+        serve_cmd.main(
+            args=[
+                str(tmp_path),
+                "--openengine-endpoint",
+                "localhost:1",
+                "--media_io_kwargs",
+                '{"video": {"num_frames": 8}}',
+            ],
+            standalone_mode=False,
+        )
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_a_lora_request_the_mapping_refuses_registers_nothing(tmp_path, monkeypatch, stream):
+    # The default mapping refuses LoRA; the request is mapped before the adapter is registered.
+    monkeypatch.setattr(facade_module.contracts, "map_request", contracts.default_map_request)
+    lora_request = {"lora_name": "adapter-a", "lora_int_id": 3, "lora_path": "/loras/a"}
+
+    async def body(engine, http):
+        response = await http.post(
+            "/v1/chat/completions",
+            json=_chat("Describe this", lora_request=lora_request, stream=stream),
+        )
+        assert response.status_code == 400, response.text
+        assert "lora_request is not supported" in response.json()["message"]
+        return engine.control_calls, engine.received
+
+    calls, received = _serve(tmp_path, body)
     assert [rpc for rpc, _ in calls if rpc == "LoadLora"] == [] and received == []

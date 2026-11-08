@@ -1544,6 +1544,8 @@ def serve(
             "--disagg_cluster_uri": disagg_cluster_uri,
             "--visual_gen_args": visual_gen_args,
             "--enable_visual_gen": enable_visual_gen,
+            # The engine decodes the media; it has no carrier for these.
+            "--media_io_kwargs": media_io_kwargs,
         }
         used = [name for name, value in conflicting.items() if value]
         if used:

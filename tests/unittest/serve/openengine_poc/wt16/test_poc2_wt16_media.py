@@ -156,6 +156,8 @@ def test_media_the_engine_does_not_declare_are_refused(caps):
         ({"multi_modal_data": {"image": ["ftp://h/1.png"]}}, "scheme 'ftp'"),
         ({"multi_modal_data": {"image": ["https:///no-host"]}}, "no host"),
         ({"multi_modal_data": {"text": ["x"]}}, "unsupported multimodal modality"),
+        ({"multi_modal_data": {"image": "http://h/1.png"}}, "must list its items"),
+        ({"multi_modal_data": {"image": [""]}}, "empty image reference"),
     ],
 )
 def test_what_has_no_carrier_is_refused(inputs, match):

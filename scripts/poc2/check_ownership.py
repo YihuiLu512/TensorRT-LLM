@@ -450,7 +450,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
         Rule(
             f"{CLIENT_TESTS}/test_openengine_poc_serve.py",
             "exception",
-            "only the media-flow and default LoRA registry tests",
+            "only the media-flow, default LoRA registry and cancelled-while-starting LoRA tests",
         ),
         Rule(
             f"{POC}/facade.py",
@@ -461,6 +461,11 @@ OWNERSHIP: dict[str, list[Rule]] = {
             f"{CHAIN}/split.py",
             "exception",
             "only --video_pruning_rate to both sides",
+        ),
+        Rule(
+            "tensorrt_llm/commands/serve.py",
+            "exception",
+            "only refusing --media_io_kwargs with --openengine-endpoint",
         ),
         Rule(
             "scripts/poc2/check_ownership.py",

@@ -90,6 +90,12 @@ HEALTH_POLL_SECONDS = 5.0
 LOG_PROMPT_IDS_ENV = "TRTLLM_OPENENGINE_POC_LOG_PROMPT_IDS"
 # Where preprocess leaves a prompt's mapped media for generate_async.
 _MAPPED_MEDIA_KEY = "openengine_media"
+
+
+class _MappedMedia(list):
+    """Media that ``preprocess`` mapped; ``generate_async`` sends only these without mapping."""
+
+
 # Events a request may hold unread (results, when it is postprocessed in the pool); past
 # this its calls are cancelled and it is answered 503.
 MAX_BUFFERED_EVENTS = 4096
@@ -751,8 +757,10 @@ class OpenEngineLLM:
         """The prompt's media as the ``map_media`` slot maps them; it refuses what it cannot map."""
         prompt = prompt_inputs(inputs)
         if _MAPPED_MEDIA_KEY in prompt:
-            # Mapped by preprocess already.
-            return list(prompt[_MAPPED_MEDIA_KEY])
+            mapped = prompt[_MAPPED_MEDIA_KEY]
+            if not isinstance(mapped, _MappedMedia):
+                raise ValueError(f"{_MAPPED_MEDIA_KEY!r} is set by preprocess only")
+            return list(mapped)
         client = self.client
         return contracts.map_media(
             prompt, client.model_info(), engine_name=client.server_info().engine_name
@@ -817,7 +825,7 @@ class OpenEngineLLM:
         }
         if media:
             # generate_async sends these as mapped here, without mapping (or reading) them again.
-            tokenized[_MAPPED_MEDIA_KEY] = media
+            tokenized[_MAPPED_MEDIA_KEY] = _MappedMedia(media)
         return tokenized
 
     def _metadata(
@@ -946,12 +954,19 @@ class OpenEngineLLM:
             )
             prepare = None
         else:
-            # Registering the adapter is a Control call, so the mapping waits for the first read.
+            # Registering the adapter is a Control call, so the requests wait for the
+            # first read. They are mapped now, under the name the registry returns for
+            # a registered adapter, so a refusal comes before the adapter is registered.
+            options.lora_name = getattr(lora_request, "lora_name", None)
+            mapped = self._map(prompt_token_ids, sampling_params, options)
             requests = None
 
             async def prepare() -> list[EngineRequest]:
                 assert self._lora is not None
-                options.lora_name = await self._lora.resolve(lora_request)
+                name = await self._lora.resolve(lora_request)
+                if name == options.lora_name:
+                    return mapped
+                options.lora_name = name
                 return self._map(prompt_token_ids, sampling_params, options)
 
         if os.environ.get(LOG_PROMPT_IDS_ENV) == "1":

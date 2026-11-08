@@ -2222,7 +2222,7 @@ def test_a_postprocessing_failure_after_an_abort_ends_the_request_as_cancelled(
     _serve(engine, tmp_path, body, postproc_workers=1)
 
 
-def test_a_request_cancelled_while_starting_is_not_sent_again(tmp_path) -> None:
+def test_a_request_cancelled_while_starting_is_not_sent_again(tmp_path, monkeypatch) -> None:
     engine = _engine()
     resolving = asyncio.Event()
 
@@ -2230,6 +2230,14 @@ def test_a_request_cancelled_while_starting_is_not_sent_again(tmp_path) -> None:
         async def resolve(self, lora_request):
             resolving.set()
             await asyncio.Event().wait()
+
+    def map_without_lora(prompt_token_ids, sampling_params, caps, options, *, engine_name):
+        options = dataclasses.replace(options, lora_request=None, lora_name=None)
+        return contracts.default_map_request(
+            prompt_token_ids, sampling_params, caps, options, engine_name=engine_name
+        )
+
+    monkeypatch.setattr(facade_module.contracts, "map_request", map_without_lora)
 
     async def body(engine, facade, http):
         facade._lora = Registry()
