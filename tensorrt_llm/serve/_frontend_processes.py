@@ -41,10 +41,10 @@ class MultiFrontendMode(NamedTuple):
 def _init_multi_frontend_mode(llm_args: dict, enabled: bool) -> MultiFrontendMode:
     """Resolve this process's multi-frontend serving role.
 
-    num_serve_frontends=K runs K serving frontend processes against ONE
-    executor: the launcher (frontend 0) owns the engine and spawns K-1
-    attached frontends (classic IPC executor path only). enabled=False
-    entry points (e.g. disaggregated MPI workers) never honor the knob.
+    On the classic IPC executor path, num_serve_frontends=K runs K serving
+    frontend processes against ONE executor: the launcher (frontend 0) owns
+    the engine and spawns K-1 attached frontends. enabled=False entry points
+    (e.g. disaggregated MPI workers) never honor the knob.
     """
     if not enabled:
         if llm_args.pop("num_serve_frontends", 1) > 1:

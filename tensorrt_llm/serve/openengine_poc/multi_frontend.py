@@ -100,7 +100,9 @@ def launch_frontends(config: FrontendLaunchConfig) -> None:
             long, a frontend failed to start, or (in an attached frontend) the
             launcher exited before it started serving.
         TypeError: The facade refuses the tokenizer (not a Hugging Face one).
-        OSError: The temporary directory or a socket could not be created.
+        ValueError: ``OpenAIServer`` refuses the serving configuration.
+        OSError: The temporary directory or a socket could not be created, or
+            (in an attached frontend) the launcher was gone when it reported ready.
     """
     launcher_uds = os.environ.pop(LAUNCHER_UDS_ENV, None)
     num_frontends = _num_frontends(config.llm_args)
