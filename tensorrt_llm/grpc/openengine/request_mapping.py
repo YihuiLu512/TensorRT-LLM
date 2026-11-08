@@ -118,7 +118,8 @@ class RequestCapabilities:
 
     ``Generate`` accepts a request option only when its field here allows it;
     ``GetModelInfo`` and ``GetServerInfo`` report the request keys, priority,
-    LoRA support and ``max_loras`` from this object, and ``max_num_sequences``
+    LoRA support, ``max_loras`` and the accepted sampling values
+    (:meth:`sampling_declaration`) from this object, and ``max_num_sequences``
     from the same :func:`max_num_sequences_for`.
     """
 
@@ -318,7 +319,7 @@ def accepted_sampling_values(llm_args: Any) -> dict[str, AcceptedValues]:
     ``advanced_sampling_mode`` skips that filter.
 
     A field's default is ``generation_config`` when the LLM applies the model's
-    generation config to it, else the value Generate uses.
+    generation config to it, else the value Generate uses; the seed's is not reported.
     """
     from_generation_config = (
         getattr(llm_args, "backend", None) == "pytorch"

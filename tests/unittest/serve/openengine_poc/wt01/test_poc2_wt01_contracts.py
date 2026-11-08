@@ -324,6 +324,7 @@ def test_default_map_request_rejects_like_poc_s1(params, prompt):
         ("temperature", float("nan"), "temperature must be a finite number"),
         ("top_p", float("inf"), "top_p must be a finite number"),
         ("temperature", True, "temperature must be a finite number"),
+        ("seed", True, "seed must be a finite number"),
         ("seed", 1 << 64, r"seed must be in \[0, 2\*\*64\)"),
         ("seed", -1, r"seed must be in \[0, 2\*\*64\)"),
         ("top_k", 1 << 31, r"top_k must be in \[0, 2147483647\]"),
@@ -383,7 +384,7 @@ def test_default_map_request_sends_an_explicit_value_in_the_declared_set(provide
 def test_every_sampling_field_a_request_supplies_is_recorded():
     params = SamplingParams()
     params._set_request_provided_fields({*conv.SAMPLING_PARAM_NAMES, "model", "service_tier"})
-    # Only the sampler fields are kept, so SamplingParams compare as before.
+    # Only the sampler fields are recorded; other request fields leave SamplingParams as they are.
     assert params._request_provided_fields == frozenset(conv.SAMPLING_PARAM_NAMES)
     assert contracts.explicit_sampling_values(params) == {}
     for name in conv.SAMPLING_PARAM_NAMES:

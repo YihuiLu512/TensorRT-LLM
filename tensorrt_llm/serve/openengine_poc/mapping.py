@@ -206,11 +206,10 @@ def _sampling(
     """
     sampling: dict[str, float | int] = {}
     for name, value in explicit_sampling_values(sampling_params).items():
-        if name == "seed":
-            if not 0 <= value < _SEED_LIMIT:
-                raise ValueError(f"seed must be in [0, 2**64), got {value}")
-        elif isinstance(value, bool) or (isinstance(value, float) and not math.isfinite(value)):
+        if isinstance(value, bool) or (isinstance(value, float) and not math.isfinite(value)):
             raise ValueError(f"{name} must be a finite number, got {value!r}")
+        elif name == "seed" and not 0 <= value < _SEED_LIMIT:
+            raise ValueError(f"seed must be in [0, 2**64), got {value}")
         elif name == "top_k" and not 0 <= value <= _INT32_MAX:
             raise ValueError(f"top_k must be in [0, {_INT32_MAX}], got {value}")
         _check_accepted(name, value, capabilities, engine_name)

@@ -448,8 +448,8 @@ class OpenEngineLLM:
     async def start(self) -> None:
         """Connect to and check the engine, then start watching its health.
 
-        The checks: the schema revision, the conventions version, token-id
-        input and the tokenizer fingerprint.
+        The checks: the schema revision, the capabilities the engine declares,
+        the conventions version, token-id input and the tokenizer fingerprint.
 
         Raises:
             OpenEngineStartupError: A step failed; the message names the step.
