@@ -308,8 +308,8 @@ OWNERSHIP: dict[str, list[Rule]] = {
         Rule(
             f"{CLIENT_TESTS}/test_openengine_poc_serve.py",
             "exception",
-            "only the completion_tokens of the stop-string case, which no longer counts the stop"
-            " token once WT-12's assembler fills the slot (user approved, 2026-11-08)",
+            "only the completion_tokens of the stop-string case: the stop token matched on its id"
+            " is not counted, as with LLM",
         ),
     ],
     "WT-13": _own(

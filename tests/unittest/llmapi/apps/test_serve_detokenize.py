@@ -16,7 +16,7 @@
 
 import pytest
 from tokenizers import Regex, Tokenizer
-from tokenizers.decoders import ByteFallback, Fuse, Metaspace, Sequence
+from tokenizers.decoders import ByteFallback, Fuse, Metaspace, Replace, Sequence
 from tokenizers.models import WordLevel
 from tokenizers.pre_tokenizers import Split
 from transformers import PreTrainedTokenizerFast
@@ -192,7 +192,7 @@ def test_stop_string_completed_by_second_byte_of_character(
             [[A, B, C]],
             ["a", ""],
             StopMatch("b", 1, num_stop_tokens=1),
-            id="match_that_ends_first_wins",
+            id="single_token_stop_matched_on_its_id_first",
         ),
         pytest.param(
             ["abc", "bc"],
@@ -305,6 +305,34 @@ def test_kept_stop_string_ending_in_whitespace_ends_at_its_token(
     assert detokenizer.stop_match == StopMatch("Hello\n", 2)
 
 
+def test_stop_string_completed_by_whitespace_after_released_text(
+    tokenizer: TransformersTokenizer,
+) -> None:
+    """Whitespace held back before some released text plays no part in a later match."""
+    detokenizer = IncrementalDetokenizer(tokenizer, stop=["a\n"])
+
+    assert "".join(_run(detokenizer, [[NEWLINE], [A], [NEWLINE], [B]])) == "\n"
+    assert detokenizer.stop_match == StopMatch("a\n", 2)
+
+
+def test_stop_string_completed_by_whitespace_whose_text_changes(backend: str) -> None:
+    """Whitespace the fallback decoder holds back is checked again when its text changes.
+
+    Two spaces decode to a tab, so the held text goes from a space to a tab.
+    """
+    if backend == "decode_stream":
+        pytest.skip("DecodeStream releases the first space before the second one changes it")
+    backend_tokenizer = Tokenizer(
+        WordLevel({"x": 0, " ": 1, "y": 2, "<unk>": 3}, unk_token="<unk>")
+    )
+    backend_tokenizer.decoder = Sequence([ByteFallback(), Fuse(), Replace("  ", "\t")])
+    tokenizer = TransformersTokenizer(PreTrainedTokenizerFast(tokenizer_object=backend_tokenizer))
+    detokenizer = IncrementalDetokenizer(tokenizer, stop=["x\t"])
+
+    assert "".join(_run(detokenizer, [[0], [1], [1], [2]])) == ""
+    assert detokenizer.stop_match == StopMatch("x\t", 2)
+
+
 def test_kept_stop_string_is_not_held_back(tokenizer: TransformersTokenizer) -> None:
     """With the stop string kept in the output, a possible prefix is safe to release."""
     detokenizer = IncrementalDetokenizer(
@@ -315,6 +343,16 @@ def test_kept_stop_string_is_not_held_back(tokenizer: TransformersTokenizer) -> 
     assert detokenizer.step([ANS]).text == "ans"
     assert detokenizer.step([GT]) == DetokenizeDelta(">", StopMatch("</ans>", 4))
     assert detokenizer.text == "Hello</ans>"
+
+
+def test_kept_stop_string_holds_no_token_back(split_tokenizer: TransformersTokenizer) -> None:
+    """With the stop string kept, the ids that may start its tokens are not held back either."""
+    detokenizer = IncrementalDetokenizer(
+        split_tokenizer, stop=["</ans>"], include_stop_str_in_output=True
+    )
+
+    detokenizer.step([HE, CLOSE, ANS])
+    assert detokenizer.held_tokens == 0
 
 
 @pytest.mark.parametrize(
@@ -581,6 +619,19 @@ def test_multi_token_stop_cut_when_the_full_decode_disagrees(
     monkeypatch.setattr(split_tokenizer, "decode", lambda *args, **kwargs: "zz")
     assert detokenizer.step([GT]) == DetokenizeDelta("", StopMatch("</ans>", 3, num_stop_tokens=3))
     assert detokenizer.text == "He"
+
+
+def test_whitespace_held_back_kept_when_the_full_decode_disagrees(
+    tokenizer: TransformersTokenizer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Text the decoder holds back before a stop string's token stays in the output."""
+    detokenizer = IncrementalDetokenizer(tokenizer, stop=["b"])
+
+    released = detokenizer.step([A, NEWLINE]).text
+    monkeypatch.setattr(tokenizer, "decode", lambda *args, **kwargs: "zz")
+    delta = detokenizer.step([B])
+    assert released + delta.text == "a\n"
+    assert delta.stop == StopMatch("b", 2, num_stop_tokens=1)
 
 
 def test_finish_without_detokenizing_holding_part_of_a_stop(

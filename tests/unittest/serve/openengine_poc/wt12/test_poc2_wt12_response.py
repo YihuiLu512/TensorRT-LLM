@@ -504,7 +504,9 @@ def test_stop_strings_encoded_once_per_request(tokenizer, monkeypatch):
         detokenize, "encode_stop", lambda *args: calls.append(1) or encode_stop(*args)
     )
     assembler = response.create_response_assembler(
-        sampling_params=SamplingParams(stop=["b"], n=3), tokenizer=tokenizer, num_outputs=3
+        sampling_params=SamplingParams(stop=["b"], n=3, temperature=1.0),
+        tokenizer=tokenizer,
+        num_outputs=3,
     )
     for index in range(3):
         assembler.apply(TokenDelta(output_index=index, token_ids=(A, B)))
@@ -514,7 +516,7 @@ def test_stop_strings_encoded_once_per_request(tokenizer, monkeypatch):
 
 
 def test_cancelled_by_the_serving_side(tokenizer):
-    params = SamplingParams(stop=["</ans>"], n=2)
+    params = SamplingParams(stop=["</ans>"], n=2, temperature=1.0)
     assembler = response.create_response_assembler(
         sampling_params=params, tokenizer=tokenizer, num_outputs=2
     )
@@ -533,7 +535,7 @@ def test_cancelled_by_the_serving_side(tokenizer):
 
 
 def test_outputs_by_index_and_the_first_usage(tokenizer):
-    params = SamplingParams(n=2)
+    params = SamplingParams(n=2, temperature=1.0)
     steps = [
         TokenDelta(output_index=1, token_ids=(A,)),
         TokenDelta(output_index=0, token_ids=(B,)),
@@ -623,7 +625,7 @@ def test_no_logprobs_unless_requested(tokenizer):
 
 def test_prompt_logprobs(tokenizer):
     """LLM's prompt logprobs start at the second prompt token, top candidates first."""
-    params = SamplingParams(prompt_logprobs=1, n=2)
+    params = SamplingParams(prompt_logprobs=1, n=2, temperature=1.0)
     steps = [
         PromptInfo(
             token_logprobs=(
@@ -670,7 +672,9 @@ def test_detokenizer_created_at_an_outputs_first_tokens(tokenizer, monkeypatch):
 
     monkeypatch.setattr(detokenize, "IncrementalDetokenizer", Counting)
     assembler = response.create_response_assembler(
-        sampling_params=SamplingParams(stop=["b"], n=2), tokenizer=tokenizer, num_outputs=2
+        sampling_params=SamplingParams(stop=["b"], n=2, temperature=1.0),
+        tokenizer=tokenizer,
+        num_outputs=2,
     )
     assert created == []
 

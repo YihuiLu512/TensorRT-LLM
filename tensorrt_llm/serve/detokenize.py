@@ -354,11 +354,16 @@ class IncrementalDetokenizer:
         released = self.text
         if not full.startswith(released):
             # The incremental decode disagrees with the full one: cut the incremental text.
+            # Text the decoder holds back is taken as the latest decoded token's.
             full = released + self._unreleased
             if self._include_stop_str_in_output:
                 full += self._decode([self._ids[-1]], flush=True)
             else:
-                full = full[: max(self._token_ends[-num_stop_tokens], len(released))]
+                end = self._token_ends[-num_stop_tokens]
+                held = self._decode([], flush=True)
+                if num_stop_tokens == 1:
+                    end += len(held)
+                full = (full + held)[: max(end, len(released))]
         for candidate in self._stop_strs:
             position = full.find(candidate)
             if position >= 0:
