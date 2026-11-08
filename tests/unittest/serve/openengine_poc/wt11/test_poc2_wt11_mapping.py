@@ -5,6 +5,7 @@
 import dataclasses
 import json
 import math
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -179,9 +180,9 @@ def test_an_explicit_value_is_checked_against_the_declared_values(name):
     params = _explicit(SamplingParams(**{name: NO_EFFECT[name]}), name)
     assert _one(params, caps).sampling == {name: NO_EFFECT[name]}
     effective = 5 if name == "top_k" else 0.5
-    with pytest.raises(
-        ValueError, match=rf"{name}={effective} .*'eng' \(it accepts only {NO_EFFECT[name]!r}\)"
-    ):
+    expected = re.escape(f"{name}={effective}") + " .*'eng' "
+    expected += re.escape(f"(it accepts only {NO_EFFECT[name]!r})")
+    with pytest.raises(ValueError, match=expected):
         _one(SamplingParams(**{name: effective}), caps)
 
 

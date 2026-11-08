@@ -12,16 +12,6 @@ from typing import Any, Collection, Mapping
 # fingerprint, or for request counters. The `extra` conventions carry them as
 # `trtllm.*` keys in ServerInfo.extra, ModelInfo.extra and
 # LoadInfo.attributes; this module re-exports them under its own names.
-from tensorrt_llm.grpc.openengine_conventions import (
-    CAP_FREQUENCY_PENALTY as SAMPLING_FREQUENCY_PENALTY_KEY,
-)
-from tensorrt_llm.grpc.openengine_conventions import CAP_MIN_P as SAMPLING_MIN_P_KEY
-from tensorrt_llm.grpc.openengine_conventions import (
-    CAP_PRESENCE_PENALTY as SAMPLING_PRESENCE_PENALTY_KEY,
-)
-from tensorrt_llm.grpc.openengine_conventions import (
-    CAP_REPETITION_PENALTY as SAMPLING_REPETITION_PENALTY_KEY,
-)
 from tensorrt_llm.grpc.openengine_conventions import CAP_REQ_BEST_OF as REQUEST_BEST_OF_KEY
 from tensorrt_llm.grpc.openengine_conventions import (
     CAP_REQ_CONVERSATION_ID as REQUEST_CONVERSATION_ID_KEY,
@@ -234,10 +224,6 @@ __all__ = [
     "REQUEST_LOGIT_BIAS_KEY",
     "REQUEST_SCHEDULING_KEY",
     "REQUEST_THINKING_TOKEN_BUDGET_KEY",
-    "SAMPLING_FREQUENCY_PENALTY_KEY",
-    "SAMPLING_MIN_P_KEY",
-    "SAMPLING_PRESENCE_PENALTY_KEY",
-    "SAMPLING_REPETITION_PENALTY_KEY",
     "SAMPLING_SEED_SCOPE_KEY",
     "STOPPING_STOP_TEXT_KEY",
     "TOKENIZER_BOS_TOKEN_ID_KEY",

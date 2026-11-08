@@ -18,6 +18,9 @@ from fakes import TINY_EOS, TINY_VOCAB, tiny_hf_tokenizer, tiny_tokenizer  # noq
 
 pytestmark = [pytest.mark.cpu_only, pytest.mark.threadleak(enabled=False)]
 
+NAN = float("nan")
+INF = float("inf")
+
 
 def test_version_and_keys():
     assert conv.CONVENTIONS_VERSION == 3
@@ -46,9 +49,8 @@ def test_seed_scope(value, expected):
     assert conv.parse_extra_capabilities({conv.CAP_SEED_SCOPE: value}).seed_scope == expected
 
 
-def test_no_conventions_version_gets_no_builtin_table():
-    """Every engine is read from what it reports; an unconverted TRT-LLM server declares nothing."""
-    assert not hasattr(conv, "BUILTIN_CAPABILITIES")
+def test_a_trtllm_engine_without_the_conventions_declares_nothing():
+    """Every engine is read from what it reports; a TRT-LLM server that reports no keys declares nothing."""
     server = server_pb2.ServerInfo(engine_name="tensorrt_llm")
     caps = conv.model_capabilities_from_proto(server, model_pb2.ModelInfo())
     assert caps.extra.declared == frozenset()
@@ -92,17 +94,18 @@ def test_params_are_read_alone_when_reported():
 @pytest.mark.parametrize(
     "described, inside, outside",
     [
-        ({"accept": "any"}, [0.0, -5.0, 1e30], []),
+        ({"accept": "any"}, [0.0, -5.0, 1e30, NAN, INF], []),
         ({"accept": "none"}, [], [0.0, 1.0]),
-        ({"accept": "values", "values": [0.0, 2]}, [0.0, -0.0, 2.0], [1.0, 1e-300]),
-        ({"accept": "range", "min": 0, "max": 1}, [0.0, 0.5, 1.0], [-1e-9, 1.0000001]),
+        ({"accept": "values", "values": [0.0, 2]}, [0.0, -0.0, 2.0], [1.0, 1e-300, NAN]),
+        ({"accept": "range", "min": 0, "max": 1}, [0.0, 0.5, 1.0], [-1e-9, 1.0000001, NAN]),
+        ({"accept": "range", "min": 1, "max": 1, "default": "generation_config"}, [1.0], [1.1]),
         (
             {"accept": "range", "min": 0, "min_exclusive": True, "max": 1, "max_exclusive": True},
             [1e-300, 0.999],
             [0.0, 1.0],
         ),
-        ({"accept": "range", "min": 2}, [2.0, 1e300], [1.999]),
-        ({"accept": "range", "max": 2, "max_exclusive": True}, [-1e300, 1.999], [2.0]),
+        ({"accept": "range", "min": 2}, [2.0, 1e300], [1.999, NAN, INF]),
+        ({"accept": "range", "max": 2, "max_exclusive": True}, [-1e300, 1.999], [2.0, -INF]),
     ],
 )
 def test_accepted_values(described, inside, outside):
@@ -125,10 +128,16 @@ def test_accepted_values(described, inside, outside):
         {"accept": "range", "min": True},
         {"accept": "range", "max": float("inf")},
         {"accept": "range", "min": 0, "min_exclusive": 1},
+        {"accept": "range", "min": 2, "max": 1},
+        {"accept": "range", "min": 1, "max": 1, "max_exclusive": True},
         {"accept": "values"},
         {"accept": "values", "values": []},
         {"accept": "values", "values": [1.0, "x"]},
+        {"accept": "values", "values": [NAN]},
+        {"accept": "values", "values": [1.0, INF]},
         {"accept": "values", "values": 1.0},
+        {"accept": "any", "default": {"x": 1}},
+        {"accept": "any", "default": [1.0]},
     ],
 )
 def test_malformed_params_name_the_parameter_and_value(described):

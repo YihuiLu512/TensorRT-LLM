@@ -43,6 +43,7 @@ from tensorrt_llm.serve.openengine_poc import OpenEngineLLM, contracts, mapping
 from tensorrt_llm.serve.openengine_poc import field_classes as fc
 from tensorrt_llm.serve.openengine_poc.engine_client import EngineRequest, GuidedSpec, MediaSpec
 from tensorrt_llm.serve.openengine_poc.engine_client_impl import to_generate_request
+from tensorrt_llm.serve.openengine_poc.facade import OpenEngineStartupError
 from tensorrt_llm.tokenizer import TransformersTokenizer
 
 __extra_import_path__ = ["..", "~/tests/unittest/grpc/openengine_client"]
@@ -421,7 +422,8 @@ def test_a_value_reaches_the_engine_exactly_when_the_engine_accepts_it(profile, 
             (request,) = _run(caps, {name: value})
             assert request.sampling == {name: value}
         else:
-            with pytest.raises(ValueError, match=rf"{name}={value!r} .*it accepts"):
+            expected = re.escape(f"{name}={value!r}") + " .*it accepts"
+            with pytest.raises(ValueError, match=expected):
                 _run(caps, {name: value})
 
 
@@ -487,7 +489,7 @@ def _grpc_profile(name):
     )
 
 
-def _grpc_facade(engine, tmp_path, reasoning_parser=None):
+def _grpc_facade(engine, tmp_path, reasoning_parser=None, **facade_kwargs):
     backend = Tokenizer(WordLevel(_GRPC_VOCAB, unk_token="<unk>"))
     backend.add_special_tokens(["</s>"])
     hf = PreTrainedTokenizerFast(tokenizer_object=backend, eos_token="</s>")
@@ -519,6 +521,7 @@ def _grpc_facade(engine, tmp_path, reasoning_parser=None):
         hf_model_dir=str(tmp_path),
         endpoint=engine.target,
         ready_timeout=WAIT_SECONDS,
+        **facade_kwargs,
     )
 
 
@@ -601,7 +604,7 @@ def test_over_grpc_a_facade_mapped_field_reaches_the_engine_or_is_rejected(profi
 def test_over_grpc_an_engine_without_the_conventions_starts_and_accepts_no_min_p_or_penalty(
     name, tmp_path
 ):
-    """No built-in table: an engine that reports no conventions version declares nothing (R9)."""
+    """An engine that reports no conventions version and no capability keys declares nothing."""
     # The engine accepts these fields without declaring them; serve must not send them.
     profile = FAKE_PROFILES["trtllm-like"].replace(
         follows_conventions=False,
@@ -633,6 +636,49 @@ def test_over_grpc_an_engine_without_the_conventions_starts_and_accepts_no_min_p
                 )
                 (received,) = engine.requests
                 assert received.sampling.temperature == 0.5
+            finally:
+                await facade.aclose()
+
+    asyncio.run(asyncio.wait_for(main(), WAIT_SECONDS * 2))
+
+
+# A declaration serve cannot read (CAP-FMT-6).
+MALFORMED_PARAMS = {conv.PARAMS_KEY: {"top_p": {"accept": "range"}}}
+
+
+def test_startup_fails_at_the_capabilities_step_on_a_malformed_declaration(tmp_path):
+    profile = _grpc_profile("trtllm-like").replace(model_info_extra=MALFORMED_PARAMS)
+
+    async def main():
+        async with FakeEngine(profile) as engine:
+            facade = _grpc_facade(engine, tmp_path)
+            with pytest.raises(OpenEngineStartupError, match=r"step 'capabilities'.*params\.top_p"):
+                await facade.start()
+
+    asyncio.run(asyncio.wait_for(main(), WAIT_SECONDS * 2))
+
+
+def test_a_restarted_engine_with_a_malformed_declaration_is_lost(tmp_path):
+    lost = []
+
+    def on_engine_lost(facade):
+        lost.append(facade)
+        facade._executor.doing_shutdown = True
+
+    async def main():
+        async with FakeEngine(_grpc_profile("trtllm-like")) as engine:
+            facade = _grpc_facade(
+                engine, tmp_path, health_poll_interval=0.01, on_engine_lost=on_engine_lost
+            )
+            await facade.start()
+            try:
+                engine.profile = engine.profile.replace(model_info_extra=MALFORMED_PARAMS)
+                engine.instance_id = "fake-restarted"
+                while not lost:
+                    await asyncio.sleep(0.01)
+                reason = str(facade._executor._fatal_error)
+                assert "restarted OpenEngine engine is not usable" in reason, reason
+                assert "trtllm.params.top_p" in reason, reason
             finally:
                 await facade.aclose()
 

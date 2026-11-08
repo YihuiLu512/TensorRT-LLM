@@ -57,6 +57,7 @@ from tensorrt_llm.grpc.openengine_conventions import (
     META_TRACEPARENT,
     META_TRACESTATE,
     SERVE_COUNTER_DIR_ENV,
+    CapabilityFormatError,
     compare_tokenizer_fingerprints,
     compute_tokenizer_fingerprint,
     conventions_version,
@@ -468,6 +469,8 @@ class OpenEngineLLM:
             raise self._startup_error("schema revision", str(error)) from error
         except OpenEngineClientError as error:
             raise self._startup_error("connect and wait until ready", str(error)) from error
+        except CapabilityFormatError as error:
+            raise self._startup_error("capabilities", str(error)) from error
         try:
             self._check_engine(self._client.server_info(), self._client.model_info())
         except BaseException:
@@ -500,7 +503,7 @@ class OpenEngineLLM:
         if version is None:
             logger.warning(
                 f"OpenEngine engine {info.engine_name!r} at {self._endpoint} reports no "
-                f"{CONVENTIONS_VERSION_KEY}; using no extra capabilities"
+                f"{CONVENTIONS_VERSION_KEY}; requests are checked against the capabilities it declares"
             )
         elif version != CONVENTIONS_VERSION:
             raise self._startup_error(
@@ -586,7 +589,8 @@ class OpenEngineLLM:
 
         Returns:
             False if the restarted engine cannot be served from (its schema
-            revision or a startup check fails); it is then declared lost.
+            revision is not supported, its capabilities are malformed, or a
+            startup check fails); it is then declared lost.
         """
         client = self.client
         before_info, before_caps = client.server_info(), client.model_info()
@@ -595,7 +599,7 @@ class OpenEngineLLM:
             return True
         try:
             await client.refresh()
-        except OpenEngineIncompatibleServerError as error:
+        except (OpenEngineIncompatibleServerError, CapabilityFormatError) as error:
             self._engine_lost(f"the restarted OpenEngine engine is not usable: {error}")
             return False
         info, caps = client.server_info(), client.model_info()

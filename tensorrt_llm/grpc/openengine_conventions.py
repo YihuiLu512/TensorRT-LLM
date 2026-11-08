@@ -7,8 +7,9 @@ beyond the protocol's own, request options that ``LLM`` takes as callables or
 tensors, scheduling options, a tokenizer fingerprint, and the counters that
 prove a request went through the engine. These conventions carry them in the
 protocol's ``extra`` fields (``ServerInfo.extra``, ``ModelInfo.extra``,
-``GenerateRequest.extra``) and in ``LoadInfo.attributes``. They bind only an
-engine that reports :data:`CONVENTIONS_VERSION_KEY`.
+``GenerateRequest.extra``) and in ``LoadInfo.attributes``. An engine that
+reports :data:`CONVENTIONS_VERSION_KEY` follows them; the serving side reads
+the capability keys an engine declares whether or not it reports a version.
 
 The serving side and the engines both import this module, so it must not import
 ``tensorrt_llm.serve``; protobuf is imported only by the functions that read
@@ -270,10 +271,10 @@ class AcceptedValues:
             raise CapabilityFormatError("accept 'range' needs min or max")
 
     def accepts(self, value: float) -> bool:
-        """Whether ``value`` is in the set."""
+        """Whether ``value`` is in the set; NaN and infinities are only in ``any``."""
         if self.accept == ACCEPT_ANY:
             return True
-        if self.accept == ACCEPT_NONE:
+        if self.accept == ACCEPT_NONE or not math.isfinite(value):
             return False
         if self.accept == ACCEPT_VALUES:
             return any(value == accepted for accepted in self.values)
@@ -332,7 +333,10 @@ class AcceptedValues:
         accept = described.get("accept")
         if accept not in ACCEPT_FORMS:
             raise malformed(f"has an unknown accept form {accept!r}")
-        fields: dict[str, Any] = {"accept": accept, "default": described.get("default")}
+        default = described.get("default")
+        if default is not None and not (_number(default) or isinstance(default, str)):
+            raise malformed("has a default that is not a number or a string")
+        fields: dict[str, Any] = {"accept": accept, "default": default}
         if accept == ACCEPT_RANGE:
             for bound in ("min", "max"):
                 value = described.get(bound)
@@ -344,16 +348,26 @@ class AcceptedValues:
                 if not isinstance(value, bool):
                     raise malformed(f"has a {flag} that is not a boolean")
                 fields[flag] = value
-            if fields["min"] is None and fields["max"] is None:
+            low, high = fields["min"], fields["max"]
+            if low is None and high is None:
                 raise malformed("is a range without min or max")
+            if (
+                low is not None
+                and high is not None
+                and (
+                    low > high
+                    or (low == high and (fields["min_exclusive"] or fields["max_exclusive"]))
+                )
+            ):
+                raise malformed("is an empty range")
         elif accept == ACCEPT_VALUES:
             values = described.get("values")
             if (
                 not isinstance(values, list)
                 or not values
-                or not all(_number(value) for value in values)
+                or not all(_number(value) and math.isfinite(value) for value in values)
             ):
-                raise malformed("has no non-empty list of numbers in values")
+                raise malformed("has no non-empty list of finite numbers in values")
             fields["values"] = tuple(values)
         return cls(**fields)
 

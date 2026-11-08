@@ -15,8 +15,9 @@ is set. A rejection is a ``ValueError`` raised before anything is sent, which
 
 ``n`` beyond the sequences one call can return is split into several calls.
 
-:func:`build_generate_request` at the end of this module serves the PoC-S1
-``OpenEngineLLMAdapter`` only.
+:func:`build_generate_request` at the end of this module builds one Generate
+request by the PoC-S1 rules instead of the field tables; the serving path does
+not call it.
 """
 
 from __future__ import annotations
@@ -193,7 +194,8 @@ def _sampling(
 
     A value is sent as the request gave it, whatever it is; a value the
     serving side filled in is not sent, so the engine's own default applies
-    (CAP-GEN-4, CAP-GEN-5).
+    (CAP-GEN-4, CAP-GEN-5). The one exception is the seed of each call ``n`` is
+    split into (:func:`map_request`), which is checked the same way.
     """
     sampling: dict[str, float | int] = {}
     for name, value in explicit_sampling_values(sampling_params).items():

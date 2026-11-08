@@ -21,6 +21,7 @@ from google.protobuf import struct_pb2
 from tensorrt_llm.conversation_params import ConversationParams
 from tensorrt_llm.grpc.openengine_conventions import (
     ACCEPT_ANY,
+    ACCEPT_VALUES,
     ANY_VALUE,
     DEFAULT_FROM_GENERATION_CONFIG,
     NO_VALUE,
@@ -256,11 +257,11 @@ def _priority_scheduling_enabled(llm_args: Any) -> bool:
     return not GenAdmissionConfig.from_env().enabled
 
 
-def uses_one_model_speculation(llm_args: Any) -> bool:
-    """Whether a one-model speculative decoding mode runs, which rejects ``embedding_bias``."""
+def _one_model_spec_config(llm_args: Any) -> Any:
+    """The speculative config the executor runs when it is a one-model mode, else None."""
     spec_config = getattr(llm_args, "speculative_config", None)
     if spec_config is None:
-        return False
+        return None
     if spec_config.decoding_type == "AUTO":
         from tensorrt_llm._torch.speculative import suggest_spec_config
 
@@ -268,17 +269,26 @@ def uses_one_model_speculation(llm_args: Any) -> bool:
         spec_config = suggest_spec_config(
             _positive_int(getattr(llm_args, "max_batch_size", None)) or 1
         )
-    return bool(spec_config.spec_dec_mode.use_one_engine())
+    return spec_config if spec_config.spec_dec_mode.use_one_engine() else None
 
 
-# The values of the parameters one-model speculation does not always apply that
-# leave sampling unchanged; under one-model speculation they are the only ones accepted.
-_NO_EFFECT_UNDER_SPECULATION = {
-    "min_p": 0.0,
-    "frequency_penalty": 0.0,
-    "presence_penalty": 0.0,
-    "repetition_penalty": 1.0,
-}
+def uses_one_model_speculation(llm_args: Any) -> bool:
+    """Whether a one-model speculative decoding mode runs.
+
+    It rejects ``embedding_bias`` and narrows the sampling values ``Generate``
+    accepts (:func:`accepted_sampling_values`).
+    """
+    return _one_model_spec_config(llm_args) is not None
+
+
+# The parameters one-model speculation does not always apply. Under one-model
+# speculation each accepts only its default, the value that leaves sampling unchanged.
+_NOT_ALWAYS_APPLIED_UNDER_SPECULATION = (
+    "min_p",
+    "frequency_penalty",
+    "presence_penalty",
+    "repetition_penalty",
+)
 # The value used for a sampling field the request does not set: Generate fills
 # in temperature, top_p and top_k (sampling_params_from_request); for the others
 # the executor's own default applies, which leaves sampling unchanged. The seed's
@@ -303,7 +313,8 @@ def accepted_sampling_values(llm_args: Any) -> dict[str, AcceptedValues]:
     settings such as ``advanced_sampling_mode``, ``enable_penalty``, the dynamic
     tree, relaxed acceptance and the checkpoint's MTP layer count, which the
     server process cannot all see. Only the values that leave sampling
-    unchanged are then accepted.
+    unchanged are then accepted for them, and for top_k and top_p when
+    ``advanced_sampling_mode`` skips that filter.
 
     A field's default is ``generation_config`` when the LLM applies the model's
     generation config to it, else the value Generate uses.
@@ -312,15 +323,23 @@ def accepted_sampling_values(llm_args: Any) -> dict[str, AcceptedValues]:
         getattr(llm_args, "backend", None) == "pytorch"
         and getattr(llm_args, "generation_config", None) == "auto"
     )
-    speculative = uses_one_model_speculation(llm_args)
+    spec_config = _one_model_spec_config(llm_args)
+    no_effect_only: set[str] = set()
+    if spec_config is not None:
+        no_effect_only.update(_NOT_ALWAYS_APPLIED_UNDER_SPECULATION)
+        mode = getattr(spec_config, "advanced_sampling_mode", None)
+        if mode is not None and mode.skips_top_k:
+            no_effect_only.add("top_k")
+        if mode is not None and mode.skips_top_p:
+            no_effect_only.add("top_p")
     accepted = {}
     for name in SAMPLING_PARAM_NAMES:
         default = _SAMPLING_DEFAULTS[name]
         if from_generation_config and name in _GENERATION_CONFIG_SAMPLING_FIELDS:
             default = DEFAULT_FROM_GENERATION_CONFIG
-        if speculative and name in _NO_EFFECT_UNDER_SPECULATION:
+        if name in no_effect_only:
             accepted[name] = AcceptedValues(
-                "values", values=(_NO_EFFECT_UNDER_SPECULATION[name],), default=default
+                ACCEPT_VALUES, values=(_SAMPLING_DEFAULTS[name],), default=default
             )
         else:
             accepted[name] = AcceptedValues(ACCEPT_ANY, default=default)
@@ -955,9 +974,8 @@ def sampling_params_from_request(
     # trtllm-serve OpenAI path (/v1/completions) applies, so a sampling request
     # produces identical results across the HTTP and OpenEngine transports. These
     # are no-ops for greedy decoding (argmax).
-    kwargs.setdefault("temperature", 1.0)
-    kwargs.setdefault("top_p", 1.0)
-    kwargs.setdefault("top_k", 0)
+    for name in ("temperature", "top_p", "top_k"):
+        kwargs.setdefault(name, _SAMPLING_DEFAULTS[name])
     # SamplingParams.max_tokens defaults to 32, but the protocol default for an
     # omitted stopping.max_tokens is "unbounded", as on /v1/completions (whose
     # max_tokens is Optional[int] = None). None is the engine's documented unset

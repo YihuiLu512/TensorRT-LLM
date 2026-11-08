@@ -38,10 +38,13 @@ from tensorrt_llm.grpc.openengine.request_mapping import (  # noqa: E402
 from tensorrt_llm.kv_hints import KvHintsEnvelope  # noqa: E402
 from tensorrt_llm.kv_hints.protocol import admit_kv_hints  # noqa: E402
 from tensorrt_llm.llmapi.llm_args import (  # noqa: E402
+    AdvancedSamplingMode,
     AutoDecodingConfig,
+    DecodingBaseConfig,
     Eagle3DecodingConfig,
     MTPDecodingConfig,
     NGramDecodingConfig,
+    TorchLlmArgs,
     WaitingQueuePolicy,
 )
 from tensorrt_llm.llmapi.thinking_budget import ThinkingBudgetLogitsProcessor  # noqa: E402
@@ -635,7 +638,42 @@ def test_the_declaration_reports_the_version_2_keys_from_the_same_table():
     assert all(plain[key] is True for key in plain if key != "trtllm.params")
 
 
-@pytest.mark.parametrize(("backend", "generation_config"), [("pytorch", "auto"), ("pytorch", None)])
+@pytest.mark.parametrize(
+    ("mode", "skipped"),
+    [
+        (AdvancedSamplingMode.FULL, set()),
+        (AdvancedSamplingMode.NO_TOPK, {"top_k"}),
+        (AdvancedSamplingMode.NO_TOPP, {"top_p"}),
+        (AdvancedSamplingMode.NO_TOPK_NO_TOPP, {"top_k", "top_p"}),
+    ],
+)
+def test_a_filter_the_speculative_sampler_skips_accepts_only_its_no_effect_value(mode, skipped):
+    capabilities = request_capabilities_for_model(
+        _llm(speculative_config=MTPDecodingConfig(max_draft_len=3, advanced_sampling_mode=mode))
+    )
+    no_effect = {"top_k": 0, "top_p": 1.0}
+    for name, value in no_effect.items():
+        accepted = capabilities.sampling[name]
+        if name in skipped:
+            assert (accepted.accept, accepted.values) == ("values", (value,)), name
+            with pytest.raises(UnsupportedFeatureError, match=f"sampling.{name}="):
+                capabilities.check_sampling_value(name, 5 if name == "top_k" else 0.5)
+        else:
+            assert accepted.accept == "any", name
+        capabilities.check_sampling_value(name, value)
+    assert capabilities.sampling["temperature"].accept == "any"
+
+
+def test_the_engine_arguments_the_sampling_declaration_reads_exist():
+    """The declaration reads these with getattr, so pin them against the real argument classes."""
+    assert {"backend", "generation_config", "speculative_config"} <= set(TorchLlmArgs.model_fields)
+    assert "advanced_sampling_mode" in DecodingBaseConfig.model_fields
+
+
+@pytest.mark.parametrize(
+    ("backend", "generation_config"),
+    [("pytorch", "auto"), ("pytorch", None), ("_autodeploy", "auto")],
+)
 def test_the_declared_defaults_name_the_generation_config_when_the_llm_applies_it(
     backend, generation_config
 ):
@@ -644,7 +682,7 @@ def test_the_declared_defaults_name_the_generation_config_when_the_llm_applies_i
     )
     from_config = {"temperature", "top_p", "top_k", "min_p", "repetition_penalty"}
     for name, values in accepted.items():
-        if generation_config == "auto" and name in from_config:
+        if (backend, generation_config) == ("pytorch", "auto") and name in from_config:
             assert values.default == "generation_config", name
         else:
             assert values.default != "generation_config", name

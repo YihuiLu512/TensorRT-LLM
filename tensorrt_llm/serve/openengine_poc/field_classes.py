@@ -9,7 +9,9 @@ these kinds:
 - ``MAPPED``: it reaches the engine, at ``target``. When the engine has not
   declared ``capability``, a set value is rejected, unless ``fallback`` names
   what happens to it instead. A ``trtllm.params.*`` capability is a set of
-  values: a value outside the set the engine accepts is rejected.
+  values (:meth:`~tensorrt_llm.grpc.openengine_conventions.ExtraCapabilities.accepted`
+  says how one is read when the engine reports no ``trtllm.params``): a value
+  outside the set is rejected.
 - ``SERVE``: the serving side handles it; ``verified_by`` names the feature
   row (``row F-xx``) whose tests verify that handling, or says why none is
   needed (``none needed: ...``).

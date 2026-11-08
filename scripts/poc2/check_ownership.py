@@ -321,7 +321,8 @@ OWNERSHIP: dict[str, list[Rule]] = {
             ),
             (
                 f"{POC}/facade.py",
-                "priority sent only when given; the no-conventions warning names no built-in table",
+                "priority sent only when given; the no-conventions warning names no built-in table;"
+                " a malformed capability declaration fails startup or loses a restarted engine",
             ),
             ("tensorrt_llm/serve/openai_server.py", "the request's priority only when it set one"),
             ("tensorrt_llm/sampling_params.py", "every field name a request supplied is recorded"),
@@ -330,7 +331,10 @@ OWNERSHIP: dict[str, list[Rule]] = {
                 "the accepted sampling values, declared and checked by Generate",
             ),
             (f"{OE_SERVER}/control.py", "reporting the accepted sampling values"),
-            (f"{OE_SERVER}/capabilities.py", "the note on the conventions"),
+            (
+                f"{OE_SERVER}/capabilities.py",
+                "the note on the conventions; no aliases of the version 2 sampling keys",
+            ),
             (
                 "tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_contracts.py",
                 "the tests of the contract v6 changes",
@@ -348,6 +352,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
                 "tests/unittest/grpc/openengine_client/test_openengine_poc_serve.py",
                 "the PoC-S1 mapping's and the facade's priority tests",
             ),
+            ("scripts/poc2/check_ownership.py", "these WT-11-fix2 exceptions"),
         )
     ]
     + [
