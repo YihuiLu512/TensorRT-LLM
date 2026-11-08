@@ -24,6 +24,7 @@ from tensorrt_llm.inputs.registry import (
     MULTIMODAL_PLACEHOLDER_REGISTRY,
     MultimodalPlaceholderMetadata,
 )
+from tensorrt_llm.sampling_params import SamplingParams
 from tensorrt_llm.serve.openai_server import OpenAIServer
 from tensorrt_llm.serve.openengine_poc import OpenEngineLLM, contracts
 from tensorrt_llm.serve.openengine_poc import facade as facade_module
@@ -320,6 +321,21 @@ def test_chat_media_that_cannot_be_sent_are_bad_requests(tmp_path, content, fiel
         return engine.received
 
     assert _serve(tmp_path, body) == []
+
+
+@pytest.mark.parametrize(
+    "multi_modal_data, refused",
+    [({"image": []}, False), ({"image": [], "video": ["http://h/v.mp4"]}, True), ({}, False)],
+)
+def test_truncation_is_refused_only_for_a_prompt_with_media_items(multi_modal_data, refused):
+    # Empty lists are no media, as map_media reads them; the prompt goes as text.
+    prompt = {"prompt": "Describe this", "multi_modal_data": multi_modal_data}
+    params = SamplingParams(truncate_prompt_tokens=1)
+    if refused:
+        with pytest.raises(ValueError, match="truncate_prompt_tokens is not supported"):
+            OpenEngineLLM._check_truncation(prompt, params)
+    else:
+        OpenEngineLLM._check_truncation(prompt, params)
 
 
 def test_chat_lora_is_registered_then_named(tmp_path):

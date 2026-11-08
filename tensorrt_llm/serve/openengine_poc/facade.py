@@ -775,7 +775,11 @@ class OpenEngineLLM:
         if sampling_params.truncate_prompt_tokens is None:
             return
         data = prompt.get("multi_modal_data")
-        if prompt.get(_MAPPED_MEDIA_KEY) or (isinstance(data, Mapping) and data):
+        # An empty list is no media, as map_media reads it.
+        items = data.values() if isinstance(data, Mapping) else ()
+        if prompt.get(_MAPPED_MEDIA_KEY) or any(
+            not (isinstance(value, (list, tuple)) and not value) for value in items
+        ):
             # The prompt's placeholders are unexpanded (OE-MED-2); truncating it
             # can drop a placeholder whose media item is still sent.
             raise ValueError(

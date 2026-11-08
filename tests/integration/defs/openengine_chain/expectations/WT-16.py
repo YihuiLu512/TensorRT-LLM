@@ -4,6 +4,11 @@
 
 from openengine_chain.expectations import HTTP_STATUS, STARTUP_REJECTED, Expectation
 
+_MEDIA_IO_KWARGS_REFUSED = (
+    "the frontend refuses --media_io_kwargs: the engine decodes the media and has no "
+    "carrier for these settings"
+)
+
 EXPECTATIONS = [
     Expectation(
         "WT-16",
@@ -12,12 +17,17 @@ EXPECTATIONS = [
         "precomputed image embeddings have no carrier in a Generate request (OE-MED-5)",
         status=400,
     ),
-    Expectation(
-        "WT-16",
-        "test_glm53_flash.py::TestGLM53FlashFP8::test_video_url",
-        STARTUP_REJECTED,
-        "the frontend refuses --media_io_kwargs: the engine decodes the media and has no "
-        "carrier for these settings",
-        log_contains="cannot be combined with --media_io_kwargs",
+    *(
+        Expectation(
+            "WT-16",
+            match,
+            STARTUP_REJECTED,
+            _MEDIA_IO_KWARGS_REFUSED,
+            log_contains="cannot be combined with --media_io_kwargs",
+        )
+        for match in (
+            "test_glm53_flash.py::TestGLM53FlashFP8::test_video_url",
+            "_test_openengine_glm53.py::test_video_url[*",
+        )
     ),
 ]
