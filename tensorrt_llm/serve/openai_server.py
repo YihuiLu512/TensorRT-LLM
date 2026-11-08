@@ -2368,24 +2368,35 @@ class OpenAIServer(_VideoRoutesMixin):
                                  (request.prompt_token_ids is not None
                                   or request.prompt_token_ids_b64))
 
+            # An OpenEngine facade sends the media's references for its engine
+            # to fetch and decode; the media are then not loaded here.
+            media_references = getattr(type(self.generator), "media_references",
+                                       None)
+            mm_references = None
             try:
+                if media_references is not None:
+                    mm_references = self.generator.media_references(
+                        request.messages, request.media_io_kwargs)
                 conversation, mm_coroutines, mm_placeholder_counts, mm_item_order = parse_chat_messages_coroutines(
                     request.messages,
                     self.model_config,
                     self.multimodal_server_config,
                     request_media_io_kwargs=request.media_io_kwargs,
-                    resolve_media=resolve_media,
+                    resolve_media=resolve_media and mm_references is None,
                 )
             except ValidationError:
                 # ValidatorIterator rejects extra fields; fall back to raw JSON.
                 raw_body = await raw_request.json()
                 raw_messages = raw_body.get("messages", [])
+                if media_references is not None:
+                    mm_references = self.generator.media_references(
+                        raw_messages, request.media_io_kwargs)
                 conversation, mm_coroutines, mm_placeholder_counts, mm_item_order = parse_chat_messages_coroutines(
                     raw_messages,
                     self.model_config,
                     self.multimodal_server_config,
                     request_media_io_kwargs=request.media_io_kwargs,
-                    resolve_media=resolve_media,
+                    resolve_media=resolve_media and mm_references is None,
                 )
 
             # Decode base64 int32 prompt_token_ids relayed by the orchestrator.
@@ -2429,6 +2440,8 @@ class OpenAIServer(_VideoRoutesMixin):
 
             if request.prompt_token_ids is not None:
                 mm_data, mm_embeddings = await mm_coroutines
+            if mm_references:
+                mm_data = mm_references
             if mm_data:
                 self._attach_multimodal_data(prompt, request, mm_data,
                                              mm_item_order)
@@ -3507,6 +3520,10 @@ class OpenAIServer(_VideoRoutesMixin):
                 chat_template=self.chat_template
                 if not self.use_harmony else None,
                 thinking_budget_processor=not self._takes_request_data(),
+                # An OpenEngine facade sends the media's references instead.
+                media_references=self.generator.media_references if getattr(
+                    type(self.generator), "media_references", None) is not None
+                else None,
             )
             if not self.use_harmony:
                 # Detokenize as chat completions does for these parsers: a

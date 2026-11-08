@@ -107,8 +107,12 @@ def test_a_module_that_only_reexports_the_public_function_uses_the_default(monke
 
 
 def test_slot_lookup_is_logged_once(monkeypatch):
+    def absent(name):
+        raise ModuleNotFoundError(f"No module named {name!r}", name=name)
+
     lines = []
     monkeypatch.setattr(contracts.logger, "info", lines.append)
+    monkeypatch.setattr(contracts.importlib, "import_module", absent)
     contracts.resolve_slot("map_media")
     contracts.resolve_slot("map_media")
     assert lines == ["OpenEngine slot map_media: using default"]
@@ -735,15 +739,16 @@ def test_default_metrics_record_nothing():
     "key", ["multi_modal_data", "multi_modal_embeddings", "mm_processor_kwargs"]
 )
 def test_default_media_rejects_multimodal_inputs(key):
+    default_map_media = contracts.slots()["map_media"].default
     caps = conv.ModelCapabilities(served_model_name="m")
-    assert contracts.map_media({"prompt": "x"}, caps, engine_name="e") == []
+    assert default_map_media({"prompt": "x"}, caps, engine_name="e") == []
     with pytest.raises(ValueError, match="multimodal"):
-        contracts.map_media({key: {}}, caps, engine_name="e")
+        default_map_media({key: {}}, caps, engine_name="e")
 
 
 def test_default_lora_registry_rejects_adapters():
     client = FakeEngineClient()
-    registry = contracts.create_lora_registry(client, client.model_info())
+    registry = contracts.slots()["create_lora_registry"].default(client, client.model_info())
     assert asyncio.run(registry.resolve(None)) is None
     with pytest.raises(ValueError, match="lora_request"):
         asyncio.run(registry.resolve(object()))

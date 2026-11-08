@@ -88,6 +88,8 @@ DEFAULT_CONTROL_TIMEOUT_S = 5.0
 DEFAULT_ENGINE_LOST_TIMEOUT_S = 30.0
 HEALTH_POLL_SECONDS = 5.0
 LOG_PROMPT_IDS_ENV = "TRTLLM_OPENENGINE_POC_LOG_PROMPT_IDS"
+# Where preprocess leaves a prompt's mapped media for generate_async.
+_MAPPED_MEDIA_KEY = "openengine_media"
 # Events a request may hold unread (results, when it is postprocessed in the pool); past
 # this its calls are cancelled and it is answered 503.
 MAX_BUFFERED_EVENTS = 4096
@@ -337,6 +339,8 @@ class OpenEngineLLM:
         self._lost_close: asyncio.Task[None] | None = None
         # The default registry refuses every adapter; such requests fail before they start.
         self._lora_supported = contracts.resolve_slot("create_lora_registry")[1] != "default"
+        # The default map_media slot refuses every media item, so it needs no references.
+        self._media_supported = contracts.resolve_slot("map_media")[1] != "default"
         if postproc_workers is None:
             postproc_workers = getattr(args, "num_postprocess_workers", 0) or 0
         postproc_tokenizer_dir = getattr(args, "postprocess_tokenizer_dir", None)
@@ -719,11 +723,39 @@ class OpenEngineLLM:
 
     # -- Requests ------------------------------------------------------------
 
+    def media_references(
+        self, messages: Any, media_io_kwargs: Any = None
+    ) -> dict[str, list[str]] | None:
+        """The media references of chat messages for the ``map_media`` slot; None to load the media.
+
+        ``OpenAIServer`` attaches these to the prompt in place of the media it
+        would download and decode: the engine fetches and decodes them itself
+        (OE-MED). None when the slot is the default, which refuses all media.
+
+        Raises:
+            ValueError: The media cannot be sent, or ``media_io_kwargs`` (how
+                to decode them, which the engine does) is set; reported as 400.
+        """
+        if not self._media_supported:
+            return None
+        from . import media
+
+        references = media.chat_media_references(messages)
+        if references and media_io_kwargs:
+            raise ValueError(
+                "media_io_kwargs is not supported when serving through an OpenEngine engine"
+            )
+        return references
+
     def _media(self, inputs: Any) -> list[contracts.MediaSpec]:
         """The prompt's media as the ``map_media`` slot maps them; it refuses what it cannot map."""
+        prompt = prompt_inputs(inputs)
+        if _MAPPED_MEDIA_KEY in prompt:
+            # Mapped by preprocess already.
+            return list(prompt[_MAPPED_MEDIA_KEY])
         client = self.client
         return contracts.map_media(
-            prompt_inputs(inputs), client.model_info(), engine_name=client.server_info().engine_name
+            prompt, client.model_info(), engine_name=client.server_info().engine_name
         )
 
     def _prompt_token_ids(
@@ -732,6 +764,17 @@ class OpenEngineLLM:
         prompt = prompt_inputs(inputs)
         if prompt.get("prompt_token_ids") is not None:
             return list(prompt["prompt_token_ids"])
+        if media:
+            # The engine preprocesses the media and expands their placeholders,
+            # so the prompt is only tokenized here, placeholders unexpanded (OE-MED-2).
+            from tensorrt_llm.inputs.tokenization import tokenize_prompt
+
+            return tokenize_prompt(
+                self.tokenizer,
+                prompt["prompt"],
+                add_special_tokens=sampling_params.add_special_tokens,
+                truncate_prompt_tokens=sampling_params.truncate_prompt_tokens,
+            )
         prompt_token_ids, extra = self.input_processor(prompt, sampling_params)
         has_media = extra and any(extra.get(key) for key in ("multimodal_data", "multimodal_input"))
         if has_media and not media:
@@ -765,10 +808,9 @@ class OpenEngineLLM:
                 inputs, sampling_params or SamplingParams(), media
             )
         }
-        # Media the slot accepted stay with the prompt for generate_async to map.
-        for key in contracts._MULTIMODAL_KEYS:
-            if prompt.get(key) is not None:
-                tokenized[key] = prompt[key]
+        if media:
+            # generate_async sends these as mapped here, without mapping (or reading) them again.
+            tokenized[_MAPPED_MEDIA_KEY] = media
         return tokenized
 
     def _metadata(

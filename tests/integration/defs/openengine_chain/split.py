@@ -41,8 +41,9 @@ OPTIONS: Mapping[str, Option] = {
     "--media_io_kwargs": Option(Side.FRONTEND),
     "--num_media_load_workers": Option(Side.FRONTEND),
     "--num_input_processor_workers": Option(Side.FRONTEND),
-    "--video_pruning_rate": Option(Side.FRONTEND),
     # Both.
+    # The engine prunes video tokens (EVS) when it preprocesses the media.
+    "--video_pruning_rate": Option(Side.BOTH),
     "--tokenizer": Option(Side.BOTH),
     "--trust_remote_code": Option(Side.BOTH, takes_value=False),
     "--reasoning_parser": Option(Side.BOTH),

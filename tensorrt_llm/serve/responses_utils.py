@@ -1433,6 +1433,7 @@ async def _create_input_tokens(
     processor: AutoProcessor,
     multimodal_server_config: Optional[MultimodalServerConfig] = None,
     chat_template: Optional[str] = None,
+    media_references: Optional[Callable[[list], Optional[dict]]] = None,
 ) -> PromptInputs:
     """Create the model input for a Responses request.
 
@@ -1441,6 +1442,10 @@ async def _create_input_tokens(
     multimodal data, the form the chat completions route submits: the model's
     input processor expands each media placeholder into the tokens the media
     occupies, which pre-tokenized input would skip.
+
+    ``media_references`` (the OpenEngine facade's) returns the media's
+    references for its engine to fetch; the media are then not loaded here and
+    the references stand in for the multimodal data.
 
     Returns:
         PromptInputs: The token ids, or a prompt dict with the multimodal data.
@@ -1468,8 +1473,13 @@ async def _create_input_tokens(
     ]
     messages = _render_developer_as_system(messages, tokenizer, processor,
                                            tools_dict, chat_template)
+    mm_references = (media_references(messages)
+                     if media_references is not None else None)
     conversation, mm_coroutines, mm_placeholder_counts, mm_item_order = parse_chat_messages_coroutines(
-        messages, model_config, multimodal_server_config)
+        messages,
+        model_config,
+        multimodal_server_config,
+        resolve_media=mm_references is None)
     has_media = any(message.get("media") for message in conversation)
     # Carry the request's reasoning configuration into the chat template.
     #
@@ -1502,6 +1512,8 @@ async def _create_input_tokens(
                mm_embeddings) = await asyncio.gather(render_task, mm_coroutines)
     if not has_media:
         return rendered.token_ids
+    if mm_references:
+        mm_data = mm_references
 
     if mm_data and mm_embeddings:
         raise ValueError(
@@ -1551,6 +1563,7 @@ async def request_preprocess(
     multimodal_server_config: Optional[MultimodalServerConfig] = None,
     chat_template: Optional[str] = None,
     thinking_budget_processor: bool = True,
+    media_references: Optional[Callable[[list], Optional[dict]]] = None,
 ) -> tuple[PromptInputs, SamplingParams]:
     """Render the request and build its sampling parameters.
 
@@ -1607,6 +1620,7 @@ async def request_preprocess(
             processor=processor,
             multimodal_server_config=multimodal_server_config,
             chat_template=chat_template,
+            media_references=media_references,
         )
 
     if ENABLE_RESPONSES_DEBUG_MSG:  # decoding is not free; skip it otherwise

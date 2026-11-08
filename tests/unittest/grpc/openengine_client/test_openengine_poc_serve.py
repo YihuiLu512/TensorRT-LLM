@@ -1262,20 +1262,24 @@ def test_media_are_refused_by_the_media_slot_before_tokenizing(tmp_path) -> None
 def test_media_the_media_slot_maps_survive_preprocess(tmp_path, monkeypatch) -> None:
     engine = _engine()
     mapped = [object()]
-    monkeypatch.setattr(
-        facade_module.contracts, "map_media", lambda inputs, caps, *, engine_name: mapped
-    )
+    calls = []
+
+    def map_media(inputs, caps, *, engine_name):
+        calls.append(inputs)
+        return mapped
+
+    monkeypatch.setattr(facade_module.contracts, "map_media", map_media)
 
     async def body(engine, facade, http):
-        # A multimodal input processor returns the processed media next to the ids.
-        facade.input_processor = lambda prompt, params: (
-            list(PROMPT_IDS),
-            {"multimodal_data": {"image": 1}},
-        )
-        prompt = {"prompt": "Hi", "multi_modal_data": {"image": [object()]}}
+        prompt = {"prompt": "He", "multi_modal_data": {"image": ["http://h/i.png"]}}
         tokenized = facade.preprocess(prompt)
-        assert tokenized["prompt_token_ids"] == PROMPT_IDS
-        assert tokenized["multi_modal_data"] is prompt["multi_modal_data"]
+        # Tokenized only, placeholders unexpanded: the input processor is not used.
+        assert tokenized["prompt_token_ids"] == [HE]
+        assert facade.input_processor.prompts == []
+        assert "multi_modal_data" not in tokenized
+        # generate_async takes the media as preprocess mapped them, without mapping again.
+        assert facade._media(tokenized) == mapped
+        assert calls == [prompt]
 
     _serve(engine, tmp_path, body)
 
@@ -1467,6 +1471,8 @@ def test_a_lora_request_without_a_lora_registry_is_refused_at_once(tmp_path) -> 
     engine = _engine()
 
     async def body(engine, facade, http):
+        # As with the default registry slot, which refuses every adapter.
+        facade._lora_supported = False
         with pytest.raises(ValueError, match="lora_request"):
             facade.generate_async(PROMPT_IDS, SamplingParams(max_tokens=1), lora_request=object())
         assert engine.requests == []
