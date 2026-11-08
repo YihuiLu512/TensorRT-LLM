@@ -398,7 +398,8 @@ def test_stop_string_truncates_and_cancels_the_engine_request(tmp_path) -> None:
         assert choice["message"]["content"] == "Hello"
         assert choice["finish_reason"] == "stop"
         assert choice["stop_reason"] == " world"
-        assert response.json()["usage"]["completion_tokens"] == 3
+        # As with LLM, the token matched as the stop string is not counted.
+        assert response.json()["usage"]["completion_tokens"] == 2
         await asyncio.wait_for(engine.cancel_seen.wait(), WAIT_SECONDS)
         assert not engine.requests[0].stopping.conditions
 

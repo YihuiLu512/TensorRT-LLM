@@ -164,22 +164,23 @@ def test_stop_string_variants(client, model_name, tokenizer, output_ids, stream,
     assert usage.prompt_tokens_details is not None
     assert usage.prompt_tokens_details.cached_tokens > 0
 
+    # The output stops at the first occurrence of the stop token.
     stop_token = output_ids[first.start]
-    if stop_token not in output_ids[: first.start]:
-        text, finish_reason, stop_reason, usage = _complete(
-            client,
-            model_name,
-            stream=stream,
-            stop_token_ids=[stop_token],
-            include_stop_str_in_output=include,
-        )
-        kept = first.start + (1 if include else 0)
-        assert (text, finish_reason, stop_reason) == (
-            tokenizer.decode(output_ids[:kept]),
-            "stop",
-            stop_token,
-        )
-        assert usage.completion_tokens == kept
+    stop_index = output_ids.index(stop_token)
+    text, finish_reason, stop_reason, usage = _complete(
+        client,
+        model_name,
+        stream=stream,
+        stop_token_ids=[stop_token],
+        include_stop_str_in_output=include,
+    )
+    kept = stop_index + (1 if include else 0)
+    assert (text, finish_reason, stop_reason) == (
+        tokenizer.decode(output_ids[:kept]),
+        "stop",
+        stop_token,
+    )
+    assert usage.completion_tokens == kept
 
 
 @pytest.mark.parametrize("skip_special_tokens", [True, False], ids=["skip", "keep"])

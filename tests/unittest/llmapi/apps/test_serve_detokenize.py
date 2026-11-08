@@ -488,8 +488,8 @@ def test_min_tokens_holds_for_whitespace_the_decoder_holds(
     assert detokenizer.stop_match is None
 
 
-def test_min_tokens_holds_when_finish_releases_the_text(tokenizer: TransformersTokenizer) -> None:
-    """Text released only by :meth:`finish` completes no match when its last token is banned."""
+def test_min_tokens_holds_for_a_banned_last_token(tokenizer: TransformersTokenizer) -> None:
+    """A banned token completes no match, also as the output's last token."""
     detokenizer = IncrementalDetokenizer(tokenizer, stop=["\n"], min_tokens=5)
 
     assert "".join(_run(detokenizer, [[A, NEWLINE]])) == "a\n"

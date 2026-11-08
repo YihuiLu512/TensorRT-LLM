@@ -43,7 +43,13 @@ Differences from ``LLM``:
   non-streamed output keeps the tokens generated past a match found only in
   the text. A cancelled output whose detokenizer still holds text that
   completes a stop string ends at that stop string; ``LLM`` ends a cancelled
-  output with ``cancelled``;
+  output with ``cancelled``. The engine does not know the stop strings, so,
+  unlike ``LLM``'s sampler, it does not ban a single-token stop string's
+  token before ``min_tokens``; when generated, that token stays in the
+  output. When the serving side ends an output at a stop string, the facade
+  cancels the engine's calls, so the usage the engine would send at their
+  end, and with it ``cached_tokens``, may not arrive (``cached_tokens`` is
+  then 0);
 - ``prompt_logprobs`` lacks ``LLM``'s entry for the first generated token;
 - the text, where the detokenizer's decoding differs from ``decode``; see
   :class:`~tensorrt_llm.serve.detokenize.IncrementalDetokenizer`.
@@ -135,7 +141,8 @@ class OpenEngineResponseAssembler:
                 f"tokenizer must be a TransformersTokenizer, got {type(tokenizer).__name__}"
             )
         self._tokenizer = tokenizer
-        self._detokenizer_options = dict(
+        self._stop = stop
+        self._detokenizer_options: dict[str, Any] = dict(
             stop=stop,
             include_stop_str_in_output=self._include_stop,
             skip_special_tokens=sampling_params.skip_special_tokens,
@@ -259,8 +266,11 @@ class OpenEngineResponseAssembler:
             return None
         detokenizer = self._detokenizers[index]
         if detokenizer is None:
-            from tensorrt_llm.serve.detokenize import IncrementalDetokenizer
+            from tensorrt_llm.serve.detokenize import IncrementalDetokenizer, encode_stop
 
+            if not self._engine_stop and "encoded_stop" not in self._detokenizer_options:
+                # Encoded once for all outputs of the request.
+                self._detokenizer_options["encoded_stop"] = encode_stop(self._tokenizer, self._stop)
             detokenizer = IncrementalDetokenizer(self._tokenizer, **self._detokenizer_options)
             self._detokenizers[index] = detokenizer
         return detokenizer

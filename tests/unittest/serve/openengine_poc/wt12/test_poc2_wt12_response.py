@@ -479,6 +479,40 @@ def test_fallback_without_detokenizing_matches_token_ids(tokenizer):
     assert (output.text, output.token_ids, output.stop_reason) == ("", [A, C], "b")
 
 
+def test_cancelled_with_tokens_held_back(split_tokenizer):
+    """Tokens held back because they may start a stop string are released when the request is cancelled."""
+    assembler = response.create_response_assembler(
+        sampling_params=SamplingParams(stop=["</ans>"]), tokenizer=split_tokenizer, num_outputs=1
+    )
+    assembler.apply(TokenDelta(output_index=0, token_ids=(HE, CLOSE, ANS)))
+    assert assembler.outputs[0].token_ids == [HE]
+
+    assembler.finish_cancelled()
+
+    output = assembler.outputs[0]
+    assert (output.text, output.finish_reason) == ("He</ans", "cancelled")
+    assert output.token_ids == [HE, CLOSE, ANS]
+    assert output.token_ids_diff == [CLOSE, ANS]
+
+
+def test_stop_strings_encoded_once_per_request(tokenizer, monkeypatch):
+    from tensorrt_llm.serve import detokenize
+
+    calls = []
+    encode_stop = detokenize.encode_stop
+    monkeypatch.setattr(
+        detokenize, "encode_stop", lambda *args: calls.append(1) or encode_stop(*args)
+    )
+    assembler = response.create_response_assembler(
+        sampling_params=SamplingParams(stop=["b"], n=3), tokenizer=tokenizer, num_outputs=3
+    )
+    for index in range(3):
+        assembler.apply(TokenDelta(output_index=index, token_ids=(A, B)))
+
+    assert len(calls) == 1
+    assert [output.text for output in assembler.outputs] == ["a", "a", "a"]
+
+
 def test_cancelled_by_the_serving_side(tokenizer):
     params = SamplingParams(stop=["</ans>"], n=2)
     assembler = response.create_response_assembler(

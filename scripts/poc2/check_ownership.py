@@ -303,7 +303,13 @@ OWNERSHIP: dict[str, list[Rule]] = {
         Rule(
             "scripts/poc2/check_ownership.py",
             "exception",
-            "only the contract v3 exceptions of WT-12",
+            "only the exceptions of WT-12",
+        ),
+        Rule(
+            f"{CLIENT_TESTS}/test_openengine_poc_serve.py",
+            "exception",
+            "only the completion_tokens of the stop-string case, which no longer counts the stop"
+            " token once WT-12's assembler fills the slot (user approved, 2026-11-08)",
         ),
     ],
     "WT-13": _own(

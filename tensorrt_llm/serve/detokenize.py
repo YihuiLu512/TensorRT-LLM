@@ -146,6 +146,9 @@ class IncrementalDetokenizer:
         detokenize: Decode text. Without it no text is released, and stop
             strings are only matched on their token ids, as ``LLM`` does when
             not detokenizing.
+        encoded_stop: What :func:`encode_stop` gives for the same tokenizer
+            and stop strings, so that several outputs of one request encode
+            them once; computed here when not given.
 
     Raises:
         TypeError: If the tokenizer is not a ``TransformersTokenizer``, or a stop
@@ -164,6 +167,7 @@ class IncrementalDetokenizer:
         min_tokens: int | None = None,
         engine_stop: bool = False,
         detokenize: bool = True,
+        encoded_stop: Sequence[tuple[str, tuple[int, ...]]] | None = None,
     ) -> None:
         if not isinstance(tokenizer, TransformersTokenizer):
             raise TypeError(
@@ -186,26 +190,23 @@ class IncrementalDetokenizer:
         # The token ids of each stop string, for matching the way LLM's engine does.
         words: list[tuple[str, tuple[int, ...]]] = []
         if not engine_stop:
-            for stop_str in stop_strs:
-                token_ids = tuple(tokenizer.encode(stop_str, add_special_tokens=False))
-                if token_ids:
-                    words.append((stop_str, token_ids))
+            words = list(
+                encode_stop(tokenizer, stop_strs) if encoded_stop is None else encoded_stop
+            )
         self._token_matcher = _TokenStopMatcher(words) if words else None
         # Tokens LLM's sampler bans until the output has min_tokens tokens.
         self._banned_before_min = {ids[0] for _, ids in words if len(ids) == 1}
         # trtllm_decode_incrementally holds back whitespace only, so only these
         # stop strings can end in the text it holds (see _whitespace_completing_a_stop).
         self._whitespace_stops = tuple(s for s in stop_strs if s[-1].isspace())
-        # While that decoder holds whitespace: a copy of the text matcher fed with
-        # it, and how much of it the copy has been fed.
+        # While that decoder holds whitespace: a copy of the text matcher, and the
+        # held text it has been fed.
         self._probe: _StopMatcher | None = None
-        self._probe_fed = 0
+        self._probe_seen = ""
         # With a token-level matcher only: the ids, and the text length (released
         # and held) after each token; index -1 - k is the length before the last k tokens.
         self._ids: list[int] = []
         self._token_ends: list[int] = [0]
-        # Whether a match completed by the latest token counts (see min_tokens).
-        self._last_counts = True
         self._decode_states: dict[str, Any] | None = None
         self._num_tokens = 0
         self._released: list[str] = []
@@ -300,7 +301,7 @@ class IncrementalDetokenizer:
                     break
             self._release_to(end)
         elif self._detokenize:
-            self._consume_text(new_text, self._num_tokens - 1, counts=self._last_counts)
+            self._consume_text(new_text, self._num_tokens - 1)
             if not self._finished:
                 self._release_to(self._released_len + len(self._unreleased))
         self._unreleased = ""
@@ -315,7 +316,6 @@ class IncrementalDetokenizer:
         if self._token_matcher is not None:
             self._ids.append(token_id)
         counts = index >= self._min_tokens or token_id not in self._banned_before_min
-        self._last_counts = counts
         word = self._token_matcher.feed(token_id) if self._token_matcher is not None else None
         if word is not None and counts:
             stop_str, num_stop_tokens = word
@@ -451,7 +451,8 @@ class IncrementalDetokenizer:
         whitespace. When that text completes a stop string, it is released
         now; the decoder state then continues from the flushed state. A copy
         of the text matcher, taken when the decoder starts holding, is fed only
-        the whitespace added since the previous check.
+        the text added since the previous check; a held text that does not
+        extend the one checked before gets a new copy.
         """
         if (
             self._use_decode_stream
@@ -471,9 +472,9 @@ class IncrementalDetokenizer:
         )
         if not text or text.endswith(_REPLACEMENT_CHARACTER):
             return ""
-        if self._probe is None or len(text) < self._probe_fed:
-            self._probe, self._probe_fed = self._matcher.fork(), 0
-        added, self._probe_fed = text[self._probe_fed :], len(text)
+        if self._probe is None or not text.startswith(self._probe_seen):
+            self._probe, self._probe_seen = self._matcher.fork(), ""
+        added, self._probe_seen = text[len(self._probe_seen) :], text
         if self._probe.feed(added) is None:
             return ""
         self._decode_states = flushed_states
@@ -584,6 +585,18 @@ def _kmp_failure_table(pattern: Sequence[Any]) -> list[int]:
             matched += 1
         table[index] = matched
     return table
+
+
+def encode_stop(
+    tokenizer: TransformersTokenizer, stop_strs: Iterable[str]
+) -> list[tuple[str, tuple[int, ...]]]:
+    """Each stop string with its token ids, as ``LLM``'s engine matches them; strings encoding to none are left out."""
+    words = []
+    for stop_str in stop_strs:
+        token_ids = tuple(tokenizer.encode(stop_str, add_special_tokens=False))
+        if token_ids:
+            words.append((stop_str, token_ids))
+    return words
 
 
 def normalize_stop(stop: str | Iterable[str] | None) -> tuple[str, ...]:
