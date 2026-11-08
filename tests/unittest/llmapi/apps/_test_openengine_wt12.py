@@ -2,13 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Stop strings, stop token ids, usage and decoding options over ``trtllm-serve``.
 
-Every case first asks for the greedy output's token ids (``detokenize=False``,
-``ignore_eos``) and derives what ``LLM`` returns from them: a stop string the
-engine matches on its token ids ends the output before its tokens (or after
-them with ``include_stop_str_in_output``), the text is the decoded tokens
-that are kept, and ``completion_tokens`` counts them. The stop strings are
-taken from the output itself, so they span several tokens wherever the model
-happened to put them.
+Every case first asks for the greedy output's token ids (``detokenize=False``)
+and derives what ``LLM`` returns from them: a stop string the engine matches
+on its token ids ends the output before its tokens (or after them with
+``include_stop_str_in_output``), the text is the decoded tokens that are
+kept, and ``completion_tokens`` counts them. The stop strings are taken from
+the output itself, so they span several tokens wherever the model happened
+to put them. The requests with stop strings or stop token ids leave out
+``ignore_eos``, with which ``LLM`` gives its engine no stop words.
 """
 
 from dataclasses import dataclass
@@ -62,7 +63,7 @@ def _complete(client, model_name, prompt=_PROMPT, *, stream=False, **extra_body)
         prompt=prompt,
         max_tokens=_MAX_TOKENS,
         temperature=0.0,
-        extra_body={"ignore_eos": True, **extra_body},
+        extra_body=extra_body,
     )
     if not stream:
         completion = client.completions.create(**kwargs)
@@ -88,10 +89,10 @@ def output_ids(client, model_name):
         prompt=_PROMPT,
         max_tokens=_MAX_TOKENS,
         temperature=0.0,
-        extra_body={"ignore_eos": True, "detokenize": False},
+        extra_body={"detokenize": False},
     )
     token_ids = completion.choices[0].token_ids
-    assert token_ids is not None and len(token_ids) == _MAX_TOKENS
+    assert token_ids
     return token_ids
 
 
@@ -219,6 +220,7 @@ def test_detokenize_options(
             model_name,
             _CHAT_PROMPT,
             stream=stream,
+            ignore_eos=True,
             skip_special_tokens=skip_special_tokens,
             spaces_between_special_tokens=spaces_between_special_tokens,
         )

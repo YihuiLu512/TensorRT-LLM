@@ -326,6 +326,41 @@ def test_fallback_stop_string_of_special_tokens(tokenizer, include, expected_tok
     assert [list(entry) for entry in output.logprobs] == [[t] for t in expected_tokens]
 
 
+def test_fallback_with_ignore_eos_matches_no_token_ids(tokenizer):
+    """With ``ignore_eos``, ``LLM``'s engine gets no stop words: ``</s>`` is not in the skipped text."""
+    params = SamplingParams(stop=["</s>"], ignore_eos=True)
+    steps = [
+        TokenDelta(output_index=0, token_ids=(A, C, EOS, B)),
+        OutputFinished(output_index=0, reason="length", usage=_usage()),
+    ]
+
+    assembler, _ = _assemble(tokenizer, params, steps)
+
+    output = assembler.outputs[0]
+    assert (output.text, output.finish_reason, output.stop_reason) == ("acb", "length", None)
+    assert output.token_ids == [A, C, EOS, B]
+
+
+@pytest.mark.parametrize("min_tokens", [None, 5])
+def test_fallback_with_ignore_eos_matches_the_text(tokenizer, min_tokens):
+    """A single-token stop string is found in the text, keeping its token, whatever ``min_tokens``.
+
+    ``LLM`` neither matches its token id nor bans the token then; its text check
+    still ends the output.
+    """
+    params = SamplingParams(stop=["b"], ignore_eos=True, min_tokens=min_tokens)
+    steps = [
+        TokenDelta(output_index=0, token_ids=(A, B, C)),
+        OutputFinished(output_index=0, reason="length", usage=_usage()),
+    ]
+
+    assembler, _ = _assemble(tokenizer, params, steps)
+
+    output = assembler.outputs[0]
+    assert (output.text, output.finish_reason, output.stop_reason) == ("a", "stop", "b")
+    assert output.token_ids == [A, B]
+
+
 def test_fallback_stop_spanning_events_trims_earlier_tokens(split_tokenizer):
     """The stop tokens may have arrived in earlier events; they are all left out."""
     params = SamplingParams(stop=["</ans>"], logprobs=0)

@@ -25,7 +25,9 @@ Who matches stop strings decides how the output ends:
   ``token_ids`` counts no token generated past it (for text the decoder held
   back, the token that released it). Tokens that may start a stop string's
   token ids are held back, text, ids and logprobs alike, until the match is
-  decided, so nothing streamed is taken back.
+  decided, so nothing streamed is taken back. With ``ignore_eos``, as
+  ``LLM`` gives its engine no stop words then, the stop strings are looked
+  for in the text only.
 
 Differences from ``LLM``:
 
@@ -134,8 +136,12 @@ class OpenEngineResponseAssembler:
         self._include_stop = bool(sampling_params.include_stop_str_in_output)
         stop = normalize_stop(sampling_params.stop)
         detokenize = bool(sampling_params.detokenize)
+        # With ignore_eos, LLM's engine gets no stop words, so the serving side matches no token ids.
+        self._match_token_ids = bool(
+            stop and not engine_stop_texts and not sampling_params.ignore_eos
+        )
         # Without text, only a serving-side match on token ids needs a detokenizer.
-        self._needs_detokenizer = bool(detokenize or (stop and not engine_stop_texts))
+        self._needs_detokenizer = bool(detokenize or self._match_token_ids)
         if self._needs_detokenizer and not isinstance(tokenizer, TransformersTokenizer):
             raise TypeError(
                 f"tokenizer must be a TransformersTokenizer, got {type(tokenizer).__name__}"
@@ -270,7 +276,9 @@ class OpenEngineResponseAssembler:
 
             if not self._engine_stop and "encoded_stop" not in self._detokenizer_options:
                 # Encoded once for all outputs of the request.
-                self._detokenizer_options["encoded_stop"] = encode_stop(self._tokenizer, self._stop)
+                self._detokenizer_options["encoded_stop"] = (
+                    encode_stop(self._tokenizer, self._stop) if self._match_token_ids else []
+                )
             detokenizer = IncrementalDetokenizer(self._tokenizer, **self._detokenizer_options)
             self._detokenizers[index] = detokenizer
         return detokenizer
