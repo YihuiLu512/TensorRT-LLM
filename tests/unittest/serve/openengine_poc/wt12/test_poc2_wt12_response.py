@@ -623,6 +623,32 @@ def test_tokenizer_checked_when_the_assembler_is_created():
         )
 
 
+def test_detokenizer_created_at_an_outputs_first_tokens(tokenizer, monkeypatch):
+    """Outputs postprocessed in a postprocessing process get no tokens here, so no detokenizer."""
+    from tensorrt_llm.serve import detokenize
+
+    created = []
+
+    class Counting(detokenize.IncrementalDetokenizer):
+        def __init__(self, *args, **kwargs):
+            created.append(1)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(detokenize, "IncrementalDetokenizer", Counting)
+    assembler = response.create_response_assembler(
+        sampling_params=SamplingParams(stop=["b"], n=2), tokenizer=tokenizer, num_outputs=2
+    )
+    assert created == []
+
+    assembler.apply(TokenDelta(output_index=0, token_ids=(A, B)))
+    assembler.finish_cancelled()
+
+    assert len(created) == 1
+    first, second = assembler.outputs
+    assert (first.text, first.finish_reason, first.stop_reason) == ("a", "stop", "b")
+    assert (second.text, second.finish_reason) == ("", "cancelled")
+
+
 def test_no_tokenizer_needed_without_text_or_serving_side_stop():
     params = SamplingParams(detokenize=False, stop=["b"])
 

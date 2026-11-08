@@ -211,7 +211,10 @@ def test_serving_side_stop_strings(tokenizer):
     while this one ends at the match that ends first (and so does LLM's
     streaming path when the matches complete in different steps); those cases
     are not compared. ``min_tokens`` is drawn too, for token ids LLM could have
-    generated with it.
+    generated with it. The token ids kept on a token-id match equal LLM's for
+    a tokenizer that encodes each stop string into the ids it generates for
+    it, as this one does; a SentencePiece tokenizer that encodes a newline
+    after a leading ``"▁"`` piece is not one.
     """
     compared = 0
     rng = random.Random(7)

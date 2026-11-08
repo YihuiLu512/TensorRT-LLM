@@ -84,11 +84,12 @@ class IncrementalDetokenizer:
 
     **Who matches stop strings.** With ``engine_stop`` the engine matches them
     and ends the output. :meth:`finish` then cuts the text as ``LLM`` cuts an
-    output that was not cancelled, whatever ended it: at the first occurrence of the first stop
-    string, in request order, that the text holds, keeping it when
-    ``include_stop_str_in_output`` is set. Until then, text that could start a
-    stop string is held back, and once the text holds a complete stop string
-    nothing more is released before :meth:`finish`.
+    output that was not cancelled, whatever ended it: at the first occurrence
+    of the first stop string, in request order, that the text holds, keeping it
+    when ``include_stop_str_in_output`` is set. Until then, unless
+    ``include_stop_str_in_output`` is set, text that could start a stop string
+    is held back; once the text holds a complete stop string, nothing more is
+    released before :meth:`finish`.
 
     Without ``engine_stop`` this class matches them and ends the output at the
     first match, found in either of the two ways ``LLM`` finds one:
@@ -127,9 +128,9 @@ class IncrementalDetokenizer:
     the other path. A stop string that ends in held-back text is reported as
     completed by the token that released it; text still held back when
     :meth:`finish` is called counts as text of the last token.
-    ``DecodeStream`` does not apply the tokenizer's
-    ``clean_up_tokenization_spaces``, which ``decode`` applies when the
-    tokenizer sets it.
+    With ``DecodeStream``, the tokenizer's ``clean_up_tokenization_spaces`` is
+    applied to each piece of text decoded, so around the pieces' boundaries
+    the text can differ from what ``decode`` gives for the whole output.
 
     Args:
         tokenizer: Tokenizer whose vocabulary produced the token ids.
@@ -195,9 +196,10 @@ class IncrementalDetokenizer:
         # trtllm_decode_incrementally holds back whitespace only, so only these
         # stop strings can end in the text it holds (see _whitespace_completing_a_stop).
         self._whitespace_stops = tuple(s for s in stop_strs if s[-1].isspace())
-        self._longest_whitespace_stop = max(map(len, self._whitespace_stops), default=0)
-        # Length of the held whitespace already checked for those stop strings.
-        self._whitespace_checked = 0
+        # While that decoder holds whitespace: a copy of the text matcher fed with
+        # it, and how much of it the copy has been fed.
+        self._probe: _StopMatcher | None = None
+        self._probe_fed = 0
         # With a token-level matcher only: the ids, and the text length (released
         # and held) after each token; index -1 - k is the length before the last k tokens.
         self._ids: list[int] = []
@@ -324,8 +326,10 @@ class IncrementalDetokenizer:
             return
         new_text = self._decode([token_id], flush=False)
         if new_text:
-            self._whitespace_checked = 0
-        elif counts:
+            self._probe = None
+        else:
+            # Also for a token that does not count, so that a stop string its
+            # whitespace completes is skipped now rather than counted later.
             new_text = self._whitespace_completing_a_stop()
         self._consume_text(new_text, index, counts=counts)
 
@@ -445,9 +449,16 @@ class IncrementalDetokenizer:
 
         That decoder holds back text while the latest tokens add only
         whitespace. When that text completes a stop string, it is released
-        now; the decoder state then continues from the flushed state.
+        now; the decoder state then continues from the flushed state. A copy
+        of the text matcher, taken when the decoder starts holding, is fed only
+        the whitespace added since the previous check.
         """
-        if self._use_decode_stream or self._frozen or not self._whitespace_stops:
+        if (
+            self._use_decode_stream
+            or self._frozen
+            or self._matcher is None
+            or not self._whitespace_stops
+        ):
             return ""
         # Given no ids, the decoder only pops keys of the state it is passed, so a
         # shallow copy leaves the current state as it is.
@@ -460,27 +471,14 @@ class IncrementalDetokenizer:
         )
         if not text or text.endswith(_REPLACEMENT_CHARACTER):
             return ""
-        # The text checked before completed no stop string, so a match must end
-        # in what was added since.
-        checked, self._whitespace_checked = self._whitespace_checked, len(text)
-        context = self._longest_whitespace_stop - 1
-        window = text[checked:]
-        if context:
-            window = (self._tail(context) + text[:checked])[-context:] + window
-        if not any(stop_str in window for stop_str in self._whitespace_stops):
+        if self._probe is None or len(text) < self._probe_fed:
+            self._probe, self._probe_fed = self._matcher.fork(), 0
+        added, self._probe_fed = text[self._probe_fed :], len(text)
+        if self._probe.feed(added) is None:
             return ""
         self._decode_states = flushed_states
-        self._whitespace_checked = 0
+        self._probe = None
         return text
-
-    def _tail(self, length: int) -> str:
-        """The last ``length`` characters of the text so far, released or held."""
-        tail = self._unreleased[-length:]
-        for piece in reversed(self._released):
-            if len(tail) >= length:
-                break
-            tail = piece[len(piece) - (length - len(tail)) :] + tail
-        return tail
 
 
 class _StopMatcher:
@@ -500,6 +498,14 @@ class _StopMatcher:
     def held_length(self) -> int:
         """Length of the longest suffix of the text that starts some stop string."""
         return max(self._matched, default=0)
+
+    def fork(self) -> _StopMatcher:
+        """A matcher in the same state that can be fed on its own."""
+        other = _StopMatcher.__new__(_StopMatcher)
+        other._stop_strs = self._stop_strs
+        other._failure = self._failure
+        other._matched = list(self._matched)
+        return other
 
     def feed(self, text: str, *, counts: bool = True) -> tuple[int, str] | None:
         """Scans ``text`` and returns ``(end, stop_str)`` for the first match that ends in it.

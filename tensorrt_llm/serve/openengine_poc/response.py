@@ -20,9 +20,10 @@ Who matches stop strings decides how the output ends:
   :class:`~tensorrt_llm.serve.detokenize.IncrementalDetokenizer` matches the
   stop strings and ends the output at the first match; the output's tokens
   and logprobs are cut at the token that completed it (without the stop
-  string's own tokens when they matched, as ``LLM`` drops them), so the
-  completion token count the handlers derive from ``token_ids`` counts no
-  token generated past the stop. Tokens that may start a stop string's
+  string's own tokens when they matched and are not to be kept, as ``LLM``
+  drops them), so the completion token count the handlers derive from
+  ``token_ids`` counts no token generated past it (for text the decoder held
+  back, the token that released it). Tokens that may start a stop string's
   token ids are held back, text, ids and logprobs alike, until the match is
   decided, so nothing streamed is taken back.
 
@@ -31,14 +32,18 @@ Differences from ``LLM``:
 - with the engine matching: a stop string found only in the text (its token
   ids are not the ones generated) ends ``LLM``'s streamed output at once,
   while here the output waits for the engine to end it, as ``LLM``'s
-  non-streamed output does; its text is the same. A cancelled output
-  has its text cut at a stop string it holds, as the text
-  streamed so far was; ``LLM`` does not cut a cancelled output;
+  non-streamed output does; its text is the same. This difference arises
+  with an engine that matches stop strings on their token ids only, as
+  ``LLM``'s engine does. A cancelled output has
+  its text cut at a stop string it holds, as the text streamed so far was;
+  ``LLM`` does not cut a cancelled output;
 - with the serving side matching: several stop strings, a match found only
   in the text, and stop token ids that start in the prompt; see
   :class:`~tensorrt_llm.serve.detokenize.IncrementalDetokenizer`. ``LLM``'s
   non-streamed output keeps the tokens generated past a match found only in
-  the text;
+  the text. A cancelled output whose detokenizer still holds text that
+  completes a stop string ends at that stop string; ``LLM`` ends a cancelled
+  output with ``cancelled``;
 - ``prompt_logprobs`` lacks ``LLM``'s entry for the first generated token;
 - the text, where the detokenizer's decoding differs from ``decode``; see
   :class:`~tensorrt_llm.serve.detokenize.IncrementalDetokenizer`.
@@ -109,7 +114,8 @@ class OpenEngineResponseAssembler:
         engine_stop_texts: bool = False,
     ) -> None:
         from tensorrt_llm.executor.result import CompletionOutput
-        from tensorrt_llm.serve.detokenize import IncrementalDetokenizer, normalize_stop
+        from tensorrt_llm.serve.detokenize import normalize_stop
+        from tensorrt_llm.tokenizer import TransformersTokenizer
 
         self.outputs: list[CompletionOutput] = [
             CompletionOutput(index=i) for i in range(num_outputs)
@@ -123,22 +129,24 @@ class OpenEngineResponseAssembler:
         stop = normalize_stop(sampling_params.stop)
         detokenize = bool(sampling_params.detokenize)
         # Without text, only a serving-side match on token ids needs a detokenizer.
-        needs_detokenizer = detokenize or (stop and not engine_stop_texts)
-        self._detokenizers: list[IncrementalDetokenizer | None] = [
-            IncrementalDetokenizer(
-                tokenizer,
-                stop=stop,
-                include_stop_str_in_output=self._include_stop,
-                skip_special_tokens=sampling_params.skip_special_tokens,
-                spaces_between_special_tokens=sampling_params.spaces_between_special_tokens,
-                min_tokens=sampling_params.min_tokens,
-                engine_stop=engine_stop_texts,
-                detokenize=detokenize,
+        self._needs_detokenizer = bool(detokenize or (stop and not engine_stop_texts))
+        if self._needs_detokenizer and not isinstance(tokenizer, TransformersTokenizer):
+            raise TypeError(
+                f"tokenizer must be a TransformersTokenizer, got {type(tokenizer).__name__}"
             )
-            if needs_detokenizer
-            else None
-            for _ in range(num_outputs)
-        ]
+        self._tokenizer = tokenizer
+        self._detokenizer_options = dict(
+            stop=stop,
+            include_stop_str_in_output=self._include_stop,
+            skip_special_tokens=sampling_params.skip_special_tokens,
+            spaces_between_special_tokens=sampling_params.spaces_between_special_tokens,
+            min_tokens=sampling_params.min_tokens,
+            engine_stop=engine_stop_texts,
+            detokenize=detokenize,
+        )
+        # Created at an output's first tokens: outputs postprocessed elsewhere
+        # (in a postprocessing process) never need theirs.
+        self._detokenizers: list[IncrementalDetokenizer | None] = [None] * num_outputs
         self._logprobs = sampling_params.logprobs
         self._logprobs_simple = bool(getattr(sampling_params, "logprobs_simple_format", False))
         self._prompt_logprobs = sampling_params.prompt_logprobs
@@ -152,10 +160,12 @@ class OpenEngineResponseAssembler:
         return all(output.finish_reason is not None for output in self.outputs)
 
     def apply(self, event: EngineEvent) -> bool:
-        """Apply one event; return whether an output's text, tokens, logprobs or finish changed.
+        """Apply one event; return whether any output changed.
 
-        A ``PromptInfo`` event sets ``prompt_logprobs`` and returns False: it
-        carries nothing to send by itself.
+        An unfinished output that receives tokens counts as changed even when
+        all their text and ids are held back, as ``LLM`` gives a response for
+        every step. A ``PromptInfo`` event sets ``prompt_logprobs`` and returns
+        False: it carries nothing to send by itself.
         """
         if isinstance(event, TokenDelta):
             return self._apply_tokens(event)
@@ -171,15 +181,17 @@ class OpenEngineResponseAssembler:
     def finish_cancelled(self) -> None:
         """End the outputs that have not finished, after the serving side cancelled the request.
 
-        As with ``LLM``, they end with ``cancelled``, unless the serving side
-        matches the stop strings and the text a detokenizer still holds
-        completes one. With the engine matching, the text is still cut at the
-        stop string it holds, as the text streamed so far was.
+        They end with ``cancelled``, as with ``LLM``, except when the serving
+        side matches the stop strings and the text a detokenizer still holds
+        completes one: the output then ends at that stop string. With the
+        engine matching, the text is cut at the stop string it holds, as the
+        text streamed so far was, and the output ends with ``cancelled``.
         """
         self._start_step()
         for index, (output, detokenizer) in enumerate(zip(self.outputs, self._detokenizers)):
             if output.finish_reason is not None:
                 continue
+            # None also when the output got no tokens: there is no text to finish.
             if detokenizer is not None:
                 delta = detokenizer.finish()
                 output.text += delta.text
@@ -206,7 +218,7 @@ class OpenEngineResponseAssembler:
         held_ids.extend(event.token_ids)
         if self._logprobs is not None and event.logprobs is not None:
             held_logprobs.extend(self._output_logprob(info) for info in event.logprobs)
-        detokenizer = self._detokenizers[event.output_index]
+        detokenizer = self._detokenizer(event.output_index)
         hold = 0
         if detokenizer is not None:
             delta = detokenizer.step(event.token_ids)
@@ -223,11 +235,13 @@ class OpenEngineResponseAssembler:
         if output.finish_reason is not None:
             return False
         self._start_step()
+        # None also when the output got no tokens: there is no text to finish.
         detokenizer = self._detokenizers[event.output_index]
         if detokenizer is not None:
             delta = detokenizer.finish()
             output.text += delta.text
-            # As LLM: a cancelled output gets no stop_reason from its text.
+            # With the engine matching, as with LLM, a cancelled output gets no
+            # stop_reason from its text (the fallback differs: see the module docstring).
             if delta.stop is not None and not (self._engine_stop and event.reason == "cancelled"):
                 self._end_at_stop(event.output_index, delta.stop)
                 return True
@@ -238,6 +252,18 @@ class OpenEngineResponseAssembler:
         elif event.stop_text is not None:
             output.stop_reason = event.stop_text
         return True
+
+    def _detokenizer(self, index: int) -> IncrementalDetokenizer | None:
+        """The detokenizer of output ``index``, created on first use; None when not needed."""
+        if not self._needs_detokenizer:
+            return None
+        detokenizer = self._detokenizers[index]
+        if detokenizer is None:
+            from tensorrt_llm.serve.detokenize import IncrementalDetokenizer
+
+            detokenizer = IncrementalDetokenizer(self._tokenizer, **self._detokenizer_options)
+            self._detokenizers[index] = detokenizer
+        return detokenizer
 
     def _release_tokens(self, index: int, hold: int) -> None:
         """Move the held token ids and logprobs of output ``index`` into it, all but the last ``hold``."""

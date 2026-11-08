@@ -293,6 +293,18 @@ def test_stop_string_ending_in_whitespace(
     assert detokenizer.stop_match == expected
 
 
+def test_kept_stop_string_ending_in_whitespace_ends_at_its_token(
+    tokenizer: TransformersTokenizer,
+) -> None:
+    """The stop string is matched on the token that adds its whitespace, however the text was released."""
+    detokenizer = IncrementalDetokenizer(
+        tokenizer, stop=["Hello\n"], include_stop_str_in_output=True
+    )
+
+    assert "".join(_run(detokenizer, [[HE], [LLO], [NEWLINE], [A], [B]])) == "Hello\n"
+    assert detokenizer.stop_match == StopMatch("Hello\n", 2)
+
+
 def test_kept_stop_string_is_not_held_back(tokenizer: TransformersTokenizer) -> None:
     """With the stop string kept in the output, a possible prefix is safe to release."""
     detokenizer = IncrementalDetokenizer(
@@ -464,6 +476,16 @@ def test_min_tokens_only_holds_back_single_token_stop_strings(
 
     assert "".join(_run(detokenizer, chunks)) == expected_text
     assert detokenizer.stop_match == expected_match
+
+
+def test_min_tokens_holds_for_whitespace_the_decoder_holds(
+    tokenizer: TransformersTokenizer,
+) -> None:
+    """A banned whitespace token completes no match, also when the decoder releases its text later."""
+    detokenizer = IncrementalDetokenizer(tokenizer, stop=["\n"], min_tokens=5)
+
+    assert "".join(_run(detokenizer, [[A], [NEWLINE], [B]])) == "a\nb"
+    assert detokenizer.stop_match is None
 
 
 def test_min_tokens_holds_when_finish_releases_the_text(tokenizer: TransformersTokenizer) -> None:
