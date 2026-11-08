@@ -151,6 +151,7 @@ __all__ = [
     "FakeProfile",
     "Hang",
     "KEY_CONVENTIONS_VERSION",
+    "KV_HINTS_TEXT_MAX_BYTES",
     "MAX_LOGIT_BIAS_ENTRIES",
     "MAX_MESSAGE_BYTES",
     "MAX_STOP_CONDITIONS",
@@ -188,6 +189,8 @@ _BOOLEAN_CAPABILITIES = BOOL_CAPABILITY_KEYS
 
 MAX_MESSAGE_BYTES = 64 * 1024 * 1024
 MAX_STOP_CONDITIONS = 64
+# Longest trtllm.kv_hints JSON text: four times the 64 KiB the envelope may take.
+KV_HINTS_TEXT_MAX_BYTES = 256 * 1024
 
 _GUIDE_MODE = {
     "json_schema": model_pb2.GUIDED_DECODING_MODE_JSON_SCHEMA,
@@ -624,6 +627,64 @@ def _is_int(value: struct_pb2.Value, minimum: int | None = None) -> bool:
     return float(number).is_integer() and (minimum is None or number >= minimum)
 
 
+def _json_data(value: struct_pb2.Value, key: str) -> Any:
+    """A ``Struct`` value as JSON data, with integral numbers as ints.
+
+    A double of magnitude ``2**53`` or more may be a rounded integer, so it is
+    refused rather than read as a value the client did not send.
+    """
+    kind = value.WhichOneof("kind")
+    if kind == "struct_value":
+        return {name: _json_data(item, key) for name, item in value.struct_value.fields.items()}
+    if kind == "list_value":
+        return [_json_data(item, key) for item in value.list_value.values]
+    if kind == "number_value":
+        number = value.number_value
+        if math.isfinite(number) and abs(number) >= 2**53:
+            raise _invalid(f"extra.{key} as an object holds a number of magnitude 2**53 or more")
+        return int(number) if number.is_integer() else number
+    if kind == "string_value":
+        return value.string_value
+    if kind == "bool_value":
+        return value.bool_value
+    return None
+
+
+def _refuse_json_constant(name: str) -> Any:
+    raise ValueError(f"{name} is not JSON")
+
+
+def _validate_kv_hints(key: str, value: struct_pb2.Value) -> None:
+    """Admit ``trtllm.kv_hints``: the envelope's JSON text, or the envelope as an object.
+
+    The text is at most ``KV_HINTS_TEXT_MAX_BYTES`` long, has no ``NaN`` or
+    ``Infinity``, and holds a JSON object. Either form is then refused when
+    the KV hints protocol's admission would drop the envelope.
+    """
+    # The protocol module needs pydantic, which only this key uses.
+    from tensorrt_llm.kv_hints.protocol import admit_kv_hints
+
+    kind = value.WhichOneof("kind")
+    if kind == "string_value":
+        text = value.string_value
+        if len(text.encode("utf-8")) > KV_HINTS_TEXT_MAX_BYTES:
+            raise _invalid(f"extra.{key} is longer than {KV_HINTS_TEXT_MAX_BYTES} bytes")
+        try:
+            envelope = json.loads(text, parse_constant=_refuse_json_constant)
+        except (ValueError, RecursionError):
+            raise _invalid(f"extra.{key} is not valid JSON") from None
+        if not isinstance(envelope, dict):
+            raise _invalid(f"extra.{key} must be the JSON text of an object")
+    elif kind == "struct_value":
+        envelope = _json_data(value, key)
+    else:
+        raise _invalid(f"extra.{key} must be a JSON object as text, or an object")
+    if admit_kv_hints(envelope) is None:
+        raise _invalid(
+            f"extra.{key} was not admitted: unsupported protocol_version, oversized or malformed"
+        )
+
+
 def _validate_request_key(
     key: str, value: struct_pb2.Value, profile: FakeProfile, num_sequences: int
 ) -> None:
@@ -637,17 +698,8 @@ def _validate_request_key(
             raise _invalid(f"extra.{key} must be an integer greater than num_sequences")
         return
     if key == REQ_KV_HINTS:
-        # The envelope's JSON text, or the envelope as an object.
-        if kind == "string_value":
-            try:
-                envelope = json.loads(value.string_value)
-            except (ValueError, RecursionError):
-                envelope = None
-            if isinstance(envelope, dict):
-                return
-        elif kind == "struct_value":
-            return
-        raise _invalid(f"extra.{key} must be a JSON object as text, or an object")
+        _validate_kv_hints(key, value)
+        return
     if kind != "struct_value":
         raise _invalid(f"extra.{key} must be an object")
     entries = value.struct_value.fields

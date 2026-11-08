@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import os
 import signal
 import subprocess
@@ -36,6 +37,7 @@ from fake_openengine import (
     FP_FILES_SHA256,
     FP_VOCAB_SIZE,
     KEY_CONVENTIONS_VERSION,
+    KV_HINTS_TEXT_MAX_BYTES,
     PROFILES,
     Delay,
     Disconnect,
@@ -75,6 +77,14 @@ EOS = PROFILES["trtllm-like"].eos_token_ids[0]
 NO_CONVENTIONS = PROFILES["trtllm-like"].replace(
     name="no-conventions", follows_conventions=False, max_num_sequences=None
 )
+# A KV hints envelope that the protocol's admission keeps.
+KV_HINTS = {
+    "protocol_version": "0.1",
+    "message_id": "m-1",
+    "actions": [
+        {"action_id": "a-1", "action_type": "kv.fetch", "action_version": "1", "payload": {}}
+    ],
+}
 CAPABILITY_KEYS = (
     CAP_MIN_P,
     CAP_FREQUENCY_PENALTY,
@@ -631,6 +641,32 @@ _REJECTIONS = [
         "INVALID_ARGUMENT",
     ),
     ("trtllm-like", {}, {"trtllm.kv_hints": "x"}, (), "INVALID_ARGUMENT"),
+    ("trtllm-like", {}, {"trtllm.kv_hints": 3}, (), "INVALID_ARGUMENT"),
+    ("trtllm-like", {}, {"trtllm.kv_hints": "[1]"}, (), "INVALID_ARGUMENT"),
+    (
+        "trtllm-like",
+        {},
+        {"trtllm.kv_hints": json.dumps(KV_HINTS)[:-1] + ', "x": NaN}'},
+        (),
+        "INVALID_ARGUMENT",
+    ),
+    (
+        "trtllm-like",
+        {},
+        {"trtllm.kv_hints": json.dumps(KV_HINTS) + " " * KV_HINTS_TEXT_MAX_BYTES},
+        (),
+        "INVALID_ARGUMENT",
+    ),
+    (
+        "trtllm-like",
+        {},
+        {"trtllm.kv_hints": json.dumps({**KV_HINTS, "protocol_version": "1"})},
+        (),
+        "INVALID_ARGUMENT",
+    ),
+    ("trtllm-like", {}, {"trtllm.kv_hints": {"protocol_version": "1"}}, (), "INVALID_ARGUMENT"),
+    ("trtllm-like", {}, {"trtllm.kv_hints": {"message_id": "m"}}, (), "INVALID_ARGUMENT"),
+    ("trtllm-like", {}, {"trtllm.kv_hints": {**KV_HINTS, "n": 2**53}}, (), "INVALID_ARGUMENT"),
     ("trtllm-like", {}, None, (("openengine-priority", "500"),), "UNIMPLEMENTED"),
     ("trtllm-like", {}, None, (("openengine-routing-key", "k"),), "UNIMPLEMENTED"),
     ("trtllm-like", {}, None, (("openengine-target-dp-rank", "1"),), "INVALID_ARGUMENT"),
@@ -753,6 +789,28 @@ def test_refused_requests_get_the_declared_status_and_no_events(
     run(main())
 
 
+@pytest.mark.parametrize(
+    "hints",
+    [
+        KV_HINTS,
+        json.dumps(KV_HINTS),
+        # Text keeps an integer beyond 2**53 exact, and may have whitespace.
+        json.dumps({**KV_HINTS, "n": 2**60}, indent=2),
+        {**KV_HINTS, "n": 2**53 - 1},
+    ],
+    ids=["object", "text", "text-large-integer", "object-largest-exact-integer"],
+)
+def test_kv_hints_are_taken_as_json_text_or_as_an_object(hints: str | dict[str, Any]) -> None:
+    message = request(stopping={"maxTokens": 1}, extra={"trtllm.kv_hints": hints})
+
+    async def main() -> None:
+        async with FakeEngine() as engine:
+            _, code, details = await raw_generate(engine, message)
+            assert code == grpc.StatusCode.OK, details
+
+    run(main())
+
+
 def test_a_request_without_input_is_invalid() -> None:
     with pytest.raises(Rejection) as refused:
         admit(generation_pb2.GenerateRequest(model="fake-model"), (), PROFILES["trtllm-like"])
@@ -806,7 +864,7 @@ def test_accepted_extensions_and_metadata_are_recorded() -> None:
                 "end_token_ids": [4],
             },
             "trtllm.scheduling": {"attention_dp_relax": False, "agent_hierarchy": [["a", 1]]},
-            "trtllm.kv_hints": {"any": ["json"]},
+            "trtllm.kv_hints": KV_HINTS,
         },
     )
     metadata = (
