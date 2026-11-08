@@ -5,21 +5,30 @@
 Every field of ``SamplingParams``, ``GenerateOptions`` and the OpenAI request
 models must be classified; a mapped field set to a non-default value must reach
 the engine's request when the engine declares what it needs and be rejected (or
-handled as the table's fallback says) when it does not; a
-rejected field must be rejected; a field the serving side handles must not be
-rejected and must name the feature row whose tests verify it, or say why none
-is needed.
+handled as the table's fallback says) when it does not; a rejected field must
+be rejected; a field the serving side handles must not be rejected and must
+name the feature row whose tests verify it, or say why none is needed.
+
+The last section sends the probes through the ``OpenEngineLLM`` facade to the
+fake OpenEngine engine over gRPC (row F-44-cpu).
 """
 
+import ast
+import asyncio
 import dataclasses
+import inspect
 import re
 from collections.abc import Callable
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 import torch
 import yaml
+from tokenizers import Tokenizer
+from tokenizers.models import WordLevel
+from transformers import PreTrainedTokenizerFast
 
 from tensorrt_llm.grpc import openengine_conventions as conv
 from tensorrt_llm.sampling_params import GuidedDecodingParams, LogprobMode, SamplingParams
@@ -28,12 +37,17 @@ from tensorrt_llm.serve.openai_protocol import (
     CompletionRequest,
     ResponsesRequest,
 )
-from tensorrt_llm.serve.openengine_poc import contracts, mapping
+from tensorrt_llm.serve.openengine_poc import OpenEngineLLM, contracts, mapping
 from tensorrt_llm.serve.openengine_poc import field_classes as fc
 from tensorrt_llm.serve.openengine_poc.engine_client import EngineRequest, GuidedSpec, MediaSpec
+from tensorrt_llm.serve.openengine_poc.engine_client_impl import to_generate_request
+from tensorrt_llm.tokenizer import TransformersTokenizer
 
-__extra_import_path__ = [".."]
+__extra_import_path__ = ["..", "~/tests/unittest/grpc/openengine_client"]
+from fake_openengine import PROFILES as FAKE_PROFILES  # noqa: E402
+from fake_openengine import FakeEngine  # noqa: E402
 from fakes import glm_like, trtllm_like  # noqa: E402
+from openengine_client_helpers import WAIT_SECONDS  # noqa: E402
 
 pytestmark = pytest.mark.cpu_only
 
@@ -371,3 +385,190 @@ def test_an_unclassified_field_is_rejected(monkeypatch):
     monkeypatch.setattr(mapping, "SAMPLING_PARAMS", table)
     with pytest.raises(ValueError, match="unclassified"):
         _run(PROFILES["trtllm-like"], {"top_k": 5})
+
+
+# --- the same probes through the facade, against the gRPC fake engine ----------------
+
+_GRPC_MODEL = "x1-model"
+_GRPC_VOCAB = {"<unk>": 0, "</s>": 1, **{f"t{i}": i for i in range(2, 16)}}
+_GRPC_EOS = 1
+GRPC_PROMPT = [2, 3, 5]
+_TRACEPARENT = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
+
+
+class SmallTokenizer:
+    """Encodes any text as one id in the fake engine's vocabulary."""
+
+    def encode(self, text, add_special_tokens=True):
+        return [2 + len(text) % 14]
+
+
+# generate_async takes neither: the facade resolves lora_name from lora_request
+# through the LoRA registry and media from the prompt through the map_media slot.
+GRPC_DERIVED = {"lora_name", "media"}
+# What the facade sends as gRPC metadata: (options, supported, check on the call).
+FACADE_PROBES = {
+    "priority": (
+        {"priority": 0.9},
+        lambda caps: caps.supports_priority,
+        lambda call: call.metadata_value(conv.META_PRIORITY) == str(conv.encode_priority(0.9)),
+    ),
+    "trace_headers": (
+        {"trace_headers": {conv.META_TRACEPARENT: _TRACEPARENT}},
+        lambda caps: True,
+        lambda call: call.metadata_value(conv.META_TRACEPARENT) == _TRACEPARENT,
+    ),
+}
+GRPC_PROFILES = {
+    "trtllm-like": {"supports_priority": True},
+    "glm-like": {},
+}
+
+
+def _grpc_profile(name):
+    return FAKE_PROFILES[name].replace(
+        model=_GRPC_MODEL,
+        max_context_length=64,
+        vocab_size=len(_GRPC_VOCAB),
+        eos_token_ids=(_GRPC_EOS,),
+        bos_token_id=None,
+        **GRPC_PROFILES[name],
+    )
+
+
+def _grpc_facade(engine, tmp_path):
+    backend = Tokenizer(WordLevel(_GRPC_VOCAB, unk_token="<unk>"))
+    backend.add_special_tokens(["</s>"])
+    hf = PreTrainedTokenizerFast(tokenizer_object=backend, eos_token="</s>")
+    args = SimpleNamespace(
+        backend="pytorch",
+        reasoning_parser=None,
+        gather_generation_logits=False,
+        guided_decoding_backend=None,
+        num_postprocess_workers=0,
+        cache_transceiver_config=None,
+        trust_remote_code=False,
+        checkpoint_format=None,
+        return_perf_metrics=False,
+        perf_metrics_output_dir=None,
+        speculative_config=None,
+        post_processor_hook=None,
+        sleep_config=None,
+        num_serve_frontends=1,
+        enable_iter_perf_stats=False,
+        max_beam_width=1,
+        custom_tokenizer=None,
+        max_batch_size=None,
+        kv_cache_config=None,
+    )
+    return OpenEngineLLM(
+        args=args,
+        tokenizer=TransformersTokenizer(hf),
+        input_processor=lambda prompt, sampling_params: (list(GRPC_PROMPT), None),
+        hf_model_dir=str(tmp_path),
+        endpoint=engine.target,
+        ready_timeout=WAIT_SECONDS,
+    )
+
+
+def _sampling(params) -> SamplingParams:
+    sampling_params = SamplingParams()
+    for name, value in dict(params).items():
+        setattr(sampling_params, name, value)
+    return sampling_params
+
+
+def _without_id(message):
+    message.ClearField("request_id")
+    return message.SerializeToString(deterministic=True)
+
+
+def _over_grpc(profile, tmp_path, check):
+    """Run ``check(engine, facade)`` with a started facade on a fake ``profile`` engine."""
+
+    async def main():
+        async with FakeEngine(_grpc_profile(profile)) as engine:
+            facade = _grpc_facade(engine, tmp_path)
+            await facade.start()
+            try:
+                await asyncio.wait_for(check(engine, facade), WAIT_SECONDS * 2)
+            finally:
+                await facade.aclose()
+
+    asyncio.run(main())
+
+
+@pytest.mark.parametrize("profile", GRPC_PROFILES)
+@pytest.mark.parametrize("name", sorted({**MAPPED_PROBES, **OPTION_PROBES}.keys() - GRPC_DERIVED))
+def test_over_grpc_the_engine_receives_what_the_mapping_sends(profile, name, tmp_path):
+    probe = {**MAPPED_PROBES, **OPTION_PROBES}[name]
+    options = {key: value for key, value in probe.options.items() if key not in GRPC_DERIVED}
+    if name == "thinking_token_budget":
+        options = {**options, "tokenizer": SmallTokenizer()}
+
+    async def check(engine, facade):
+        caps = facade.client.model_info()
+        engine_name = facade.client.server_info().engine_name
+        if not probe.supported(caps) and not probe.fallback:
+            with pytest.raises(ValueError):
+                await facade.generate_async(GRPC_PROMPT, _sampling(probe.params), **options)
+            assert engine.requests == []
+            return
+        await facade.generate_async(GRPC_PROMPT, _sampling(probe.params), **options)
+        expected = mapping.map_request(
+            GRPC_PROMPT,
+            _sampling(probe.params),
+            caps,
+            contracts.GenerateOptions(**options),
+            engine_name=engine_name,
+        )
+        assert bool(probe.landed(expected)) == bool(probe.supported(caps)), name
+        received = sorted(_without_id(message) for message in engine.requests)
+        assert received == sorted(_without_id(to_generate_request(r)) for r in expected), name
+
+    _over_grpc(profile, tmp_path, check)
+
+
+@pytest.mark.parametrize("profile", GRPC_PROFILES)
+@pytest.mark.parametrize("name", sorted(FACADE_PROBES))
+def test_over_grpc_a_facade_mapped_field_reaches_the_engine_or_is_rejected(profile, name, tmp_path):
+    options, supported, landed = FACADE_PROBES[name]
+
+    async def check(engine, facade):
+        if not supported(facade.client.model_info()):
+            with pytest.raises(ValueError, match=name):
+                facade.generate_async(GRPC_PROMPT, SamplingParams(max_tokens=1), **options)
+            assert engine.requests == []
+            return
+        await facade.generate_async(GRPC_PROMPT, SamplingParams(max_tokens=1), **options)
+        assert landed(engine.accepted[0]), name
+
+    _over_grpc(profile, tmp_path, check)
+
+
+def _server_generate_async_keywords() -> set[str]:
+    """Every keyword ``OpenAIServer`` passes to ``generate_async``, with the request data."""
+    source = Path(inspect.getfile(contracts)).parents[1] / "openai_server.py"
+    keywords = set()
+    for node in ast.walk(ast.parse(source.read_text())):
+        if isinstance(node, ast.Call) and getattr(node.func, "attr", None) == "generate_async":
+            for keyword in node.keywords:
+                if keyword.arg is not None:
+                    keywords.add(keyword.arg)
+                else:
+                    # Only the request-data helpers are spread into the call.
+                    assert ast.unparse(keyword.value).startswith(
+                        ("self._request_data_kwargs(", "self._responses_request_data_kwargs(")
+                    ), ast.unparse(keyword.value)
+    return keywords | {"logit_bias", "reasoning_parser", "tokenizer"}
+
+
+def test_the_facade_names_every_keyword_the_server_passes():
+    """Nothing the server passes falls into the facade's ``**_ignored``."""
+    parameters = inspect.signature(OpenEngineLLM.generate_async).parameters
+    named = {name for name, p in parameters.items() if p.kind is not p.VAR_KEYWORD}
+    assert _server_generate_async_keywords() - named == set()
+    assert contracts.takes_request_data(object.__new__(OpenEngineLLM))
+    # Each keyword other than the prompt and the pool's own names a GenerateOptions field.
+    options = {f.name for f in dataclasses.fields(contracts.GenerateOptions)}
+    assert named - {"self", "inputs", "sampling_params", "_postproc_params"} <= options

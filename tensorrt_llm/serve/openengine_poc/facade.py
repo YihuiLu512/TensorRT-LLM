@@ -274,6 +274,8 @@ class OpenEngineLLM:
     """
 
     postproc_host = True
+    # A thinking budget and logit_bias reach map_request as request data.
+    takes_request_data = True
 
     def __init__(
         self,
@@ -828,6 +830,9 @@ class OpenEngineLLM:
         scheduling_params: Any = None,
         priority: float | None = None,
         trace_headers: Any = None,
+        logit_bias: Any = None,
+        reasoning_parser: str | None = None,
+        tokenizer: Any = None,
         _postproc_params: Any = None,
         **_ignored: Any,
     ) -> OpenEngineRequestOutput:
@@ -838,6 +843,10 @@ class OpenEngineLLM:
 
         With a postprocessing pool, a request given ``_postproc_params`` is
         postprocessed in it; without one, ``_postproc_params`` is ignored.
+
+        ``logit_bias``, ``reasoning_parser`` and ``tokenizer`` are the request
+        data ``OpenAIServer`` passes to a generator that takes it
+        (:func:`.contracts.takes_request_data`); they go to ``map_request``.
 
         Raises:
             ValueError: The request asks for something the engine cannot do; reported as 400.
@@ -862,6 +871,9 @@ class OpenEngineLLM:
             priority=priority,
             trace_headers=trace_headers,
             media=media,
+            logit_bias=logit_bias,
+            reasoning_parser=reasoning_parser,
+            tokenizer=tokenizer,
         )
         if lora_request is None:
             requests: list[EngineRequest] | None = self._map(
