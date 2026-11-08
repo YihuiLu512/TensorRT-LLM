@@ -2,10 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 """WT-11's table: serve tests that send requests the request mapping refuses.
 
-The harness starts the engine, not the front end, with ``--max_beam_width``, so
-a server that asks for beam search starts. OpenEngine has no beam search: a
-request with ``use_beam_search`` gets HTTP 400 from the front end and never
-reaches the engine.
+The harness passes ``--max_beam_width`` to the engine only, so a server that
+asks for beam search starts with an engine fixed at that beam width.
+OpenEngine has no beam search: a request with ``use_beam_search`` gets HTTP 400
+from the front end and never reaches the engine. A request without beam search
+sent to such a server reaches the engine, which refuses a beam width other than
+its own (``test_health_generate`` on the ``with_beam_search`` server of
+``_test_openai_misc.py``); no entry here excuses that failure.
 """
 
 from openengine_chain.expectations import HTTP_STATUS, NO_ENGINE_TRAFFIC, Expectation

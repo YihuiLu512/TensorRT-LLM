@@ -11,8 +11,7 @@ is not sent). A field the serving side handles, and an internal field (state
 derived from other fields, or an input of the mapping itself), is not sent. A
 field classified as rejected, or missing from the tables, is rejected when it
 is set. A rejection is a ``ValueError`` raised before anything is sent, which
-``OpenAIServer`` returns
-as HTTP 400.
+``OpenAIServer`` returns as HTTP 400.
 
 ``n`` beyond the sequences one call can return is split into several calls.
 
