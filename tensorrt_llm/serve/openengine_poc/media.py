@@ -97,8 +97,10 @@ def chat_media_references(messages: Iterable[MutableMapping[str, Any]]) -> dict[
                     f"data:audio/{value.get('format', '')};base64,{data}"
                 )
                 continue
+            if not isinstance(value, str):
+                raise ValueError(f"{part_type} must give its url as a string")
             modality = part_type.removesuffix("_url")
-            references.setdefault(modality, []).append(str(value))
+            references.setdefault(modality, []).append(value)
     return references
 
 
@@ -238,9 +240,7 @@ def map_media(
     if not isinstance(data, Mapping):
         raise ValueError("multi_modal_data must map each modality to its items")
     for modality, items in data.items():
-        if isinstance(items, (str, bytes, bytearray, memoryview)) or not isinstance(
-            items, Iterable
-        ):
+        if not isinstance(items, Sequence) or isinstance(items, (str, bytes, bytearray)):
             raise ValueError(f"multi_modal_data[{modality!r}] must list its items")
     data = {modality: list(items) for modality, items in data.items() if items}
     for modality in data:

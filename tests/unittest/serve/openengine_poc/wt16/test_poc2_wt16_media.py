@@ -164,6 +164,7 @@ def test_media_the_engine_does_not_declare_are_refused(caps):
         ({"multi_modal_data": {"image": ["https:///no-host"]}}, "no host"),
         ({"multi_modal_data": {"text": ["x"]}}, "unsupported multimodal modality"),
         ({"multi_modal_data": {"image": "http://h/1.png"}}, "must list its items"),
+        ({"multi_modal_data": {"image": {"http://h/1.png": 1}}}, "must list its items"),
         ({"multi_modal_data": {"image": [""]}}, "empty image reference"),
         (
             {"multi_modal_data": {"image": ["http://h/1.png"]}, "mm_item_order": ["image"]},
@@ -280,6 +281,14 @@ def test_chat_image_embeds_are_refused():
         {"role": "user", "content": [{"type": "image_embeds", "image_embeds": {"data": "x"}}]}
     ]
     with pytest.raises(ValueError, match="image embeddings"):
+        media.chat_media_references(messages)
+
+
+def test_chat_urls_that_are_not_strings_are_refused():
+    messages = [
+        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": {"x": 1}}}]}
+    ]
+    with pytest.raises(ValueError, match="image_url must give its url as a string"):
         media.chat_media_references(messages)
 
 

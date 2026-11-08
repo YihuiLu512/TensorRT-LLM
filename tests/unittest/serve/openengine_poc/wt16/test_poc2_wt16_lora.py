@@ -188,6 +188,21 @@ def test_an_engine_refusal_is_a_bad_request_and_is_not_kept():
     _with_registries(body, profile=LORA_PROFILE.replace(max_loras=1))
 
 
+def test_a_failed_registration_not_yet_cleared_is_tried_again():
+    async def body(engine, registries, clients):
+        [registry] = registries
+        failed = asyncio.get_running_loop().create_future()
+        failed.set_exception(ValueError("refused"))
+        failed.exception()
+        # As the registry holds it between the failure and its done callback.
+        registry._loading["adapter-a"] = (lora._fields(_request()), failed)
+        registry.check(_request())
+        assert await registry.resolve(_request()) == "adapter-a"
+        assert len(_load_calls(engine)) == 1
+
+    _with_registries(body)
+
+
 def test_an_unavailable_engine_keeps_its_status():
     class Unavailable(FakeEngineClient):
         async def load_lora(self, name, int_id, path):

@@ -9,8 +9,10 @@ reuse the registration. The id is the client's ``lora_int_id``, never one this
 registry assigns, so frontends agree on an adapter's id whenever their clients
 do; the engine refuses a name or an id already bound to another adapter.
 
-:meth:`check` refuses, without a call, what the registry can tell is wrong, so
-the facade reports it before a streamed response starts.
+:meth:`check` refuses, without a call, what the registry can tell is wrong from
+the adapters registered or being registered so far, so the facade reports it
+before a streamed response starts. Two requests whose first uses conflict and
+are checked before either is resolved are told apart when they are resolved.
 
 ``lora_request.lora_ckpt_source`` is not sent: ``LoadLora`` has no field for it,
 and the engine reads every adapter in the format it was started with.
@@ -92,7 +94,10 @@ class _EngineLoraRegistry:
             if known is not None and known != fields:
                 # The registration stays as it is.
                 raise _conflict(*fields, known)
-        for other, _task in self._loading.values():
+        for other, task in self._loading.values():
+            if task.done():
+                # Failed; nothing was registered.
+                continue
             if other != fields and (other[0] == name or other[1] == int_id):
                 raise _conflict(*fields, other)
         return fields
@@ -105,7 +110,9 @@ class _EngineLoraRegistry:
         if self._by_name.get(name) == fields:
             return name
         loading = self._loading.get(name)
-        if loading is None:
+        if loading is None or loading[1].done():
+            # A registration that failed is tried again; its entry is removed when
+            # its callback runs, unless a new one has taken its place.
             task = asyncio.ensure_future(self._load(fields))
             self._loading[name] = (fields, task)
             task.add_done_callback(self._loaded)

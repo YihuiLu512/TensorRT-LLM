@@ -156,6 +156,9 @@ def test_a_slot_module_may_resolve_other_slots_while_it_is_imported(monkeypatch)
     nested = []
 
     def import_module(name):
+        if name == f"{PACKAGE}.lora":
+            # The nested slot falls back to its default.
+            raise ModuleNotFoundError(f"No module named {name!r}", name=name)
         if name == f"{PACKAGE}.media":
             # What a slot module that calls another slot at import time does.
             nested.append(contracts.resolve_slot("create_lora_registry")[1])

@@ -772,6 +772,13 @@ class OpenEngineLLM:
         self, inputs: Any, sampling_params: SamplingParams, media: list[contracts.MediaSpec]
     ) -> list[int]:
         prompt = prompt_inputs(inputs)
+        if media and sampling_params.truncate_prompt_tokens is not None:
+            # The prompt's placeholders are unexpanded (OE-MED-2); truncating it
+            # can drop a placeholder whose media item is still sent.
+            raise ValueError(
+                "truncate_prompt_tokens is not supported for a prompt with media when "
+                "serving through an OpenEngine engine"
+            )
         if prompt.get("prompt_token_ids") is not None:
             return list(prompt["prompt_token_ids"])
         if media:
@@ -779,13 +786,6 @@ class OpenEngineLLM:
             # so the prompt is only tokenized here, placeholders unexpanded (OE-MED-2).
             from tensorrt_llm.inputs.tokenization import tokenize_prompt
 
-            if sampling_params.truncate_prompt_tokens is not None:
-                # Truncating before the placeholders are expanded can drop a
-                # placeholder whose media item is still sent.
-                raise ValueError(
-                    "truncate_prompt_tokens is not supported for a prompt with media when "
-                    "serving through an OpenEngine engine"
-                )
             return tokenize_prompt(
                 self.tokenizer,
                 prompt["prompt"],
@@ -923,8 +923,8 @@ class OpenEngineLLM:
                 raise ValueError(
                     "lora_request is not supported when serving through an OpenEngine engine"
                 )
-            # What the registry can refuse without the engine is refused here,
-            # before a streamed response starts.
+            # What the registry can refuse from the adapters registered, or being
+            # registered, so far is refused here, before a streamed response starts.
             check = getattr(self._lora, "check", None)
             if check is not None:
                 check(lora_request)
@@ -1171,7 +1171,7 @@ class OpenEngineRequestOutput:
 
     @property
     def outputs(self) -> list[Any]:
-        # Empty for a request with a LoRA adapter until its calls are mapped, at its first read.
+        # Empty for a request with a LoRA adapter until its calls start, at its first read.
         return [] if self._assembler is None else self._assembler.outputs
 
     @property

@@ -309,8 +309,20 @@ def test_responses_media_go_to_the_engine_as_references(tmp_path):
             {"truncate_prompt_tokens": 1},
             "truncate_prompt_tokens is not supported",
         ),
+        (
+            [_image("http://media.invalid/a.png")],
+            {"prompt_token_ids": [DESCRIBE, IMAGE], "truncate_prompt_tokens": 1},
+            "truncate_prompt_tokens is not supported",
+        ),
     ],
-    ids=["embeds", "media_io_kwargs", "undeclared-modality", "outside-allowed-dir", "truncate"],
+    ids=[
+        "embeds",
+        "media_io_kwargs",
+        "undeclared-modality",
+        "outside-allowed-dir",
+        "truncate",
+        "truncate-token-prompt",
+    ],
 )
 def test_chat_media_that_cannot_be_sent_are_bad_requests(tmp_path, content, fields, match):
     async def body(engine, http):
