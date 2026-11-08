@@ -2368,8 +2368,9 @@ class OpenAIServer(_VideoRoutesMixin):
                                  (request.prompt_token_ids is not None
                                   or request.prompt_token_ids_b64))
 
-            # An OpenEngine facade sends the media's references for its engine
-            # to fetch and decode; the media are then not loaded here.
+            # An OpenEngine facade with a map_media slot returns the media's
+            # references for its engine to fetch and decode; the media are then
+            # not loaded here. Without references they are loaded as usual.
             media_references = getattr(type(self.generator), "media_references",
                                        None)
             mm_references = None

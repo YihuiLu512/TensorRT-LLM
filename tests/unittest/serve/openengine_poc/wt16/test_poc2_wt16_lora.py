@@ -160,6 +160,7 @@ def test_an_engine_without_lora_refuses_without_registering():
         (_request(name=""), "lora_name"),
         (_request(int_id=-1), "lora_int_id"),
         (_request(int_id=True), "lora_int_id"),
+        (_request(int_id=1 << 63), "lora_int_id"),
         (_request(path=""), "lora_path"),
         (object(), "lora_name"),
     ],

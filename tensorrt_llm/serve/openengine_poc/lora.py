@@ -37,8 +37,10 @@ def _fields(lora_request: Any) -> tuple[str, int, str]:
     path = getattr(lora_request, "lora_path", None)
     if not isinstance(name, str) or not name:
         raise ValueError("lora_request.lora_name must be a non-empty string")
-    if isinstance(int_id, bool) or not isinstance(int_id, int) or int_id < 0:
-        raise ValueError(f"lora_request.lora_int_id must be a non-negative integer, got {int_id!r}")
+    if isinstance(int_id, bool) or not isinstance(int_id, int) or not 0 <= int_id < 1 << 63:
+        raise ValueError(
+            f"lora_request.lora_int_id must be an integer in [0, 2**63), got {int_id!r}"
+        )
     if not isinstance(path, str) or not path:
         raise ValueError(
             "lora_request.lora_path must name the adapter's directory on the engine's machine"

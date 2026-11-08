@@ -117,6 +117,13 @@ def test_items_follow_the_placeholder_order_and_carry_their_uuids():
     ]
 
 
+def test_a_single_uuid_names_a_single_item():
+    [spec] = _map(
+        {"multi_modal_data": {"image": ["http://h/1.png"]}, "multi_modal_uuids": {"image": "u"}}
+    )
+    assert spec.uuid == "u"
+
+
 def test_an_item_order_that_skips_an_item_is_refused():
     with pytest.raises(ValueError, match="exactly once"):
         _map(
@@ -165,6 +172,20 @@ def test_media_the_engine_does_not_declare_are_refused(caps):
         (
             {"multi_modal_data": {"image": ["http://h/1.png"]}, "multi_modal_uuids": ["u"]},
             "multi_modal_uuids must map",
+        ),
+        (
+            {
+                "multi_modal_data": {"image": ["http://h/1.png"] * 2},
+                "multi_modal_uuids": {"image": ["u"]},
+            },
+            "one uuid or None for each of its 2 items",
+        ),
+        (
+            {
+                "multi_modal_data": {"image": ["http://h/1.png"]},
+                "multi_modal_uuids": {"image": [7]},
+            },
+            "must hold strings or None",
         ),
     ],
 )

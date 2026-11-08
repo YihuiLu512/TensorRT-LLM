@@ -1444,8 +1444,9 @@ async def _create_input_tokens(
     occupies, which pre-tokenized input would skip.
 
     ``media_references`` (the OpenEngine facade's) returns the media's
-    references for its engine to fetch; the media are then not loaded here and
-    the references stand in for the multimodal data.
+    references for its engine to fetch, or None; when it returns references the
+    media are not loaded here and the references stand in for the multimodal
+    data.
 
     Returns:
         PromptInputs: The token ids, or a prompt dict with the multimodal data.

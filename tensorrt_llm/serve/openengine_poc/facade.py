@@ -739,8 +739,10 @@ class OpenEngineLLM:
         (OE-MED). None when the slot is the default, which refuses all media.
 
         Raises:
-            ValueError: The media cannot be sent, or ``media_io_kwargs`` (how
-                to decode them, which the engine does) is set; reported as 400.
+            ValueError: With the slot implemented, a message holds media that
+                cannot be sent (image embeddings, ``input_audio`` without
+                data), or holds media while ``media_io_kwargs`` (how to decode
+                them, which the engine does) is set; reported as 400.
         """
         if not self._media_supported:
             return None

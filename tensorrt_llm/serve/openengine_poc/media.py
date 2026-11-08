@@ -198,6 +198,22 @@ def _ordered(
     return order
 
 
+def _uuids(modality: str, given: Any, count: int) -> list[str | None]:
+    """One uuid (or None) per item of ``modality``; a single uuid stands for a single item."""
+    if given is None:
+        return [None] * count
+    if isinstance(given, str):
+        given = [given]
+    if not isinstance(given, Sequence) or len(given) != count:
+        raise ValueError(
+            f"multi_modal_uuids[{modality!r}] must give one uuid or None for each of its "
+            f"{count} items"
+        )
+    if not all(uuid is None or isinstance(uuid, str) for uuid in given):
+        raise ValueError(f"multi_modal_uuids[{modality!r}] must hold strings or None")
+    return [uuid or None for uuid in given]
+
+
 def map_media(
     inputs: Mapping[str, Any], capabilities: ModelCapabilities, *, engine_name: str
 ) -> list[MediaSpec]:
@@ -243,19 +259,13 @@ def map_media(
     uuids = inputs.get("multi_modal_uuids") or {}
     if not isinstance(uuids, Mapping):
         raise ValueError("multi_modal_uuids must map each modality to its items' uuids")
+    item_uuids = {
+        modality: _uuids(modality, uuids.get(modality), len(data[modality])) for modality in data
+    }
     budget = MAX_INLINE_MEDIA_BYTES
     specs = []
     for modality, index in _ordered(data, inputs.get("mm_item_order")):
-        modality_uuids = uuids.get(modality)
-        if not isinstance(modality_uuids, Sequence) or isinstance(modality_uuids, str):
-            modality_uuids = ()
-        uuid = modality_uuids[index] if index < len(modality_uuids) else None
-        spec = _media_spec(
-            modality,
-            data[modality][index],
-            uuid if isinstance(uuid, str) and uuid else None,
-            budget,
-        )
+        spec = _media_spec(modality, data[modality][index], item_uuids[modality][index], budget)
         budget -= len(spec.data_uri or "")
         specs.append(spec)
     return specs
