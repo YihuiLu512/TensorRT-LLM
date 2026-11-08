@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 
 # --- Version (ServerInfo.extra) ----------------------------------------------
 
-CONVENTIONS_VERSION = 2
+CONVENTIONS_VERSION = 3
 CONVENTIONS_VERSION_KEY = "trtllm.conventions_version"
 
 # --- Request keys (GenerateRequest.extra) -------------------------------------

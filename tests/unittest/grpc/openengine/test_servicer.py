@@ -1815,3 +1815,213 @@ def test_detokenize_extension_rejects_string_boolean() -> None:
     request.extra.update({"detokenize": "false"})
     with pytest.raises(ValueError, match="extra.detokenize must be a boolean"):
         sampling_params_from_request(request)
+
+
+class _HoldingTokenizer:
+    """Decodes id ``i`` as ``<i>`` and holds an odd id back until the next id or a flush.
+
+    An incremental decoder holds the lead byte of a multi-byte character the same way.
+    """
+
+    def decode(self, token_ids: Sequence[int], **_: Any) -> str:
+        return "".join(f"<{token_id}>" for token_id in token_ids)
+
+    def convert_ids_to_tokens(self, token_ids: Sequence[int], **_: Any) -> list[str]:
+        return [f"<{token_id}>" for token_id in token_ids]
+
+    def decode_incrementally(
+        self,
+        token_ids: Sequence[int],
+        prev_text: str | None = None,
+        states: dict | None = None,
+        *,
+        flush: bool = False,
+        **_: Any,
+    ) -> tuple[str, dict]:
+        held = [*(states or {}).get("held", ()), *token_ids]
+        text = prev_text or ""
+        if held and (flush or held[-1] % 2 == 0):
+            text += self.decode(held)
+            held = []
+        return text, {"held": held}
+
+
+def _sequence_response(
+    index: int,
+    token_ids: list[int],
+    finished: bool,
+    final: bool,
+    cumulative_logprob: float | None = None,
+) -> Any:
+    """A PyTorch-executor response that advances one candidate of an n > 1 request."""
+    from tensorrt_llm.bindings import executor as tllm
+
+    reason = tllm.FinishReason.END_ID if finished else tllm.FinishReason.NOT_FINISHED
+    result = SimpleNamespace(
+        is_final=final,
+        sequence_index=index,
+        finish_reasons=[reason],
+        output_token_ids=[list(token_ids)],
+        context_phase_params=None,
+        decoding_iter=1,
+        cached_tokens=0,
+        per_pos_drafted=None,
+        per_pos_accepted=None,
+        spec_dec_totals=None,
+        avg_decoded_tokens_per_iter=None,
+        request_perf_metrics=None,
+        cum_log_probs=None if cumulative_logprob is None else [cumulative_logprob],
+        log_probs=None,
+        generation_logits=None,
+        context_logits=None,
+        additional_context_outputs=None,
+        additional_generation_outputs=None,
+        time_breakdown_metrics=None,
+    )
+    return SimpleNamespace(has_error=lambda: False, result=result)
+
+
+@pytest.mark.parametrize("n", [2, 4])
+def test_streamed_text_of_multiple_sequences_is_sent_once(n: int) -> None:
+    """With n > 1 and detokenize on, each response advances one candidate.
+
+    Its siblings' text must not be decoded again from their previous delta, and
+    a candidate that has finished must not receive text from a later flush.
+    Candidate ``i`` streams ``3 + i`` tokens round-robin; every candidate's last
+    token is odd, so it is held back until that candidate's own finish.
+    """
+    from tensorrt_llm.executor.result import DetokenizedGenerationResultBase
+
+    tokenizer = _HoldingTokenizer()
+    sampling_params = SamplingParams(n=n, temperature=1.0, end_id=2)
+    result = DetokenizedGenerationResultBase(
+        id=0, sampling_params=sampling_params, tokenizer=tokenizer, streaming=True
+    )
+    result.prompt_token_ids = [1, 2]
+    state = oe_streaming._OpenEngineFormatState(
+        tokenizer=tokenizer, request_id="r", sampling_params=sampling_params
+    )
+    lengths = [3 + index for index in range(n)]
+    tokens = [
+        [100 * (index + 1) + 2 * step for step in range(lengths[index])] for index in range(n)
+    ]
+    for sequence in tokens:
+        sequence[-1] += 1
+    script = [
+        (index, step) for step in range(max(lengths)) for index in range(n) if step < lengths[index]
+    ]
+
+    events = []
+    for position, (index, step) in enumerate(script):
+        result._handle_response(
+            _sequence_response(
+                index,
+                [tokens[index][step]],
+                finished=step == lengths[index] - 1,
+                final=position == len(script) - 1,
+            )
+        )
+        for output in result.outputs:
+            if output.index != index:
+                assert output.text_diff == ""
+        events += oe_streaming._format_result(result, state)
+
+    finished_at = {}
+    sent_ids = {index: [] for index in range(n)}
+    sent_text = {index: "" for index in range(n)}
+    for position, event in enumerate(events):
+        if event.WhichOneof("event") == "finished":
+            finished_at[event.finished.output_index] = position
+            continue
+        assert event.WhichOneof("event") == "token"
+        index = event.token.output_index
+        assert index not in finished_at, f"output {index} streamed after its finish"
+        assert event.token.tokens, f"output {index} streamed text without a token"
+        sent_ids[index] += [token.token_id for token in event.token.tokens]
+        sent_text[index] += event.token.text
+    assert sorted(finished_at) == list(range(n))
+    for index in range(n):
+        assert sent_ids[index] == tokens[index]
+        assert sent_text[index] == tokenizer.decode(tokens[index])
+        assert result.outputs[index].text == tokenizer.decode(tokens[index])
+    assert events[-1].HasField("usage")
+
+
+def _streaming_result(sampling_params: SamplingParams) -> Any:
+    from tensorrt_llm.executor.result import DetokenizedGenerationResultBase
+
+    result = DetokenizedGenerationResultBase(
+        id=0, sampling_params=sampling_params, tokenizer=_HoldingTokenizer(), streaming=True
+    )
+    result.prompt_token_ids = [1, 2]
+    return result
+
+
+def test_stop_string_flushes_the_text_its_siblings_held() -> None:
+    """A stop string in one candidate ends the request; a sibling's held text is still sent."""
+    sampling_params = SamplingParams(n=2, temperature=1.0, end_id=2, stop=["<6>"])
+    sampling_params._stop_word_ids = [[6]]
+    result = _streaming_result(sampling_params)
+
+    # Candidate 0's odd id is held back; candidate 1 then decodes the stop string.
+    result._handle_response(_sequence_response(0, [101], finished=False, final=False))
+    assert result.outputs[0].text == ""
+    result._handle_response(_sequence_response(1, [6], finished=False, final=False))
+
+    assert result._done
+    assert result.outputs[0].text == result.outputs[0].text_diff == "<101>"
+    assert result.outputs[1].text == "" and result.outputs[1].finish_reason == "stop"
+
+
+@pytest.mark.parametrize("holder", [0, 1])
+def test_text_flushed_after_a_stop_string_is_checked_for_stop_strings(holder: int) -> None:
+    """The holder's flushed text is checked whether it comes before or after the stopper."""
+    sampling_params = SamplingParams(n=2, temperature=1.0, end_id=2, stop=["<6>", "<101>"])
+    sampling_params._stop_word_ids = [[6], [101]]
+    result = _streaming_result(sampling_params)
+
+    result._handle_response(_sequence_response(holder, [101], finished=False, final=False))
+    result._handle_response(_sequence_response(1 - holder, [6], finished=False, final=False))
+
+    assert result.outputs[holder].text == ""
+    assert result.outputs[holder].finish_reason == "stop"
+    assert result.outputs[holder].stop_reason == "<101>"
+
+
+def test_beam_search_keeps_its_stop_string_check() -> None:
+    """Beams are decoded in full each pass; the beams after a stop string are not re-checked."""
+    from tensorrt_llm.bindings import executor as tllm
+
+    sampling_params = SamplingParams(n=2, best_of=2, use_beam_search=True, end_id=2, stop=["<6>"])
+    sampling_params._stop_word_ids = [[6]]
+    result = _streaming_result(sampling_params)
+    response = _sequence_response(0, [], finished=False, final=False)
+    response.result.output_token_ids = [[4, 6], [4, 6, 10]]
+    response.result.finish_reasons = [tllm.FinishReason.NOT_FINISHED] * 2
+
+    result._handle_response(response)
+
+    assert result._done
+    assert [output.text for output in result.outputs] == ["<4>", "<4><6><10>"]
+    assert [output.finish_reason for output in result.outputs] == ["stop", None]
+
+
+def test_candidate_entering_the_top_n_decodes_all_its_tokens() -> None:
+    """With best_of > n, a candidate outside the top n is decoded once it enters it."""
+    result = _streaming_result(SamplingParams(n=1, best_of=2, temperature=1.0, end_id=2))
+    script = [(0, 10, -1.0), (1, 20, -5.0), (1, 22, -5.5), (0, 12, -10.0)]
+
+    for index, token_id, cumulative_logprob in script:
+        result._handle_response(
+            _sequence_response(
+                index,
+                [token_id],
+                finished=False,
+                final=False,
+                cumulative_logprob=cumulative_logprob,
+            )
+        )
+
+    (output,) = result.outputs
+    assert output.token_ids == [20, 22]
+    assert output.text == "<20><22>"

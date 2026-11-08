@@ -2,3 +2,5 @@
 # SPDX-License-Identifier: Apache-2.0
 # A streaming completion through the OpenEngine Generate path.
 unittest/llmapi/apps/_test_openai_completions.py::test_completion_stream_options[pytorch-disable_processpool]
+# The OpenEngine server orders waiting requests by the openengine-priority metadata (F-44-chain).
+unittest/llmapi/apps/_test_openengine_wt05_scheduling.py::test_priority_reorders_waiting_requests

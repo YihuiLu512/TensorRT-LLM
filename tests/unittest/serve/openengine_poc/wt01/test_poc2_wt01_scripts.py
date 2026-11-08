@@ -320,6 +320,7 @@ def test_per_item_files_belong_to_their_item_only():
     assert {n: r.kind for n, r in check_ownership.owners(fake)} == {
         "WT-02": "own",
         "WT-01": "exception",
+        "WT-05": "exception",
     }
     assert {n: r.kind for n, r in check_ownership.owners(f"{chain}/conventions.py")} == {
         "WT-03": "own",

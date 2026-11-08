@@ -9,6 +9,7 @@ values that would break sampling, and how the engine decides what it accepts.
 """
 
 import dataclasses
+import json
 import math
 from types import SimpleNamespace
 from typing import Any
@@ -34,6 +35,7 @@ from tensorrt_llm.grpc.openengine.request_mapping import (  # noqa: E402
     sampling_params_from_request,
 )
 from tensorrt_llm.kv_hints import KvHintsEnvelope  # noqa: E402
+from tensorrt_llm.kv_hints.protocol import admit_kv_hints  # noqa: E402
 from tensorrt_llm.llmapi.llm_args import (  # noqa: E402
     AutoDecodingConfig,
     Eagle3DecodingConfig,
@@ -154,6 +156,68 @@ def test_kv_hints_are_admitted_with_integral_numbers_as_ints():
     assert payload == {"blocks": 3} and type(payload["blocks"]) is int
 
 
+def _envelope(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "protocol_version": "0.1",
+        "message_id": "m-1",
+        "actions": [
+            {
+                "action_id": "a-1",
+                "action_type": "kv.fetch",
+                "action_version": "1",
+                "payload": payload,
+            }
+        ],
+    }
+
+
+def test_kv_hints_json_text_is_admitted_exactly_as_over_http():
+    """The JSON text keeps integers beyond 2**53 and the type of every number."""
+    envelope = _envelope(
+        {
+            "block_hashes": [2**64 - 1, 2**53 + 1, -(2**63), 11],
+            "ratio": 2.0,
+            "label": "123",
+        }
+    )
+    text = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+
+    _, options = _map(_request({"trtllm.kv_hints": text}))
+
+    payload = options.kv_hints.actions[0].payload
+    assert payload["block_hashes"] == [2**64 - 1, 2**53 + 1, -(2**63), 11]
+    assert all(type(value) is int for value in payload["block_hashes"])
+    assert type(payload["ratio"]) is float and payload["label"] == "123"
+    over_http = admit_kv_hints(json.loads(text))
+    assert options.kv_hints.model_dump_json() == over_http.model_dump_json()
+
+
+def test_kv_hints_json_text_may_contain_insignificant_whitespace():
+    text = json.dumps(_envelope({"blocks": 3}), indent=4)
+
+    _, options = _map(_request({"trtllm.kv_hints": text}))
+
+    assert options.kv_hints.actions[0].payload == {"blocks": 3}
+
+
+def test_kv_hints_object_holds_numbers_as_doubles():
+    """The object form is still accepted; a Struct cannot tell 2.0 from 2."""
+    _, options = _map(
+        _request({"trtllm.kv_hints": _envelope({"ratio": 2.0, "largest": float(2**53 - 1)})})
+    )
+
+    payload = options.kv_hints.actions[0].payload
+    assert payload["ratio"] == 2 and type(payload["ratio"]) is int
+    assert payload["largest"] == 2**53 - 1
+
+
+@pytest.mark.parametrize("number", [float(2**53), float(-(2**63)), 1.5e19])
+def test_kv_hints_object_rejects_numbers_a_double_may_have_rounded(number):
+    """2**53 + 1 arrives as the double 2**53, so the object form cannot carry it."""
+    with pytest.raises(ValueError, match="JSON text"):
+        _map(_request({"trtllm.kv_hints": _envelope({"block_hashes": [number]})}))
+
+
 def test_scheduling_carries_relax_and_agent_hierarchy():
     _, options = _map(_request({"trtllm.scheduling": VALID_EXTRA["trtllm.scheduling"]}))
 
@@ -217,6 +281,34 @@ INVALID_VALUES = [
     ("trtllm.logit_bias", {"5": math.inf}),
     ("trtllm.logit_bias", {str(i): 1 for i in range(301)}),
     ("trtllm.kv_hints", "hints"),
+    ("trtllm.kv_hints", 3),
+    ("trtllm.kv_hints", "[]"),
+    ("trtllm.kv_hints", '{"protocol_version": "0.1"'),
+    ("trtllm.kv_hints", json.dumps(_envelope({"x": 1})).replace("1}", "NaN}")),
+    ("trtllm.kv_hints", json.dumps(_envelope({"x": 1})).replace("1}", "1e400}")),
+    # Outside the -2**63..2**64-1 range that HTTP admission accepts.
+    ("trtllm.kv_hints", json.dumps(_envelope({"block_hashes": [2**64]}))),
+    # More digits than the interpreter converts to an int.
+    pytest.param(
+        "trtllm.kv_hints",
+        json.dumps(_envelope({"x": 1})).replace("1}", "9" * 5000 + "}"),
+        id="trtllm.kv_hints-long-integer",
+    ),
+    pytest.param(
+        "trtllm.kv_hints",
+        json.dumps(_envelope({"x": "y" * (64 * 1024)})),
+        id="trtllm.kv_hints-oversized",
+    ),
+    pytest.param(
+        "trtllm.kv_hints",
+        " " * (4 * 64 * 1024) + json.dumps(_envelope({})),
+        id="trtllm.kv_hints-long-text",
+    ),
+    pytest.param(
+        "trtllm.kv_hints",
+        json.dumps(_envelope({"x": [[]]})).replace("[[]]", "[" * 100000 + "]" * 100000),
+        id="trtllm.kv_hints-deep",
+    ),
     ("trtllm.kv_hints", {"protocol_version": "9.9", "message_id": "m", "actions": []}),
     ("trtllm.kv_hints", {"protocol_version": "0.1", "actions": []}),
     ("trtllm.scheduling", True),

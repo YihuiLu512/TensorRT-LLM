@@ -17,6 +17,7 @@ import ast
 import asyncio
 import dataclasses
 import inspect
+import json
 import re
 from collections.abc import Callable
 from pathlib import Path
@@ -258,7 +259,9 @@ OPTION_PROBES: dict[str, Probe] = {
     "kv_hints": Probe(
         options={"kv_hints": {"protocol_version": "1"}},
         supported=_cap(conv.CAP_REQ_KV_HINTS),
-        landed=_first(lambda r: r.extra[conv.REQ_KV_HINTS] == {"protocol_version": "1"}),
+        landed=_first(
+            lambda r: json.loads(r.extra[conv.REQ_KV_HINTS]) == {"protocol_version": "1"}
+        ),
     ),
     "conversation_params": Probe(
         options={"conversation_params": type("C", (), {"conversation_id": "c"})()},

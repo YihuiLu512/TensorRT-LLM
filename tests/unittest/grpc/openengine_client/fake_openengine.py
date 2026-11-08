@@ -663,6 +663,18 @@ def _validate_request_key(
         if not _is_int(value) or value.number_value <= num_sequences:
             raise _invalid(f"extra.{key} must be an integer greater than num_sequences")
         return
+    if key == REQ_KV_HINTS:
+        # The envelope's JSON text, or the envelope as an object.
+        if kind == "string_value":
+            try:
+                envelope = json.loads(value.string_value)
+            except (ValueError, RecursionError):
+                envelope = None
+            if isinstance(envelope, dict):
+                return
+        elif kind == "struct_value":
+            return
+        raise _invalid(f"extra.{key} must be a JSON object as text, or an object")
     if kind != "struct_value":
         raise _invalid(f"extra.{key} must be an object")
     entries = value.struct_value.fields
@@ -714,7 +726,6 @@ def _validate_request_key(
                 for pair in pairs
             ):
                 raise _invalid(f"extra.{key}.agent_hierarchy must be a list of [string, int]")
-    # REQ_KV_HINTS is passed through as an object.
 
 
 def _admit_stopping(

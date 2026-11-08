@@ -94,7 +94,7 @@ class _FakeHandle:
         self.aborted = True
 
 
-def _inference(active: dict | None = None) -> OpenEngineInferenceServicer:
+def _inference(active: dict | None = None, llm=None) -> OpenEngineInferenceServicer:
     """A real inference servicer with a seeded in-flight table.
 
     Control is deliberately given the production servicer rather than a stand-in,
@@ -102,7 +102,7 @@ def _inference(active: dict | None = None) -> OpenEngineInferenceServicer:
     the code actually under test -- a duplicate would pass by construction and
     would not catch a regression in the real methods.
     """
-    servicer = OpenEngineInferenceServicer(_llm(), MODEL)
+    servicer = OpenEngineInferenceServicer(llm if llm is not None else _llm(), MODEL)
     servicer._active_requests.update(active or {})
     return servicer
 
@@ -148,10 +148,16 @@ def _llm(**overrides):
 
 
 def _servicer(inference=None, kv_transfer_backend="NIXL", **overrides):
+    """Control and, unless one is given, the inference servicer on one engine.
+
+    Control reads the request capabilities from the inference servicer, so the
+    overrides must reach both, as in production where they share the engine.
+    """
+    llm = _llm(**overrides)
     return OpenEngineControlServicer(
-        _llm(**overrides),
+        llm,
         MODEL,
-        inference if inference is not None else _inference(),
+        inference if inference is not None else _inference(llm=llm),
         kv_transfer_backend=kv_transfer_backend,
     )
 
@@ -428,13 +434,20 @@ async def test_unsupported_rpcs_report_unimplemented(rpc, request_message):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("enable_lora", [False, True])
-async def test_model_info_never_advertises_lora_that_generate_rejects(enable_lora):
+@pytest.mark.parametrize(
+    ("overrides", "supported"),
+    [
+        ({"enable_lora": False}, False),
+        ({"enable_lora": True}, False),
+        ({"lora_config": SimpleNamespace(max_loras=2, lora_ckpt_source="hf")}, True),
+    ],
+)
+async def test_model_info_never_advertises_lora_that_generate_rejects(overrides, supported):
     """LoRA follows `lora_config`; `enable_lora` alone gives Generate no adapter registry."""
-    info = await _servicer(enable_lora=enable_lora).GetModelInfo(
+    info = await _servicer(**overrides).GetModelInfo(
         model_pb2.GetModelInfoRequest(), FakeServicerContext()
     )
-    assert info.supports_lora is False
+    assert info.supports_lora is supported
 
 
 @pytest.mark.asyncio
@@ -1048,7 +1061,7 @@ async def test_server_info_reports_the_conventions_version():
     info = await _servicer().GetServerInfo(server_pb2.GetServerInfoRequest(), FakeServicerContext())
 
     version = info.extra["trtllm.conventions_version"]
-    assert isinstance(version, float) and version == 2
+    assert isinstance(version, float) and version == 3
 
 
 @pytest.mark.asyncio

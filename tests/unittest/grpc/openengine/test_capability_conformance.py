@@ -33,6 +33,7 @@ from tensorrt_llm import LLM  # noqa: E402
 from tensorrt_llm.grpc.openengine.bindings import (  # noqa: E402
     generation_pb2,
     lifecycle_pb2,
+    lora_pb2,
     model_pb2,
 )
 from tensorrt_llm.grpc.openengine.capabilities import (  # noqa: E402
@@ -113,7 +114,12 @@ def _request(**kw: Any) -> generation_pb2.GenerateRequest:
     return generation_pb2.GenerateRequest(**base)
 
 
-def _accepted(llm, request, context: FakeServicerContext | None = None) -> bool:
+def _accepted(
+    llm,
+    request,
+    context: FakeServicerContext | None = None,
+    servicer: OpenEngineInferenceServicer | None = None,
+) -> bool:
     """Drive the real Generate against the real engine.
 
     Returns True when the stream completed, False when the servicer aborted it
@@ -122,7 +128,7 @@ def _accepted(llm, request, context: FakeServicerContext | None = None) -> bool:
     tolerated it.
     """
     context = context or FakeServicerContext()
-    servicer = OpenEngineInferenceServicer(llm, MODEL_NAME)
+    servicer = servicer or OpenEngineInferenceServicer(llm, MODEL_NAME)
 
     async def drive() -> bool:
         saw_error = False
@@ -155,9 +161,28 @@ def test_priority_capability_matches_generate(llm, model_info):
     )
 
 
-def test_lora_capability_matches_generate(llm, model_info):
+def test_lora_capability_matches_generate(llm, model_info, tmp_path):
+    """Generate takes a `lora_name` that LoadLora registered, so register one first.
+
+    An unregistered name is FAILED_PRECONDITION even on an engine that supports
+    LoRA, so probing without LoadLora would report a mismatch there.
+    """
     advertised = model_info.supports_lora
-    accepted = _accepted(llm, _request(lora_name="adapter-a"))
+    inference = OpenEngineInferenceServicer(llm, MODEL_NAME)
+    if advertised:
+        from llmapi.lora_test_utils import create_qwen3_lora_adapter
+
+        adapter_dir = create_qwen3_lora_adapter(tmp_path / "adapter-a")
+        control = OpenEngineControlServicer(llm, MODEL_NAME, inference)
+        load = lora_pb2.LoadLoraRequest(
+            adapter=lora_pb2.LoraAdapter(
+                lora_id=1, lora_name="adapter-a", source_path=str(adapter_dir)
+            )
+        )
+        # A failed load aborts the fake context, which raises.
+        loaded = asyncio.run(control.LoadLora(load, FakeServicerContext()))
+        assert loaded.adapter.lora_name == "adapter-a"
+    accepted = _accepted(llm, _request(lora_name="adapter-a"), servicer=inference)
 
     assert advertised == accepted, (
         f"supports_lora={advertised} but the engine "

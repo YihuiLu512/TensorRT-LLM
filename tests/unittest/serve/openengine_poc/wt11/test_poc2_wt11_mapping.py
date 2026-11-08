@@ -521,7 +521,9 @@ def test_kv_hints_conversation_and_scheduling():
         "kv_hints": contracts.GenerateOptions(kv_hints=hints),
         "scheduling_params": contracts.GenerateOptions(scheduling_params=scheduling),
     }
-    assert _one(options=each["kv_hints"]).extra[conv.REQ_KV_HINTS] == hints.model_dump(mode="json")
+    assert json.loads(_one(options=each["kv_hints"]).extra[conv.REQ_KV_HINTS]) == hints.model_dump(
+        mode="json"
+    )
     assert _one(options=conversation).extra[conv.REQ_CONVERSATION_ID] == "c1"
     # A routing and cache-retention hint (OpenAIServer also takes it from gateway
     # headers) that does not change the output: not sent to an engine without it.
@@ -538,14 +540,8 @@ def test_kv_hints_conversation_and_scheduling():
         _one(caps=_caps("glm"), options=each["scheduling_params"])
 
 
-@pytest.mark.parametrize("value", [2**53 + 1, -(2**53) - 1, 2**64 - 1])
-def test_kv_hints_integers_a_struct_would_round_are_rejected(value):
-    exact = KvHintsEnvelope(
-        protocol_version="1", message_id="m", actions=[], block_hashes=[2**53, -(2**53)]
-    )
-    assert _one(options=contracts.GenerateOptions(kv_hints=exact)).extra[conv.REQ_KV_HINTS][
-        "block_hashes"
-    ] == [2**53, -(2**53)]
+@pytest.mark.parametrize("value", [2**53, 2**53 + 1, -(2**53) - 1, 2**64 - 1])
+def test_kv_hints_go_as_json_text_that_keeps_integers_exact(value):
     hints = KvHintsEnvelope(
         protocol_version="1",
         message_id="m",
@@ -557,12 +553,31 @@ def test_kv_hints_integers_a_struct_would_round_are_rejected(value):
                 "payload": {"block_hashes": [1, value]},
             }
         ],
+        ratio=2.0,
     )
-    with pytest.raises(ValueError, match=r"kv_hints.*2\*\*53"):
-        _one(options=contracts.GenerateOptions(kv_hints=hints))
-    # An engine without kv_hints is told so, not about the integer.
+    sent = _one(options=contracts.GenerateOptions(kv_hints=hints)).extra[conv.REQ_KV_HINTS]
+    assert isinstance(sent, str) and ", " not in sent
+    received = json.loads(sent)
+    assert received["actions"][0]["payload"]["block_hashes"] == [1, value]
+    assert type(received["ratio"]) is float
+    # An engine without kv_hints is told so.
     with pytest.raises(ValueError, match=r"kv_hints=<dict> is not supported [^(]*'eng'$"):
         _one(caps=_caps("glm"), options=contracts.GenerateOptions(kv_hints=hints))
+
+
+def _nested(depth):
+    value = {}
+    for _ in range(depth):
+        value = {"a": value}
+    return value
+
+
+@pytest.mark.parametrize(
+    "hints", [{"ratio": math.nan}, {"ids": {1, 2}}, _nested(100_000)], ids=["nan", "set", "deep"]
+)
+def test_kv_hints_that_are_not_json_are_rejected(hints):
+    with pytest.raises(ValueError, match="kv_hints cannot be sent as JSON text"):
+        _one(options=contracts.GenerateOptions(kv_hints=hints))
 
 
 def test_scheduling_and_best_of_integers_a_struct_would_round_are_rejected():

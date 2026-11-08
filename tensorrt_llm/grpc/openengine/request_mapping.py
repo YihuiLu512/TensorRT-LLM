@@ -5,6 +5,7 @@
 
 import asyncio
 import importlib
+import json
 import math
 import threading
 from collections import Counter
@@ -58,6 +59,9 @@ from .errors import MediaUnavailableError, UnsupportedFeatureError
 if TYPE_CHECKING:
     from tensorrt_llm.kv_hints.protocol import KvHintsEnvelope
 
+# trtllm.kv_hints JSON text is parsed only up to this multiple of the admitted
+# envelope size limit.
+_KV_HINTS_TEXT_BYTES_PER_ENVELOPE_BYTE = 4
 # Cap on the number of stop conditions. Each one costs a KMP automaton per
 # output index and a scan of every generated token, so an unbounded list lets a
 # single request tax the event loop for the whole stream.
@@ -617,7 +621,11 @@ def _embedding_bias(value: struct_pb2.Value, vocab_size: int) -> Any:
 
 
 def _plain(value: struct_pb2.Value) -> Any:
-    """A ``Struct`` value as JSON data, with integral numbers as ints (EX-GEN-3)."""
+    """A ``Struct`` value as JSON data, with integral numbers as ints (EX-GEN-3).
+
+    A finite double of magnitude 2**53 or more may be a rounded integer, so it
+    is rejected rather than passed on with a value the client did not send.
+    """
     kind = value.WhichOneof("kind")
     if kind == "struct_value":
         return {key: _plain(item) for key, item in value.struct_value.fields.items()}
@@ -625,7 +633,12 @@ def _plain(value: struct_pb2.Value) -> Any:
         return [_plain(item) for item in value.list_value.values]
     if kind == "number_value":
         number = value.number_value
-        return int(number) if number.is_integer() and abs(number) <= 2**53 else number
+        if math.isfinite(number) and abs(number) >= 2**53:
+            raise ValueError(
+                f"{_KV_HINTS_EXTRA_KEY} as an object holds a number of magnitude 2**53 or "
+                "more, which a double cannot carry exactly; send the envelope's JSON text"
+            )
+        return int(number) if number.is_integer() else number
     if kind == "string_value":
         return value.string_value
     if kind == "bool_value":
@@ -633,17 +646,60 @@ def _plain(value: struct_pb2.Value) -> Any:
     return None
 
 
+class _JsonConstantError(ValueError):
+    pass
+
+
+def _reject_json_constant(name: str) -> Any:
+    raise _JsonConstantError(f"{_KV_HINTS_EXTRA_KEY} must not contain {name}")
+
+
+def _kv_hints_from_json(text: str) -> Any:
+    from tensorrt_llm.kv_hints.protocol import MAX_KV_HINTS_BYTES
+
+    # Bounds the parse only; admission measures the compact encoding against
+    # MAX_KV_HINTS_BYTES, so insignificant whitespace in the text is allowed.
+    limit = _KV_HINTS_TEXT_BYTES_PER_ENVELOPE_BYTE * MAX_KV_HINTS_BYTES
+    if len(text) > limit or len(text.encode("utf-8")) > limit:
+        raise ValueError(f"{_KV_HINTS_EXTRA_KEY} is longer than {limit} bytes")
+    try:
+        hints = json.loads(text, parse_constant=_reject_json_constant)
+    except RecursionError:
+        raise ValueError(f"{_KV_HINTS_EXTRA_KEY} is nested too deeply") from None
+    except _JsonConstantError:
+        raise
+    except json.JSONDecodeError as error:
+        raise ValueError(f"{_KV_HINTS_EXTRA_KEY} is not valid JSON: {error}") from None
+    except ValueError:
+        # For example an integer with more digits than the interpreter converts.
+        raise ValueError(f"{_KV_HINTS_EXTRA_KEY} cannot be parsed") from None
+    if not isinstance(hints, dict):
+        raise ValueError(f"{_KV_HINTS_EXTRA_KEY} must be the JSON text of an object")
+    return hints
+
+
 def _kv_hints(value: struct_pb2.Value) -> "KvHintsEnvelope":
     """Admit ``trtllm.kv_hints`` the way ``generate_async`` admits hints.
+
+    The value is the envelope's JSON text, parsed like an HTTP request body, so
+    every number keeps its JSON type and value (EX-REQ-5). An object is still
+    accepted, but a ``Struct`` holds every number as a double: integral values
+    become ints, so ``2.0`` arrives as ``2``, and a number of magnitude 2**53
+    or more is rejected.
 
     Hints that admission would drop are rejected instead, so a client never
     believes a hint took effect when it did not.
     """
     from tensorrt_llm.kv_hints.protocol import admit_kv_hints
 
-    if value.WhichOneof("kind") != "struct_value":
-        raise ValueError(f"{_KV_HINTS_EXTRA_KEY} must be an object")
-    admitted = admit_kv_hints(_plain(value))
+    kind = value.WhichOneof("kind")
+    if kind == "string_value":
+        hints = _kv_hints_from_json(value.string_value)
+    elif kind == "struct_value":
+        hints = _plain(value)
+    else:
+        raise ValueError(f"{_KV_HINTS_EXTRA_KEY} must be the envelope's JSON text or an object")
+    admitted = admit_kv_hints(hints)
     if admitted is None:
         raise ValueError(
             f"{_KV_HINTS_EXTRA_KEY} was not admitted: unsupported protocol_version, "

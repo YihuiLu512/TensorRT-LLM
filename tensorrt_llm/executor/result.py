@@ -151,6 +151,11 @@ class CompletionOutput:
     _last_text_len: int = field(default=0, init=False, repr=False)
     _last_token_ids_len: int = field(default=0, init=False, repr=False)
     _last_logprobs_len: int = field(default=0, init=False, repr=False)
+    # Streaming detokenization: the position in token_ids up to which the
+    # incremental decoder has been fed, and whether a response updated this
+    # output since it was last detokenized.
+    _detok_ids_len: int = field(default=0, init=False, repr=False)
+    _detok_pending: bool = field(default=False, init=False, repr=False)
     _incremental_states: Optional[dict] = field(default=None,
                                                 init=False,
                                                 repr=False)
@@ -382,6 +387,7 @@ class GenerationResultBase:
         output.disaggregated_params = self.disaggregated_params
         output._last_token_ids_len = len(output.token_ids)
         output._last_logprobs_len = len(output.logprobs)
+        output._detok_pending = True
         output._spec_dec_counters = _SpecDecCounters()
         decoder_output_prefix = ()
         if (self.sampling_params.exclude_input_from_output
@@ -1051,46 +1057,78 @@ class DetokenizedGenerationResultBase(GenerationResultBase):
         # ``detokenize=False``.
         if (self.sampling_params.detokenize or self._post_processor_hook
                 is not None) and self.tokenizer is not None:
+            incremental = hasattr(
+                self.tokenizer, 'decode_incrementally'
+            ) and self._streaming and not self.sampling_params.use_beam_search
+            # Outputs this pass did not flush, other than stopped ones.
+            held = []
+            # When streaming incrementally, a stop string found in this pass ends
+            # the request, yet the outputs after it are still checked.
+            done_before_pass = self._done
             for beam_output in self.outputs:
                 beam_output._last_text_len = len(beam_output.text)
-                if hasattr(
-                        self.tokenizer, 'decode_incrementally'
-                ) and self._streaming and not self.sampling_params.use_beam_search:
-                    beam_output.text, beam_output._incremental_states = self.tokenizer.decode_incrementally(
-                        beam_output.token_ids_diff,
-                        prev_text=beam_output.text,
-                        states=beam_output._incremental_states,
-                        flush=self._done,
-                        stream_interval=self.sampling_params._stream_interval,
-                        **kwargs)
+                updated = beam_output._detok_pending
+                beam_output._detok_pending = False
+                if incremental:
+                    # An output is flushed in the first pass that sees it
+                    # finished, so no text follows its finish.
+                    flush = self._done or (updated and beam_output.finish_reason
+                                           is not None)
+                    new_ids = beam_output.token_ids[beam_output._detok_ids_len:]
+                    if new_ids or flush:
+                        beam_output._detok_ids_len = len(beam_output.token_ids)
+                        beam_output.text, beam_output._incremental_states = self.tokenizer.decode_incrementally(
+                            new_ids,
+                            prev_text=beam_output.text,
+                            states=beam_output._incremental_states,
+                            flush=flush,
+                            stream_interval=self.sampling_params.
+                            _stream_interval,
+                            **kwargs)
                 else:
                     beam_output.text = self.tokenizer.decode(
                         beam_output.token_ids, **kwargs)
 
-                is_generating = not self._done
+                is_generating = not (done_before_pass
+                                     if incremental else self._done)
                 is_finished_with_stop_or_length = (
                     beam_output.finish_reason == 'stop'
                     or beam_output.finish_reason == 'length')
 
                 if is_generating or is_finished_with_stop_or_length:
-                    for stop_reason, _ in self.sampling_params._get_stop_reasons_and_words(
-                    ):
-                        if isinstance(stop_reason,
-                                      str) and stop_reason in beam_output.text:
-                            stop_pos = beam_output.text.find(stop_reason)
-                            if not self.sampling_params.include_stop_str_in_output:
-                                beam_output.text = beam_output.text[:stop_pos]
-                            else:
-                                beam_output.text = beam_output.text[:stop_pos +
-                                                                    len(stop_reason
-                                                                        )]
+                    self._truncate_at_stop_string(beam_output)
+                if incremental and not flush and beam_output.finish_reason != 'stop':
+                    held.append(beam_output)
 
-                            beam_output.finish_reason = 'stop'
-                            beam_output.stop_reason = stop_reason
-                            self._done = True
-                            break
+            if self._done:
+                # A stop string ended the request after these were decoded.
+                for beam_output in held:
+                    beam_output.text, beam_output._incremental_states = self.tokenizer.decode_incrementally(
+                        [],
+                        prev_text=beam_output.text,
+                        states=beam_output._incremental_states,
+                        flush=True,
+                        stream_interval=self.sampling_params._stream_interval,
+                        **kwargs)
+                    self._truncate_at_stop_string(beam_output)
 
             self._apply_post_processor_hook()
+
+    def _truncate_at_stop_string(self, output: CompletionOutput) -> None:
+        """Truncate ``output.text`` at a stop string it holds and end the request."""
+        for stop_reason, _ in self.sampling_params._get_stop_reasons_and_words(
+        ):
+            if isinstance(stop_reason, str) and stop_reason in output.text:
+                stop_pos = output.text.find(stop_reason)
+                if not self.sampling_params.include_stop_str_in_output:
+                    output.text = output.text[:stop_pos]
+                else:
+                    output.text = output.text[:stop_pos + len(stop_reason)]
+
+                output.finish_reason = 'stop'
+                output.stop_reason = stop_reason
+                self._done = True
+                break
 
     def _apply_post_processor_hook(self):
         """Run the user post-processing hook at the detok chokepoint.

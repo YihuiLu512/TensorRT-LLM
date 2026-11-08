@@ -131,8 +131,8 @@ def _not_supported(name: str, value: Any, engine_name: str, why: str = "") -> Va
 
 
 def _check_struct_ints(name: str, value: Any, engine_name: str) -> None:
-    # GenerateRequest.extra is a Struct: kv_hints, scheduling_params and the thinking budget
-    # carry request integers into it.
+    # GenerateRequest.extra is a Struct: scheduling_params and the thinking budget carry
+    # request integers into it.
     """Reject integers a ``Struct`` would round, rather than send a different value."""
     if isinstance(value, Mapping):
         for item in value.values():
@@ -489,7 +489,15 @@ def _extra(
         hints = options.kv_hints
         if hasattr(hints, "model_dump"):
             hints = hints.model_dump(mode="json")
-        put(REQ_KV_HINTS, CAP_REQ_KV_HINTS, "kv_hints", hints)
+        if not capabilities.supports(CAP_REQ_KV_HINTS):
+            raise _not_supported("kv_hints", hints, engine_name)
+        # The envelope's compact JSON text, which keeps integers of any size exact.
+        try:
+            extra[REQ_KV_HINTS] = json.dumps(
+                hints, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+            )
+        except (TypeError, ValueError, RecursionError) as error:
+            raise ValueError(f"kv_hints cannot be sent as JSON text: {error}") from None
     if options.conversation_params is not None and capabilities.supports(CAP_REQ_CONVERSATION_ID):
         # A routing and cache-retention hint, also taken from gateway headers,
         # that does not change the output: not sent to an engine without it.

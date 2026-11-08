@@ -20,7 +20,7 @@ pytestmark = [pytest.mark.cpu_only, pytest.mark.threadleak(enabled=False)]
 
 
 def test_version_and_keys():
-    assert conv.CONVENTIONS_VERSION == 2
+    assert conv.CONVENTIONS_VERSION == 3
     assert len(set(conv.BOOL_CAPABILITY_KEYS)) == len(conv.BOOL_CAPABILITY_KEYS) == 11
     assert set(conv.REQUEST_KEY_CAPABILITY) == set(conv.REQUEST_KEYS) - {conv.REQ_DETOKENIZE}
     assert set(conv.REQUEST_KEY_CAPABILITY.values()) == set(conv.REQUEST_CAPABILITY_KEYS)

@@ -154,8 +154,39 @@ OWNERSHIP: dict[str, list[Rule]] = {
         Rule(
             f"{OE_SERVER_TESTS}/test_control.py",
             "exception",
-            "only the expected request-key values, and the comments and docstrings that"
-            " state what Generate accepts",
+            "only the expected request-key values, the comments and docstrings that"
+            " state what Generate accepts, and (WT-05-fix1) the _inference and _servicer"
+            " helpers giving Control and the inference servicer one engine, with the cases"
+            " that change because of it, and the expected CONVENTIONS_VERSION",
+        ),
+        Rule(
+            f"{OE_SERVER_TESTS}/test_capability_conformance.py",
+            "exception",
+            "only (WT-05-fix1) the LoRA probe registering its adapter with LoadLora first,"
+            " and the servicer argument it passes to _accepted",
+        ),
+        Rule(
+            "tensorrt_llm/executor/result.py",
+            "exception",
+            "only (WT-05-fix1) streaming detokenization of several candidates: an id"
+            " cursor per output, a flush at each output's finish and when a stop string"
+            " ends the request, so no text is decoded twice or follows an output's finish,"
+            " and a stop-string check of the outputs after the one that ends the request",
+        ),
+        Rule(
+            "tests/integration/test_lists/test-db/l0_cpu.yml",
+            "exception",
+            "only (WT-05-fix1) listing test_request_mapping_features.py and test_lora_registry.py",
+        ),
+        Rule(
+            "tensorrt_llm/grpc/openengine_conventions.py",
+            "exception",
+            "only (WT-05-fix1) CONVENTIONS_VERSION",
+        ),
+        Rule(
+            "tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_conventions.py",
+            "exception",
+            "only (WT-05-fix1) the expected CONVENTIONS_VERSION",
         ),
         Rule(
             f"{OE_SERVER}/capabilities.py",
@@ -166,6 +197,31 @@ OWNERSHIP: dict[str, list[Rule]] = {
             f"{OE_SERVER}/README.md",
             "exception",
             "only the sentences on priority metadata, lora_name and the LoRA RPCs",
+        ),
+        Rule(
+            f"{POC}/mapping.py",
+            "exception",
+            "only (WT-05-fix1) sending kv_hints to the engine as the envelope's JSON text",
+        ),
+        Rule(
+            "tests/unittest/serve/openengine_poc/wt11/test_poc2_wt11_mapping.py",
+            "exception",
+            "only (WT-05-fix1) the kv_hints cases, which expect JSON text",
+        ),
+        Rule(
+            "tests/unittest/serve/openengine_poc/wt11/test_poc2_wt11_no_silent_drop.py",
+            "exception",
+            "only (WT-05-fix1) the kv_hints probe reading JSON text",
+        ),
+        Rule(
+            f"{CLIENT_TESTS}/fake_openengine.py",
+            "exception",
+            "only (WT-05-fix1) the request check taking kv_hints as JSON text or an object",
+        ),
+        Rule(
+            "tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_scripts.py",
+            "exception",
+            "only (WT-05-fix1) the owners it expects of fake_openengine.py",
         ),
         Rule(
             "docs/source/features/kv-hints.md",
