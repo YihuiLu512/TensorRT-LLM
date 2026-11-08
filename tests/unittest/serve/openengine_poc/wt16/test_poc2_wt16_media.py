@@ -158,6 +158,14 @@ def test_media_the_engine_does_not_declare_are_refused(caps):
         ({"multi_modal_data": {"text": ["x"]}}, "unsupported multimodal modality"),
         ({"multi_modal_data": {"image": "http://h/1.png"}}, "must list its items"),
         ({"multi_modal_data": {"image": [""]}}, "empty image reference"),
+        (
+            {"multi_modal_data": {"image": ["http://h/1.png"]}, "mm_item_order": ["image"]},
+            "mm_item_order must list",
+        ),
+        (
+            {"multi_modal_data": {"image": ["http://h/1.png"]}, "multi_modal_uuids": ["u"]},
+            "multi_modal_uuids must map",
+        ),
     ],
 )
 def test_what_has_no_carrier_is_refused(inputs, match):

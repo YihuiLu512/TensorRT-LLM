@@ -189,6 +189,8 @@ def _ordered(
         return [
             (modality, index) for modality, items in data.items() for index in range(len(items))
         ]
+    if not all(isinstance(entry, Mapping) for entry in item_order):
+        raise ValueError("mm_item_order must list {'modality', 'index'} entries")
     order = [(entry.get("modality"), entry.get("index")) for entry in item_order]
     expected = sorted((m, i) for m, items in data.items() for i in range(len(items)))
     if sorted(order, key=repr) != sorted(expected, key=repr):
@@ -239,10 +241,14 @@ def map_media(
                 f"{engine_name!r} (supported modalities: {supported})"
             )
     uuids = inputs.get("multi_modal_uuids") or {}
+    if not isinstance(uuids, Mapping):
+        raise ValueError("multi_modal_uuids must map each modality to its items' uuids")
     budget = MAX_INLINE_MEDIA_BYTES
     specs = []
     for modality, index in _ordered(data, inputs.get("mm_item_order")):
-        modality_uuids = uuids.get(modality) or ()
+        modality_uuids = uuids.get(modality)
+        if not isinstance(modality_uuids, Sequence) or isinstance(modality_uuids, str):
+            modality_uuids = ()
         uuid = modality_uuids[index] if index < len(modality_uuids) else None
         spec = _media_spec(
             modality,
