@@ -38,6 +38,7 @@ from tensorrt_llm.grpc.openengine_client import (
     OpenEngineRpcError,
 )
 from tensorrt_llm.grpc.openengine_conventions import (
+    CAP_STOP_TEXT,
     CONVENTIONS_VERSION,
     CONVENTIONS_VERSION_KEY,
     META_PRIORITY,
@@ -202,7 +203,10 @@ def _serve(engine: FakeEngine, tmp_path, body, **facade_kwargs: Any) -> Any:
 
 
 def _profile() -> FakeProfile:
-    """``trtllm-like`` serving this file's model, declaring none of the gated sampling fields."""
+    """``trtllm-like`` serving this file's model, declaring none of the gated sampling fields.
+
+    Nor stop strings: the frontend matches them, as these tests expect.
+    """
     return PROFILES["trtllm-like"].replace(
         model=MODEL,
         max_context_length=MAX_CONTEXT,
@@ -210,8 +214,11 @@ def _profile() -> FakeProfile:
         eos_token_ids=(EOS,),
         bos_token_id=None,
         capabilities={
-            f"trtllm.sampling.{name}": False
-            for name in ("min_p", "frequency_penalty", "presence_penalty", "repetition_penalty")
+            **{
+                f"trtllm.sampling.{name}": False
+                for name in ("min_p", "frequency_penalty", "presence_penalty", "repetition_penalty")
+            },
+            CAP_STOP_TEXT: False,
         },
     )
 

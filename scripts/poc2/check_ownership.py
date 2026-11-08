@@ -269,10 +269,18 @@ OWNERSHIP: dict[str, list[Rule]] = {
             ("tensorrt_llm/serve/responses_utils.py", "the thinking-budget processor switch"),
             (
                 "tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_contracts.py",
-                "the version and the slot-default test",
+                "the version",
             ),
             ("scripts/poc2/check_ownership.py", "these WT-11 exceptions"),
         )
+    ]
+    + [
+        Rule(
+            "tests/unittest/grpc/openengine_client/test_openengine_poc_serve.py",
+            "exception",
+            "only its test profile declaring no stop strings: its tests check the frontend's"
+            " matching, and the request mapping sends stop strings to an engine that declares them",
+        ),
     ],
     "WT-12": _own(
         f"{POC}/response.py",

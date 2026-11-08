@@ -234,6 +234,10 @@ def _stop_frontend(facade: OpenEngineLLM) -> None:
         signal.raise_signal(signal.SIGINT)
 
 
+# A request-data keyword the caller did not pass; None is a value OpenAIServer can pass.
+_NOT_GIVEN: Any = object()
+
+
 class OpenEngineLLM:
     """Stands in for ``LLM`` in ``OpenAIServer`` and runs requests on an OpenEngine engine.
 
@@ -831,8 +835,8 @@ class OpenEngineLLM:
         priority: float | None = None,
         trace_headers: Any = None,
         logit_bias: Any = None,
-        reasoning_parser: str | None = None,
-        tokenizer: Any = None,
+        reasoning_parser: str | None = _NOT_GIVEN,
+        tokenizer: Any = _NOT_GIVEN,
         _postproc_params: Any = None,
         **_ignored: Any,
     ) -> OpenEngineRequestOutput:
@@ -847,6 +851,8 @@ class OpenEngineLLM:
         ``logit_bias``, ``reasoning_parser`` and ``tokenizer`` are the request
         data ``OpenAIServer`` passes to a generator that takes it
         (:func:`.contracts.takes_request_data`); they go to ``map_request``.
+        A caller that does not pass the reasoning parser or the tokenizer gets
+        the facade's own, as ``LLM`` uses its own.
 
         Raises:
             ValueError: The request asks for something the engine cannot do; reported as 400.
@@ -860,6 +866,10 @@ class OpenEngineLLM:
         engine_name = self.client.server_info().engine_name
         media = self._media(inputs)
         prompt_token_ids = self._prompt_token_ids(inputs, sampling_params, media)
+        if reasoning_parser is _NOT_GIVEN:
+            reasoning_parser = getattr(self.args, "reasoning_parser", None)
+        if tokenizer is _NOT_GIVEN:
+            tokenizer = self.tokenizer
         options = contracts.GenerateOptions(
             streaming=streaming,
             lora_request=lora_request,

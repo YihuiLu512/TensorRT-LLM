@@ -7,11 +7,11 @@ Every field of ``SamplingParams`` and ``GenerateOptions`` is classified in
 :mod:`.field_classes`. A mapped field reaches the engine when the engine
 declares what it needs; otherwise it is rejected, or handled as the fallback
 the table names (stop strings are left to the serving side; a conversation id
-is not sent). A field the serving side
-handles, and an internal field (state derived from other fields, or an input of
-the mapping itself), is not sent. A field classified as rejected, or missing
-from the tables, is rejected when it is set. A rejection is a
-``ValueError`` raised before anything is sent, which ``OpenAIServer`` returns
+is not sent). A field the serving side handles, and an internal field (state
+derived from other fields, or an input of the mapping itself), is not sent. A
+field classified as rejected, or missing from the tables, is rejected when it
+is set. A rejection is a ``ValueError`` raised before anything is sent, which
+``OpenAIServer`` returns
 as HTTP 400.
 
 ``n`` beyond the sequences one call can return is split into several calls.
@@ -497,8 +497,11 @@ def _extra(
         extra[REQ_CONVERSATION_ID] = options.conversation_params.conversation_id
     scheduling = _scheduling(options.scheduling_params, engine_name)
     if scheduling is not None:
-        name = "scheduling_params." + "/".join(scheduling)
-        put(REQ_SCHEDULING, CAP_REQ_SCHEDULING, name, scheduling)
+        if not capabilities.supports(CAP_REQ_SCHEDULING):
+            # Name a field the request set, not the payload built from it.
+            field, value = next(iter(scheduling.items()))
+            raise _not_supported(f"scheduling_params.{field}", value, engine_name)
+        put(REQ_SCHEDULING, CAP_REQ_SCHEDULING, "scheduling_params", scheduling)
     return extra
 
 
@@ -538,9 +541,9 @@ def map_request(
     the request is split into ceil(n / M) calls of M sequences, the last one
     taking the rest, and only the first call asks for prompt logprobs. TRT-LLM
     seeds sequence i of a request for n > 1 sequences with its seed (0 when
-    unset) plus i, so each
-    call of a split request is sent that seed plus the number of sequences
-    before it: the n sequences get the seeds one in-process request gives them.
+    unset) plus i, so each call of a split request is sent that seed plus the
+    number of sequences before it: the n sequences get the seeds one in-process
+    request gives them.
 
     ``priority``, ``trace_headers`` and ``scheduling_params.attention_dp_rank``
     become metadata, which the caller adds (OE-META).

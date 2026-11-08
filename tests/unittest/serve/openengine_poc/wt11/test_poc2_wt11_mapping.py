@@ -230,7 +230,7 @@ def test_integers_outside_the_request_field_ranges_are_rejected(name, value, mes
     params = SamplingParams()
     setattr(params, name, value)
     params = _explicit(params, name)
-    caps = _caps(tokenizer_fingerprint=None, max_context_length=None, max_output_tokens=None)
+    caps = _caps(max_context_length=None, max_output_tokens=None)
     with pytest.raises(ValueError, match=message):
         _map(params, caps)
 
@@ -248,7 +248,7 @@ def test_stop_token_ids_are_not_checked_against_the_vocabulary():
 
 def test_prompt_token_ids_beyond_the_field_range_are_rejected():
     with pytest.raises(ValueError, match=r"prompt token id 4294967296 .*\[0, 2\*\*32\)"):
-        _one(caps=_caps(tokenizer_fingerprint=None), prompt=[1, 1 << 32])
+        _one(prompt=[1, 1 << 32])
 
 
 @pytest.mark.parametrize("n", [0, -1])
@@ -533,8 +533,8 @@ def test_kv_hints_conversation_and_scheduling():
     for name, options in each.items():
         with pytest.raises(ValueError, match=name):
             _one(caps=_caps("glm"), options=options)
-    # The rejection names the fields the request set.
-    with pytest.raises(ValueError, match="scheduling_params.attention_dp_relax/agent_hierarchy="):
+    # The rejection names a field the request set.
+    with pytest.raises(ValueError, match=r"scheduling_params\.attention_dp_relax=False is not"):
         _one(caps=_caps("glm"), options=each["scheduling_params"])
 
 

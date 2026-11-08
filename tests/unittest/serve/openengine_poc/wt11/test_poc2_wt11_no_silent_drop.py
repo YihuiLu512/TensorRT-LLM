@@ -32,6 +32,7 @@ from transformers import PreTrainedTokenizerFast
 
 from tensorrt_llm.grpc import openengine_conventions as conv
 from tensorrt_llm.sampling_params import GuidedDecodingParams, LogprobMode, SamplingParams
+from tensorrt_llm.scheduling_params import SchedulingParams
 from tensorrt_llm.serve.openai_protocol import (
     ChatCompletionRequest,
     CompletionRequest,
@@ -418,6 +419,11 @@ FACADE_PROBES = {
         lambda caps: True,
         lambda call: call.metadata_value(conv.META_TRACEPARENT) == _TRACEPARENT,
     ),
+    "scheduling_params.attention_dp_rank": (
+        {"scheduling_params": SchedulingParams(attention_dp_rank=0)},
+        lambda caps: caps.supports_dp_rank_targeting,
+        lambda call: call.metadata_value(conv.META_TARGET_DP_RANK) == "0",
+    ),
 }
 GRPC_PROFILES = {
     "trtllm-like": {"supports_priority": True},
@@ -436,13 +442,13 @@ def _grpc_profile(name):
     )
 
 
-def _grpc_facade(engine, tmp_path):
+def _grpc_facade(engine, tmp_path, reasoning_parser=None):
     backend = Tokenizer(WordLevel(_GRPC_VOCAB, unk_token="<unk>"))
     backend.add_special_tokens(["</s>"])
     hf = PreTrainedTokenizerFast(tokenizer_object=backend, eos_token="</s>")
     args = SimpleNamespace(
         backend="pytorch",
-        reasoning_parser=None,
+        reasoning_parser=reasoning_parser,
         gather_generation_logits=False,
         guided_decoding_backend=None,
         num_postprocess_workers=0,
@@ -483,12 +489,12 @@ def _without_id(message):
     return message.SerializeToString(deterministic=True)
 
 
-def _over_grpc(profile, tmp_path, check):
+def _over_grpc(profile, tmp_path, check, **facade_kwargs):
     """Run ``check(engine, facade)`` with a started facade on a fake ``profile`` engine."""
 
     async def main():
         async with FakeEngine(_grpc_profile(profile)) as engine:
-            facade = _grpc_facade(engine, tmp_path)
+            facade = _grpc_facade(engine, tmp_path, **facade_kwargs)
             await facade.start()
             try:
                 await asyncio.wait_for(check(engine, facade), WAIT_SECONDS * 2)
@@ -572,3 +578,24 @@ def test_the_facade_names_every_keyword_the_server_passes():
     # Each keyword other than the prompt and the pool's own names a GenerateOptions field.
     options = {f.name for f in dataclasses.fields(contracts.GenerateOptions)}
     assert named - {"self", "inputs", "sampling_params", "_postproc_params"} <= options
+
+
+def test_a_direct_caller_gets_the_facade_reasoning_parser_and_tokenizer(tmp_path):
+    """As ``LLM`` does, a caller that passes no request data gets the facade's own."""
+    sampling = {"thinking_token_budget": 4, "max_tokens": 2}
+
+    async def check(engine, facade):
+        await facade.generate_async(GRPC_PROMPT, _sampling(sampling))
+        options = contracts.GenerateOptions(reasoning_parser="qwen3", tokenizer=facade.tokenizer)
+        (expected,) = mapping.map_request(
+            GRPC_PROMPT,
+            _sampling(sampling),
+            facade.client.model_info(),
+            options,
+            engine_name=facade.client.server_info().engine_name,
+        )
+        assert conv.REQ_THINKING_TOKEN_BUDGET in expected.extra
+        (received,) = engine.requests
+        assert _without_id(received) == _without_id(to_generate_request(expected))
+
+    _over_grpc("trtllm-like", tmp_path, check, reasoning_parser="qwen3")
