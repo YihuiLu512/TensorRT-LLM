@@ -6,12 +6,15 @@ Every case first asks for the greedy output's token ids (``detokenize=False``)
 and derives what ``LLM`` returns from them: a stop string the engine matches
 on its token ids ends the output before its tokens (or after them with
 ``include_stop_str_in_output``), the text is the decoded tokens that are
-kept, and ``completion_tokens`` counts them. The stop strings are taken from
+kept (``LLM``'s streamed text also keeps the text of the stop string's
+tokens before the last one), and ``completion_tokens`` counts the kept
+tokens. The stop strings are taken from
 the output itself, so they span several tokens wherever the model happened
 to put them. The requests with stop strings or stop token ids leave out
 ``ignore_eos``, with which ``LLM`` gives its engine no stop words.
 """
 
+import os
 from dataclasses import dataclass
 
 import openai
@@ -24,6 +27,8 @@ from ..test_llm import get_model_path
 from .openai_server import RemoteOpenAIServer
 
 pytestmark = pytest.mark.threadleak(enabled=False)
+
+CHAIN = os.environ.get("TRTLLM_TEST_OPENENGINE_CHAIN", "none") not in ("", "none")
 
 _PROMPT = "Write a short story about a lighthouse keeper who finds a message in a bottle."
 _MAX_TOKENS = 48
@@ -143,9 +148,11 @@ def _expected(tokenizer, token_ids, stop: _Stop, include: bool):
 def test_stop_string_variants(client, model_name, tokenizer, output_ids, stream, include):
     """A stop string spanning tokens, several stop strings, and a stop token id.
 
-    The output ends where ``LLM``'s does; when streaming, the text held back
-    while a stop string might be starting is never sent. ``completion_tokens``
-    counts the tokens kept, and a repeated request reuses the prompt's cache.
+    The output ends where ``LLM``'s does. When streaming over the chain, the
+    text held back while a stop string might be starting is never sent;
+    ``LLM`` streams the text of a stop string's tokens before the last one and
+    keeps it. ``completion_tokens`` counts the tokens kept, and a repeated
+    request reuses the prompt's cache.
     """
     first, second = _stops(tokenizer, output_ids)[:2]
 
@@ -154,6 +161,8 @@ def test_stop_string_variants(client, model_name, tokenizer, output_ids, stream,
             client, model_name, stream=stream, stop=stops, include_stop_str_in_output=include
         )
         expected_text, kept = _expected(tokenizer, output_ids, first, include)
+        if stream and not include and not CHAIN:
+            expected_text = tokenizer.decode(output_ids[: first.start + first.num_tokens - 1])
         assert (text, finish_reason, stop_reason) == (expected_text, "stop", first.text), stops
         assert usage.completion_tokens == kept, stops
         assert usage.total_tokens == usage.prompt_tokens + kept

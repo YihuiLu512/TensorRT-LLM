@@ -52,6 +52,11 @@ Differences from ``LLM``:
   cancels the engine's calls, so the usage the engine would send at their
   end, and with it ``cached_tokens``, may not arrive (``cached_tokens`` is
   then 0);
+- when streaming a stop string that is not kept, ``LLM`` sends the text of
+  its tokens before the one that completes it, and that text stays in what
+  it streamed once its engine matches the stop string on its token ids; here
+  that text is held back, so the streamed text is ``LLM``'s non-streamed
+  text;
 - ``prompt_logprobs`` lacks ``LLM``'s entry for the first generated token;
 - the text, where the detokenizer's decoding differs from ``decode``; see
   :class:`~tensorrt_llm.serve.detokenize.IncrementalDetokenizer`.
