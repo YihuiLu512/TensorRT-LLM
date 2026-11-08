@@ -16,8 +16,8 @@ is set. A rejection is a ``ValueError`` raised before anything is sent, which
 ``n`` beyond the sequences one call can return is split into several calls.
 
 :func:`build_generate_request` at the end of this module builds one Generate
-request by the PoC-S1 rules instead of the field tables; the serving path does
-not call it.
+request with rules of its own for every field but the sampling values; the
+serving path does not call it.
 """
 
 from __future__ import annotations
@@ -51,6 +51,7 @@ from tensorrt_llm.grpc.openengine_conventions import (
     REQ_LOGIT_BIAS,
     REQ_SCHEDULING,
     REQ_THINKING_TOKEN_BUDGET,
+    ExtraCapabilities,
     ModelCapabilities,
     parse_extra_capabilities,
     struct_to_dict,
@@ -155,7 +156,11 @@ def _check_rejected(sampling_params: SamplingParams, engine_name: str) -> None:
 
 
 def _check_accepted(
-    name: str, value: Any, capabilities: ModelCapabilities, engine_name: str, why: str = ""
+    name: str,
+    value: Any,
+    capabilities: ModelCapabilities | ExtraCapabilities,
+    engine_name: str,
+    why: str = "",
 ) -> None:
     """Reject a sampling value outside the set the engine accepts (CAP-SV-1)."""
     accepted = capabilities.accepted(name)
@@ -188,7 +193,9 @@ def log_sequence_capability(engine_name: str, capabilities: ModelCapabilities) -
 
 
 def _sampling(
-    sampling_params: SamplingParams, capabilities: ModelCapabilities, engine_name: str
+    sampling_params: SamplingParams,
+    capabilities: ModelCapabilities | ExtraCapabilities,
+    engine_name: str,
 ) -> dict[str, float | int]:
     """The sampling values the request set itself, each checked against what the engine accepts.
 
@@ -204,9 +211,9 @@ def _sampling(
                 raise ValueError(f"seed must be in [0, 2**64), got {value}")
         elif isinstance(value, bool) or (isinstance(value, float) and not math.isfinite(value)):
             raise ValueError(f"{name} must be a finite number, got {value!r}")
-        _check_accepted(name, value, capabilities, engine_name)
-        if name == "top_k" and not 0 <= value <= _INT32_MAX:
+        elif name == "top_k" and not 0 <= value <= _INT32_MAX:
             raise ValueError(f"top_k must be in [0, {_INT32_MAX}], got {value}")
+        _check_accepted(name, value, capabilities, engine_name)
         sampling[name] = value
     return sampling
 
@@ -669,8 +676,9 @@ def build_generate_request(
         model_info: The engine's ``ModelInfo``.
         engine_name: The engine's name, used in error messages.
 
-    Sampling values are sent as :func:`map_request` sends them, checked against
-    ``model_info``'s declaration.
+    Sampling values are checked and sent as :func:`map_request` checks and
+    sends them, against ``model_info``'s declaration; the other fields follow
+    rules of their own, not the field tables.
 
     Raises:
         ValueError: A parameter is not supported, or the prompt does not fit.
@@ -719,15 +727,7 @@ def build_generate_request(
     model_extra = struct_to_dict(model_info.extra) if model_info.HasField("extra") else {}
     extra_capabilities = parse_extra_capabilities(model_extra)
     sampling = generation_pb2.SamplingParams()
-    for field, value in explicit_sampling_values(sampling_params).items():
-        if field == "seed" and value < 0:
-            raise ValueError(f"seed must be non-negative, got {value}")
-        accepted = extra_capabilities.accepted(field)
-        if not accepted.accepts(value):
-            raise ValueError(
-                f"{field}={value!r} is not supported when serving through the OpenEngine engine "
-                f"{engine_name!r} (it accepts {accepted.describe()})"
-            )
+    for field, value in _sampling(sampling_params, extra_capabilities, engine_name).items():
         setattr(sampling, field, value)
     if n > 1:
         sampling.num_sequences = n

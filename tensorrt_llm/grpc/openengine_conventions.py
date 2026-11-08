@@ -235,6 +235,13 @@ def _number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
+def _finite_number(value: Any) -> bool:
+    try:
+        return _number(value) and math.isfinite(value)
+    except OverflowError:  # an int too large for a float
+        return False
+
+
 @dataclass(frozen=True)
 class AcceptedValues:
     """The values an engine accepts for one request parameter.
@@ -274,7 +281,7 @@ class AcceptedValues:
         """Whether ``value`` is in the set; NaN and infinities are only in ``any``."""
         if self.accept == ACCEPT_ANY:
             return True
-        if self.accept == ACCEPT_NONE or not math.isfinite(value):
+        if self.accept == ACCEPT_NONE or not _finite_number(value):
             return False
         if self.accept == ACCEPT_VALUES:
             return any(value == accepted for accepted in self.values)
@@ -340,7 +347,7 @@ class AcceptedValues:
         if accept == ACCEPT_RANGE:
             for bound in ("min", "max"):
                 value = described.get(bound)
-                if value is not None and not (_number(value) and math.isfinite(value)):
+                if value is not None and not _finite_number(value):
                     raise malformed(f"has a {bound} that is not a finite number")
                 fields[bound] = value
             for flag in ("min_exclusive", "max_exclusive"):
@@ -365,7 +372,7 @@ class AcceptedValues:
             if (
                 not isinstance(values, list)
                 or not values
-                or not all(_number(value) and math.isfinite(value) for value in values)
+                or not all(_finite_number(value) for value in values)
             ):
                 raise malformed("has no non-empty list of finite numbers in values")
             fields["values"] = tuple(values)
@@ -670,12 +677,16 @@ def model_capabilities_from_proto(
     """Merge an engine's ``ServerInfo`` and ``ModelInfo`` into :class:`ModelCapabilities`.
 
     Raises:
-        CapabilityFormatError: ``trtllm.params`` is malformed.
+        CapabilityFormatError: ``trtllm.params`` is malformed, or ``ModelInfo.extra``
+            cannot be read.
     """
     from tensorrt_llm.grpc.openengine.bindings import model_pb2
 
     server_extra = struct_to_dict(server_info.extra) if server_info.HasField("extra") else {}
-    model_extra = struct_to_dict(model_info.extra) if model_info.HasField("extra") else {}
+    try:
+        model_extra = struct_to_dict(model_info.extra) if model_info.HasField("extra") else {}
+    except ValueError as error:  # json_format cannot represent NaN or an infinity
+        raise CapabilityFormatError(f"ModelInfo.extra cannot be read: {error}") from error
 
     def flag(message: Any, name: str) -> bool:
         return message.HasField(name) and bool(getattr(message, name))

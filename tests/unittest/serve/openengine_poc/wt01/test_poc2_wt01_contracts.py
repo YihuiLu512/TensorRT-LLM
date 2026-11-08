@@ -318,10 +318,34 @@ def test_default_map_request_rejects_like_poc_s1(params, prompt):
     assert str(got.value) == str(expected.value)
 
 
+@pytest.mark.parametrize(
+    "name, value, match",
+    [
+        ("temperature", float("nan"), "temperature must be a finite number"),
+        ("top_p", float("inf"), "top_p must be a finite number"),
+        ("temperature", True, "temperature must be a finite number"),
+        ("seed", 1 << 64, r"seed must be in \[0, 2\*\*64\)"),
+        ("seed", -1, r"seed must be in \[0, 2\*\*64\)"),
+        ("top_k", 1 << 31, r"top_k must be in \[0, 2147483647\]"),
+    ],
+)
+def test_both_mappings_reject_a_value_the_sampling_fields_cannot_carry(name, value, match):
+    server, model = _engine()
+    params = SamplingParams()
+    # Set after construction, which would reject some of these values itself.
+    setattr(params, name, value)
+    poc_s1, default = _both([1], params, server, model)
+    with pytest.raises(ValueError, match=match) as expected:
+        poc_s1()
+    with pytest.raises(ValueError) as got:
+        default()
+    assert str(got.value) == str(expected.value)
+
+
 def test_default_map_request_rejects_gated_fields_the_engine_lacks():
     server, model = _engine("glm5")
     caps = conv.model_capabilities_from_proto(server, model)
-    with pytest.raises(ValueError, match="frequency_penalty=0.5 .*it accepts no value"):
+    with pytest.raises(ValueError, match=r"frequency_penalty=0\.5 .*it accepts no value"):
         contracts.default_map_request(
             [1],
             SamplingParams(frequency_penalty=0.5),
@@ -346,7 +370,7 @@ def test_default_map_request_sends_an_explicit_value_in_the_declared_set(provide
         [1], params, caps, contracts.GenerateOptions(), engine_name="eng"
     )
     assert request.sampling == {"repetition_penalty": 1.0}
-    with pytest.raises(ValueError, match=r"repetition_penalty=1.2 .*it accepts only 1.0"):
+    with pytest.raises(ValueError, match=r"repetition_penalty=1\.2 .*it accepts only 1\.0"):
         contracts.default_map_request(
             [1],
             SamplingParams(repetition_penalty=1.2),

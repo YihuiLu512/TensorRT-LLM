@@ -282,17 +282,18 @@ def uses_one_model_speculation(llm_args: Any) -> bool:
 
 
 # The parameters one-model speculation does not always apply. Under one-model
-# speculation each accepts only its default, the value that leaves sampling unchanged.
+# speculation each accepts only its _SAMPLING_DEFAULTS value, which leaves sampling unchanged.
 _NOT_ALWAYS_APPLIED_UNDER_SPECULATION = (
     "min_p",
     "frequency_penalty",
     "presence_penalty",
     "repetition_penalty",
 )
-# The value used for a sampling field the request does not set: Generate fills
-# in temperature, top_p and top_k (sampling_params_from_request); for the others
-# the executor's own default applies, which leaves sampling unchanged. The seed's
-# is not reported.
+# Generate's value for a sampling field the request does not set: it fills in
+# temperature, top_p and top_k (sampling_params_from_request); for the others the
+# executor's own default applies. Each leaves sampling unchanged. When the LLM
+# applies the model's generation config, the config's values take the place of
+# these for the fields it sets (accepted_sampling_values). The seed's is not reported.
 _SAMPLING_DEFAULTS: dict[str, Any] = {
     "temperature": 1.0,
     "top_p": 1.0,

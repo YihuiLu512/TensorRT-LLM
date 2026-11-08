@@ -127,6 +127,7 @@ def test_accepted_values(described, inside, outside):
         {"accept": "range", "min": "0"},
         {"accept": "range", "min": True},
         {"accept": "range", "max": float("inf")},
+        {"accept": "range", "min": 10**400},
         {"accept": "range", "min": 0, "min_exclusive": 1},
         {"accept": "range", "min": 2, "max": 1},
         {"accept": "range", "min": 1, "max": 1, "max_exclusive": True},
@@ -169,6 +170,14 @@ def test_malformed_params_from_proto_fail():
     model = model_pb2.ModelInfo()
     model.extra.update({conv.PARAMS_KEY: {"min_p": {"accept": "values", "values": []}}})
     with pytest.raises(conv.CapabilityFormatError, match="min_p"):
+        conv.model_capabilities_from_proto(server_pb2.ServerInfo(engine_name="e"), model)
+
+
+@pytest.mark.parametrize("value", [INF, NAN])
+def test_a_non_finite_number_in_the_model_extra_is_a_format_error(value):
+    model = model_pb2.ModelInfo()
+    model.extra.update({conv.PARAMS_KEY: {"top_p": {"accept": "range", "max": value}}})
+    with pytest.raises(conv.CapabilityFormatError, match=r"ModelInfo\.extra cannot be read"):
         conv.model_capabilities_from_proto(server_pb2.ServerInfo(engine_name="e"), model)
 
 

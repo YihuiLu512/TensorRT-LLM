@@ -11,6 +11,7 @@ values that would break sampling, and how the engine decides what it accepts.
 import dataclasses
 import json
 import math
+import re
 from types import SimpleNamespace
 from typing import Any
 
@@ -599,7 +600,9 @@ def test_generate_rejects_a_sampling_value_outside_the_declared_set(name):
     capabilities = _speculative_capabilities()
     request = _request(sampling=generation_pb2.SamplingParams(**{name: EFFECTIVE_VALUES[name]}))
     if name in NO_EFFECT_VALUES:
-        with pytest.raises(UnsupportedFeatureError, match=f"sampling.{name}=.*accepts only"):
+        with pytest.raises(
+            UnsupportedFeatureError, match=re.escape(f"sampling.{name}=") + ".*accepts only"
+        ):
             sampling_params_from_request(request, None, capabilities)
         no_effect = _request(
             sampling=generation_pb2.SamplingParams(**{name: NO_EFFECT_VALUES[name]})
@@ -656,7 +659,7 @@ def test_a_filter_the_speculative_sampler_skips_accepts_only_its_no_effect_value
         accepted = capabilities.sampling[name]
         if name in skipped:
             assert (accepted.accept, accepted.values) == ("values", (value,)), name
-            with pytest.raises(UnsupportedFeatureError, match=f"sampling.{name}="):
+            with pytest.raises(UnsupportedFeatureError, match=re.escape(f"sampling.{name}=")):
                 capabilities.check_sampling_value(name, 5 if name == "top_k" else 0.5)
         else:
             assert accepted.accept == "any", name

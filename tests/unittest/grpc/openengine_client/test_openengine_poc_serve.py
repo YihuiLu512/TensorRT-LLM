@@ -324,7 +324,7 @@ def test_mapping_checks_an_explicit_penalty_against_the_declared_values(value) -
         assert request.sampling.HasField("presence_penalty")
         assert request.sampling.presence_penalty == 0.0
     else:
-        with pytest.raises(ValueError, match="presence_penalty=0.5 .*it accepts only 0.0"):
+        with pytest.raises(ValueError, match=r"presence_penalty=0\.5 .*it accepts only 0\.0"):
             build_generate_request(PROMPT_IDS, sampling, info, engine_name="stub")
     # Without the declaration (as from an engine that reports no conventions), nothing is accepted.
     with pytest.raises(ValueError, match="presence_penalty.*it accepts no value"):

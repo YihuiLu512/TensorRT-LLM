@@ -161,7 +161,9 @@ def test_values_the_server_filled_in_are_not_sent():
 
 def test_an_explicit_no_effect_value_is_rejected_by_an_engine_that_accepts_none():
     params = _explicit(SamplingParams(repetition_penalty=1.0), "repetition_penalty")
-    with pytest.raises(ValueError, match=r"repetition_penalty=1.0 .*'eng' \(it accepts no value\)"):
+    with pytest.raises(
+        ValueError, match=r"repetition_penalty=1\.0 .*'eng' \(it accepts no value\)"
+    ):
         _one(params, _caps("glm"))
 
 
@@ -189,9 +191,9 @@ def test_an_explicit_value_is_checked_against_the_declared_values(name):
 def test_a_parameter_missing_from_the_declaration_accepts_nothing():
     caps = _with_params(_caps(), temperature={"accept": "range", "min": 0.0, "max": 2.0})
     assert _one(SamplingParams(temperature=2.0), caps).sampling == {"temperature": 2.0}
-    with pytest.raises(ValueError, match=r"temperature=2.5 .*values in \[0.0, 2.0\]"):
+    with pytest.raises(ValueError, match=r"temperature=2\.5 .*values in \[0\.0, 2\.0\]"):
         _one(SamplingParams(temperature=2.5), caps)
-    with pytest.raises(ValueError, match=r"top_p=0.9 .*it accepts no value"):
+    with pytest.raises(ValueError, match=r"top_p=0\.9 .*it accepts no value"):
         _one(SamplingParams(top_p=0.9), caps)
     # The seed is a sampling parameter like the others.
     with pytest.raises(ValueError, match=r"seed=3 .*it accepts no value"):
