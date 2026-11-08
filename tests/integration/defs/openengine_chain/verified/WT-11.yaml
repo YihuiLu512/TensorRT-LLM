@@ -1,0 +1,154 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Rows WT-11 owed but could not verify, and so does not list:
+# - F-09 and F-35: the T12 and _test_openai_cache_salt.py servers enable perf metrics, and the
+#   front end refuses to start without the metrics recorder (row F-42, WT-15).
+# - F-44-chain: no chain cases for priority, scheduling and kv_hints exist yet.
+# F-19: the n case of T2 (test_multiple_responses) skips itself on the PyTorch backend, so the
+# row rests on the new n tests.
+entries:
+  - row: F-44-cpu
+    features: [F-44]
+    cases:
+      - unittest/serve/openengine_poc/wt11/test_poc2_wt11_no_silent_drop.py
+    commit: d67370b6f2d14a0941af945485a9c25904c56787
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/01_cpu-test/results/cputest-5721662/unittest_serve_openengine_poc.xml
+    result: passed
+    chain_proof: incomplete
+  - row: F-08
+    features: [F-08]
+    cases:
+      - unittest/llmapi/apps/_test_openai_tool_call.py::test_named_tool_choice_forces_function_call
+      - unittest/llmapi/apps/_test_openai_tool_call.py::test_named_tool_choice_missing_function_returns_400
+      - unittest/llmapi/apps/_test_openai_tool_call.py::test_named_tool_choice_streaming
+      - unittest/llmapi/apps/_test_openai_tool_call.py::test_named_tool_choice_with_prompt_token_ids_b64_is_rejected
+      - unittest/llmapi/apps/_test_openai_tool_call.py::test_named_tool_choice_with_response_format_is_rejected
+      - unittest/llmapi/apps/_test_openai_tool_call.py::test_tool_choice_auto_unchanged
+      - unittest/llmapi/apps/_test_openai_tool_call.py::test_tool_choice_none_unchanged
+      - unittest/llmapi/apps/_test_openai_tool_call.py::test_tool_parser
+      - unittest/llmapi/apps/_test_openai_tool_call.py::test_tool_parser_streaming
+      - unittest/llmapi/apps/_test_openai_chat_harmony.py::test_prompt_token_ids_skips_retokenization[disable_processpool]
+    moved:
+      - to_row: F-38
+        why: it runs with num_postprocess_workers > 0, which needs the postprocessing pool (WT-13)
+        cases:
+          - unittest/llmapi/apps/_test_openai_chat_harmony.py::test_prompt_token_ids_skips_retokenization[enable_processpool]
+    commit: d67370b6f2d14a0941af945485a9c25904c56787
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p1-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p1-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p2-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p2-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p3-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p3-r0/obligations/junit/
+    result: passed
+    chain_proof: ok
+  - row: F-11+F-12
+    features: [F-11, F-12]
+    cases:
+      - unittest/llmapi/apps/_test_openai_chat.py::test_custom_role[pytorch-extra_options-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_chat.py::test_custom_role[pytorch-no_extra_options-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_completions.py::test_batch_completions[pytorch-disable_processpool-prompts0]
+      - unittest/llmapi/apps/_test_openai_completions.py::test_batch_completions[pytorch-disable_processpool-prompts1]
+      - unittest/llmapi/apps/_test_openai_completions.py::test_batch_completions_streaming[pytorch-disable_processpool-prompts0]
+      - unittest/llmapi/apps/_test_openai_completions.py::test_batch_completions_streaming[pytorch-disable_processpool-prompts1]
+      - unittest/llmapi/apps/_test_openai_completions.py::test_detokenize_single[pytorch-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_completions.py::test_single_completion[pytorch-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_completions.py::test_single_completion_with_too_long_prompt[pytorch-disable_processpool]
+      - unittest/llmapi/apps/_test_openengine_wt11_mapping.py::test_sampling_knobs_reach_engine
+    commit: d67370b6f2d14a0941af945485a9c25904c56787
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p1-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p1-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p2-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p2-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p3-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p3-r0/obligations/junit/
+    result: passed
+    chain_proof: ok
+  - row: F-13
+    features: [F-13]
+    cases:
+      - unittest/llmapi/apps/_test_openengine_wt11_mapping.py::test_penalties
+    commit: d67370b6f2d14a0941af945485a9c25904c56787
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p1-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p1-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p2-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p2-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p3-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p3-r0/obligations/junit/
+    result: passed
+    chain_proof: ok
+  - row: F-19
+    features: [F-19]
+    cases:
+      - unittest/llmapi/apps/_test_openengine_wt11_mapping.py::test_n_choices[native]
+      - unittest/llmapi/apps/_test_openengine_wt11_mapping.py::test_n_choices[split]
+      - unittest/llmapi/apps/_test_openengine_wt11_mapping.py::test_n_engine_call_count[native]
+      - unittest/llmapi/apps/_test_openengine_wt11_mapping.py::test_n_engine_call_count[split]
+    commit: d67370b6f2d14a0941af945485a9c25904c56787
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p1-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p1-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p2-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p2-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p3-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p3-r0/obligations/junit/
+    result: passed
+    chain_proof: ok
+  - row: F-23
+    features: [F-23]
+    cases:
+      - unittest/llmapi/apps/_test_openai_chat_guided_decoding.py::test_ebnf[openai/gpt-oss-120b]
+      - unittest/llmapi/apps/_test_openai_chat_guided_decoding.py::test_json_schema[openai/gpt-oss-120b]
+      - unittest/llmapi/apps/_test_openai_chat_guided_decoding.py::test_json_schema_user_profile[openai/gpt-oss-120b]
+      - unittest/llmapi/apps/_test_openai_chat_guided_decoding.py::test_openai_compatible_json_schema[openai/gpt-oss-120b]
+      - unittest/llmapi/apps/_test_openai_chat_guided_decoding.py::test_regex[openai/gpt-oss-120b]
+      - unittest/llmapi/apps/_test_openai_chat_guided_decoding.py::test_structural_tag[openai/gpt-oss-120b]
+    commit: d67370b6f2d14a0941af945485a9c25904c56787
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p1-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p1-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p2-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p2-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p3-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p3-r0/obligations/junit/
+    result: passed
+    chain_proof: ok
+  - row: F-22
+    features: [F-22]
+    cases:
+      - unittest/llmapi/apps/_test_openai_chat.py::test_chat_completion_with_logit_bias_effect[pytorch]
+      - unittest/llmapi/apps/_test_openai_completions.py::test_completion_with_logit_bias_effect[pytorch]
+    commit: d67370b6f2d14a0941af945485a9c25904c56787
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p1-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p1-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p2-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p2-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p3-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/e2e-5721795/p3-r0/obligations/junit/
+    result: passed
+    chain_proof: ok
+  - row: F-25+F-26
+    features: [F-25, F-26]
+    cases:
+      - unittest/llmapi/apps/_test_openai_chat.py::test_multiple_responses_with_beam_search[pytorch-extra_options-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_chat.py::test_multiple_responses_with_beam_search[pytorch-no_extra_options-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_completions.py::test_batch_completions_beam_search[pytorch-disable_processpool-prompts0]
+      - unittest/llmapi/apps/_test_openai_completions.py::test_batch_completions_beam_search[pytorch-disable_processpool-prompts1]
+      - unittest/llmapi/apps/_test_openai_misc.py::test_request_cancellation[pytorch-with_beam_search-8-32768-True]
+      - unittest/llmapi/apps/_test_openai_reasoning.py::test_reasoning_parser[Qwen3/Qwen3-0.6B-pytorch-with_beam_search-True]
+      - unittest/llmapi/apps/_test_openengine_wt11_mapping.py::test_unsupported_fields_rejected
+    commit: 2df0a8111d6fdb21073161d396225393042cc891
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/retest1-5723872/p1-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/retest1-5723872/p1-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/retest1-5724315/p2-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/retest1-5724315/p2-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/retest1-5723872/p3-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17721/data/stage-00/test-00/02_e2e/results/retest1-5723872/p3-r0/obligations/junit/
+    result: passed
+    chain_proof: ok
