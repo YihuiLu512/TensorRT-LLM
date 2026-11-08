@@ -307,6 +307,49 @@ OWNERSHIP: dict[str, list[Rule]] = {
         ),
     ],
     "WT-11": _own(f"{POC}/mapping.py", f"{POC}/field_classes.py")
+    # WT-11-fix2 (spec 06, CAP-*): sampling capabilities as accepted values, on both sides.
+    + [
+        Rule(path, "exception", f"WT-11-fix2 only: {what}")
+        for path, what in (
+            (
+                "tensorrt_llm/grpc/openengine_conventions.py",
+                "trtllm.params and its parsing; no built-in capability table",
+            ),
+            (
+                f"{POC}/contracts.py",
+                "contract v6 and the default map_request's explicit values checked against them",
+            ),
+            (
+                f"{POC}/facade.py",
+                "priority sent only when given; the no-conventions warning names no built-in table",
+            ),
+            ("tensorrt_llm/serve/openai_server.py", "the request's priority only when it set one"),
+            ("tensorrt_llm/sampling_params.py", "every field name a request supplied is recorded"),
+            (
+                f"{OE_SERVER}/request_mapping.py",
+                "the accepted sampling values, declared and checked by Generate",
+            ),
+            (f"{OE_SERVER}/control.py", "reporting the accepted sampling values"),
+            (f"{OE_SERVER}/capabilities.py", "the note on the conventions"),
+            (
+                "tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_contracts.py",
+                "the tests of the contract v6 changes",
+            ),
+            (
+                "tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_conventions.py",
+                "the tests of trtllm.params",
+            ),
+            (f"{OE_SERVER_TESTS}/test_control.py", "the tests of the reported sampling values"),
+            (
+                f"{OE_SERVER_TESTS}/test_request_mapping_features.py",
+                "the tests of the accepted sampling values",
+            ),
+            (
+                "tests/unittest/grpc/openengine_client/test_openengine_poc_serve.py",
+                "the PoC-S1 mapping's and the facade's priority tests",
+            ),
+        )
+    ]
     + [
         Rule(
             f"{POC}/{path}",
@@ -339,40 +382,6 @@ OWNERSHIP: dict[str, list[Rule]] = {
             "only its test profile declaring no stop strings: its tests check the frontend's"
             " matching, and the request mapping sends stop strings to an engine that declares them",
         ),
-    ]
-    # WT-11-fix2 (spec 06, CAP-*): sampling capabilities as accepted values, on both sides.
-    + [
-        Rule(path, "exception", f"WT-11-fix2 only: {what}")
-        for path, what in (
-            (
-                "tensorrt_llm/grpc/openengine_conventions.py",
-                "trtllm.params and its parsing; no built-in capability table",
-            ),
-            (
-                f"{POC}/contracts.py",
-                "contract v6 and the default map_request's explicit values checked against them",
-            ),
-            (
-                f"{POC}/facade.py",
-                "priority sent only when given; the no-conventions warning names no built-in table",
-            ),
-            ("tensorrt_llm/serve/openai_server.py", "the request's priority only when it set one"),
-            ("tensorrt_llm/sampling_params.py", "every field name a request supplied is recorded"),
-            (
-                f"{OE_SERVER}/request_mapping.py",
-                "the accepted sampling values, declared and checked by Generate",
-            ),
-            (f"{OE_SERVER}/control.py", "reporting the accepted sampling values"),
-            (f"{OE_SERVER}/capabilities.py", "the note on the conventions"),
-            ("tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_contracts.py", "the same"),
-            ("tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_conventions.py", "the same"),
-            (f"{OE_SERVER_TESTS}/test_control.py", "the same"),
-            (f"{OE_SERVER_TESTS}/test_request_mapping_features.py", "the same"),
-            (
-                "tests/unittest/grpc/openengine_client/test_openengine_poc_serve.py",
-                "the PoC-S1 mapping's and the facade's priority tests",
-            ),
-        )
     ],
     "WT-12": _own(
         f"{POC}/response.py",
