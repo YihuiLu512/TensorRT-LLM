@@ -49,7 +49,7 @@ def _fresh_slots():
 
 
 def test_contract_version():
-    assert contracts.POC2_CONTRACT_VERSION == 4
+    assert contracts.POC2_CONTRACT_VERSION == 5
 
 
 def test_slot_table():

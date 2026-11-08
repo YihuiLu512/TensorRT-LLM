@@ -80,7 +80,7 @@ if TYPE_CHECKING:
 
 # Bump on any change to a signature, type or message in this module or in
 # engine_client.py, in a commit of its own.
-POC2_CONTRACT_VERSION = 4
+POC2_CONTRACT_VERSION = 5
 
 _PACKAGE = "tensorrt_llm.serve.openengine_poc"
 
