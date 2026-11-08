@@ -314,6 +314,8 @@ def test_responses_media_go_to_the_engine_as_references(tmp_path):
             {"prompt_token_ids": [DESCRIBE, IMAGE], "truncate_prompt_tokens": 1},
             "truncate_prompt_tokens is not supported",
         ),
+        # Refused before the media are mapped (or local files read).
+        ([_image("/etc/passwd")], {"truncate_prompt_tokens": 1}, "truncate_prompt_tokens"),
     ],
     ids=[
         "embeds",
@@ -322,6 +324,7 @@ def test_responses_media_go_to_the_engine_as_references(tmp_path):
         "outside-allowed-dir",
         "truncate",
         "truncate-token-prompt",
+        "truncate-before-media",
     ],
 )
 def test_chat_media_that_cannot_be_sent_are_bad_requests(tmp_path, content, fields, match):

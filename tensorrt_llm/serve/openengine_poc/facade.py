@@ -34,7 +34,7 @@ import os
 import re
 import signal
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any
@@ -741,8 +741,9 @@ class OpenEngineLLM:
         Raises:
             ValueError: With the slot implemented, a message holds media that
                 cannot be sent (image embeddings, ``input_audio`` without
-                data), or holds media while ``media_io_kwargs`` (how to decode
-                them, which the engine does) is set; reported as 400.
+                data, a url that is not a string), or holds media while
+                ``media_io_kwargs`` (how to decode them, which the engine does)
+                is set; reported as 400.
         """
         if not self._media_supported:
             return None
@@ -768,17 +769,24 @@ class OpenEngineLLM:
             prompt, client.model_info(), engine_name=client.server_info().engine_name
         )
 
-    def _prompt_token_ids(
-        self, inputs: Any, sampling_params: SamplingParams, media: list[contracts.MediaSpec]
-    ) -> list[int]:
-        prompt = prompt_inputs(inputs)
-        if media and sampling_params.truncate_prompt_tokens is not None:
+    @staticmethod
+    def _check_truncation(prompt: Mapping[str, Any], sampling_params: SamplingParams) -> None:
+        """Refuse ``truncate_prompt_tokens`` for a prompt with media, before the media are read."""
+        if sampling_params.truncate_prompt_tokens is None:
+            return
+        data = prompt.get("multi_modal_data")
+        if prompt.get(_MAPPED_MEDIA_KEY) or (isinstance(data, Mapping) and data):
             # The prompt's placeholders are unexpanded (OE-MED-2); truncating it
             # can drop a placeholder whose media item is still sent.
             raise ValueError(
                 "truncate_prompt_tokens is not supported for a prompt with media when "
                 "serving through an OpenEngine engine"
             )
+
+    def _prompt_token_ids(
+        self, inputs: Any, sampling_params: SamplingParams, media: list[contracts.MediaSpec]
+    ) -> list[int]:
+        prompt = prompt_inputs(inputs)
         if prompt.get("prompt_token_ids") is not None:
             return list(prompt["prompt_token_ids"])
         if media:
@@ -817,13 +825,13 @@ class OpenEngineLLM:
                 "disaggregated_params is not supported when serving through an OpenEngine engine"
             )
         prompt = prompt_inputs(inputs)
+        sampling_params = sampling_params or SamplingParams()
+        self._check_truncation(prompt, sampling_params)
         # The map_media slot decides on the media before the input processor
         # spends time on them; the default slot refuses all media.
         media = self._media(prompt)
         tokenized: dict[str, Any] = {
-            "prompt_token_ids": self._prompt_token_ids(
-                inputs, sampling_params or SamplingParams(), media
-            )
+            "prompt_token_ids": self._prompt_token_ids(inputs, sampling_params, media)
         }
         if media:
             # generate_async sends these as mapped here, without mapping (or reading) them again.
@@ -929,6 +937,7 @@ class OpenEngineLLM:
             if check is not None:
                 check(lora_request)
         engine_name = self.client.server_info().engine_name
+        self._check_truncation(prompt_inputs(inputs), sampling_params)
         media = self._media(inputs)
         prompt_token_ids = self._prompt_token_ids(inputs, sampling_params, media)
         if reasoning_parser is _NOT_GIVEN:

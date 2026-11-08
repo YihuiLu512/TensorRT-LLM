@@ -1476,11 +1476,10 @@ async def _create_input_tokens(
                                            tools_dict, chat_template)
     mm_references = (media_references(messages)
                      if media_references is not None else None)
+    # With references the media are not loaded; otherwise parse as before.
+    parse_kwargs = {} if mm_references is None else {"resolve_media": False}
     conversation, mm_coroutines, mm_placeholder_counts, mm_item_order = parse_chat_messages_coroutines(
-        messages,
-        model_config,
-        multimodal_server_config,
-        resolve_media=mm_references is None)
+        messages, model_config, multimodal_server_config, **parse_kwargs)
     has_media = any(message.get("media") for message in conversation)
     # Carry the request's reasoning configuration into the chat template.
     #

@@ -58,8 +58,9 @@ def chat_media_references(messages: Iterable[MutableMapping[str, Any]]) -> dict[
     list and put back into the message, so the messages can be parsed again.
 
     Raises:
-        ValueError: A part holds image embeddings (OE-MED-5), or an
-            ``input_audio`` part has no data.
+        ValueError: A part holds image embeddings (OE-MED-5), an
+            ``input_audio`` part has no data, or a media part's url is not a
+            string.
     """
     from tensorrt_llm.serve.chat_utils import MM_PARSER_MAP, VALID_MESSAGE_CONTENT_MM_PART_TYPES
 
@@ -191,7 +192,11 @@ def _ordered(
         return [
             (modality, index) for modality, items in data.items() for index in range(len(items))
         ]
-    if not all(isinstance(entry, Mapping) for entry in item_order):
+    if (
+        not isinstance(item_order, Sequence)
+        or isinstance(item_order, str)
+        or not all(isinstance(entry, Mapping) for entry in item_order)
+    ):
         raise ValueError("mm_item_order must list {'modality', 'index'} entries")
     order = [(entry.get("modality"), entry.get("index")) for entry in item_order]
     expected = sorted((m, i) for m, items in data.items() for i in range(len(items)))

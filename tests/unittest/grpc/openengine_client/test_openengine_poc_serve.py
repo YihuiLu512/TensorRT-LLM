@@ -2118,7 +2118,7 @@ def test_the_assembler_and_the_pool_learn_whether_the_engine_matches_stop_string
             lora_request=object() if lora else None,
             _postproc_params=object(),
         )
-        # A request with an adapter is mapped, and so assembled, at its first read.
+        # A request with an adapter is assembled at its first read, once the adapter is registered.
         assert told == ([] if lora else [bool(stop_texts)])
         if lora:
             assert output.outputs == []

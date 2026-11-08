@@ -450,7 +450,8 @@ OWNERSHIP: dict[str, list[Rule]] = {
         Rule(
             f"{CLIENT_TESTS}/test_openengine_poc_serve.py",
             "exception",
-            "only the media-flow, default LoRA registry and cancelled-while-starting LoRA tests",
+            "only the media-flow, default LoRA registry and cancelled-while-starting LoRA tests, "
+            "and the comment on when a request with an adapter is assembled",
         ),
         Rule(
             f"{POC}/facade.py",

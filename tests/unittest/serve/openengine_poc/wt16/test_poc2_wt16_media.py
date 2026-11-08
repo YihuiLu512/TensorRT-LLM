@@ -171,6 +171,10 @@ def test_media_the_engine_does_not_declare_are_refused(caps):
             "mm_item_order must list",
         ),
         (
+            {"multi_modal_data": {"image": ["http://h/1.png"]}, "mm_item_order": 1},
+            "mm_item_order must list",
+        ),
+        (
             {"multi_modal_data": {"image": ["http://h/1.png"]}, "multi_modal_uuids": ["u"]},
             "multi_modal_uuids must map",
         ),
