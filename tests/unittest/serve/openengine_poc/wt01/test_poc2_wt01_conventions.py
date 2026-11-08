@@ -36,7 +36,6 @@ def test_version_and_keys():
 def test_capability_keys_must_be_booleans(value, expected):
     caps = conv.parse_extra_capabilities({conv.CAP_MIN_P: value})
     assert caps.supports(conv.CAP_MIN_P) is expected
-    assert not caps.builtin
 
 
 @pytest.mark.parametrize(
@@ -47,20 +46,121 @@ def test_seed_scope(value, expected):
     assert conv.parse_extra_capabilities({conv.CAP_SEED_SCOPE: value}).seed_scope == expected
 
 
-def test_builtin_table_only_for_unconverted_trtllm_server():
-    builtin = conv.resolve_extra_capabilities("tensorrt_llm", {}, {})
-    assert builtin is conv.BUILTIN_CAPABILITIES
-    assert builtin.declared == frozenset(
-        conv.SAMPLING_CAPABILITY_KEYS + (conv.CAP_STOP_TEXT, conv.CAP_REQ_CONVERSATION_ID)
+def test_no_conventions_version_gets_no_builtin_table():
+    """Every engine is read from what it reports; an unconverted TRT-LLM server declares nothing."""
+    assert not hasattr(conv, "BUILTIN_CAPABILITIES")
+    server = server_pb2.ServerInfo(engine_name="tensorrt_llm")
+    caps = conv.model_capabilities_from_proto(server, model_pb2.ModelInfo())
+    assert caps.extra.declared == frozenset()
+    for name in conv.SAMPLING_FIELD_CAPABILITY:
+        assert caps.accepted(name).accept == "none"
+    # Parameters the version 2 keys do not cover are protocol fields every engine takes.
+    for name in set(conv.SAMPLING_PARAM_NAMES) - set(conv.SAMPLING_FIELD_CAPABILITY):
+        assert caps.accepted(name).accept == "any"
+
+
+def test_version_2_keys_read_as_any_or_none():
+    caps = conv.parse_extra_capabilities({conv.CAP_MIN_P: True, conv.CAP_REPETITION_PENALTY: False})
+    assert caps.params is None
+    assert caps.accepted("min_p") == conv.ANY_VALUE
+    assert caps.accepted("repetition_penalty") == conv.NO_VALUE
+    assert caps.accepted("frequency_penalty") == conv.NO_VALUE
+    assert caps.accepted("temperature") == conv.ANY_VALUE
+
+
+def test_params_are_read_alone_when_reported():
+    caps = conv.parse_extra_capabilities(
+        {
+            conv.PARAMS_KEY: {
+                "min_p": {"accept": "range", "min": 0, "max": 1, "default": 0.0},
+                "repetition_penalty": {"accept": "values", "values": [1.0]},
+            },
+            # The version 2 keys are ignored next to trtllm.params.
+            conv.CAP_MIN_P: False,
+            conv.CAP_FREQUENCY_PENALTY: True,
+        }
     )
-    assert builtin.seed_scope == "none"
-    # A server that reports a conventions version is read, even with no keys.
-    declared = conv.resolve_extra_capabilities(
-        "tensorrt_llm", {conv.CONVENTIONS_VERSION_KEY: 2.0}, {}
+    assert caps.accepted("min_p").accepts(0.5) and not caps.accepted("min_p").accepts(1.5)
+    assert caps.accepted("min_p").default == 0.0
+    assert caps.accepted("repetition_penalty").accepts(1) is True
+    assert caps.accepted("repetition_penalty").accepts(1.2) is False
+    # A parameter missing from trtllm.params accepts nothing.
+    assert caps.accepted("frequency_penalty") == conv.NO_VALUE
+    assert caps.accepted("temperature") == conv.NO_VALUE
+
+
+@pytest.mark.parametrize(
+    "described, inside, outside",
+    [
+        ({"accept": "any"}, [0.0, -5.0, 1e30], []),
+        ({"accept": "none"}, [], [0.0, 1.0]),
+        ({"accept": "values", "values": [0.0, 2]}, [0.0, -0.0, 2.0], [1.0, 1e-300]),
+        ({"accept": "range", "min": 0, "max": 1}, [0.0, 0.5, 1.0], [-1e-9, 1.0000001]),
+        (
+            {"accept": "range", "min": 0, "min_exclusive": True, "max": 1, "max_exclusive": True},
+            [1e-300, 0.999],
+            [0.0, 1.0],
+        ),
+        ({"accept": "range", "min": 2}, [2.0, 1e300], [1.999]),
+        ({"accept": "range", "max": 2, "max_exclusive": True}, [-1e300, 1.999], [2.0]),
+    ],
+)
+def test_accepted_values(described, inside, outside):
+    accepted = conv.AcceptedValues.from_extra("p", described)
+    assert all(accepted.accepts(value) for value in inside)
+    assert not any(accepted.accepts(value) for value in outside)
+    # What an engine reports reads back the same.
+    assert conv.AcceptedValues.from_extra("p", accepted.to_extra()) == accepted
+
+
+@pytest.mark.parametrize(
+    "described",
+    [
+        None,
+        [],
+        {},
+        {"accept": "maybe"},
+        {"accept": "range"},
+        {"accept": "range", "min": "0"},
+        {"accept": "range", "min": True},
+        {"accept": "range", "max": float("inf")},
+        {"accept": "range", "min": 0, "min_exclusive": 1},
+        {"accept": "values"},
+        {"accept": "values", "values": []},
+        {"accept": "values", "values": [1.0, "x"]},
+        {"accept": "values", "values": 1.0},
+    ],
+)
+def test_malformed_params_name_the_parameter_and_value(described):
+    with pytest.raises(conv.CapabilityFormatError, match=r"trtllm\.params\.top_p"):
+        conv.parse_extra_capabilities({conv.PARAMS_KEY: {"top_p": described}})
+
+
+@pytest.mark.parametrize("declared", [[], "any", 1, None])
+def test_params_must_be_an_object(declared):
+    with pytest.raises(conv.CapabilityFormatError, match=r"trtllm\.params is not an object"):
+        conv.parse_extra_capabilities({conv.PARAMS_KEY: declared})
+
+
+def test_params_from_proto():
+    model = model_pb2.ModelInfo()
+    model.extra.update(
+        {conv.PARAMS_KEY: {"top_k": {"accept": "range", "min": 0, "default": "generation_config"}}}
     )
-    assert declared.declared == frozenset() and not declared.builtin
-    # No other engine gets a built-in table.
-    assert conv.resolve_extra_capabilities("glm5", {}, {}).declared == frozenset()
+    caps = conv.model_capabilities_from_proto(server_pb2.ServerInfo(engine_name="e"), model)
+    assert caps.accepted("top_k").accepts(5) and not caps.accepted("top_k").accepts(-1)
+    assert caps.accepted("top_k").default == conv.DEFAULT_FROM_GENERATION_CONFIG
+    assert caps.accepted("top_p") == conv.NO_VALUE
+    # The declaration does not stop the capabilities from comparing or hashing.
+    assert caps == conv.model_capabilities_from_proto(server_pb2.ServerInfo(engine_name="e"), model)
+    hash(caps)
+
+
+def test_malformed_params_from_proto_fail():
+    model = model_pb2.ModelInfo()
+    model.extra.update({conv.PARAMS_KEY: {"min_p": {"accept": "values", "values": []}}})
+    with pytest.raises(conv.CapabilityFormatError, match="min_p"):
+        conv.model_capabilities_from_proto(server_pb2.ServerInfo(engine_name="e"), model)
 
 
 @pytest.mark.parametrize(

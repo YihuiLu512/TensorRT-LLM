@@ -23,8 +23,9 @@ import math
 import os
 import re
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -110,6 +111,31 @@ SAMPLING_FIELD_CAPABILITY = {
     "repetition_penalty": CAP_REPETITION_PENALTY,
 }
 
+# --- Accepted values (ModelInfo.extra, version 3) -------------------------------
+
+# The values an engine accepts for each request parameter, keyed by the names in
+# SAMPLING_PARAM_NAMES. An engine that reports this key is read from it alone;
+# a parameter missing from it accepts no value.
+PARAMS_KEY = "trtllm.params"
+# The ``GenerateRequest.sampling`` fields, by the names ``PARAMS_KEY`` uses.
+SAMPLING_PARAM_NAMES = (
+    "temperature",
+    "top_p",
+    "top_k",
+    "min_p",
+    "frequency_penalty",
+    "presence_penalty",
+    "repetition_penalty",
+    "seed",
+)
+ACCEPT_ANY = "any"
+ACCEPT_RANGE = "range"
+ACCEPT_VALUES = "values"
+ACCEPT_NONE = "none"
+ACCEPT_FORMS = (ACCEPT_ANY, ACCEPT_RANGE, ACCEPT_VALUES, ACCEPT_NONE)
+# A ``default`` that names the model's generation_config.json.
+DEFAULT_FROM_GENERATION_CONFIG = "generation_config"
+
 SEED_SCOPE_NONE = "none"
 SEED_SCOPE_BATCH_DEPENDENT = "batch_dependent"
 SEED_SCOPE_PER_REQUEST = "per_request"
@@ -148,10 +174,6 @@ META_TRACESTATE = "tracestate"
 META_PRIORITY = "openengine-priority"
 META_TARGET_DP_RANK = "openengine-target-dp-rank"
 PRIORITY_SCALE = 1000
-
-# The only engine for which a client may assume capabilities it does not
-# report, and only while its ServerInfo.extra has no conventions version key.
-BUILTIN_CAPABILITY_ENGINE = "tensorrt_llm"
 
 
 def encode_priority(priority: float) -> int:
@@ -204,6 +226,160 @@ def conventions_version(server_extra: Mapping[str, Any]) -> int | None:
     return as_int(server_extra.get(CONVENTIONS_VERSION_KEY))
 
 
+class CapabilityFormatError(ValueError):
+    """An engine's ``trtllm.params`` declaration is malformed."""
+
+
+def _number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+@dataclass(frozen=True)
+class AcceptedValues:
+    """The values an engine accepts for one request parameter.
+
+    Values are compared as the request sends them (a protobuf double or
+    integer), never at the precision the engine computes with.
+
+    Attributes:
+        accept: One of :data:`ACCEPT_FORMS`: every value, a range, listed values, or none.
+        min: ``range``: the lower bound, or None for no lower bound.
+        max: ``range``: the upper bound, or None for no upper bound.
+        min_exclusive: ``range``: whether ``min`` itself is left out.
+        max_exclusive: ``range``: whether ``max`` itself is left out.
+        values: ``values``: the accepted values.
+        default: The value the engine uses when the request does not set the
+            parameter, :data:`DEFAULT_FROM_GENERATION_CONFIG`, or None when not
+            reported. For information only: it never changes what is sent.
+    """
+
+    accept: str
+    min: float | None = None
+    max: float | None = None
+    min_exclusive: bool = False
+    max_exclusive: bool = False
+    values: tuple[float, ...] = ()
+    default: Any = None
+
+    def __post_init__(self) -> None:
+        if self.accept not in ACCEPT_FORMS:
+            raise CapabilityFormatError(f"unknown accept form {self.accept!r}")
+        if self.accept == ACCEPT_VALUES and not self.values:
+            raise CapabilityFormatError("accept 'values' needs a non-empty values list")
+        if self.accept == ACCEPT_RANGE and self.min is None and self.max is None:
+            raise CapabilityFormatError("accept 'range' needs min or max")
+
+    def accepts(self, value: float) -> bool:
+        """Whether ``value`` is in the set."""
+        if self.accept == ACCEPT_ANY:
+            return True
+        if self.accept == ACCEPT_NONE:
+            return False
+        if self.accept == ACCEPT_VALUES:
+            return any(value == accepted for accepted in self.values)
+        if self.min is not None and (
+            value < self.min or (self.min_exclusive and value == self.min)
+        ):
+            return False
+        return self.max is None or not (
+            value > self.max or (self.max_exclusive and value == self.max)
+        )
+
+    def describe(self) -> str:
+        """The set in words, for error messages."""
+        if self.accept == ACCEPT_ANY:
+            return "any value"
+        if self.accept == ACCEPT_NONE:
+            return "no value"
+        if self.accept == ACCEPT_VALUES:
+            return "only " + ", ".join(repr(value) for value in self.values)
+        low = "(" if self.min_exclusive or self.min is None else "["
+        high = ")" if self.max_exclusive or self.max is None else "]"
+        low_text = "-inf" if self.min is None else repr(self.min)
+        high_text = "inf" if self.max is None else repr(self.max)
+        return f"values in {low}{low_text}, {high_text}{high}"
+
+    def to_extra(self) -> dict[str, Any]:
+        """The value description an engine reports under ``trtllm.params``."""
+        described: dict[str, Any] = {"accept": self.accept}
+        if self.accept == ACCEPT_RANGE:
+            for name in ("min", "max"):
+                if getattr(self, name) is not None:
+                    described[name] = getattr(self, name)
+            if self.min_exclusive:
+                described["min_exclusive"] = True
+            if self.max_exclusive:
+                described["max_exclusive"] = True
+        elif self.accept == ACCEPT_VALUES:
+            described["values"] = list(self.values)
+        described["default"] = self.default
+        return described
+
+    @classmethod
+    def from_extra(cls, name: str, described: Any) -> AcceptedValues:
+        """Read one value description of ``trtllm.params``.
+
+        Raises:
+            CapabilityFormatError: The description is malformed; the message
+                names the parameter and quotes what was reported.
+        """
+
+        def malformed(why: str) -> CapabilityFormatError:
+            return CapabilityFormatError(f"{PARAMS_KEY}.{name} {why}: {described!r}")
+
+        if not isinstance(described, Mapping):
+            raise malformed("is not an object")
+        accept = described.get("accept")
+        if accept not in ACCEPT_FORMS:
+            raise malformed(f"has an unknown accept form {accept!r}")
+        fields: dict[str, Any] = {"accept": accept, "default": described.get("default")}
+        if accept == ACCEPT_RANGE:
+            for bound in ("min", "max"):
+                value = described.get(bound)
+                if value is not None and not (_number(value) and math.isfinite(value)):
+                    raise malformed(f"has a {bound} that is not a finite number")
+                fields[bound] = value
+            for flag in ("min_exclusive", "max_exclusive"):
+                value = described.get(flag, False)
+                if not isinstance(value, bool):
+                    raise malformed(f"has a {flag} that is not a boolean")
+                fields[flag] = value
+            if fields["min"] is None and fields["max"] is None:
+                raise malformed("is a range without min or max")
+        elif accept == ACCEPT_VALUES:
+            values = described.get("values")
+            if (
+                not isinstance(values, list)
+                or not values
+                or not all(_number(value) for value in values)
+            ):
+                raise malformed("has no non-empty list of numbers in values")
+            fields["values"] = tuple(values)
+        return cls(**fields)
+
+
+ANY_VALUE = AcceptedValues(ACCEPT_ANY)
+NO_VALUE = AcceptedValues(ACCEPT_NONE)
+
+
+def parse_params(model_extra: Mapping[str, Any]) -> dict[str, AcceptedValues] | None:
+    """Read ``trtllm.params`` from ``ModelInfo.extra``; None when the engine does not report it.
+
+    Parameters this module does not know are kept as reported.
+
+    Raises:
+        CapabilityFormatError: The declaration is malformed.
+    """
+    if PARAMS_KEY not in model_extra:
+        return None
+    declared = model_extra[PARAMS_KEY]
+    if not isinstance(declared, Mapping):
+        raise CapabilityFormatError(f"{PARAMS_KEY} is not an object: {declared!r}")
+    return {
+        name: AcceptedValues.from_extra(name, described) for name, described in declared.items()
+    }
+
+
 @dataclass(frozen=True)
 class ExtraCapabilities:
     """The capability keys an engine declares in ``ModelInfo.extra``.
@@ -211,49 +387,53 @@ class ExtraCapabilities:
     Attributes:
         declared: The boolean capability keys declared ``true``.
         seed_scope: How far a seed makes sampling reproducible; one of :data:`SEED_SCOPES`.
-        builtin: Whether these come from the built-in table rather than from the engine.
+        params: The ``trtllm.params`` declaration, or None when the engine does
+            not report one.
     """
 
     declared: frozenset[str] = frozenset()
     seed_scope: str = SEED_SCOPE_NONE
-    builtin: bool = False
+    params: Mapping[str, AcceptedValues] | None = field(default=None, hash=False)
+
+    def __post_init__(self) -> None:
+        if self.params is not None:
+            object.__setattr__(self, "params", MappingProxyType(dict(self.params)))
 
     def supports(self, key: str) -> bool:
         return key in self.declared
 
+    def accepted(self, name: str) -> AcceptedValues:
+        """The values accepted for the sampling parameter ``name`` (a :data:`SAMPLING_PARAM_NAMES` entry).
 
-# What a TRT-LLM server whose ServerInfo.extra has no conventions version key supports.
-BUILTIN_CAPABILITIES = ExtraCapabilities(
-    declared=frozenset(SAMPLING_CAPABILITY_KEYS + (CAP_STOP_TEXT, CAP_REQ_CONVERSATION_ID)),
-    builtin=True,
-)
+        From ``trtllm.params`` when the engine reports it, where a missing
+        parameter accepts nothing. Otherwise from the boolean keys of the
+        version 2 conventions: a parameter with a key accepts any value when it
+        is declared ``true`` and none otherwise; one without a key accepts any value.
+        """
+        if self.params is not None:
+            return self.params.get(name, NO_VALUE)
+        key = SAMPLING_FIELD_CAPABILITY.get(name)
+        if key is None or self.supports(key):
+            return ANY_VALUE
+        return NO_VALUE
 
 
 def parse_extra_capabilities(model_extra: Mapping[str, Any]) -> ExtraCapabilities:
     """Read the capability keys from ``ModelInfo.extra``.
 
-    A key that is missing or not a boolean counts as not supported; a seed scope
-    that is missing or unknown counts as ``"none"``.
+    A boolean key that is missing or not a boolean counts as not supported; a
+    seed scope that is missing or unknown counts as ``"none"``.
+
+    Raises:
+        CapabilityFormatError: ``trtllm.params`` is malformed.
     """
     declared = frozenset(key for key in BOOL_CAPABILITY_KEYS if model_extra.get(key) is True)
     seed_scope = model_extra.get(CAP_SEED_SCOPE)
     if seed_scope not in SEED_SCOPES:
         seed_scope = SEED_SCOPE_NONE
-    return ExtraCapabilities(declared=declared, seed_scope=seed_scope)
-
-
-def uses_builtin_capabilities(engine_name: str, server_extra: Mapping[str, Any]) -> bool:
-    """Whether the client should use :data:`BUILTIN_CAPABILITIES` instead of reading the keys."""
-    return engine_name == BUILTIN_CAPABILITY_ENGINE and CONVENTIONS_VERSION_KEY not in server_extra
-
-
-def resolve_extra_capabilities(
-    engine_name: str, server_extra: Mapping[str, Any], model_extra: Mapping[str, Any]
-) -> ExtraCapabilities:
-    """The capability keys to check requests against, from the engine or the built-in table."""
-    if uses_builtin_capabilities(engine_name, server_extra):
-        return BUILTIN_CAPABILITIES
-    return parse_extra_capabilities(model_extra)
+    return ExtraCapabilities(
+        declared=declared, seed_scope=seed_scope, params=parse_params(model_extra)
+    )
 
 
 @dataclass(frozen=True)
@@ -462,6 +642,10 @@ class ModelCapabilities:
         """Whether a capability key is declared."""
         return self.extra.supports(key)
 
+    def accepted(self, name: str) -> AcceptedValues:
+        """The values accepted for a sampling parameter; see :meth:`ExtraCapabilities.accepted`."""
+        return self.extra.accepted(name)
+
 
 _GUIDED_MODE_PREFIX = "GUIDED_DECODING_MODE_"
 
@@ -469,7 +653,11 @@ _GUIDED_MODE_PREFIX = "GUIDED_DECODING_MODE_"
 def model_capabilities_from_proto(
     server_info: server_pb2.ServerInfo, model_info: model_pb2.ModelInfo
 ) -> ModelCapabilities:
-    """Merge an engine's ``ServerInfo`` and ``ModelInfo`` into :class:`ModelCapabilities`."""
+    """Merge an engine's ``ServerInfo`` and ``ModelInfo`` into :class:`ModelCapabilities`.
+
+    Raises:
+        CapabilityFormatError: ``trtllm.params`` is malformed.
+    """
     from tensorrt_llm.grpc.openengine.bindings import model_pb2
 
     server_extra = struct_to_dict(server_info.extra) if server_info.HasField("extra") else {}
@@ -518,6 +706,6 @@ def model_capabilities_from_proto(
         supports_dp_rank_targeting=server_extra.get(SERVER_DP_RANK_TARGETING_KEY) is True,
         reasoning_parser=model_info.reasoning_parser,
         tool_call_parser=model_info.tool_call_parser,
-        extra=resolve_extra_capabilities(server_info.engine_name, server_extra, model_extra),
+        extra=parse_extra_capabilities(model_extra),
         tokenizer_fingerprint=TokenizerFingerprint.from_extra(model_extra),
     )

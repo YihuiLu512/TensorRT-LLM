@@ -56,7 +56,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, cast
 
 from tensorrt_llm.grpc.openengine_conventions import (
     REQ_DETOKENIZE,
-    SAMPLING_FIELD_CAPABILITY,
+    SAMPLING_PARAM_NAMES,
     SERVE_COUNTER_DIR_ENV,
     SERVE_COUNTER_GENERATE_SENT,
 )
@@ -80,7 +80,7 @@ if TYPE_CHECKING:
 
 # Bump on any change to a signature, type or message in this module or in
 # engine_client.py, in a commit of its own.
-POC2_CONTRACT_VERSION = 5
+POC2_CONTRACT_VERSION = 6
 
 _PACKAGE = "tensorrt_llm.serve.openengine_poc"
 
@@ -227,15 +227,6 @@ def map_request(
     )
 
 
-# Values that leave sampling unchanged; OpenAIServer always fills these fields,
-# so a neutral value counts as not set.
-_NEUTRAL: dict[str, Any] = {
-    "top_k": 0,
-    "min_p": 0.0,
-    "frequency_penalty": 0.0,
-    "presence_penalty": 0.0,
-    "repetition_penalty": 1.0,
-}
 # SamplingParams fields the default mapping cannot carry; each must be unset
 # (None or empty) or equal to the value given.
 _UNSUPPORTED_DEFAULTS: dict[str, Any] = {
@@ -264,35 +255,31 @@ _UNSUPPORTED_DEFAULTS: dict[str, Any] = {
     "beam_search_diversity_rate": None,
     "beam_width_array": None,
 }
-_SAMPLING_FIELDS = (
-    "temperature",
-    "top_p",
-    "top_k",
-    "min_p",
-    "frequency_penalty",
-    "presence_penalty",
-    "repetition_penalty",
-)
 
 
-def _not_supported(field_name: str, value: Any, engine_name: str) -> ValueError:
+def _not_supported(field_name: str, value: Any, engine_name: str, why: str = "") -> ValueError:
+    reason = f" ({why})" if why else ""
     return ValueError(
         f"{field_name}={value!r} is not supported when serving through the OpenEngine engine "
-        f"{engine_name!r}"
+        f"{engine_name!r}{reason}"
     )
 
 
-def _requested(sampling_params: SamplingParams, name: str) -> Any:
-    """The value to send for a sampling field; None when it is unset, neutral or a server-filled default."""
-    from tensorrt_llm.sampling_params import _GENERATION_CONFIG_SAMPLING_FIELDS
+def explicit_sampling_values(sampling_params: SamplingParams) -> dict[str, Any]:
+    """The ``GenerateRequest.sampling`` fields the request set itself, by their ``trtllm.params`` names.
 
-    value = getattr(sampling_params, name)
-    if value is None or _NEUTRAL.get(name, object()) == value:
-        return None
+    ``OpenAIServer`` records the fields a request supplied; a value it filled
+    in is not one of them, whatever the value. Without that record (a caller
+    that builds ``SamplingParams`` itself) every field that is not None counts,
+    since all of them default to None.
+    """
     provided = sampling_params._request_provided_fields
-    if provided is not None and name in _GENERATION_CONFIG_SAMPLING_FIELDS and name not in provided:
-        return None
-    return value
+    values = {}
+    for name in SAMPLING_PARAM_NAMES:
+        value = getattr(sampling_params, name)
+        if value is not None and (provided is None or name in provided):
+            values[name] = value
+    return values
 
 
 def new_request_id() -> str:
@@ -371,18 +358,13 @@ def default_map_request(
         )
 
     sampling: dict[str, float | int] = {}
-    for name in _SAMPLING_FIELDS:
-        value = _requested(sampling_params, name)
-        if value is None:
-            continue
-        capability = SAMPLING_FIELD_CAPABILITY.get(name)
-        if capability is not None and not capabilities.supports(capability):
-            raise _not_supported(name, value, engine_name)
+    for name, value in explicit_sampling_values(sampling_params).items():
+        if name == "seed" and value < 0:
+            raise ValueError(f"seed must be non-negative, got {value}")
+        accepted = capabilities.accepted(name)
+        if not accepted.accepts(value):
+            raise _not_supported(name, value, engine_name, f"it accepts {accepted.describe()}")
         sampling[name] = value
-    if sampling_params.seed is not None:
-        if sampling_params.seed < 0:
-            raise ValueError(f"seed must be non-negative, got {sampling_params.seed}")
-        sampling["seed"] = sampling_params.seed
 
     limits = []
     if max_context is not None:

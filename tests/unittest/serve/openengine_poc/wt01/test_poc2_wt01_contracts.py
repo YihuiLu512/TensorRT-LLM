@@ -49,7 +49,7 @@ def _fresh_slots():
 
 
 def test_contract_version():
-    assert contracts.POC2_CONTRACT_VERSION == 5
+    assert contracts.POC2_CONTRACT_VERSION == 6
 
 
 def test_slot_table():
@@ -222,20 +222,11 @@ def _engine_request_view(request) -> dict:
 
 
 def _both(prompt, params, server, model):
-    from tensorrt_llm.serve.openengine_poc.mapping import (
-        build_generate_request,
-        builtin_capabilities,
-    )
+    from tensorrt_llm.serve.openengine_poc.mapping import build_generate_request
 
     def poc_s1():
         return _proto_view(
-            build_generate_request(
-                prompt,
-                params,
-                model,
-                engine_name=server.engine_name,
-                builtin=builtin_capabilities(server),
-            )
+            build_generate_request(prompt, params, model, engine_name=server.engine_name)
         )
 
     def default():
@@ -263,10 +254,25 @@ def _both(prompt, params, server, model):
     ],
     ids=lambda p: "params",
 )
-@pytest.mark.parametrize("engine", ["builtin", "declared", "glm"])
+@pytest.mark.parametrize("engine", ["unversioned", "declared", "glm", "params"])
 def test_default_map_request_matches_poc_s1(params, engine):
-    if engine == "builtin":
+    if engine == "unversioned":
         server, model = _engine()
+    elif engine == "params":
+        no_effect = {"min_p": 0.0, "frequency_penalty": 0.0, "presence_penalty": 0.0}
+        server, model = _engine(
+            conventions=True,
+            extra={
+                conv.PARAMS_KEY: {
+                    **{name: {"accept": "any"} for name in conv.SAMPLING_PARAM_NAMES},
+                    **{
+                        name: {"accept": "values", "values": [value]}
+                        for name, value in no_effect.items()
+                    },
+                    "repetition_penalty": {"accept": "range", "min": 1.0, "max": 1.05},
+                }
+            },
+        )
     elif engine == "declared":
         server, model = _engine(
             conventions=True,
@@ -315,7 +321,7 @@ def test_default_map_request_rejects_like_poc_s1(params, prompt):
 def test_default_map_request_rejects_gated_fields_the_engine_lacks():
     server, model = _engine("glm5")
     caps = conv.model_capabilities_from_proto(server, model)
-    with pytest.raises(ValueError, match="frequency_penalty"):
+    with pytest.raises(ValueError, match="frequency_penalty=0.5 .*it accepts no value"):
         contracts.default_map_request(
             [1],
             SamplingParams(frequency_penalty=0.5),
@@ -323,6 +329,42 @@ def test_default_map_request_rejects_gated_fields_the_engine_lacks():
             contracts.GenerateOptions(),
             engine_name="glm5",
         )
+
+
+def _params_caps(**declared):
+    server, model = _engine(conventions=True, extra={conv.PARAMS_KEY: declared})
+    return conv.model_capabilities_from_proto(server, model)
+
+
+@pytest.mark.parametrize("provided", [None, {"repetition_penalty"}])
+def test_default_map_request_sends_an_explicit_value_in_the_declared_set(provided):
+    caps = _params_caps(repetition_penalty={"accept": "values", "values": [1.0]})
+    params = SamplingParams(repetition_penalty=1.0)
+    if provided is not None:
+        params._set_request_provided_fields(provided)
+    (request,) = contracts.default_map_request(
+        [1], params, caps, contracts.GenerateOptions(), engine_name="eng"
+    )
+    assert request.sampling == {"repetition_penalty": 1.0}
+    with pytest.raises(ValueError, match=r"repetition_penalty=1.2 .*it accepts only 1.0"):
+        contracts.default_map_request(
+            [1],
+            SamplingParams(repetition_penalty=1.2),
+            caps,
+            contracts.GenerateOptions(),
+            engine_name="eng",
+        )
+
+
+def test_default_map_request_does_not_send_a_server_filled_value():
+    caps = _params_caps(temperature={"accept": "any"})
+    params = SamplingParams(temperature=1.0, top_k=0, repetition_penalty=1.0)
+    params._set_request_provided_fields({"temperature"})
+    (request,) = contracts.default_map_request(
+        [1], params, caps, contracts.GenerateOptions(), engine_name="eng"
+    )
+    # top_k and repetition_penalty are not sent, so the undeclared set does not matter.
+    assert request.sampling == {"temperature": 1.0}
 
 
 @pytest.mark.parametrize(

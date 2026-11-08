@@ -500,8 +500,7 @@ class OpenEngineLLM:
         if version is None:
             logger.warning(
                 f"OpenEngine engine {info.engine_name!r} at {self._endpoint} reports no "
-                f"{CONVENTIONS_VERSION_KEY}; using "
-                f"{'the built-in capability table' if caps.extra.builtin else 'no extra capabilities'}"
+                f"{CONVENTIONS_VERSION_KEY}; using no extra capabilities"
             )
         elif version != CONVENTIONS_VERSION:
             raise self._startup_error(
