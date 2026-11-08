@@ -200,6 +200,8 @@ def _first(check):
 
 
 _BUDGET_OPTIONS = {"reasoning_parser": "qwen3", "tokenizer": CharTokenizer()}
+# An envelope the engine's kv_hints admission keeps.
+KV_HINTS = {"protocol_version": "0.1", "message_id": "x1", "actions": []}
 # A value of each sampling field that changes sampling.
 SAMPLING_VALUES = {
     "top_k": 5,
@@ -285,11 +287,9 @@ OPTION_PROBES: dict[str, Probe] = {
         landed=_first(lambda r: r.cache_salt == "s"),
     ),
     "kv_hints": Probe(
-        options={"kv_hints": {"protocol_version": "1"}},
+        options={"kv_hints": KV_HINTS},
         supported=_cap(conv.CAP_REQ_KV_HINTS),
-        landed=_first(
-            lambda r: json.loads(r.extra[conv.REQ_KV_HINTS]) == {"protocol_version": "1"}
-        ),
+        landed=_first(lambda r: json.loads(r.extra[conv.REQ_KV_HINTS]) == KV_HINTS),
     ),
     "conversation_params": Probe(
         options={"conversation_params": type("C", (), {"conversation_id": "c"})()},
@@ -602,7 +602,10 @@ def test_over_grpc_an_engine_without_the_conventions_starts_and_accepts_no_min_p
     name, tmp_path
 ):
     """No built-in table: an engine that reports no conventions version declares nothing (R9)."""
-    profile = FAKE_PROFILES["trtllm-current"].replace(
+    # The engine accepts these fields without declaring them; serve must not send them.
+    profile = FAKE_PROFILES["trtllm-like"].replace(
+        follows_conventions=False,
+        max_num_sequences=None,
         model=_GRPC_MODEL,
         max_context_length=64,
         vocab_size=len(_GRPC_VOCAB),
