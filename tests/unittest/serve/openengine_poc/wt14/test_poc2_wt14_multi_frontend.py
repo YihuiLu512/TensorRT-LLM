@@ -341,7 +341,9 @@ def test_sigterm_before_serving_cleans_up_then_ends_the_process(when):
         timeout=STARTUP_SECONDS,
     )
     assert result.returncode == -signal.SIGTERM, result.stderr
-    assert result.stdout.splitlines() == ["cleaned up"], result.stderr
+    # Importing TensorRT LLM may print warnings too.
+    lines = result.stdout.splitlines()
+    assert "cleaned up" in lines and "not ended" not in lines, result.stdout + result.stderr
 
 
 # -- The command line --------------------------------------------------------------
