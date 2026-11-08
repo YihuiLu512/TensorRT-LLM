@@ -49,7 +49,7 @@ def _fresh_slots():
 
 
 def test_contract_version():
-    assert contracts.POC2_CONTRACT_VERSION == 6
+    assert contracts.POC2_CONTRACT_VERSION == 7
 
 
 def test_slot_table():
@@ -807,10 +807,16 @@ def test_default_launch_rejects_several_frontends():
 
 
 def test_default_metrics_record_nothing():
-    recorder = contracts.create_metrics_recorder(SimpleNamespace())
-    request = recorder.start_request("r", 0.0)
+    recorder = contracts.slots()["create_metrics_recorder"].default(SimpleNamespace())
+    request = recorder.start_request(
+        "r", 0.0, sampling_params=SamplingParams(), trace_headers={"traceparent": "x"}
+    )
     request.on_event(TokenDelta(0, (1,)), 1.0)
     assert request.metrics_dict() == {}
+    output = SimpleNamespace(request_perf_metrics=None)
+    request.finish([output], 2.0, prompt_tokens=3, assembled=True)
+    assert output.request_perf_metrics is None
+    assert request.candidate_metrics() == []
     assert recorder.iteration_stats(None) is None
     with pytest.raises(contracts.OpenEngineUnsupportedError):
         asyncio.run(recorder.kv_cache_events(FakeEngineClient(), None))

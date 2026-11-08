@@ -491,7 +491,47 @@ OWNERSHIP: dict[str, list[Rule]] = {
         ),
         Rule("scripts/poc2/check_ownership.py", "exception", "only the exceptions of WT-14"),
     ],
-    "WT-15": _own(f"{POC}/metrics.py"),
+    "WT-15": _own(f"{POC}/metrics.py")
+    + [
+        Rule(
+            f"{POC}/contracts.py",
+            "exception",
+            "only contract v7: the sampling parameters and trace headers of"
+            " MetricsRecorder.start_request, RequestMetrics.finish and"
+            " RequestMetrics.candidate_metrics, and the metrics_dict key type",
+        ),
+        Rule(
+            f"{POC}/facade.py",
+            "exception",
+            "only contract v7: passing the sampling parameters and trace headers to"
+            " start_request, giving the recorder each event as it arrives, calling"
+            " finish when a request completes or is aborted (saying whether the"
+            " outputs were assembled), reading candidate_metrics and metrics_dict from the"
+            " recorder, and logging rather than serving the recorder's failures",
+        ),
+        Rule(
+            "tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_contracts.py",
+            "exception",
+            "only the contract v7 version and the test of the default recorder",
+        ),
+        Rule(
+            f"{CLIENT_TESTS}/test_openengine_poc_serve.py",
+            "exception",
+            "only to resolve every slot to its default in the option-refusal and"
+            " stats-without-a-recorder tests; WT-10 owns it",
+        ),
+        Rule(
+            "tests/unittest/serve/openengine_poc/wt09/test_poc2_wt09_perf_arms.py",
+            "exception",
+            "only to resolve every slot to its default in"
+            " test_prepare_server_uses_the_frontend_check; WT-09 owns it",
+        ),
+        Rule(
+            "scripts/poc2/check_ownership.py",
+            "exception",
+            "only the exceptions of WT-15",
+        ),
+    ],
     "WT-16": _own(f"{POC}/media.py", f"{POC}/lora.py")
     + [
         Rule(

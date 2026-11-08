@@ -81,7 +81,7 @@ if TYPE_CHECKING:
 
 # Bump on any change to a signature, type or message in this module or in
 # engine_client.py, in a commit of its own.
-POC2_CONTRACT_VERSION = 6
+POC2_CONTRACT_VERSION = 7
 
 _PACKAGE = "tensorrt_llm.serve.openengine_poc"
 
@@ -1169,17 +1169,53 @@ def default_launch_frontends(config: FrontendLaunchConfig) -> None:
 class RequestMetrics(Protocol):
     """Timing of one request, measured from its engine events on the serving side."""
 
-    def on_event(self, event: EngineEvent, now: float) -> None: ...
+    def on_event(self, event: EngineEvent, now: float) -> None:
+        """Called with each engine event of the request as it arrives, at wall-clock time ``now``."""
+        ...
 
-    def metrics_dict(self) -> dict[str, Any]:
-        """The ``RequestOutput.metrics_dict`` entries measured so far."""
+    def metrics_dict(self) -> dict[Any, Any]:
+        """The ``RequestOutput.metrics_dict`` entries measured so far, keyed as in-process."""
+        ...
+
+    def candidate_metrics(self) -> list[dict[Any, Any]]:
+        """The ``RequestOutput.candidate_metrics``: one entry per output, recorded at ``finish``."""
+        ...
+
+    def finish(
+        self,
+        outputs: Sequence[CompletionOutput],
+        now: float,
+        *,
+        prompt_tokens: int,
+        assembled: bool,
+    ) -> None:
+        """Called once when the request has ended: it completed or was aborted, not failed.
+
+        As in-process, a request ends as it is read: one no one reads to its
+        end, such as a streaming request whose client went away before its
+        end, is not recorded. ``prompt_tokens`` is the length of the request's prompt. With
+        ``assembled``, ``outputs`` hold the tokens the response serves, after
+        any serving-side stop trimming, and each has its finish reason ("cancelled"
+        for one an abort ended). Without it, the postprocessing pool assembled
+        the response, and ``outputs`` hold no tokens. The recorder may set the
+        ``request_perf_metrics`` of ``outputs`` here.
+        """
         ...
 
 
 class MetricsRecorder(Protocol):
     """Request metrics, iteration stats and KV-cache events of a frontend."""
 
-    def start_request(self, request_id: str, arrival_time: float) -> RequestMetrics: ...
+    def start_request(
+        self,
+        request_id: str,
+        arrival_time: float,
+        *,
+        sampling_params: SamplingParams | None = None,
+        trace_headers: Mapping[str, str] | None = None,
+    ) -> RequestMetrics:
+        """Start timing a request; ``trace_headers`` are the ones it arrived with."""
+        ...
 
     def iteration_stats(self, load: EngineLoad | None) -> dict[str, Any] | None:
         """One ``/metrics`` entry derived from an engine load snapshot; None for none."""
@@ -1204,14 +1240,34 @@ class _NoRequestMetrics:
     def on_event(self, event: EngineEvent, now: float) -> None:
         pass
 
-    def metrics_dict(self) -> dict[str, Any]:
+    def metrics_dict(self) -> dict[Any, Any]:
         return {}
+
+    def candidate_metrics(self) -> list[dict[Any, Any]]:
+        return []
+
+    def finish(
+        self,
+        outputs: Sequence[CompletionOutput],
+        now: float,
+        *,
+        prompt_tokens: int,
+        assembled: bool,
+    ) -> None:
+        pass
 
 
 class _NoMetrics:
     """Records nothing; the OpenEngine path serves with perf metrics off."""
 
-    def start_request(self, request_id: str, arrival_time: float) -> RequestMetrics:
+    def start_request(
+        self,
+        request_id: str,
+        arrival_time: float,
+        *,
+        sampling_params: SamplingParams | None = None,
+        trace_headers: Mapping[str, str] | None = None,
+    ) -> RequestMetrics:
         return _NoRequestMetrics()
 
     def iteration_stats(self, load: EngineLoad | None) -> dict[str, Any] | None:
