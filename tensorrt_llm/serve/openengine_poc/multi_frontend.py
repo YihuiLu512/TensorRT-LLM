@@ -97,7 +97,9 @@ def launch_frontends(config: FrontendLaunchConfig) -> None:
         click.UsageError: The configuration asks for something these frontends cannot do.
         OpenEngineStartupError: The engine is not usable; the message names the step.
         RuntimeError: The port cannot be bound, the launcher's socket path is too
-            long, or a frontend failed to start.
+            long, a frontend failed to start, or (in an attached frontend) the
+            launcher exited before it started serving.
+        TypeError: The facade refuses the tokenizer (not a Hugging Face one).
         OSError: The temporary directory or a socket could not be created.
     """
     launcher_uds = os.environ.pop(LAUNCHER_UDS_ENV, None)
@@ -151,9 +153,8 @@ class _Sigterm:
     task, also for a SIGTERM received before the task starts. Once uvicorn has
     shut down, it raises SIGTERM again into this handler. The handler does not
     raise: under uvloop an exception raised by a signal handler is logged and
-    dropped while the loop is idle. A process forked from this one (a
-    postprocessing worker, say) inherits the handler and dies of SIGTERM as by
-    default.
+    dropped while the loop is idle. A process forked from this one inherits
+    the handler and dies of SIGTERM as by default.
     """
 
     def __init__(self) -> None:
@@ -189,9 +190,10 @@ class _Sigterm:
 
 @contextlib.contextmanager
 def _stopped_by_sigterm():
-    """Handle SIGTERM in the block, then end the process by it once the block has cleaned up.
+    """Handle SIGTERM in the block; after a SIGTERM, end the process by it once the block is done.
 
-    The cancellation a SIGTERM causes ends the block quietly.
+    The cancellation a SIGTERM causes ends the block quietly. Any other
+    exception the block raises propagates instead.
     """
     sigterm = _Sigterm()
     try:
@@ -320,6 +322,7 @@ def _close_facade(facade: OpenEngineLLM) -> None:
     """Close a facade that never served, without hiding the error that stopped it."""
     try:
         asyncio.run(facade.aclose())
+    # Broad on purpose: this runs while another error propagates, which must win.
     except Exception as error:
         logger.warning(f"Closing the OpenEngine facade failed: {error!r}")
 
@@ -416,7 +419,7 @@ def _serve_launcher(config: FrontendLaunchConfig, num_frontends: int) -> None:
     if 0 < postproc_total < num_frontends:
         logger.warning(
             f"num_postprocess_workers={postproc_total} is less than "
-            f"num_serve_frontends={num_frontends}: every frontend runs one "
+            f"num_serve_frontends={num_frontends}: each frontend's share is one "
             f"postprocessing worker, {num_frontends} in all."
         )
     _disable_responses_store(warn=True)
@@ -513,7 +516,11 @@ async def _run_launcher(
 async def _stop_launcher(
     facade: OpenEngineLLM, spawn: asyncio.Future | None, children: list
 ) -> None:
-    """Stop the attached frontends, including those of a spawn that was cancelled, then the facade."""
+    """Stop the attached frontends, then the facade.
+
+    The frontends include those of a spawn that finished while this task was
+    being cancelled; a spawn stopped by ``cancelled`` reaps its own.
+    """
     try:
         if spawn is not None and not children:
             await asyncio.wait([spawn])

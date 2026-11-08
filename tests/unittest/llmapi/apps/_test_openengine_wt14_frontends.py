@@ -72,6 +72,7 @@ def _sent_by_pid(counter_dir: str) -> dict[int, int]:
 def test_the_frontends_share_the_port_and_the_engine(server: RemoteOpenAIServer, model_name: str):
     log = Path(server._chain_handle.frontend_log).read_text(errors="replace")
     assert f"All {NUM_FRONTENDS} serving frontends are connected" in log
+    before = _sent_by_pid(server._chain_handle.counter_dir)
     for i in range(NUM_REQUESTS):
         # A connection of its own each time, so the kernel picks a frontend for each request.
         with server.get_client() as client:
@@ -85,7 +86,8 @@ def test_the_frontends_share_the_port_and_the_engine(server: RemoteOpenAIServer,
     # The counters are written after each call, off the request path.
     deadline = time.monotonic() + 30
     while True:
-        sent = _sent_by_pid(server._chain_handle.counter_dir)
+        after = _sent_by_pid(server._chain_handle.counter_dir)
+        sent = {pid: count - before.get(pid, 0) for pid, count in after.items()}
         if sum(sent.values()) == NUM_REQUESTS or time.monotonic() > deadline:
             break
         time.sleep(0.5)

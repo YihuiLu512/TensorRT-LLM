@@ -288,8 +288,8 @@ def test_an_attached_frontend_listens_only_once_the_launcher_listens():
             sock.listen()
             await asyncio.wait_for(waiting, 10)
 
-    with tempfile.TemporaryDirectory(prefix="wt14-") as directory:
-        asyncio.run(scenario(os.path.join(directory, "launcher.sock")))
+    with _short_tmpdir() as directory:
+        asyncio.run(scenario(str(directory / "launcher.sock")))
 
 
 def test_an_attached_frontend_stops_waiting_when_the_launcher_is_gone(tmp_path):
@@ -532,6 +532,8 @@ class _Serve:
         self.counter_dir = tmp_path / "counters"
         self.log_path = tmp_path / "serve.log"
         env = {**os.environ, **(env or {})}
+        # The launcher warns about the Responses store only when it turns it off.
+        env.pop("TRTLLM_RESPONSES_API_DISABLE_STORE", None)
         env[SERVE_COUNTER_DIR_ENV] = str(self.counter_dir)
         env.pop(multi_frontend.LAUNCHER_UDS_ENV, None)
         # The attached frontends re-exec the command line, so start it as users do,
@@ -607,8 +609,8 @@ class _Serve:
 
 @contextlib.contextmanager
 def _short_tmpdir():
-    """A private TMPDIR, short enough for the launcher's Unix socket path."""
-    path = Path(tempfile.mkdtemp(prefix="wt14-"))
+    """A private TMPDIR under /tmp, short enough for the launcher's Unix socket path."""
+    path = Path(tempfile.mkdtemp(prefix="wt14-", dir="/tmp" if os.path.isdir("/tmp") else None))
     try:
         yield path
     finally:
@@ -630,8 +632,8 @@ def serving(tmp_path_factory):
     tmp_path = tmp_path_factory.mktemp("wt14_serve")
     model_dir = _model_dir(tmp_path / "model")
     engine = _engine(model_dir)
-    with running_in_thread(engine):
-        serve = _Serve(tmp_path, model_dir, engine, NUM_FRONTENDS)
+    with _short_tmpdir() as tmpdir, running_in_thread(engine):
+        serve = _Serve(tmp_path, model_dir, engine, NUM_FRONTENDS, env={"TMPDIR": str(tmpdir)})
         try:
             # Read together with the first listening socket of any frontend.
             model_info_calls = _wait(
