@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import dataclasses
 from types import SimpleNamespace
 
 import click
@@ -97,22 +96,8 @@ def _args():
     )
 
 
-def _passthrough_map_request(prompt_token_ids, sampling_params, caps, options, *, engine_name):
-    """The default mapping, plus the media and the adapter name it does not carry."""
-    plain = dataclasses.replace(options, media=(), lora_request=None, lora_name=None)
-    requests = contracts.default_map_request(
-        prompt_token_ids, sampling_params, caps, plain, engine_name=engine_name
-    )
-    for request in requests:
-        request.media = list(options.media)
-        request.lora_name = options.lora_name
-    return requests
-
-
 @pytest.fixture(autouse=True)
 def _setup(monkeypatch, tmp_path):
-    # The request mapping that carries media and adapters is another slot's.
-    monkeypatch.setattr(facade_module.contracts, "map_request", _passthrough_map_request)
     monkeypatch.setitem(
         MULTIMODAL_PLACEHOLDER_REGISTRY._multimodal_placeholder_by_model_type,
         MODEL_TYPE,
