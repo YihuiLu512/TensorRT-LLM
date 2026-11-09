@@ -34,6 +34,7 @@ import os
 import re
 import signal
 import time
+from collections import deque
 from collections.abc import Callable, Mapping
 from http import HTTPStatus
 from pathlib import Path
@@ -68,7 +69,14 @@ from tensorrt_llm.logger import logger
 from tensorrt_llm.sampling_params import SamplingParams
 
 from . import contracts
-from .engine_client import EngineInfo, EngineLoad, EngineRequest, ModelCapabilities, OutputFinished
+from .engine_client import (
+    EngineInfo,
+    EngineLoad,
+    EngineRequest,
+    ModelCapabilities,
+    OutputFinished,
+    TokenDelta,
+)
 from .engine_client_impl import EngineEventStream, OpenEngineEngineClient
 
 __all__ = [
@@ -1129,6 +1137,10 @@ class OpenEngineRequestOutput:
     relative to the previous yield. When the request is served by several calls,
     output ``i`` of call ``k`` is request output ``offset_k + i``.
 
+    An output that has received its call's ``max_tokens`` tokens can only
+    finish next: the step that carries its last tokens also waits for and
+    carries its finish, so the last chunk holds both, as with ``LLM``.
+
     The assembler, and the pool session when there is one, are created once
     the calls are known (at once, or for a request with a LoRA adapter, at the
     first read), since they are told whether the engine matches the stop strings.
@@ -1162,6 +1174,11 @@ class OpenEngineRequestOutput:
         self._engine_name = engine_name
         self._streams: list[EngineEventStream] = []
         self._queue: asyncio.Queue[tuple[int, Any]] | None = None
+        # Items taken from the queue while completing a step, for the next read.
+        self._pending: deque[tuple[int, Any]] = deque()
+        # Per request output: its call's max_tokens, and the tokens it has received.
+        self._max_tokens: list[int | None] = []
+        self._tokens_received: list[int] = []
         self._open_calls = 0
         self._aborted = False
         # Whether this side has cancelled the calls; a cancellation it did not ask for is an error.
@@ -1196,6 +1213,10 @@ class OpenEngineRequestOutput:
         """Create the assembler and open the pool session for these calls."""
         engine_stop_texts = _engine_stop_texts(requests)
         self._assembler = self._create_assembler(engine_stop_texts)
+        self._max_tokens = [
+            request.max_tokens for request in requests for _ in range(request.num_sequences)
+        ]
+        self._tokens_received = [0] * len(self._max_tokens)
         if self._postproc is not None:
             self._open_session(self._postproc, engine_stop_texts)
 
@@ -1539,6 +1560,67 @@ class OpenEngineRequestOutput:
         self._cancel_calls()
         return error
 
+    def _apply(self, offset: int, event: Any) -> bool:
+        """Apply one event of the call at ``offset``; return whether an output changed."""
+        if offset and hasattr(event, "output_index"):
+            event = _shifted(event, offset)
+        try:
+            changed = self._assembler.apply(event)
+        except Exception as error:
+            # Whatever went wrong, the engine must not keep generating.
+            raise self._fail(
+                OpenEngineServeError(
+                    f"failed to apply an OpenEngine response: {error}",
+                    HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            ) from error
+        if isinstance(event, TokenDelta):
+            self._tokens_received[event.output_index] += len(event.token_ids)
+        return changed
+
+    def _finish_due(self) -> bool:
+        """Whether an unfinished output has received its call's ``max_tokens`` tokens."""
+        return any(
+            output.finish_reason is None and limit is not None and received >= limit
+            for output, limit, received in zip(
+                self._assembler.outputs, self._max_tokens, self._tokens_received
+            )
+        )
+
+    async def _complete_step(self) -> None:
+        """Apply the events up to the finish of every output that has received all its tokens.
+
+        The ``*_diff`` views then cover the whole step. The end of the last
+        open call, a call's failure, or a cancellation the engine made itself
+        ends the step early and is read next.
+        """
+        outputs = self._assembler.outputs
+        # Each output's diff views start where the step started.
+        starts = [
+            (output._last_text_len, output._last_token_ids_len, output._last_logprobs_len)
+            for output in outputs
+        ]
+        merged = False
+        while not self._assembler.finished and self._finish_due():
+            offset, item = await self._queue.get()
+            if item is _END and self._open_calls > 1:
+                # Counted as the next read would count it.
+                self._open_calls -= 1
+                continue
+            if (
+                item is _END
+                or isinstance(item, BaseException)
+                or self._engine_cancelled(item) is not None
+            ):
+                self._pending.append((offset, item))
+                break
+            merged = self._apply(offset, item) or merged
+        if merged:
+            for output, (text, token_ids, logprobs) in zip(outputs, starts):
+                output._last_text_len = text
+                output._last_token_ids_len = token_ids
+                output._last_logprobs_len = logprobs
+
     async def __anext__(self) -> OpenEngineRequestOutput:
         if self.finished:
             raise StopAsyncIteration
@@ -1567,7 +1649,7 @@ class OpenEngineRequestOutput:
         if self._session is not None:
             return await self._next_postprocessed()
         while True:
-            offset, item = await self._queue.get()
+            offset, item = self._pending.popleft() if self._pending else await self._queue.get()
             if item is _END:
                 self._open_calls -= 1
                 if self._open_calls > 0:
@@ -1589,25 +1671,14 @@ class OpenEngineRequestOutput:
                 return self
             if isinstance(item, BaseException):
                 raise self._fail(self._call_failure(item)) from item
-            event = item
-            cancelled = self._engine_cancelled(event)
+            cancelled = self._engine_cancelled(item)
             if cancelled is not None:
                 # The engine gave up on the request on its own: not a result to return.
                 raise self._fail(cancelled)
-            if offset and hasattr(event, "output_index"):
-                event = _shifted(event, offset)
-            try:
-                changed = self._assembler.apply(event)
-            except Exception as error:
-                # Whatever went wrong, the engine must not keep generating.
-                raise self._fail(
-                    OpenEngineServeError(
-                        f"failed to apply an OpenEngine response: {error}",
-                        HTTPStatus.INTERNAL_SERVER_ERROR,
-                    )
-                ) from error
-            if not changed:
+            if not self._apply(offset, item):
                 continue
+            if not self._assembler.finished and self._finish_due():
+                await self._complete_step()
             if self._assembler.finished:
                 self.finished = True
                 # Tokens past a serving-side stop string are not needed: cancelling

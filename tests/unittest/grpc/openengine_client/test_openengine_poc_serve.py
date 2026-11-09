@@ -16,7 +16,7 @@ import grpc
 import httpx
 import pytest
 import torch
-from fake_openengine import PROFILES, Fail, FakeEngine, FakeProfile, Hang
+from fake_openengine import PROFILES, Delay, Fail, FakeEngine, FakeProfile, Hang
 from google.protobuf import struct_pb2
 from openengine_client_helpers import WAIT_SECONDS, engine_error, token
 from tokenizers import Tokenizer
@@ -649,6 +649,133 @@ def test_engine_error_in_a_streaming_completion_is_an_error_event(tmp_path) -> N
         assert response.status_code == 200
         errors = [c for c in _sse_chunks(response.text) if "error" in c]
         assert len(errors) == 1 and "engine gave up" in errors[0]["error"]["message"]
+
+    _serve(engine, tmp_path, body)
+
+
+async def _steps(output) -> list[tuple[str, list[int], str | None]]:
+    """The text and token ids each yield adds, and the finish reason it reports, of output 0."""
+    steps = []
+    async for step in output:
+        out = step.outputs[0]
+        steps.append((out.text_diff, list(out.token_ids_diff), out.finish_reason))
+    return steps
+
+
+def test_the_last_tokens_and_the_finish_reason_are_one_chunk(tmp_path) -> None:
+    # The engine sends the finish in a message of its own, here well after the last token.
+    engine = _engine(
+        token(0, HE), token(0, LLO), Delay(0.3), _finished(generation_pb2.FINISH_REASON_LENGTH)
+    )
+
+    async def body(engine, facade, http):
+        response = await http.post("/v1/chat/completions", json=_chat(True, max_tokens=2))
+        assert response.status_code == 200, response.text
+        choices = [c["choices"][0] for c in _sse_chunks(response.text) if c["choices"]]
+        finishing = [c for c in choices if c.get("finish_reason") is not None]
+        assert len(finishing) == 1
+        assert finishing[0]["delta"].get("content") == "llo"
+        assert finishing[0]["finish_reason"] == "length"
+        assert "".join(c["delta"].get("content") or "" for c in choices) == "Hello"
+
+    _serve(engine, tmp_path, body)
+
+
+def test_a_step_ending_at_max_tokens_waits_for_the_finish(tmp_path) -> None:
+    engine = _engine(
+        token(0, HE), token(0, LLO), Delay(0.3), _finished(generation_pb2.FINISH_REASON_LENGTH)
+    )
+
+    async def body(engine, facade, http):
+        output = facade.generate_async(PROMPT_IDS, SamplingParams(max_tokens=2), streaming=True)
+        assert await _steps(output) == [("He", [HE], None), ("llo", [LLO], "length")]
+
+    _serve(engine, tmp_path, body)
+
+
+def test_a_finish_before_max_tokens_is_a_step_of_its_own(tmp_path) -> None:
+    # Nothing tells the facade that the engine will end the output, so it does not wait.
+    engine = _engine(token(0, HE), token(0, LLO), _finished())
+
+    async def body(engine, facade, http):
+        output = facade.generate_async(PROMPT_IDS, SamplingParams(max_tokens=8), streaming=True)
+        assert await _steps(output) == [
+            ("He", [HE], None),
+            ("llo", [LLO], None),
+            ("", [], "stop"),
+        ]
+
+    _serve(engine, tmp_path, body)
+
+
+def test_a_step_of_several_outputs_covers_each_one_from_its_start(tmp_path) -> None:
+    engine = _engine(
+        token(0, HE),
+        token(1, WORLD),
+        token(0, LLO),
+        Delay(0.2),
+        token(1, BANG),
+        _finished(generation_pb2.FINISH_REASON_LENGTH, index=0, terminal=False),
+        _finished(generation_pb2.FINISH_REASON_LENGTH, index=1),
+        profile=_profile().replace(max_num_sequences=2),
+    )
+
+    async def body(engine, facade, http):
+        output = facade.generate_async(
+            PROMPT_IDS, SamplingParams(n=2, temperature=1.0, max_tokens=2), streaming=True
+        )
+        steps = []
+        async for step in output:
+            steps.append([(o.text_diff, o.finish_reason) for o in step.outputs])
+        # Output 0 has all its tokens with "llo": that step goes on until both outputs finished.
+        assert steps == [
+            [("He", None), ("", None)],
+            [("", None), (" world", None)],
+            [("llo", "length"), ("!", "length")],
+        ]
+        assert [o.text for o in output.outputs] == ["Hello", " world!"]
+
+    _serve(engine, tmp_path, body)
+
+
+def test_another_call_that_ends_does_not_end_a_step_that_waits_for_the_finish(tmp_path) -> None:
+    # One sequence per call, so n=2 is two calls; one of them ends while the
+    # other's last tokens wait for their finish.
+    engine = _engine(profile=_profile().replace(max_num_sequences=1))
+    length = generation_pb2.FINISH_REASON_LENGTH
+    engine.push_script(token(0, HE), token(0, LLO), Delay(0.4), _finished(length))
+    engine.push_script(token(0, WORLD), token(0, BANG), Delay(0.2), _finished(length))
+
+    async def body(engine, facade, http):
+        output = facade.generate_async(
+            PROMPT_IDS, SamplingParams(n=2, temperature=1.0, max_tokens=2), streaming=True
+        )
+        steps = []
+        async for step in output:
+            steps.append([(o.text_diff, o.finish_reason) for o in step.outputs])
+        assert len(engine.requests) == 2
+        assert sorted(o.text for o in output.outputs) == [" world!", "Hello"]
+        for index in range(2):
+            # The step that finishes an output also carries its last tokens.
+            text, reason = next(s[index] for s in steps if s[index][1] is not None)
+            assert text.endswith(("llo", "!")) and reason == "length"
+
+    _serve(engine, tmp_path, body)
+
+
+def test_a_call_that_fails_while_a_step_waits_for_the_finish_fails_after_that_step(
+    tmp_path,
+) -> None:
+    engine = _engine(token(0, HE), token(0, LLO), Delay(0.2), Fail(grpc.StatusCode.INTERNAL, "x"))
+
+    async def body(engine, facade, http):
+        output = facade.generate_async(PROMPT_IDS, SamplingParams(max_tokens=2), streaming=True)
+        assert (await output.__anext__()).outputs[0].text_diff == "He"
+        step = await output.__anext__()
+        assert (step.outputs[0].text_diff, step.outputs[0].finish_reason) == ("llo", None)
+        with pytest.raises(OpenEngineServeError):
+            await output.__anext__()
+        assert output.finished and output.error is not None
 
     _serve(engine, tmp_path, body)
 
