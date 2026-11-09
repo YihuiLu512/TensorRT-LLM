@@ -3,12 +3,18 @@
 """Stand-in for ``trtllm-serve`` in the launch tests; installed as an executable named trtllm-serve.
 
 With ``--grpc`` it is an engine: a gRPC health server whose ``inference``
-service turns SERVING. Otherwise it is a front end: an HTTP server answering
-``/health``. Each run records its arguments, environment and signal times in
-``$FAKE_RECORD_DIR``. ``FAKE_<ROLE>_MODE`` is ``ok``, ``exit`` (exit 3 at once),
-``busy_once`` (the first run fails to bind its port, later runs are ``ok``)
-or ``never_ready``; ``FAKE_<ROLE>_IGNORE_TERM`` ignores SIGTERM;
-a front end whose port is taken logs uvicorn's bind error and exits 1;
+service turns SERVING. Otherwise it is a front end (role ``frontend-check``
+when the harness's front-end check variable is set): it refuses a
+``--max_beam_width`` above 1 as the real one does (exit 2), connects once to its
+``--openengine-endpoint`` and is then an HTTP server answering ``/health``.
+Each run records its arguments, environment and signal times in
+``$FAKE_RECORD_DIR``. ``FAKE_<ROLE>_MODE`` (``FAKE_FRONTEND_CHECK_MODE`` for the
+check) is ``ok``, ``exit`` (exit 3 at once), ``done`` (exit 0 at once),
+``killed`` (SIGKILL itself at once), ``busy_once`` (the first run fails to bind
+its port, later runs are ``ok``) or ``never_ready`` (an engine never turns
+SERVING, a front end never connects); ``FAKE_<ROLE>_IGNORE_TERM`` ignores
+SIGTERM; options take ``--name value`` and ``--name=value`` alike; a front end
+whose port is taken logs uvicorn's bind error and exits 1;
 ``FAKE_ENGINE_CHILD`` starts a child in the same session that ignores SIGTERM.
 """
 
@@ -16,14 +22,31 @@ import errno
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import time
 
 args = sys.argv[1:]
-role = "engine" if "--grpc" in args else "frontend"
+if "--grpc" in args:
+    role = "engine"
+elif os.environ.get("TRTLLM_OPENENGINE_CHAIN_FRONTEND_CHECK"):
+    role = "frontend-check"
+else:
+    role = "frontend"
 record_dir = os.environ["FAKE_RECORD_DIR"]
-mode = os.environ.get(f"FAKE_{role.upper()}_MODE", "ok")
+env_prefix = f"FAKE_{role.upper().replace('-', '_')}_"
+mode = os.environ.get(env_prefix + "MODE", "ok")
+
+
+def option(name, default=None):
+    """The value of option ``name``, given as ``name value`` or ``name=value``."""
+    for i, arg in enumerate(args):
+        if arg == name and i + 1 < len(args):
+            return args[i + 1]
+        if arg.startswith(name + "="):
+            return arg.split("=", 1)[1]
+    return default
 
 
 def record(name, data):
@@ -35,12 +58,12 @@ def record(name, data):
 
 def on_term(signum, frame):
     record("term", {"time": time.monotonic()})
-    if not os.environ.get(f"FAKE_{role.upper()}_IGNORE_TERM"):
+    if not os.environ.get(env_prefix + "IGNORE_TERM"):
         sys.exit(0)
 
 
 signal.signal(signal.SIGTERM, on_term)
-port = int(args[args.index("--port") + 1]) if "--port" in args else 8000
+port = int(option("--port", 8000))
 child = None
 if role == "engine" and os.environ.get("FAKE_ENGINE_CHILD"):
     child = subprocess.Popen(
@@ -63,6 +86,10 @@ record(
 print(f"{role} started pid {os.getpid()}", flush=True)
 if mode == "exit":
     sys.exit(3)
+if mode == "done":
+    sys.exit(0)
+if mode == "killed":
+    os.kill(os.getpid(), signal.SIGKILL)
 if mode == "busy_once":
     marker = os.path.join(record_dir, f"{role}-busy")
     if not os.path.exists(marker):
@@ -89,6 +116,19 @@ if role == "engine":
         time.sleep(0.1)
 else:
     from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    if int(option("--max_beam_width", 1)) > 1:
+        print(
+            "Error: max_beam_width > 1 is not supported: OpenEngine has no beam search",
+            flush=True,
+        )
+        sys.exit(2)
+    if mode != "never_ready" and option("--openengine-endpoint") is not None:
+        engine_host, _, engine_port = option("--openengine-endpoint").rpartition(":")
+        try:
+            socket.create_connection((engine_host, int(engine_port)), timeout=1).close()
+        except OSError:
+            pass
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):

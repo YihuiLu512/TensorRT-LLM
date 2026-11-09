@@ -230,6 +230,156 @@ def test_engine_not_ready_in_time_fails_and_is_stopped(fake):
     assert not (fake.records / "frontend-start.json").exists()
 
 
+def _wait_gone(pid, timeout=10.0):
+    deadline = time.monotonic() + timeout
+    while not _gone(pid):
+        assert time.monotonic() < deadline, f"pid {pid} still running"
+        time.sleep(0.05)
+
+
+def test_front_end_refusal_stops_the_engine_while_it_loads(fake, tmp_path):
+    # The fake engine would take 600 s to turn SERVING.
+    fake.env["FAKE_ENGINE_DELAY"] = "600"
+    sink = open(tmp_path / "sink.log", "w")
+    started = time.monotonic()
+    handle = _start(
+        fake, ["--port", str(_port()), "--max_beam_width", "2"], chain="trtllm", sink=sink
+    )
+    assert time.monotonic() - started < 30
+    check = _record(fake.records, "frontend-check-start")
+    assert check["argv"][check["argv"].index("--max_beam_width") + 1] == "2"
+    # The engine was stopped; the front end proper never started.
+    engine = _record(fake.records, "engine-start")
+    _record(fake.records, "engine-term")
+    _wait_gone(engine["pid"])
+    assert not (fake.records / "frontend-start.json").exists()
+    # The check's exited process stands for the front end, as an exited front end would.
+    assert handle.frontend.pid == check["pid"]
+    assert handle.poll() == 2
+    assert os.path.basename(handle.frontend_log) == f"frontend-check-{check['pid']}.log"
+    assert "max_beam_width > 1 is not supported" in open(handle.frontend_log).read()
+    assert handle.alive
+    handle.terminate(grace=1)
+    assert handle.teardown_errors == []
+    sink.close()
+    mirrored = open(tmp_path / "sink.log").read()
+    assert "max_beam_width > 1 is not supported" in mirrored
+    assert "engine started" not in mirrored
+
+
+@pytest.mark.parametrize("beam", [["--max_beam_width", "4"], ["--max_beam_width=4"]])
+def test_chain_process_of_a_refused_front_end_exits_with_its_code(
+    fake, monkeypatch, tmp_path, beam
+):
+    monkeypatch.setenv(cv.ENV_CHAIN, "trtllm")
+    fake.env["FAKE_ENGINE_DELAY"] = "600"
+    out = open(tmp_path / "out.log", "w")
+    cmd = [fake.exe, "/model", "--port", str(_port())] + beam
+    with launch.chain_popen(cmd, env=fake.env, stdout=out) as proc:
+        assert proc.wait(timeout=30) == 2
+        engine_pid = _record(fake.records, "engine-start")["pid"]
+    _wait_gone(engine_pid)
+    out.close()
+    assert "max_beam_width > 1 is not supported" in open(tmp_path / "out.log").read()
+
+
+def test_front_end_check_that_passes_is_stopped_before_the_front_end_starts(fake):
+    port = _port()
+    handle = _start(
+        fake,
+        ["--host", "127.0.0.1", "--port", str(port), "--max_beam_width", "1", "--tool_parser", "x"],
+        chain="trtllm",
+    )
+    check = _record(fake.records, "frontend-check-start")
+    frontend = _record(fake.records, "frontend-start")
+    assert _record(fake.records, "frontend-check-term")["time"] < frontend["time"]
+    _wait_gone(check["pid"])
+    # The same front-end command line, with an engine address and a port of its own.
+    endpoint = check["argv"][check["argv"].index("--openengine-endpoint") + 1]
+    check_port = check["argv"][check["argv"].index("--port") + 1]
+    assert endpoint != handle.engine_endpoint and check_port != str(port)
+    assert [a for a in check["argv"] if a not in (endpoint, check_port)] == [
+        a for a in frontend["argv"] if a not in (handle.engine_endpoint, str(port))
+    ]
+    assert check["env"][launch.FRONTEND_CHECK_ENV] == "1"
+    assert cv.ENV_COUNTER_DIR not in check["env"]
+    assert launch.FRONTEND_CHECK_ENV not in frontend["env"]
+    _wait_healthy(handle)
+    assert os.path.basename(handle.frontend_log) == f"frontend-{frontend['pid']}.log"
+    handle.terminate(grace=1)
+    assert handle.teardown_errors == []
+
+
+@pytest.mark.parametrize("check_mode", ["never_ready", "busy_once", "killed", "done"])
+def test_front_end_check_without_an_answer_leaves_the_start_as_it_was(fake, check_mode):
+    # never_ready: still checking when the engine is ready; busy_once: lost its own port;
+    # killed, done: exited by a signal or with code 0, which is no refusal.
+    fake.env["FAKE_FRONTEND_CHECK_MODE"] = check_mode
+    handle = _start(fake, ["--port", str(_port())], chain="trtllm")
+    check = _record(fake.records, "frontend-check-start")
+    frontend = _record(fake.records, "frontend-start")
+    _wait_gone(check["pid"])
+    assert frontend["time"] - _record(fake.records, "engine-start")["time"] >= 0.4
+    _wait_healthy(handle)
+    assert handle.poll() is None
+    handle.terminate(grace=1)
+    assert handle.teardown_errors == []
+
+
+def test_front_end_check_takes_a_descriptor_above_fd_setsize(fake):
+    import resource
+
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    need = 1200
+    if hard != resource.RLIM_INFINITY and hard < need:
+        pytest.skip(f"RLIMIT_NOFILE hard limit {hard} is below {need}")
+    resource.setrlimit(resource.RLIMIT_NOFILE, (max(soft, need), hard))
+    fds = [os.open(os.devnull, os.O_RDONLY)]
+    try:
+        # Every descriptor below 1024 is taken, so the check's socket gets a higher one.
+        while fds[-1] < 1024:
+            fds.append(os.dup(fds[0]))
+        handle = _start(fake, ["--port", str(_port())], chain="trtllm")
+        frontend = _record(fake.records, "frontend-start")
+        assert _record(fake.records, "frontend-check-term")["time"] < frontend["time"]
+        _wait_healthy(handle)
+        handle.terminate(grace=1)
+        assert handle.teardown_errors == []
+    finally:
+        for fd in fds:
+            os.close(fd)
+        resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+
+
+def test_front_end_check_is_stopped_when_the_engine_fails(fake, monkeypatch):
+    monkeypatch.setattr(launch, "_HANDLES", [])
+    fake.env["FAKE_ENGINE_MODE"] = "exit"
+    fake.env["FAKE_FRONTEND_CHECK_MODE"] = "never_ready"
+    with pytest.raises(launch.ChainStartupError, match="exited with code 3"):
+        _start(fake, ["--port", str(_port())], chain="trtllm")
+    _wait_gone(_record(fake.records, "frontend-check-start")["pid"])
+    (handle,) = launch._HANDLES
+    assert handle.frontend is None and handle.teardown_errors == []
+
+
+def test_front_end_check_problems_of_a_start_without_a_server_are_printed(
+    fake, monkeypatch, capsys
+):
+    monkeypatch.setattr(launch, "_HANDLES", [])
+    monkeypatch.setenv(cv.ENV_GLM_SERVE_CMD, str(fake.records / "no-such-engine"))
+    real_stop = launch.LoggedProcess.stop
+
+    def stop(self, grace):
+        problems = real_stop(self, grace)
+        return problems + ([f"{self.role} left pid 1"] if self.role == "frontend-check" else [])
+
+    monkeypatch.setattr(launch.LoggedProcess, "stop", stop)
+    with pytest.raises(FileNotFoundError):
+        _start(fake, ["--port", str(_port())], chain="glm")
+    assert launch._HANDLES == []
+    assert "front-end check of a failed start: frontend-check left pid 1" in capsys.readouterr().err
+
+
 def test_chain_process_reports_an_engine_that_died(fake, monkeypatch):
     monkeypatch.setenv(cv.ENV_CHAIN, "trtllm")
     with launch.chain_popen([fake.exe, "/model", "--port", str(_port())], env=fake.env) as proc:
@@ -500,8 +650,9 @@ def test_engine_port_served_by_another_server_too_is_retried_on_another(fake, mo
     taken = other.add_insecure_port("127.0.0.1:0")
     other.start()
     servicer.set("inference", health_pb2.HealthCheckResponse.SERVING)
-    ports = iter([taken])
     real_free_port = launch.free_port
+    # The front-end check picks its port first; the engine's first attempt gets ``taken``.
+    ports = iter([real_free_port(), taken])
     monkeypatch.setattr(launch, "free_port", lambda: next(ports, None) or real_free_port())
     try:
         handle = _start(fake, ["--port", str(_port())], chain="trtllm")
@@ -607,6 +758,9 @@ def test_stop_leaves_the_session_of_a_recorded_process_that_exited(tmp_path):
         assert not _gone(orphan)
         (note,) = proc.notes
         assert str(orphan) in note and "not killed" in note
+        # A second stop, as terminate() makes after a refusal stopped the engine, adds nothing.
+        assert proc.stop(grace=1) == []
+        assert len(proc.notes) == 1
     finally:
         os.kill(orphan, signal.SIGKILL)
 

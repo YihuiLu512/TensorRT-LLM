@@ -468,3 +468,38 @@ def test_chain_front_end_whose_given_port_is_taken_fails_fast(server_module, fak
             )
         # Without a timeout, /health would wait for the listener's answer for good.
         assert time.monotonic() - start < 60
+
+
+def test_chain_server_whose_front_end_refuses_fails_without_waiting_for_the_engine(
+    monkeypatch, server_module, fake_chain, tmp_path
+):
+    import time
+
+    from openengine_chain import expectations as ex
+    from openengine_chain import launch, pytest_plugin
+
+    monkeypatch.setattr(launch, "_HANDLES", [])
+    # The fake engine would take 600 s to turn SERVING.
+    fake_chain["FAKE_ENGINE_DELAY"] = "600"
+    start = time.monotonic()
+    with pytest.raises(RuntimeError, match="exited unexpectedly") as info:
+        server_module.RemoteOpenAIServer(
+            "/m",
+            ["--max_beam_width", "2"],
+            host="127.0.0.1",
+            env=fake_chain,
+            log_path=str(tmp_path / "server.log"),
+        )
+    assert time.monotonic() - start < 60
+    (handle,) = launch._HANDLES
+    assert not handle.alive and handle.engine.poll() is not None
+    assert os.path.basename(handle.frontend_log).startswith("frontend-check-")
+    # The plugin's STARTUP_REJECTED check finds the front end's own refusal.
+    refused = ex.Expectation(
+        "WT-11",
+        "_test_x.py::test_x",
+        ex.STARTUP_REJECTED,
+        "beam",
+        log_contains="max_beam_width > 1 is not supported",
+    )
+    assert pytest_plugin._startup_rejected(refused, info.value, [handle]) == (True, "")
