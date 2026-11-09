@@ -21,7 +21,7 @@ import pending_e2e  # noqa: E402
 pytestmark = [pytest.mark.cpu_only, pytest.mark.threadleak(enabled=False)]
 
 LINK_ROWS = ["F-01+F-02", "F-05", "F-06", "F-07", "F-14", "F-41", "F-47"]
-WT11_LINK_ROWS = ["F-08", "F-09", "F-11+F-12", "F-13", "F-19", "F-23", "F-25+F-26", "F-35"]
+WT11_LINK_ROWS = ["F-08", "F-11+F-12", "F-13", "F-19", "F-23", "F-25+F-26", "F-35"]
 WT12_ROWS = ["F-03+F-04", "F-15+F-16", "F-17+F-18+F-30", "F-20+F-21", "F-24", "F-27+F-28"]
 LINK = {"WT-01", "WT-03", "WT-04", "WT-10"}
 TRTLLM_FEATURES = {f"WT-0{i}" for i in range(1, 6)} | {f"WT-1{i}" for i in range(0, 7)}
@@ -90,6 +90,9 @@ def test_feature_items_landing_before_the_link_hand_their_rows_on(rows):
     owed, _, unverified = _owed("WT-10", landed, rows, verified)
     assert owed == LINK_ROWS + WT11_LINK_ROWS
     assert unverified == []
+    # WT-11's row F-09 waits for WT-15 too, whose metrics recorder its server needs.
+    owed, _, _ = _owed("WT-15", landed | {"WT-10"}, rows, verified)
+    assert owed == ["F-09", "F-43", "F-45"]
 
 
 def test_feature_item_after_the_link(rows):
@@ -109,9 +112,11 @@ def test_case01_rows(rows):
     # A glm item landing before its row is complete owes nothing for it ...
     assert _owed("WT-06", LINK, rows)[0] == []
     # ... and the TRT-LLM item completing it leaves it to R3.
-    owed, r3, _ = _owed("WT-12", LINK | {"WT-11", "WT-06"}, rows)
+    owed, r3, _ = _owed("WT-12", LINK | {"WT-11", "WT-06", "WT-07"}, rows)
     assert owed == WT12_ROWS
     assert r3 == ["F-17+F-30+F-19-case01"]
+    # The row needs WT-07 too (glm's min_tokens).
+    assert _owed("WT-12", LINK | {"WT-11", "WT-06"}, rows)[1] == []
     # A TRT-LLM item completing a glm row without its own dependency never owes it.
     assert "F-15-case01" not in _owed("WT-10", {"WT-01", "WT-03", "WT-04", "WT-07"}, rows)[0]
 
@@ -129,7 +134,9 @@ def test_rows_waiting_only_on_unchecked_glm_items_are_reported(rows):
     assert "F-15-case01" in unknown and "F-31+F-36+F-37+GLM" in unknown
     assert not {row.id for row in result.owed} & set(unknown)
     # An item known to have landed is not unknown.
-    result = pending_e2e.obligations("WT-12", LINK | {"WT-11", "WT-06"}, rows, unknown={"WT-06"})
+    result = pending_e2e.obligations(
+        "WT-12", LINK | {"WT-11", "WT-06", "WT-07"}, rows, unknown={"WT-06", "WT-07"}
+    )
     assert [row.id for row in result.left_to_r3] == ["F-17+F-30+F-19-case01"]
 
 

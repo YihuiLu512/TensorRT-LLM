@@ -125,9 +125,10 @@ OWNERSHIP: dict[str, list[Rule]] = {
         f"!{CHAIN}/expectations/WT-*.py",
         f"!{CHAIN}/verified/WT-*.yaml",
         f"!{CHAIN}/smoke/WT-*.txt",
-        # WT-03-fix1's own table and verification record (F-09, F-35).
+        # WT-03-fix1's own table, verification record and smoke list.
         f"{CHAIN}/expectations/WT-03-fix1.py",
         f"{CHAIN}/verified/WT-03-fix1.yaml",
+        f"{CHAIN}/smoke/WT-03-fix1.txt",
     )
     + [
         _shared(
@@ -141,23 +142,22 @@ OWNERSHIP: dict[str, list[Rule]] = {
         ),
         _shared("tests/integration/defs/accuracy/test_glm53_flash.py", "the H-2 chain hook"),
     ]
-    # WT-03-fix1 (stage-01/test-01 S3).
     + [
         Rule(path, "exception", f"WT-03-fix1 only: {what}")
         for path, what in (
             (
                 f"{CHAIN}/expectations/WT-11.py",
-                "T4, beam servers refused at startup again, as the front end now gets"
-                " --max_beam_width",
+                "T4, beam servers refused at startup, as the front end gets --max_beam_width",
             ),
             (
                 f"{CHAIN}/expectations/WT-15.py",
-                "T2, no SKIP for the KV-cache utilization test, as the engine now gets"
-                " load metrics with iteration stats",
+                "T2, the KV-cache utilization test's SKIP only on the glm chain, as a"
+                " TensorRT-LLM engine gets load metrics with iteration stats",
             ),
             (
                 "tests/unittest/llmapi/apps/_test_openai_prometheus.py",
-                "T2, a truncate_prompt_tokens test (row F-09) without iteration stats",
+                "T2, a truncate_prompt_tokens test (row F-09) that does not wait for"
+                " iteration stats",
             ),
             (
                 "tests/unittest/llmapi/apps/_test_openengine_wt10_frontend.py",
@@ -173,7 +173,14 @@ OWNERSHIP: dict[str, list[Rule]] = {
             ),
             (
                 "scripts/poc2/feature_deps.yaml",
-                "T10, naming the six streaming cached_tokens cases of F-17+F-18+F-30",
+                "T4, F-25+F-26's beam cases refused at startup; T10, naming the six"
+                " streaming cached_tokens cases of F-17+F-18+F-30;"
+                " T2③ / U6③ / D10 / D15, WT-15 in the deps of F-09, WT-07 in the deps of"
+                " F-17+F-30+F-19-case01; D11, naming F-35's chain case",
+            ),
+            (
+                "tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_scripts.py",
+                "T2③ / U6③ / D10 / D15, the obligation cases following those deps",
             ),
             ("scripts/poc2/check_ownership.py", "the WT-03 entry"),
         )

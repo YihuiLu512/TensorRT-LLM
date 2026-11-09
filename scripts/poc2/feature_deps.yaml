@@ -86,7 +86,9 @@ rows:
     features: [F-09]
     cases: "the truncate_prompt_tokens case of T12"
     author: WT-11
-    deps: [link, WT-11]
+    # WT-15: T12's server turns on perf metrics, which the front end refuses
+    # without WT-15's metrics recorder.
+    deps: [link, WT-11, WT-15]
   - id: F-11+F-12
     features: [F-11, F-12]
     cases: "the sampling cases of T1, T2; new: test_sampling_knobs_reach_engine"
@@ -109,12 +111,15 @@ rows:
     deps: [link, WT-11]
   - id: F-25+F-26
     features: [F-25, F-26]
-    cases: "the beam cases of T1, T2 (expected 400); new: test_unsupported_fields_rejected"
+    cases: "the beam cases of T1, T2 (refused at startup); new: test_unsupported_fields_rejected"
     author: WT-11
     deps: [link, WT-11]
   - id: F-35
     features: [F-35]
-    cases: "_test_openai_cache_salt.py (not in CI)"
+    cases: >-
+      _test_openai_cache_salt.py (not in CI); on the chain it reads a KV-cache hit rate
+      the engine does not report and is SKIP, and
+      _test_openengine_wt03_cache_salt.py, which judges by cached_tokens, takes its place
     author: WT-11
     deps: [link, WT-11]
   - id: F-03+F-04
@@ -220,7 +225,8 @@ rows:
     features: [F-17, F-30, F-19]
     cases: "test_sampling_and_stop, test_n_best_of of the GLM module"
     author: WT-06
-    deps: [link, WT-11, WT-12, WT-06]
+    # WT-07: the min_tokens step of test_sampling_and_stop[glm] needs glm's min_tokens.
+    deps: [link, WT-11, WT-12, WT-06, WT-07]
     chain: case-01
   - id: F-32
     features: [F-32]
