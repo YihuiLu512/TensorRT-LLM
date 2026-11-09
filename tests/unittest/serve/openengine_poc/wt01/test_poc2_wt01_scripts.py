@@ -332,6 +332,7 @@ def test_per_item_files_belong_to_their_item_only():
     assert {n: r.kind for n, r in check_ownership.owners(f"{chain}/conventions.py")} == {
         "WT-03": "own",
         "WT-01": "exception",
+        "WT-09": "exception",
     }
     servicer = "tensorrt_llm/grpc/openengine/servicer.py"
     assert {n: r.kind for n, r in check_ownership.owners(servicer)} == {

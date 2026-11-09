@@ -164,9 +164,11 @@ FINGERPRINT_FILES = (
 
 COUNTER_GENERATE_RECEIVED = "trtllm.counters.generate_received"
 COUNTER_GENERATE_ACCEPTED = "trtllm.counters.generate_accepted"
-# The serving side's count of Generate calls it sent, and where it writes it.
+# The serving side's count of Generate calls it sent, where it publishes it, and
+# the field of its file that names the socket it answers on while it runs.
 SERVE_COUNTER_GENERATE_SENT = "generate_sent"
 SERVE_COUNTER_DIR_ENV = "TRTLLM_OPENENGINE_COUNTER_DIR"
+SERVE_COUNTER_ADDRESS = "address"
 
 # --- Request metadata ---------------------------------------------------------
 

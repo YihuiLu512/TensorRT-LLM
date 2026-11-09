@@ -382,6 +382,51 @@ OWNERSHIP: dict[str, list[Rule]] = {
             "exception",
             "only the rules of WT-09 and WT-09-fix1",
         ),
+    ]
+    # WT-09-fix1, D18: the frontend's Generate count kept in memory (contract v9), and its readers.
+    + [
+        Rule(path, "exception", f"only (WT-09-fix1, D18) {what}")
+        for path, what in (
+            (f"{POC}/contracts.py", "contract v9: GenerateCounter and the readers of its count"),
+            (
+                "tensorrt_llm/grpc/openengine_conventions.py",
+                "the name of the counter file's address field",
+            ),
+            (
+                "tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_contracts.py",
+                "the contract version and the GenerateCounter tests",
+            ),
+            (
+                "tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_conventions.py",
+                "the harness's copy of the address field",
+            ),
+            (f"{POC}/facade.py", "starting, counting with and closing the GenerateCounter"),
+            (
+                f"{CLIENT_TESTS}/test_openengine_poc_serve.py",
+                "the tests of the facade's Generate count",
+            ),
+            (f"{CHAIN}/proof.py", "reading the front ends' counts"),
+            (f"{CHAIN}/conventions.py", "the copy of the address field"),
+            (f"{CHAIN}/tests/test_proof.py", "the tests of reading the front ends' counts"),
+            (f"{CHAIN}/tests/test_plugin.py", "a comment on when the counter file appears"),
+            (f"{CHAIN}/tests/plugin_support.py", "a comment on when the counter file appears"),
+            (f"{CHAIN}/pytest_plugin.py", "the comment on re-reading the counts"),
+            (
+                "tests/unittest/serve/openengine_poc/wt14/test_poc2_wt14_multi_frontend.py",
+                "reading each frontend's count",
+            ),
+            (
+                "tests/unittest/llmapi/apps/_test_openengine_wt14_frontends.py",
+                "reading each frontend's count",
+            ),
+        )
+    ]
+    + [
+        Rule(
+            "tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_scripts.py",
+            "exception",
+            "only (WT-09-fix1, D18 / D-N5) the owners it expects of the chain's conventions.py",
+        )
     ],
     "WT-10": _own(
         f"{POC}/adapter.py",

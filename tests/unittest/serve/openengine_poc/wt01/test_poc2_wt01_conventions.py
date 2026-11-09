@@ -360,6 +360,7 @@ def test_the_harness_copies_match_the_conventions():
     spec.loader.exec_module(harness)
     assert harness.ENV_COUNTER_DIR == conv.SERVE_COUNTER_DIR_ENV
     assert harness.FRONTEND_COUNTER_FIELD == conv.SERVE_COUNTER_GENERATE_SENT
+    assert harness.FRONTEND_COUNTER_ADDRESS_FIELD == conv.SERVE_COUNTER_ADDRESS
     assert harness.ENGINE_COUNTER_KEY == conv.COUNTER_GENERATE_RECEIVED
 
 

@@ -4,13 +4,18 @@
 
 import asyncio
 import collections
+import contextlib
 import dataclasses
 import enum
 import json
 import os
 import pickle
+import socket
 import sys
+import threading
 import types
+import uuid
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest import mock
@@ -49,7 +54,7 @@ def _fresh_slots():
 
 
 def test_contract_version():
-    assert contracts.POC2_CONTRACT_VERSION == 8
+    assert contracts.POC2_CONTRACT_VERSION == 9
 
 
 def test_slot_table():
@@ -1022,62 +1027,251 @@ def test_pp_messages_hold_plain_data():
 # --- GenerateCounter ------------------------------------------------------------
 
 
-def test_counter_writes_one_file_per_process(tmp_path):
-    counter = contracts.GenerateCounter(tmp_path)
-    assert counter.value == 0 and list(tmp_path.iterdir()) == []
-    assert counter.increment() == 1
-    assert counter.increment(2) == 3
-    files = sorted(p.name for p in tmp_path.iterdir())
-    assert files == [f"{os.getpid()}.json"]
-    assert json.loads((tmp_path / files[0]).read_text()) == {
-        "pid": os.getpid(),
-        "generate_sent": 3,
-    }
-    (tmp_path / "99999999.json").write_text(json.dumps({"pid": 99999999, "generate_sent": 4}))
-    assert contracts.read_generate_sent(tmp_path) == 7
-    with pytest.raises(ValueError):
-        counter.increment(-1)
+def _counter_file(counter_dir) -> dict:
+    return json.loads((Path(counter_dir) / f"{os.getpid()}.json").read_text())
 
 
-def test_counter_creates_its_directory_and_leaves_no_temporary_file(tmp_path):
+def _counter(*args):
+    """A counter that is closed, and its answering thread joined, however the test ends."""
+    return contextlib.closing(contracts.GenerateCounter(*args))
+
+
+def _no_file_writes(patch):
+    def fail(*args, **kwargs):
+        raise AssertionError("the counter wrote a file")
+
+    patch.setattr(contracts.tempfile, "mkstemp", fail)
+    patch.setattr(contracts.os, "replace", fail)
+
+
+def test_counter_counts_in_memory(tmp_path, monkeypatch):
+    with _counter(tmp_path) as counter:
+        counter.start()
+        with monkeypatch.context() as patch:
+            _no_file_writes(patch)
+            assert counter.value == 0
+            assert counter.increment() == 1
+            assert counter.increment(2) == 3
+            with pytest.raises(ValueError):
+                counter.increment(-1)
+            assert counter.value == 3
+            # The file still holds the count of start(); readers ask the running counter.
+            assert _counter_file(tmp_path)["generate_sent"] == 0
+            assert contracts.read_generate_sent_by_pid(tmp_path) == {os.getpid(): 3}
+            counter.increment()
+            assert contracts.read_generate_sent(tmp_path) == 4
+
+
+def test_counter_publishes_only_once_started(tmp_path):
     counter_dir = tmp_path / "new" / "counters"
-    contracts.GenerateCounter(counter_dir).increment()
-    assert [p.name for p in counter_dir.iterdir()] == [f"{os.getpid()}.json"]
-    assert contracts.read_generate_sent(counter_dir) == 1
+    with _counter(counter_dir) as counter:
+        counter.increment()
+        assert not counter_dir.exists()
+        counter.start()
+        counter.start()
+        data = _counter_file(counter_dir)
+        assert set(data) == {"pid", "generate_sent", conv.SERVE_COUNTER_ADDRESS}
+        assert data["pid"] == os.getpid() and data["generate_sent"] == 1
+        # No temporary file is left.
+        assert [p.name for p in counter_dir.iterdir()] == [f"{os.getpid()}.json"]
+        assert contracts.read_generate_sent(counter_dir) == 1
 
 
-def test_counter_recreates_a_removed_directory(tmp_path):
-    counter_dir = tmp_path / "counters"
-    counter = contracts.GenerateCounter(counter_dir)
-    counter.increment()
-    (counter_dir / f"{os.getpid()}.json").unlink()
-    counter_dir.rmdir()
-    counter.increment()
-    assert contracts.read_generate_sent(counter_dir) == 2
+def test_counter_close_leaves_the_final_count(tmp_path):
+    with _counter(tmp_path) as counter:
+        counter.start()
+        address = _counter_file(tmp_path)[conv.SERVE_COUNTER_ADDRESS]
+        counter.increment(2)
+        counter.close()
+        assert _counter_file(tmp_path) == {"pid": os.getpid(), "generate_sent": 2}
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
+            with pytest.raises(ConnectionRefusedError):
+                probe.connect("\0" + address)
+        # Calls that end while the frontend closes still reach the file.
+        assert counter.increment() == 3
+        assert _counter_file(tmp_path) == {"pid": os.getpid(), "generate_sent": 3}
+        counter.close()
+        counter.start()
+        assert contracts.read_generate_sent(tmp_path) == 3
 
 
-def test_counter_counts_a_call_whose_write_failed(tmp_path, monkeypatch):
+def test_counter_that_never_started_writes_nothing(tmp_path):
     counter = contracts.GenerateCounter(tmp_path)
     counter.increment()
+    counter.close()
+    counter.increment()
+    assert list(tmp_path.iterdir()) == []
 
+
+def test_reading_adds_up_every_frontend(tmp_path):
+    with _counter(tmp_path) as counter:
+        counter.start()
+        counter.increment(3)
+        (tmp_path / "99999999.json").write_text(json.dumps({"pid": 99999999, "generate_sent": 4}))
+        assert contracts.read_generate_sent_by_pid(tmp_path) == {os.getpid(): 3, 99999999: 4}
+        assert contracts.read_generate_sent(tmp_path) == 7
+        counter.close()
+        assert contracts.read_generate_sent(tmp_path) == 7
+    assert contracts.read_generate_sent(tmp_path / "empty") == 0
+
+
+def test_a_frontend_that_does_not_answer_is_an_error(tmp_path):
+    (tmp_path / "12.json").write_text(
+        json.dumps({"pid": 12, "generate_sent": 4, conv.SERVE_COUNTER_ADDRESS: "nobody-listens"})
+    )
+    with pytest.raises(OSError, match="pid 12 did not answer"):
+        contracts.read_generate_sent(tmp_path)
+
+
+def test_a_frontend_that_hangs_up_without_answering_did_not_answer(tmp_path):
+    address = f"wt01-test-{os.getpid()}-{uuid.uuid4().hex}"
+    (tmp_path / "12.json").write_text(
+        json.dumps({"pid": 12, "generate_sent": 4, conv.SERVE_COUNTER_ADDRESS: address})
+    )
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+        listener.bind("\0" + address)
+        listener.listen()
+
+        def hang_up():
+            connection, _ = listener.accept()
+            connection.close()
+
+        thread = threading.Thread(target=hang_up)
+        thread.start()
+        try:
+            with pytest.raises(OSError, match="pid 12 did not answer"):
+                contracts.read_generate_sent(tmp_path)
+        finally:
+            thread.join(contracts.COUNTER_READ_TIMEOUT_S)
+
+
+def test_a_frontend_that_closed_while_being_read_gives_its_final_count(tmp_path, monkeypatch):
+    path = tmp_path / "12.json"
+    path.write_text(
+        json.dumps({"pid": 12, "generate_sent": 0, conv.SERVE_COUNTER_ADDRESS: "closing"})
+    )
+
+    def closed(address):
+        # The counter wrote its final count, then stopped answering.
+        path.write_text(json.dumps({"pid": 12, "generate_sent": 5}))
+        raise ConnectionRefusedError(address)
+
+    monkeypatch.setattr(contracts, "_ask_counter", closed)
+    assert contracts.read_generate_sent_by_pid(tmp_path) == {12: 5}
+
+
+def test_two_counts_for_one_pid_are_refused(tmp_path):
+    for name in ("12", "13"):
+        (tmp_path / f"{name}.json").write_text(json.dumps({"pid": 12, "generate_sent": 1}))
+    with pytest.raises(ValueError, match="pid 12"):
+        contracts.read_generate_sent(tmp_path)
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "null",
+        "[]",
+        '{"pid": 12}',
+        '{"pid": 12, "generate_sent": null}',
+        '{"pid": 12, "generate_sent": true}',
+        '{"pid": "12", "generate_sent": 1}',
+        '{"pid": 12, "generate_sent": 1, "address": 7}',
+        '{"pid": 12, "gen',
+    ],
+)
+def test_a_file_without_a_count_is_refused(tmp_path, content):
+    (tmp_path / "12.json").write_text(content)
+    with pytest.raises(ValueError):
+        contracts.read_generate_sent(tmp_path)
+
+
+def test_counter_start_that_fails_publishes_nothing(tmp_path, monkeypatch):
     def fail(*args, **kwargs):
         raise PermissionError("read-only")
 
-    with monkeypatch.context() as patch:
-        patch.setattr(contracts.tempfile, "mkstemp", fail)
-        with pytest.raises(PermissionError):
-            counter.increment()
-    assert counter.value == 2 and contracts.read_generate_sent(tmp_path) == 1
-    # The next write brings the file up to date.
-    assert counter.increment() == 3
-    assert contracts.read_generate_sent(tmp_path) == 3
+    threads = set(threading.enumerate())
+    with _counter(tmp_path) as counter:
+        with monkeypatch.context() as patch:
+            patch.setattr(contracts.tempfile, "mkstemp", fail)
+            with pytest.raises(PermissionError):
+                counter.start()
+        assert list(tmp_path.iterdir()) == []
+        # The thread that answered while the file was being written has stopped.
+        assert set(threading.enumerate()) <= threads
+        counter.increment()
+        # A later start publishes the count.
+        counter.start()
+        assert contracts.read_generate_sent(tmp_path) == 1
+
+
+def test_counter_whose_thread_cannot_start_publishes_nothing(tmp_path, monkeypatch):
+    def fail(self):
+        raise RuntimeError("can't start new thread")
+
+    with _counter(tmp_path) as counter:
+        with monkeypatch.context() as patch:
+            patch.setattr(contracts.threading.Thread, "start", fail)
+            with pytest.raises(RuntimeError):
+                counter.start()
+        assert list(tmp_path.iterdir()) == []
+        counter.start()
+        counter.increment()
+        assert contracts.read_generate_sent(tmp_path) == 1
+
+
+def test_counter_keeps_answering_after_failing_to_take_a_connection(tmp_path, monkeypatch):
+    accept, failed, warned = socket.socket.accept, [], []
+
+    def fail_three_times(self):
+        if len(failed) < 3:
+            failed.append(True)
+            raise OSError("Too many open files")
+        return accept(self)
+
+    monkeypatch.setattr(socket.socket, "accept", fail_three_times)
+    monkeypatch.setattr(contracts, "_COUNTER_ACCEPT_RETRY_S", 0.01)
+    monkeypatch.setattr(contracts.logger, "warning", warned.append)
+    with _counter(tmp_path) as counter:
+        counter.start()
+        counter.increment()
+        assert contracts.read_generate_sent(tmp_path) == 1
+        assert len(failed) == 3
+        # One warning for the failures in a row.
+        assert len(warned) == 1 and "Too many open files" in warned[0]
+
+
+def test_counter_close_that_fails_stops_answering(tmp_path, monkeypatch):
+    def fail(*args, **kwargs):
+        raise PermissionError("read-only")
+
+    with _counter(tmp_path) as counter:
+        counter.start()
+        counter.increment()
+        server, joined = counter._server, []
+        join = server.join
+        server.join = lambda *args: joined.append(join(*args))
+        with monkeypatch.context() as patch:
+            patch.setattr(contracts.tempfile, "mkstemp", fail)
+            with pytest.raises(PermissionError):
+                counter.close()
+        # The answering thread is joined all the same.
+        assert joined and not server.is_alive()
+        with pytest.raises(OSError, match="did not answer"):
+            contracts.read_generate_sent(tmp_path)
+        # The next write brings the file up to date.
+        assert counter.increment() == 2
+        assert contracts.read_generate_sent(tmp_path) == 2
 
 
 def test_counter_directory_comes_from_the_environment(tmp_path, monkeypatch):
     monkeypatch.setenv(conv.SERVE_COUNTER_DIR_ENV, str(tmp_path))
-    contracts.GenerateCounter().increment()
-    assert contracts.read_generate_sent(tmp_path) == 1
+    with _counter() as counter:
+        counter.start()
+        counter.increment()
+        assert contracts.read_generate_sent(tmp_path) == 1
     monkeypatch.delenv(conv.SERVE_COUNTER_DIR_ENV)
-    counter = contracts.GenerateCounter()
-    counter.increment()
+    with _counter() as counter:
+        counter.start()
+        counter.increment()
     assert counter.value == 1 and contracts.read_generate_sent(tmp_path) == 1

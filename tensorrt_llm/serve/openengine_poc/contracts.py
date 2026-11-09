@@ -40,6 +40,7 @@ and :mod:`.engine_client`, none of which loads protobuf or gRPC.
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import enum
 import importlib
@@ -47,9 +48,11 @@ import inspect
 import json
 import math
 import os
+import socket
 import sys
 import tempfile
 import threading
+import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -59,6 +62,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, Protocol, cast
 from tensorrt_llm.grpc.openengine_conventions import (
     REQ_DETOKENIZE,
     SAMPLING_PARAM_NAMES,
+    SERVE_COUNTER_ADDRESS,
     SERVE_COUNTER_DIR_ENV,
     SERVE_COUNTER_GENERATE_SENT,
 )
@@ -82,7 +86,7 @@ if TYPE_CHECKING:
 
 # Bump on any change to a signature, type or message in this module or in
 # engine_client.py, in a commit of its own.
-POC2_CONTRACT_VERSION = 8
+POC2_CONTRACT_VERSION = 9
 
 _PACKAGE = "tensorrt_llm.serve.openengine_poc"
 
@@ -1443,20 +1447,33 @@ def default_create_lora_registry(
 
 # --- Generate-call counter ----------------------------------------------------
 
+# Seconds a reader waits for a running frontend's answer.
+COUNTER_READ_TIMEOUT_S = 5.0
+# Seconds a counter waits before it takes connections again after failing to take one.
+_COUNTER_ACCEPT_RETRY_S = 0.1
+
 
 class GenerateCounter:
     """Counts the Generate calls a frontend sent, for proving requests went through the engine.
 
     The count starts at 0 and only grows; every call counts, including each
-    call of a split request. Call :meth:`increment` once a call has been sent.
-    When ``counter_dir`` is set, every change writes
-    ``{"pid": ..., "generate_sent": ...}`` to ``<counter_dir>/<pid>.json``,
-    replacing the file atomically; the directory is created if missing. A
-    process keeps one counter, and each run uses a directory of its own:
-    :func:`read_generate_sent` sums every file in it.
+    call of a split request. Call :meth:`increment` once a call has been sent;
+    it adds to a number in memory and does no I/O until :meth:`close`.
+
+    When ``counter_dir`` is set, :meth:`start` lets other processes read the
+    count: it writes ``{"pid": ..., "generate_sent": ..., "address": ...}`` to
+    ``<counter_dir>/<pid>.json`` (the directory is created if missing) and
+    answers each connection to ``address``, the name of a Linux abstract Unix
+    socket, with ``{"pid": ..., "generate_sent": ...}`` holding the current count.
+    Once started, :meth:`close` rewrites the file with the final count and no
+    ``address``, then stops answering; each call counted after that rewrites
+    the file.
+    Files are replaced atomically. A process keeps one counter, and each run
+    uses a directory of its own: :func:`read_generate_sent` adds up the counts
+    of every frontend in it.
 
     Args:
-        counter_dir: Where to write the count; defaults to ``$TRTLLM_OPENENGINE_COUNTER_DIR``.
+        counter_dir: Where to publish the count; defaults to ``$TRTLLM_OPENENGINE_COUNTER_DIR``.
     """
 
     def __init__(self, counter_dir: str | os.PathLike[str] | None = _UNSET) -> None:
@@ -1465,6 +1482,10 @@ class GenerateCounter:
         self._dir = Path(counter_dir) if counter_dir is not None else None
         self._value = 0
         self._lock = threading.Lock()
+        self._listener: socket.socket | None = None
+        self._server: threading.Thread | None = None
+        self._started = False
+        self._closed = False
 
     @property
     def value(self) -> int:
@@ -1475,20 +1496,107 @@ class GenerateCounter:
 
         Raises:
             ValueError: ``count`` is negative.
-            OSError: The file could not be written. The calls are counted
-                anyway, and the next write that succeeds brings the file up to date.
+            OSError: After :meth:`close`, the file could not be rewritten. The
+                calls are counted anyway, and the next write that succeeds
+                brings the file up to date.
         """
         if count < 0:
             raise ValueError(f"the count only grows, got {count}")
         with self._lock:
             self._value += count
-            if self._dir is not None:
-                self._write(self._value)
+            if self._closed and self._started:
+                self._write(None)
             return self._value
 
-    def _write(self, value: int) -> None:
+    def start(self) -> None:
+        """Publish the count in ``counter_dir``; nothing to do without one, or once started or closed.
+
+        Raises:
+            OSError: The socket or the file could not be set up; the count is
+                then not published.
+            RuntimeError: The thread that answers readers could not start; the
+                count is then not published.
+        """
+        with self._lock:
+            if self._dir is None or self._started or self._closed:
+                return
+            address = f"trtllm-openengine-counter-{os.getpid()}-{uuid.uuid4().hex}"
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server = threading.Thread(
+                target=self._answer, args=(listener,), name="openengine-counter", daemon=True
+            )
+            # Under the lock, so that close() finds the thread to join.
+            self._listener, self._server = listener, server
+            try:
+                listener.bind("\0" + address)
+                listener.listen()
+                # Answering before the address is published.
+                server.start()
+                self._write(address)
+            except BaseException:
+                self._listener = self._server = None
+                _stop_answering(listener)
+                if server.ident is not None:
+                    server.join(COUNTER_READ_TIMEOUT_S)
+                raise
+            self._started = True
+
+    def close(self) -> None:
+        """Write the final count to the file if started, then stop answering; safe to call again.
+
+        Raises:
+            OSError: The file could not be written; the counter stops answering anyway.
+        """
+        try:
+            with self._lock:
+                if self._closed:
+                    return
+                self._closed = True
+                listener, self._listener = self._listener, None
+                try:
+                    if self._started:
+                        self._write(None)
+                finally:
+                    if listener is not None:
+                        _stop_answering(listener)
+        finally:
+            if self._server is not None:
+                self._server.join(COUNTER_READ_TIMEOUT_S)
+
+    def _answer(self, listener: socket.socket) -> None:
+        failing = False
+        while True:
+            try:
+                connection, _ = listener.accept()
+            except OSError as error:
+                if self._listener is not listener:
+                    # Stopped by close(), or by a start() that failed.
+                    return
+                if not failing:
+                    # Once until a connection is taken again, however long the error lasts.
+                    logger.warning(
+                        f"The Generate counter could not take a connection and keeps trying: {error!r}"
+                    )
+                    failing = True
+                time.sleep(_COUNTER_ACCEPT_RETRY_S)
+                continue
+            failing = False
+            with connection:
+                answer = {"pid": os.getpid(), SERVE_COUNTER_GENERATE_SENT: self._value}
+                try:
+                    connection.settimeout(COUNTER_READ_TIMEOUT_S)
+                    connection.sendall(json.dumps(answer).encode())
+                except OSError:
+                    # The reader went away; it reports that itself.
+                    pass
+
+    def _write(self, address: str | None) -> None:
+        """Write the file; the caller holds the lock."""
         assert self._dir is not None
         pid = os.getpid()
+        data: dict[str, Any] = {"pid": pid, SERVE_COUNTER_GENERATE_SENT: self._value}
+        if address is not None:
+            data[SERVE_COUNTER_ADDRESS] = address
         # A fresh temporary file (created exclusively), then an atomic rename.
         try:
             fd, tmp = tempfile.mkstemp(prefix=f".{pid}.", suffix=".tmp", dir=self._dir)
@@ -1497,16 +1605,87 @@ class GenerateCounter:
             fd, tmp = tempfile.mkstemp(prefix=f".{pid}.", suffix=".tmp", dir=self._dir)
         try:
             with os.fdopen(fd, "w") as file:
-                file.write(json.dumps({"pid": pid, SERVE_COUNTER_GENERATE_SENT: value}))
+                file.write(json.dumps(data))
             os.replace(tmp, self._dir / f"{pid}.json")
         except BaseException:
             Path(tmp).unlink(missing_ok=True)
             raise
 
 
-def read_generate_sent(counter_dir: str | os.PathLike[str]) -> int:
-    """The total of ``generate_sent`` over every frontend's file in ``counter_dir``."""
-    total = 0
+def _stop_answering(listener: socket.socket) -> None:
+    """Close a counter's listening socket, waking the thread blocked in its accept()."""
+    with contextlib.suppress(OSError):
+        listener.shutdown(socket.SHUT_RDWR)
+    listener.close()
+
+
+def read_generate_sent_by_pid(counter_dir: str | os.PathLike[str]) -> dict[int, int]:
+    """Each frontend's ``generate_sent`` in ``counter_dir``, by pid.
+
+    A frontend whose counter is open is asked for its current count; one that
+    has closed it left the final count in its file.
+
+    Raises:
+        OSError: A file could not be read, or a frontend whose counter is
+            open did not answer (one that exited without closing it, for example).
+        ValueError: A file, or a frontend's answer, does not hold a count, or
+            two of them give the same pid.
+    """
+    counts: dict[int, int] = {}
     for path in sorted(Path(counter_dir).glob("*.json")):
-        total += int(json.loads(path.read_text())[SERVE_COUNTER_GENERATE_SENT])
-    return total
+        pid, count = _read_counter_file(path)
+        if pid in counts:
+            raise ValueError(f"more than one Generate count for pid {pid} in {counter_dir}")
+        counts[pid] = count
+    return counts
+
+
+def read_generate_sent(counter_dir: str | os.PathLike[str]) -> int:
+    """The total of ``generate_sent`` over every frontend in ``counter_dir``.
+
+    Raises:
+        OSError, ValueError: As :func:`read_generate_sent_by_pid`.
+    """
+    return sum(read_generate_sent_by_pid(counter_dir).values())
+
+
+def _read_counter_file(path: Path) -> tuple[int, int]:
+    data = _counter_record(path.read_text())
+    if SERVE_COUNTER_ADDRESS in data:
+        try:
+            return _ask_counter(data[SERVE_COUNTER_ADDRESS])
+        except OSError as error:
+            # A counter that closes writes its final count before it stops answering.
+            data = _counter_record(path.read_text())
+            if SERVE_COUNTER_ADDRESS in data:
+                raise OSError(
+                    f"the frontend with pid {data['pid']} did not answer for its Generate count "
+                    f"({path}): {error!r}"
+                ) from error
+    return data["pid"], data[SERVE_COUNTER_GENERATE_SENT]
+
+
+def _ask_counter(address: str) -> tuple[int, int]:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.settimeout(COUNTER_READ_TIMEOUT_S)
+        connection.connect("\0" + address)
+        chunks = []
+        while chunk := connection.recv(4096):
+            chunks.append(chunk)
+    if not chunks:
+        # The frontend exited, or closed its counter, before it answered.
+        raise ConnectionResetError(f"no answer from {address}")
+    answer = _counter_record(b"".join(chunks).decode())
+    return answer["pid"], answer[SERVE_COUNTER_GENERATE_SENT]
+
+
+def _counter_record(text: str) -> dict[str, Any]:
+    data = json.loads(text)
+    if not (
+        isinstance(data, dict)
+        and type(data.get("pid")) is int
+        and type(data.get(SERVE_COUNTER_GENERATE_SENT)) is int
+        and isinstance(data.get(SERVE_COUNTER_ADDRESS, ""), str)
+    ):
+        raise ValueError(f"not a Generate count: {text!r}")
+    return data
