@@ -51,6 +51,13 @@ def arms(harness_path):
 
 
 @pytest.fixture(autouse=True)
+def _no_container_ports(monkeypatch):
+    """free_port avoids CI's container port range; the tests that want one set it."""
+    monkeypatch.delenv("CONTAINER_PORT_START", raising=False)
+    monkeypatch.delenv("CONTAINER_PORT_NUM", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _accept_frontend_options(request, arms, monkeypatch):
     """The OpenEngine front end's option check needs TensorRT-LLM; tests that want it ask for ``facade``."""
     if "facade" not in request.fixturenames:
@@ -244,11 +251,178 @@ def test_free_port_is_not_held(arms):
         s.bind(("127.0.0.1", port))
 
 
-@pytest.mark.parametrize("floor, below", [(32768, True), (5000, False), (0, False)])
-def test_free_port_avoids_the_ephemeral_range(arms, monkeypatch, floor, below):
+# (ephemeral floor, the ports expected; None: a port the kernel picks)
+@pytest.mark.parametrize(
+    "floor, ports",
+    [
+        (32768, range(10000, 32768 - 4096)),
+        # The static window reaches down to 10000, leaving no room below it.
+        (14096, range(10000, 14096)),
+        (5000, None),
+        (0, None),
+    ],
+)
+def test_free_port_avoids_the_ephemeral_range_and_the_static_window(
+    arms, monkeypatch, floor, ports
+):
+    """Below the static window under the ephemeral range, else below that range, else any port."""
     monkeypatch.setattr(arms, "_ephemeral_floor", lambda: floor)
     port = arms.free_port("127.0.0.1")
-    assert (arms._PORT_FLOOR <= port < floor) == below
+    if ports is not None:
+        assert port in ports
+    else:
+        assert not arms._PORT_FLOOR <= port < floor
+
+
+def test_free_port_takes_the_container_port_range_rather_than_the_ephemeral_range(
+    arms, monkeypatch
+):
+    """With the container range covering every port below the ephemeral range."""
+    bounds = set()
+    pick = arms.random.SystemRandom()
+
+    def randrange(start, stop):
+        bounds.add((start, stop))
+        return pick.randrange(start, stop)
+
+    monkeypatch.setattr(
+        arms.random, "SystemRandom", lambda: types.SimpleNamespace(randrange=randrange)
+    )
+    monkeypatch.setattr(arms, "_ephemeral_floor", lambda: 32768)
+    monkeypatch.setenv("CONTAINER_PORT_START", str(arms._PORT_FLOOR))
+    monkeypatch.setenv("CONTAINER_PORT_NUM", str(32768 - arms._PORT_FLOOR))
+    assert arms._PORT_FLOOR <= arms.free_port("127.0.0.1") < 32768
+    assert bounds == {(arms._PORT_FLOOR, 32768)}
+
+
+def test_free_port_draws_below_the_static_window(arms, monkeypatch):
+    """The bounds of the draw, whatever port it lands on."""
+    bounds = []
+
+    def randrange(start, stop):
+        bounds.append((start, stop))
+        return start
+
+    monkeypatch.setattr(
+        arms.random, "SystemRandom", lambda: types.SimpleNamespace(randrange=randrange)
+    )
+    monkeypatch.setattr(arms, "_ephemeral_floor", lambda: 32768)
+    arms.free_port("127.0.0.1")
+    assert bounds[0] == (arms._PORT_FLOOR, 32768 - arms._STATIC_PORT_RANGE_SIZE)
+
+
+def test_free_port_skips_the_container_port_range(arms, monkeypatch):
+    """Ports get_free_port_in_ci hands out from CONTAINER_PORT_START are not drawn.
+
+    The range covers the whole draw but one free port, which a draw that only
+    skipped it would hardly ever reach in its tries.
+    """
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        free = s.getsockname()[1]
+    monkeypatch.setattr(arms, "_ephemeral_floor", lambda: free + 1 + arms._STATIC_PORT_RANGE_SIZE)
+    monkeypatch.setenv("CONTAINER_PORT_START", str(arms._PORT_FLOOR))
+    monkeypatch.setenv("CONTAINER_PORT_NUM", str(free - arms._PORT_FLOOR))
+    assert arms.free_port("127.0.0.1") == free
+
+
+# (container range, values the draw returns, ports yielded, upper bound of the draw)
+@pytest.mark.parametrize(
+    "handed_out, values, ports, stop",
+    [
+        (range(0), [10000, 19999], [10000, 19999], 20000),
+        (range(12000, 13000), [10000, 11999, 12000, 18999], [10000, 11999, 13000, 19999], 19000),
+        (range(5000, 11000), [10000, 18999], [11000, 19999], 19000),
+        (range(19000, 30000), [10000, 18999], [10000, 18999], 19000),
+        (range(10000, 20000), [], [], None),
+    ],
+)
+def test_candidate_ports_are_drawn_around_the_container_range(
+    arms, monkeypatch, handed_out, values, ports, stop
+):
+    """Below 20000, the draw covers the window with the range cut out, mapped back around it."""
+    bounds = set()
+
+    def randrange(start, end):
+        bounds.add((start, end))
+        return values.pop(0)
+
+    monkeypatch.setattr(
+        arms.random, "SystemRandom", lambda: types.SimpleNamespace(randrange=randrange)
+    )
+    monkeypatch.setattr(arms, "_PORT_TRIES", len(ports))
+    assert list(arms._candidate_ports(20000, handed_out)) == ports
+    assert bounds == ({(arms._PORT_FLOOR, stop)} if stop else set())
+
+
+@pytest.mark.parametrize(
+    "start, count, ports",
+    [(None, None, range(0)), ("20000", "8", range(20000, 20008)), ("x", "8", range(0))],
+)
+def test_container_ports(arms, monkeypatch, start, count, ports):
+    for name, value in (("CONTAINER_PORT_START", start), ("CONTAINER_PORT_NUM", count)):
+        if value is not None:
+            monkeypatch.setenv(name, value)
+    assert arms._container_ports() == ports
+
+
+def test_static_window_matches_common(arms):
+    """The window size is the one tests/integration/defs/common.py hands ports from."""
+    import re
+
+    text = (_DEFS / "common.py").read_text()
+    sizes = re.findall(r"^STATIC_PORT_RANGE_SIZE = (\d+)$", text, re.MULTILINE)
+    assert sizes == [str(arms._STATIC_PORT_RANGE_SIZE)]
+    assert "high - STATIC_PORT_RANGE_SIZE + 1" in text, "common.py's window changed shape"
+
+
+@pytest.mark.parametrize(
+    "content, floor",
+    [
+        ("32768\t60999\n", 32768),
+        ("1024 65535", 1024),
+        ("60999 32768", 0),  # reversed
+        ("0 60999", 0),
+        ("32768 70000", 0),
+        ("32768", 0),
+        ("x y", 0),
+    ],
+)
+def test_ephemeral_floor_is_checked(arms, tmp_path, monkeypatch, content, floor):
+    path = tmp_path / "ip_local_port_range"
+    path.write_text(content)
+    monkeypatch.setattr(arms, "_EPHEMERAL_RANGE_FILE", str(path))
+    assert arms._ephemeral_floor() == floor
+
+
+def test_ephemeral_floor_without_the_file(arms, tmp_path, monkeypatch):
+    monkeypatch.setattr(arms, "_EPHEMERAL_RANGE_FILE", str(tmp_path / "missing"))
+    assert arms._ephemeral_floor() == 0
+
+
+def test_free_port_uses_the_family_of_the_host(arms, monkeypatch):
+    real = socket.getaddrinfo
+
+    def only(family):
+        def fake(host, port, *args, **kwargs):
+            return [info for info in real(host, port, *args, **kwargs) if info[0] == family]
+
+        return fake
+
+    monkeypatch.setattr(arms.socket, "getaddrinfo", only(socket.AF_INET))
+    assert arms._family("localhost") == socket.AF_INET
+    if not socket.has_ipv6:
+        pytest.skip("no IPv6")
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as s:
+            s.bind(("::1", 0))
+    except OSError:
+        pytest.skip("no IPv6 loopback")
+    monkeypatch.setattr(arms.socket, "getaddrinfo", only(socket.AF_INET6))
+    assert arms._family("::1") == socket.AF_INET6
+    port = arms.free_port("::1")
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as s:
+        s.bind(("::1", port))
 
 
 def test_free_port_skips_ports_in_use(arms, monkeypatch):
@@ -266,6 +440,76 @@ def test_free_port_skips_ports_in_use(arms, monkeypatch):
         monkeypatch.setattr(arms, "_PORT_TRIES", 3)
         monkeypatch.setattr(arms, "_ephemeral_floor", lambda: 65535)
         assert arms.free_port("127.0.0.1") == free
+
+
+def _perf_sanity_function(name, namespace, owner=None):
+    """A function of test_perf_sanity.py (a method of class ``owner``), compiled from its source alone.
+
+    Importing test_perf_sanity needs TensorRT-LLM and the integration conftest;
+    ``namespace`` stands in for the module globals the function uses.
+    """
+    import ast
+
+    path = _DEFS / "perf" / "test_perf_sanity.py"
+    body = ast.parse(path.read_text()).body
+    if owner is not None:
+        (cls,) = [n for n in body if isinstance(n, ast.ClassDef) and n.name == owner]
+        body = cls.body
+    (node,) = [n for n in body if isinstance(n, ast.FunctionDef) and n.name == name]
+    exec(compile(ast.Module(body=[node], type_ignores=[]), str(path), "exec"), namespace)
+    return namespace[name]
+
+
+def _reserve_multi_frontend_port():
+    """test_perf_sanity.reserve_multi_frontend_port and the list of sockets it holds."""
+    held = []
+    namespace = {"socket": socket, "print_info": lambda *a, **k: None}
+    namespace["_RESERVED_PORT_SOCKETS"] = held
+    return _perf_sanity_function("reserve_multi_frontend_port", namespace), held
+
+
+def _bind(port, *options, listen=False):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        for option in options:
+            s.setsockopt(socket.SOL_SOCKET, option, 1)
+        s.bind(("127.0.0.1", port))
+        if listen:
+            s.listen()
+    except OSError:
+        s.close()
+        raise
+    return s
+
+
+def test_multi_frontend_reservation_lets_the_launcher_probe():
+    """A reserved port lets trtllm-serve start its front ends, and refuses a plain bind.
+
+    trtllm-serve's multi-front-end launcher first binds the port with
+    SO_REUSEADDR only, then each front end binds it with SO_REUSEADDR and
+    SO_REUSEPORT and listens.
+    """
+    reserve, held = _reserve_multi_frontend_port()
+    port = reserve("127.0.0.1")
+    opened = []
+    try:
+        opened.append(_bind(port, socket.SO_REUSEADDR))  # the launcher's probe
+        opened.pop().close()
+        for _ in range(2):
+            opened.append(_bind(port, socket.SO_REUSEADDR, socket.SO_REUSEPORT, listen=True))
+        with pytest.raises(OSError):
+            opened.append(_bind(port))  # anything else on the node
+    finally:
+        for s in opened + held:
+            s.close()
+
+
+def test_a_reuseport_only_reservation_fails_the_launcher_probe():
+    """Why the reservation also sets SO_REUSEADDR."""
+    with _bind(0, socket.SO_REUSEPORT) as reservation:
+        port = reservation.getsockname()[1]
+        with pytest.raises(OSError):
+            _bind(port, socket.SO_REUSEADDR).close()
 
 
 # ----------------------------------------------------------------------------- server command
@@ -370,6 +614,19 @@ def test_prepare_server_refuses_what_the_frontend_refuses(arms, tmp_path, monkey
     assert seen[0]["post_processor_hook"] == "pkg.mod:hook"
     assert seen[0]["otlp_traces_endpoint"] == "http://x"
     assert seen[0]["num_postprocess_workers"] == 0, "the check sees the arm's settings"
+
+
+def test_prepare_server_refuses_values_of_the_wrong_type(arms, tmp_path, monkeypatch):
+    """The YAML is not validated yet: a value of the wrong type is refused as ArmError too."""
+
+    def check(args):
+        if args.num_postprocess_workers > 0:  # TypeError for a string
+            raise ValueError("unreachable")
+
+    monkeypatch.setattr(arms, "_frontend_check", lambda: check)
+    source = _write_config(tmp_path, {**CONFIG, "num_postprocess_workers": "4"}, "str.yml")
+    with pytest.raises(arms.ArmError, match="C-full: TypeError.*'>'"):
+        arms.prepare_server(_serve_cmd(source), arms.ARMS["C-full"], str(tmp_path))
 
 
 def test_prepare_server_uses_the_frontend_check(arms, tmp_path, facade, monkeypatch):
@@ -586,9 +843,9 @@ def test_run_number_must_be_positive(arms):
 
 
 class _FakeServer:
-    def __init__(self, arms, name, handle=None, root=10):
+    def __init__(self, arms, name, handle=None, root=10, config=None):
         self.arm = arms.ARMS[name]
-        self.plan = arms.ServerPlan(("trtllm-serve", "m"), {})
+        self.plan = arms.ServerPlan(("trtllm-serve", "m"), config or {})
         self.env = {}
         self.handle = handle
         self.frontend_pid = root
@@ -816,6 +1073,111 @@ def test_unreadable_counters_count_as_unknown(arms, monkeypatch):
     probe = arms.RunProbe.start(_FakeServer(arms, "B-s1", handle=object()), reader)
     assert probe.chain_counts() == {"generate_sent": None, "generate_received": None}
     assert any("counter file vanished" in note for note in probe.notes)
+
+
+@pytest.mark.parametrize("content", ["null", '{"pid": 1, "generate_sent": null}'])
+def test_counter_file_holding_null_counts_as_unknown(arms, tmp_path, content):
+    """The real reader on a counter file with no count: no TypeError, no count."""
+    (tmp_path / "1.json").write_text(content)
+    handle = types.SimpleNamespace(alive=True, counter_dir=str(tmp_path))
+    notes = []
+    counters = arms._read_counters(handle, notes)
+    assert (counters.frontend, counters.engine) == (None, None)
+    assert any("TypeError" in note for note in notes), notes
+
+
+# ----------------------------------------------------------------------------- decoded tokens
+
+
+def test_checks_decoded_tokens(arms):
+    """Perf sanity's check of 'Mean Avg Decoded Tokens per Iter' skips the arms with a chain."""
+    assert arms.checks_decoded_tokens(None)
+    assert {name: arms.checks_decoded_tokens(arm) for name, arm in arms.ARMS.items()} == {
+        name: chain == "none" for name, (_, chain, *_) in EXPECTED_ARMS.items()
+    }
+    assert arms.DECODED_TOKENS_LINE == "Mean Avg Decoded Tokens per Iter"
+
+
+def _check_pattern():
+    """The pattern test_perf_sanity.py parses the line with (read from its source)."""
+    import re
+
+    text = (_DEFS / "perf" / "test_perf_sanity.py").read_text()
+    found = re.findall(r'"al": re\.compile\(r"([^"]+)"\)', text)
+    assert len(found) == 1, found
+    return re.compile(found[0])
+
+
+AL_LINE = "Mean Avg Decoded Tokens per Iter:        3.38\n"
+
+
+@pytest.mark.parametrize(
+    "name, config, output, noted",
+    [
+        ("B-s1", CONFIG, BENCHMARK_OUTPUT, True),
+        ("C-full", CONFIG, BENCHMARK_OUTPUT, True),
+        ("B-s1", CONFIG, AL_LINE + BENCHMARK_OUTPUT, True),  # not checked even when printed
+        ("B-s1", {}, BENCHMARK_OUTPUT, False),  # no speculative decoding
+        # No decoding_type: perf sanity does not count it as speculative decoding.
+        ("B-s1", {"speculative_config": {"max_draft_len": 3}}, BENCHMARK_OUTPUT, False),
+        ("A-1f0", CONFIG, BENCHMARK_OUTPUT, False),  # the in-process arms keep the check
+    ],
+)
+def test_unchecked_decoded_tokens_are_noted(
+    arms, tmp_path, monkeypatch, name, config, output, noted
+):
+    from openengine_chain.proof import Counters
+
+    assert _check_pattern().search(AL_LINE), "the line the note is about is the one checked"
+    monkeypatch.setattr(arms, "_read_counters", lambda handle, notes: Counters(0, 0))
+    arm = arms.ARMS[name]
+    server = _FakeServer(arms, name, handle=None if arm.in_process else object(), config=config)
+    reader = _FakeReader(arms, ticks={10: [(1, 100), (1, 300)]}, gpu={11})
+    path = arms.RunProbe.start(server, reader).finish(
+        output=output,
+        client_cmd=CLIENT_TEXT,
+        test_id="t",
+        default_dir=str(tmp_path),
+        environ={},
+    )
+    notes = json.loads(Path(path).read_text())["notes"]
+    assert any(arms.DECODED_TOKENS_LINE in note for note in notes) == noted, notes
+
+
+@pytest.mark.parametrize("name", [None, *sorted(EXPECTED_ARMS)])
+def test_perf_sanity_checks_decoded_tokens_of_in_process_servers_only(arms, name):
+    """PerfSanityTestConfig.check_test_failure, run from its source on a case without the line."""
+    arm = None if name is None else arms.ARMS[name]
+    warnings = []
+    namespace = {
+        "openengine_arms": types.SimpleNamespace(
+            selected_arm=lambda: arm, checks_decoded_tokens=arms.checks_decoded_tokens
+        ),
+        "PERF_METRIC_LOG_QUERIES": {},
+        "AGENTX_BENCHMARK_CLIENT": "agentx",
+        "DISAGG_CONFIG_RUNTIMES": (),
+        "GEN_ONLY_MODES": (),
+        "TIME_BREAKDOWN_MODIFIER": "time_breakdown",
+        "print_warning": warnings.append,
+    }
+    check = _perf_sanity_function("check_test_failure", namespace, owner="PerfSanityTestConfig")
+    client = types.SimpleNamespace(
+        only_run_accuracy=False, benchmark_client="benchmark_serving", spec_decoding=True
+    )
+    config = types.SimpleNamespace(
+        server_client_configs={0: [client]},
+        _perf_results={0: [{}]},
+        server_configs={0: types.SimpleNamespace()},
+        runtime="aggr_server",
+        time_breakdown=False,
+    )
+    if name is None or EXPECTED_ARMS[name][1] == "none":
+        with pytest.raises(RuntimeError, match="missing 'Mean Avg Decoded Tokens per Iter'"):
+            check(config)
+        assert warnings == []
+    else:
+        check(config)
+        assert len(warnings) == 1 and name in warnings[0], warnings
 
 
 @pytest.mark.parametrize(

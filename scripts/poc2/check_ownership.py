@@ -356,7 +356,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
         _shared(
             "tests/integration/defs/perf/test_perf_sanity.py",
             "the arm hook only, and (WT-09-fix1, ISSUES T18) reserve_multi_frontend_port's"
-            " reuse_addr for the non-arm multi-frontend branch",
+            " SO_REUSEADDR",
         ),
         _shared("tests/integration/defs/perf/utils.py", "the arm hook only"),
         Rule(

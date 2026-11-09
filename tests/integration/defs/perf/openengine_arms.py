@@ -59,7 +59,7 @@ import subprocess
 import tempfile
 import time
 import types
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import IO, Any
 
@@ -146,41 +146,99 @@ class Arm:
 
 _PORT_FLOOR = 10000
 _PORT_TRIES = 64
+# The size of the window just below the ephemeral range (get_static_port_range) from
+# which get_free_port_in_ci in tests/integration/defs/common.py hands ports to other
+# test servers; test_poc2_wt09_perf_arms.py checks it matches STATIC_PORT_RANGE_SIZE there.
+_STATIC_PORT_RANGE_SIZE = 4096
+_EPHEMERAL_RANGE_FILE = "/proc/sys/net/ipv4/ip_local_port_range"
 
 
 def _ephemeral_floor() -> int:
-    """The lowest port the kernel numbers sockets from by itself, or 0 when unknown."""
+    """The lowest port the kernel numbers sockets from by itself, or 0 when unknown.
+
+    A range outside 1-65535, or with its bounds reversed, counts as unknown.
+    """
     try:
-        with open("/proc/sys/net/ipv4/ip_local_port_range", encoding="ascii") as f:
-            return int(f.read().split()[0])
-    except (OSError, ValueError, IndexError):
+        with open(_EPHEMERAL_RANGE_FILE, encoding="ascii") as f:
+            low, high = (int(value) for value in f.read().split())
+    except (OSError, ValueError):
         return 0
+    return low if 1 <= low <= high <= 65535 else 0
+
+
+def _family(host: str) -> socket.AddressFamily:
+    """IPv6 when every address of ``host`` is IPv6, else IPv4, the family trtllm-serve binds."""
+    try:
+        infos = socket.getaddrinfo(host, 0, socket.AF_UNSPEC, socket.SOCK_STREAM)
+    except socket.gaierror:
+        return socket.AF_INET
+    if infos and all(info[0] == socket.AF_INET6 for info in infos):
+        return socket.AF_INET6
+    return socket.AF_INET
+
+
+def _container_ports() -> range:
+    """The CI container's port range (``CONTAINER_PORT_START``, ``CONTAINER_PORT_NUM``).
+
+    get_free_port_in_ci in tests/integration/defs/common.py hands other test
+    servers ports from it first. Empty when unset or not a number.
+    """
+    try:
+        start = int(os.environ.get("CONTAINER_PORT_START", -1))
+        count = int(os.environ.get("CONTAINER_PORT_NUM", -1))
+    except ValueError:
+        return range(0)
+    if start == -1 or count == -1:
+        return range(0)
+    return range(start, start + count)
+
+
+def _candidate_ports(top: int, handed_out: range) -> Iterator[int]:
+    """Up to ``_PORT_TRIES`` random ports in ``[_PORT_FLOOR, top)`` outside ``handed_out``.
+
+    The ports are drawn from what is left once ``handed_out`` is cut out, so
+    that a container range covering most of the window costs no tries.
+    """
+    cut = range(max(_PORT_FLOOR, handed_out.start), min(top, handed_out.stop))
+    stop = top - len(cut)
+    if stop <= _PORT_FLOOR:
+        return
+    pick = random.SystemRandom()
+    for _ in range(_PORT_TRIES):
+        port = pick.randrange(_PORT_FLOOR, stop)
+        yield port + len(cut) if cut and port >= cut.start else port
 
 
 def free_port(host: str) -> int:
     """A port of ``host`` that was free a moment ago, for an arm's server.
 
-    The port is taken below the kernel's ephemeral range when there is room, so
-    that no socket the kernel numbers itself (the engine's own connections
-    while it loads, for one) can take it before the server binds. The socket
-    is closed before the server starts, so that every bind of the port, the
-    server's own and the probe of trtllm-serve's multi-front-end launcher
-    included, finds it free whatever socket options it sets.
+    When there is room, the port is taken below the kernel's ephemeral range,
+    so that no socket the kernel numbers itself (the engine's own connections
+    while it loads, for one) can take it before the server binds. Ports below
+    the static window under that range and outside the CI container's port
+    range, which get_free_port_in_ci hands to no other test server, are tried
+    first. The socket is closed before the server starts, so that every bind
+    of the port, the server's own and the probe of trtllm-serve's
+    multi-front-end launcher included, finds it free whatever socket options it
+    sets.
 
     Raises:
         OSError: No port of ``host`` can be bound.
     """
+    family = _family(host)
     floor = _ephemeral_floor()
-    tries = _PORT_TRIES if floor > _PORT_FLOOR else 0
-    pick = random.SystemRandom()
-    for port in (pick.randrange(_PORT_FLOOR, floor) for _ in range(tries)):
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            try:
-                s.bind((host, port))
-            except OSError:
-                continue
-            return port
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+    draws = (
+        ((floor - _STATIC_PORT_RANGE_SIZE, _container_ports()), (floor, range(0))) if floor else ()
+    )
+    for top, handed_out in draws:
+        for port in _candidate_ports(top, handed_out):
+            with socket.socket(family, socket.SOCK_STREAM) as s:
+                try:
+                    s.bind((host, port))
+                except OSError:
+                    continue
+                return port
+    with socket.socket(family, socket.SOCK_STREAM) as s:
         s.bind((host, 0))
         return s.getsockname()[1]
 
@@ -233,6 +291,32 @@ def selected_arm(environ: Mapping[str, str] | None = None) -> Arm | None:
             "run the tests through openengine_chain/runner.py"
         )
     return arm
+
+
+# The benchmark line perf sanity requires of speculative-decoding cases. The
+# benchmark client averages the ``avg_decoded_tokens_per_iter`` field of each
+# response, which the OpenEngine front end does not fill in: Generate's events
+# carry no such count. So against the arms with a chain the client prints no such line.
+DECODED_TOKENS_LINE = "Mean Avg Decoded Tokens per Iter"
+_DECODED_TOKENS_NOTE = (
+    f"speculative decoding: perf sanity does not check '{DECODED_TOKENS_LINE}' of the arms "
+    "with a chain, whose OpenEngine responses carry no avg_decoded_tokens_per_iter"
+)
+
+
+def checks_decoded_tokens(arm: Arm | None) -> bool:
+    """Whether perf sanity requires :data:`DECODED_TOKENS_LINE` of a speculative-decoding case.
+
+    Not of the arms with a chain, which cannot report it; their results of
+    such cases say so instead.
+    """
+    return arm is None or arm.in_process
+
+
+def _speculative(config: Mapping[str, Any]) -> bool:
+    """Whether perf sanity counts this server as speculative decoding: a ``decoding_type`` is set."""
+    speculative = config.get("speculative_config")
+    return isinstance(speculative, Mapping) and bool(speculative.get("decoding_type"))
 
 
 def run_number(environ: Mapping[str, str]) -> int:
@@ -354,6 +438,11 @@ def _check_frontend_options(tokens: Sequence[str], config: Mapping[str, Any], ar
         _frontend_check()(types.SimpleNamespace(**values))
     except ValueError as error:
         raise ArmError(f"arm {arm.name}: {error}") from error
+    except TypeError as error:
+        # Pydantic has not validated the YAML yet, so a value of the wrong type,
+        # such as a number given as a string, gets here; so would a defect of the
+        # check itself, which the exception's name and the chained traceback show.
+        raise ArmError(f"arm {arm.name}: {error!r}") from error
 
 
 def prepare_server(
@@ -745,6 +834,8 @@ class RunProbe:
         """
         check_benchmark_output(output)
         env = os.environ if environ is None else environ
+        if not checks_decoded_tokens(self.server.arm) and _speculative(self.server.plan.config):
+            self.notes.append(_DECODED_TOKENS_NOTE)
         cpu_s = self.frontend_cpu_s()
         chain = self.chain_counts()
         doc = build_result(
@@ -774,12 +865,15 @@ def _rpc_errors() -> tuple[type[BaseException], ...]:
 
 
 def _read_counters(handle: Any, notes: list[str]) -> Any:
-    """The chain's counters; a read that fails counts as no counter on either side."""
+    """The chain's counters; a read that fails counts as no counter on either side.
+
+    A counter file that holds ``null``, or ``null`` as the count, fails with TypeError.
+    """
     from openengine_chain import proof
 
     try:
         return proof.read_counters(handle)
-    except (OSError, ValueError, KeyError, *_rpc_errors()) as error:
+    except (OSError, ValueError, KeyError, TypeError, *_rpc_errors()) as error:
         notes.append(f"reading the chain's counters failed: {error!r}")
         return proof.Counters(None, None)
 
