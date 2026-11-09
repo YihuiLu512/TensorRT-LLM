@@ -6,10 +6,12 @@
 ``TRTLLM_TEST_OPENENGINE_CHAIN`` set, the perf tests start their server as
 the test configures it and write no arm result; the perf tests that read the
 arm refuse a chain without one. An arm changes
-only the number of serving front ends, the number of post-processing workers,
+the number of serving front ends, the number of post-processing workers,
 whether the server runs as an OpenEngine engine plus a
-``trtllm-serve --openengine-endpoint`` front end, and which engine serves.
-Every other setting of the test is kept; a server that needs a fixed port gets
+``trtllm-serve --openengine-endpoint`` front end, and which engine serves;
+with the TensorRT-LLM chain, the harness also starts the engine with
+``--openengine-enable-load-metrics`` when the test's configuration turns on
+``enable_iter_perf_stats``. Every other setting of the test is kept; a server that needs a fixed port gets
 one chosen in advance. Only the plain aggregated perf sanity cases (no
 benchmark mode such as ``ctx_only``, no ``time_breakdown``) and the legacy
 serve perf tests take an arm; the legacy tests still write their usual perf

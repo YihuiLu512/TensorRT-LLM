@@ -182,6 +182,11 @@ OWNERSHIP: dict[str, list[Rule]] = {
                 "tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_scripts.py",
                 "T2③ / U6③ / D10 / D15, the obligation cases following those deps",
             ),
+            (
+                "tests/integration/defs/perf/openengine_arms.py",
+                "D20 / Y12, the module docstring's sentence on what an arm changes, naming"
+                " the load metrics of the TensorRT-LLM chain's engine",
+            ),
             ("scripts/poc2/check_ownership.py", "the WT-03 entry"),
         )
     ],
