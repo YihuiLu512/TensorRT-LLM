@@ -5,8 +5,16 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import json
+import os
+import signal
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest import mock
@@ -43,6 +51,7 @@ from tensorrt_llm.grpc.openengine_conventions import (
     META_PRIORITY,
     META_TARGET_DP_RANK,
     META_TRACEPARENT,
+    SERVE_COUNTER_ADDRESS,
     SERVE_COUNTER_DIR_ENV,
     encode_priority,
 )
@@ -1567,12 +1576,39 @@ def test_counting_after_close_writes_the_file_directly(tmp_path, monkeypatch) ->
     counter_dir = tmp_path / "counters"
     monkeypatch.setenv(SERVE_COUNTER_DIR_ENV, str(counter_dir))
     facade = _facade(SimpleNamespace(target="127.0.0.1:1"), tmp_path)
+    facade._counter.start()
     facade._record_sent(1)
-    facade.shutdown()
-    facade._counter_writer.shutdown(wait=True)
+    asyncio.run(facade.aclose())
     facade._record_sent(1)
     assert facade.generate_sent == 2
+    # The final count, with no address to ask.
+    assert set(_counter_record(counter_dir)) == {"pid", "generate_sent"}
     assert contracts.read_generate_sent(counter_dir) == 2
+
+
+def test_startup_fails_when_the_count_cannot_be_published(tmp_path, monkeypatch) -> None:
+    not_a_directory = tmp_path / "counters"
+    not_a_directory.write_text("")
+    monkeypatch.setenv(SERVE_COUNTER_DIR_ENV, str(not_a_directory))
+    error = _start_fails(_engine(), tmp_path)
+    assert "Generate count" in str(error)
+    assert str(not_a_directory) in str(error)
+
+
+def test_startup_fails_when_the_counter_cannot_answer(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv(SERVE_COUNTER_DIR_ENV, str(tmp_path / "counters"))
+
+    def no_thread(self) -> None:
+        raise RuntimeError("can't start new thread")
+
+    monkeypatch.setattr(contracts.GenerateCounter, "start", no_thread)
+    error = _start_fails(_engine(), tmp_path)
+    assert "Generate count" in str(error) and "can't start new thread" in str(error)
+
+
+def _counter_record(counter_dir) -> dict[str, Any]:
+    (path,) = counter_dir.glob("*.json")
+    return json.loads(path.read_text())
 
 
 def test_media_are_refused_by_the_media_slot_before_tokenizing(tmp_path) -> None:
@@ -1793,36 +1829,155 @@ def test_load_reads_for_the_stats_are_spaced_out(tmp_path, monkeypatch) -> None:
     _serve(engine, tmp_path, body)
 
 
-def test_generate_sent_is_written_to_the_counter_dir(tmp_path, monkeypatch) -> None:
+def test_generate_sent_is_published_in_the_counter_dir(tmp_path, monkeypatch) -> None:
     counter_dir = tmp_path / "counters"
     monkeypatch.setenv(SERVE_COUNTER_DIR_ENV, str(counter_dir))
     engine = _engine()
 
     def written(facade) -> int:
-        # The file is written off the event loop, in order; wait for the queued writes.
-        facade._counter_writer.submit(lambda: None).result(WAIT_SECONDS)
         return contracts.read_generate_sent(counter_dir)
+
+    def no_file_writes(*args, **kwargs):
+        raise AssertionError("a Generate call wrote the counter file")
 
     async def body(engine, facade, http):
         assert written(facade) == 0
-        response = await http.post(
-            "/v1/completions", json={"model": MODEL, "prompt": PROMPT_IDS, "max_tokens": 2}
-        )
-        assert response.status_code == 200, response.text
-        # Refused by the engine: sent all the same.
-        engine.push_script(Fail(grpc.StatusCode.INVALID_ARGUMENT, "refused"))
-        response = await http.post("/v1/completions", json={"model": MODEL, "prompt": PROMPT_IDS})
-        assert response.status_code == 400 and "refused" in response.text
-        # Refused by the facade: never sent.
-        response = await http.post("/v1/chat/completions", json=_chat(False, presence_penalty=0.5))
-        assert response.status_code == 400
-        assert facade.generate_sent == 2 == engine.counters["trtllm.counters.generate_received"]
-        assert written(facade) == 2
-        info = (await http.get("/server_info")).json()
-        assert info["engine"]["generate_sent"] == 2
+        # Counting writes no file while the frontend serves.
+        facade._counter._write = no_file_writes
+        try:
+            response = await http.post(
+                "/v1/completions", json={"model": MODEL, "prompt": PROMPT_IDS, "max_tokens": 2}
+            )
+            assert response.status_code == 200, response.text
+            # Refused by the engine: sent all the same.
+            engine.push_script(Fail(grpc.StatusCode.INVALID_ARGUMENT, "refused"))
+            response = await http.post(
+                "/v1/completions", json={"model": MODEL, "prompt": PROMPT_IDS}
+            )
+            assert response.status_code == 400 and "refused" in response.text
+            # Refused by the facade: never sent.
+            response = await http.post(
+                "/v1/chat/completions", json=_chat(False, presence_penalty=0.5)
+            )
+            assert response.status_code == 400
+            assert facade.generate_sent == 2 == engine.counters["trtllm.counters.generate_received"]
+            assert written(facade) == 2
+            info = (await http.get("/server_info")).json()
+            assert info["engine"]["generate_sent"] == 2
+        finally:
+            # Closing the frontend writes the final count.
+            del facade._counter._write
 
     _serve(engine, tmp_path, body)
+    # Closing the frontend left the final count in the file.
+    assert set(_counter_record(counter_dir)) == {"pid", "generate_sent"}
     assert contracts.read_generate_sent(counter_dir) == 2
+
+
+def test_the_app_shutdown_writes_the_final_count(tmp_path, monkeypatch) -> None:
+    from fastapi import FastAPI
+
+    counter_dir = tmp_path / "counters"
+    monkeypatch.setenv(SERVE_COUNTER_DIR_ENV, str(counter_dir))
+    facade = _facade(SimpleNamespace(target="127.0.0.1:1"), tmp_path)
+    events = []
+
+    @contextlib.asynccontextmanager
+    async def lifespan(app):
+        yield
+        events.append(("server shut down", set(_counter_record(counter_dir))))
+
+    server = SimpleNamespace(
+        app=FastAPI(lifespan=lifespan),
+        get_server_info=None,
+        create_error_response=None,
+    )
+    adapt_server(server, facade)
+    facade._counter.start()
+
+    async def main() -> None:
+        async with server.app.router.lifespan_context(server.app):
+            facade._record_sent(1)
+        events.append(("app shut down", _counter_record(counter_dir)))
+
+    asyncio.run(main())
+    (_, open_record), (_, final_record) = events
+    assert open_record == {"pid", "generate_sent", SERVE_COUNTER_ADDRESS}
+    # The final count, with no address to ask, before the launcher's aclose().
+    assert final_record == {"pid": os.getpid(), "generate_sent": 1}
+    asyncio.run(facade.aclose())
+    assert _counter_record(counter_dir) == final_record
+
+
+def _serve_until_signalled(model_dir: str, port_file: str) -> None:
+    """Serve the facade on a fake engine as ``launch_openengine_server`` does, until a signal."""
+
+    async def main() -> None:
+        async with _engine() as engine:
+            facade = _facade(engine, model_dir)
+            server = OpenAIServer(
+                generator=facade,
+                model=MODEL,
+                tool_parser=None,
+                server_role=None,
+                metadata_server_cfg=None,
+            )
+            adapt_server(server, facade)
+            sock = socket.create_server(("127.0.0.1", 0))
+            try:
+                await facade.start()
+                port = sock.getsockname()[1]
+                Path(port_file).write_text(str(port))
+                await server("127.0.0.1", port, sockets=[sock])
+            finally:
+                await facade.aclose()
+                sock.close()
+
+    asyncio.run(main())
+
+
+def test_a_frontend_stopped_by_sigterm_leaves_its_final_count(tmp_path) -> None:
+    """Uvicorn re-raises the SIGTERM once the app has shut down: the launcher's aclose() never runs."""
+    counter_dir = tmp_path / "counters"
+    port_file = tmp_path / "port"
+    code = (
+        f"import sys; sys.path.insert(0, {str(Path(__file__).parent)!r}); "
+        f"import {Path(__file__).stem} as t; "
+        f"t._serve_until_signalled({str(tmp_path)!r}, {str(port_file)!r})"
+    )
+    child = subprocess.Popen(
+        [sys.executable, "-c", code], env={**os.environ, SERVE_COUNTER_DIR_ENV: str(counter_dir)}
+    )
+    try:
+        deadline = time.monotonic() + 120
+        while not port_file.exists():
+            assert child.poll() is None, f"the frontend exited with {child.returncode}"
+            assert time.monotonic() < deadline, "the frontend did not start"
+            time.sleep(0.2)
+        url = f"http://127.0.0.1:{port_file.read_text()}"
+        while True:
+            try:
+                if httpx.get(f"{url}/health", timeout=WAIT_SECONDS).status_code == 200:
+                    break
+            except httpx.TransportError:
+                pass
+            assert time.monotonic() < deadline, "the frontend did not answer /health"
+            time.sleep(0.2)
+        response = httpx.post(
+            f"{url}/v1/completions",
+            json={"model": MODEL, "prompt": PROMPT_IDS, "max_tokens": 2},
+            timeout=WAIT_SECONDS * 2,
+        )
+        assert response.status_code == 200, response.text
+        assert SERVE_COUNTER_ADDRESS in _counter_record(counter_dir)
+        child.send_signal(signal.SIGTERM)
+        assert child.wait(timeout=60) == -signal.SIGTERM
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
+    assert _counter_record(counter_dir) == {"pid": child.pid, "generate_sent": 1}
+    assert contracts.read_generate_sent(counter_dir) == 1
 
 
 def test_a_lora_request_without_a_lora_registry_is_refused_at_once(tmp_path) -> None:

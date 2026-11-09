@@ -865,15 +865,12 @@ def _rpc_errors() -> tuple[type[BaseException], ...]:
 
 
 def _read_counters(handle: Any, notes: list[str]) -> Any:
-    """The chain's counters; a read that fails counts as no counter on either side.
-
-    A counter file that holds ``null``, or ``null`` as the count, fails with TypeError.
-    """
+    """The chain's counters; a read that fails counts as no counter on either side."""
     from openengine_chain import proof
 
     try:
         return proof.read_counters(handle)
-    except (OSError, ValueError, KeyError, TypeError, *_rpc_errors()) as error:
+    except (OSError, ValueError, *_rpc_errors()) as error:
         notes.append(f"reading the chain's counters failed: {error!r}")
         return proof.Counters(None, None)
 

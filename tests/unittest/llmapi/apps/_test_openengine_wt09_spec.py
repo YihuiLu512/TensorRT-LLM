@@ -19,8 +19,9 @@ from typing import Iterator
 
 import openai
 import pytest
-import requests
 import yaml
+
+from tensorrt_llm.serve.openengine_poc.contracts import read_generate_sent
 
 from ..test_llm import get_model_path
 from .openai_server import RemoteOpenAIServer
@@ -72,12 +73,14 @@ def model_name(client: openai.OpenAI) -> str:
 
 
 def _engine_calls(server: RemoteOpenAIServer) -> int | None:
-    """Generate calls the front end has sent so far; None for the in-process server."""
+    """Generate calls all front ends have sent so far; None for the in-process server.
+
+    A request and the next read may reach different front ends, so the count is
+    the total over every front end's counter.
+    """
     if not CHAIN:
         return None
-    response = requests.get(server.url_for("server_info"), timeout=30)
-    response.raise_for_status()
-    return response.json()["engine"]["generate_sent"]
+    return read_generate_sent(server._chain_handle.counter_dir)
 
 
 def _refused(server, call, *words) -> None:

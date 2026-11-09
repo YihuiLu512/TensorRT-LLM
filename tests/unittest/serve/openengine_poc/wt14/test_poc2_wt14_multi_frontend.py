@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import os
 import shutil
 import signal
@@ -33,7 +32,6 @@ from tensorrt_llm.commands import serve as serve_cmd
 from tensorrt_llm.grpc.openengine_conventions import (
     COUNTER_GENERATE_RECEIVED,
     SERVE_COUNTER_DIR_ENV,
-    SERVE_COUNTER_GENERATE_SENT,
     compute_tokenizer_fingerprint,
 )
 from tensorrt_llm.serve.multi_frontend import AttachedFrontendWatchdog
@@ -476,15 +474,6 @@ def _model_info_calls(engine: FakeEngine) -> int:
     return sum(1 for rpc, _ in list(engine.control_calls) if rpc == "GetModelInfo")
 
 
-def _counts(counter_dir: Path) -> dict[int, int]:
-    """Each frontend's ``generate_sent``, by pid."""
-    counts = {}
-    for path in counter_dir.glob("*.json"):
-        data = json.loads(path.read_text())
-        counts[data["pid"]] = data[SERVE_COUNTER_GENERATE_SENT]
-    return counts
-
-
 def _gone(process: psutil.Process) -> bool:
     """Exited; a zombie counts, since no one may reap an orphan in a container."""
     try:
@@ -656,7 +645,10 @@ def test_no_frontend_listens_before_every_frontend_connected(serving):
     assert _wait(lambda: serve.listeners() == NUM_FRONTENDS, "every frontend to listen")
     pids = {serve.launcher.pid, *(p.pid for p in serve.attached())}
     # Each frontend writes its count from the start.
-    assert _wait(lambda: set(_counts(serve.counter_dir)) == pids, "every frontend's count file")
+    assert _wait(
+        lambda: set(contracts.read_generate_sent_by_pid(serve.counter_dir)) == pids,
+        "every frontend's count file",
+    )
     assert f"All {NUM_FRONTENDS} serving frontends are connected" in serve.log()
 
 
@@ -664,7 +656,7 @@ def test_requests_spread_over_the_frontends_and_the_counts_add_up(serving):
     serve, engine, _ = serving
     _wait(lambda: serve.listeners() == NUM_FRONTENDS, "every frontend to listen")
     received_before = engine.counters[COUNTER_GENERATE_RECEIVED]
-    sent_before = _counts(serve.counter_dir)
+    sent_before = contracts.read_generate_sent_by_pid(serve.counter_dir)
     num_requests = 48
     for index in range(num_requests):
         response = _complete(serve.url, index)
@@ -673,18 +665,17 @@ def test_requests_spread_over_the_frontends_and_the_counts_add_up(serving):
     received = engine.counters[COUNTER_GENERATE_RECEIVED] - received_before
     assert received == num_requests
 
-    def sent_by_pid() -> dict[int, int] | None:
-        counts = _counts(serve.counter_dir)
-        sent = {pid: counts[pid] - sent_before.get(pid, 0) for pid in counts}
-        return sent if sum(sent.values()) == received else None
-
-    sent = _wait(sent_by_pid, "the frontends' counts to add up to what the engine received")
+    counts = contracts.read_generate_sent_by_pid(serve.counter_dir)
+    sent = {pid: counts[pid] - sent_before.get(pid, 0) for pid in counts}
+    assert sum(sent.values()) == received, sent
     pids = {serve.launcher.pid, *(p.pid for p in serve.attached())}
     assert set(sent) == pids
     assert sum(1 for count in sent.values() if count > 0) >= 2, sent
     # /server_info answers with the count of whichever frontend served it.
     info = requests.get(f"{serve.url}/server_info", timeout=30).json()
-    assert info["engine"]["generate_sent"] in {_counts(serve.counter_dir)[pid] for pid in pids}
+    assert info["engine"]["generate_sent"] in {
+        contracts.read_generate_sent_by_pid(serve.counter_dir)[pid] for pid in pids
+    }
 
 
 def test_the_responses_store_is_off_with_several_frontends(serving):

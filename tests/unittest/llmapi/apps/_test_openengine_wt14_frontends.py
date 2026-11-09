@@ -6,7 +6,6 @@ Runs only when ``TRTLLM_TEST_OPENENGINE_CHAIN`` selects the chain harness
 (``tests/integration/defs/openengine_chain``).
 """
 
-import json
 import os
 import time
 from pathlib import Path
@@ -14,7 +13,7 @@ from pathlib import Path
 import psutil
 import pytest
 
-from tensorrt_llm.grpc.openengine_conventions import SERVE_COUNTER_GENERATE_SENT
+from tensorrt_llm.serve.openengine_poc.contracts import read_generate_sent_by_pid
 
 from ..test_llm import get_model_path
 from .openai_server import RemoteOpenAIServer
@@ -60,19 +59,10 @@ def server(model_name: str):
         yield remote_server
 
 
-def _sent_by_pid(counter_dir: str) -> dict[int, int]:
-    """Each frontend's ``generate_sent``, by pid."""
-    counts = {}
-    for path in Path(counter_dir).glob("*.json"):
-        data = json.loads(path.read_text())
-        counts[data["pid"]] = data[SERVE_COUNTER_GENERATE_SENT]
-    return counts
-
-
 def test_the_frontends_share_the_port_and_the_engine(server: RemoteOpenAIServer, model_name: str):
     log = Path(server._chain_handle.frontend_log).read_text(errors="replace")
     assert f"All {NUM_FRONTENDS} serving frontends are connected" in log
-    before = _sent_by_pid(server._chain_handle.counter_dir)
+    before = read_generate_sent_by_pid(server._chain_handle.counter_dir)
     for i in range(NUM_REQUESTS):
         # A connection of its own each time, so the kernel picks a frontend for each request.
         with server.get_client() as client:
@@ -83,13 +73,7 @@ def test_the_frontends_share_the_port_and_the_engine(server: RemoteOpenAIServer,
                 temperature=0.0,
             )
         assert output.choices[0].text
-    # The counters are written after each call, off the request path.
-    deadline = time.monotonic() + 30
-    while True:
-        after = _sent_by_pid(server._chain_handle.counter_dir)
-        sent = {pid: count - before.get(pid, 0) for pid, count in after.items()}
-        if sum(sent.values()) == NUM_REQUESTS or time.monotonic() > deadline:
-            break
-        time.sleep(0.5)
+    after = read_generate_sent_by_pid(server._chain_handle.counter_dir)
+    sent = {pid: count - before.get(pid, 0) for pid, count in after.items()}
     assert sum(sent.values()) == NUM_REQUESTS, sent
     assert sum(1 for count in sent.values() if count > 0) >= 2, sent

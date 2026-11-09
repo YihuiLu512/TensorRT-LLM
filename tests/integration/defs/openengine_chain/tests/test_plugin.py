@@ -178,7 +178,7 @@ def test_proof_and_expectations(pytester, run):
         "test_400_other_error": ("failed", "ok", "0"),
         "test_server_started_in_test": ("passed", "ok", "3"),
         "test_incomplete": ("passed", "incomplete", "1"),
-        # The counter file a server writes with its first call shows it had sent none before.
+        # The counter file a server writes once it serves shows it had sent none before.
         "test_first_counter_file": ("passed", "ok", "3"),
         "test_no_server": ("passed", "no_server", None),
     }

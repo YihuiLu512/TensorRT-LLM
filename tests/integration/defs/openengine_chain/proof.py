@@ -12,6 +12,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import socket
 import subprocess
 import time
 from collections.abc import Iterable, Sequence
@@ -37,8 +38,8 @@ class Counters:
 
     frontend: int | None
     engine: int | None
-    # No front end had written a counter file: none had sent a Generate call yet,
-    # or the front ends do not count.
+    # No front end had written a counter file: none had started serving yet, or
+    # the front ends do not count.
     frontend_unwritten: bool = False
 
 
@@ -52,7 +53,7 @@ class Check:
 class CountCheck(Check):
     # The engine's increase, or None if the engine does not report its counter.
     engine_calls: int | None = None
-    # The two sides disagree; a counter written late can still settle it.
+    # The two sides disagree; a call counted late can still settle it.
     mismatch: bool = False
 
 
@@ -60,12 +61,15 @@ class CountCheck(Check):
 
 
 def read_frontend_counter(handle) -> int | None:
-    """Sum of ``generate_sent`` over the front ends' counter files; ``None`` if there is none.
+    """Sum of the front ends' ``generate_sent``; ``None`` if no front end has a counter file.
 
-    A front end writes its file after each Generate call it sends, so no file
-    means that none has sent one yet or that the front ends do not count;
-    :func:`counting_start` tells the two apart once a file appears. A missing
-    directory reads as "no file"; one that exists but cannot be listed raises.
+    A front end writes its file when it starts serving, so no file means that
+    none has started yet or that the front ends do not count;
+    :func:`counting_start` tells the two apart once a file appears. A running
+    front end is asked for its current count at the address its file names; one
+    that has closed its counter left its final count in the file. A missing
+    directory reads as "no file"; any other read that fails raises, as does the
+    read of a front end that exited without closing its counter.
     """
     try:
         names = os.listdir(handle.counter_dir)
@@ -79,11 +83,29 @@ def read_frontend_counter(handle) -> int | None:
 
 
 def _read_counter_file(path: str) -> int:
-    """One front end's count; a file caught while being rewritten is read again."""
+    """One front end's count."""
+    record = _read_counter_record(path)
+    address = record.get(cv.FRONTEND_COUNTER_ADDRESS_FIELD)
+    if address is None:
+        return record[cv.FRONTEND_COUNTER_FIELD]
+    try:
+        return _ask_frontend(address)
+    except OSError as error:
+        # A front end that closes its counter writes its final count before it stops answering.
+        record = _read_counter_record(path)
+        if cv.FRONTEND_COUNTER_ADDRESS_FIELD in record:
+            raise OSError(
+                f"front end pid {record['pid']} did not answer for its counter ({path}): {error!r}"
+            ) from error
+        return record[cv.FRONTEND_COUNTER_FIELD]
 
-    def read() -> int:
+
+def _read_counter_record(path: str) -> dict:
+    """The record in a counter file; a file caught while being rewritten is read again."""
+
+    def read() -> dict:
         with open(path, encoding="utf-8") as f:
-            return int(json.load(f)[cv.FRONTEND_COUNTER_FIELD])
+            return _counter_record(f.read())
 
     for _ in range(_COUNTER_FILE_TRIES - 1):
         try:
@@ -91,6 +113,32 @@ def _read_counter_file(path: str) -> int:
         except ValueError:
             time.sleep(_COUNTER_FILE_RETRY_S)
     return read()
+
+
+def _ask_frontend(address: str) -> int:
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.settimeout(_RPC_TIMEOUT_S)
+        connection.connect("\0" + address)
+        chunks = []
+        while chunk := connection.recv(4096):
+            chunks.append(chunk)
+    if not chunks:
+        # The front end exited, or closed its counter, before it answered.
+        raise ConnectionResetError(f"no answer from {address}")
+    return _counter_record(b"".join(chunks).decode())[cv.FRONTEND_COUNTER_FIELD]
+
+
+def _counter_record(text: str) -> dict:
+    """``text`` as a counter record; ``ValueError`` if it is not one."""
+    record = json.loads(text)
+    if not (
+        isinstance(record, dict)
+        and type(record.get("pid")) is int
+        and type(record.get(cv.FRONTEND_COUNTER_FIELD)) is int
+        and isinstance(record.get(cv.FRONTEND_COUNTER_ADDRESS_FIELD, ""), str)
+    ):
+        raise ValueError(f"not a counter record: {text!r}")
+    return record
 
 
 def _control_stub(endpoint: str):
@@ -187,8 +235,9 @@ def read_counters(handle) -> Counters:
 def counting_start(before: Counters, after: Counters) -> Counters:
     """``before`` of one server, with an unwritten front-end counter read as 0 once ``after`` has one.
 
-    Counter files appear with a front end's first Generate call, so front ends
-    that have written one since ``before`` count and had sent nothing then.
+    A front end writes its counter file when it starts serving, before its first
+    Generate call, so front ends that have written one since ``before`` count and
+    had sent nothing then.
     """
     if before.frontend_unwritten and after.frontend is not None:
         return dataclasses.replace(before, frontend=0, frontend_unwritten=False)

@@ -34,7 +34,7 @@ import os
 import re
 import signal
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping
 from http import HTTPStatus
 from pathlib import Path
 from typing import Any
@@ -339,10 +339,8 @@ class OpenEngineLLM:
         self._healthy = False
         self._health_task: asyncio.Task[None] | None = None
         self._closing = False
-        self._generate_sent = 0
         self._counter_dir = os.environ.get(SERVE_COUNTER_DIR_ENV) or None
         self._counter = contracts.GenerateCounter(self._counter_dir)
-        self._counter_writer: concurrent.futures.ThreadPoolExecutor | None = None
         self._metrics = contracts.create_metrics_recorder(args)
         # The default recorder derives nothing from the engine's load, so none is fetched.
         self._metrics_use_load = contracts.resolve_slot("create_metrics_recorder")[1] != "default"
@@ -445,7 +443,7 @@ class OpenEngineLLM:
     @property
     def generate_sent(self) -> int:
         """Generate calls this frontend has sent."""
-        return self._generate_sent
+        return self._counter.value
 
     def _startup_error(self, step: str, problem: str) -> OpenEngineStartupError:
         return OpenEngineStartupError(
@@ -457,6 +455,7 @@ class OpenEngineLLM:
 
         The checks: the schema revision, the capabilities the engine declares,
         the conventions version, token-id input and the tokenizer fingerprint.
+        With a counter directory, it also publishes the Generate count.
 
         Raises:
             OpenEngineStartupError: A step failed; the message names the step.
@@ -491,8 +490,14 @@ class OpenEngineLLM:
             f"{caps.served_model_name!r}, max_context_length={caps.max_context_length}"
         )
         self._lora = contracts.create_lora_registry(self._client, caps)
-        # The count file exists from the start, so a run that sends nothing still proves it.
-        self._record_sent(0)
+        # The count is readable from the start, so a run that sends nothing still proves it.
+        try:
+            self._counter.start()
+        except (OSError, RuntimeError) as error:
+            await self._client.close()
+            raise self._startup_error(
+                "Generate count", f"could not publish it in {self._counter_dir}: {error}"
+            ) from error
         self._healthy = True
         self._health_task = asyncio.create_task(self._watch_health())
         self._health_task.add_done_callback(self._health_watch_ended)
@@ -692,38 +697,39 @@ class OpenEngineLLM:
             if self._client is not None:
                 await self._client.close()
         finally:
-            # The pool and the writer thread are closed whatever happened to the connection.
+            # The pool and the counter are closed whatever happened to the connection.
             try:
                 if self.postproc_pool is not None:
                     await self.postproc_pool.aclose()
             finally:
-                if self._counter_writer is not None:
-                    # The last writes may go to a slow file system; the loop keeps running.
-                    await asyncio.to_thread(self._counter_writer.shutdown, True)
+                await self.close_counter()
 
     # -- Counting ------------------------------------------------------------
+
+    async def close_counter(self) -> None:
+        """Write the final Generate count and stop answering for it; safe to call again."""
+        if self._counter_dir is None:
+            self._close_counter()
+        else:
+            # The final count may go to a slow file system, so it is written off the loop.
+            await asyncio.to_thread(self._close_counter)
 
     def _record_sent(self, count: int) -> None:
         """Count ``count`` more Generate calls.
 
-        With a counter directory, a writer thread updates the count file;
-        while the frontend closes, the file is written on the calling thread.
+        The count is kept in memory; only calls counted after the counter is
+        closed write its file, on the calling thread.
         """
-        self._generate_sent += count
-        if self._counter_dir is None or self._closing:
-            # Calls that end while the frontend closes are written here, after the writer stopped.
-            try:
-                self._counter.increment(count)
-            except OSError as error:
-                logger.warning(f"Could not write the OpenEngine generate_sent count: {error}")
-            return
-        if self._counter_writer is None:
-            # One thread keeps the writes in order, so the last one holds the total.
-            self._counter_writer = concurrent.futures.ThreadPoolExecutor(
-                1, thread_name_prefix="openengine-counter"
-            )
-        future = self._counter_writer.submit(self._counter.increment, count)
-        future.add_done_callback(_log_counter_failure)
+        try:
+            self._counter.increment(count)
+        except OSError as error:
+            logger.warning(f"Could not write the OpenEngine generate_sent count: {error}")
+
+    def _close_counter(self) -> None:
+        try:
+            self._counter.close()
+        except OSError as error:
+            logger.warning(f"Could not write the OpenEngine generate_sent count: {error}")
 
     def engine_block(self) -> dict[str, Any]:
         """The ``engine`` block of ``/server_info``."""
@@ -734,7 +740,7 @@ class OpenEngineLLM:
             "engine_name": info.engine_name,
             "engine_version": info.engine_version,
             "instance_id": info.instance_id,
-            "generate_sent": self._generate_sent,
+            "generate_sent": self._counter.value,
         }
 
     # -- Requests ------------------------------------------------------------
@@ -1079,12 +1085,6 @@ class OpenEngineLLM:
         raise contracts.OpenEngineUnsupportedError(
             "/v1/data_transceiver_state is not supported when serving through an OpenEngine engine"
         )
-
-
-def _log_counter_failure(future: Any) -> None:
-    error = future.exception()
-    if error is not None:
-        logger.warning(f"Could not write the OpenEngine generate_sent count: {error}")
 
 
 _END = object()
@@ -1740,13 +1740,29 @@ def adapt_server(server: Any, facade: OpenEngineLLM) -> None:
       response has started, so its status stays 200 and the handler decides
       how the error reaches the client (``/v1/completions`` sends an error
       event; ``/v1/chat/completions`` ends the stream).
+    - the app's shutdown closes the Generate counter: uvicorn raises the
+      signal that stopped it again once the app has shut down, and a process
+      with no handler of its own for that signal ends there, before the
+      launcher's ``aclose()`` runs.
     """
+    import contextlib
     import sys
 
     from fastapi.responses import JSONResponse
     from fastapi.routing import APIRoute
 
     app = server.app
+    lifespan = app.router.lifespan_context
+
+    @contextlib.asynccontextmanager
+    async def lifespan_closing_the_counter(app: Any) -> AsyncIterator[Any]:
+        try:
+            async with lifespan(app) as state:
+                yield state
+        finally:
+            await facade.close_counter()
+
+    app.router.lifespan_context = lifespan_closing_the_counter
 
     def not_supported(path: str) -> JSONResponse:
         return server._create_not_supported_error(

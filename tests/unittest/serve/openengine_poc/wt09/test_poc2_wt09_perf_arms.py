@@ -1049,15 +1049,16 @@ def test_chain_counts_that_disagree_are_noted(arms, monkeypatch):
     assert any("sent 5 Generate calls, the engine received 4" in n for n in probe.notes)
 
 
-def test_counter_bugs_are_not_hidden(arms, monkeypatch):
+@pytest.mark.parametrize("bug", [AttributeError, KeyError])
+def test_counter_bugs_are_not_hidden(arms, monkeypatch, bug):
     from openengine_chain import proof
 
     def broken(handle):
-        raise AttributeError("harness API changed")
+        raise bug("harness API changed")
 
     monkeypatch.setattr(proof, "read_counters", broken)
     reader = _FakeReader(arms, ticks={}, gpu=set(), tree={10: {10}})
-    with pytest.raises(AttributeError):
+    with pytest.raises(bug):
         arms.RunProbe.start(_FakeServer(arms, "B-s1", handle=object()), reader)
 
 
@@ -1077,13 +1078,13 @@ def test_unreadable_counters_count_as_unknown(arms, monkeypatch):
 
 @pytest.mark.parametrize("content", ["null", '{"pid": 1, "generate_sent": null}'])
 def test_counter_file_holding_null_counts_as_unknown(arms, tmp_path, content):
-    """The real reader on a counter file with no count: no TypeError, no count."""
+    """The real reader on a counter file with no count: ValueError, no count."""
     (tmp_path / "1.json").write_text(content)
     handle = types.SimpleNamespace(alive=True, counter_dir=str(tmp_path))
     notes = []
     counters = arms._read_counters(handle, notes)
     assert (counters.frontend, counters.engine) == (None, None)
-    assert any("TypeError" in note for note in notes), notes
+    assert any("ValueError" in note for note in notes), notes
 
 
 # ----------------------------------------------------------------------------- decoded tokens

@@ -5,10 +5,13 @@
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
+import threading
 import time
 import types
+import uuid
 
 import pytest
 from openengine_chain import proof
@@ -110,6 +113,103 @@ def test_frontend_counter_rereads_a_file_being_rewritten(tmp_path, monkeypatch):
 
     monkeypatch.setattr(proof.time, "sleep", finish)
     assert proof.read_frontend_counter(handle) == 5
+
+
+class _RunningFrontend:
+    """Answers each connection with ``{"pid": ..., "generate_sent": ...}``, as a running front end does."""
+
+    def __init__(self, pid, sent):
+        self.address = f"openengine-chain-test-{os.getpid()}-{uuid.uuid4().hex}"
+        self._listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._listener.bind("\0" + self.address)
+        self._listener.listen()
+        self.answer = json.dumps({"pid": pid, "generate_sent": sent}).encode()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+        self._thread.start()
+
+    def _serve(self):
+        while True:
+            try:
+                connection, _ = self._listener.accept()
+            except OSError:
+                return
+            with connection:
+                connection.sendall(self.answer)
+
+    def close(self):
+        self._listener.shutdown(socket.SHUT_RDWR)
+        self._listener.close()
+        self._thread.join()
+
+
+def _write_record(path, pid, sent, address=None):
+    record = {"pid": pid, "generate_sent": sent}
+    if address is not None:
+        record["address"] = address
+    path.write_text(json.dumps(record))
+
+
+def test_a_running_frontend_is_asked_for_its_count(tmp_path):
+    handle = _handle(tmp_path)
+    running = _RunningFrontend(11, 9)
+    try:
+        # The file holds the count of when the front end started.
+        _write_record(tmp_path / "counters" / "11.json", 11, 0, running.address)
+        _write_record(tmp_path / "counters" / "12.json", 12, 4)
+        assert proof.read_frontend_counter(handle) == 13
+    finally:
+        running.close()
+
+
+def test_a_running_frontend_that_does_not_answer_raises(tmp_path):
+    handle = _handle(tmp_path)
+    _write_record(tmp_path / "counters" / "11.json", 11, 0, f"nobody-{uuid.uuid4().hex}")
+    with pytest.raises(OSError, match="pid 11 did not answer"):
+        proof.read_frontend_counter(handle)
+
+
+def test_a_running_frontend_that_hangs_up_without_answering_raises(tmp_path):
+    handle = _handle(tmp_path)
+    running = _RunningFrontend(11, 9)
+    running.answer = b""
+    try:
+        _write_record(tmp_path / "counters" / "11.json", 11, 0, running.address)
+        with pytest.raises(OSError, match="pid 11 did not answer"):
+            proof.read_frontend_counter(handle)
+    finally:
+        running.close()
+
+
+def test_a_frontend_that_stopped_while_being_read_gives_its_final_count(tmp_path, monkeypatch):
+    handle = _handle(tmp_path)
+    path = tmp_path / "counters" / "11.json"
+    _write_record(path, 11, 0, "stopping")
+
+    def stopped(address):
+        # The front end wrote its final count, then stopped answering.
+        _write_record(path, 11, 6)
+        raise ConnectionRefusedError(address)
+
+    monkeypatch.setattr(proof, "_ask_frontend", stopped)
+    assert proof.read_frontend_counter(handle) == 6
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "null",
+        '{"pid": 11}',
+        '{"pid": 11, "generate_sent": null}',
+        '{"pid": 11, "generate_sent": true}',
+        '{"pid": 11, "generate_sent": 1, "address": 7}',
+    ],
+)
+def test_a_file_without_a_count_raises_value_error(tmp_path, monkeypatch, content):
+    handle = _handle(tmp_path)
+    (tmp_path / "counters" / "11.json").write_text(content)
+    monkeypatch.setattr(proof.time, "sleep", lambda _: None)
+    with pytest.raises(ValueError):
+        proof.read_frontend_counter(handle)
 
 
 def test_frontend_counter_is_unknown_without_files(tmp_path, monkeypatch):

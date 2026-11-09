@@ -8,7 +8,7 @@ from openengine_chain import launch, proof
 class FakeHandle:
     def __init__(self, frontend=0, engine=0, topology=proof.OK, frontend_log=None, unwritten=False):
         self.chain = "trtllm"
-        # unwritten: the front end counts but has not written its counter file yet.
+        # unwritten: no front end has written its counter file yet; send() makes one appear.
         self.counters = proof.Counters(
             None if unwritten else frontend, engine, frontend_unwritten=unwritten
         )

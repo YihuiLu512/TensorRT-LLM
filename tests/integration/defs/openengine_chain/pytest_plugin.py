@@ -47,7 +47,8 @@ _OUTER = pytest.StashKey[str]()
 _STARTUP_VERDICTS = pytest.StashKey[dict]()
 _STARTUP_DECIDED = pytest.StashKey[bool]()
 
-# Re-reads before a count mismatch is reported: the front end may write its counter late.
+# Re-reads before a count mismatch is reported: the front end counts a call that was
+# cancelled before its first event only when it finishes reading it, which can be late.
 _SETTLE_TRIES = 4
 _SETTLE_INTERVAL_S = 0.5
 _LOG_TAIL_BYTES = 8192
