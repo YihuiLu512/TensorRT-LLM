@@ -330,7 +330,14 @@ OWNERSHIP: dict[str, list[Rule]] = {
         Rule(
             "scripts/poc2/check_ownership.py",
             "exception",
-            "only the contract v4 exceptions of WT-10",
+            "only the exceptions of WT-10 and WT-10-fix1",
+        ),
+        # WT-10-fix1: the pool's steps as the facade's.
+        Rule(
+            f"{POC}/postproc_pool.py",
+            "exception",
+            "WT-10-fix1 only: a streaming step that brings an output to its call's max_tokens"
+            " waits for that output's finish, as the facade's steps without a pool",
         ),
     ],
     "WT-11": _own(f"{POC}/mapping.py", f"{POC}/field_classes.py")

@@ -52,17 +52,26 @@ from tensorrt_llm.scheduling_params import SchedulingParams
 from tensorrt_llm.serve.detokenize import IncrementalDetokenizer
 from tensorrt_llm.serve.openai_protocol import ChatCompletionRequest
 from tensorrt_llm.serve.openai_server import OpenAIServer
-from tensorrt_llm.serve.openengine_poc import OpenEngineLLM, build_generate_request, contracts
+from tensorrt_llm.serve.openengine_poc import (
+    OpenEngineLLM,
+    build_generate_request,
+    contracts,
+    postproc_pool,
+)
 from tensorrt_llm.serve.openengine_poc import facade as facade_module
 from tensorrt_llm.serve.openengine_poc import launch as launch_module
 from tensorrt_llm.serve.openengine_poc import mapping as mapping_module
-from tensorrt_llm.serve.openengine_poc.engine_client import OutputFinished
+from tensorrt_llm.serve.openengine_poc.engine_client import OutputFinished, TokenDelta
 from tensorrt_llm.serve.openengine_poc.facade import (
     UNSUPPORTED_ENDPOINTS,
     OpenEngineServeError,
     OpenEngineStartupError,
     adapt_server,
     check_frontend_options,
+)
+from tensorrt_llm.serve.postprocess_handlers import (
+    CompletionPostprocArgs,
+    completion_stream_post_processor,
 )
 from tensorrt_llm.tokenizer import TransformersTokenizer
 from tensorrt_llm.usage import usage_lib
@@ -778,6 +787,138 @@ def test_a_call_that_fails_while_a_step_waits_for_the_finish_fails_after_that_st
         assert output.finished and output.error is not None
 
     _serve(engine, tmp_path, body)
+
+
+def _pool_record(
+    max_tokens: int | None, n: int = 1, stop: list[str] | None = None
+) -> postproc_pool._Record:
+    """A streaming completion request in a pool process, run in this process."""
+    params = SamplingParams(
+        max_tokens=max_tokens, n=n, temperature=1.0 if n > 1 else None, stop=stop
+    )
+    message = contracts.PPOpen(
+        request_id="r",
+        streaming=True,
+        n=n,
+        post_processor=contracts.post_processor_path(completion_stream_post_processor),
+        postproc_args=CompletionPostprocArgs(model=MODEL, num_choices=n),
+        detok=contracts.DetokOptions(),
+        num_prompt_tokens=len(PROMPT_IDS),
+        sampling_params=postproc_pool.plain_sampling_params(params),
+    )
+    return postproc_pool._Record(message, _tokenizer(), None)
+
+
+def _pool_choices(result: contracts.PPResult) -> list[tuple[int, str, str | None]]:
+    """Each choice's (index, text, finish reason) in a streaming result's chunks."""
+    choices = []
+    for chunk in result.chunks:
+        if chunk.startswith("data: ") and "[DONE]" not in chunk:
+            for choice in json.loads(chunk[len("data: ") :])["choices"]:
+                choices.append((choice["index"], choice["text"], choice["finish_reason"]))
+    return choices
+
+
+def _pool_steps(record: postproc_pool._Record, *events: Any) -> list[Any]:
+    """Per event: None when it gave no step, else each choice's (index, text, finish reason)."""
+    steps = []
+    for event in events:
+        result = record.on_event(event)
+        steps.append(None if result is None else _pool_choices(result))
+    return steps
+
+
+def _delta(index: int, token_id: int) -> TokenDelta:
+    return TokenDelta(output_index=index, token_ids=(token_id,))
+
+
+def test_in_the_pool_the_last_tokens_and_the_finish_are_one_step() -> None:
+    record = _pool_record(max_tokens=2)
+    steps = _pool_steps(
+        record, _delta(0, HE), _delta(0, LLO), OutputFinished(output_index=0, reason="length")
+    )
+    # As the facade steps without a pool: "llo" waits for the finish.
+    assert steps == [[(0, "He", None)], None, [(0, "llo", "length")]]
+    assert record.final
+
+
+def test_in_the_pool_a_finish_before_max_tokens_is_a_step_of_its_own() -> None:
+    record = _pool_record(max_tokens=8)
+    steps = _pool_steps(
+        record, _delta(0, HE), _delta(0, LLO), OutputFinished(output_index=0, reason="stop")
+    )
+    assert steps == [[(0, "He", None)], [(0, "llo", None)], [(0, "", "stop")]]
+
+
+def test_in_the_pool_a_step_of_several_outputs_covers_each_one_from_its_start() -> None:
+    record = _pool_record(max_tokens=2, n=2)
+    steps = _pool_steps(
+        record,
+        _delta(0, HE),
+        _delta(1, WORLD),
+        _delta(0, LLO),
+        _delta(1, BANG),
+        OutputFinished(output_index=0, reason="length"),
+        OutputFinished(output_index=1, reason="length"),
+    )
+    assert steps[:2] == [[(0, "He", None), (1, "", None)], [(0, "", None), (1, " world", None)]]
+    assert steps[2:5] == [None, None, None]
+    assert sorted(steps[5]) == [(0, "llo", "length"), (1, "!", "length")]
+
+
+def test_in_the_pool_a_stop_string_matched_while_a_step_waits_goes_with_that_step() -> None:
+    record = _pool_record(max_tokens=2, n=2, stop=["!"])
+    results = [
+        record.on_event(event)
+        for event in (
+            _delta(0, HE),
+            _delta(1, WORLD),
+            _delta(0, LLO),
+            _delta(1, BANG),
+            OutputFinished(output_index=0, reason="length"),
+        )
+    ]
+    # A streaming result always has chunks: the stop string waits with the step.
+    assert results[2:4] == [None, None]
+    last = results[4]
+    assert last.is_final and last.stop_hit == (1,)
+    assert sorted(_pool_choices(last)) == [(0, "llo", "length"), (1, "", "stop")]
+
+
+def test_in_the_pool_a_step_waiting_for_the_finish_is_sent_when_the_request_is_cancelled() -> None:
+    record = _pool_record(max_tokens=2)
+    assert _pool_steps(record, _delta(0, HE), _delta(0, LLO))[1] is None
+    result = record.on_close("cancelled")
+    (chunk, *_) = result.chunks
+    (choice,) = json.loads(chunk[len("data: ") :])["choices"]
+    assert result.is_final and (choice["text"], choice["finish_reason"]) == ("llo", "cancelled")
+
+
+@pytest.mark.parametrize(
+    "max_tokens, given",
+    # The mapping fills in a missing max_tokens, and caps one past the context.
+    [(None, MAX_CONTEXT - len(PROMPT_IDS)), (1000, MAX_CONTEXT - len(PROMPT_IDS)), (4, 4)],
+)
+def test_the_pool_is_given_the_max_tokens_of_the_calls(
+    tmp_path, monkeypatch, max_tokens, given
+) -> None:
+    pools = _with_pool(monkeypatch)
+    engine = _engine(token(0, HE), _finished())
+
+    async def body(engine, facade, http):
+        params = SamplingParams(max_tokens=max_tokens)
+        output = facade.generate_async(
+            PROMPT_IDS, params, streaming=True, _postproc_params=object()
+        )
+        await asyncio.wait_for(output.aresult(), WAIT_SECONDS)
+        (sent,) = pools[0].sampling_params
+        assert engine.requests[0].stopping.max_tokens == given
+        assert sent.max_tokens == given
+        # The request's own parameters are not changed.
+        assert params.max_tokens == max_tokens
+        assert (sent is params) is (max_tokens == given)
+
+    _serve(engine, tmp_path, body, postproc_workers=1)
 
 
 def test_health_is_lost_after_close(tmp_path) -> None:
@@ -1964,6 +2105,7 @@ class _FakePool:
         self.tokenizer_dir = tokenizer_dir
         self.sessions: list[_FakeSession] = []
         self.opened: list[dict[str, Any]] = []
+        self.sampling_params: list[SamplingParams] = []
         self.closed = False
         self._behaviour = {
             "overflow_after": None,
@@ -1979,6 +2121,7 @@ class _FakePool:
         if self._behaviour["open_error"] is not None:
             raise self._behaviour["open_error"]
         self.opened.append({"request_id": request_id, "params": postproc_params, **kwargs})
+        self.sampling_params.append(sampling_params)
         session = _FakeSession(
             request_id,
             overflow_after=self._behaviour["overflow_after"],

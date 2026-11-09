@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import copy
 import dataclasses
 import json
 import os
@@ -1218,15 +1219,24 @@ class OpenEngineRequestOutput:
         ]
         self._tokens_received = [0] * len(self._max_tokens)
         if self._postproc is not None:
-            self._open_session(self._postproc, engine_stop_texts)
+            self._open_session(self._postproc, engine_stop_texts, requests)
 
-    def _open_session(self, postproc: _Postproc, engine_stop_texts: bool) -> None:
+    def _open_session(
+        self, postproc: _Postproc, engine_stop_texts: bool, requests: list[EngineRequest]
+    ) -> None:
         """Postprocess this request in the pool."""
+        sampling_params = postproc.sampling_params
+        limits = {request.max_tokens for request in requests}
+        if len(limits) == 1 and sampling_params.max_tokens not in limits:
+            # The pool steps by max_tokens as this side does, so it is given
+            # the calls' max_tokens, which the mapping may fill in or cap.
+            sampling_params = copy.copy(sampling_params)
+            (sampling_params.max_tokens,) = limits
         try:
             self._session = postproc.pool.open(
                 self.id,
                 postproc.params,
-                postproc.sampling_params,
+                sampling_params,
                 streaming=postproc.streaming,
                 num_outputs=postproc.sampling_params.n,
                 num_prompt_tokens=len(self.prompt_token_ids),
