@@ -127,9 +127,17 @@ rows:
     cases: "test_stop_reason of T2; T6; T5"
     author: WT-12
     deps: [link, WT-11, WT-12]
+  # The six streaming cached_tokens cases of T1, T2 named in cases are SKIP on the chain
+  # (expectations/WT-12.py): they expect usage in every streamed chunk, and OpenEngine
+  # sends usage only with the last response (OE-STR-4). test_stop_string_variants[*-stream]
+  # checks the cached_tokens of the last streamed usage instead.
   - id: F-17+F-18+F-30
     features: [F-17, F-18, F-30]
-    cases: "test_stop_reason of T2; the usage cases of T1, T2; new: test_stop_string_variants"
+    cases: >-
+      test_stop_reason of T2; the usage cases of T1, T2 (on the chain SKIP:
+      test_completion_cached_tokens_stream[pytorch-{disable,enable}_processpool],
+      test_chat_cached_tokens_stream[pytorch-{extra_options,no_extra_options}-{disable,enable}_processpool]);
+      new: test_stop_string_variants
     author: WT-12
     deps: [link, WT-11, WT-12]
   - id: F-20+F-21
