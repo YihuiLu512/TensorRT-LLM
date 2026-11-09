@@ -1,0 +1,67 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# WT-09-fix1 owes no row (pending_e2e.py). These entries record the cases of
+# _test_openengine_wt09_spec.py on the trtllm chain: under one-model Eagle3 the front end refuses
+# output logprobs and non-neutral penalties with 400 before any Generate call; the plain server
+# serves them. Each case ran three times on 1xB200 at the commit below, with one front end
+# (acceptance3) and with the default 8 front ends and the postproc pool (spec8pool).
+# Not entries, because they verify no feature row (same runs, in the acceptance3 junit):
+# _test_openengine_wt09_perf.py::test_perf_arm_b_s1 and
+# _test_openengine_wt14_frontends.py::test_the_frontends_share_the_port_and_the_engine passed with
+# chain_proof ok. The smoke set passed with one front end and with 8 front ends and the pool:
+# /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/e2e/results/e2e-a3-5c01b7b359/p*-r0/{smoke,smoke8pool}/outer-junit.xml
+# 4xB200 perf arms (GLM-5.3-Flash, job-local configs, Slurm job 5759115, one run each, at
+# a96c8b0b371074eaf85eceb696864404109b3068; the later commits do not change the arms' MTP check or
+# port choice): B-s1 MTP3 passed without failing on the decoded-tokens check, and B-full MTP3,
+# A-def MTP3 and the non-arm 8-frontend run passed with no port error:
+#   /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/gpu4/results/run-5759115/B-s1_trtllm_mtp3/outer-junit.xml
+#   /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/gpu4/results/run-5759115/B-full_trtllm_mtp3/outer-junit.xml
+#   /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/gpu4/results/run-5759115/A-def_none_mtp3/outer-junit.xml
+#   /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/gpu4/results/run-5759115/-_none_h5_8fe/outer-junit.xml
+entries:
+  - row: F-20+F-21
+    features: [F-20]
+    cases:
+      - unittest/llmapi/apps/_test_openengine_wt09_spec.py::test_output_logprobs[eagle3]
+      - unittest/llmapi/apps/_test_openengine_wt09_spec.py::test_output_logprobs[plain]
+    commit: 5c01b7b3599149bbb54c70a86b0744761aa3ef16
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/e2e/results/e2e-a3-5c01b7b359/p1-r0/acceptance3/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/e2e/results/e2e-a3-5c01b7b359/p1-r0/acceptance3/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/e2e/results/e2e-a3-5c01b7b359/p2-r0/acceptance3/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/e2e/results/e2e-a3-5c01b7b359/p2-r0/acceptance3/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/e2e/results/e2e-a3-5c01b7b359/p3-r0/acceptance3/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/e2e/results/e2e-a3-5c01b7b359/p3-r0/acceptance3/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/e2e/results/e2e-a3-5c01b7b359/p1-r0/spec8pool/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/e2e/results/e2e-a3-5c01b7b359/p1-r0/spec8pool/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/e2e/results/e2e-a3-5c01b7b359/p2-r0/spec8pool/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/e2e/results/e2e-a3-5c01b7b359/p2-r0/spec8pool/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/e2e/results/e2e-a3-5c01b7b359/p3-r0/spec8pool/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/e2e/results/e2e-a3-5c01b7b359/p3-r0/spec8pool/junit/
+    result: passed
+    chain_proof: ok
+  - row: F-13
+    features: [F-13]
+    cases:
+      - unittest/llmapi/apps/_test_openengine_wt09_spec.py::test_penalties[eagle3-frequency_penalty]
+      - unittest/llmapi/apps/_test_openengine_wt09_spec.py::test_penalties[eagle3-presence_penalty]
+      - unittest/llmapi/apps/_test_openengine_wt09_spec.py::test_penalties[eagle3-repetition_penalty]
+      - unittest/llmapi/apps/_test_openengine_wt09_spec.py::test_penalties[plain-frequency_penalty]
+      - unittest/llmapi/apps/_test_openengine_wt09_spec.py::test_penalties[plain-presence_penalty]
+      - unittest/llmapi/apps/_test_openengine_wt09_spec.py::test_penalties[plain-repetition_penalty]
+    commit: 5c01b7b3599149bbb54c70a86b0744761aa3ef16
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/e2e/results/e2e-a3-5c01b7b359/p1-r0/acceptance3/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/e2e/results/e2e-a3-5c01b7b359/p1-r0/acceptance3/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/e2e/results/e2e-a3-5c01b7b359/p2-r0/acceptance3/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/e2e/results/e2e-a3-5c01b7b359/p2-r0/acceptance3/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/e2e/results/e2e-a3-5c01b7b359/p3-r0/acceptance3/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/e2e/results/e2e-a3-5c01b7b359/p3-r0/acceptance3/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/e2e/results/e2e-a3-5c01b7b359/p1-r0/spec8pool/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/e2e/results/e2e-a3-5c01b7b359/p1-r0/spec8pool/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/e2e/results/e2e-a3-5c01b7b359/p2-r0/spec8pool/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/e2e/results/e2e-a3-5c01b7b359/p2-r0/spec8pool/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/e2e/results/e2e-a3-5c01b7b359/p3-r0/spec8pool/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S4-WT-09-fix1/e2e/results/e2e-a3-5c01b7b359/p3-r0/spec8pool/junit/
+    result: passed
+    chain_proof: ok

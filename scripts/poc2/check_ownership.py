@@ -351,7 +351,12 @@ OWNERSHIP: dict[str, list[Rule]] = {
         ),
         Rule("scripts/poc2/check_ownership.py", "exception", "only WT-07's entry in OWNERSHIP"),
     ],
-    "WT-09": _own("tests/integration/defs/perf/openengine_arms.py")
+    "WT-09": _own(
+        "tests/integration/defs/perf/openengine_arms.py",
+        # WT-09-fix1 records the chain cases of its fix (ISSUES T13).
+        f"{CHAIN}/verified/WT-09-fix1.yaml",
+        f"{CHAIN}/smoke/WT-09-fix1.txt",
+    )
     + [
         _shared(
             "tests/integration/defs/perf/test_perf_sanity.py",
