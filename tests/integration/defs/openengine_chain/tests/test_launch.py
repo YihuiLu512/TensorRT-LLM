@@ -666,3 +666,134 @@ def test_interrupt_while_reading_counters_still_stops_both_processes(fake, monke
     with pytest.raises(KeyboardInterrupt):
         handle.terminate(grace=1)
     assert _gone(engine_pid) and _gone(frontend_pid)
+
+
+def test_uvicorn_bind_error_of_the_front_end_is_found(tmp_path):
+    log = tmp_path / "frontend.log"
+    line = (
+        "ERROR:    [Errno 98] error while attempting to bind on address "
+        "('127.0.0.1', {}): address already in use\n"
+    )
+    log.write_text("INFO:     Application startup complete.\n" + line.format(42213))
+    assert launch._lost_its_port(str(log), 42213)
+    assert not launch._lost_its_port(str(log), 4221)
+    log.write_text(line.format(18))
+    assert not launch._lost_its_port(str(log), 1)
+
+
+def test_port_reserved_by_another_multi_frontend_server_is_found(tmp_path):
+    log = tmp_path / "frontend.log"
+    line = (
+        "RuntimeError: Port {} is already reserved by another multi-frontend trtllm-serve: "
+        "[Errno 98] Address already in use\n"
+    )
+    log.write_text(line.format(42213))
+    assert launch._lost_its_port(str(log), 42213)
+    assert not launch._lost_its_port(str(log), 4221)
+    # The probe bind of a multi-frontend server names the port after a colon.
+    log.write_text(
+        "RuntimeError: Failed to bind socket to 127.0.0.1:42213: [Errno 98] Address already "
+        "in use. Port holder(s): 127.0.0.1:42213 status=LISTEN pid=7\n"
+    )
+    assert launch._lost_its_port(str(log), 42213)
+
+
+def _write_config(tmp_path, name, config):
+    path = tmp_path / name
+    path.write_text(yaml.safe_dump(config))
+    return str(path)
+
+
+@pytest.mark.parametrize(
+    "chain, config, sets, flagged",
+    [
+        ("trtllm", {"enable_iter_perf_stats": True}, [], True),
+        ("trtllm", {"return_perf_metrics": True}, [], False),
+        ("trtllm", {"enable_iter_perf_stats": True}, ["enable_iter_perf_stats=false"], False),
+        ("trtllm", {}, ["enable_iter_perf_stats=true"], True),
+        ("glm", {"enable_iter_perf_stats": True}, [], False),
+    ],
+)
+def test_engine_gets_load_metrics_when_the_configuration_has_iteration_stats(
+    fake, monkeypatch, tmp_path, chain, config, sets, flagged
+):
+    monkeypatch.setenv(cv.ENV_GLM_SERVE_CMD, fake.exe)
+    args = [
+        "--port",
+        str(_port()),
+        "--extra_llm_api_options",
+        _write_config(tmp_path, "c.yaml", config),
+    ]
+    for assignment in sets:
+        args += ["--set", assignment]
+    handle = _start(fake, args, chain=chain)
+    engine = _record(fake.records, "engine-start")["argv"]
+    frontend = _record(fake.records, "frontend-start")["argv"]
+    assert (launch.ENGINE_LOAD_METRICS_FLAG in engine) is flagged
+    assert launch.ENGINE_LOAD_METRICS_FLAG not in frontend
+    handle.terminate(grace=1)
+
+
+def _blocked_port():
+    """A port another process listens on without ever answering, as in a TOCTOU collision."""
+    blocker = socket.socket()
+    blocker.bind(("127.0.0.1", 0))
+    blocker.listen(16)
+    return blocker, blocker.getsockname()[1]
+
+
+def test_front_end_that_lost_its_port_is_restarted_on_another(fake):
+    blocker, taken = _blocked_port()
+    with blocker:
+        handle = _start(fake, ["--host", "127.0.0.1", "--port", str(taken)], chain="trtllm")
+        deadline = time.monotonic() + 10
+        while handle.poll() is None:
+            assert time.monotonic() < deadline, "the front end did not exit"
+            time.sleep(0.05)
+        problem = handle.frontend_port_problem()
+        assert problem is not None and f"port {taken} is in use" in problem
+        engine_pid = handle.engine.pid
+        lost = handle.frontend.pid
+        new_port = _port()
+        handle.restart_frontend(new_port)
+        assert handle.port == new_port and handle.frontend.pid != lost
+        assert handle.engine.pid == engine_pid
+        _wait_healthy(handle)
+        assert handle.frontend_port_problem() is None
+        assert any(f"restarted on port {new_port}" in note for note in handle.teardown_notes)
+        assert _record(fake.records, "frontend-start")["argv"][-2:] == ["--port", str(new_port)]
+        handle.terminate(grace=1)
+    assert handle.teardown_errors == []
+
+
+def test_front_end_sharing_its_port_with_another_listener_has_a_port_problem(fake):
+    handle = _start(fake, ["--host", "127.0.0.1", "--port", str(_port())], chain="trtllm")
+    _wait_healthy(handle)
+    assert handle.frontend_port_problem() is None
+    # Another address of the same port binds without an error, as SO_REUSEPORT does.
+    with socket.socket() as other:
+        other.bind(("127.0.0.2", handle.port))
+        other.listen(1)
+        assert "another process also listens" in handle.frontend_port_problem()
+    assert handle.frontend_port_problem() is None
+    handle.terminate(grace=1)
+
+
+def test_front_end_exiting_for_another_reason_has_no_port_problem(fake):
+    fake.env["FAKE_FRONTEND_MODE"] = "exit"
+    handle = _start(fake, ["--port", str(_port())], chain="trtllm")
+    deadline = time.monotonic() + 10
+    while handle.poll() is None:
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    assert handle.frontend_port_problem() is None
+    handle.terminate(grace=1)
+
+
+def test_restart_refuses_a_server_whose_engine_exited(fake):
+    handle = _start(fake, ["--port", str(_port())], chain="trtllm")
+    _record(fake.records, "frontend-start")
+    handle._engine.stop(1)
+    with pytest.raises(launch.ChainStartupError, match="engine has exited"):
+        handle.restart_frontend(_port())
+    handle.terminate(grace=1)

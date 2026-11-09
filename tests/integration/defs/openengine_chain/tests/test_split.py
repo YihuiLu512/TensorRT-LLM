@@ -54,10 +54,37 @@ def test_flag_with_value_and_missing_value_are_errors():
         sp.split_args(["--tp_size"], rewrite_yaml=lambda p: p)
 
 
-def test_beam_width_goes_to_the_engine_only():
+def test_beam_width_goes_to_both_so_the_front_end_refuses_beam_servers():
     result = sp.split_args(["--max_beam_width", "4"], rewrite_yaml=lambda p: p)
     assert result.engine == ("--max_beam_width", "4")
-    assert result.frontend == ()
+    assert result.frontend == ("--max_beam_width", "4")
+
+
+def _config(tmp_path, name, config):
+    path = tmp_path / name
+    path.write_text(yaml.safe_dump(config))
+    return str(path)
+
+
+def test_iteration_stats_come_from_the_last_config_file_and_the_set_overrides(tmp_path):
+    on = _config(tmp_path, "on.yaml", {"enable_iter_perf_stats": True})
+    off = _config(tmp_path, "off.yaml", {"enable_iter_perf_stats": False})
+    other = _config(tmp_path, "other.yaml", {"return_perf_metrics": True})
+    assert not sp.iteration_stats_enabled([])
+    assert not sp.iteration_stats_enabled(["--extra_llm_api_options", other])
+    assert sp.iteration_stats_enabled(["--extra_llm_api_options", on])
+    # The two names are one option of trtllm-serve: only the last file given counts.
+    assert not sp.iteration_stats_enabled(["--config", on, "--extra_llm_api_options", other])
+    assert not sp.iteration_stats_enabled(["--config", on, "--extra_llm_api_options", off])
+    assert sp.iteration_stats_enabled(["--config", other, "--extra_llm_api_options", on])
+    # --set wins over the file.
+    assert not sp.iteration_stats_enabled(["--set", "enable_iter_perf_stats=false", "--config", on])
+    assert sp.iteration_stats_enabled(["--config=" + off, "--set=enable_iter_perf_stats=true"])
+    assert not sp.iteration_stats_enabled(["--set", "enable_iter_req_stats=true"])
+    # A string is read as pydantic reads it.
+    quoted_off = _config(tmp_path, "quoted_off.yaml", {"enable_iter_perf_stats": "false"})
+    assert not sp.iteration_stats_enabled(["--config", quoted_off])
+    assert not sp.iteration_stats_enabled(["--config", on, "--set", "enable_iter_perf_stats='off'"])
 
 
 def test_set_of_a_frontend_only_key_stays_with_the_frontend():

@@ -126,4 +126,42 @@ def test_http_status_of():
 def test_shipped_tables_list_tests_that_do_not_generate(test, listed):
     nodeid = f"llmapi/apps/{test}"
     found = ex.applicable(ex.load(), nodeid, "trtllm")
-    assert [e.kind for e in found] == ([ex.NO_ENGINE_TRAFFIC] if listed else [])
+    kinds = [e.kind for e in found if e.kind == ex.NO_ENGINE_TRAFFIC]
+    assert kinds == ([ex.NO_ENGINE_TRAFFIC] if listed else [])
+
+
+@pytest.mark.parametrize(
+    "test",
+    [
+        "_test_openai_completions.py::test_batch_completions_beam_search[pytorch-prompts0]",
+        "_test_openai_chat.py::test_multiple_responses_with_beam_search[pytorch]",
+        "_test_openai_reasoning.py::test_reasoning_parser[Qwen3/Qwen3-0.6B-pytorch-with_beam_search-False]",
+        "_test_openai_reasoning.py::test_reasoning_parser[Qwen3/Qwen3-0.6B-pytorch-with_beam_search-True]",
+        "_test_openai_misc.py::test_health_generate[pytorch-with_beam_search-8-32768]",
+        "_test_openai_misc.py::test_request_cancellation[pytorch-with_beam_search-8-32768-True]",
+        "_test_openai_misc.py::test_version[pytorch-with_beam_search-8-32768]",
+    ],
+)
+def test_shipped_tables_expect_beam_servers_to_be_refused_at_startup(test):
+    found = ex.outcome_expectation(ex.applicable(ex.load(), f"llmapi/apps/{test}", "trtllm"))
+    assert found is not None and found.kind == ex.STARTUP_REJECTED
+    assert found.log_contains == "max_beam_width > 1 is not supported"
+
+
+@pytest.mark.parametrize(
+    "test",
+    [
+        "_test_openai_misc.py::test_health_generate[pytorch-no_beam_search-8-32768]",
+        "_test_openai_reasoning.py::test_reasoning_parser[Qwen3/Qwen3-0.6B-pytorch-no_beam_search-False]",
+    ],
+)
+def test_shipped_tables_leave_servers_without_beam_alone(test):
+    found = ex.applicable(ex.load(), f"llmapi/apps/{test}", "trtllm")
+    assert ex.outcome_expectation(found) is None
+
+
+@pytest.mark.parametrize("chain, skipped", [("trtllm", False), ("glm", True)])
+def test_kv_cache_utilization_test_runs_where_the_engine_gets_load_metrics(chain, skipped):
+    test = "_test_openai_prometheus.py::test_kv_cache_metrics_available_before_first_request"
+    found = ex.outcome_expectation(ex.applicable(ex.load(), f"llmapi/apps/{test}", chain))
+    assert (found is not None and found.kind == ex.SKIP) == skipped

@@ -27,13 +27,20 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import IO, Any
 
 import yaml
 
 from . import conventions as cv
-from .split import ServeCommand, engine_yaml, frontend_env, parse_serve_command, split_args
+from .split import (
+    ServeCommand,
+    engine_yaml,
+    frontend_env,
+    iteration_stats_enabled,
+    parse_serve_command,
+    split_args,
+)
 
 ENGINE_HOST = "127.0.0.1"
 # Functional tests' server-ready limit (RemoteOpenAIServer.MAX_SERVER_START_WAIT_S).
@@ -44,11 +51,18 @@ TERMINATE_GRACE_S = 30.0
 SURVIVOR_WAIT_S = 5.0
 LOG_TAIL_BYTES = 16384
 ENGINE_PORT_ATTEMPTS = 3
-# A line of the engine's log saying that binding its port failed because the port is in use,
-# such as gRPC's "Error in bind for address '[::ffff:127.0.0.1]:<port>': Address already in use".
+# A line of a log saying that taking a port failed because the port is in use, such as
+# gRPC's "Error in bind for address '[::ffff:127.0.0.1]:<port>': Address already in use",
+# uvicorn's "[Errno 98] error while attempting to bind on address ('127.0.0.1', <port>): ..."
+# or trtllm-serve's "Port <port> is already reserved by another multi-frontend trtllm-serve:
+# [Errno 98] Address already in use".
 _PORT_IN_USE_LINE = (
-    r"^(?=.*\bbind\b)(?=.*:{port}\b).*(?:address already in use|eaddrinuse|errno 98)"
+    r"^(?:(?=.*\bbind\b)(?=.*(?::|,\s*){port}\b)|(?=.*\bport {port} is already reserved\b))"
+    r".*(?:address already in use|eaddrinuse|errno 98)"
 )
+# Given to a TensorRT-LLM engine whose configuration turns on iteration stats: the front
+# end's iteration stats come from the engine's load, which reports KV-cache blocks only then.
+ENGINE_LOAD_METRICS_FLAG = "--openengine-enable-load-metrics"
 
 
 class ChainError(RuntimeError):
@@ -452,6 +466,8 @@ class ServeHandle:
         self.engine_endpoint = engine_endpoint
         self.workdir = workdir
         self.counter_dir = counter_dir
+        # Starts a chain's front end on the given port (None: the command line's), for restarts.
+        self._start_frontend: Callable[[str | None], LoggedProcess] | None = None
         # Counters and topology read just before shutdown, for tests that start and stop the server.
         self.final_counters = None
         self.final_topology = None
@@ -504,6 +520,47 @@ class ServeHandle:
 
     def url_for(self, *parts: str) -> str:
         return f"http://{self.host}:{self.port}/" + "/".join(parts)
+
+    def frontend_port_problem(self) -> str | None:
+        """Why the front end cannot serve on its port, or ``None``.
+
+        Either it exited after failing to take the port because another process
+        holds it, or it runs while another process listens on the port too (a
+        bind with SO_REUSEPORT, which several front ends of one server use, does
+        not fail). A front end that exited for another reason has no port problem.
+        """
+        frontend = self._frontend
+        if not isinstance(frontend, LoggedProcess) or self.port is None:
+            return None
+        if frontend.poll() is not None:
+            if _lost_its_port(frontend.log_path, self.port):
+                return f"the front end exited: port {self.port} is in use; log {frontend.log_path}"
+            return None
+        foreign = foreign_listeners(self.port, live_process_tree(frontend.pid))
+        if foreign:
+            return f"another process also listens on port {self.port} (sockets {sorted(foreign)})"
+        return None
+
+    def restart_frontend(self, port: int) -> None:
+        """Stop the front end and start it again on ``port``, keeping the engine.
+
+        For a front end with a :meth:`frontend_port_problem`. Shutdown problems of
+        the stopped front end are reported with this server.
+        """
+        old = self._frontend
+        if self._start_frontend is None or not isinstance(old, LoggedProcess):
+            raise ChainError("this server's front end cannot be restarted")
+        if self.engine is None or self.engine.poll() is not None:
+            raise ChainStartupError("the engine has exited; the front end is not restarted")
+        self.teardown_errors.extend(old.stop(TERMINATE_GRACE_S))
+        self.teardown_notes.extend(old.notes)
+        self.teardown_notes.append(
+            f"front end pid {old.pid} could not serve on port {self.port}; restarted on port {port}"
+        )
+        self._frontend = None
+        self.port = port
+        with self.stop_on_error():
+            self._frontend = self._start_frontend(str(port))
 
     @contextlib.contextmanager
     def stop_on_error(self) -> Iterator[None]:
@@ -694,6 +751,9 @@ def launch_serve_command(
     workdir = _results_dir()
     split = split_args(command.args, rewrite_yaml=lambda path: engine_yaml(path, workdir))
     engine_env = {k: v for k, v in env.items() if k != cv.ENV_COUNTER_DIR}
+    engine_flags = []
+    if chain == cv.CHAIN_TRTLLM and iteration_stats_enabled(command.args):
+        engine_flags.append(ENGINE_LOAD_METRICS_FLAG)
     host, port = _address(command.args)
     counter_dir = os.path.join(workdir, "counters")
     # Shutdown problems of replaced attempts, reported with the server that replaces them.
@@ -716,6 +776,7 @@ def launch_serve_command(
                 str(engine_port),
             ]
             + list(split.engine)
+            + engine_flags
         )
         handle = ServeHandle(
             chain=chain,
@@ -751,27 +812,32 @@ def launch_serve_command(
             handle._engine.copy_to_sink()
             raise
         break
-    with handle.stop_on_error():
-        os.makedirs(counter_dir, exist_ok=True)
-        fe_env = frontend_env(env)
-        fe_env[cv.ENV_COUNTER_DIR] = counter_dir
+    fe_env = frontend_env(env)
+    fe_env[cv.ENV_COUNTER_DIR] = counter_dir
+
+    def start_frontend(frontend_port: str | None) -> LoggedProcess:
         frontend_cmd = list(command.prefix) + [command.model, "--openengine-endpoint", endpoint]
         if frontend_supports_ready_timeout():
             frontend_cmd += ["--openengine-ready-timeout", str(FRONTEND_READY_TIMEOUT_S)]
         if split.host is not None:
             frontend_cmd += ["--host", split.host]
-        if split.port is not None:
-            frontend_cmd += ["--port", split.port]
+        if frontend_port is not None:
+            frontend_cmd += ["--port", frontend_port]
         frontend_cmd += list(split.frontend)
-        handle._frontend = LoggedProcess("frontend", frontend_cmd, fe_env, workdir, sink)
+        return LoggedProcess("frontend", frontend_cmd, fe_env, workdir, sink)
+
+    handle._start_frontend = start_frontend
+    with handle.stop_on_error():
+        os.makedirs(counter_dir, exist_ok=True)
+        handle._frontend = start_frontend(split.port)
     return handle
 
 
 def _lost_its_port(log_path: str | None, port: int) -> bool:
-    """Whether the engine's log reports that binding ``port`` failed because it is in use.
+    """Whether a process's log reports that taking ``port`` failed because it is in use.
 
-    Reads the whole log: shutdown output can push the bind error out of the tail.
-    The bind error, the port and the reason must be on one line, so that errors
+    Reads the whole log: shutdown output can push the error out of the tail.
+    The error, the port and the reason must be on one line, so that errors
     about other ports (MPI, metrics) do not count.
     """
     if not log_path:

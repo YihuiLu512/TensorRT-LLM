@@ -100,9 +100,13 @@ class FakeHandle:
         self.frontend = FakeProc()
         self.terminated = 0
         self.exit_code = None
+        self.port_problem = None
 
     def poll(self):
         return self.exit_code
+
+    def frontend_port_problem(self):
+        return self.port_problem
 
     def terminate(self):
         self.terminated += 1
@@ -183,7 +187,7 @@ def test_switch_on_failed_start_releases_the_extra_config(monkeypatch, server_mo
 def test_switch_on_start_that_times_out_releases_the_extra_config_once(
     monkeypatch, server_module, popen, chain, capsys
 ):
-    def refused(url):
+    def refused(url, **kwargs):
         raise server_module.requests.ConnectionError("refused")
 
     # The clock passes the timeout only after the first refused /health, so the wait
@@ -212,7 +216,7 @@ def test_switch_on_wait_ends_while_the_front_end_answers_503(
     server = server_module.RemoteOpenAIServer("/m", [], port=1234, wait=False)
     handle = chain[0][2]
     handle.exit_code = exit_code
-    monkeypatch.setattr(server_module.requests, "get", lambda url: Unavailable())
+    monkeypatch.setattr(server_module.requests, "get", lambda url, **kwargs: Unavailable())
     monkeypatch.setattr(server_module.time, "sleep", lambda s: None)
     with pytest.raises(RuntimeError, match=error):
         server.wait_for_server(timeout=timeout)
@@ -249,3 +253,218 @@ def test_chain_without_the_harness_on_the_path_releases_its_files(
             "/m", [], port=1234, extra_config={"a": 1}, log_path=str(log)
         )
     assert made and not os.path.exists(made[0].name)
+
+
+class Healthy:
+    status_code = 200
+
+
+def test_switch_off_health_check_has_no_timeout_as_before(monkeypatch, server_module, popen):
+    monkeypatch.delenv(cv.ENV_CHAIN, raising=False)
+    seen = []
+
+    def get(url, **kwargs):
+        seen.append(kwargs)
+        return Healthy()
+
+    monkeypatch.setattr(server_module.requests, "get", get)
+    server_module.RemoteOpenAIServer("/m", [], port=1234)
+    assert seen == [{}]
+
+
+def test_switch_on_health_check_has_a_timeout(monkeypatch, server_module, popen, chain):
+    seen = []
+
+    def get(url, **kwargs):
+        seen.append(kwargs)
+        return Healthy()
+
+    monkeypatch.setattr(server_module.requests, "get", get)
+    server_module.RemoteOpenAIServer("/m", [], port=1234)
+    assert seen == [{"timeout": server_module.RemoteOpenAIServer.CHAIN_HEALTH_TIMEOUT_S}]
+
+
+class RestartableHandle(FakeHandle):
+    """Its front end loses the port ``lost`` times, then serves."""
+
+    def __init__(self, lost):
+        super().__init__()
+        self.lost = lost
+        self.exit_code = 1 if lost else None
+        self.port_problem = "port in use" if lost else None
+        self.restarts = []
+
+    def restart_frontend(self, port):
+        self.restarts.append(port)
+        self.frontend = FakeProc()
+        self.lost -= 1
+        self.exit_code = 1 if self.lost else None
+        self.port_problem = "port in use" if self.lost else None
+
+
+@pytest.mark.parametrize("lost, ok", [(1, True), (2, True), (3, False)])
+def test_switch_on_front_end_that_lost_a_picked_port_moves_to_another(
+    monkeypatch, server_module, popen, lost, ok
+):
+    monkeypatch.setenv(cv.ENV_CHAIN, "trtllm")
+    handle = RestartableHandle(lost)
+    monkeypatch.setattr(remote, "launch_for_remote_server", lambda cmd, **kwargs: handle)
+    ports = iter(range(2000, 2010))
+    monkeypatch.setattr(server_module, "get_free_port", lambda: next(ports))
+    urls = []
+
+    def get(url, **kwargs):
+        urls.append(url)
+        return Healthy()
+
+    monkeypatch.setattr(server_module.requests, "get", get)
+    monkeypatch.setattr(server_module.time, "sleep", lambda s: None)
+    if ok:
+        server = server_module.RemoteOpenAIServer("/m", [])
+        assert handle.restarts == list(range(2001, 2001 + lost))
+        assert server.port == 2000 + lost and server.proc is handle.frontend
+        assert urls[-1] == f"http://localhost:{server.port}/health"
+    else:
+        with pytest.raises(RuntimeError, match="cannot serve on its port: port in use"):
+            server_module.RemoteOpenAIServer("/m", [])
+        attempts = server_module.RemoteOpenAIServer.CHAIN_FRONTEND_PORT_ATTEMPTS
+        assert handle.restarts == list(range(2001, 2000 + attempts))
+        assert handle.terminated == 1
+
+
+def test_switch_on_front_end_that_lost_a_given_port_fails_at_once(
+    monkeypatch, server_module, popen
+):
+    monkeypatch.setenv(cv.ENV_CHAIN, "trtllm")
+    handle = RestartableHandle(1)
+    monkeypatch.setattr(remote, "launch_for_remote_server", lambda cmd, **kwargs: handle)
+    monkeypatch.setattr(server_module.requests, "get", lambda url, **kwargs: Healthy())
+    monkeypatch.setattr(server_module.time, "sleep", lambda s: None)
+    with pytest.raises(RuntimeError, match="cannot serve on its port"):
+        server_module.RemoteOpenAIServer("/m", [], port=1234)
+    assert handle.restarts == [] and handle.terminated == 1
+
+
+def test_switch_on_answer_from_another_listener_moves_the_front_end(
+    monkeypatch, server_module, popen
+):
+    monkeypatch.setenv(cv.ENV_CHAIN, "trtllm")
+    handle = RestartableHandle(0)
+    # The front end runs, but another process answers /health on its port.
+    handle.port_problem = "another process also listens"
+    handle.lost = 1
+    monkeypatch.setattr(remote, "launch_for_remote_server", lambda cmd, **kwargs: handle)
+    ports = iter(range(2000, 2010))
+    monkeypatch.setattr(server_module, "get_free_port", lambda: next(ports))
+    monkeypatch.setattr(server_module.requests, "get", lambda url, **kwargs: Healthy())
+    server = server_module.RemoteOpenAIServer("/m", [])
+    assert handle.restarts == [2001] and server.port == 2001
+
+
+def test_switch_on_answer_after_the_chain_exited_is_not_ready(monkeypatch, server_module, popen):
+    monkeypatch.setenv(cv.ENV_CHAIN, "trtllm")
+    handle = RestartableHandle(0)
+    monkeypatch.setattr(remote, "launch_for_remote_server", lambda cmd, **kwargs: handle)
+
+    def get(url, **kwargs):
+        # The front end exits, for no port problem, while another process answers.
+        handle.exit_code = 1
+        return Healthy()
+
+    monkeypatch.setattr(server_module.requests, "get", get)
+    with pytest.raises(RuntimeError, match="exited unexpectedly"):
+        server_module.RemoteOpenAIServer("/m", [])
+    assert handle.restarts == [] and handle.terminated == 1
+
+
+def test_switch_on_engine_exit_is_not_a_port_problem(monkeypatch, server_module, popen, chain):
+    server = server_module.RemoteOpenAIServer("/m", [], wait=False)
+    handle = chain[0][2]
+    handle.exit_code = 1
+    monkeypatch.setattr(server_module.requests, "get", lambda url, **kwargs: Unavailable())
+    monkeypatch.setattr(server_module.time, "sleep", lambda s: None)
+    with pytest.raises(RuntimeError, match="exited unexpectedly"):
+        server.wait_for_server(timeout=600)
+
+
+# ---------------------------------------------------------------- real processes
+
+
+@pytest.fixture
+def fake_chain(tmp_path, monkeypatch, server_module):
+    """``trtllm-serve`` on PATH is the fake of fake_serve.py; the chain harness starts it."""
+    from openengine_chain import launch
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    exe = bin_dir / "trtllm-serve"
+    exe.write_text(
+        f"#!{sys.executable}\n" + (pathlib.Path(__file__).parent / "fake_serve.py").read_text()
+    )
+    exe.chmod(0o755)
+    records = tmp_path / "records"
+    records.mkdir()
+    monkeypatch.setattr(launch, "require_plugin", lambda: None)
+    monkeypatch.setattr(launch, "frontend_supports_ready_timeout", lambda: True)
+    monkeypatch.setenv(cv.ENV_CHAIN, "trtllm")
+    monkeypatch.setenv(cv.ENV_RESULTS_DIR, str(tmp_path / "results"))
+    monkeypatch.setattr(server_module.RemoteOpenAIServer, "CHAIN_HEALTH_TIMEOUT_S", 1)
+    env = dict(os.environ, FAKE_RECORD_DIR=str(records))
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+    env.pop(cv.ENV_COUNTER_DIR, None)
+    return env
+
+
+def _silent_listener():
+    """A socket that accepts connections and never answers, on a port it took first."""
+    import socket
+
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(16)
+    return listener
+
+
+def test_chain_front_end_whose_picked_port_is_taken_moves_to_another(
+    monkeypatch, server_module, fake_chain, tmp_path
+):
+    import time
+
+    with _silent_listener() as listener:
+        taken = listener.getsockname()[1]
+        real = server_module.get_free_port
+        ports = iter([taken])
+        monkeypatch.setattr(server_module, "get_free_port", lambda: next(ports, None) or real())
+        start = time.monotonic()
+        server = server_module.RemoteOpenAIServer(
+            "/m", [], host="127.0.0.1", env=fake_chain, log_path=str(tmp_path / "server.log")
+        )
+        try:
+            assert server.port != taken
+            assert time.monotonic() - start < 60
+            assert (
+                server_module.requests.get(server.url_for("health"), timeout=5).status_code == 200
+            )
+            notes = server._chain_handle.teardown_notes
+            assert any(f"could not serve on port {taken}" in note for note in notes)
+        finally:
+            server.terminate()
+
+
+def test_chain_front_end_whose_given_port_is_taken_fails_fast(server_module, fake_chain, tmp_path):
+    import time
+
+    with _silent_listener() as listener:
+        taken = listener.getsockname()[1]
+        start = time.monotonic()
+        with pytest.raises(RuntimeError, match=f"port {taken} is in use"):
+            server_module.RemoteOpenAIServer(
+                "/m",
+                [],
+                host="127.0.0.1",
+                port=taken,
+                env=fake_chain,
+                log_path=str(tmp_path / "server.log"),
+            )
+        # Without a timeout, /health would wait for the listener's answer for good.
+        assert time.monotonic() - start < 60

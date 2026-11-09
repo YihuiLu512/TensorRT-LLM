@@ -125,16 +125,58 @@ OWNERSHIP: dict[str, list[Rule]] = {
         f"!{CHAIN}/expectations/WT-*.py",
         f"!{CHAIN}/verified/WT-*.yaml",
         f"!{CHAIN}/smoke/WT-*.txt",
+        # WT-03-fix1's own table and verification record (F-09, F-35).
+        f"{CHAIN}/expectations/WT-03-fix1.py",
+        f"{CHAIN}/verified/WT-03-fix1.yaml",
     )
     + [
         _shared(
-            "tests/unittest/llmapi/apps/openai_server.py", "the chain hook of RemoteOpenAIServer"
+            "tests/unittest/llmapi/apps/openai_server.py",
+            "the chain hook of RemoteOpenAIServer, including (WT-03-fix1, T6) the chain's"
+            " /health timeout and moving a chain front end off a port it lost",
         ),
         _shared("tests/integration/defs/examples/serve/test_serve.py", "the H-2 chain hook"),
         _shared(
             "tests/integration/defs/kv_cache/test_prefix_aware_scheduling.py", "the H-2 chain hook"
         ),
         _shared("tests/integration/defs/accuracy/test_glm53_flash.py", "the H-2 chain hook"),
+    ]
+    # WT-03-fix1 (stage-01/test-01 S3).
+    + [
+        Rule(path, "exception", f"WT-03-fix1 only: {what}")
+        for path, what in (
+            (
+                f"{CHAIN}/expectations/WT-11.py",
+                "T4, beam servers refused at startup again, as the front end now gets"
+                " --max_beam_width",
+            ),
+            (
+                f"{CHAIN}/expectations/WT-15.py",
+                "T2, no SKIP for the KV-cache utilization test, as the engine now gets"
+                " load metrics with iteration stats",
+            ),
+            (
+                "tests/unittest/llmapi/apps/_test_openai_prometheus.py",
+                "T2, a truncate_prompt_tokens test (row F-09) without iteration stats",
+            ),
+            (
+                "tests/unittest/llmapi/apps/_test_openengine_wt10_frontend.py",
+                "T11, test_server_info_engine_block under several front ends",
+            ),
+            (
+                "tests/unittest/llmapi/apps/_test_openengine_wt11_mapping.py",
+                "T11, test_n_engine_call_count counting on the engine",
+            ),
+            (
+                "tests/unittest/llmapi/apps/_test_openengine_wt13_postproc_pool.py",
+                "T11, the pool process count under several front ends",
+            ),
+            (
+                "scripts/poc2/feature_deps.yaml",
+                "T10, naming the six streaming cached_tokens cases of F-17+F-18+F-30",
+            ),
+            ("scripts/poc2/check_ownership.py", "the WT-03 entry"),
+        )
     ],
     "WT-04": _own(
         f"{OE_SERVER}/control.py",

@@ -164,3 +164,27 @@ def test_rerun_of_an_inner_test_replaces_its_earlier_result(tmp_path):
         ("w[a -k x]", "passed"),
         ("v", "failed"),
     ]
+
+
+def test_runner_called_through_a_symlink_uses_the_real_paths(tmp_path):
+    real_defs = os.path.dirname(os.path.dirname(os.path.realpath(runner.__file__)))
+    link = tmp_path / "defs-link"
+    link.symlink_to(real_defs, target_is_directory=True)
+    out = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import importlib.util, sys; "
+            f"spec = importlib.util.spec_from_file_location('r', {str(link / 'openengine_chain' / 'runner.py')!r}); "
+            "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m); "
+            "print(m._DEFS); print(m._HERE); print(m._REPO)",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    assert out == [
+        real_defs,
+        os.path.join(real_defs, "openengine_chain"),
+        os.path.dirname(os.path.dirname(os.path.dirname(real_defs))),
+    ]

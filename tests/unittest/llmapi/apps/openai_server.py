@@ -34,6 +34,11 @@ class RemoteOpenAIServer:
     # Engine and front end when TRTLLM_TEST_OPENENGINE_CHAIN selects the OpenEngine
     # chain harness (tests/integration/defs/openengine_chain); None otherwise.
     _chain_handle = None
+    # Limit of one /health request while a chain starts: a process that took the
+    # front end's port may accept the connection and never answer.
+    CHAIN_HEALTH_TIMEOUT_S = 5
+    # Ports a chain front end may try when this class picks the port.
+    CHAIN_FRONTEND_PORT_ATTEMPTS = 3
 
     def __init__(self,
                  model: str,
@@ -49,6 +54,9 @@ class RemoteOpenAIServer:
                  role: Optional[ServerRole] = None) -> None:
         self.host = host
         self.port = port if port is not None else get_free_port()
+        # A chain front end that cannot serve on a port picked here moves to another.
+        self._port_picked = port is None
+        self._frontend_port_attempts = 1
         self.rank = rank if rank != -1 else int(
             os.environ.get("SLURM_PROCID", 0))
         self.extra_config_file = None
@@ -157,17 +165,23 @@ class RemoteOpenAIServer:
         while True:
             if self._chain_handle is not None:
                 self._check_chain_start(start, timeout)
+                # A restarted front end serves on another port.
+                url = self.url_for("health")
             try:
                 if self.rank == 0:
-                    if requests.get(url).status_code == 200:
-                        break
+                    if self._health_status(url) == 200:
+                        if self._chain_handle is None:
+                            break
                     else:
                         time.sleep(0.5)
+                        continue
                 else:
                     time.sleep(timeout)
                     break
             except Exception as err:
-                result = self.proc.poll()
+                # A chain's exits are checked at the top of the loop.
+                result = None if self._chain_handle is not None else self.proc.poll(
+                )
                 if result is not None and result != 0:
                     raise RuntimeError("Server exited unexpectedly.") from err
 
@@ -177,15 +191,46 @@ class RemoteOpenAIServer:
                     self.terminate()
                     raise RuntimeError(
                         "Server failed to start in time.") from err
+                continue
+            # A chain front end answered; the answer may come from another
+            # process listening on its port, or come after the chain exited,
+            # which the check at the top of the loop reports.
+            problem = self._chain_handle.frontend_port_problem()
+            if problem is not None:
+                self._restart_chain_frontend(problem)
+            elif self._chain_handle.poll() is None:
+                break
+
+    def _health_status(self, url: str) -> int:
+        if self._chain_handle is None:
+            return requests.get(url).status_code
+        return requests.get(url,
+                            timeout=self.CHAIN_HEALTH_TIMEOUT_S).status_code
 
     def _check_chain_start(self, start: float, timeout: float):
         # The chain's front end answers /health with 503 while the engine is not
         # serving, so its status alone never ends the wait. The caller stops the
         # chain: __init__ on its own failure, the test's teardown otherwise.
         if self._chain_handle.poll() is not None:
-            raise RuntimeError("Server exited unexpectedly.")
+            problem = self._chain_handle.frontend_port_problem()
+            if problem is None:
+                raise RuntimeError("Server exited unexpectedly.")
+            self._restart_chain_frontend(problem)
         if time.time() - start > timeout:
             raise RuntimeError("Server failed to start in time.")
+
+    def _restart_chain_frontend(self, problem: str):
+        """Restart the chain's front end on a new port, if the port was picked here."""
+        if (not self._port_picked or self._frontend_port_attempts
+                >= self.CHAIN_FRONTEND_PORT_ATTEMPTS):
+            raise RuntimeError(f"Server cannot serve on its port: {problem}")
+        self._frontend_port_attempts += 1
+        self.port = get_free_port()
+        print(f"{problem}; restarting the front end on port {self.port}",
+              file=sys.stderr,
+              flush=True)
+        self._chain_handle.restart_frontend(self.port)
+        self.proc = self._chain_handle.frontend
 
     @property
     def url_root(self) -> str:

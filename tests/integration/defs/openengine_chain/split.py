@@ -9,6 +9,7 @@ import os
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import yaml
 
@@ -50,6 +51,8 @@ OPTIONS: Mapping[str, Option] = {
     "--config": Option(Side.BOTH),
     "--extra_llm_api_options": Option(Side.BOTH),
     "--set": Option(Side.BOTH),
+    # The front end refuses a beam width above 1 at startup; the engine is sized with it.
+    "--max_beam_width": Option(Side.BOTH),
     # Engine only.
     "--backend": Option(Side.ENGINE),
     "--tp_size": Option(Side.ENGINE),
@@ -63,7 +66,6 @@ OPTIONS: Mapping[str, Option] = {
     "--kv_cache_free_gpu_memory_fraction": Option(Side.ENGINE),
     "--enable_chunked_prefill": Option(Side.ENGINE, takes_value=False),
     "--enable_attention_dp": Option(Side.ENGINE, takes_value=False),
-    "--max_beam_width": Option(Side.ENGINE),
     # Each process gets its own address.
     "--host": Option(Side.HARNESS),
     "--port": Option(Side.HARNESS),
@@ -80,6 +82,9 @@ FRONTEND_ONLY_YAML_KEYS = (
     "post_processor_hook",
     "allow_request_chat_template",
 )
+
+# The configuration key whose iteration stats need the engine's KV-cache load.
+_ITERATION_STATS_KEY = "enable_iter_perf_stats"
 
 # Environment variables that only configure the engine.
 ENGINE_ONLY_ENV = ("TLLM_SPEC_DECODE_FORCE_NUM_ACCEPTED_TOKENS",)
@@ -226,6 +231,39 @@ def split_args(args: Sequence[str], *, rewrite_yaml: Callable[[str], str]) -> Sp
             else:
                 engine.extend(tokens)
     return SplitArgs(engine=tuple(engine), frontend=tuple(frontend), host=host, port=port)
+
+
+def iteration_stats_enabled(args: Sequence[str]) -> bool:
+    """Whether the configuration of one command line turns on ``enable_iter_perf_stats``.
+
+    As in ``trtllm-serve``: ``--config`` and ``--extra_llm_api_options`` name
+    one option, so only the last file given counts, and ``--set`` overrides it.
+    """
+    config_file = None
+    sets = []
+    for name, _, value in _iter_options(args):
+        if name in CONFIG_OPTIONS:
+            config_file = value
+        elif name == "--set":
+            sets.append(value)
+    enabled = False
+    if config_file is not None:
+        with open(config_file, encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+        if isinstance(config, dict) and _ITERATION_STATS_KEY in config:
+            enabled = _as_bool(config[_ITERATION_STATS_KEY])
+    for assignment in sets:
+        key, _, raw = assignment.partition("=")
+        if key.strip() == _ITERATION_STATS_KEY:
+            enabled = _as_bool(yaml.safe_load(raw))
+    return enabled
+
+
+def _as_bool(value: Any) -> bool:
+    """A configuration boolean as pydantic reads it, strings such as ``"false"`` included."""
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "t", "yes", "y", "on")
+    return bool(value)
 
 
 def frontend_env(env: Mapping[str, str]) -> dict[str, str]:

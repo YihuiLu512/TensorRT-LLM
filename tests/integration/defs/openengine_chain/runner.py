@@ -26,7 +26,9 @@ import subprocess
 import sys
 import xml.etree.ElementTree as ET
 
-_DEFS = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# The real path: pytest resolves test paths through symlinks, so a --rootdir that keeps a
+# symlinked prefix would not contain the tests it is given.
+_DEFS = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 if __package__ in (None, ""):
     sys.path.insert(0, _DEFS)
 

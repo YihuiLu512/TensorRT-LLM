@@ -379,3 +379,39 @@ def test_new_metrics_exposed(server: RemoteOpenAIServer):
         data, METRIC_PREFIX + "prompt_cached_tokens_total")
     assert cached_total is not None and cached_total >= 0, \
         f"prompt_cached_tokens_total not found or invalid: {cached_total}"
+
+
+def test_truncate_prompt_tokens(server: RemoteOpenAIServer):
+    """``truncate_prompt_tokens`` limits the prompt; 0 fails validation and is counted.
+
+    The validation error increments trtllm_request_error_total{http_code="400"}.
+    Unlike ``test_new_metrics_exposed``, this test does not wait for iteration
+    stats, so it also runs where those stats come from an external engine.
+    """
+    error_pattern = re.compile(
+        r'^trtllm_request_error_total\{[^}]*http_code="400"[^}]*\}\s+(\S+)',
+        re.MULTILINE)
+
+    def errors_400() -> float:
+        data = urlopen(f'{server.url_root}/prometheus/metrics').read().decode(
+            "utf-8")
+        match = error_pattern.search(data)
+        return float(match.group(1)) if match else 0.0
+
+    before = errors_400()
+    _trigger_validation_error_400(server)
+    deadline = time.time() + 10.0
+    while errors_400() < before + 1 and time.time() < deadline:
+        time.sleep(0.5)
+    assert errors_400() >= before + 1, (
+        f'trtllm_request_error_total{{http_code="400"}} did not grow from {before}'
+    )
+
+    keep = 8
+    response = server.get_client().completions.create(
+        model="Server",
+        prompt="The quick brown fox jumps over the lazy dog. " * 8,
+        max_tokens=1,
+        extra_body={"truncate_prompt_tokens": keep},
+    )
+    assert response.usage.prompt_tokens == keep

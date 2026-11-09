@@ -8,9 +8,11 @@ service turns SERVING. Otherwise it is a front end: an HTTP server answering
 ``$FAKE_RECORD_DIR``. ``FAKE_<ROLE>_MODE`` is ``ok``, ``exit`` (exit 3 at once),
 ``busy_once`` (the first run fails to bind its port, later runs are ``ok``)
 or ``never_ready``; ``FAKE_<ROLE>_IGNORE_TERM`` ignores SIGTERM;
+a front end whose port is taken logs uvicorn's bind error and exits 1;
 ``FAKE_ENGINE_CHILD`` starts a child in the same session that ignores SIGTERM.
 """
 
+import errno
 import json
 import os
 import signal
@@ -96,7 +98,17 @@ else:
         def log_message(self, *a):
             pass
 
-    httpd = HTTPServer(("127.0.0.1", port), Handler)
+    try:
+        httpd = HTTPServer(("127.0.0.1", port), Handler)
+    except OSError as error:
+        if error.errno != errno.EADDRINUSE:
+            raise
+        print(
+            "ERROR:    [Errno 98] error while attempting to bind on address "
+            f"('127.0.0.1', {port}): address already in use",
+            flush=True,
+        )
+        sys.exit(1)
     httpd.timeout = 0.1
     while True:
         httpd.handle_request()

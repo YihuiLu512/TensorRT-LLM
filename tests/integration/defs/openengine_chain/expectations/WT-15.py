@@ -5,12 +5,14 @@
 On the chain the frontend measures a request from the engine's events; the
 time in queue, the first scheduled time, iteration counts, per-request
 KV-cache reuse and the iteration stats beyond the engine's load are measured
-inside the engine and left out rather than reported as 0. The chain starts
-the engine without load metrics, so its load reports no KV-cache blocks.
+inside the engine and left out rather than reported as 0. On the TensorRT-LLM
+chain the engine's load reports KV-cache blocks because the harness starts the
+engine with load metrics when the configuration turns on iteration stats.
 ``_test_openengine_wt15_metrics.py`` checks the same features with the
 chain's expectations.
 """
 
+from openengine_chain.conventions import CHAIN_GLM
 from openengine_chain.expectations import SKIP, Expectation
 
 EXPECTATIONS = [
@@ -58,7 +60,8 @@ EXPECTATIONS = [
         "_test_openai_prometheus.py::test_kv_cache_metrics_available_before_first_request*",
         SKIP,
         "waits for trtllm_kv_cache_utilization, which comes from the KV-cache blocks of "
-        "the engine's load; the chain starts the engine without "
-        "--openengine-enable-load-metrics, so its load reports none",
+        "the engine's load; the harness starts only a TensorRT-LLM engine with "
+        "--openengine-enable-load-metrics",
+        chains=(CHAIN_GLM,),
     ),
 ]
