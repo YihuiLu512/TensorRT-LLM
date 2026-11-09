@@ -265,6 +265,13 @@ class FakeProfile:
             as glm does, checks that a sampling value is valid before checking
             ``params``: a float value must be finite as a 32-bit float, inside
             the protocol's bounds, and for ``top_p`` not 0 as a 32-bit float.
+        max_loras: Reported as ``capacity.max_loras``; ``LoadLora`` does not
+            refuse because of it.
+        max_registered_loras: The most distinct ``lora_id`` values
+            ``LoadLora`` accepts over the engine's life, unloaded ones
+            included, as the TensorRT-LLM server's registry counts them
+            against its fixed limit; ``None`` sets no limit. Unlike the
+            server, the fake does not check that ``source_path`` exists.
         reject_kv_session: Reject ``kv.session``; otherwise it is ignored.
         eos_token_ids: Tokens that end an output unless ``ignore_eos`` is set;
             the one sampled is reported in ``stop_match.eos_token_id``.
@@ -295,6 +302,7 @@ class FakeProfile:
     supports_cache_salt: bool = True
     supports_lora: bool = False
     max_loras: int | None = None
+    max_registered_loras: int | None = None
     modalities: frozenset[str] = frozenset()
     reasoning_parser: str = ""
     tool_call_parser: str = ""
@@ -1570,28 +1578,46 @@ class _Control(openengine_pb2_grpc.ControlServicer):
         self._record("LoadLora", request)
         await self._require_lora(context)
         adapter = request.adapter
-        if not adapter.lora_name or not adapter.source_path:
+        if not adapter.lora_name or not adapter.source_path or adapter.lora_id < 0:
             await context.abort(
-                grpc.StatusCode.INVALID_ARGUMENT, "adapter.lora_name and source_path are required"
+                grpc.StatusCode.INVALID_ARGUMENT,
+                "adapter.lora_name and source_path are required and lora_id must be non-negative",
             )
         loras = self._engine.loras
-        loaded = loras.get(adapter.lora_name)
+        name, lora_id, path = adapter.lora_name, adapter.lora_id, adapter.source_path
+        loaded = loras.get(name)
         if loaded is not None:
-            if (loaded.lora_id, loaded.source_path) != (adapter.lora_id, adapter.source_path):
+            if (loaded.lora_id, loaded.source_path) != (lora_id, path):
                 await context.abort(
-                    grpc.StatusCode.INVALID_ARGUMENT,
-                    f"LoRA adapter '{adapter.lora_name}' is already loaded from "
-                    f"{loaded.source_path} with id {loaded.lora_id}",
+                    grpc.StatusCode.ALREADY_EXISTS,
+                    f"LoRA '{name}' is registered with id {loaded.lora_id} and path "
+                    f"'{loaded.source_path}', not id {lora_id} and path '{path}'",
                 )
             return lora_pb2.LoadLoraResponse(adapter=loaded, already_loaded=True)
-        max_loras = self._engine.profile.max_loras
-        if max_loras is not None and len(loras) >= max_loras:
+        owner = next((other for other in loras.values() if other.lora_id == lora_id), None)
+        if owner is not None:
             await context.abort(
-                grpc.StatusCode.RESOURCE_EXHAUSTED, f"at most {max_loras} LoRA adapters"
+                grpc.StatusCode.ALREADY_EXISTS,
+                f"LoRA id {lora_id} is registered to '{owner.lora_name}'",
+            )
+        bound_path = self._engine.lora_paths.get(lora_id, path)
+        if bound_path != path:
+            await context.abort(
+                grpc.StatusCode.ALREADY_EXISTS,
+                f"LoRA id {lora_id} was used with path '{bound_path}' and the engine keeps "
+                "its weights; register this adapter with a new id",
+            )
+        limit = self._engine.profile.max_registered_loras
+        new_id = lora_id not in self._engine.lora_paths
+        if new_id and limit is not None and len(self._engine.lora_paths) >= limit:
+            await context.abort(
+                grpc.StatusCode.RESOURCE_EXHAUSTED,
+                f"at most {limit} LoRA ids can be registered",
             )
         stored = lora_pb2.LoraAdapter()
         stored.CopyFrom(adapter)
-        loras[adapter.lora_name] = stored
+        loras[name] = stored
+        self._engine.lora_paths[lora_id] = path
         return lora_pb2.LoadLoraResponse(adapter=stored, already_loaded=False)
 
     async def UnloadLora(
@@ -1774,6 +1800,9 @@ class FakeEngine:
         self.cancel_seen = asyncio.Event()
         self.control_calls: list[tuple[str, Any]] = []
         self.loras: dict[str, lora_pb2.LoraAdapter] = {}
+        # The path each LoRA id was first loaded from. Never shrinks: like the
+        # TensorRT-LLM server, the engine keeps serving an id's first weights.
+        self.lora_paths: dict[int, str] = {}
         self._scripts: list[Sequence[Step]] = []
         self._active: dict[str, _Call] = {}
         self._counters = {COUNTER_GENERATE_RECEIVED: 0, COUNTER_GENERATE_ACCEPTED: 0}

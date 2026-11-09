@@ -111,7 +111,14 @@ OWNERSHIP: dict[str, list[Rule]] = {
         _shared(
             f"{CLIENT_TESTS}/test_openengine_poc_serve.py",
             "only to run the PoC-S1 request-equivalence test against the gRPC fake; WT-10 owns it",
-        )
+        ),
+        Rule("scripts/poc2/check_ownership.py", "exception", "only (WT-02-fix1) WT-02's entry"),
+        Rule(
+            "tests/unittest/serve/openengine_poc/wt16/test_poc2_wt16_lora.py",
+            "exception",
+            "only (WT-02-fix1) the refused registration's profile setting max_registered_loras,"
+            " and its comment",
+        ),
     ],
     "WT-03": _own(
         f"{CHAIN}/**",

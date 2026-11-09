@@ -182,14 +182,14 @@ def test_an_engine_refusal_is_a_bad_request_and_is_not_kept():
     async def body(engine, registries, clients):
         [registry] = registries
         await registry.resolve(_request())
-        # The fake keeps at most one adapter.
+        # The fake registers at most one adapter id.
         with pytest.raises(ValueError, match="RESOURCE_EXHAUSTED"):
             await registry.resolve(_request(name="adapter-b", int_id=2, path="/loras/b"))
         with pytest.raises(ValueError, match="RESOURCE_EXHAUSTED"):
             await registry.resolve(_request(name="adapter-b", int_id=2, path="/loras/b"))
         assert len(_load_calls(engine)) == 3
 
-    _with_registries(body, profile=LORA_PROFILE.replace(max_loras=1))
+    _with_registries(body, profile=LORA_PROFILE.replace(max_registered_loras=1))
 
 
 def test_a_failed_registration_not_yet_cleared_is_tried_again():

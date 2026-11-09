@@ -487,6 +487,97 @@ def test_client_drives_every_rpc() -> None:
     run(main())
 
 
+def test_load_lora_refuses_a_name_or_id_of_another_adapter() -> None:
+    profile = PROFILES["trtllm-like"].replace(supports_lora=True)
+
+    def adapter(name: str, lora_id: int, path: str) -> lora_pb2.LoadLoraRequest:
+        return lora_pb2.LoadLoraRequest(
+            adapter=lora_pb2.LoraAdapter(lora_name=name, lora_id=lora_id, source_path=path)
+        )
+
+    async def main() -> None:
+        async with FakeEngine(profile) as engine:
+            async with grpc.aio.insecure_channel(engine.target) as channel:
+                control = openengine_pb2_grpc.ControlStub(channel)
+
+                async def status(load: lora_pb2.LoadLoraRequest) -> grpc.StatusCode:
+                    try:
+                        await control.LoadLora(load)
+                    except grpc.aio.AioRpcError as error:
+                        return error.code()
+                    return grpc.StatusCode.OK
+
+                assert await status(adapter("a", 7, "/l/a")) == grpc.StatusCode.OK
+                conflict = grpc.StatusCode.ALREADY_EXISTS
+                assert await status(adapter("a", 7, "/l/x")) == conflict
+                assert await status(adapter("a", 8, "/l/a")) == conflict
+                assert await status(adapter("b", 7, "/l/b")) == conflict
+                # The same id and path under another name: the id belongs to "a".
+                assert await status(adapter("b", 7, "/l/a")) == conflict
+                await control.UnloadLora(lora_pb2.UnloadLoraRequest(lora_name="a"))
+                # The id stays bound to its first path after the unload.
+                assert await status(adapter("b", 7, "/l/b")) == conflict
+                assert await status(adapter("b", 7, "/l/a")) == grpc.StatusCode.OK
+                invalid = grpc.StatusCode.INVALID_ARGUMENT
+                assert await status(adapter("c", -1, "/l/c")) == invalid
+
+    run(main())
+
+
+def test_load_lora_does_not_limit_adapters_by_max_loras() -> None:
+    profile = PROFILES["trtllm-like"].replace(supports_lora=True, max_loras=1)
+
+    async def main() -> None:
+        async with FakeEngine(profile) as engine:
+            async with grpc.aio.insecure_channel(engine.target) as channel:
+                control = openengine_pb2_grpc.ControlStub(channel)
+                for lora_id in (1, 2, 3):
+                    adapter = lora_pb2.LoraAdapter(
+                        lora_name=f"a{lora_id}", lora_id=lora_id, source_path=f"/l/{lora_id}"
+                    )
+                    await control.LoadLora(lora_pb2.LoadLoraRequest(adapter=adapter))
+                listed = await control.ListLoras(lora_pb2.ListLorasRequest())
+                assert len(listed.adapters) == 3
+
+    run(main())
+
+
+def test_load_lora_counts_every_id_it_has_loaded_against_max_registered_loras() -> None:
+    profile = PROFILES["trtllm-like"].replace(
+        supports_lora=True, max_loras=1, max_registered_loras=2
+    )
+
+    async def main() -> None:
+        async with FakeEngine(profile) as engine:
+            async with grpc.aio.insecure_channel(engine.target) as channel:
+                control = openengine_pb2_grpc.ControlStub(channel)
+
+                async def load(name: str, lora_id: int) -> grpc.StatusCode:
+                    adapter = lora_pb2.LoraAdapter(
+                        lora_name=name, lora_id=lora_id, source_path=f"/l/{lora_id}"
+                    )
+                    try:
+                        await control.LoadLora(lora_pb2.LoadLoraRequest(adapter=adapter))
+                    except grpc.aio.AioRpcError as error:
+                        return error.code()
+                    return grpc.StatusCode.OK
+
+                async def unload(name: str) -> None:
+                    await control.UnloadLora(lora_pb2.UnloadLoraRequest(lora_name=name))
+
+                assert await load("a", 1) == grpc.StatusCode.OK
+                # max_loras is only reported: a second adapter is accepted.
+                assert await load("b", 2) == grpc.StatusCode.OK
+                await unload("a")
+                await unload("b")
+                # Both ids count although neither adapter is loaded.
+                assert await load("c", 3) == grpc.StatusCode.RESOURCE_EXHAUSTED
+                # An id loaded before does not count again.
+                assert await load("c", 1) == grpc.StatusCode.OK
+
+    run(main())
+
+
 def test_lora_rpcs_are_unimplemented_without_lora() -> None:
     async def main() -> None:
         async with FakeEngine() as engine:
