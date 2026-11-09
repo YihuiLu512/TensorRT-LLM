@@ -81,10 +81,14 @@ def tokenizer(model_name: str):
 
 
 def _engine_calls(server: RemoteOpenAIServer) -> int:
-    """Generate calls the front end has sent so far (chain only)."""
-    response = requests.get(server.url_for("server_info"), timeout=30)
-    response.raise_for_status()
-    return response.json()["engine"]["generate_sent"]
+    """Generate calls the engine has received so far (chain only).
+
+    Read from the engine: ``/server_info`` reports the calls of whichever front
+    end answers it, which is not the one that sent them when several front ends run.
+    """
+    from openengine_chain import proof
+
+    return proof.engine_received(server._chain_handle)
 
 
 def _frontend_log(server: RemoteOpenAIServer) -> str:

@@ -85,11 +85,19 @@ def test_server_info_engine_block(server: RemoteOpenAIServer, client, model_name
     assert before["engine_version"] == engine.engine_version
     assert before["instance_id"] == engine.instance_id
 
+    from openengine_chain import proof
+
+    received = proof.engine_received(server._chain_handle)
+
     client.completions.create(model=model_name, prompt="Hello", max_tokens=2, temperature=0.0)
 
+    assert proof.engine_received(server._chain_handle) == received + 1
     after = _server_info(server)["engine"]
-    assert after["generate_sent"] == before["generate_sent"] + 1
     assert after["instance_id"] == before["instance_id"]
+    # Each front end reports the calls it sent itself; with several, the call and
+    # the two /server_info requests may each reach a different one.
+    if proof.frontend_count(server._chain_handle) == 1:
+        assert after["generate_sent"] == before["generate_sent"] + 1
 
 
 @chain_only

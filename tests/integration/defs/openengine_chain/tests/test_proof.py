@@ -4,6 +4,10 @@
 
 import json
 import os
+import signal
+import subprocess
+import sys
+import time
 import types
 
 import pytest
@@ -198,3 +202,73 @@ def test_one_server_without_counters_does_not_hide_a_disagreement_on_another():
         [C(0, 0), C(1, 1)], [C(2, 2), C(4, 4)], no_engine_traffic=False
     )
     assert (complete.status, complete.engine_calls) == (proof.OK, 5)
+
+
+# A launcher with two further front ends (one with a child of its own) and a pool
+# process; it writes its argument once all of them have started.
+_FRONTEND_TREE = """
+import os, subprocess, sys
+sleep = [sys.executable, "-c", "import time; time.sleep(60)"]
+def start(cmd, frontend_id=None):
+    env = dict(os.environ)
+    if frontend_id is not None:
+        env["TLLM_EXECUTOR_FRONTEND_ID"] = frontend_id
+    return subprocess.Popen(cmd, env=env)
+grandchild = [sys.executable, "-c", "import subprocess, sys, time; "
+              "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); "
+              "time.sleep(60)"]
+children = [start(grandchild, "1"), start(sleep, "2"), start(sleep)]
+open(sys.argv[1], "w").close()
+for child in children:
+    child.wait()
+"""
+
+
+def _front_end(tmp_path, script, env=None):
+    ready = tmp_path / "ready"
+    proc = subprocess.Popen(
+        [sys.executable, "-c", script, str(ready)], start_new_session=True, env=env
+    )
+    deadline = time.monotonic() + 30
+    while not ready.exists():
+        assert proc.poll() is None and time.monotonic() < deadline
+        time.sleep(0.05)
+    return proc
+
+
+# With an id in the launcher's own environment, the pool process inherits it.
+@pytest.mark.parametrize("inherited", [None, "7"])
+def test_frontend_count_counts_the_front_ends_the_launcher_started(tmp_path, inherited):
+    env = {k: v for k, v in os.environ.items() if k != "TLLM_EXECUTOR_FRONTEND_ID"}
+    if inherited is not None:
+        env["TLLM_EXECUTOR_FRONTEND_ID"] = inherited
+    proc = _front_end(tmp_path, _FRONTEND_TREE, env)
+    try:
+        # The grandchild must have started before the count.
+        deadline = time.monotonic() + 30
+        while len(proof.live_descendants(proc.pid)) < 4:
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        assert proof.frontend_count(types.SimpleNamespace(frontend=proc)) == 3
+    finally:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+
+
+def test_frontend_count_is_one_without_further_front_ends(tmp_path):
+    proc = _front_end(tmp_path, "import sys, time; open(sys.argv[1], 'w').close(); time.sleep(60)")
+    try:
+        assert proof.frontend_count(types.SimpleNamespace(frontend=proc)) == 1
+    finally:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait()
+    with pytest.raises(AssertionError, match="not running"):
+        proof.frontend_count(types.SimpleNamespace(frontend=proc))
+
+
+def test_engine_received_fails_when_the_engine_does_not_report_it(monkeypatch):
+    monkeypatch.setattr(proof, "read_engine_counter", lambda h: 4)
+    assert proof.engine_received(object()) == 4
+    monkeypatch.setattr(proof, "read_engine_counter", lambda h: None)
+    with pytest.raises(AssertionError, match="does not report"):
+        proof.engine_received(object())

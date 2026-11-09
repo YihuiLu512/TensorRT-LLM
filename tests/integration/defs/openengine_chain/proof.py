@@ -18,7 +18,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from . import conventions as cv
-from .launch import live_process_tree
+from .launch import live_descendants, live_process_tree
 
 OK = "ok"
 FAIL = "fail"
@@ -27,6 +27,8 @@ INCOMPLETE = "incomplete"
 _RPC_TIMEOUT_S = 5.0
 _COUNTER_FILE_TRIES = 5
 _COUNTER_FILE_RETRY_S = 0.1
+# Set by trtllm-serve's launcher in the environment of each further front end it starts.
+_FRONTEND_ID_ENV = b"TLLM_EXECUTOR_FRONTEND_ID="
 
 
 @dataclass(frozen=True)
@@ -118,6 +120,44 @@ def read_engine_counter(handle) -> int | None:
     if cv.ENGINE_COUNTER_KEY not in fields:
         return None
     return int(fields[cv.ENGINE_COUNTER_KEY].number_value)
+
+
+def engine_received(handle) -> int:
+    """Generate calls the engine has received, for tests that count them; fails if not reported."""
+    received = read_engine_counter(handle)
+    if received is None:
+        raise AssertionError("the engine does not report the Generate calls it received")
+    return received
+
+
+def _environ(pid: int) -> list[bytes]:
+    try:
+        with open(f"/proc/{pid}/environ", "rb") as f:
+            return f.read().split(b"\0")
+    except OSError:
+        return []
+
+
+def frontend_count(handle, *, descendants_reader=live_descendants, environ_reader=_environ) -> int:
+    """How many front ends serve the chain, from its running front-end processes.
+
+    The server's front-end process is one; trtllm-serve's launcher starts each
+    further front end below it with its own ``TLLM_EXECUTOR_FRONTEND_ID``, which
+    that front end's own child processes inherit. A value the server's
+    front-end process has itself came from its own environment and names no
+    further front end. The command line does not settle the count, as a
+    ``--set`` override wins over it.
+    """
+    if handle.frontend is None or handle.frontend.poll() is not None:
+        raise AssertionError("the front end is not running, so its front ends cannot be counted")
+
+    def ids_of(pid: int) -> set[bytes]:
+        return {e for e in environ_reader(pid) if e.startswith(_FRONTEND_ID_ENV)}
+
+    ids = set()
+    for pid in descendants_reader(handle.frontend.pid):
+        ids |= ids_of(pid)
+    return 1 + len(ids - ids_of(handle.frontend.pid))
 
 
 def read_engine_name(handle) -> str | None:
