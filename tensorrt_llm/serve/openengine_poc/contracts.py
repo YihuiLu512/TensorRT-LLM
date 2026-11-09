@@ -28,9 +28,10 @@ called while its own module is still being imported, before that module defines
 the slot's function, uses the default for that call and is looked up again on
 the next one.
 
-The module also holds the messages between a frontend and its postprocessing
-processes, the plain-data check for what crosses into them, the interface of
-those processes, and the frontend's count of Generate calls.
+The module also holds the grouping of an assembler's changes into steps, the
+messages between a frontend and its postprocessing processes, the plain-data
+check for what crosses into them, the interface of those processes, and the
+frontend's count of Generate calls.
 
 This module is imported by ``OpenAIServer``, so at module level it imports only
 the standard library, the logger, :mod:`tensorrt_llm.grpc.openengine_conventions`
@@ -81,7 +82,7 @@ if TYPE_CHECKING:
 
 # Bump on any change to a signature, type or message in this module or in
 # engine_client.py, in a commit of its own.
-POC2_CONTRACT_VERSION = 7
+POC2_CONTRACT_VERSION = 8
 
 _PACKAGE = "tensorrt_llm.serve.openengine_poc"
 
@@ -420,9 +421,11 @@ class ResponseAssembler(Protocol):
     """Builds the outputs of one Generate call from its events.
 
     ``outputs`` hold the ``CompletionOutput`` objects a ``RequestOutput`` hands
-    to the handlers. Their ``*_diff`` views cover the change made by the last
-    :meth:`apply` that returned True, or by :meth:`finish_cancelled`, so the
-    caller hands the outputs on after each such call.
+    to the handlers. Before each change it makes (an :meth:`apply` that returns
+    True, or :meth:`finish_cancelled`), the assembler sets every output's
+    ``_last_text_len``, ``_last_token_ids_len`` and ``_last_logprobs_len`` to
+    the output's current lengths, so the outputs' ``*_diff`` views cover that
+    change. :class:`StepJoiner` relies on this to join changes into one step.
     """
 
     outputs: list[CompletionOutput]
@@ -467,6 +470,81 @@ def create_response_assembler(
             engine_stop_texts=engine_stop_texts,
         ),
     )
+
+
+class StepJoiner:
+    """Groups an assembler's changes into the steps the serving side hands on.
+
+    An output that has received its call's ``max_tokens`` tokens can only
+    finish next. So the step that brings an output there is held until every
+    output that is there has finished: the steps after it are joined to it,
+    and its ``*_diff`` views cover them all, so the last chunk of such an
+    output carries its last tokens and its finish together, as with ``LLM``.
+    Every other change is a step of its own.
+
+    The facade and the postprocessing pool apply a request's events through
+    one of these. A held step keeps the ``_last_*`` lengths the assembler set
+    for its first change (see :class:`ResponseAssembler`) and sets them back
+    when it is handed on.
+
+    Args:
+        assembler: The assembler of the request's outputs.
+        max_tokens: Per output, the ``max_tokens`` of the Generate call serving
+            it (``EngineRequest.max_tokens``), or None when the call has none.
+            Outputs past its end are treated as having none.
+    """
+
+    def __init__(self, assembler: ResponseAssembler, max_tokens: Sequence[int | None]) -> None:
+        self.assembler = assembler
+        self._max_tokens = list(max_tokens)
+        self._tokens_received = [0] * len(assembler.outputs)
+        # While a step is held: each output's diff start.
+        self._held_starts: list[tuple[int, int, int]] | None = None
+
+    def apply(self, event: EngineEvent) -> bool:
+        """Apply one event to the assembler; return whether a step is to be handed on now.
+
+        That is, whether an output changed and no step is held after the event:
+        the event made a step of its own, or ended the held one.
+        """
+        changed = self.assembler.apply(event)
+        if isinstance(event, TokenDelta):
+            self._tokens_received[event.output_index] += len(event.token_ids)
+        if self._held_starts is None:
+            if not changed or not self._finish_due():
+                return changed
+            self._held_starts = [
+                (output._last_text_len, output._last_token_ids_len, output._last_logprobs_len)
+                for output in self.assembler.outputs
+            ]
+        if self._finish_due():
+            return False
+        self.release()
+        return True
+
+    def release(self) -> bool:
+        """Hand on the held step as it is, if there is one; return whether there was.
+
+        Called when the request ends, after any last change such as
+        :meth:`ResponseAssembler.finish_cancelled`, which then joins the step.
+        """
+        if self._held_starts is None:
+            return False
+        for output, (text, token_ids, logprobs) in zip(self.assembler.outputs, self._held_starts):
+            output._last_text_len = text
+            output._last_token_ids_len = token_ids
+            output._last_logprobs_len = logprobs
+        self._held_starts = None
+        return True
+
+    def _finish_due(self) -> bool:
+        """Whether an unfinished output has received its call's ``max_tokens`` tokens."""
+        return any(
+            output.finish_reason is None and limit is not None and received >= limit
+            for output, limit, received in zip(
+                self.assembler.outputs, self._max_tokens, self._tokens_received
+            )
+        )
 
 
 class _DefaultResponseAssembler:
@@ -706,6 +784,10 @@ class PPOpen:
         num_prompt_tokens: The prompt's length in tokens.
         sampling_params: A copy of the request's ``SamplingParams`` with
             ``logits_processor`` and ``embedding_bias`` unset, holding plain data only.
+        max_tokens: Per output, the ``max_tokens`` of the Generate call serving
+            it, the ``max_tokens`` given to :meth:`PostprocPool.open`; None:
+            ``sampling_params.max_tokens`` for every output. The process steps
+            the outputs with a :class:`StepJoiner` over these.
     """
 
     request_id: str
@@ -716,6 +798,7 @@ class PPOpen:
     detok: DetokOptions
     num_prompt_tokens: int
     sampling_params: Any
+    max_tokens: tuple[int | None, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -1005,8 +1088,12 @@ class PostprocPool(Protocol):
         num_outputs: int,
         num_prompt_tokens: int,
         engine_stop_texts: bool = False,
+        max_tokens: Sequence[int | None] | None = None,
     ) -> PostprocSession:
         """Start postprocessing a request in the process ``request_id`` routes to.
+
+        The steps of a streaming request are those of a :class:`StepJoiner`
+        over ``max_tokens``, as the facade's are without a pool.
 
         Args:
             request_id: The ``id`` of the output object the facade yields for
@@ -1020,6 +1107,12 @@ class PostprocPool(Protocol):
                 postprocessor reports.
             engine_stop_texts: As for :func:`create_response_assembler`; the
                 pool sends it as ``DetokOptions.engine_stop``.
+            max_tokens: Per output, the ``max_tokens`` of the Generate call
+                serving it (``EngineRequest.max_tokens``: the request mapping
+                may fill in or cap the request's own, which ``sampling_params``
+                keeps); the pool sends it as ``PPOpen.max_tokens``. None: the
+                pool takes ``sampling_params.max_tokens`` for every output, so a
+                step joins its finish only when the calls have that value.
 
         Raises:
             PostprocDataError: ``postproc_params``, or a field of

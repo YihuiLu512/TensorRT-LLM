@@ -320,12 +320,14 @@ OWNERSHIP: dict[str, list[Rule]] = {
             f"{POC}/contracts.py",
             "exception",
             "only contract v4: FrontendLaunchConfig's allow_newer_schema and control_timeout,"
-            " and the default launch passing them and report_addr on",
+            " and the default launch passing them and report_addr on; and WT-10-fix1 contract"
+            " v8 (D14 / X6): StepJoiner and the ResponseAssembler text it relies on, the"
+            " max_tokens of PostprocPool.open and PPOpen",
         ),
         Rule(
             "tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_contracts.py",
             "exception",
-            "only the contract v4 version and the default launch's arguments",
+            "only the contract v4 and v8 versions and the default launch's arguments",
         ),
         Rule(
             "scripts/poc2/check_ownership.py",
@@ -336,8 +338,14 @@ OWNERSHIP: dict[str, list[Rule]] = {
         Rule(
             f"{POC}/postproc_pool.py",
             "exception",
-            "WT-10-fix1 only: a streaming step that brings an output to its call's max_tokens"
-            " waits for that output's finish, as the facade's steps without a pool",
+            "WT-10-fix1 only (T3 / X1, D14 / X6): the pool process steps a request with a"
+            " StepJoiner over the calls' max_tokens, which open passes on in PPOpen",
+        ),
+        Rule(
+            "tests/unittest/serve/openengine_poc/wt13/pool_harness.py",
+            "exception",
+            "WT-10-fix1 only (D14 / X6): the harness facade passes the calls' max_tokens to"
+            " the pool and steps its own outputs with a StepJoiner",
         ),
     ],
     "WT-11": _own(f"{POC}/mapping.py", f"{POC}/field_classes.py")
