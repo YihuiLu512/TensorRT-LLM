@@ -131,6 +131,45 @@ def test_shipped_tables_list_tests_that_do_not_generate(test, listed):
 
 
 @pytest.mark.parametrize(
+    "test, listed",
+    [
+        (
+            "_test_openai_misc.py::test_request_cancellation[pytorch-no_beam_search-8-32768-False]",
+            True,
+        ),
+        (
+            "_test_openai_misc.py::test_request_cancellation[pytorch-with_beam_search-8-32768-True]",
+            True,
+        ),
+        (
+            "_test_openai_kv_cache_contamination.py::test_no_kv_cache_contamination_under_cancel",
+            True,
+        ),
+        (
+            "_test_openai_kv_cache_contamination.py::test_no_kv_cache_contamination_number_set_probe",
+            True,
+        ),
+        ("_test_openai_kv_cache_contamination.py::test_parse_integers_all_same_line", False),
+        ("_test_openai_misc.py::test_health_generate[pytorch-no_beam_search-8-32768]", False),
+        ("_test_openai_chat.py::test_chat_streaming[pytorch-disable_processpool]", False),
+    ],
+)
+def test_shipped_tables_relax_the_count_check_only_for_tests_that_cancel_calls(test, listed):
+    found = ex.applicable(ex.load(), f"llmapi/apps/{test}", "trtllm")
+    assert any(e.kind == ex.CANCELS_CALLS for e in found) == listed
+
+
+def test_shipped_tables_name_each_test_that_cancels_calls():
+    # The relaxed count check must not reach other tests through a broad pattern.
+    matches = sorted(e.match for e in ex.load() if e.kind == ex.CANCELS_CALLS)
+    assert matches == [
+        "_test_openai_kv_cache_contamination.py::test_no_kv_cache_contamination_number_set_probe*",
+        "_test_openai_kv_cache_contamination.py::test_no_kv_cache_contamination_under_cancel*",
+        "_test_openai_misc.py::test_request_cancellation[*",
+    ]
+
+
+@pytest.mark.parametrize(
     "test",
     [
         "_test_openai_completions.py::test_batch_completions_beam_search[pytorch-prompts0]",

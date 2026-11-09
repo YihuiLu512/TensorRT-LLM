@@ -170,10 +170,11 @@ def _topology(handle) -> proof.Check:
 def _prove(item: pytest.Item, seq: int, before: dict, details: list[str]) -> ProofResult:
     handles = _chain_handles(seq)
     # Tests expected to be rejected by the server send nothing to the engine either.
+    found = item.stash.get(_FOUND, [])
     whitelisted = any(
-        e.kind in (ex.NO_ENGINE_TRAFFIC, ex.HTTP_STATUS, ex.STARTUP_REJECTED)
-        for e in item.stash.get(_FOUND, [])
+        e.kind in (ex.NO_ENGINE_TRAFFIC, ex.HTTP_STATUS, ex.STARTUP_REJECTED) for e in found
     )
+    cancels_calls = any(e.kind == ex.CANCELS_CALLS for e in found)
     if not handles:
         if item.config.stash[_OUTER] and not whitelisted:
             # A pytest started by a wrapper test runs tests against a chain server; one
@@ -189,14 +190,19 @@ def _prove(item: pytest.Item, seq: int, before: dict, details: list[str]) -> Pro
             "no_server", details=["no chain server ran in this process during the test"]
         )
     # Counters start at 0 when a process starts; a server started during the test starts there.
+    # A test that cancels calls is held to equal counts until the last read, so an engine
+    # count that arrives during the re-reads is still this test's.
     for attempt in range(_SETTLE_TRIES):
+        last = attempt == _SETTLE_TRIES - 1
         ends = [_safe_counters(h, details) for h in handles]
         starts = [
             proof.counting_start(before.get(id(h), proof.ZERO), end)
             for h, end in zip(handles, ends)
         ]
-        counts = proof.check_server_counts(starts, ends, no_engine_traffic=whitelisted)
-        if not counts.mismatch or attempt == _SETTLE_TRIES - 1:
+        counts = proof.check_server_counts(
+            starts, ends, no_engine_traffic=whitelisted, cancels_calls=cancels_calls and last
+        )
+        if not counts.mismatch or last:
             break
         time.sleep(_SETTLE_INTERVAL_S)
     statuses = [counts.status]

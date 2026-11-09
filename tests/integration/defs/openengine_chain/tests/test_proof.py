@@ -37,6 +37,48 @@ def test_check_counts(before, after, whitelisted, status, calls):
     assert (result.status, result.engine_calls) == (status, calls)
 
 
+@pytest.mark.parametrize(
+    "after, cancels_calls, status, mismatch",
+    [
+        # Every test not listed as cancelling calls needs equal increases.
+        (C(5, 3), False, proof.FAIL, True),
+        (C(3, 3), False, proof.OK, False),
+        # A test that cancels calls may count more calls on the front end ...
+        (C(5, 3), True, proof.OK, False),
+        (C(3, 3), True, proof.OK, False),
+        # ... but not more on the engine, and still needs a call to reach the engine.
+        (C(3, 5), True, proof.FAIL, True),
+        (C(2, 0), True, proof.FAIL, False),
+    ],
+)
+def test_only_tests_that_cancel_calls_may_count_more_on_the_front_end(
+    after, cancels_calls, status, mismatch
+):
+    result = proof.check_counts(
+        C(0, 0), after, no_engine_traffic=False, cancels_calls=cancels_calls
+    )
+    assert (result.status, result.mismatch, result.engine_calls) == (
+        status,
+        mismatch,
+        after.engine,
+    )
+
+
+def test_a_cancelling_test_is_checked_on_each_server():
+    # The total has more calls on the front end, but the second server's engine
+    # received a call its front end never sent.
+    starts, ends = [C(0, 0), C(0, 0)], [C(5, 2), C(1, 2)]
+    relaxed = proof.check_server_counts(starts, ends, no_engine_traffic=False, cancels_calls=True)
+    assert (relaxed.status, relaxed.mismatch) == (proof.FAIL, True)
+    assert "front end sent 1 Generate calls, engine received 2" in relaxed.detail
+    ok = proof.check_server_counts(
+        starts, [C(5, 2), C(2, 2)], no_engine_traffic=False, cancels_calls=True
+    )
+    assert (ok.status, ok.engine_calls) == (proof.OK, 4)
+    strict = proof.check_server_counts(starts, [C(5, 2), C(2, 2)], no_engine_traffic=False)
+    assert (strict.status, strict.mismatch) == (proof.FAIL, True)
+
+
 def test_add_counters_is_unknown_if_any_side_is_unknown():
     assert proof.add_counters([C(1, 2), C(3, 4)]) == C(4, 6)
     assert proof.add_counters([C(1, 2), C(None, 4)]) == C(None, 6)

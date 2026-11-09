@@ -198,8 +198,17 @@ def counting_start(before: Counters, after: Counters) -> Counters:
 ZERO = Counters(0, 0)
 
 
-def check_counts(before: Counters, after: Counters, *, no_engine_traffic: bool) -> CountCheck:
-    """The front end's and the engine's increases must be equal, and non-zero unless allowed."""
+def check_counts(
+    before: Counters, after: Counters, *, no_engine_traffic: bool, cancels_calls: bool = False
+) -> CountCheck:
+    """The front end's and the engine's increases must be equal, and non-zero unless allowed.
+
+    With ``cancels_calls`` (a test listed as ``CANCELS_CALLS`` in an expectation
+    table) the front end's increase may also exceed the engine's: the front end
+    counts a call once it has started it, and a call cancelled before it reaches
+    the engine never runs there. The engine's increase still may not exceed the
+    front end's, and must still be non-zero unless allowed.
+    """
     d_front = (
         None if None in (before.frontend, after.frontend) else after.frontend - before.frontend
     )
@@ -208,13 +217,9 @@ def check_counts(before: Counters, after: Counters, *, no_engine_traffic: bool) 
     missing = [side for side, d in (("front end", d_front), ("engine", d_engine)) if d is None]
     if missing:
         return CountCheck(INCOMPLETE, f"no counter from the {' and the '.join(missing)}", calls)
-    if d_front != d_engine:
-        return CountCheck(
-            FAIL,
-            f"front end sent {d_front} Generate calls, engine received {d_engine}",
-            calls,
-            mismatch=True,
-        )
+    sides = f"front end sent {d_front} Generate calls, engine received {d_engine}"
+    if d_front != d_engine and not (cancels_calls and d_front > d_engine):
+        return CountCheck(FAIL, sides, calls, mismatch=True)
     if d_engine == 0 and not no_engine_traffic:
         return CountCheck(
             FAIL,
@@ -222,11 +227,17 @@ def check_counts(before: Counters, after: Counters, *, no_engine_traffic: bool) 
             "it sends none",
             calls,
         )
+    if d_front != d_engine:
+        return CountCheck(OK, f"{sides}; accepted, as the test cancels calls", calls)
     return CountCheck(OK, f"{d_engine} Generate calls on both sides", calls)
 
 
 def check_server_counts(
-    starts: Sequence[Counters], ends: Sequence[Counters], *, no_engine_traffic: bool
+    starts: Sequence[Counters],
+    ends: Sequence[Counters],
+    *,
+    no_engine_traffic: bool,
+    cancels_calls: bool = False,
 ) -> CountCheck:
     """:func:`check_counts` over all servers, failing if any one server's two sides disagree.
 
@@ -234,14 +245,18 @@ def check_server_counts(
     server on its own keeps that from hiding a disagreement on another.
     """
     total = check_counts(
-        add_counters(starts), add_counters(ends), no_engine_traffic=no_engine_traffic
+        add_counters(starts),
+        add_counters(ends),
+        no_engine_traffic=no_engine_traffic,
+        cancels_calls=cancels_calls,
     )
     if total.mismatch:
         return total
     disagree = [
         check.detail
         for check in (
-            check_counts(s, e, no_engine_traffic=True) for s, e in zip(starts, ends, strict=True)
+            check_counts(s, e, no_engine_traffic=True, cancels_calls=cancels_calls)
+            for s, e in zip(starts, ends, strict=True)
         )
         if check.mismatch
     ]

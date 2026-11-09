@@ -29,10 +29,15 @@ HTTP_STATUS = "http_status"
 STARTUP_REJECTED = "startup_rejected"
 # The test sends no Generate call by design, so zero engine calls is not a failure.
 NO_ENGINE_TRAFFIC = "no_engine_traffic"
+# The test cancels Generate calls, and a call cancelled before it reaches the engine
+# is counted by the front end only: the chain proof accepts a front-end count at or
+# above the engine's instead of an equal one (see proof.check_counts). List each such
+# test by name; every other test keeps the exact count check.
+CANCELS_CALLS = "cancels_calls"
 # The test does not apply to the chain.
 SKIP = "skip"
 
-KINDS = (HTTP_STATUS, STARTUP_REJECTED, NO_ENGINE_TRAFFIC, SKIP)
+KINDS = (HTTP_STATUS, STARTUP_REJECTED, NO_ENGINE_TRAFFIC, CANCELS_CALLS, SKIP)
 # Kinds that decide a test's outcome; at most one may apply to a test.
 OUTCOME_KINDS = (HTTP_STATUS, STARTUP_REJECTED, SKIP)
 

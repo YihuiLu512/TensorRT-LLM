@@ -18,6 +18,7 @@ TABLE = [
     E("WT-10", "test_gen.py::test_whitelisted", ex.NO_ENGINE_TRAFFIC, "sends nothing"),
     E("WT-11", "test_gen.py::test_400*", ex.HTTP_STATUS, "X-a", status=400),
     E("WT-11", "test_gen.py::test_not_for_chain", ex.SKIP, "X-b"),
+    E("WT-03-fix1", "test_gen.py::test_cancels_*", ex.CANCELS_CALLS, "cancels calls"),
     E(
         "WT-11",
         "test_rejected.py::test_*",
@@ -71,6 +72,15 @@ def test_400_other_error(server):
 
 def test_not_for_chain(server):
     raise AssertionError("must not run")
+
+def test_cancels_before_the_engine(server):
+    server.send(3, 2)
+
+def test_cancels_but_engine_counts_more(server):
+    server.send(2, 3)
+
+def test_cancels_while_engine_counts_arrive(server):
+    server.send(3, 2, late=1)
 
 def test_server_started_in_test():
     h = FakeHandle()
@@ -156,6 +166,11 @@ def test_proof_and_expectations(pytester, run):
     expected = {
         "test_ok": ("passed", "ok", "2"),
         "test_mismatch": ("failed", "fail", "1"),
+        # A test listed as cancelling calls may count more on the front end only.
+        "test_cancels_before_the_engine": ("passed", "ok", "2"),
+        "test_cancels_but_engine_counts_more": ("failed", "fail", "3"),
+        # An engine count that arrives during the re-reads counts for this test.
+        "test_cancels_while_engine_counts_arrive": ("passed", "ok", "3"),
         "test_zero": ("failed", "fail", "0"),
         "test_whitelisted": ("passed", "ok", "0"),
         "test_400_met": ("passed", "ok", "0"),

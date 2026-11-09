@@ -21,6 +21,8 @@ class FakeHandle:
         self.teardown_notes = []
         self.engine_log = None
         self.frontend_log = frontend_log
+        # Engine calls that show up only from the next read of the counters on.
+        self.late_engine = 0
         self.started_seq = launch.next_seq()
         self.ended_seq = None
         launch._HANDLES.append(self)
@@ -29,8 +31,9 @@ class FakeHandle:
     def alive(self):
         return self.ended_seq is None
 
-    def send(self, frontend, engine=None):
+    def send(self, frontend, engine=None, late=0):
         engine = frontend if engine is None else engine
+        self.late_engine += late
         if self.counters.frontend_unwritten:
             self.counters = proof.Counters(0, self.counters.engine)
         self.counters = proof.Counters(
@@ -45,11 +48,19 @@ class FakeHandle:
         self.ended_seq = launch.next_seq()
 
 
+def _read_counters(handle):
+    if not handle.alive:
+        return handle.final_counters
+    counters = handle.counters
+    if handle.late_engine:
+        handle.counters = proof.Counters(counters.frontend, counters.engine + handle.late_engine)
+        handle.late_engine = 0
+    return counters
+
+
 def install(monkeypatch):
     """Route the plugin's process and RPC readers to FakeHandle attributes."""
     monkeypatch.setattr(launch, "_HANDLES", [])
-    monkeypatch.setattr(
-        proof, "read_counters", lambda h: h.counters if h.alive else h.final_counters
-    )
+    monkeypatch.setattr(proof, "read_counters", _read_counters)
     monkeypatch.setattr(proof, "check_topology", lambda h: h.topology)
     monkeypatch.setattr(proof, "read_engine_name", lambda h: "fake-engine")
