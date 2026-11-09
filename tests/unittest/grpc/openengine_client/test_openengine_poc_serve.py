@@ -2219,6 +2219,34 @@ def test_the_stats_are_empty_when_reading_the_load_times_out(tmp_path) -> None:
     _serve(engine, tmp_path, body)
 
 
+def test_with_the_pool_the_frontend_builds_no_detokenizer(tmp_path, monkeypatch) -> None:
+    built = []
+    original = IncrementalDetokenizer.__init__
+
+    def counting_init(self, *args, **kwargs):
+        built.append(self)
+        original(self, *args, **kwargs)
+
+    monkeypatch.setattr(IncrementalDetokenizer, "__init__", counting_init)
+    _with_pool(monkeypatch)
+    engine = _engine(token(0, HE), token(0, LLO), _finished())
+
+    async def body(engine, facade, http):
+        pooled = facade.generate_async(
+            PROMPT_IDS, SamplingParams(max_tokens=4), streaming=True, _postproc_params=object()
+        )
+        async for _ in pooled:
+            pass
+        assert pooled.finished and pooled.error is None
+        # The pool process detokenizes; the frontend's outputs only carry its results.
+        assert built == []
+        # Without the pool the frontend detokenizes the same request itself.
+        plain = await facade.generate_async(PROMPT_IDS, SamplingParams(max_tokens=4))
+        assert plain.outputs[0].text == "Hello" and len(built) == 1
+
+    _serve(engine, tmp_path, body, postproc_workers=1)
+
+
 def test_the_tokenizer_directory_is_the_tokenizer_path_when_it_is_one(tmp_path) -> None:
     tokenizer_dir = tmp_path / "tokenizer"
     tokenizer_dir.mkdir()
