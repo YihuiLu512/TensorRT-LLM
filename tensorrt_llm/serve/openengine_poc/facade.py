@@ -76,6 +76,7 @@ __all__ = [
     "DEFAULT_ENGINE_LOST_TIMEOUT_S",
     "DEFAULT_READY_TIMEOUT_S",
     "HEALTH_POLL_SECONDS",
+    "LOAD_READ_INTERVAL_S",
     "MAX_BUFFERED_EVENTS",
     "OpenEngineLLM",
     "OpenEngineRequestOutput",
@@ -88,6 +89,10 @@ DEFAULT_READY_TIMEOUT_S = 1800.0
 DEFAULT_CONTROL_TIMEOUT_S = 5.0
 DEFAULT_ENGINE_LOST_TIMEOUT_S = 30.0
 HEALTH_POLL_SECONDS = 5.0
+# The iteration stats read the engine's load (a GetLoad call) at most this often. In-process
+# they are taken from the executor's queue; here every read is an RPC to the engine, and with
+# return_perf_metrics the stats collector asks again after every request that completes.
+LOAD_READ_INTERVAL_S = 0.5
 LOG_PROMPT_IDS_ENV = "TRTLLM_OPENENGINE_POC_LOG_PROMPT_IDS"
 # Where preprocess leaves a prompt's mapped media for generate_async.
 _MAPPED_MEDIA_KEY = "openengine_media"
@@ -341,6 +346,8 @@ class OpenEngineLLM:
         self._metrics = contracts.create_metrics_recorder(args)
         # The default recorder derives nothing from the engine's load, so none is fetched.
         self._metrics_use_load = contracts.resolve_slot("create_metrics_recorder")[1] != "default"
+        # Event-loop time of the latest load read, or of the next one already scheduled.
+        self._load_read_at: float | None = None
         self._lora: contracts.LoraRegistry | None = None
         self._local_fingerprint: Any = None
         self._lost_close: asyncio.Task[None] | None = None
@@ -1016,9 +1023,25 @@ class OpenEngineLLM:
 
     # -- Stats and events ----------------------------------------------------
 
-    async def _iteration_stats(self) -> list[dict[str, Any]]:
+    async def _iteration_stats(self, timeout: float | None = None) -> list[dict[str, Any]]:
+        """The iteration stats, from one read of the engine's load when the recorder uses it.
+
+        Reads are at least :data:`LOAD_READ_INTERVAL_S` apart: a read asked for
+        sooner waits for its turn, or returns no stats when its turn is more
+        than ``timeout`` seconds away.
+        """
         load: EngineLoad | None = None
         if self._metrics_use_load:
+            now = asyncio.get_running_loop().time()
+            turn = now
+            if self._load_read_at is not None:
+                turn = max(now, self._load_read_at + LOAD_READ_INTERVAL_S)
+            if timeout is not None and turn - now > timeout:
+                return []
+            # Taken before waiting, so a concurrent read waits for the turn after this one.
+            self._load_read_at = turn
+            if turn > now:
+                await asyncio.sleep(turn - now)
             try:
                 load = await self.client.load()
             except OpenEngineClientError as error:
@@ -1032,7 +1055,9 @@ class OpenEngineLLM:
         """Iteration stats derived from the engine's load; called from a worker thread."""
         if self._loop is None or self._closing:
             return []
-        future = asyncio.run_coroutine_threadsafe(self._iteration_stats(), self._loop)
+        future = asyncio.run_coroutine_threadsafe(
+            self._iteration_stats(max(timeout, 0)), self._loop
+        )
         try:
             return future.result(max(timeout, 0) + self._control_timeout)
         except (TimeoutError, concurrent.futures.TimeoutError):
@@ -1043,7 +1068,7 @@ class OpenEngineLLM:
             return []
 
     async def get_stats_async(self, timeout: float | None = None):
-        for stat in await self._iteration_stats():
+        for stat in await self._iteration_stats(timeout):
             yield stat
 
     async def get_kv_cache_events_async(self, timeout: float | None = None):

@@ -1420,6 +1420,33 @@ def test_stats_when_the_engine_load_cannot_be_read_are_empty(tmp_path, monkeypat
     _serve(engine, tmp_path, body)
 
 
+def test_load_reads_for_the_stats_are_spaced_out(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(facade_module, "LOAD_READ_INTERVAL_S", 0.3)
+    engine = _engine()
+
+    async def body(engine, facade, http):
+        reads: list[float] = []
+
+        async def load():
+            reads.append(asyncio.get_running_loop().time())
+            return None
+
+        facade._metrics_use_load = True
+        monkeypatch.setattr(facade.client, "load", load)
+        assert await facade._iteration_stats() == []
+        # The next turn is further away than the read may wait: no read, no stats.
+        assert await facade._iteration_stats(0) == []
+        assert len(reads) == 1
+        # A read that may wait takes its turn.
+        assert await facade._iteration_stats(1.0) == []
+        assert len(reads) == 2 and reads[1] - reads[0] >= 0.29
+        # Concurrent reads take turns too.
+        await asyncio.gather(facade._iteration_stats(), facade._iteration_stats())
+        assert len(reads) == 4 and reads[3] - reads[2] >= 0.29
+
+    _serve(engine, tmp_path, body)
+
+
 def test_generate_sent_is_written_to_the_counter_dir(tmp_path, monkeypatch) -> None:
     counter_dir = tmp_path / "counters"
     monkeypatch.setenv(SERVE_COUNTER_DIR_ENV, str(counter_dir))
@@ -2054,7 +2081,7 @@ def test_the_stats_are_empty_when_reading_the_load_times_out(tmp_path) -> None:
     engine = _engine()
 
     async def body(engine, facade, http):
-        async def slow_stats():
+        async def slow_stats(timeout=None):
             await asyncio.sleep(WAIT_SECONDS)
             return [{"never": True}]
 
