@@ -369,12 +369,16 @@ class OpenEngineControlServicer(openengine_pb2_grpc.ControlServicer):
         # avoid. Unset means "unknown", which is the honest claim.
 
         generation = model_pb2.GenerationCapabilities()
-        # The bound is enforced per request, so it is known rather than unknown.
-        logprobs = model_pb2.LogprobCapabilities(
-            supported=True,
-            candidate_selection_modes=[model_pb2.CANDIDATE_TOKEN_SELECTION_MODE_TOP_N],
-            max_top_n=MAX_TOP_LOGPROBS,
-        )
+        # Generate checks requests against the same request_capabilities.
+        if self._inference.request_capabilities.supports_logprobs:
+            # The bound is enforced per request, so it is known rather than unknown.
+            logprobs = model_pb2.LogprobCapabilities(
+                supported=True,
+                candidate_selection_modes=[model_pb2.CANDIDATE_TOKEN_SELECTION_MODE_TOP_N],
+                max_top_n=MAX_TOP_LOGPROBS,
+            )
+        else:
+            logprobs = model_pb2.LogprobCapabilities(supported=False)
         generation.output_logprobs.CopyFrom(logprobs)
         generation.prompt_logprobs.CopyFrom(logprobs)
         guided_backend = str(self._llm.args.guided_decoding_backend or "")

@@ -353,8 +353,35 @@ OWNERSHIP: dict[str, list[Rule]] = {
     ],
     "WT-09": _own("tests/integration/defs/perf/openengine_arms.py")
     + [
-        _shared("tests/integration/defs/perf/test_perf_sanity.py", "the arm hook only"),
+        _shared(
+            "tests/integration/defs/perf/test_perf_sanity.py",
+            "the arm hook only, and (WT-09-fix1, ISSUES T18) reserve_multi_frontend_port's"
+            " reuse_addr for the non-arm multi-frontend branch",
+        ),
         _shared("tests/integration/defs/perf/utils.py", "the arm hook only"),
+        Rule(
+            f"{OE_SERVER}/control.py",
+            "exception",
+            "only (WT-09-fix1, ISSUES T13) declaring no output or prompt logprobs under one-model"
+            " speculative decoding",
+        ),
+        Rule(
+            f"{OE_SERVER}/request_mapping.py",
+            "exception",
+            "only (WT-09-fix1, ISSUES T13 / D12) declaring and refusing output and prompt logprobs"
+            " under one-model speculative decoding",
+        ),
+        Rule(
+            "tests/unittest/grpc/openengine/test_request_mapping_features.py",
+            "exception",
+            "only (WT-09-fix1, ISSUES T13 / D12) the declaration and the cases of logprobs under"
+            " one-model speculative decoding",
+        ),
+        Rule(
+            "scripts/poc2/check_ownership.py",
+            "exception",
+            "only the rules of WT-09 and WT-09-fix1",
+        ),
     ],
     "WT-10": _own(
         f"{POC}/adapter.py",

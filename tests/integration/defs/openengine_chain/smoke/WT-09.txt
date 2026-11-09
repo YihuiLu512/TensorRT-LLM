@@ -1,3 +1,4 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 unittest/llmapi/apps/_test_openengine_wt09_perf.py::test_perf_arm_b_s1
+unittest/llmapi/apps/_test_openengine_wt09_spec.py::test_output_logprobs[eagle3]

@@ -116,11 +116,12 @@ _FLOAT_SAMPLING_FIELDS = (
 class RequestCapabilities:
     """What ``Generate`` accepts beyond the portable request, fixed per engine.
 
-    ``Generate`` accepts a request option only when its field here allows it;
-    ``GetModelInfo`` and ``GetServerInfo`` report the request keys, priority,
-    LoRA support, ``max_loras`` and the accepted sampling values
+    ``Generate`` accepts a request option only when its field here allows it.
+    ``GetModelInfo`` reports the request keys, priority, LoRA support,
+    log-probability support and the accepted sampling values
     (:meth:`sampling_declaration`) from this object, and ``max_num_sequences``
-    from the same :func:`max_num_sequences_for`.
+    from the same :func:`max_num_sequences_for`; ``GetServerInfo`` reports
+    ``max_loras`` from it.
     """
 
     max_num_sequences: int
@@ -141,6 +142,8 @@ class RequestCapabilities:
     """str | None: Checkpoint format of LoRA adapters; None when LoRA is not supported."""
     max_loras: int | None
     """int | None: Adapters the LoRA cache keeps on the GPU; None when unknown or unsupported."""
+    supports_logprobs: bool
+    """bool: Whether output and prompt log probabilities may be requested."""
     sampling: Mapping[str, AcceptedValues] = field(
         default_factory=lambda: dict.fromkeys(SAMPLING_PARAM_NAMES, ANY_VALUE), hash=False
     )
@@ -212,6 +215,7 @@ PORTABLE_REQUEST_CAPABILITIES = RequestCapabilities(
     supports_scheduling=False,
     lora_ckpt_source=None,
     max_loras=None,
+    supports_logprobs=True,
 )
 
 
@@ -276,8 +280,8 @@ def _one_model_spec_config(llm_args: Any) -> Any:
 def uses_one_model_speculation(llm_args: Any) -> bool:
     """Whether a one-model speculative decoding mode runs.
 
-    It rejects ``embedding_bias`` and narrows the sampling values ``Generate``
-    accepts (:func:`accepted_sampling_values`).
+    Such a mode narrows what ``Generate`` accepts; see
+    :func:`request_capabilities_for_model` and :func:`accepted_sampling_values`.
     """
     return _one_model_spec_config(llm_args) is not None
 
@@ -421,6 +425,9 @@ def request_capabilities_for_model(llm: Any) -> RequestCapabilities:
             str(getattr(lora_config, "lora_ckpt_source", "hf")) if lora_enabled else None
         ),
         max_loras=_positive_int(lora_config.max_loras) if lora_enabled else None,
+        # The one-model speculative sampler rejects requests for output or
+        # prompt log probabilities at admission.
+        supports_logprobs=not uses_one_model_speculation(args),
         sampling=accepted_sampling_values(args),
     )
 
@@ -950,6 +957,9 @@ def sampling_params_from_request(
         response = request.response
         if response.HasField("prompt_logprob_start") and response.prompt_logprob_start != 0:
             raise UnsupportedFeatureError("response.prompt_logprob_start is not supported")
+        for name in ("return_prompt_logprobs", "return_output_logprobs"):
+            if getattr(response, name) and not capabilities.supports_logprobs:
+                raise UnsupportedFeatureError(f"response.{name} is not supported by this engine")
         if response.HasField("return_prompt_logprobs") and response.return_prompt_logprobs:
             kwargs["prompt_logprobs"] = _top_n_candidates(response.prompt_candidates, "prompt")
         if response.HasField("return_output_logprobs") and response.return_output_logprobs:

@@ -63,6 +63,7 @@ FULL = RequestCapabilities(
     supports_scheduling=True,
     lora_ckpt_source="hf",
     max_loras=2,
+    supports_logprobs=True,
 )
 EXTRA_KEYS = (
     "trtllm.thinking_token_budget",
@@ -545,7 +546,7 @@ SPECULATIVE_CONFIGS = [
 
 @pytest.mark.parametrize(("make_config", "supported"), SPECULATIVE_CONFIGS)
 def test_speculation_limits_the_request_keys(make_config, supported):
-    """The one-model speculative sampler rejects every request with an embedding_bias."""
+    """The one-model speculative sampler rejects every request with an embedding_bias or logprobs."""
     speculative_config = make_config()
     args = _llm(speculative_config=speculative_config).args
     capabilities = request_capabilities_for_model(
@@ -553,6 +554,7 @@ def test_speculation_limits_the_request_keys(make_config, supported):
     )
 
     assert capabilities.supports_logit_bias is supported
+    assert capabilities.supports_logprobs is supported
     # The thinking budget is declared only without speculative decoding.
     assert capabilities.supports_thinking_token_budget is (speculative_config is None)
     # The same one-model test that limits min_p and the penalties to their no-effect values.
@@ -614,6 +616,37 @@ def test_generate_rejects_a_sampling_value_outside_the_declared_set(name):
         assert getattr(params, name) == pytest.approx(EFFECTIVE_VALUES[name])
     # Without speculation every value is accepted.
     sampling_params_from_request(request, None, request_capabilities_for_model(_llm()))
+
+
+# A request for each kind of log probabilities, keyed by its ResponseOptions flag.
+LOGPROB_REQUESTS = {
+    "return_prompt_logprobs": generation_pb2.ResponseOptions(
+        return_prompt_logprobs=True,
+        prompt_candidates=generation_pb2.CandidateTokenSelection(top_n=2),
+    ),
+    "return_output_logprobs": generation_pb2.ResponseOptions(
+        return_output_logprobs=True,
+        output_candidates=generation_pb2.CandidateTokenSelection(top_n=2),
+    ),
+}
+LOGPROB_PARAMS = {
+    "return_prompt_logprobs": "prompt_logprobs",
+    "return_output_logprobs": "logprobs",
+}
+
+
+@pytest.mark.parametrize("name", sorted(LOGPROB_REQUESTS))
+def test_logprobs_are_unimplemented_under_one_model_speculation(name):
+    request = _request(response=LOGPROB_REQUESTS[name])
+
+    with pytest.raises(UnsupportedFeatureError, match=re.escape(f"response.{name} is not")):
+        sampling_params_from_request(request, None, _speculative_capabilities())
+    # Asking for none is accepted.
+    not_requested = _request(response=generation_pb2.ResponseOptions(**{name: False}))
+    sampling_params_from_request(not_requested, None, _speculative_capabilities())
+    # Without speculation the request is accepted.
+    params = sampling_params_from_request(request, None, request_capabilities_for_model(_llm()))
+    assert getattr(params, LOGPROB_PARAMS[name]) == 2
 
 
 def test_a_sampling_field_missing_from_the_declaration_accepts_nothing():
@@ -937,6 +970,22 @@ def test_generate_forwards_every_request_option(monkeypatch, tmp_path):
     params = kwargs["sampling_params"]
     assert isinstance(params.logits_processor, ThinkingBudgetLogitsProcessor)
     assert params.embedding_bias[5].item() == 100
+
+
+@pytest.mark.parametrize("name", sorted(LOGPROB_REQUESTS))
+def test_generate_rejects_logprobs_it_does_not_declare(name):
+    """Under one-model speculation GetModelInfo declares no logprobs and Generate refuses them."""
+    from tensorrt_llm.grpc.openengine.bindings import model_pb2
+
+    llm = _llm(speculative_config=MTPDecodingConfig(max_draft_len=3))
+    info = _run(_control(llm).GetModelInfo(model_pb2.GetModelInfoRequest(), FakeServicerContext()))
+
+    assert info.generation.output_logprobs.supported is False
+    assert info.generation.prompt_logprobs.supported is False
+    servicer, code = _generate(llm, _request(response=LOGPROB_REQUESTS[name]))
+    assert code == grpc.StatusCode.UNIMPLEMENTED
+    assert llm.generate_kwargs is None
+    assert servicer.generate_counters.accepted == 0
 
 
 def test_generate_defaults_without_options():
