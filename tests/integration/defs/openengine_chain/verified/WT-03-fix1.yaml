@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Notes on the entries:
+# - F-35: _test_openai_cache_salt.py is SKIP on the chain (expectations/WT-03-fix1.py: it reads a
+#   KV-cache hit rate the engine does not report); the chain version listed here judges by
+#   cached_tokens and takes its place.
+# - F-25+F-26: the beam servers are refused at startup (expectations/WT-11.py, STARTUP_REJECTED), so
+#   those cases have no chain_proof property; test_unsupported_fields_rejected has chain_proof ok. Only
+#   cases that use a beam server are listed, not the beam-parametrized cases that skip themselves.
+entries:
+  - row: F-09
+    features: [F-09]
+    cases:
+      - unittest/llmapi/apps/_test_openai_prometheus.py::test_truncate_prompt_tokens
+    commit: a8cda93fcfbbd1b6fee8645ee0076dc868eef20b
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S3-WT-03-fix1/e2e/results/e2e-5759825/p1-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S3-WT-03-fix1/e2e/results/e2e-5759825/p1-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S3-WT-03-fix1/e2e/results/e2e-5759825/p2-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S3-WT-03-fix1/e2e/results/e2e-5759825/p2-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S3-WT-03-fix1/e2e/results/e2e-5759825/p3-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S3-WT-03-fix1/e2e/results/e2e-5759825/p3-r0/obligations/junit/
+    result: passed
+    chain_proof: ok
+  - row: F-35
+    features: [F-35]
+    cases:
+      - unittest/llmapi/apps/_test_openengine_wt03_cache_salt.py::test_cache_salt_prevents_reuse_by_cached_tokens
+    commit: a8cda93fcfbbd1b6fee8645ee0076dc868eef20b
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S3-WT-03-fix1/e2e/results/e2e-5759825/p1-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S3-WT-03-fix1/e2e/results/e2e-5759825/p1-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S3-WT-03-fix1/e2e/results/e2e-5759825/p2-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S3-WT-03-fix1/e2e/results/e2e-5759825/p2-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S3-WT-03-fix1/e2e/results/e2e-5759825/p3-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S3-WT-03-fix1/e2e/results/e2e-5759825/p3-r0/obligations/junit/
+    result: passed
+    chain_proof: ok
+  - row: F-25+F-26
+    features: [F-25, F-26]
+    cases:
+      - unittest/llmapi/apps/_test_openai_chat.py::test_multiple_responses_with_beam_search[pytorch-no_extra_options-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_completions.py::test_batch_completions_beam_search[pytorch-disable_processpool-prompts0]
+      - unittest/llmapi/apps/_test_openai_completions.py::test_batch_completions_beam_search[pytorch-disable_processpool-prompts1]
+      - unittest/llmapi/apps/_test_openai_completions.py::test_batch_completions_beam_search[pytorch-enable_processpool-prompts0]
+      - unittest/llmapi/apps/_test_openai_completions.py::test_batch_completions_beam_search[pytorch-enable_processpool-prompts1]
+      - unittest/llmapi/apps/_test_openai_misc.py::test_health_generate[pytorch-with_beam_search-8-32768]
+      - unittest/llmapi/apps/_test_openai_reasoning.py::test_reasoning_parser[Qwen3/Qwen3-0.6B-pytorch-with_beam_search-True]
+      - unittest/llmapi/apps/_test_openengine_wt11_mapping.py::test_unsupported_fields_rejected
+    commit: a8cda93fcfbbd1b6fee8645ee0076dc868eef20b
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S3-WT-03-fix1/e2e/results/e2e-5759825/p1-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S3-WT-03-fix1/e2e/results/e2e-5759825/p1-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S3-WT-03-fix1/e2e/results/e2e-5759825/p1-r0/smoke/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S3-WT-03-fix1/e2e/results/e2e-5759825/p1-r0/smoke/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S3-WT-03-fix1/e2e/results/e2e-5759825/p2-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S3-WT-03-fix1/e2e/results/e2e-5759825/p2-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S3-WT-03-fix1/e2e/results/e2e-5759825/p2-r0/smoke/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S3-WT-03-fix1/e2e/results/e2e-5759825/p2-r0/smoke/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S3-WT-03-fix1/e2e/results/e2e-5759825/p3-r0/obligations/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S3-WT-03-fix1/e2e/results/e2e-5759825/p3-r0/obligations/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S3-WT-03-fix1/e2e/results/e2e-5759825/p3-r0/smoke/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S3-WT-03-fix1/e2e/results/e2e-5759825/p3-r0/smoke/junit/
+    result: passed
+    chain_proof: incomplete

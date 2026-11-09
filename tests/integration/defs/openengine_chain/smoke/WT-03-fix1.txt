@@ -1,6 +1,4 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-unittest/llmapi/apps/_test_openai_prometheus.py::test_truncate_prompt_tokens
-unittest/llmapi/apps/_test_openengine_wt03_cache_salt.py::test_cache_salt_prevents_reuse_by_cached_tokens
 unittest/llmapi/apps/_test_openai_misc.py::test_health_generate[pytorch-with_beam_search-8-32768]
 unittest/llmapi/apps/_test_openai_prometheus.py::test_kv_cache_metrics_available_before_first_request
