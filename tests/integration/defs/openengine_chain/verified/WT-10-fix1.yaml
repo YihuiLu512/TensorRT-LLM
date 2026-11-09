@@ -1,0 +1,40 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# WT-10-fix1 owes no row (pending_e2e.py); these entries record the cases that failed on the chain
+# before it because the front end sent the finish_reason in an extra, empty last chunk (see WT-12.yaml
+# and WT-16.yaml).
+# Not verified: test_chat_streaming[pytorch-no_extra_options-disable_processpool] and
+# [pytorch-no_extra_options-enable_processpool]. They pass the finish_reason checks but fail at
+# _test_openai_chat.py:373 comparing non-streaming and streaming logprobs (np.allclose) with block
+# reuse on. This is pre-existing (T9): the in-process trtllm-serve control without the chain (Slurm
+# job 5757791) fails at the same line in each of its 3 runs.
+entries:
+  - row: F-20+F-21
+    features: [F-20]
+    cases:
+      - unittest/llmapi/apps/_test_openai_chat.py::test_chat_streaming[pytorch-extra_options-disable_processpool]
+      - unittest/llmapi/apps/_test_openai_chat.py::test_chat_streaming[pytorch-extra_options-enable_processpool]
+    commit: e052f2a86e2517b12d2772f8b77017ac42f3ecf2
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S2-WT-10-fix1/e2e/results/e2e-5757489/p1-r0/acceptance/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S2-WT-10-fix1/e2e/results/e2e-5757489/p1-r0/acceptance/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S2-WT-10-fix1/e2e/results/e2e-5757489/p2-r0/acceptance/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S2-WT-10-fix1/e2e/results/e2e-5757489/p2-r0/acceptance/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S2-WT-10-fix1/e2e/results/e2e-5757489/p3-r0/acceptance/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S2-WT-10-fix1/e2e/results/e2e-5757489/p3-r0/acceptance/junit/
+    result: passed
+    chain_proof: ok
+  - row: F-10
+    features: [F-10]
+    cases:
+      - unittest/llmapi/apps/_test_openai_chat_multimodal.py::test_chat_streaming_image
+    commit: e052f2a86e2517b12d2772f8b77017ac42f3ecf2
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S2-WT-10-fix1/e2e/results/e2e-5757489/p1-r0/acceptance/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S2-WT-10-fix1/e2e/results/e2e-5757489/p1-r0/acceptance/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S2-WT-10-fix1/e2e/results/e2e-5757489/p2-r0/acceptance/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S2-WT-10-fix1/e2e/results/e2e-5757489/p2-r0/acceptance/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S2-WT-10-fix1/e2e/results/e2e-5757489/p3-r0/acceptance/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17503/data/stage-01/test-01/03_track/S2-WT-10-fix1/e2e/results/e2e-5757489/p3-r0/acceptance/junit/
+    result: passed
+    chain_proof: ok

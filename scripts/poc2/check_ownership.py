@@ -313,6 +313,9 @@ OWNERSHIP: dict[str, list[Rule]] = {
         f"{CLIENT_TESTS}/**",
         f"!{CLIENT_TESTS}/fake_openengine.py",
         f"!{CLIENT_TESTS}/test_fake_openengine*.py",
+        # WT-10-fix1 records the chain cases its fix makes pass (T3).
+        f"{CHAIN}/verified/WT-10-fix1.yaml",
+        f"{CHAIN}/smoke/WT-10-fix1.txt",
     )
     + [
         _shared(f"{POC}/__init__.py", "exports of the facade"),
