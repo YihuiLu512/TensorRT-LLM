@@ -250,6 +250,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
         "tests/test_min_tokens*.py",
         "tests/test_min_tokens*.cpp",
         "tests/test_ban_logits.py",
+        "tests/test_fp8_small_determinism.py",
         repo=GLM,
     )
     + [
@@ -267,13 +268,32 @@ OWNERSHIP: dict[str, list[Rule]] = {
             repo=GLM,
         ),
         Rule(
-            "tests/openengine/test_openengine_server.py",
+            "python/glm5_serve/openengine/validation.py",
             "exception",
-            "only the min_tokens tests and their imports; WT-06 owns the file",
+            "only (WT-07-fix1) not failing a request on extra.detokenize; WT-06 owns the file",
             repo=GLM,
         ),
         Rule(
-            "README.md", "exception", "only the min_tokens notes and test-table entries", repo=GLM
+            "tests/openengine/test_openengine_server.py",
+            "exception",
+            "only the min_tokens tests and their imports, and (WT-07-fix1) the checks of the"
+            " requests that set extra.detokenize; WT-06 owns the file",
+            repo=GLM,
+        ),
+        Rule(
+            "README.md",
+            "exception",
+            "only the min_tokens notes and test-table entries, and (WT-07-fix1) the extra.detokenize"
+            " note, the block-reuse row's note on rounding and the split-K determinism test's"
+            " test-table entry",
+            repo=GLM,
+        ),
+        Rule(
+            "tests/unittest/llmapi/apps/_test_openengine_glm53.py",
+            "exception",
+            "only (WT-07-fix1) test_sampling_and_stop's stop-string usage step: the prompt it"
+            " sends in the glm case (the trtllm case keeps LONG_PROMPT) and the step's comment;"
+            " WT-06 owns the file",
         ),
         Rule("scripts/poc2/check_ownership.py", "exception", "only WT-07's entry in OWNERSHIP"),
     ],

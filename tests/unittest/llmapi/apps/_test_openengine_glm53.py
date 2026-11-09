@@ -628,15 +628,18 @@ def test_sampling_and_stop(servers, case, tokenizer):
     out = complete(server, prompt=prompt, max_tokens=n + 8, extra_body={"ignore_eos": True})
     assert out.usage.completion_tokens == n + 8 and out.choices[0].finish_reason == "length"
 
-    # usage after a stop-string match: complete, with the prefix-cache hit.
+    # usage after a stop-string match: complete, with the prefix-cache hit. glm's greedy
+    # continuation of LONG_PROMPT can leave the pattern (a numbered list) and never reach
+    # " Berlin", so glm's prompt stops mid-sentence and the continuation finishes the sentence.
     reuse_server = servers.get("reuse", config=REUSE_CONFIG)
-    complete(reuse_server, prompt=LONG_PROMPT, max_tokens=4)
+    stop_prompt = LONG_PROMPT + "The capital of France is" if case == "glm" else LONG_PROMPT
+    complete(reuse_server, prompt=stop_prompt, max_tokens=4)
     for stream in (False, True):
         if stream:
             chunks = list(
                 client(reuse_server).completions.create(
                     model=MODEL_NAME,
-                    prompt=LONG_PROMPT,
+                    prompt=stop_prompt,
                     max_tokens=64,
                     temperature=0.0,
                     stop=[" Berlin"],
@@ -647,7 +650,7 @@ def test_sampling_and_stop(servers, case, tokenizer):
             usage = chunks[-1].usage
             text = "".join(ch.choices[0].text for ch in chunks if ch.choices)
         else:
-            out = complete(reuse_server, prompt=LONG_PROMPT, max_tokens=64, stop=[" Berlin"])
+            out = complete(reuse_server, prompt=stop_prompt, max_tokens=64, stop=[" Berlin"])
             usage, text = out.usage, out.choices[0].text
             assert (
                 out.choices[0].finish_reason == "stop" and stop_reason(out.choices[0]) == " Berlin"
