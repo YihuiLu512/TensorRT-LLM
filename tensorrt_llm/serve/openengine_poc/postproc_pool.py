@@ -28,7 +28,7 @@ import queue
 import time
 import traceback
 import weakref
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -46,7 +46,7 @@ from .contracts import (
     PPOpen,
     PPResult,
 )
-from .engine_client import OutputFinished, TokenDelta
+from .engine_client import OutputFinished
 
 __all__ = [
     "FacadePostprocDispatch",
@@ -312,20 +312,18 @@ class _Record:
         self.final = False
         # Outputs a stop string ended on this side, not reported yet.
         self._stop_hit: list[int] = []
-        # The calls' max_tokens, and per output the tokens it has received.
-        self._max_tokens = message.sampling_params.max_tokens
-        self._tokens_received = [0] * message.n
-        # While a step waits for a finish (see ``_hold``): each output's diff start.
-        self._held_starts: list[tuple[int, int, int]] | None = None
+        # The steps it hands on are those the facade hands on without a pool.
+        max_tokens = message.max_tokens
+        if max_tokens is None:
+            max_tokens = (message.sampling_params.max_tokens,) * message.n
+        self._steps = contracts.StepJoiner(self.assembler, max_tokens)
 
     def _request_abort(self) -> None:
         self._abort_requested = True
 
     def on_event(self, event: Any) -> PPResult | None:
         before = [output.finish_reason for output in self.result.outputs]
-        changed = self.assembler.apply(event)
-        if isinstance(event, TokenDelta):
-            self._tokens_received[event.output_index] += len(event.token_ids)
+        changed = self._steps.apply(event)
         self.result.cached_tokens = self.assembler.cached_tokens
         # An output the engine ended with this event ended there, even on a
         # stop string; any other output that ends with a stop string ended here.
@@ -338,8 +336,6 @@ class _Record:
                 and not (ended_by_engine and output.index == event.output_index)
             ):
                 self._stop_hit.append(output.index)
-        if self.streaming:
-            changed = self._hold(changed)
         return self._step(changed, closing=False)
 
     def on_close(self, reason: Literal["done", "cancelled"]) -> PPResult | None:
@@ -352,47 +348,9 @@ class _Record:
             self.result._aborted = True
             self.assembler.finish_cancelled()
             changed = True
-        if self._held_starts is not None:
-            self._release_held()
+        if self._steps.release():
             changed = True
         return self._step(changed, closing=True)
-
-    def _finish_due(self) -> bool:
-        """Whether an unfinished output has received its call's ``max_tokens`` tokens."""
-        limit = self._max_tokens
-        return limit is not None and any(
-            output.finish_reason is None and received >= limit
-            for output, received in zip(self.result.outputs, self._tokens_received)
-        )
-
-    def _hold(self, changed: bool) -> bool:
-        """Whether a streaming step is to be sent now, as the facade steps without a pool.
-
-        An output that has received its call's ``max_tokens`` tokens can only
-        finish next: the step that brings it there takes in the events up to
-        the finish of every such output, and its ``*_diff`` views cover them all.
-        """
-        if self._held_starts is None:
-            if not changed or not self._finish_due():
-                return changed
-            # The assembler starts every output's diff views at each change.
-            self._held_starts = [
-                (output._last_text_len, output._last_token_ids_len, output._last_logprobs_len)
-                for output in self.result.outputs
-            ]
-        if self._finish_due():
-            return False
-        self._release_held()
-        return True
-
-    def _release_held(self) -> None:
-        """Start each output's diff views where the held step started."""
-        assert self._held_starts is not None
-        for output, (text, token_ids, logprobs) in zip(self.result.outputs, self._held_starts):
-            output._last_text_len = text
-            output._last_token_ids_len = token_ids
-            output._last_logprobs_len = logprobs
-        self._held_starts = None
 
     def _step(self, changed: bool, *, closing: bool) -> PPResult | None:
         if self.final:
@@ -837,6 +795,7 @@ class PostprocPool:
         num_outputs: int,
         num_prompt_tokens: int,
         engine_stop_texts: bool = False,
+        max_tokens: Sequence[int | None] | None = None,
     ) -> _Session:
         if self._closed:
             raise PostprocWorkerError("the postprocessing pool is closed")
@@ -868,6 +827,7 @@ class PostprocPool:
             detok=detok,
             num_prompt_tokens=num_prompt_tokens,
             sampling_params=plain_params,
+            max_tokens=None if max_tokens is None else tuple(max_tokens),
         )
         self._start()
         index = _route(request_id, self.size)

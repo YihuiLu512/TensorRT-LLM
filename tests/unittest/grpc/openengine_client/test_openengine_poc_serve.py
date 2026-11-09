@@ -764,24 +764,24 @@ def test_another_call_that_ends_does_not_end_a_step_that_waits_for_the_finish(tm
             steps.append([(o.text_diff, o.finish_reason) for o in step.outputs])
         assert len(engine.requests) == 2
         assert sorted(o.text for o in output.outputs) == [" world!", "Hello"]
-        for index in range(2):
+        for index, out in enumerate(output.outputs):
             # The step that finishes an output also carries its last tokens.
             text, reason = next(s[index] for s in steps if s[index][1] is not None)
-            assert text.endswith(("llo", "!")) and reason == "length"
+            assert reason == "length"
+            assert text.endswith({"Hello": "llo", " world!": "!"}[out.text])
 
     _serve(engine, tmp_path, body)
 
 
-def test_a_call_that_fails_while_a_step_waits_for_the_finish_fails_after_that_step(
+def test_a_call_that_fails_while_a_step_waits_for_the_finish_fails_without_that_step(
     tmp_path,
 ) -> None:
+    # As with the pool, where the failure overtakes the held step.
     engine = _engine(token(0, HE), token(0, LLO), Delay(0.2), Fail(grpc.StatusCode.INTERNAL, "x"))
 
     async def body(engine, facade, http):
         output = facade.generate_async(PROMPT_IDS, SamplingParams(max_tokens=2), streaming=True)
         assert (await output.__anext__()).outputs[0].text_diff == "He"
-        step = await output.__anext__()
-        assert (step.outputs[0].text_diff, step.outputs[0].finish_reason) == ("llo", None)
         with pytest.raises(OpenEngineServeError):
             await output.__anext__()
         assert output.finished and output.error is not None
@@ -789,8 +789,30 @@ def test_a_call_that_fails_while_a_step_waits_for_the_finish_fails_after_that_st
     _serve(engine, tmp_path, body)
 
 
+def test_abort_while_a_step_waits_for_the_finish_returns_that_step_cancelled(tmp_path) -> None:
+    # As the pool does: the cancellation joins the held step.
+    engine = _engine(token(0, HE), token(0, LLO), Hang())
+
+    async def body(engine, facade, http):
+        output = facade.generate_async(PROMPT_IDS, SamplingParams(max_tokens=2), streaming=True)
+        assert (await output.__anext__()).outputs[0].text_diff == "He"
+        waiting = asyncio.create_task(output.__anext__())
+        await asyncio.sleep(0.2)
+        assert not waiting.done()
+        output.abort()
+        step = await asyncio.wait_for(waiting, WAIT_SECONDS)
+        assert (step.outputs[0].text_diff, step.outputs[0].finish_reason) == ("llo", "cancelled")
+        assert output.finished
+        assert [s async for s in output] == []
+
+    _serve(engine, tmp_path, body)
+
+
 def _pool_record(
-    max_tokens: int | None, n: int = 1, stop: list[str] | None = None
+    max_tokens: int | None,
+    n: int = 1,
+    stop: list[str] | None = None,
+    calls_max_tokens: tuple[int | None, ...] | None = None,
 ) -> postproc_pool._Record:
     """A streaming completion request in a pool process, run in this process."""
     params = SamplingParams(
@@ -805,6 +827,7 @@ def _pool_record(
         detok=contracts.DetokOptions(),
         num_prompt_tokens=len(PROMPT_IDS),
         sampling_params=postproc_pool.plain_sampling_params(params),
+        max_tokens=calls_max_tokens,
     )
     return postproc_pool._Record(message, _tokenizer(), None)
 
@@ -840,6 +863,19 @@ def test_in_the_pool_the_last_tokens_and_the_finish_are_one_step() -> None:
     # As the facade steps without a pool: "llo" waits for the finish.
     assert steps == [[(0, "He", None)], None, [(0, "llo", "length")]]
     assert record.final
+
+
+@pytest.mark.parametrize("calls_max_tokens, held", [((2,), True), (None, False)])
+def test_in_the_pool_the_steps_follow_the_max_tokens_of_the_calls(calls_max_tokens, held) -> None:
+    # The request has no max_tokens; its call has the one the facade passes on.
+    record = _pool_record(max_tokens=None, calls_max_tokens=calls_max_tokens)
+    steps = _pool_steps(
+        record, _delta(0, HE), _delta(0, LLO), OutputFinished(output_index=0, reason="length")
+    )
+    if held:
+        assert steps == [[(0, "He", None)], None, [(0, "llo", "length")]]
+    else:
+        assert steps == [[(0, "He", None)], [(0, "llo", None)], [(0, "", "length")]]
 
 
 def test_in_the_pool_a_finish_before_max_tokens_is_a_step_of_its_own() -> None:
@@ -911,14 +947,56 @@ def test_the_pool_is_given_the_max_tokens_of_the_calls(
             PROMPT_IDS, params, streaming=True, _postproc_params=object()
         )
         await asyncio.wait_for(output.aresult(), WAIT_SECONDS)
-        (sent,) = pools[0].sampling_params
         assert engine.requests[0].stopping.max_tokens == given
-        assert sent.max_tokens == given
-        # The request's own parameters are not changed.
-        assert params.max_tokens == max_tokens
-        assert (sent is params) is (max_tokens == given)
+        (opened,) = pools[0].opened
+        assert list(opened["max_tokens"]) == [given]
+        # The pool is given the request's own parameters, unchanged.
+        (sent,) = pools[0].sampling_params
+        assert sent is params and params.max_tokens == max_tokens
 
     _serve(engine, tmp_path, body, postproc_workers=1)
+
+
+def _joiner(max_tokens: list[int | None]) -> contracts.StepJoiner:
+    assembler = contracts.slots()["create_response_assembler"].default(
+        sampling_params=SamplingParams(detokenize=False),
+        tokenizer=None,
+        num_outputs=len(max_tokens),
+    )
+    return contracts.StepJoiner(assembler, max_tokens)
+
+
+def test_the_step_joiner_holds_a_step_at_max_tokens_until_the_finish() -> None:
+    joiner = _joiner([2])
+    output = joiner.assembler.outputs[0]
+    assert joiner.apply(_delta(0, HE)) and output.token_ids_diff == [HE]
+    assert not joiner.apply(_delta(0, LLO))
+    assert joiner.apply(OutputFinished(output_index=0, reason="length"))
+    assert (output.token_ids_diff, output.finish_reason) == ([LLO], "length")
+    assert not joiner.release()
+
+
+def test_the_step_joiner_does_not_hold_an_output_without_max_tokens() -> None:
+    joiner = _joiner([None])
+    output = joiner.assembler.outputs[0]
+    for token_id in (HE, LLO):
+        assert joiner.apply(_delta(0, token_id))
+        assert output.token_ids_diff == [token_id]
+    assert joiner.apply(OutputFinished(output_index=0, reason="stop"))
+    assert (output.token_ids_diff, output.finish_reason) == ([], "stop")
+
+
+def test_the_step_joiner_hands_on_a_held_step_on_release() -> None:
+    joiner = _joiner([1, None])
+    first, second = joiner.assembler.outputs
+    assert not joiner.apply(_delta(0, HE))
+    # Changes while the step is held join it.
+    assert not joiner.apply(_delta(1, WORLD))
+    joiner.assembler.finish_cancelled()
+    assert joiner.release()
+    assert (first.token_ids_diff, first.finish_reason) == ([HE], "cancelled")
+    assert (second.token_ids_diff, second.finish_reason) == ([WORLD], "cancelled")
+    assert not joiner.release()
 
 
 def test_health_is_lost_after_close(tmp_path) -> None:
@@ -2197,6 +2275,7 @@ def test_a_request_is_postprocessed_in_the_pool(tmp_path, monkeypatch) -> None:
             "num_outputs": 1,
             "num_prompt_tokens": len(PROMPT_IDS),
             "engine_stop_texts": False,
+            "max_tokens": [4],
         }
         session = pools[0].sessions[0]
         assert [type(event).__name__ for event in session.events][-1] == "OutputFinished"

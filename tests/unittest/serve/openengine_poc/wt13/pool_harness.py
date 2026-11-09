@@ -105,6 +105,8 @@ class FacadeOutput:
         self._request = request
         self._steps = self._run(sampling_params, streaming, postproc_params)
         n = request.num_sequences
+        # The steps follow the call's max_tokens, which the mapping may fill in or cap.
+        max_tokens = [request.max_tokens] * n
         pool = facade.postproc_pool
         self._session = None
         if pool is not None and postproc_params is not None:
@@ -115,12 +117,14 @@ class FacadeOutput:
                 streaming=streaming,
                 num_outputs=n,
                 num_prompt_tokens=len(prompt_token_ids),
+                max_tokens=max_tokens,
             )
             self.outputs = [CompletionOutput(index=i) for i in range(n)]
         else:
             self._assembler = contracts.create_response_assembler(
                 sampling_params=sampling_params, tokenizer=facade.tokenizer, num_outputs=n
             )
+            self._joiner = contracts.StepJoiner(self._assembler, max_tokens)
             self.outputs = self._assembler.outputs
         self._cancel = asyncio.Event()
 
@@ -141,7 +145,7 @@ class FacadeOutput:
     async def _run(self, sampling_params, streaming, postproc_params):
         if self._session is None:
             async for event in self._events():
-                if self._assembler.apply(event):
+                if self._joiner.apply(event):
                     self.cached_tokens = self._assembler.cached_tokens
                     self._done = self._assembler.finished
                     yield
@@ -152,6 +156,7 @@ class FacadeOutput:
                     # As the facade does: an engine stream that ends early is an error.
                     raise RuntimeError("the engine ended the request before its outputs")
                 self._assembler.finish_cancelled()
+                self._joiner.release()
                 self._done = True
                 yield
             return
