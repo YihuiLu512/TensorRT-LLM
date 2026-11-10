@@ -15,7 +15,12 @@ its port, later runs are ``ok``) or ``never_ready`` (an engine never turns
 SERVING, a front end never connects); ``FAKE_<ROLE>_IGNORE_TERM`` ignores
 SIGTERM; options take ``--name value`` and ``--name=value`` alike; a front end
 whose port is taken logs uvicorn's bind error and exits 1;
-``FAKE_ENGINE_CHILD`` starts a child in the same session that ignores SIGTERM.
+``FAKE_ENGINE_CHILD`` starts a child in the same session that ignores SIGTERM;
+``FAKE_ENGINE_METRICS=<port>`` makes an engine bind its Prometheus port
+(``--openengine-metrics-port``, default ``<port>`` in place of the real one's
+8001; 0 is an ephemeral port) once it has "loaded" and log it as the real one
+does, failing with Python's bind error if the port is taken;
+``FAKE_<ROLE>_SAY`` is a line printed at start.
 """
 
 import errno
@@ -84,6 +89,8 @@ record(
     },
 )
 print(f"{role} started pid {os.getpid()}", flush=True)
+if os.environ.get(env_prefix + "SAY"):
+    print(os.environ[env_prefix + "SAY"], flush=True)
 if mode == "exit":
     sys.exit(3)
 if mode == "done":
@@ -110,6 +117,18 @@ if role == "engine":
     server.start()
     servicer.set("inference", health_pb2.HealthCheckResponse.NOT_SERVING)
     time.sleep(float(os.environ.get("FAKE_ENGINE_DELAY", "0.5")))
+    if os.environ.get("FAKE_ENGINE_METRICS"):
+        metrics = socket.create_server(
+            (
+                "127.0.0.1",
+                int(option("--openengine-metrics-port", os.environ["FAKE_ENGINE_METRICS"])),
+            )
+        )
+        print(
+            "OpenEngine Prometheus endpoint: "
+            f"127.0.0.1:{metrics.getsockname()[1]}/prometheus/metrics",
+            flush=True,
+        )
     if mode != "never_ready":
         servicer.set("inference", health_pb2.HealthCheckResponse.SERVING)
     while True:

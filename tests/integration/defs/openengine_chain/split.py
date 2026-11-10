@@ -66,6 +66,8 @@ OPTIONS: Mapping[str, Option] = {
     "--kv_cache_free_gpu_memory_fraction": Option(Side.ENGINE),
     "--enable_chunked_prefill": Option(Side.ENGINE, takes_value=False),
     "--enable_attention_dp": Option(Side.ENGINE, takes_value=False),
+    # The engine's Prometheus port (launch.ENGINE_METRICS_PORT_OPTION).
+    "--openengine-metrics-port": Option(Side.ENGINE),
     # Each process gets its own address.
     "--host": Option(Side.HARNESS),
     "--port": Option(Side.HARNESS),
@@ -231,6 +233,15 @@ def split_args(args: Sequence[str], *, rewrite_yaml: Callable[[str], str]) -> Sp
             else:
                 engine.extend(tokens)
     return SplitArgs(engine=tuple(engine), frontend=tuple(frontend), host=host, port=port)
+
+
+def option_value(args: Sequence[str], name: str) -> str | None:
+    """The value ``args`` gives option ``name`` last, or ``None`` if it does not give one."""
+    value = None
+    for found, _, found_value in _iter_options(args):
+        if found == name:
+            value = found_value
+    return value
 
 
 def iteration_stats_enabled(args: Sequence[str]) -> bool:

@@ -14,6 +14,7 @@ environment of the processes it starts.
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import functools
 import importlib.util
@@ -39,6 +40,7 @@ from .split import (
     engine_yaml,
     frontend_env,
     iteration_stats_enabled,
+    option_value,
     parse_serve_command,
     split_args,
 )
@@ -51,6 +53,8 @@ TERMINATE_GRACE_S = 30.0
 # How long processes killed at shutdown may take to disappear before they count as survivors.
 SURVIVOR_WAIT_S = 5.0
 LOG_TAIL_BYTES = 16384
+# Engine starts per server: a start that lost the gRPC port the harness picked is retried on
+# a new port.
 ENGINE_PORT_ATTEMPTS = 3
 # A line of a log saying that taking a port failed because the port is in use, such as
 # gRPC's "Error in bind for address '[::ffff:127.0.0.1]:<port>': Address already in use",
@@ -64,6 +68,12 @@ _PORT_IN_USE_LINE = (
 # Given to a TensorRT-LLM engine whose configuration turns on iteration stats: the front
 # end's iteration stats come from the engine's load, which reports KV-cache blocks only then.
 ENGINE_LOAD_METRICS_FLAG = "--openengine-enable-load-metrics"
+# The port of a TensorRT-LLM engine's Prometheus listener. Without it the engine binds
+# 8001 once the model is loaded, whenever its configuration enables Prometheus, so two
+# such engines in one network namespace collide. The harness gives 0, an ephemeral port
+# the engine binds itself (launch_serve_command says when). An engine with Prometheus
+# off does not bind it.
+ENGINE_METRICS_PORT_OPTION = "--openengine-metrics-port"
 # Set in the environment of a front end that only runs its startup checks (FrontendCheck).
 # trtllm-serve does not read it; it tells the people and test doubles reading the records.
 FRONTEND_CHECK_ENV = "TRTLLM_OPENENGINE_CHAIN_FRONTEND_CHECK"
@@ -140,18 +150,55 @@ def _stop_waits(proc: subprocess.Popen, grace: float) -> None:
 
 
 @functools.lru_cache(maxsize=1)
-def frontend_supports_ready_timeout() -> bool:
-    """Whether the installed ``trtllm-serve`` declares ``--openengine-ready-timeout``.
+def _serve_source() -> str:
+    """The source of ``tensorrt_llm.commands.serve`` in this interpreter's installation.
 
-    Looks at the source of ``tensorrt_llm.commands.serve`` in this interpreter's
-    installation, which is the one ``trtllm-serve`` runs from, without importing
-    that module (its parent packages are imported).
+    Read without importing that module (its parent packages are imported), or
+    empty if ``tensorrt_llm`` has no such module; the chain's ``trtllm-serve``
+    commands are taken to run from the same installation.
     """
     spec = importlib.util.find_spec("tensorrt_llm.commands.serve")
     if spec is None or spec.origin is None:
-        return False
+        return ""
     with open(spec.origin, encoding="utf-8") as f:
-        return '"--openengine-ready-timeout"' in f.read()
+        return f.read()
+
+
+def frontend_supports_ready_timeout() -> bool:
+    """Whether the installed ``trtllm-serve`` declares ``--openengine-ready-timeout``."""
+    return '"--openengine-ready-timeout"' in _serve_source()
+
+
+def engine_supports_metrics_port() -> bool:
+    """Whether the installed ``trtllm-serve``'s metrics port option has a lower bound of 0.
+
+    Reads the lower bound of the ``IntRange`` the option is declared with from
+    the parsed source, so line breaks and comments do not matter. An
+    installation whose option takes only 1-65535 does not. A declaration it
+    cannot read that way, such as one whose option name or type is held in a
+    variable, counts as not having that bound, so the engine keeps its default port.
+    """
+    try:
+        tree = ast.parse(_serve_source())
+    except SyntaxError:
+        return False
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == ENGINE_METRICS_PORT_OPTION
+        ):
+            continue
+        bounds = {k.arg: k.value for k in node.keywords}.get("type")
+        if isinstance(bounds, ast.Call):
+            low = (
+                bounds.args[0]
+                if bounds.args
+                else {k.arg: k.value for k in bounds.keywords}.get("min")
+            )
+            return isinstance(low, ast.Constant) and low.value == 0
+    return False
 
 
 def _live_processes() -> dict[int, tuple[int, int, int]]:
@@ -850,10 +897,18 @@ def launch_serve_command(
     engine is stopped and the call returns at once, with the check's exited
     process as the front end (its output reaches ``sink``, the engine's does
     not). Otherwise the engine's output reaches ``sink`` from the attempt that
-    becomes ready, or from the last one if none does; attempts retried on a new
-    port leave only their log files. On a startup failure the started processes
-    are stopped before the error propagates, and their handle stays registered
-    with its logs.
+    becomes ready, or from the last one if none does. An attempt retried on a new
+    port leaves its log files; its teardown errors, and a note saying why it was
+    replaced, are reported with the server that replaces it (its other teardown
+    notes are not). A TensorRT-LLM engine whose command line gives no
+    :data:`ENGINE_METRICS_PORT_OPTION` gets it with 0 (an ephemeral port) if the
+    installed ``trtllm-serve`` declares it with a lower bound of 0. A command
+    line that gives the option is refused for a glm chain, and for a TensorRT-LLM
+    chain if that port is nonzero and equals the ``--port`` it gives. The gRPC
+    port the harness picks for the engine differs from the front end's ``--port``
+    and the metrics port ``cmd`` gives, and from the front-end check's port. On a startup
+    failure the started processes are stopped before the error propagates, and
+    their handle stays registered with its logs.
     """
     env = dict(os.environ if env is None else env)
     chain = resolve_chain() if chain is None else chain
@@ -876,13 +931,25 @@ def launch_serve_command(
     if check_plugin:
         require_plugin()
     engine_prefix = _engine_prefix(chain, command)
+    given_metrics_port = option_value(command.args, ENGINE_METRICS_PORT_OPTION)
+    if given_metrics_port is not None and chain != cv.CHAIN_TRTLLM:
+        raise ChainError(
+            f"{ENGINE_METRICS_PORT_OPTION} is a TensorRT-LLM engine option; the harness does "
+            f"not pass it to the {chain} chain's engine"
+        )
+    host, port = _address(command.args)
+    # trtllm-serve refuses a metrics port equal to its --port, but the engine gets a
+    # --port the harness picks, so that check does not see a clash with the front end's.
+    if _as_port(given_metrics_port) and _as_port(given_metrics_port) == port:
+        raise ChainError(f"{ENGINE_METRICS_PORT_OPTION} must differ from --port")
     workdir = _results_dir()
     split = split_args(command.args, rewrite_yaml=lambda path: engine_yaml(path, workdir))
     engine_env = {k: v for k, v in env.items() if k != cv.ENV_COUNTER_DIR}
     engine_flags = []
     if chain == cv.CHAIN_TRTLLM and iteration_stats_enabled(command.args):
         engine_flags.append(ENGINE_LOAD_METRICS_FLAG)
-    host, port = _address(command.args)
+    if chain == cv.CHAIN_TRTLLM and given_metrics_port is None and engine_supports_metrics_port():
+        engine_flags += [ENGINE_METRICS_PORT_OPTION, "0"]
     counter_dir = os.path.join(workdir, "counters")
     fe_env = frontend_env(env)
     check_env = {k: v for k, v in fe_env.items() if k != cv.ENV_COUNTER_DIR}
@@ -901,20 +968,23 @@ def launch_serve_command(
 
     # Runs while the engine loads, so that a configuration the front end refuses
     # does not wait for the engine.
+    check_port = free_port()
     check = FrontendCheck(
-        lambda check_endpoint: frontend_cmd(check_endpoint, str(free_port())),
+        lambda check_endpoint: frontend_cmd(check_endpoint, str(check_port)),
         check_env,
         workdir,
         sink,
     )
     handle: ServeHandle | None = None
     try:
-        # Shutdown problems of replaced attempts, reported with the server that replaces them.
         replaced_errors: list[str] = []
+        replaced_notes: list[str] = []
         for attempt in range(1, ENGINE_PORT_ATTEMPTS + 1):
-            # The engine binds its port only after loading the model, so another process
-            # may take the port in between; that start is retried on a new port.
-            engine_port = free_port()
+            # The engine binds its gRPC port only after loading the model, so another
+            # process may take it in between. The front end's port, the front-end check's
+            # port and a metrics port the command line gives may be unbound at this point
+            # too, so free_port() may return them.
+            engine_port = _free_port_other_than(_as_port(given_metrics_port), port, check_port)
             endpoint = f"{ENGINE_HOST}:{engine_port}"
             engine_cmd = (
                 engine_prefix
@@ -945,6 +1015,7 @@ def launch_serve_command(
                 counter_dir=counter_dir,
             )
             handle.teardown_errors.extend(replaced_errors)
+            handle.teardown_notes.extend(replaced_notes)
             try:
                 with handle.stop_on_error():
                     ready = wait_engine_ready(
@@ -966,6 +1037,10 @@ def launch_serve_command(
                     # The next attempt replaces this server; it is no test's server.
                     _HANDLES.remove(handle)
                     replaced_errors = list(handle.teardown_errors)
+                    replaced_notes = replaced_notes + [
+                        f"engine pid {handle._engine.pid} lost its gRPC port {engine_port} to "
+                        f"another process (log {handle.engine_log}); started again on a new port"
+                    ]
                     continue
                 handle._engine.copy_to_sink()
                 raise
@@ -999,6 +1074,26 @@ def launch_serve_command(
                 print(f"front-end check of a failed start: {line}", file=sys.stderr, flush=True)
         check.problems.clear()
         check.notes.clear()
+
+
+def _as_port(value: str | None) -> int | None:
+    """``value`` as a port number, or ``None`` if it is not one."""
+    try:
+        return int(value) if value is not None else None
+    except ValueError:
+        return None
+
+
+def _free_port_other_than(*taken: int | None) -> int:
+    """A :func:`free_port` that is none of ``taken``.
+
+    ``taken`` are ports that another process or option of the server uses.
+    """
+    for _ in range(100):
+        port = free_port()
+        if port not in taken:
+            return port
+    raise ChainError(f"no free port other than {taken} found")
 
 
 def _lost_its_port(log_path: str | None, port: int) -> bool:

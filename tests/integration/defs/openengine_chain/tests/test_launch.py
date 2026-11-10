@@ -5,6 +5,8 @@
 import glob
 import json
 import os
+import pathlib
+import re
 import signal
 import socket
 import stat
@@ -21,6 +23,7 @@ from openengine_chain import launch, proof
 pytestmark = pytest.mark.cpu_only
 
 _FAKE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fake_serve.py")
+_SERVE_PY = pathlib.Path(__file__).resolve().parents[5] / "tensorrt_llm" / "commands" / "serve.py"
 
 
 @pytest.fixture
@@ -35,6 +38,7 @@ def fake(tmp_path, monkeypatch):
     records.mkdir()
     monkeypatch.setattr(launch, "require_plugin", lambda: None)
     monkeypatch.setattr(launch, "frontend_supports_ready_timeout", lambda: True)
+    monkeypatch.setattr(launch, "engine_supports_metrics_port", lambda: True)
     monkeypatch.setenv(cv.ENV_RESULTS_DIR, str(tmp_path / "results"))
     monkeypatch.delenv(cv.ENV_GLM_SERVE_CMD, raising=False)
     env = dict(os.environ, FAKE_RECORD_DIR=str(records))
@@ -122,6 +126,8 @@ def test_engine_is_ready_before_frontend_starts_and_args_are_split(fake, tmp_pat
         str(engine_port),
         "--tp_size",
         "1",
+        launch.ENGINE_METRICS_PORT_OPTION,
+        "0",
     ]
     assert frontend["argv"] == [
         "/model",
@@ -210,6 +216,8 @@ def test_engine_that_lost_its_port_is_restarted_on_another(fake, monkeypatch):
     assert len(logs) == 2 and handle.engine_log in logs
     (first_log,) = set(logs) - {handle.engine_log}
     assert "address already in use" in open(first_log).read()
+    (note,) = [n for n in handle.teardown_notes if "lost its gRPC port" in n]
+    assert first_log in note
     handle.terminate(grace=1)
 
 
@@ -950,4 +958,191 @@ def test_restart_refuses_a_server_whose_engine_exited(fake):
     handle._engine.stop(1)
     with pytest.raises(launch.ChainStartupError, match="engine has exited"):
         handle.restart_frontend(_port())
+    handle.terminate(grace=1)
+
+
+def _engine_logs(handle):
+    return sorted(glob.glob(os.path.join(handle.workdir, "engine-*.log")))
+
+
+def test_trtllm_engine_gets_an_ephemeral_metrics_port(fake):
+    handle = _start(fake, ["--port", str(_port())], chain="trtllm")
+    engine = _record(fake.records, "engine-start")["argv"]
+    frontend = _record(fake.records, "frontend-start")["argv"]
+    assert [a for a in engine if a.startswith(launch.ENGINE_METRICS_PORT_OPTION)] == [
+        launch.ENGINE_METRICS_PORT_OPTION
+    ]
+    assert engine[engine.index(launch.ENGINE_METRICS_PORT_OPTION) + 1] == "0"
+    assert not any(a.startswith(launch.ENGINE_METRICS_PORT_OPTION) for a in frontend)
+    handle.terminate(grace=1)
+
+
+@pytest.mark.parametrize(
+    "given",
+    [
+        [launch.ENGINE_METRICS_PORT_OPTION, "18001"],
+        [f"{launch.ENGINE_METRICS_PORT_OPTION}=18001"],
+    ],
+)
+def test_metrics_port_the_command_gives_is_kept(fake, given):
+    handle = _start(fake, ["--port", str(_port())] + given, chain="trtllm")
+    engine = _record(fake.records, "engine-start")["argv"]
+    frontend = _record(fake.records, "frontend-start")["argv"]
+    assert [a for a in engine if a.startswith(launch.ENGINE_METRICS_PORT_OPTION)] == given[:1]
+    assert engine[engine.index(given[0]) : engine.index(given[0]) + len(given)] == given
+    assert not any(a.startswith(launch.ENGINE_METRICS_PORT_OPTION) for a in frontend)
+    handle.terminate(grace=1)
+
+
+def test_glm_engine_gets_no_metrics_port(fake, monkeypatch):
+    monkeypatch.setenv(cv.ENV_GLM_SERVE_CMD, fake.exe)
+    handle = _start(fake, ["--port", str(_port())], chain="glm")
+    engine = _record(fake.records, "engine-start")["argv"]
+    assert not any(a.startswith(launch.ENGINE_METRICS_PORT_OPTION) for a in engine)
+    handle.terminate(grace=1)
+
+
+def test_glm_chain_refuses_a_metrics_port_the_command_gives(fake, monkeypatch):
+    monkeypatch.setattr(launch, "_HANDLES", [])
+    monkeypatch.setenv(cv.ENV_GLM_SERVE_CMD, fake.exe)
+    args = ["--port", str(_port()), launch.ENGINE_METRICS_PORT_OPTION, "18001"]
+    with pytest.raises(launch.ChainError, match="not pass it to the glm chain's engine"):
+        _start(fake, args, chain="glm")
+    assert launch._HANDLES == []
+    assert not os.listdir(fake.records)
+    assert not glob.glob(os.path.join(os.environ[cv.ENV_RESULTS_DIR], "chain-*"))
+
+
+@pytest.mark.parametrize("joined", [False, True])
+def test_metrics_port_equal_to_the_front_end_port_is_refused(fake, monkeypatch, joined):
+    monkeypatch.setattr(launch, "_HANDLES", [])
+    port = str(_port())
+    option = launch.ENGINE_METRICS_PORT_OPTION
+    given = [f"{option}={port}"] if joined else [option, port]
+    with pytest.raises(launch.ChainError, match="must differ from --port"):
+        _start(fake, ["--port", port] + given, chain="trtllm")
+    assert launch._HANDLES == []
+    assert not os.listdir(fake.records)
+    assert not glob.glob(os.path.join(os.environ[cv.ENV_RESULTS_DIR], "chain-*"))
+
+
+def test_metrics_port_0_may_equal_the_front_end_port(fake, monkeypatch):
+    class PastTheChecks(Exception):
+        pass
+
+    def results_dir():
+        raise PastTheChecks
+
+    monkeypatch.setattr(launch, "_results_dir", results_dir)
+    with pytest.raises(PastTheChecks):
+        _start(fake, ["--port", "0", launch.ENGINE_METRICS_PORT_OPTION, "0"], chain="trtllm")
+
+
+@pytest.mark.parametrize(
+    ("source", "accepts"),
+    [
+        ('option(\n    "--openengine-metrics-port",\n    type=click.IntRange(0, 65535))', True),
+        ('option("--openengine-metrics-port", default=None, type=IntRange(min=0, max=9))', True),
+        ('option("--openengine-metrics-port", type=click.IntRange(1, 65535))', False),
+        ('option("--openengine-metrics-port", type=int)', False),
+        ('option("--openengine-metrics-port", type=PORTS)\nPORTS = IntRange(0, 65535)', False),
+        (
+            '# "--openengine-metrics-port", type=click.IntRange(0,\n'
+            'option("--openengine-metrics-port", type=click.IntRange(1, 65535))',
+            False,
+        ),
+        ('option("--openengine-metrics-port", type=click.IntRange(0,', False),
+        ("", False),
+    ],
+)
+def test_metrics_port_probe_needs_the_option_to_take_0(monkeypatch, source, accepts):
+    monkeypatch.setattr(launch, "_serve_source", lambda: source)
+    assert launch.engine_supports_metrics_port() is accepts
+
+
+def test_metrics_port_probe_accepts_this_checkouts_trtllm_serve(monkeypatch):
+    monkeypatch.setattr(launch, "_serve_source", lambda: _SERVE_PY.read_text(encoding="utf-8"))
+    assert launch.engine_supports_metrics_port()
+
+
+def test_no_metrics_port_for_a_trtllm_serve_without_the_option(fake, monkeypatch):
+    monkeypatch.setattr(launch, "engine_supports_metrics_port", lambda: False)
+    handle = _start(fake, ["--port", str(_port())], chain="trtllm")
+    engine = _record(fake.records, "engine-start")["argv"]
+    assert launch.ENGINE_METRICS_PORT_OPTION not in engine
+    handle.terminate(grace=1)
+
+
+def test_engines_with_prometheus_do_not_take_its_default_port(fake, monkeypatch):
+    monkeypatch.setattr(launch, "_HANDLES", [])
+    blocker, default = _blocked_port()
+    # The fake engine's stand-in for 8001, which another listener holds.
+    fake.env["FAKE_ENGINE_METRICS"] = str(default)
+    with blocker:
+        handles = [_start(fake, ["--port", str(_port())], chain="trtllm") for _ in range(2)]
+        bound = []
+        for handle in handles:
+            _wait_healthy(handle)
+            log = open(handle.engine_log).read()
+            (port,) = re.findall(r"OpenEngine Prometheus endpoint: 127\.0\.0\.1:(\d+)/", log)
+            bound.append(int(port))
+        assert launch._HANDLES == handles
+        assert all(len(_engine_logs(h)) == 1 for h in handles)
+        assert default not in bound and 0 not in bound and bound[0] != bound[1]
+        for handle in handles:
+            handle.terminate(grace=1)
+
+
+def test_metrics_port_the_command_gives_is_not_changed_when_taken(fake, monkeypatch):
+    monkeypatch.setattr(launch, "_HANDLES", [])
+    blocker, taken = _blocked_port()
+    fake.env["FAKE_ENGINE_METRICS"] = str(taken)
+    args = ["--port", str(_port()), launch.ENGINE_METRICS_PORT_OPTION, str(taken)]
+    with blocker, pytest.raises(launch.ChainStartupError, match="exited with code 1"):
+        _start(fake, args, chain="trtllm")
+    (handle,) = launch._HANDLES
+    assert len(_engine_logs(handle)) == 1
+    assert f"('127.0.0.1', {taken})" in open(handle.engine_log).read()
+
+
+def test_bind_error_on_another_port_is_not_retried(fake, monkeypatch):
+    monkeypatch.setattr(launch, "_HANDLES", [])
+    fake.env["FAKE_ENGINE_MODE"] = "exit"
+    fake.env["FAKE_ENGINE_SAY"] = (
+        "OSError: [Errno 98] Address already in use (while attempting to bind on address "
+        "('127.0.0.1', 1))"
+    )
+    with pytest.raises(launch.ChainStartupError, match="exited with code 3"):
+        _start(fake, ["--port", str(_port())], chain="trtllm")
+    (handle,) = launch._HANDLES
+    assert len(_engine_logs(handle)) == 1
+
+
+def _distinct_ports(count):
+    ports = set()
+    while len(ports) < count:
+        ports.add(_port())
+    return list(ports)
+
+
+def test_free_port_other_than_skips_the_ports_given(monkeypatch):
+    ports = iter([5, 6, 7])
+    monkeypatch.setattr(launch, "free_port", lambda: next(ports))
+    assert launch._free_port_other_than(5, None, 6) == 7
+    monkeypatch.setattr(launch, "free_port", lambda: 5)
+    with pytest.raises(launch.ChainError, match="no free port"):
+        launch._free_port_other_than(5)
+
+
+def test_engine_port_avoids_the_ports_of_the_server(fake, monkeypatch):
+    check_port, frontend_port, given = _distinct_ports(3)
+    real_free_port = launch.free_port
+    # The front-end check's port, then the ports the engine port must avoid.
+    ports = iter([check_port, frontend_port, given, check_port])
+    monkeypatch.setattr(launch, "free_port", lambda: next(ports, None) or real_free_port())
+    args = ["--port", str(frontend_port), launch.ENGINE_METRICS_PORT_OPTION, str(given)]
+    handle = _start(fake, args, chain="trtllm")
+    engine_port = int(handle.engine_endpoint.rsplit(":", 1)[1])
+    assert engine_port not in (check_port, frontend_port, given)
+    assert len(_engine_logs(handle)) == 1
     handle.terminate(grace=1)

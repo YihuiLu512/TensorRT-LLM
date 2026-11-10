@@ -162,3 +162,10 @@ def test_table_matches_the_trtllm_serve_cli():
     for name, option in sp.OPTIONS.items():
         assert name in params, f"{name} is not a trtllm-serve option"
         assert params[name].is_flag == (not option.takes_value), name
+
+
+def test_option_value_is_the_last_value_given():
+    args = ["--openengine-metrics-port", "1", "--tp_size=2", "--openengine-metrics-port=2"]
+    assert sp.option_value(args, "--openengine-metrics-port") == "2"
+    assert sp.option_value(args, "--tp_size") == "2"
+    assert sp.option_value(args, "--pp_size") is None

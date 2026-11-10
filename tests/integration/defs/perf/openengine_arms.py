@@ -9,9 +9,8 @@ arm refuse a chain without one. An arm changes
 the number of serving front ends, the number of post-processing workers,
 whether the server runs as an OpenEngine engine plus a
 ``trtllm-serve --openengine-endpoint`` front end, and which engine serves;
-with the TensorRT-LLM chain, the harness also starts the engine with
-``--openengine-enable-load-metrics`` when the test's configuration turns on
-``enable_iter_perf_stats``. Every other setting of the test is kept; a server that needs a fixed port gets
+with the TensorRT-LLM chain, the harness also adds engine options of its own
+(``openengine_chain.launch`` says which). Every other setting of the test is kept; a server that needs a fixed port gets
 one chosen in advance. Only the plain aggregated perf sanity cases (no
 benchmark mode such as ``ctx_only``, no ``time_breakdown``) and the legacy
 serve perf tests take an arm; the legacy tests still write their usual perf

@@ -406,6 +406,7 @@ def fake_chain(tmp_path, monkeypatch, server_module):
     records.mkdir()
     monkeypatch.setattr(launch, "require_plugin", lambda: None)
     monkeypatch.setattr(launch, "frontend_supports_ready_timeout", lambda: True)
+    monkeypatch.setattr(launch, "engine_supports_metrics_port", lambda: True)
     monkeypatch.setenv(cv.ENV_CHAIN, "trtllm")
     monkeypatch.setenv(cv.ENV_RESULTS_DIR, str(tmp_path / "results"))
     monkeypatch.setattr(server_module.RemoteOpenAIServer, "CHAIN_HEALTH_TIMEOUT_S", 1)
