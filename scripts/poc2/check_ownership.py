@@ -182,13 +182,46 @@ OWNERSHIP: dict[str, list[Rule]] = {
                 "tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_scripts.py",
                 "T2③ / U6③ / D10 / D15, the obligation cases following those deps",
             ),
-            (
-                "tests/integration/defs/perf/openengine_arms.py",
-                "D20 / Y12, the module docstring's sentence on what an arm changes, naming"
-                " the load metrics of the TensorRT-LLM chain's engine",
-            ),
-            ("scripts/poc2/check_ownership.py", "the WT-03 entry"),
         )
+    ]
+    # WT-03-fix2, D22 / D24: an OpenEngine engine given metrics port 0 binds an ephemeral
+    # port and logs it at warning level.
+    + [
+        Rule(path, "exception", f"WT-03-fix2 only (D22 / D24): {what}")
+        for path, what in (
+            (
+                "tensorrt_llm/commands/serve.py",
+                "the --openengine-metrics-port option, its help and its validation accepting 0",
+            ),
+            (f"{OE_SERVER}/server.py", "launch_server's note on metrics_port 0"),
+            (
+                f"{OE_SERVER}/metrics.py",
+                "OpenEngineMetrics' note on port 0 and the log level of its endpoint line",
+            ),
+            (f"{OE_SERVER}/README.md", "the sentence on the metrics port and 0"),
+            (
+                f"{OE_SERVER_TESTS}/test_openengine.py",
+                "the tests of the metrics port option and launch_server's metrics port check",
+            ),
+            (
+                f"{OE_SERVER_TESTS}/test_metrics.py",
+                "the lifecycle checks of the endpoint line's level for port 0 and a fixed port",
+            ),
+        )
+    ]
+    + [
+        Rule(
+            "tests/integration/defs/perf/openengine_arms.py",
+            "exception",
+            "only the module docstring's sentence on what an arm changes, on the options the"
+            " harness adds to the TensorRT-LLM chain's engine (WT-03-fix1, D20 / Y12;"
+            " WT-03-fix2, D23)",
+        ),
+        Rule(
+            "scripts/poc2/check_ownership.py",
+            "exception",
+            "only the WT-03 entry (WT-03-fix1, WT-03-fix2)",
+        ),
     ],
     "WT-04": _own(
         f"{OE_SERVER}/control.py",

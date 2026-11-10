@@ -338,6 +338,7 @@ async def _multiprocess(attached: bool) -> None:
 async def _lifecycle() -> None:
     import threading
 
+    from tensorrt_llm.grpc.openengine import metrics as metrics_module
     from tensorrt_llm.grpc.openengine.metrics import OpenEngineMetrics
 
     llm = SimpleNamespace(args=_args(), get_stats=lambda timeout: [])
@@ -388,10 +389,27 @@ async def _lifecycle() -> None:
                 await service.start()
         finally:
             await service.stop()
+
+    async def start_logged(service: OpenEngineMetrics) -> list[tuple[str, str]]:
+        logged = []
+        with pytest.MonkeyPatch.context() as patch:
+            for level in ("info", "warning"):
+                patch.setattr(
+                    metrics_module.logger,
+                    level,
+                    lambda msg, *a, level=level, **k: logged.append((level, msg)),
+                )
+            await service.start()
+        return logged
+
     service = OpenEngineMetrics(llm, "test-model", "127.0.0.1", 0, True)
-    await service.start()
+    logged = await start_logged(service)
     port = service.port
+    endpoint = f"OpenEngine Prometheus endpoint: 127.0.0.1:{port}/prometheus/metrics"
     try:
+        # Port 0 binds an ephemeral port, which the log reports at warning level.
+        assert port != 0
+        assert logged == [("warning", endpoint)]
         service.check_health()
         await _scrape(port)
         with pytest.raises(HTTPError) as error:
@@ -405,6 +423,13 @@ async def _lifecycle() -> None:
         await service.stop()
     with socket.create_server(("127.0.0.1", port)):
         pass
+    # A fixed port is the one requested, so its line stays at info level.
+    service = OpenEngineMetrics(llm, "test-model", "127.0.0.1", port, True)
+    try:
+        assert await start_logged(service) == [("info", endpoint)]
+    finally:
+        await service.stop()
+        await service.wait_for_collection()
 
     entered = threading.Event()
     release = threading.Event()

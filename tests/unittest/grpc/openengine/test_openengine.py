@@ -691,6 +691,10 @@ def test_metrics_listener_preserves_engine_collection_config(
             ],
             "must differ from --port",
         ),
+        (
+            ["--grpc", "--grpc-protocol", "openengine", "--openengine-metrics-port", "-1"],
+            "is not in the range",
+        ),
     ],
 )
 def test_metrics_cli_rejects_incompatible_server_options(
@@ -704,6 +708,90 @@ def test_metrics_cli_rejects_incompatible_server_options(
     result = CliRunner().invoke(serve, ["nonexistent-model", *arguments])
     assert result.exit_code == 2
     assert message in result.output
+
+
+@pytest.mark.parametrize(
+    ("arguments", "metrics_port"),
+    [
+        ([], 8001),
+        (["--openengine-metrics-port", "0"], 0),
+        (["--port", "0", "--openengine-metrics-port", "0"], 0),
+        (["--port", "8001", "--openengine-metrics-port", "0"], 0),
+        (["--openengine-metrics-port", "9100"], 9100),
+    ],
+)
+def test_metrics_cli_passes_the_metrics_port(
+    tmp_path, arguments: list[str], metrics_port: int
+) -> None:
+    """Port 0 (an ephemeral port) is accepted even when --port is 0 or 8001, the metrics default."""
+    from unittest import mock
+
+    import tensorrt_llm.grpc.openengine.server as oe_server
+    from tensorrt_llm.commands import serve as serve_cmd
+
+    with (
+        mock.patch.object(serve_cmd, "get_is_diffusion_only_model", return_value=False),
+        mock.patch.object(serve_cmd, "device_count", return_value=1),
+        mock.patch.object(oe_server, "launch_server") as launch,
+    ):
+        serve_cmd.main(
+            args=[str(tmp_path), "--grpc", "--grpc-protocol", "openengine", *arguments],
+            standalone_mode=False,
+        )
+
+    assert launch.call_args.kwargs["metrics_port"] == metrics_port
+
+
+@pytest.mark.parametrize(
+    ("port", "metrics_port", "refused"),
+    [(50051, 50051, True), (50051, 0, False), (0, 0, False)],
+)
+def test_metrics_port_must_differ_only_from_a_fixed_port(
+    monkeypatch: pytest.MonkeyPatch, port: int, metrics_port: int, refused: bool
+) -> None:
+    """With Prometheus on, launch_server refuses a fixed metrics port equal to its port, not 0."""
+    import click
+
+    import tensorrt_llm.grpc.openengine.server as oe_server
+
+    created = []
+
+    class Model:
+        def __init__(self, **kwargs) -> None:
+            self.llm_id = "test-instance"
+
+        def shutdown(self) -> None:
+            pass
+
+    class Metrics:
+        def __init__(self, llm, model, host, port, **kwargs) -> None:
+            created.append(port)
+
+        async def wait_for_collection(self) -> None:
+            pass
+
+    class Server:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        async def start(self) -> None:
+            raise _StopLaunch
+
+        async def stop(self) -> None:
+            pass
+
+    monkeypatch.setattr(oe_server, "PyTorchLLM", Model)
+    monkeypatch.setattr(oe_server, "OpenEngineMetrics", Metrics)
+    monkeypatch.setattr(oe_server, "OpenEngineServer", Server)
+    llm_args = {"model": "test-model", "backend": "pytorch", "return_perf_metrics": True}
+    expected = (
+        pytest.raises(click.UsageError, match="must differ from --port")
+        if refused
+        else pytest.raises(_StopLaunch)
+    )
+    with expected:
+        oe_server.launch_server("127.0.0.1", port, llm_args, metrics_port=metrics_port)
+    assert created == ([] if refused else [metrics_port])
 
 
 @pytest.mark.parametrize(

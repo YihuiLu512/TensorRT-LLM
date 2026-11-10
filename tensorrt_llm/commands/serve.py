@@ -1384,9 +1384,10 @@ def launch_visual_gen_server(
                   status="prototype")
 @stability_option(
     "--openengine-metrics-port",
-    type=click.IntRange(1, 65535),
+    type=click.IntRange(0, 65535),
     default=None,
-    help="OpenEngine Prometheus HTTP port (default: 8001). "
+    help="OpenEngine Prometheus HTTP port (default: 8001; 0 binds an ephemeral "
+    "port, which the server logs at warning level). "
     "Enabled by return_perf_metrics or perf_metrics_output_dir in the engine configuration.",
     status="prototype")
 @stability_option(
@@ -1601,7 +1602,8 @@ def serve(
         raise click.UsageError(
             "--openengine-metrics-host requires --grpc --grpc-protocol openengine"
         )
-    if openengine_metrics_port is not None and openengine_metrics_port == port:
+    # 0 asks the system for an ephemeral port; only a fixed port can clash with --port.
+    if openengine_metrics_port and openengine_metrics_port == port:
         raise click.UsageError(
             "--openengine-metrics-port must differ from --port")
 

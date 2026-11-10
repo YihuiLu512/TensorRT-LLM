@@ -350,7 +350,8 @@ def launch_server(
         enable_load_metrics: Enable scheduler-owned routing-load snapshots, independently of KV events.
         subagent_affinity_auth_key: Shared key for authenticated parent affinity hints.
         metrics_host: HTTP bind address; defaults to the inference host.
-        metrics_port: HTTP port when performance-metrics configuration enables Prometheus.
+        metrics_port: HTTP port when performance-metrics configuration enables Prometheus;
+            0 binds an ephemeral port.
     """
     _warn_if_python_protobuf()
 

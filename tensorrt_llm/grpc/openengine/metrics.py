@@ -156,7 +156,8 @@ class OpenEngineMetrics:
         llm: Initialized LLM with engine performance statistics enabled.
         model: Stable served model label; request-supplied model aliases are ignored.
         host: HTTP bind address.
-        port: HTTP port, or zero for an ephemeral port in embedded use.
+        port: HTTP port, or zero for an ephemeral port, which ``start`` reads back and logs
+            at warning level.
         owner: Whether this process owns the engine and HTTP endpoint.
     """
 
@@ -276,6 +277,7 @@ class OpenEngineMetrics:
             (address for address in addresses if address[0] == socket.AF_INET), addresses[0]
         )
         self._socket = socket.create_server(address[4], family=address[0], backlog=8)
+        ephemeral = self.port == 0
         self.port = self._socket.getsockname()[1]
         self._thread = threading.Thread(
             target=self._http.run,
@@ -291,7 +293,9 @@ class OpenEngineMetrics:
             await asyncio.sleep(0.01)
         if self._collect_iterations:
             self._task = asyncio.create_task(self._collect(), name="openengine-metrics")
-        logger.info(f"OpenEngine Prometheus endpoint: {self.host}:{self.port}/prometheus/metrics")
+        # Only this line reports an ephemeral port: at warning level, --log_level warning shows it.
+        log = logger.warning if ephemeral else logger.info
+        log(f"OpenEngine Prometheus endpoint: {self.host}:{self.port}/prometheus/metrics")
 
     def check_health(self) -> None:
         """Fail supervision if the requested endpoint or collection task exited."""
