@@ -802,7 +802,30 @@ OWNERSHIP: dict[str, list[Rule]] = {
             "only the exceptions of WT-20-R2",
         ),
     ],
-    "WT-20-R3": [],
+    "WT-20-R3": [
+        Rule(
+            "tests/unittest/llmapi/apps/_test_openengine_glm53.py",
+            "exception",
+            "only test_n_best_of's check of the front end's max_num_sequences notice",
+        ),
+        Rule(
+            "tests/unittest/llmapi/apps/_test_openengine_wt05_scheduling.py",
+            "exception",
+            "only the priority test's capability check and docstring: asserted on the TRT-LLM chain, "
+            "the refusal expected from an engine that does not declare priority",
+        ),
+        Rule(
+            f"{CHAIN}/expectations/WT-05.py",
+            "exception",
+            "only the glm-chain NO_ENGINE_TRAFFIC entries of the kv_hints and priority tests and "
+            "their CHAIN_GLM import",
+        ),
+        Rule(
+            "scripts/poc2/check_ownership.py",
+            "exception",
+            "only the exceptions of WT-20-R3",
+        ),
+    ],
     "WT-21": [],
     "WT-22": [],
 }
