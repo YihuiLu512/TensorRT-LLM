@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Chat and completion through a TP2 engine (F-32). They need at least 2 GPUs and are skipped
+# (skip_single_gpu) on 1xB200; on a multi-GPU node they share one server, about 7.5 minutes.
+unittest/llmapi/apps/_test_openai_multi_gpu.py -k "no_extra_options and (test_chat_tp2 or test_completion_tp2)"
