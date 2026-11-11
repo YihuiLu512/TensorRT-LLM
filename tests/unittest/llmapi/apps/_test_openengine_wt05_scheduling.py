@@ -137,7 +137,19 @@ def _assert_taken_or_refused(server: RemoteOpenAIServer, send, declared: bool, n
 
 
 def test_priority_reorders_waiting_requests(server: RemoteOpenAIServer):
-    """With one batch slot busy, a later high-priority request overtakes a low-priority one."""
+    """With one batch slot busy, a later high-priority request overtakes a low-priority one.
+
+    On the chain, if the engine does not declare priority scheduling, the front end refuses the
+    request with 400 instead.
+    """
+    supported = not CHAIN or _capabilities(server).supports_priority
+    if TRTLLM_CHAIN:
+        assert supported, "the TRT-LLM engine declares priority scheduling"
+    if not supported:
+        _assert_taken_or_refused(
+            server, lambda: _completion(server, priority=0.9), False, "priority"
+        )
+        return
     blocker_started = threading.Event()
     finished: list[str] = []
     errors: list[Exception] = []
