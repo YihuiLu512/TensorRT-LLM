@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# F-32 on the TRT-LLM chain: T31 on 4xB200 and T32 (TP2), both runs on 4xB200.
+# Cases of the row that are not listed, and why:
+# - _test_openai_multi_gpu.py::test_completion_streaming_tp2[*]: the test skips itself
+#   (nvbugs 5163855) with and without the chain.
+# - The ten other tests of _test_openai_kv_cache_contamination.py only parse text; they run
+#   as NO_ENGINE_TRAFFIC (expectations/WT-20-R2.py) and passed in the second run.
+# The first run's T31 wrapper failed because no expectation table named those ten tests
+# yet; the cases of the first entry passed in it with chain_proof ok.
+entries:
+  - row: F-32
+    features: [F-32]
+    cases:
+      - unittest/llmapi/apps/_test_openai_kv_cache_contamination.py::test_no_kv_cache_contamination_under_cancel
+      - unittest/llmapi/apps/_test_openai_kv_cache_contamination.py::test_no_kv_cache_contamination_number_set_probe
+      - unittest/llmapi/apps/_test_openai_multi_gpu.py::test_chat_tp2[pytorch-extra_options]
+      - unittest/llmapi/apps/_test_openai_multi_gpu.py::test_completion_tp2[pytorch-extra_options]
+      - unittest/llmapi/apps/_test_openai_multi_gpu.py::test_chat_streaming_tp2[pytorch-extra_options]
+      - unittest/llmapi/apps/_test_openai_multi_gpu.py::test_chat_tp2[pytorch-no_extra_options]
+      - unittest/llmapi/apps/_test_openai_multi_gpu.py::test_completion_tp2[pytorch-no_extra_options]
+      - unittest/llmapi/apps/_test_openai_multi_gpu.py::test_chat_streaming_tp2[pytorch-no_extra_options]
+    commit: 3d475efe7d79e4adb5dc3ecf4d716c3568e8555d
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-00/01_exec/gpu-results/chain_trtllm__t31_t32_multigpu/trtllm-5812795-r0/results/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-00/01_exec/gpu-results/chain_trtllm__t31_t32_multigpu/trtllm-5812795-r0/results/junit/
+    result: passed
+    chain_proof: ok
+  - row: F-32
+    features: [F-32]
+    cases:
+      - unittest/llmapi/apps/_test_openai_kv_cache_contamination.py::test_no_kv_cache_contamination_under_cancel
+      - unittest/llmapi/apps/_test_openai_kv_cache_contamination.py::test_no_kv_cache_contamination_number_set_probe
+      - unittest/llmapi/apps/_test_openai_multi_gpu.py::test_chat_tp2[pytorch-no_extra_options]
+      - unittest/llmapi/apps/_test_openai_multi_gpu.py::test_completion_tp2[pytorch-no_extra_options]
+    commit: c33c2556f66851c778fd0a6b268cc6ff75553df7
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-00/01_exec/gpu-results/chain_trtllm__t31_expectations_smoke/trtllm-5819227-r0/results/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-00/01_exec/gpu-results/chain_trtllm__t31_expectations_smoke/trtllm-5819227-r0/results/junit/
+    result: passed
+    chain_proof: ok
