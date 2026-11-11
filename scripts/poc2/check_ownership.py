@@ -785,7 +785,23 @@ OWNERSHIP: dict[str, list[Rule]] = {
             "only the exceptions of WT-16",
         ),
     ],
-    "WT-20-R2": [],
+    "WT-20-R2": [
+        Rule(
+            f"{CHAIN}/expectations/__init__.py",
+            "exception",
+            "only accepting WT-20-R2 and WT-20-R3 expectation table names",
+        ),
+        Rule(
+            f"{CHAIN}/tests/test_expectations.py",
+            "exception",
+            "only integration-round table-name acceptance and rejection coverage, and the WT-20-R2 table's contents",
+        ),
+        Rule(
+            "scripts/poc2/check_ownership.py",
+            "exception",
+            "only the exceptions of WT-20-R2",
+        ),
+    ],
     "WT-20-R3": [],
     "WT-21": [],
     "WT-22": [],

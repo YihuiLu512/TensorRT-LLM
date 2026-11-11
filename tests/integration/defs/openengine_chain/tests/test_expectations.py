@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Loading and matching the per-work-item expectation tables."""
 
+import ast
 import types
+from pathlib import Path
 
 import pytest
 from openengine_chain import expectations as ex
@@ -35,7 +37,24 @@ def test_load_reads_only_work_item_files(tmp_path):
     assert [(e.wt, e.kind) for e in loaded] == [("WT-11", "http_status")]
 
 
-@pytest.mark.parametrize("name", ["helper.py", "WT-1.py", "wt-11.py", "WT-11-fix.py"])
+@pytest.mark.parametrize("task", ["WT-20-R2", "WT-20-R3"])
+def test_load_reads_integration_round_tables(tmp_path, task):
+    _table(
+        tmp_path,
+        f"{task}.py",
+        f"EXPECTATIONS = [Expectation('{task}', 'helper.py::test_parse', "
+        "'no_engine_traffic', 'pure helper')]\n",
+    )
+    loaded = ex.load(str(tmp_path))
+    assert [(e.wt, e.match, e.kind) for e in loaded] == [
+        (task, "helper.py::test_parse", ex.NO_ENGINE_TRAFFIC)
+    ]
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["helper.py", "WT-1.py", "wt-11.py", "WT-11-fix.py", "WT-20-R4.py", "WT-11-R2.py"],
+)
 def test_load_rejects_misnamed_python_files(tmp_path, name):
     _table(tmp_path, name, "EXPECTATIONS = []\n")
     with pytest.raises(ValueError, match="named WT-"):
@@ -157,6 +176,51 @@ def test_shipped_tables_list_tests_that_do_not_generate(test, listed):
 def test_shipped_tables_relax_the_count_check_only_for_tests_that_cancel_calls(test, listed):
     found = ex.applicable(ex.load(), f"llmapi/apps/{test}", "trtllm")
     assert any(e.kind == ex.CANCELS_CALLS for e in found) == listed
+
+
+_T31 = "_test_openai_kv_cache_contamination.py"
+_T31_PROBES = (
+    "test_no_kv_cache_contamination_under_cancel",
+    "test_no_kv_cache_contamination_number_set_probe",
+)
+
+
+def _t31_tests():
+    source = Path(__file__).resolve().parents[5] / "tests/unittest/llmapi/apps" / _T31
+    tree = ast.parse(source.read_text(encoding="utf-8"))
+    # Exact entries cover module-level tests only; a test class would need its own entries.
+    assert not [node.name for node in tree.body if isinstance(node, ast.ClassDef)]
+    return [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name.startswith("test_")
+    ]
+
+
+def test_shipped_wt20_r2_table_names_every_t31_test_except_the_probes():
+    # The probes send requests while the other tests of the module only parse text.
+    tables = ex.load()
+    tests = _t31_tests()
+    names = [node.name for node in tests]
+    assert set(_T31_PROBES) <= set(names)
+    helpers = [node.name for node in tests if node.name not in _T31_PROBES]
+    # A parametrized or fixture-using helper would get a node id the exact entries miss.
+    assert not [
+        node.name
+        for node in tests
+        if node.name in helpers and (node.decorator_list or node.args.args)
+    ]
+    assert sorted(e.match for e in tables if e.wt == "WT-20-R2") == sorted(
+        f"{_T31}::{name}" for name in helpers
+    )
+    for name in names:
+        nodeid = f"llmapi/apps/{_T31}::{name}"
+        on_trtllm = [
+            e.wt for e in ex.applicable(tables, nodeid, "trtllm") if e.kind == ex.NO_ENGINE_TRAFFIC
+        ]
+        assert on_trtllm == ([] if name in _T31_PROBES else ["WT-20-R2"]), name
+        assert not [e for e in ex.applicable(tables, nodeid, "glm") if e.wt == "WT-20-R2"]
 
 
 def test_shipped_tables_name_each_test_that_cancels_calls():

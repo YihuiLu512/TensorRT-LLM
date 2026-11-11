@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """What existing tests are expected to do on the chain, one table per work item.
 
-Each ``WT-xx.py`` in this directory belongs to work item WT-xx and defines
+Each ``WT-xx.py``, ``WT-xx-fixN.py``, ``WT-20-R2.py`` or ``WT-20-R3.py`` in
+this directory belongs to the work item it is named after and defines
 ``EXPECTATIONS``, a list of :class:`Expectation`. The harness applies them; the
 tests themselves are not edited.
 
@@ -41,7 +42,7 @@ KINDS = (HTTP_STATUS, STARTUP_REJECTED, NO_ENGINE_TRAFFIC, CANCELS_CALLS, SKIP)
 # Kinds that decide a test's outcome; at most one may apply to a test.
 OUTCOME_KINDS = (HTTP_STATUS, STARTUP_REJECTED, SKIP)
 
-_WT_FILE = re.compile(r"^WT-\d{2}(-fix\d+)?\.py$")
+_WT_FILE = re.compile(r"^(?:WT-\d{2}(?:-fix\d+)?|WT-20-R[23])\.py$")
 
 
 @dataclass(frozen=True)
@@ -90,7 +91,7 @@ def short_id(nodeid: str) -> str:
 
 
 def load(directory: str | None = None) -> list[Expectation]:
-    """Load every ``WT-xx.py`` table in ``directory``, checking that each entry names its own file.
+    """Load every work item's table in ``directory``, checking that each entry names its own file.
 
     Any other ``.py`` file there except ``__init__.py`` is an error, so that a
     misnamed table is not silently ignored.
@@ -102,7 +103,8 @@ def load(directory: str | None = None) -> list[Expectation]:
             continue
         if not _WT_FILE.match(name):
             raise ValueError(
-                f"{name}: expectation tables are named WT-<nn>.py or WT-<nn>-fix<n>.py"
+                f"{name}: expectation tables are named WT-<nn>.py, WT-<nn>-fix<n>.py, "
+                "WT-20-R2.py or WT-20-R3.py"
             )
         wt = name[:-3]
         spec = importlib.util.spec_from_file_location(
