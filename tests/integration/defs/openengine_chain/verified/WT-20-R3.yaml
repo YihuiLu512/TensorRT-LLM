@@ -1,0 +1,178 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# GLM-5.3-Flash (FP8) on case-01 (glm chain, glm eda0ca679c) and case-02 (TRT-LLM chain), 4xB200.
+# test_n_best_of[*] failed in the full-module runs at 5c648719a3 (the max_num_sequences notice is
+# logged once per front end, before the test started), so R3 lists it from the reruns after the fix;
+# in the job-5752393 runs it was the first test to use its server and passed.
+# case-02's test_gsm8k_over_chain[trtllm-tp4ep4] and [trtllm-mtp3] are listed from their reruns: in
+# job 5827257 the tp4ep4 server lost its engine to a hang, and the mtp3 run that followed passed, but
+# its chain proof also covered the tp4ep4 server, whose counters could not be read.
+# Cases of the GLM module that are not listed, and why:
+# - test_video_url[*] and accuracy/test_glm53_flash.py::TestGLM53FlashFP8::test_video_url: skipped,
+#   the image's transformers has no glm5_next processor.
+# - The other case's parameters skip themselves; test_gsm8k_over_chain[glm-adp_mtp3_fp8kv] (no FP8
+#   KV cache on glm) and [trtllm-adp_mtp3] (covered by adp_mtp3_fp8kv) skip by design.
+# GSM8K: each run is at or above the reference threshold. case-01 is paired per question with glm's
+# native HTTP server in the test; case-02 with the in-process server, offline; both by an exact
+# McNemar test with Holm's step-down over the three runs of a case, with no significant difference.
+# Not covered here: F-36 with the NVFP4 checkpoint, F-37 (512K context) and F-31's acceptance
+# length have no test yet.
+# F-36 expects case-01 to refuse an FP8 KV cache; glm instead warns and runs with its default KV
+# dtype (job 5827577_7, a local probe commit that is not on this branch), so that expectation is not
+# recorded here.
+entries:
+  - row: F-17+F-30+F-19-case01
+    features: [F-17, F-30, F-19]
+    cases:
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_sampling_and_stop[glm]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_n_best_of[glm]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_usage_and_cached_tokens[glm-completions]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_usage_and_cached_tokens[glm-chat]
+    # TRT-LLM f566e816d0 is 41f310af19cb6688bbc6b9065305e3ac4707e01d before its rebase onto the
+    # integration branch; glm eda0ca679c. Each of the three runs lists only these cases.
+    commit: f566e816d0876ec6e9ad384055fe2c97b53ad9b2
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17740/data/stage-00/test-00/03_verify/logs/job-5752393/t1-r0/chain/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17740/data/stage-00/test-00/03_verify/logs/job-5752393/t1-r0/chain/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17740/data/stage-00/test-00/03_verify/logs/job-5752393/t2-r0/chain/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17740/data/stage-00/test-00/03_verify/logs/job-5752393/t2-r0/chain/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17740/data/stage-00/test-00/03_verify/logs/job-5752393/t3-r0/chain/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17740/data/stage-00/test-00/03_verify/logs/job-5752393/t3-r0/chain/junit/
+    result: passed
+    chain_proof: ok
+  - row: F-17+F-30+F-19-case01
+    features: [F-17, F-30, F-19]
+    cases:
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_sampling_and_stop[glm]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_usage_and_cached_tokens[glm-completions]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_usage_and_cached_tokens[glm-chat]
+    commit: 5c648719a3112b0b47bba683bab1fb484aaddcad
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/A_case01_functional/glm-5827253-r0/results/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/A_case01_functional/glm-5827253-r0/results/junit/
+    result: passed
+    chain_proof: ok
+  - row: F-15-case01
+    features: [F-15]
+    cases:
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_sampling_and_stop[glm]
+    commit: 5c648719a3112b0b47bba683bab1fb484aaddcad
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/A_case01_functional/glm-5827253-r0/results/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/A_case01_functional/glm-5827253-r0/results/junit/
+    result: passed
+    chain_proof: ok
+  - row: F-31+F-36+F-37+GLM
+    features: [F-31, F-36, F-37]
+    cases:
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_chat_and_completions_basic[glm-non_stream]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_chat_and_completions_basic[glm-stream]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_penalties[glm]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_logprobs[glm-5]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_logprobs[glm-20]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_logprobs[glm-21]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_guided_json_schema[glm]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_reasoning_and_tools[glm]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_thinking_token_budget[glm]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_seed[glm]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_sampling_and_stop[glm]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_usage_and_cached_tokens[glm-completions]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_usage_and_cached_tokens[glm-chat]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_postproc_and_frontends[glm]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_gsm8k_over_chain[glm-tp4ep4]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_gsm8k_over_chain[glm-mtp3]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_gsm8k_over_chain[glm-adp_mtp3]
+    commit: 5c648719a3112b0b47bba683bab1fb484aaddcad
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/A_case01_functional/glm-5827253-r0/results/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/A_case01_functional/glm-5827253-r0/results/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/B1_case01_gsm8k_tp4ep4/glm-5827641-r0/results/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/B1_case01_gsm8k_tp4ep4/glm-5827641-r0/results/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/B2_case01_gsm8k_mtp3/glm-5827642-r0/results/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/B2_case01_gsm8k_mtp3/glm-5827642-r0/results/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/B3_case01_gsm8k_adp_mtp3/glm-5827668-r0/results/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/B3_case01_gsm8k_adp_mtp3/glm-5827668-r0/results/junit/
+    result: passed
+    chain_proof: ok
+  - row: F-31+F-36+F-37+GLM
+    features: [F-31, F-36, F-37]
+    cases:
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_chat_and_completions_basic[trtllm-non_stream]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_chat_and_completions_basic[trtllm-stream]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_penalties[trtllm]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_logprobs[trtllm-5]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_logprobs[trtllm-20]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_logprobs[trtllm-21]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_guided_json_schema[trtllm]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_reasoning_and_tools[trtllm]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_thinking_token_budget[trtllm]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_seed[trtllm]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_sampling_and_stop[trtllm]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_usage_and_cached_tokens[trtllm-completions]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_usage_and_cached_tokens[trtllm-chat]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_postproc_and_frontends[trtllm]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_gsm8k_over_chain[trtllm-adp_mtp3_fp8kv]
+    commit: 5c648719a3112b0b47bba683bab1fb484aaddcad
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/C_case02_functional/trtllm-5827254-r0/results/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/C_case02_functional/trtllm-5827254-r0/results/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/D_case02_gsm8k/trtllm-5827257-r0/results/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/D_case02_gsm8k/trtllm-5827257-r0/results/junit/
+    result: passed
+    chain_proof: ok
+  - row: F-31+F-36+F-37+GLM
+    features: [F-31, F-36, F-37]
+    cases:
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_gsm8k_over_chain[trtllm-tp4ep4]
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_gsm8k_over_chain[trtllm-mtp3]
+    commit: 5c648719a3112b0b47bba683bab1fb484aaddcad
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RD2_case02_gsm8k_mtp3/trtllm-5828707-r0/results/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RD2_case02_gsm8k_mtp3/trtllm-5828707-r0/results/junit/
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RD_case02_gsm8k_tp4ep4/trtllm-5828304-r0/results/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RD_case02_gsm8k_tp4ep4/trtllm-5828304-r0/results/junit/
+    result: passed
+    chain_proof: ok
+  - row: F-17+F-30+F-19-case01
+    features: [F-17, F-30, F-19]
+    cases:
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_n_best_of[glm]
+    commit: 259419ce2255e247f658682d9580cda7681d7e0d
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RA_case01_n_best_of/glm-5828940-r0/results/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RA_case01_n_best_of/glm-5828940-r0/results/junit/
+    result: passed
+    chain_proof: ok
+  - row: F-31+F-36+F-37+GLM
+    features: [F-31, F-36, F-37]
+    cases:
+      - unittest/llmapi/apps/_test_openengine_glm53.py::test_n_best_of[trtllm]
+    commit: 259419ce2255e247f658682d9580cda7681d7e0d
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RC_case02_n_best_of/trtllm-5828941-r0/results/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RC_case02_n_best_of/trtllm-5828941-r0/results/junit/
+    result: passed
+    chain_proof: ok
+  # WT-05's tests on the TRT-LLM chain (Qwen3-0.6B, 1xB200) after the priority test's change; the
+  # engine declares priority, so the priority test checks the ordering. The module's model cannot be
+  # served by glm, so its glm-chain entries were checked by a local probe commit that serves
+  # GLM-5.3-Flash instead (job 5828939_2, not on this branch; every test refused, no engine call).
+  - row: F-44-chain
+    features: [F-44]
+    cases:
+      - unittest/llmapi/apps/_test_openengine_wt05_scheduling.py::test_priority_reorders_waiting_requests
+      - unittest/llmapi/apps/_test_openengine_wt05_scheduling.py::test_agent_hierarchy_reaches_the_engine_or_is_refused
+      - unittest/llmapi/apps/_test_openengine_wt05_scheduling.py::test_kv_hints_with_integers_beyond_double_precision
+      - unittest/llmapi/apps/_test_openengine_wt05_scheduling.py::test_option_reaches_the_engine_or_is_refused[agent_hierarchy]
+      - unittest/llmapi/apps/_test_openengine_wt05_scheduling.py::test_option_reaches_the_engine_or_is_refused[best_of]
+      - unittest/llmapi/apps/_test_openengine_wt05_scheduling.py::test_option_reaches_the_engine_or_is_refused[cache_salt]
+      - unittest/llmapi/apps/_test_openengine_wt05_scheduling.py::test_option_reaches_the_engine_or_is_refused[kv_hints]
+      - unittest/llmapi/apps/_test_openengine_wt05_scheduling.py::test_option_reaches_the_engine_or_is_refused[logit_bias]
+      - unittest/llmapi/apps/_test_openengine_wt05_scheduling.py::test_option_reaches_the_engine_or_is_refused[priority]
+      - unittest/llmapi/apps/_test_openengine_wt05_scheduling.py::test_option_reaches_the_engine_or_is_refused[thinking_token_budget]
+    commit: 259419ce2255e247f658682d9580cda7681d7e0d
+    junit:
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RW_case02_wt05/trtllm-5828942-r0/results/outer-junit.xml
+      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RW_case02_wt05/trtllm-5828942-r0/results/junit/
+    result: passed
+    chain_proof: ok
