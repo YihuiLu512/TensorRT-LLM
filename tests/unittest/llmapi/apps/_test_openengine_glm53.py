@@ -318,7 +318,6 @@ def test_n_best_of(server, case, chained):
         return None if before is None else after - before
 
     log = getattr(server._chain_handle, "frontend_log", None) if chained else None
-    log_start = os.path.getsize(log) if log and os.path.exists(log) else 0
     calls = run(3)
     if not chained:
         run(2, extra_body={"best_of": 4})  # in-process: best_of > n works
@@ -329,14 +328,15 @@ def test_n_best_of(server, case, chained):
     if case == "trtllm":
         assert run(limit + 1) == 2
     assert log
-    # what the front end logged for these requests; the log is written asynchronously
+    # The front end logs the engine's limit once, at the first request it maps, which may be
+    # an earlier test's request on this server; the log is written asynchronously.
+    notice = f"returns at most {limit} sequence(s) per Generate call (max_num_sequences)"
     deadline = time.time() + 30
     while True:
         with open(log, errors="replace") as f:
-            f.seek(log_start)
-            if "max_num_sequences" in f.read():
+            if notice in f.read():
                 break
-        assert time.time() < deadline, "the front end did not log max_num_sequences"
+        assert time.time() < deadline, f"the front end did not log {notice!r}"
         time.sleep(1)
     # best_of > n needs trtllm.request.best_of, which neither engine declares.
     expect_400(lambda: complete(server, n=2, extra_body={"best_of": 4}), "best_of")
