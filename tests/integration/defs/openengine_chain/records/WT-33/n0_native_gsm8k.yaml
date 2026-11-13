@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# WT-33 probe: the ds-engine native N-0 layout (form K) run as is, GSM8K-200 through the ds proxy.
+# Layout: context instance DEP2 on GPUs 0-1, generation instance TP2 on GPUs 2-3, ds proxy; one GB300 node.
+cluster: the PoC-S3 GB300 cluster  # name and paths: local evidence directory (see README.md)
+script: dev/test_disagg.sh 200  # ds-engine 0163a5d9c58b31681ee03054d01c17d8fc7e96b8, unchanged
+inputs_set_from_outside:
+  MODEL: this account's copy of DeepSeek-V4.1-Flash-NVFP4  # path: WT-33 evidence directory
+  GSM_EXTRA: --out <round dir>/gsm8k.json  # also writes the results and per-question samples; requests unchanged
+  HOME: a writable directory  # set by the job script, with PYTHONUNBUFFERED=1; the rest of the job's environment is inherited
+runs:
+  - image: trtllm_072c1abd45_sm100_103.sqsh  # ds-engine author's development container, copied into this account
+    ds_build: built in that container (job 1814987)
+    slurm_job: 1814988
+    rounds:
+      - {round: 1, rc: 0, gsm8k_strict: 99.0, gsm8k_flexible: 99.0, wrong_doc_ids: [12, 119], ready_s: 218.5, gsm8k_s: 9.7, wall_s: 254}
+      - {round: 2, rc: 0, gsm8k_strict: 99.5, gsm8k_flexible: 99.5, wrong_doc_ids: [119], ready_s: 179.0, gsm8k_s: 10.7, wall_s: 214}
+      - {round: 3, rc: 0, gsm8k_strict: 99.5, gsm8k_flexible: 99.5, wrong_doc_ids: [119], ready_s: 193.2, gsm8k_s: 10.5, wall_s: 232}
+    max_correctness_flips_between_rounds: 1
+    identical_responses_between_rounds: [83, 87, 80]  # of 200: r1-r2, r1-r3, r2-r3
+  - image: e17503-9b4022dd0d-aarch64-sm103-ds0163a5d9c5.ready.sqsh  # PoC image: TRT-LLM 9b4022dd0d and ds-engine in one container
+    ds_build: /opt/ds-engine, built in that image (job 1814470)
+    slurm_job: 1815299
+    rounds:
+      - {round: 1, rc: 0, gsm8k_strict: 99.5, gsm8k_flexible: 99.5, wrong_doc_ids: [119], ready_s: 269.6, gsm8k_s: 11.2, wall_s: 305}
+      - {round: 2, rc: 0, gsm8k_strict: 98.5, gsm8k_flexible: 98.5, wrong_doc_ids: [12, 119, 146], ready_s: 183.4, gsm8k_s: 10.9, wall_s: 218}
+      - {round: 3, rc: 0, gsm8k_strict: 99.5, gsm8k_flexible: 99.5, wrong_doc_ids: [119], ready_s: 210.4, gsm8k_s: 11.3, wall_s: 250}
+    max_correctness_flips_between_rounds: 2
+    identical_responses_between_rounds: [81, 66, 59]  # of 200: r1-r2, r1-r3, r2-r3
+between_runs:  # each round of the first run against each round of the second
+  correctness_flips: [[1, 1, 1], [0, 2, 0], [0, 2, 0]]  # row: author's container r1-r3; column: PoC image r1-r3
+  identical_responses: [[58, 62, 55], [68, 71, 63], [57, 59, 57]]  # of 200, same layout
