@@ -4,22 +4,26 @@
 
 A work item lands by pushing its commits to the integration branch once, each
 commit carrying the trailer ``PoC3-Task: <item>``. So an item has landed exactly
-when the integration branch has a commit with its trailer. A commit names an
-item when git parses a ``PoC3-Task`` trailer (the trailer block at the end of
-the message) with that value and the message has a line reading exactly
-``PoC3-Task: <item>``, the line tasks.md §0.2 looks for with
-``git log --grep='^PoC3-Task: <item>$'``. A trailer git accepts in another
-spelling (``poc3-task: WT-41``, ``PoC3-Task:WT-42``, a trailing space) is
-malformed: the ownership gate rejects the commit and it does not land anything.
-A ``PoC3-Task:`` line outside the trailer block names nothing. The branch was
-cut from the PoC-S2 branch, whose history carries ``PoC2-Task`` trailers; those
-name PoC-S2 items and never count here.
+when the integration branch has a commit with its trailer.
+
+The scripts read the trailer from the raw commit message, the same way
+whatever the git configuration: a ``PoC3-Task`` line is a line of the
+message's last paragraph (not the subject's) whose key, the text before the
+first colon, is ``PoC3-Task`` in any letter case. It names ``<item>`` when it
+reads exactly ``PoC3-Task: <item>`` and is not folded onto the next line; that
+is the line tasks.md §0.2 looks for with ``git log --grep='^PoC3-Task: <item>$'``.
+Any other spelling (``poc3-task: WT-41``, ``PoC3-Task:WT-42``, extra spaces) is
+malformed: the ownership gate rejects the commit, and the line lands nothing. A
+``PoC3-Task:`` line in an earlier paragraph names nothing (the §0.2 grep would
+still find it). The branch was cut from the PoC-S2 branch, whose history
+carries ``PoC2-Task`` trailers; those name PoC-S2 items and never count here.
 """
 
 from __future__ import annotations
 
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import NamedTuple
 
@@ -52,54 +56,76 @@ def git(repo: str | Path, *args: str) -> str:
 
 
 class TrailerRecord(NamedTuple):
-    """The ``PoC3-Task`` trailers of one commit, in message order."""
+    """The ``PoC3-Task`` lines of one commit, in message order."""
 
     sha: str
-    values: list[str]  # well-formed: the message has the exact line ``PoC3-Task: <value>``
-    malformed: list[str]  # parsed by git, but without that exact line
+    values: list[str]  # the items named by lines reading exactly ``PoC3-Task: <item>``
+    malformed: list[str]  # the other ``PoC3-Task`` lines (their stripped value, or the line)
 
 
-def _message(repo: str | Path, sha: str) -> list[str]:
-    """The lines of the commit message, as stored in the commit object."""
-    raw = subprocess.run(
-        ["git", "-C", str(repo), "cat-file", "commit", sha], check=True, capture_output=True
-    ).stdout.decode("utf-8", errors="replace")
-    return raw.partition("\n\n")[2].split("\n")
+def task_lines(message: str) -> tuple[list[str], list[str]]:
+    """The well-formed values and the malformed ``PoC3-Task`` lines of a commit message."""
+    lines = message.split("\n")
+    while lines and not lines[-1].strip():
+        lines.pop()
+    start = max((i + 1 for i, line in enumerate(lines) if not line.strip()), default=0)
+    block = lines[start:] if start else []  # a message of one paragraph has no trailers
+    values, malformed = [], []
+    for i, line in enumerate(block):
+        key, colon, rest = line.partition(":")
+        if not colon or key.strip().lower() != TRAILER.lower():
+            continue
+        value = rest.strip()
+        folded = i + 1 < len(block) and block[i + 1][:1] in (" ", "\t")
+        if value and not folded and line == f"{TRAILER}: {value}":
+            values.append(value)
+        else:
+            malformed.append(value or line)
+    return values, malformed
+
+
+def _messages(repo: str | Path, shas: list[str]) -> dict[str, str]:
+    """The raw commit message of each of ``shas``."""
+    out = subprocess.run(
+        ["git", "-C", str(repo), "cat-file", "--batch"],
+        input="".join(f"{sha}\n" for sha in shas).encode(),
+        check=True,
+        capture_output=True,
+    ).stdout
+    messages, pos = {}, 0
+    for sha in shas:
+        header_end = out.index(b"\n", pos)
+        name, kind, size = out[pos:header_end].decode().split()
+        if kind != "commit":
+            raise ValueError(f"{sha} is a {kind}, not a commit")
+        body = out[header_end + 1 : header_end + 1 + int(size)]
+        messages[sha] = body.decode("utf-8", errors="replace").partition("\n\n")[2]
+        pos = header_end + 1 + int(size) + 1
+    return messages
 
 
 def trailer_log(repo: str | Path, *log_args: str) -> list[TrailerRecord]:
-    """The ``PoC3-Task`` trailers of every commit ``git log <log_args>`` lists."""
-    log = git(
-        repo,
-        "log",
-        "--no-show-signature",
-        f"--format=%H%x00%(trailers:key={TRAILER},valueonly,separator=%x02)%x01",
-        *log_args,
-    )
-    records = []
-    for record in log.split("\x01"):
-        record = record.strip("\n")
-        if not record:
-            continue
-        sha, _, joined = record.partition("\0")
-        parsed = [v.strip() for v in joined.split("\x02") if v.strip()]
-        lines = _message(repo, sha) if parsed else []
-        values, malformed = [], []
-        for value in parsed:
-            line = f"{TRAILER}: {value}"
-            if line in lines:
-                lines.remove(line)  # each exact line vouches for one trailer
-                values.append(value)
-            else:
-                malformed.append(value)
-        records.append(TrailerRecord(sha, values, malformed))
-    return records
+    """The ``PoC3-Task`` lines of every commit ``git log <log_args>`` lists."""
+    shas = git(repo, "log", "--no-show-signature", "--format=%H", *log_args).split()
+    messages = _messages(repo, shas) if shas else {}
+    return [TrailerRecord(sha, *task_lines(messages[sha])) for sha in shas]
 
 
 def landed_tasks(repo: str | Path, ref: str) -> set[str]:
-    """The work items with a commit on ``ref``, fixes included under their own names."""
+    """The work items with a commit on ``ref``, fixes included under their own names.
+
+    Malformed ``PoC3-Task`` lines are reported on stderr and not counted.
+    """
     landed: set[str] = set()
-    for record in trailer_log(repo, ref):
+    # Only a superset of the commits with a PoC3-Task line is read; the options pin the match.
+    candidates = ("--fixed-strings", "--regexp-ignore-case", f"--grep={TRAILER}")
+    for record in trailer_log(repo, *candidates, ref):
+        for value in record.malformed:
+            print(
+                f"warning: {record.sha[:12]} has a malformed {TRAILER} line ({value!r});"
+                " it is not counted as landed",
+                file=sys.stderr,
+            )
         for value in record.values:
             try:
                 parse_task(value)

@@ -4,26 +4,27 @@
 """Check that a PoC-S3 work item changes only the paths it owns.
 
 Every path changed in ``<base>...<head>`` must match one of the work item's
-rules in :data:`OWNERSHIP`, and every commit in ``<base>..<head>`` must carry
-the trailer ``PoC3-Task: <work item>``, and the range must hold at least one
-commit. A fix (``WT-xx-fixN``) owns what WT-xx owns, plus the per-item files
-named after the fix itself; WT-xx and its other fixes do not own those. The gate
-files (``scripts/poc3/`` except the invariant registry and ``wt54_*``) can only
-be changed by WT-30 and its fixes, whatever the table says.
+rules in :data:`OWNERSHIP`, every commit in ``<base>..<head>`` must carry
+exactly one ``PoC3-Task`` line, reading exactly ``PoC3-Task: <work item>`` (read
+as ``poc3_common`` describes), and the range must hold at least one commit. A
+fix (``WT-xx-fixN``) owns what WT-xx owns, plus the per-item files named after
+the fix itself; WT-xx and its other fixes do not own those. The gate files
+(``scripts/poc3/`` except the invariant registry and ``wt54_*``) can only be
+changed by WT-30 and its fixes, whatever the table says.
 
 A rule is ``own`` (no other item owns the path; another item may change it only
 under a ``shared`` or ``exception`` rule of its own), ``shared`` (this item may
 change only the part the note names; the rest of the file belongs to its owner,
 which may be another item or code outside PoC-S3) or ``exception`` (a one-off
 allowance the note describes). An ``exception`` may also list the only lines
-it allows, as regular expressions: then every line the range adds to or removes
-from that file must match one of them, with as many lines removed as added, and
-nothing else about the file may change (its mode, for example); otherwise the
-path is out of bounds. Paths changed under ``shared`` and ``exception`` rules
-are listed for a reviewer to check by hand. Test files that already exist
-at the base are ``shared`` even for the item they belong to: tasks.md §0.3 lets
-existing assertions change only for the flips it names, so changes there are
-listed too.
+it allows, as regular expressions: then the range may only replace lines of
+that file in place, each removed and each added line matching one of them in
+full, and nothing else about the file may change (its mode or final newline,
+for example); otherwise the path is out of bounds. Paths changed under
+``shared`` and ``exception`` rules are listed for a reviewer to check by hand.
+Test files that already exist at the base are ``shared`` even for the item they
+belong to: tasks.md §0.3 lets existing assertions change only for the flips it
+names, so changes there are listed too.
 A pattern starting with ``!`` excludes paths from the rules before it.
 
 The orchestrator's main files belong to no work item. Some code inside files
@@ -33,9 +34,6 @@ subcommands keep their source text, and the existing lines of the HTTP
 ``DisaggregatedParams`` class and of ``disagg_auth.py`` stay as they are (only
 registered lines may be added). ``check_invariants.py`` guards all of these and
 runs separately.
-
-The trailer is read as ``poc3_common`` describes: git must parse it and the
-message must hold the exact line ``PoC3-Task: <work item>``.
 
 Usage::
 
@@ -519,6 +517,7 @@ def detect_repo(repo_dir: str) -> str:
 
 # A diff header line that may precede the hunks of a line-limited exception's file.
 _PLAIN_HEADER = ("diff --git ", "index ", "--- ", "+++ ")
+_HUNK = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
 def disallowed_lines(
@@ -526,8 +525,9 @@ def disallowed_lines(
 ) -> list[str]:
     """What ``base_ref...head_ref`` changes in ``path`` beyond the lines ``rule`` allows.
 
-    Empty when every added and removed line matches one of ``rule.lines``, as
-    many lines are removed as added, and the diff changes nothing but lines.
+    Empty when every hunk replaces lines in place (as many removed as added, at
+    the same line number), every removed and added line matches one of
+    ``rule.lines``, and the diff changes nothing but lines.
     """
     # Bytes, not text mode: universal newlines would hide a CRLF line ending.
     diff = subprocess.run(
@@ -537,6 +537,7 @@ def disallowed_lines(
             repo_dir,
             "diff",
             "-U0",
+            "--inter-hunk-context=0",
             "--no-color",
             "--no-ext-diff",
             "--no-textconv",
@@ -550,23 +551,24 @@ def disallowed_lines(
         capture_output=True,
     ).stdout.decode("utf-8", errors="replace")
     patterns = [re.compile(line) for line in rule.lines]
-    bad, added, removed = [], 0, 0
+    bad = []
     in_hunk = False
     for line in diff.split("\n")[:-1]:
         if line.startswith("@@"):
             in_hunk = True
+            hunk = _HUNK.match(line)
+            # (old start, old count, new start, new count); a missing count is 1.
+            span = [int(n) if n is not None else 1 for n in hunk.groups()] if hunk else None
+            if span is None or span[:2] != span[2:]:
+                bad.append(f"{line}: not a replacement in place")
         elif not in_hunk:
             if not line.startswith(_PLAIN_HEADER):
                 bad.append(line)
         elif line[:1] in ("+", "-"):
-            added += line[0] == "+"
-            removed += line[0] == "-"
             if not any(p.fullmatch(line[1:]) for p in patterns):
                 bad.append(line)
         else:
             bad.append(line)  # "\ No newline at end of file", or anything unexpected
-    if added != removed:
-        bad.append(f"{removed} line(s) removed but {added} added")
     return bad
 
 
@@ -643,6 +645,8 @@ def main(argv: list[str] | None = None) -> int:
         return check(args.task, args.range, args.repo_dir, args.repo)
     except ValueError as error:
         print(f"FAIL: {error}")
+    except OSError as error:
+        print(f"FAIL: {type(error).__name__}: {error}")
     except subprocess.CalledProcessError as error:
         stderr = (
             error.stderr.decode(errors="replace")

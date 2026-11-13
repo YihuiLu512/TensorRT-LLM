@@ -18,9 +18,10 @@ completes the row's dependencies, provided nobody has recorded it as verified:
 - deferred rows are owed by nobody.
 
 When the row's fixed verifier (its ``assignee``, or the ``fallback`` of a
-case-03 row) runs before the row is complete, or the row completes after that
-verifier landed, nobody owes the row any more; both cases are listed so the
-coordinator can hand the row to someone.
+case-03 row once R13 has landed) runs before the row is complete, or the row
+completes after that verifier landed, nobody owes the row any more; both cases
+are listed so the coordinator can hand the row to someone. A fallback landing
+before R13 lists nothing: R13 still owes the rows its landing completes.
 
 Supplementary cases (``hopper_cases``, ``two_node_cases``) never create an
 obligation; integration rounds run them.
@@ -64,6 +65,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import subprocess
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -207,7 +209,10 @@ def read_verified(repo: str | Path, ref: str, known: Iterable[str] | None = None
             parse_task(name[: -len(".yaml")])
         except ValueError:
             continue
-        records.append(yaml.safe_load(git(repo, "show", f"{ref}:{VERIFIED_DIR}/{name}")))
+        try:
+            records.append(yaml.safe_load(git(repo, "show", f"{ref}:{VERIFIED_DIR}/{name}")))
+        except yaml.YAMLError as error:
+            print(f"warning: {name} is not valid YAML, ignored: {error}", file=sys.stderr)
     return verified_rows(records, known)
 
 
@@ -323,12 +328,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--json", action="store_true", help="print JSON")
     args = parser.parse_args(argv)
-    if args.task:
+    if args.task and not args.landed:
         try:
             parse_task(args.task)
         except ValueError as error:
             parser.error(str(error))
+    try:
+        return _run(args, parser)
+    except subprocess.CalledProcessError as error:
+        stderr = error.stderr.strip() if isinstance(error.stderr, str) else ""
+        parser.exit(2, f"{parser.prog}: error: {' '.join(map(str, error.cmd))}: {stderr}\n")
 
+
+def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
     groups, rows = load_rows()
     ds_tasks = set(groups.get("ds-repo", ()))
     landed = {t for t in landed_tasks(args.repo, args.ref) if parse_task(t)[0] not in ds_tasks}

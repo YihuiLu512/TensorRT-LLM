@@ -135,7 +135,7 @@ def test_landed_tasks_ignore_poc2_trailers(tmp_path):
     ids=["lower-case", "no-space", "space-before-colon", "two-spaces", "trailing-space", "twice"],
 )
 def test_a_trailer_not_written_exactly_neither_passes_nor_lands(tmp_path, capsys, trailer):
-    # tasks.md §0.2 finds a landed item with --grep='^PoC3-Task: WT-xx$'; the scripts agree with it.
+    # tasks.md §0.2 finds a landed item with --grep='^PoC3-Task: WT-xx$'; only that spelling counts.
     repo = _repo(tmp_path)
     _git(repo, "config", "commit.cleanup", "verbatim")  # keep the trailing space
     (repo / "tensorrt_llm").mkdir()
@@ -146,6 +146,27 @@ def test_a_trailer_not_written_exactly_neither_passes_nor_lands(tmp_path, capsys
     assert check_ownership.check("WT-30", f"{base}..HEAD", str(repo)) == 1
     assert "is not written as the exact line" in capsys.readouterr().out
     assert landed_tasks(repo, "main") == ({"WT-30"} if trailer.count("WT-30") == 2 else set())
+    assert "malformed PoC3-Task line" in capsys.readouterr().err
+
+
+def test_an_exact_line_in_the_body_does_not_excuse_a_malformed_trailer(tmp_path, capsys):
+    message = "add\n\nPoC3-Task: WT-30\nquoted in the body\n\npoc3-task: WT-30"
+    repo, base = _two_commit_repo(tmp_path, {"scripts/poc3/x.py": "x\n"}, message)
+    [record] = trailer_log(repo, f"{base}..HEAD")
+    assert record.values == [] and record.malformed == ["WT-30"]
+    assert check_ownership.check("WT-30", f"{base}..HEAD", str(repo)) == 1
+    assert landed_tasks(repo, "main") == set()
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["PoC3-Task: WT-30", "add\n\nPoC3-Task: WT-30\n  folded onto the next line"],
+    ids=["subject-only", "folded"],
+)
+def test_lines_git_would_not_read_as_the_trailer_name_nothing(tmp_path, message):
+    repo = _repo(tmp_path)
+    _commit(repo, {}, message)
+    assert landed_tasks(repo, "main") == set()
 
 
 def test_landed_tasks_do_not_depend_on_the_grep_configuration(tmp_path):
@@ -154,6 +175,21 @@ def test_landed_tasks_do_not_depend_on_the_grep_configuration(tmp_path):
     for pattern_type in ("fixed", "extended", "perl"):
         _git(repo, "config", "grep.patternType", pattern_type)
         assert landed_tasks(repo, "main") == {"WT-30"}
+
+
+@pytest.mark.parametrize(
+    "key, value",
+    [
+        ("trailer.separators", "#"),
+        ("trailer.poc3-task.key", "Other"),
+        ("log.showSignature", "true"),
+    ],
+)
+def test_trailers_do_not_depend_on_the_git_configuration(tmp_path, key, value):
+    repo = _repo(tmp_path)
+    _commit(repo, {}, "s3\n\nPoC3-Task: WT-30")
+    _git(repo, "config", key, value)
+    assert landed_tasks(repo, "main") == {"WT-30"}
 
 
 def test_a_commit_with_two_task_trailers_fails_the_gate(tmp_path, capsys):
@@ -419,7 +455,7 @@ def test_the_ds_repository_is_detected(tmp_path):
     assert check_ownership.detect_repo(str(repo)) == check_ownership.DS
 
 
-# The three assertions that pin the contract and conventions versions WT-35 raises (STATUS B1).
+# The three assertions that pin the contract and conventions versions WT-35 raises.
 VERSION_PINS = {
     "tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_contracts.py": (
         "    assert contracts.POC2_CONTRACT_VERSION == 9\n",
@@ -462,8 +498,18 @@ def test_wt35_may_raise_the_pinned_version(tmp_path, capsys, path):
         lambda text, old, new: text.replace(old, new + new),
         lambda text, old, new: text.replace(old, new.replace("\n", "\r\n")),
         lambda text, old, new: text.replace(old, new.replace("    ", "  ")),
+        lambda text, old, new: text.replace(old, "") + new,
+        lambda text, old, new: text.replace(old, "").replace("    assert True\n", new),
     ],
-    ids=["another-line", "assertion-removed", "line-added", "crlf", "reindented"],
+    ids=[
+        "another-line",
+        "assertion-removed",
+        "line-added",
+        "crlf",
+        "reindented",
+        "moved-to-the-end",
+        "moved-into-another-test",
+    ],
 )
 def test_wt35_may_not_change_anything_else_in_those_files(tmp_path, capsys, path, change):
     old, new = VERSION_PINS[path]
@@ -484,6 +530,62 @@ def test_a_version_pin_exception_rejects_dropping_the_final_newline(tmp_path, ca
     _commit(repo, {path: f"def test_version():\n{new.rstrip()}"}, "bump\n\nPoC3-Task: WT-35")
     assert check_ownership.check("WT-35", f"{base}..HEAD", str(repo)) == 1
     assert "No newline at end of file" in capsys.readouterr().out
+
+
+def _pin_rule():
+    path = next(iter(VERSION_PINS))
+    return path, check_ownership.match_rule("WT-35", path)
+
+
+def test_a_version_pin_exception_ignores_the_hunk_context_configuration(tmp_path):
+    path, rule = _pin_rule()
+    old, new = VERSION_PINS[path]
+    text = f"{old}x = 1\n{old}"
+    repo = _repo(tmp_path)
+    base = _commit(repo, {path: text}, "base")
+    _commit(repo, {path: text.replace(old, new)}, "bump")
+    _git(repo, "config", "diff.interHunkContext", "5")
+    _git(repo, "config", "diff.context", "5")
+    assert check_ownership.disallowed_lines(rule, str(repo), base, "HEAD", path) == []
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"diff.relative": "true"},
+        {"diff.external": "true"},
+        {"diff.hide.textconv": "true"},
+    ],
+    ids=["relative", "external", "textconv"],
+)
+def test_a_version_pin_exception_sees_every_change_whatever_the_configuration(
+    tmp_path, capsys, config
+):
+    path = next(iter(VERSION_PINS))
+    old, new = VERSION_PINS[path]
+    repo, base = _pin_repo(
+        tmp_path, path, lambda text: text.replace(old, new).replace("assert True", "assert 1")
+    )
+    (repo / ".git/info/attributes").write_text("*.py diff=hide\n")
+    for key, value in config.items():
+        _git(repo, "config", key, value)
+    # Run from a directory that does not contain the file.
+    assert check_ownership.check("WT-35", f"{base}..HEAD", str(repo / "tensorrt_llm")) == 1
+    assert f"OUT OF BOUNDS  {path}" in capsys.readouterr().out
+
+
+def test_a_version_pin_exception_reads_the_change_against_the_merge_base(tmp_path):
+    path, rule = _pin_rule()
+    old, new = VERSION_PINS[path]
+    text = f"def test_version():\n{old}\n\ndef test_other():\n    assert True\n"
+    repo = _repo(tmp_path)
+    fork = _commit(repo, {path: text}, "base")
+    # The base branch moves on and changes another line; the head only raises the version.
+    _commit(repo, {path: text.replace("assert True", "assert 1")}, "elsewhere")
+    _git(repo, "branch", "moved")
+    _git(repo, "checkout", "-q", "-b", "head", fork)
+    _commit(repo, {path: text.replace(old, new)}, "bump")
+    assert check_ownership.disallowed_lines(rule, str(repo), "moved", "head", path) == []
 
 
 def test_a_version_pin_exception_rejects_a_mode_change(tmp_path, capsys):
@@ -520,6 +622,13 @@ def test_the_version_pin_patterns_match_the_files_at_the_frozen_base(path):
     assert matching == [VERSION_PINS[path][0].rstrip("\n")]
 
 
+def test_a_missing_git_fails_with_a_message(tmp_path, capsys, monkeypatch):
+    repo, base = _two_commit_repo(tmp_path, {"scripts/poc3/x.py": "x\n"}, "add\n\nPoC3-Task: WT-30")
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    assert check_ownership.main(["--task", "WT-30", f"{base}..HEAD", "--repo-dir", str(repo)]) == 1
+    assert capsys.readouterr().out.startswith("FAIL: FileNotFoundError")
+
+
 @pytest.mark.parametrize(
     "args",
     [["--task", "WT-5", "HEAD~1..HEAD"], ["--task", "WT-30", "HEAD"], ["--task", "WT-30", "x..y"]],
@@ -554,6 +663,31 @@ def test_a_bad_task_name_is_a_usage_error(tmp_path, capsys):
         pending_e2e.main(["--task", "WT-5", "--repo", str(tmp_path)])
     assert raised.value.code == 2
     assert "not a PoC-S3 work item" in capsys.readouterr().err
+
+
+def test_listing_what_landed_does_not_read_the_task(tmp_path, capsys):
+    repo = _repo(tmp_path)
+    _commit(repo, {}, "s3\n\nPoC3-Task: WT-30")
+    assert (
+        pending_e2e.main(["--landed", "--task", "WT-5", "--repo", str(repo), "--ref", "main"]) == 0
+    )
+    assert capsys.readouterr().out.split() == ["WT-30"]
+
+
+def test_an_unknown_ref_is_a_usage_error(tmp_path, capsys):
+    repo = _repo(tmp_path)
+    _commit(repo, {}, "s3\n\nPoC3-Task: WT-30")
+    with pytest.raises(SystemExit) as raised:
+        pending_e2e.main(["--task", "WT-51", "--repo", str(repo), "--ref", "nosuch"])
+    assert raised.value.code == 2
+    assert "nosuch" in capsys.readouterr().err
+
+
+def test_a_verification_record_that_is_not_yaml_is_reported_and_ignored(tmp_path, capsys):
+    repo = _repo(tmp_path)
+    _commit(repo, {f"{pending_e2e.VERIFIED_DIR}/WT-51.yaml": "entries: [\n"}, "bad record")
+    assert pending_e2e.read_verified(repo, "main") == set()
+    assert "WT-51.yaml is not valid YAML" in capsys.readouterr().err
 
 
 def test_groups_match_tasks_md_section_3_2():
@@ -1165,6 +1299,10 @@ def test_whole_files_compare_bytes_and_mode(invariant_repo, change):
         "del disaggregated\n",
         "disaggregated += 1\n",
         "(a, [disaggregated]) = (1, [2])\n",
+        "disaggregated: int = 1\n",
+        "f = lambda *, a=(disaggregated := 1): a\n",
+        "names = [x for x in () if (disaggregated := x)]\n",
+        "try:\n    pass\nexcept (disaggregated := Exception):\n    pass\n",
     ],
     ids=[
         "def-in-if",
@@ -1188,6 +1326,10 @@ def test_whole_files_compare_bytes_and_mode(invariant_repo, change):
         "del",
         "augmented",
         "nested-target",
+        "annotated-assignment",
+        "lambda-keyword-default-walrus",
+        "comprehension-condition-walrus",
+        "except-type-walrus",
     ],
 )
 def test_a_second_module_scope_binding_fails(invariant_repo, addition):
@@ -1216,6 +1358,7 @@ def test_a_star_import_may_bind_any_name(invariant_repo):
         "class K:\n    disaggregated = 1\n",
         "def g(disaggregated=1):\n    return disaggregated\n",
         "x = disaggregated\n",
+        "disaggregated: int\n",
     ],
     ids=[
         "attribute-target",
@@ -1226,6 +1369,7 @@ def test_a_star_import_may_bind_any_name(invariant_repo):
         "class-body",
         "parameter",
         "use",
+        "bare-annotation",
     ],
 )
 def test_uses_of_the_name_are_not_bindings(invariant_repo, addition):
@@ -1283,15 +1427,29 @@ def test_unreadable_input_fails_its_check_without_a_traceback(invariant_repo, pa
 
 
 def test_bad_arguments_fail_the_invariants_with_a_message(invariant_repo, tmp_path, capsys):
-    repo, _ = invariant_repo
+    repo, base = invariant_repo
     (tmp_path / "bad.yaml").write_bytes(b"\xff\n")
     assert (
         check_invariants.main(["--repo", str(repo), "--registry", str(tmp_path / "bad.yaml")]) == 1
     )
+    assert "FAIL: UnicodeDecodeError" in capsys.readouterr().out
     assert check_invariants.main(["--repo", str(repo), "--base", "no-such-rev"]) == 1
+    assert "FAIL: RuntimeError: unknown revision 'no-such-rev'" in capsys.readouterr().out
+    assert (
+        check_invariants.main(["--repo", str(repo), "--base", base, "--head", "no-such-rev"]) == 1
+    )
+    assert "FAIL: RuntimeError: unknown revision 'no-such-rev'" in capsys.readouterr().out
     assert check_invariants.main(["--repo", str(repo), "--registry", str(tmp_path / "none")]) == 1
-    out = capsys.readouterr().out
-    assert out.count("FAIL: ") == 3
+    assert "FAIL: FileNotFoundError" in capsys.readouterr().out
+
+
+def test_a_head_whose_gate_file_is_not_utf8_still_needs_its_registry(invariant_repo):
+    repo, base = invariant_repo
+    (repo / "scripts/poc3/check_invariants.py").write_bytes(b"\xff\n")
+    _git(repo, "add", "scripts/poc3/check_invariants.py")
+    _git(repo, "rm", "-q", check_invariants.REGISTRY_PATH)
+    results = {name: detail for name, passed, detail in _results(repo, base, {}) if not passed}
+    assert list(results) == ["registry"] and "missing" in results["registry"]
 
 
 @pytest.mark.parametrize(

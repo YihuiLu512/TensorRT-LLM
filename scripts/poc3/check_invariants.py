@@ -37,9 +37,10 @@ Usage::
     python3 scripts/poc3/check_invariants.py --head <rev>
     python3 scripts/poc3/check_invariants.py --working-tree       # files on disk
 
-Exit status: 0 when all three checks pass, 1 otherwise; a file or registry
-that cannot be read or parsed fails its check. The scripts need Python 3.9 or
-newer.
+Exit status: 0 when all three checks pass, 1 otherwise. A checked file or a
+registry in the repository that cannot be read or parsed fails its own check;
+an unknown revision or an unreadable ``--registry`` file fails the whole run
+with one line. The scripts need Python 3.9 or newer.
 """
 
 from __future__ import annotations
@@ -194,14 +195,13 @@ def _pattern_bindings(pattern: ast.AST, name: str) -> int:
     )
 
 
-def _module_bindings(body: list[ast.stmt], name: str) -> int:
+def _statement_bindings(body: list[ast.stmt], name: str) -> int:
     """How many times statements of a module body bind or delete ``name`` at module scope.
 
     Statements nested in blocks that run at module scope (``if``, ``try``,
     ``with``, ``for``, ``while``, ``match``) count; function and class bodies
-    do not, but decorators, default values, annotations and base classes are
-    evaluated at module scope and do. ``global`` declarations are counted by
-    :func:`module_bindings`.
+    do not, but their decorators, default values, annotations and base classes
+    do. ``global`` declarations are counted by :func:`module_bindings`.
     """
     count = 0
     for node in body:
@@ -212,20 +212,23 @@ def _module_bindings(body: list[ast.stmt], name: str) -> int:
                 a.name == "*" or (a.asname or a.name.split(".")[0]) == name for a in node.names
             )
             continue
-        count += _expression_bindings(
-            [value for field, value in ast.iter_fields(node) if field not in _BLOCKS], name
-        )
+        if isinstance(node, ast.AnnAssign) and node.value is None:
+            # A bare annotation binds nothing; only its expression is evaluated.
+            fields = [node.annotation]
+        else:
+            fields = [value for field, value in ast.iter_fields(node) if field not in _BLOCKS]
+        count += _expression_bindings(fields, name)
         for handler in getattr(node, "handlers", None) or []:
             count += handler.name == name
             count += _expression_bindings([handler.type], name)
-            count += _module_bindings(handler.body, name)
+            count += _statement_bindings(handler.body, name)
         for case in getattr(node, "cases", None) or []:
             count += _pattern_bindings(case.pattern, name)
             count += _expression_bindings([case.guard], name)
-            count += _module_bindings(case.body, name)
+            count += _statement_bindings(case.body, name)
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             for field in ("body", "orelse", "finalbody"):
-                count += _module_bindings(getattr(node, field, None) or [], name)
+                count += _statement_bindings(getattr(node, field, None) or [], name)
     return count
 
 
@@ -235,7 +238,7 @@ def module_bindings(tree: ast.Module, name: str) -> int:
     A ``global`` declaration of ``name`` anywhere in the module counts once.
     """
     declared = sum(name in node.names for node in ast.walk(tree) if isinstance(node, ast.Global))
-    return _module_bindings(tree.body, name) + declared
+    return _statement_bindings(tree.body, name) + declared
 
 
 def definition_text(source: str, name: str, kind: type = ast.FunctionDef) -> str:
@@ -245,8 +248,8 @@ def definition_text(source: str, name: str, kind: type = ast.FunctionDef) -> str
     including comment lines that follow it indented deeper than the ``def``.
 
     Raises:
-        LookupError: There is no such definition, or ``name`` is bound more than
-            once at the top level.
+        LookupError: There is no such definition, or anything else binds or
+            deletes ``name`` at module scope (:func:`module_bindings`).
     """
     tree = ast.parse(source)
     nodes = [n for n in tree.body if isinstance(n, kind) and n.name == name]
@@ -254,7 +257,7 @@ def definition_text(source: str, name: str, kind: type = ast.FunctionDef) -> str
         raise LookupError(f"expected one top-level {kind.__name__} {name!r}, found {len(nodes)}")
     bindings = module_bindings(tree, name)
     if bindings != 1:
-        raise LookupError(f"{name!r} is bound {bindings} times at module scope")
+        raise LookupError(f"{name!r} is bound or deleted {bindings} times at module scope")
     node = nodes[0]
     lines = source.splitlines(keepends=True)
     first = min([node.lineno] + [d.lineno for d in node.decorator_list])
@@ -284,11 +287,13 @@ def extra_lines(base: list[str], head: list[str]) -> list[str] | None:
     return list((Counter(head) - Counter(base)).elements())
 
 
+def _no_registered_lines() -> dict[tuple[str, str], Counter[str]]:
+    return {region: Counter() for region in ADDITION_REGIONS}
+
+
 def load_registry(text: str | None) -> tuple[dict[tuple[str, str], Counter[str]], list[str]]:
     """Registered lines per region, and the problems found in the registry itself."""
-    registered: dict[tuple[str, str], Counter[str]] = {
-        region: Counter() for region in ADDITION_REGIONS
-    }
+    registered = _no_registered_lines()
     if text is None:
         return registered, [f"registry {REGISTRY_PATH} is missing"]
     try:
@@ -328,10 +333,22 @@ def run(
 ) -> list[tuple[str, bool, str]]:
     """Every check as ``(name, passed, detail)``; ``head`` "" checks the files on disk.
 
+    Raises:
+        RuntimeError: ``base`` or ``head`` is not a commit.
+
     The registry is ``registry_text`` when given, else the one in ``head``, else
     (for a head without ``scripts/poc3``, such as the frozen base) the one next
     to this script.
     """
+    for rev in (base, head):
+        if (
+            rev
+            and subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"],
+                capture_output=True,
+            ).returncode
+        ):
+            raise RuntimeError(f"unknown revision {rev!r}")
     read, differs = git_reader(repo), git_differ(repo)
     results = []
     for path in ORCHESTRATOR_FILES:
@@ -361,7 +378,7 @@ def run(
             # The head predates scripts/poc3 (the frozen base, for example).
             registry_text, source = REGISTRY.read_bytes().decode(), str(REGISTRY)
     except ValueError as error:
-        registered, problems = load_registry(None)
+        registered = _no_registered_lines()
         problems = [f"the registry cannot be read: {type(error).__name__}: {error}"]
     else:
         registered, problems = load_registry(registry_text)
