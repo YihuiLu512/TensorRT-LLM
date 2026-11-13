@@ -1,0 +1,17 @@
+{
+ "capkit_code_sha": "cccccccccccccccccccccccccccccccccccccccc",
+ "env": {},
+ "executable": "/usr/bin/python3",
+ "gc_enabled": true,
+ "grpc": null,
+ "implementation": "cpython",
+ "loop_impl": "asyncio.unix_events._UnixSelectorEventLoop",
+ "pid": 1002,
+ "probe_groups": [],
+ "probe_patch_sha": null,
+ "probe_tier": null,
+ "protobuf": null,
+ "protobuf_impl": null,
+ "python": "3.12.3 synthetic",
+ "switchinterval_s": 0.005
+}

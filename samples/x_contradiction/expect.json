@@ -1,0 +1,10 @@
+{
+ "exit_code": 10,
+ "red_checks": [],
+ "synthetic": true,
+ "tier_verdicts": {
+  "2": "STABLE",
+  "4": "VOID"
+ },
+ "tree": "runs/Jlocal-sample-x-contradiction-r0-L0_synthetic-a"
+}

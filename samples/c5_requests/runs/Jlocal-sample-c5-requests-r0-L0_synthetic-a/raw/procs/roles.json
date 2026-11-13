@@ -1,0 +1,73 @@
+{
+ "generation": 1,
+ "identity": {
+  "arm": "synthetic-a",
+  "experiment": "E0",
+  "job_id": "local-sample-c5-requests",
+  "launch_seq": 0,
+  "pid": null,
+  "register_sha": "384933b4ea618f07c423b1f98e220d311421c3100e4e5e5473414c1abcf6703e",
+  "restart_count": 0,
+  "role": "launch",
+  "tier_label": null,
+  "tier_seq": null,
+  "worker": 0
+ },
+ "procs": [
+  {
+   "cmdline": [
+    "python",
+    "-m",
+    "capload"
+   ],
+   "cpus": [
+    2
+   ],
+   "discovered_via": "ready.children",
+   "parent_pid": 900,
+   "pid": 1001,
+   "registered_mono_ns": 996000000000,
+   "role": "capload",
+   "starttime_ticks": 6001,
+   "worker": 0
+  },
+  {
+   "cmdline": [
+    "python",
+    "-m",
+    "capload"
+   ],
+   "cpus": [
+    3
+   ],
+   "discovered_via": "ready.children",
+   "parent_pid": 900,
+   "pid": 1002,
+   "registered_mono_ns": 996000000000,
+   "role": "capload",
+   "starttime_ticks": 6002,
+   "worker": 1
+  },
+  {
+   "cmdline": [
+    "python",
+    "-m",
+    "nullsse"
+   ],
+   "cpus": [
+    4
+   ],
+   "discovered_via": "ready.children",
+   "parent_pid": 900,
+   "pid": 2001,
+   "registered_mono_ns": 996000000000,
+   "role": "nullsse",
+   "starttime_ticks": 7001,
+   "worker": 0
+  }
+ ],
+ "schema": "capkit.roles/1",
+ "unattributed": [],
+ "written_mono_ns": 9746268539140893,
+ "written_wall": "2026-11-13T11:37:24.619Z"
+}

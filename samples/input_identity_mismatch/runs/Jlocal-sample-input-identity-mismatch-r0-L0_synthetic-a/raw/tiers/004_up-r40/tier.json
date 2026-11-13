@@ -1,0 +1,161 @@
+{
+ "abs_end_ns": 1018000000000,
+ "abs_start_ns": 1012000000000,
+ "abs_window_end_ns": 1017000000000,
+ "abs_window_start_ns": 1013000000000,
+ "identity": {
+  "arm": "synthetic-a",
+  "experiment": "E0",
+  "job_id": "local-sample-input-identity-mismatch",
+  "launch_seq": 0,
+  "pid": null,
+  "register_sha": "384933b4ea618f07c423b1f98e220d311421c3100e4e5e5473414c1abcf6703e",
+  "restart_count": 0,
+  "role": "launch",
+  "tier_label": "up-r40",
+  "tier_seq": 4,
+  "worker": 0
+ },
+ "nic_counters": {
+  "unreadable": "synthetic sample"
+ },
+ "pids_stable": true,
+ "pids_window_end": [
+  1001,
+  1002,
+  2001
+ ],
+ "pids_window_start": [
+  1001,
+  1002,
+  2001
+ ],
+ "schema": "capkit.tier/1",
+ "snapshot_copies": [
+  {
+   "edge": "wstart",
+   "offset_ns": 30000000,
+   "pid": 1001,
+   "t_mono_ns": 1013030000000
+  },
+  {
+   "edge": "wstart",
+   "offset_ns": 30000000,
+   "pid": 1002,
+   "t_mono_ns": 1013030000000
+  },
+  {
+   "edge": "wstart",
+   "offset_ns": 30000000,
+   "pid": 2001,
+   "t_mono_ns": 1013030000000
+  },
+  {
+   "edge": "wend",
+   "offset_ns": 30000000,
+   "pid": 1001,
+   "t_mono_ns": 1017030000000
+  },
+  {
+   "edge": "wend",
+   "offset_ns": 30000000,
+   "pid": 1002,
+   "t_mono_ns": 1017030000000
+  },
+  {
+   "edge": "wend",
+   "offset_ns": 30000000,
+   "pid": 2001,
+   "t_mono_ns": 1017030000000
+  }
+ ],
+ "threads": {
+  "wend": {
+   "1001": [
+    {
+     "comm": "python",
+     "identified_as": "event_loop",
+     "py_name": null,
+     "tid": 1001
+    }
+   ],
+   "1002": [
+    {
+     "comm": "python",
+     "identified_as": "event_loop",
+     "py_name": null,
+     "tid": 1002
+    }
+   ],
+   "2001": [
+    {
+     "comm": "python",
+     "identified_as": "event_loop",
+     "py_name": null,
+     "tid": 2001
+    },
+    {
+     "comm": "capkit-snap",
+     "identified_as": "snapshot_writer",
+     "py_name": null,
+     "tid": 2002
+    }
+   ]
+  },
+  "wstart": {
+   "1001": [
+    {
+     "comm": "python",
+     "identified_as": "event_loop",
+     "py_name": null,
+     "tid": 1001
+    }
+   ],
+   "1002": [
+    {
+     "comm": "python",
+     "identified_as": "event_loop",
+     "py_name": null,
+     "tid": 1002
+    }
+   ],
+   "2001": [
+    {
+     "comm": "python",
+     "identified_as": "event_loop",
+     "py_name": null,
+     "tid": 2001
+    },
+    {
+     "comm": "capkit-snap",
+     "identified_as": "snapshot_writer",
+     "py_name": null,
+     "tid": 2002
+    }
+   ]
+  }
+ },
+ "tier": {
+  "baseline": false,
+  "beat_ns": 20000000,
+  "gate": null,
+  "inject": [],
+  "kind": "up",
+  "label": "up-r40",
+  "load_value": 40.0,
+  "max_tokens": 3,
+  "note": "synthetic",
+  "prompt_set": "tok8",
+  "ramp_ns": 1000000000,
+  "rate_rps": 40.0,
+  "seq": 4,
+  "start_ns": 12000000000,
+  "stream_interval": 1,
+  "streams_c": null,
+  "tail_ns": 1000000000,
+  "tokens_per_msg": 1,
+  "window_ns": 4000000000
+ },
+ "written_mono_ns": 9746272134693071,
+ "written_wall": "2026-11-13T11:37:28.215Z"
+}

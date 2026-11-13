@@ -1,0 +1,17 @@
+{
+ "add": -1,
+ "expect": {
+  "exit_code": 10,
+  "red_checks": [
+   "C5"
+  ],
+  "tier_verdicts": {
+   "4": "VOID"
+  }
+ },
+ "file": "runs/Jlocal-sample-good-r0-L0_synthetic-a/raw/tiers/004_up-r40/nullsse.w0.summary.json",
+ "json_path": [
+  "counts",
+  "requests"
+ ]
+}

@@ -1,0 +1,33 @@
+# B6-jobs 进度(作业脚手架:submit.py / sbatch 模板 / inner 脚本 / prep-tokenizer)
+
+- 2026-11-13 开始:无先前进度。正在读 INTERFACES.md(§0-2、§5、§9.5、§11)。
+- 已读 INTERFACES §0-2、§5、§9、§11、§12;下一步读 capcommon scratchpath/runtree/clock/hashing/exitcodes、计划 CONSTRAINTS/RESOURCES/DATA、WT-21 脚手架
+- 已读计划 CONSTRAINTS/RESOURCES 与 cdb csv;设计:capjobs 包放 jobs/capjobs(写权限所限),launch plan 由 capjobs.inner 执行
+- 设计已定(2026-11-13):
+  - Python 包 `capjobs` 放 `jobs/capjobs/`(写权限只到 jobs/;INTERFACES §1.1 写的是 tools/capjobs,报告里列偏差,集成者可 git mv)。调用:`PYTHONPATH=<C>/tools:<C>/jobs python3.11 -m capjobs.submit ...`。
+  - 模块:remote(ssh 命令构造+可替换 runner)、resources(资源参数校验与 sbatch argv)、snapshot(不可变快照+MANIFEST)、cdbexclude(cdb csv → --exclude)、jobstate(squeue 空且 sacct 终态)、slurmview、submit(CLI:probe/submit/local-record/slurm-view/exclude/jobstate/record-end/prep-tokenizer[只 dry-run])、overlay(容器内覆盖+逐字节核对)、envfiles(mounts/local-disk/gpu-idle/image/job)、launches(按 launch plan 起编排器、拷回、核对、raw/ 只读、STATE)、copyback(拷回+核对+收尾 sweep)。
+  - 脚本:jobs/capkit_job.sbatch(批处理层,无 python)、jobs/capkit_inner.sh(容器内)、jobs/prep_tokenizer.sbatch.draft(纯 bash,白名单拷贝+sha256 清单)。
+  - 白名单用 capcommon.policy.NO_MODEL_EXPERIMENTS(不含 E10-proxy/E13-main,与任务文本不同,以 INTERFACES 为准)。
+- 下一步:写 capjobs/__init__、remote、resources、cdbexclude、jobstate
+- 已写 __init__、remote、resources、cdbexclude、jobstate、slurmview;下一步 snapshot、launchplan、submit CLI
+- 已写 launchplan、snapshot;下一步 submit CLI
+- submit.py:helpers+resources 段已写;下一步 sub-commands 段(probe/submit/local-record/...)
+- submit.py: cmd_probe、prepare_submit 已写;下一步 cmd_submit 执行段、local-record、其余子命令
+- submit.py: 全部子命令函数已写;下一步 argparse/main
+- submit.py main 完成,import ok;下一步用保存的 cdb csv 试 exclude,再写容器侧模块(overlay/envfiles/copyback/launches)
+- 已写 jobident、overlay;下一步 envfiles、copyback、launches
+- 已写 envfiles;下一步 copyback、launches
+- 已写 copyback;下一步 launches
+- 已写 launches;import ok;下一步写 bash:capkit_job.sbatch、capkit_inner.sh、prep_tokenizer.sbatch.draft
+- 已写 capkit_job.sbatch、capkit_inner.sh(bash -n 通过;本机无 shellcheck);下一步 prep_tokenizer.sbatch.draft、README、tests
+- 已写 prep_tokenizer.sbatch.draft;开始写 tests/jobs(conftest、各模块测试)
+- tests/jobs/test_units.py 50 passed;下一步 test_submit.py(端到端 submit/probe/local-record/record-end/禁入断言)
+- test_submit.py 通过(63 passed 合计);修正:overlay sha 预检前移到写盘之前。下一步 test_container.py(overlay/envfiles/copyback/launches)
+- test_container.py 写完;修 sweep:本地无文件时直接 EMPTY、不拷空树。下一步 test_scripts.py(bash -n、静态断言、prep_tokenizer 本地跑、inner finalize-only 空场景)
+- 全部 tests/jobs 85 passed。下一步:破坏性自测(scratchpad 副本,逐项改坏断言变红)、README.md、最终复查
+- 破坏性自测 10 组全红(scratchpad/b6sab/run.py;对照组 86 passed);补 overlay 读回不一致测试。下一步 README.md
+- 已写 jobs/README.md(入口、顺序、偏差 8 条)。
+- 完成(2026-11-13):tests/jobs 86 passed(rc=0);tests/capcommon 187 passed(未改 capcommon,只回归);三个 bash 脚本 bash -n 通过(本机无 shellcheck);破坏性自测 10 组全红(scratchpad b6sab/run.py,产物目录名 TAMPERED_DO_NOT_USE_*,不在仓库内)。
+  pgrep:没有本组件留下的进程(看到的 pytest 属于 B1/B5 其他 agent,未动)。未提交 git。
+- 未决(交 spec 负责人/用户):①包位置 jobs/capjobs vs INTERFACES 的 tools/capjobs;②E10-proxy/E13-main 不在 policy 白名单;③作业级 env 文件的 identity(arm=job_arm)拷进启动树后与判定器「身份一致」规则冲突;④ts 探针文件在树内的位置(暂用 raw/probe_ts/);⑤srun --cpus-per-task 显式传(推断,待集群核对);⑥prep-tokenizer 只 dry-run,待用户批准。
+- 若有接手者:代码与测试都已落盘;下一步只剩集成者提交与三路自审。

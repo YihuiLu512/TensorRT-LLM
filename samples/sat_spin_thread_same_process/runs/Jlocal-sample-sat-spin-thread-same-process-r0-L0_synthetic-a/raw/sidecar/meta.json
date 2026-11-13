@@ -1,0 +1,6 @@
+{
+ "clk_tck": 100,
+ "interval_ns": 1000000000,
+ "schema": "capkit.sidecar.meta/1",
+ "unreadable": {}
+}

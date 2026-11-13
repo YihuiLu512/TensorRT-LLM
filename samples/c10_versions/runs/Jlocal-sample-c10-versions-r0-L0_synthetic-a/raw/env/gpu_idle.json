@@ -1,0 +1,20 @@
+{
+ "gpu_count": 1,
+ "identity": {
+  "arm": "synthetic-a",
+  "experiment": "E0",
+  "job_id": "local-sample-c10-versions",
+  "launch_seq": 0,
+  "pid": null,
+  "register_sha": "384933b4ea618f07c423b1f98e220d311421c3100e4e5e5473414c1abcf6703e",
+  "restart_count": 0,
+  "role": "gate",
+  "tier_label": null,
+  "tier_seq": null,
+  "worker": 0
+ },
+ "positive_control_ok": true,
+ "schema": "capkit.gpu_idle/1",
+ "written_mono_ns": 9746269571705747,
+ "written_wall": "2026-11-13T11:37:25.652Z"
+}

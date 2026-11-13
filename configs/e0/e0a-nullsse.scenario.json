@@ -1,0 +1,251 @@
+{
+ "schema": "capkit.scenario/1",
+ "experiment": "E0",
+ "name": "e0a-nullsse",
+ "tier_table": "02_e0/E0/register/e0a-nullsse.tiers.json",
+ "schedule": "02_e0/E0/register/e0a-nullsse.schedule.capbin",
+ "prompts": "02_e0/E0/register/e0a-nullsse.prompts.json",
+ "probe_tier": null,
+ "probe_groups": [],
+ "stop_grace_s": 10.0,
+ "stop_order": [
+  "capload",
+  "nullsse",
+  "sidecar",
+  "canary"
+ ],
+ "reconcile": {
+  "schema": "capkit.reconcile/1",
+  "chains": [
+   {
+    "name": "requests",
+    "kind": "requests",
+    "gate": null,
+    "include_usage": null,
+    "hops": [
+     {
+      "role": "capload",
+      "source": "summary.counts.ok",
+      "scope": "tier"
+     },
+     {
+      "role": "nullsse",
+      "source": "summary.counts.requests",
+      "scope": "tier"
+     }
+    ],
+    "corrections": []
+   },
+   {
+    "name": "sse",
+    "kind": "chunks",
+    "gate": "product",
+    "include_usage": true,
+    "hops": [
+     {
+      "role": "capload",
+      "source": "summary.frames.frames",
+      "scope": "tier"
+     },
+     {
+      "role": "nullsse",
+      "source": "summary.counts.frames_sent",
+      "scope": "tier"
+     }
+    ],
+    "corrections": []
+   }
+  ]
+ },
+ "roles": [
+  {
+   "role": "nullsse",
+   "launcher": "capkit",
+   "kind": "server",
+   "start_after": [],
+   "pin_role": "nullsse",
+   "cpus_needed": 2,
+   "numa": null,
+   "workers": 2,
+   "expected_procs": 3,
+   "measure_class": "stub_out_of_domain",
+   "asyncio": true,
+   "uses_grpc": false,
+   "loop": "asyncio",
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [
+    "backlog.active_streams"
+   ],
+   "snapshots": "all",
+   "args": [
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "0",
+    "--chunk-bytes",
+    "{param:nullsse_chunk_bytes}",
+    "--pacing",
+    "beat",
+    "--idle-close-s",
+    "{param:nullsse_idle_close_s}",
+    "--lag-period-us",
+    "{param:lag_period_us}"
+   ],
+   "env": {},
+   "module": "capload.nullsse",
+   "note": "expected_procs = parent + 2 SO_REUSEPORT workers (B1 forks workers as children); set to what capload.nullsse --workers 2 actually runs once B1 is final"
+  },
+  {
+   "role": "capload",
+   "launcher": "capkit",
+   "kind": "client",
+   "start_after": [
+    "nullsse"
+   ],
+   "pin_role": "capload",
+   "cpus_needed": 2,
+   "numa": null,
+   "workers": 2,
+   "expected_procs": 3,
+   "measure_class": "load_source",
+   "asyncio": true,
+   "uses_grpc": false,
+   "loop": "asyncio",
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [
+    "backlog.inflight"
+   ],
+   "snapshots": "all",
+   "args": [
+    "--target-port-file",
+    "{port_file:nullsse}",
+    "--model",
+    "nullsse",
+    "--endpoint",
+    "/v1/completions",
+    "--schedule",
+    "{input:schedule}",
+    "--prompts",
+    "{input:prompts}",
+    "--conn-policy",
+    "keepalive",
+    "--pool-pick",
+    "{param:capload_pool_pick}",
+    "--pool-seed",
+    "{param:capload_pool_seed}",
+    "--pool-reset",
+    "{param:capload_pool_reset}",
+    "--recv-mode",
+    "count",
+    "--chunk-sample-mod",
+    "{param:capload_chunk_sample_mod}",
+    "--fionread-every-ms",
+    "{param:capload_fionread_every_ms}",
+    "--lag-period-us",
+    "{param:lag_period_us}",
+    "--max-records-per-worker",
+    "{param:capload_max_records_per_worker}"
+   ],
+   "env": {},
+   "module": "capload",
+   "note": "expected_procs = parent + 2 workers (same caveat as nullsse)"
+  },
+  {
+   "role": "sidecar",
+   "launcher": "capkit",
+   "kind": "aux",
+   "start_after": [
+    "capload"
+   ],
+   "pin_role": "sidecar",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "observer",
+   "asyncio": false,
+   "uses_grpc": false,
+   "loop": null,
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "--interval-ms",
+    "{param:sidecar_interval_ms}",
+    "--gpu-every-s",
+    "{param:sidecar_gpu_every_s}",
+    "--numa-every-s",
+    "{param:sidecar_numa_every_s}"
+   ],
+   "env": {},
+   "module": "capenv.sidecar"
+  },
+  {
+   "role": "canary",
+   "launcher": "capkit",
+   "kind": "aux",
+   "start_after": [],
+   "pin_role": "canary",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "observer",
+   "asyncio": false,
+   "uses_grpc": false,
+   "loop": null,
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "--interval-ms",
+    "{param:canary_interval_ms}"
+   ],
+   "env": {},
+   "module": "capenv.canary"
+  }
+ ],
+ "params_required": [
+  "canary_interval_ms",
+  "capload_chunk_sample_mod",
+  "capload_fionread_every_ms",
+  "capload_max_records_per_worker",
+  "capload_pool_pick",
+  "capload_pool_reset",
+  "capload_pool_seed",
+  "lag_period_us",
+  "nullsse_chunk_bytes",
+  "nullsse_idle_close_s",
+  "sidecar_gpu_every_s",
+  "sidecar_interval_ms",
+  "sidecar_numa_every_s"
+ ],
+ "dims": {
+  "tokenizer": null,
+  "stub": "nullsse (capkit null SSE sink)",
+  "response_timing_switches": "defaults (not set)",
+  "interpretation": "E0 round 1: method self-check / pilot; not a capacity result",
+  "log_sink": "raw/logs on the node-local disk (orchestrator redirect)"
+ },
+ "note": "E0 (a) second line: capload -> nullsse, sub-saturation tiers only"
+}

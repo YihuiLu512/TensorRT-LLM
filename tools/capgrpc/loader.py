@@ -1,0 +1,556 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+"""capgrpc: multi-process grpc.aio open-loop load generator and stamped drain.
+
+- Absolute schedule: worker k sends the schedule rows with req_id % workers == k at their planned
+  times (one dispatcher per worker; late sends are sent, never skipped; latency columns start from
+  the planned time and the actual send time is recorded beside it).
+- Raw bytes: response_deserializer=None; every received message's type is checked against bytes
+  and counted per type (summary.recv_types), so "we really get raw bytes" is data, not assumption.
+- Channels: --channels-per-worker N grpc.aio channels per worker, each with
+  grpc.use_local_subchannel_pool=1 (own TCP connection) unless --shared-subchannel-pool (control).
+- --stamped: every message starts with the beat stamp (step, planned_rel_ns); the drain records
+  message-level lag = receive time - stamped planned time (INTERFACES.md 7.4).
+- --in-process: run the single worker in this process (weak-reader mode with
+  --workers 1 --channels-per-worker 1); otherwise a supervisor process spawns the workers.
+No disk writes until the end: records go to preallocated RecordArrays, dumped per tier at exit.
+"""
+
+import argparse
+import asyncio
+import struct
+import sys
+
+import grpc
+
+from capcommon import expect, hist as _hist
+from capcommon.aio import call_at_ns, run as aio_run
+from capcommon.capbin import RecordArray
+from capcommon.cli import add_common_args, common_from_args
+from capcommon.clock import now_ns
+from capcommon.exitcodes import OK, STOPPED_EARLY, CapkitError, ConfigError
+from capcommon.hashing import sha256_file
+from capcommon.lifecycle import StopController
+from capcommon.schedule import STEP_STAMP, load_schedule, per_worker_tier_counts, prompt_index
+from capcommon.wire import GRPC_REQ
+
+from . import SITES, SLOTS, TOOL
+from .common import (ToolRuntime, TierCursor, child_main, open_channel, raw_stream_callable,
+                     resolve_target, run_supervisor, status_reason, wait_channels_ready,
+                     worker_ready_info, write_inprocess_ready)
+from .reqbytes import encode_pb_string_field, load_prompts, load_reqbytes
+
+REQUEST_FORMATS = ("capkit", "openengine", "raw")
+REQ_FIELDS = [("req_id", "q"), ("planned_rel_ns", "q"), ("sent_rel_ns", "q"),
+              ("first_rel_ns", "q"), ("done_rel_ns", "q"), ("frames", "i"), ("bytes", "q"),
+              ("tokens", "i"), ("status", "h"), ("conn_id", "i"), ("new_conn", "b"),
+              ("tier_seq", "h")]
+MSG_FIELDS = [("stream_id", "q"), ("idx", "i"), ("step", "q"), ("planned_rel_ns", "q"),
+              ("recv_rel_ns", "q"), ("tier_seq", "h")]
+CLASS_HINTS = {"timeout_registered": "overload", "protocol_error": "non_overload"}
+
+
+# ---- command line -----------------------------------------------------------------------------
+
+def build_parser():
+    p = argparse.ArgumentParser(prog="python -m capgrpc.load", description=__doc__.split("\n")[0])
+    add_common_args(p, loop=True, tiers=True, snapshot=True, ready=True, port=False)
+    g = p.add_argument_group("capgrpc.load")
+    g.add_argument("--target", help="HOST:PORT (exclusive with --target-port-file)")
+    g.add_argument("--target-port-file", help="port file of the server role")
+    g.add_argument("--method", required=True, help="gRPC method path, e.g. /pkg.Service/Method")
+    g.add_argument("--workers", type=int, required=True)
+    g.add_argument("--in-process", action="store_true",
+                   help="run the (single) worker in this process; needs --workers 1")
+    g.add_argument("--channels-per-worker", type=int, required=True)
+    g.add_argument("--shared-subchannel-pool", action="store_true",
+                   help="CONTROL ONLY: do not set grpc.use_local_subchannel_pool, so the "
+                        "channels of a worker share one connection")
+    g.add_argument("--schedule", required=True)
+    g.add_argument("--request-format", required=True, choices=REQUEST_FORMATS)
+    g.add_argument("--prompts", help="prompt pool (capkit format)")
+    g.add_argument("--request-bytes", help="request-bytes file (openengine / raw format)")
+    g.add_argument("--stamped", action="store_true",
+                   help="drain mode: read the beat stamp of every message (INTERFACES.md 7.4)")
+    g.add_argument("--msg-sample-mod", type=int, required=True,
+                   help="record msgs rows for streams with req_id %% M == 0")
+    g.add_argument("--lag-period-us", type=int, required=True)
+    g.add_argument("--max-records-per-worker", type=int, required=True)
+    g.add_argument("--max-msg-records-per-worker", type=int,
+                   help="msgs capacity; derived exactly from the schedule for capkit requests")
+    g.add_argument("--lag-records-capacity", type=int, default=0,
+                   help="per-sample loop-lag rows (0 = histogram only)")
+    return p
+
+
+def validate_args(args, common):
+    if args.workers < 1:
+        raise ConfigError("--workers must be >= 1")
+    if args.in_process and args.workers != 1:
+        raise ConfigError("--in-process needs --workers 1")
+    if args.channels_per_worker < 1:
+        raise ConfigError("--channels-per-worker must be >= 1")
+    if args.msg_sample_mod < 1:
+        raise ConfigError("--msg-sample-mod must be >= 1")
+    if args.max_records_per_worker < 1:
+        raise ConfigError("--max-records-per-worker must be >= 1")
+    if args.lag_records_capacity < 0:
+        raise ConfigError("--lag-records-capacity must be >= 0")
+    if (args.target is None) == (args.target_port_file is None):
+        raise ConfigError("give exactly one of --target and --target-port-file")
+    if not args.method.startswith("/") or args.method.count("/") != 2:
+        raise ConfigError("--method must look like /pkg.Service/Method")
+    if args.request_format == "capkit":
+        if not args.prompts or args.request_bytes:
+            raise ConfigError("--request-format capkit needs --prompts (and no --request-bytes)")
+    elif not args.request_bytes or args.prompts:
+        raise ConfigError("--request-format %s needs --request-bytes (and no --prompts)"
+                          % args.request_format)
+    if len(common.cpus) < args.workers:
+        raise ConfigError("--cpus lists %d cpus for %d workers" % (len(common.cpus), args.workers))
+
+
+# ---- per-worker request plan ------------------------------------------------------------------
+
+def _prompt_bytes(kind, item):
+    if kind == "text":
+        return item.encode("utf-8")
+    return struct.pack("<%di" % len(item), *item)  # token ids as int32 little-endian
+
+
+class RequestPlan:
+    """This worker's schedule rows, request builder, planned counts and record capacities."""
+
+    def __init__(self, args, tt, worker):
+        self.tt = tt
+        self.n_workers = args.workers
+        try:
+            self.req_ids, self.planned, self.tseq, meta = load_schedule(
+                args.schedule, worker, args.workers, tier_table_sha=tt.sha256)
+        except OSError as e:
+            raise ConfigError("cannot read --schedule: %s" % e)
+        self.schedule_sha256 = sha256_file(args.schedule)
+        counts = per_worker_tier_counts(meta, args.workers)
+        self.planned_by_tier = [counts.get((worker, t.seq), 0) for t in tt.tiers]
+        seen = [0] * len(tt)
+        for s in self.tseq:
+            seen[s] += 1
+        if seen != self.planned_by_tier:
+            raise ConfigError("schedule rows per tier %s != header per_tier %s"
+                              % (seen, self.planned_by_tier))
+        self.n = len(self.req_ids)
+        if self.n > args.max_records_per_worker:
+            raise ConfigError("worker %d has %d requests > --max-records-per-worker %d"
+                              % (worker, self.n, args.max_records_per_worker))
+        self.format = args.request_format
+        self.expected_msgs = [None] * len(tt)
+        if self.format == "capkit":
+            self._init_capkit(args)
+        else:
+            self._init_reqbytes(args)
+        self.msg_capacity = 0
+        if args.stamped:
+            if args.max_msg_records_per_worker is not None:
+                self.msg_capacity = args.max_msg_records_per_worker
+            elif self.format == "capkit":
+                mod = args.msg_sample_mod
+                self.msg_capacity = sum(self.expected_msgs[s]
+                                        for r, s in zip(self.req_ids, self.tseq) if r % mod == 0)
+            else:
+                raise ConfigError("--stamped with --request-format %s needs "
+                                  "--max-msg-records-per-worker" % self.format)
+
+    def _init_capkit(self, args):
+        try:
+            prompts = load_prompts(args.prompts)
+        except OSError as e:
+            raise ConfigError("cannot read --prompts: %s" % e)
+        sets = prompts["sets"]
+        self._sets = {}
+        for t in self.tt.tiers:
+            if not t.is_load:
+                continue
+            if t.prompt_set not in sets:
+                raise ConfigError("tier %d prompt_set %r not in the prompts file"
+                                  % (t.seq, t.prompt_set))
+            if t.prompt_set not in self._sets:
+                s = sets[t.prompt_set]
+                self._sets[t.prompt_set] = [_prompt_bytes(s["kind"], it) for it in s["items"]]
+            self.expected_msgs[t.seq] = expect.msgs_per_request(
+                t.max_tokens, t.tokens_per_msg, t.stream_interval, "product")
+        tiers = self.tt.tiers
+        sets_by_tier = [self._sets.get(t.prompt_set) for t in tiers]
+        pack = GRPC_REQ.pack
+
+        def build(rid, seq):
+            t = tiers[seq]
+            items = sets_by_tier[seq]
+            return pack(rid, t.max_tokens, t.tokens_per_msg, t.stream_interval, seq) + \
+                items[prompt_index(rid, len(items))]
+
+        self.build = build
+
+    def _init_reqbytes(self, args):
+        try:
+            rb = load_reqbytes(args.request_bytes)
+        except OSError as e:
+            raise ConfigError("cannot read --request-bytes: %s" % e)
+        if rb.format != self.format:
+            raise ConfigError("--request-bytes file is %s, not %s" % (rb.format, self.format))
+        if self.format == "raw":
+            body = rb.wildcard
+            self.build = lambda rid, seq: body
+            return
+        tiers = self.tt.tiers
+        set_sizes = {}
+        for key in rb.table:
+            set_sizes[key[0]] = max(set_sizes.get(key[0], 0), key[1] + 1)
+        # check every request this worker will send has a template, before the origin
+        for rid, seq in zip(self.req_ids, self.tseq):
+            t = tiers[seq]
+            n = set_sizes.get(t.prompt_set, 0)
+            if not n or rb.lookup(t.prompt_set, prompt_index(rid, n), t.max_tokens) is None:
+                raise ConfigError("request-bytes has no template for tier %d (set %r, "
+                                  "max_tokens %d)" % (seq, t.prompt_set, t.max_tokens))
+        num = rb.id_field_number
+
+        def build(rid, seq):
+            t = tiers[seq]
+            n = set_sizes[t.prompt_set]
+            return encode_pb_string_field(num, str(rid)) + \
+                rb.lookup(t.prompt_set, prompt_index(rid, n), t.max_tokens)
+
+        self.build = build
+
+
+# ---- worker -----------------------------------------------------------------------------------
+
+class LoadWorker:
+    """One worker process (or the in-process worker): dispatcher + one task per request."""
+
+    def __init__(self, args, rt, plan, link):
+        self.args = args
+        self.rt = rt
+        self.plan = plan
+        self.link = link
+        self.tt = rt.tt
+        self.origin = rt.origin_ns
+        self.nch = args.channels_per_worker
+        self.local_pool = not args.shared_subchannel_pool
+        self.stamped = args.stamped
+        self.mod = args.msg_sample_mod
+        T = self.tt.request_timeout_ns
+        self.timeout_ns = T
+        nt = len(self.tt)
+        self.sent_by_tier = [0] * nt
+        self.ok_by_tier = [0] * nt
+        self.failed_by_tier = [0] * nt
+        self.msgs_by_tier = [0] * nt
+        self.bytes_by_tier = [0] * nt
+        self.mismatch_by_tier = [0] * nt
+        self.fail_reasons = [dict() for _ in range(nt)]
+        self.recv_types = [dict() for _ in range(nt)]
+        self.send_hist = [_hist.new_counts() for _ in range(nt)]
+        self.send_max = [None] * nt
+        self.status_ids = {}
+        self.req_rec = RecordArray(REQ_FIELDS, plan.n)
+        self.msg_rec = RecordArray(MSG_FIELDS, plan.msg_capacity) if self.stamped else None
+        self.cursor = TierCursor(self.tt)
+        v = rt.registry.values
+        self.v = v
+        pos = {d["name"]: d["offset"] for d in rt.registry.slots}
+        self.i_inflight = pos["backlog.inflight"]
+        self.i_active = pos["backlog.active_streams"]
+        self.i_read = pos["backlog.read"]
+        self.i_sent = pos["self.sent"]
+        self.i_ok = pos["self.ok"]
+        self.i_failed = pos["self.failed"]
+        self.i_bytes = pos["bytes.recv"]
+        self.h_send = rt.slot_refs["lag.send"]
+        self.h_msg = rt.slot_refs["lag.msg"]
+        self.inj_send = rt.injectors["send.req"]
+        self.inj_recv = rt.injectors["recv.msg"]
+        self.inj_drop = rt.injectors["drop.msg"]
+        self.tasks = set()
+        self.stopping = False
+        self.stop_hard = False
+        self.stop_at_ns = None
+        self._wake = None
+        self.n_dispatched = 0
+
+    # -- stop ------------------------------------------------------------------------------------
+    def on_stop(self, hard):
+        if not self.stopping:
+            self.stop_at_ns = now_ns()
+        self.stopping = True
+        self.stop_hard = self.stop_hard or hard
+        w = self._wake
+        if w is not None and not w.done():
+            w.set_result(None)
+        if hard:
+            for t in list(self.tasks):
+                t.cancel()
+
+    async def _sleep_until(self, loop, abs_ns):
+        """Sleep until abs_ns unless a stop arrives first; returns False when stopped."""
+        if self.stopping:
+            return False
+        if abs_ns <= now_ns():
+            return True
+        fut = loop.create_future()
+        self._wake = fut
+        h = call_at_ns(loop, abs_ns, lambda f: f.done() or f.set_result(None), fut)
+        try:
+            await fut
+        finally:
+            h.cancel()
+            self._wake = None
+        return not self.stopping
+
+    # -- main --------------------------------------------------------------------------------------
+    async def run(self, loop):
+        rt, args = self.rt, self.args
+        stopper = StopController()
+        stopper.attach_loop(loop)
+        stopper.on_stop(self.on_stop)
+        if self.link is not None:
+            self.link.attach(loop, stopper)
+        target = resolve_target(args.target, args.target_port_file)
+        channels = [open_channel(target, self.local_pool) for _ in range(self.nch)]
+        self.calls = [raw_stream_callable(c, args.method) for c in channels]
+        try:
+            await wait_channels_ready(channels, self.origin)
+            info = {"target": target, "method": args.method, "channels": self.nch,
+                    "local_subchannel_pool": self.local_pool,
+                    "request_format": self.plan.format, "stamped": self.stamped,
+                    "n_requests": self.plan.n, "planned_by_tier": self.plan.planned_by_tier,
+                    "msg_capacity": self.plan.msg_capacity,
+                    "schedule_sha256": self.plan.schedule_sha256}
+            rt.start(loop, info)
+            if self.link is not None:
+                self.link.ready(worker_ready_info(rt, info))
+            else:
+                write_inprocess_ready(rt, args.ready_file, info)
+            await self.dispatch(loop)
+            await self._sleep_until(loop, self.origin + self.tt.end_ns)
+            if self.tasks and not self.stop_hard:
+                await asyncio.wait(list(self.tasks), timeout=args.stop_grace_s)
+            for t in list(self.tasks):
+                t.cancel()
+            if self.tasks:
+                await asyncio.gather(*self.tasks, return_exceptions=True)
+        finally:
+            rt.close_tiers()
+            for c in channels:
+                await c.close()
+        rt.read_stop()
+        self.write_outputs()
+        rt.stop()
+        stopped_early = self.stop_at_ns is not None and \
+            self.stop_at_ns < self.origin + self.tt.end_ns
+        return STOPPED_EARLY if stopped_early else OK
+
+    async def dispatch(self, loop):
+        planned, origin, n = self.plan.planned, self.origin, self.plan.n
+        i = 0
+        create = loop.create_task
+        tasks = self.tasks
+        while i < n:
+            if not await self._sleep_until(loop, origin + planned[i]):
+                break
+            now = now_ns()
+            while i < n and origin + planned[i] <= now:
+                t = create(self.one(i))
+                tasks.add(t)
+                t.add_done_callback(tasks.discard)
+                i += 1
+        self.n_dispatched = i
+
+    def _status_id(self, reason):
+        sid = self.status_ids.get(reason)
+        if sid is None:
+            sid = len(self.status_ids) + 1
+            self.status_ids[reason] = sid
+        return sid
+
+    async def one(self, i):
+        plan, v, origin = self.plan, self.v, self.origin
+        rid, seq, prel = plan.req_ids[i], plan.tseq[i], plan.planned[i]
+        req = plan.build(rid, seq)
+        ch = i % self.nch
+        self.inj_send.hit()
+        t0 = now_ns()
+        timeout = None
+        if self.timeout_ns is not None:
+            timeout = max((origin + prel + self.timeout_ns - t0) / 1e9, 0.001)
+        lag = t0 - origin - prel
+        self.h_send.add(lag)
+        _hist.add(self.send_hist[seq], lag)
+        if self.send_max[seq] is None or lag > self.send_max[seq]:
+            self.send_max[seq] = lag
+        self.sent_by_tier[seq] += 1
+        v[self.i_sent] += 1
+        v[self.i_inflight] += 1
+        v[self.i_active] += 1
+        active = True
+        nmsg = nbytes = 0
+        first = -1
+        reason = None
+        call = None
+        stamped, sampled = self.stamped, rid % self.mod == 0
+        inj_recv, inj_drop = self.inj_recv, self.inj_drop
+        try:
+            call = self.calls[ch](req, timeout=timeout)
+            while True:
+                msg = await call.read()
+                if msg is grpc.aio.EOF:
+                    break
+                t = now_ns()
+                inj_recv.hit()
+                if inj_drop.should_drop():
+                    continue
+                if type(msg) is not bytes:
+                    tn = type(msg).__name__
+                    self.recv_types[seq][tn] = self.recv_types[seq].get(tn, 0) + 1
+                    reason = "protocol_error"
+                    call.cancel()
+                    break
+                if nmsg == 0:
+                    self.recv_types[seq]["bytes"] = self.recv_types[seq].get("bytes", 0) + 1
+                    first = t
+                ln = len(msg)
+                nbytes += ln
+                v[self.i_read] += 1
+                v[self.i_bytes] += ln
+                if stamped:
+                    if ln < 16:
+                        reason = "protocol_error"
+                        call.cancel()
+                        break
+                    step, splanned = STEP_STAMP.unpack_from(msg, 0)
+                    rel = t - origin
+                    self.h_msg.add(rel - splanned)
+                    if sampled:
+                        self.msg_rec.append(rid, nmsg, step, splanned, rel,
+                                            self.cursor.seq_at(rel))
+                nmsg += 1
+            v[self.i_active] -= 1
+            active = False
+            if reason is None:
+                code = await call.code()
+                if code != grpc.StatusCode.OK:
+                    reason = self._reason(code)
+        except grpc.aio.AioRpcError as e:
+            reason = self._reason(e.code())
+        except asyncio.CancelledError:
+            reason = "grpc_CANCELLED"
+            if call is not None:
+                call.cancel()
+        finally:
+            if active:
+                v[self.i_active] -= 1
+        done = now_ns()
+        v[self.i_inflight] -= 1
+        if reason is None:
+            status = 0
+            self.ok_by_tier[seq] += 1
+            v[self.i_ok] += 1
+            em = plan.expected_msgs[seq]
+            if em is not None and nmsg != em:
+                self.mismatch_by_tier[seq] += 1
+        else:
+            status = self._status_id(reason)
+            self.failed_by_tier[seq] += 1
+            v[self.i_failed] += 1
+            fr = self.fail_reasons[seq]
+            fr[reason] = fr.get(reason, 0) + 1
+        self.msgs_by_tier[seq] += nmsg
+        self.bytes_by_tier[seq] += nbytes
+        self.req_rec.append(rid, prel, t0 - origin, first - origin if first >= 0 else -1,
+                            done - origin, nmsg, nbytes, -1, status, ch, 0, seq)
+
+    def _reason(self, code):
+        if code == grpc.StatusCode.DEADLINE_EXCEEDED and self.timeout_ns is not None:
+            return "timeout_registered"
+        return status_reason(code)
+
+
+    # -- outputs -------------------------------------------------------------------------------
+    def write_outputs(self):
+        rt, plan, args = self.rt, self.plan, self.args
+        status_codes = {str(i): r for r, i in self.status_ids.items()}
+        rt.dump_records(self.req_rec, "requests", "loadgen.requests",
+                        {"status_codes": status_codes, "method": args.method,
+                         "request_format": plan.format, "conn_id": "channel index",
+                         "tokens": "-1 = not counted by the gRPC loader",
+                         "schedule_sha256": plan.schedule_sha256})
+        if self.msg_rec is not None:
+            rt.dump_records(self.msg_rec, "msgs", "drain.msgs",
+                            {"chunk_sample_mod": self.mod, "msg_sample_mod": self.mod,
+                             "sample_rule": "stream_id % msg_sample_mod == 0",
+                             "tier_seq": "event time (receive)"})
+        rt.dump_lag()
+        for seq in sorted(rt.end_marks):
+            a, b = rt.start_marks[seq], rt.end_marks[seq]
+            P, S = plan.planned_by_tier[seq], self.sent_by_tier[seq]
+            payload = rt.tier_common(seq)
+            payload.update({
+                "schedule_sha256": plan.schedule_sha256,
+                "request_timeout_ns": self.tt.request_timeout_ns,
+                "method": args.method, "request_format": plan.format,
+                "channels_per_worker": self.nch, "local_subchannel_pool": self.local_pool,
+                "stamped": self.stamped, "in_process": bool(args.in_process),
+                "counts": {"planned": P, "sent": S, "ok": self.ok_by_tier[seq],
+                           "failed": self.failed_by_tier[seq], "not_sent": P - S},
+                "failures": [{"reason": r, "count": c,
+                              "class_hint": CLASS_HINTS.get(r, "unclassified")}
+                             for r, c in sorted(self.fail_reasons[seq].items())],
+                "msgs": {"msgs": self.msgs_by_tier[seq], "bytes": self.bytes_by_tier[seq],
+                         "expected_per_request": plan.expected_msgs[seq],
+                         "ok_requests_with_unexpected_msg_count":
+                             self.mismatch_by_tier[seq]
+                             if plan.expected_msgs[seq] is not None else None,
+                         "attribution": "planned tier of the request"},
+                "send_lag_ns": {"hist": {"bins": _hist.NAME, "counts": self.send_hist[seq]},
+                                "max": self.send_max[seq], "n": sum(self.send_hist[seq])},
+                "msg_lag_ns": (rt.hist_summary("lag.msg", a["vals"], b["vals"])
+                               if self.stamped else None),
+                "read_msgs_event_time": rt.slot_delta("backlog.read", a["vals"], b["vals"]),
+                "recv_types": self.recv_types[seq],
+                "overflow": {"requests": self.req_rec.overflow,
+                             "msgs": self.msg_rec.overflow if self.msg_rec else 0,
+                             "lag": rt.lag_records.overflow if rt.lag_records else 0}})
+            rt.write_summary(seq, payload)
+
+
+# ---- entry points ------------------------------------------------------------------------------
+
+def worker_run(args, worker, link):
+    common = common_from_args(args)
+    cpus = [common.cpus[worker]]
+    rt = ToolRuntime(common, TOOL, SLOTS, SITES, worker, args.workers, cpus, args.lag_period_us,
+                     args.lag_records_capacity)
+    plan = RequestPlan(args, rt.tt, worker)
+    w = LoadWorker(args, rt, plan, link)
+    return aio_run(w.run, common.loop)
+
+
+def child_entry(args_dict, worker, conn):
+    child_main(args_dict, worker, conn, worker_run)
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    try:
+        common = common_from_args(args)
+        validate_args(args, common)
+        if args.in_process:
+            return worker_run(args, 0, None)
+        return run_supervisor(args, common, args.workers, child_entry, TOOL, SLOTS)
+    except CapkitError as e:
+        print("%s: %s" % (TOOL, e), file=sys.stderr)
+        return e.exit_code
+
+
+if __name__ == "__main__":
+    sys.exit(main())

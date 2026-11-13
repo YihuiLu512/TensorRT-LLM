@@ -1,0 +1,100 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+"""A product-like dummy for tests/launch: HTTP /health, a plain (S-FE style) port file or a
+trtllm-serve style --report_addr file, optional children. Never deployed."""
+
+import argparse
+import http.server
+import json
+import os
+import signal
+import subprocess
+import sys
+import threading
+import time
+
+
+def probe_child():
+    """Emulate a capprobe'd child process: snapshot with identity from CAPPROBE_IDENTITY_FILE."""
+    from capcommon.snapshot import SlotRegistry, SnapshotWriter  # noqa: PLC0415
+    with open(os.environ["CAPPROBE_IDENTITY_FILE"]) as f:
+        ident = json.load(f)["identity"]
+    ident["pid"] = os.getpid()
+    reg = SlotRegistry()
+    reg.counter("count.F2.msgs")
+    w = SnapshotWriter(reg, os.environ["CAPPROBE_SHM_DIR"],
+                       int(os.environ["CAPPROBE_INTERVAL_MS"]) * 1_000_000,
+                       meta_extra={"identity": ident, "role_hint": os.environ.get(
+                           "CAPPROBE_ROLE_HINT"), "versions": {"python": sys.version}}).start()
+    done = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: done.set())
+    while not done.wait(0.05):
+        pass
+    w.stop()
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--host", required=True)
+    p.add_argument("--port-file")
+    p.add_argument("--report-addr")
+    p.add_argument("--health-status", type=int, default=200)
+    p.add_argument("--delay-ready-s", type=float, default=0.0)
+    p.add_argument("--spawn-child", action="store_true")
+    p.add_argument("--probe-child", action="store_true")
+    p.add_argument("--orphan", action="store_true", help="setsid grandchild ignoring SIGTERM")
+    p.add_argument("--ignore-term", action="store_true")
+    p.add_argument("--role-child", action="store_true", help=argparse.SUPPRESS)
+    a = p.parse_args()
+    if a.role_child:
+        return probe_child()
+    stop = threading.Event()
+    if a.ignore_term:
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    else:
+        signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    status = a.health_status
+
+    class H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(status if self.path == "/health" else 404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    srv = http.server.ThreadingHTTPServer((a.host, 0), H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    kids = []
+    if a.spawn_child:
+        kids.append(subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"]))
+    if a.probe_child:
+        kids.append(subprocess.Popen([sys.executable, __file__, "--host", a.host,
+                                      "--role-child"]))
+    if a.orphan:
+        subprocess.Popen([sys.executable, "-c",
+                          "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN);"
+                          "time.sleep(600)"], start_new_session=True)
+    time.sleep(a.delay_ready_s)
+    port = srv.server_address[1]
+    if a.port_file:
+        with open(a.port_file + ".partial", "w") as f:
+            f.write("%d\n" % port)
+        os.replace(a.port_file + ".partial", a.port_file)
+    if a.report_addr:
+        with open(a.report_addr + ".tmp", "w") as f:
+            f.write("%s:%d\n" % (a.host, port))
+        os.replace(a.report_addr + ".tmp", a.report_addr)
+    while not stop.wait(0.05):
+        pass
+    for k in kids:
+        k.terminate()
+    for k in kids:
+        k.wait()
+    srv.shutdown()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

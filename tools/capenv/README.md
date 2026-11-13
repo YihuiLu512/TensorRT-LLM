@@ -1,0 +1,132 @@
+# capenv（B4）：环境门禁、硬件画像、绑核表、D13/D14、时钟自检
+
+## 包的布局
+
+`tools/capenv/` 是一个普通包（INTERFACES.md §1.1）。第一批由 B4 分三处写成命名空间包（写权限所限），集成时合并到本目录并加了 `__init__.py`；代码里的 import 都是 `capenv.<模块>` 或包内相对 import，合并时没有改代码。
+
+- 仓库里跑：`PYTHONPATH=<C>/tools python -m capenv.<模块>`。
+- 容器里跑：与其他包一样整目录拷进 `dist-packages/capenv/`（INTERFACES §1.2）。
+
+依赖：只用标准库与 `capcommon`（不用 numpy、psutil、grpc），python3.11 与容器里的 3.12 都能跑。
+
+## 入口一览
+
+身份参数（`--experiment --arm --launch-seq --job-id --restart-count --register-sha --role`，见 INTERFACES §2.1）每个入口都必需，写进输出文件的 `identity`。退出码沿用 INTERFACES §2.4：0 通过、2 用法、3 配置、6 `ENV_INVALID`（检查结果是 RED 或 NOT_RUN）。
+
+### `python -m capenv.gate`（INTERFACES §11 的参数全部支持）
+
+```
+python -m capenv.gate <身份> --run-dir <作业目录> --phase {pre,post}
+    --registered-hw-sha SHA (--comparable-file PATH | --no-comparable)
+    --slurm-view-file PATH --slurm-view-wait-s S
+    [--max-alloc-gpus N] [--idle-window-s S --idle-busy-max-frac F]
+    [--hw-profile PATH] [--roles-file PATH] [--timeout-s S]
+```
+
+- 标准输出打印**一行** JSON 判定：`{"verdict":"PASS"|"ENV_INVALID","reasons":[…],"items":{"1":"PASS",…},"files":{…sha256…},"phase":…}`；同一份写进 `env/gate.<phase>.json`（`capkit.env_gate/1`）。
+- `pre`：RESOURCES §3 第 1～6 项 → `env/exclusivity.json`；`hw_gate.json`；`memguard.json`（本进程 + `--roles-file` 里的 pid）。`post`：第 1～5 项 → `env/exclusivity.post.json`。
+- **任何一项不是 PASS（RED 或 NOT_RUN）门禁就是 `ENV_INVALID`**：查不了的项不算通过。
+- 第 1～3 项先在容器里跑 `scontrol` / `squeue`；命令不存在或返回非 0 时等 `--slurm-view-file` 出现（最多 `--slurm-view-wait-s` 秒），用它的原文判同样的条件，`source` 写 `slurm_view`。
+- 各项判据：1 `JobId` 等于本作业、`OverSubscribe=NO`、TRES 里的 GPU 数 ≤ `--max-alloc-gpus`（不给这个参数时只记录 GPU 数，详情里写「not requested」）；2 `NodeName` 对、`CPUAlloc == CPUTot`；3 退出码 0、列出本作业（阳性对照，列不出 ⇒ NOT_RUN）、没有别的作业；4 `/proc/self/status` 的 `Cpus_allowed_list` 覆盖全部在线核（掩码里多出的离线 possible 核不算问题，本 VM 上就是 `0-95` 对在线 `0-23`）；5 `nvidia-smi` 先列出 ≥1 张卡（否则 NOT_RUN），再查无计算进程；6 空转 `--idle-window-s` 秒、每个在线核的忙碌比例（user+nice+system+irq+softirq+steal ÷ 全部 tick）≤ `--idle-busy-max-frac`。**不给第 6 项的两个参数时第 6 项 NOT_RUN ⇒ 门禁 ENV_INVALID**（窗口与阈值「待 E0 试点」，由登记表给出）。
+- `hw_gate.json`：本节点画像 sha 等于 `--registered-hw-sha` 即过；不等时只有 `--comparable-file` 里登记了全部差异字段才过。可比登记文件格式（本组件定义，INTERFACES 未定义）：`{"schema":"capkit.hw_comparable/1","registered_profile":{…主型号画像，恰好 §5.5.3 的键…},"comparable_fields":["kernel",…],"evidence":{…}}`；门禁先核对 `profile_sha256(registered_profile) == --registered-hw-sha`。
+
+### `python -m capenv.hwprofile`
+
+```
+python -m capenv.hwprofile <身份> --out env/hw_profile.json --raw-out env/hw_raw.json
+    --local-dir <节点本地运行目录> --chassis-source {slurm_view,dmi}
+    [--slurm-view-file PATH] [--image-sha256 HEX64] [--code-baseline SHA40]
+    [--container-runtime TEXT] [--timeout-s S]
+```
+
+- `hw_profile.json`（`capkit.hw_profile/1`）的载荷：`profile`（**恰好** `capcommon.hwprofile` 的 IDENTITY_FIELDS + OBSERVED_FIELDS）、`profile_sha256`、`sha_fields`、`raw_file_sha256`、`unreadable_identity_fields`。读：`capenv.hwprofile.load_profile(path)`（会重算 sha 核对）。
+- **进 sha 的字段**（identity）：`chassis_model cpu_arch cpu_model sockets cores_per_socket threads_per_core microcode numa_layout cpu_governor mem_total_gib mem_per_numa_gib gpu_model gpu_count gpu_mem_mib gpu_driver nics local_disk_type kernel container_runtime image_sha256 code_baseline`。**不进 sha**（observed）：`node_name partition collected_at collected_mono_ns cpu_freq_khz mem_available_kib local_disk_free_bytes nic_link sources`。读不到写 `{"unreadable": 原因}`，identity 键的这个标记也进 sha（原因文字也在内）。
+- 取法：lscpu（`LC_ALL=C`）、`/proc/cpuinfo` 的 microcode、`/sys/devices/system/node`、cpufreq、`/proc/meminfo`、`nvidia-smi --query-gpu`、`/sys/class/net/*`（只有带 `device` 链接的才算物理网卡；型号写 PCI `vendor:device`，速率读不到写 unreadable）、mountinfo + `/sys/dev/block` 定本地盘类型。`chassis_model` 的来源由 `--chassis-source` 显式指定：`slurm_view`（`scontrol show node` 原文里的 `SystemProductName`，与 capcommon 文档一致）或 `dmi`（`/sys/class/dmi/id/product_name`）。同一研究里必须始终用同一个来源，否则 sha 会因来源不同而不同。
+- `hw_raw.json`（`capkit.hw_raw/1`）放没有画像键的原始证据：`lscpu`、`lscpu -e`、`lscpu -p`、`numactl -H`、`free -b`、`lsblk`、`df` 原文与退出码，`iommu_groups_count`、DMI 产品名、超线程兄弟表（topology.summary）、uname。
+
+### `python -m capenv.pins`
+
+```
+python -m capenv.pins generate <身份> --demand FILE --out env/pin_table.json --source-sha <hw sha>
+    [--lscpu-file PATH] [--avoid-cpus LIST] [--primary-numa N]
+python -m capenv.pins verify <身份> --pin-table PATH --roles-file PATH --out env/pin_readback.json
+```
+
+- 拓扑来自 `lscpu -p=CPU,CORE,SOCKET,NODE`（或 `--lscpu-file` 给的同格式文本）。物理核 = (socket, core)；每个物理核只用编号最小的逻辑核，兄弟核留空（`siblings_left_idle`）；`--avoid-cpus` 里任一核所在的整个物理核都不分。
+- `--demand`：`[{"role":…,"cpus_needed":N,"numa":节点号或null}]`。显式给了节点的角色放在该节点；`numa:null` 的角色全部放进同一个「主节点」：`--primary-numa`，否则（有显式节点时）出现最多的显式节点，否则编号最小、能装下全部需求的节点。按需求顺序、核号升序连续分配。装不下以退出码 3 退出，stderr 打印 `{"verdict":"DOES_NOT_FIT","gap":[…]}`，**不跨节点、不用兄弟核凑**。
+- 输出：INTERFACES §5.5.1 的键（`source_sha rules siblings_left_idle roles unassigned`）外加 `primary_numa avoid_cpus demand avoided_cores topology topology_source table_sha256`（`table_sha256` 只算 `roles`）。
+- `verify`：对 `roles.json` 里每个角色在表里的进程，逐线程读 `Cpus_allowed_list` 与最近运行核；越出本角色核集、与他角色核集相交、最近运行核不在本角色核集，都算红；登记了但表里没有的角色、表里有但没登记进程的角色也算红；应检进程数为 0 ⇒ NOT_RUN。退出码 0 / 6。
+
+### `python -m capenv.memguard`
+
+`<身份> --out PATH (--pids LIST | --roles-file PATH)`。对每个 pid：`/proc/<pid>/cgroup` → memory 控制器路径（v1 `memory.limit_in_bytes`，v2 `memory.max`），从叶子一路读到挂载根，取最小的有限值；`max` 与 v1 的「不限」哨兵值（≥ 2^62）不算护栏。没有任何有限值的 pid 记红；pid 列表为空 ⇒ NOT_RUN。
+
+> 本 VM 实测（2026-11-13）：RHEL8 cgroup v1、systemd 239 下，`systemd-run --user --scope -p MemoryMax=6G` 里的进程 memory 控制器路径仍是登录会话的 scope，`memory.limit_in_bytes` = 9223372036854771712（不限），memguard 判红。即这台 VM 上那条护栏对内存并不生效；计算节点上以作业 cgroup 的读数为准。
+
+### `python -m capenv.gpu check`
+
+`<身份> --out env/gpu_idle.json --samples N --every-s S --timeout-s S` → `capkit.gpu_idle/1`：`positive_control_ok`（`nvidia-smi --query-gpu` 返回 0 且列出 ≥1 张卡）、`gpu_count`、逐次采样（每卡 `util_pct mem_used_mib compute_pids`）、`verdict`：阳性对照不过或任一次采样失败 ⇒ NOT_RUN；任一读数利用率 > 0 或有计算进程 ⇒ RED。INTERFACES §5.5 把 `gpu_idle.json` 记在 B6 名下；本模块是给 B6 的作业脚本调用的实现。sidecar 的 `gpu.jsonl` 用同一组函数。
+
+### `python -m capenv.loopback`（D14）
+
+`<身份> --sender-cpu A --receiver-cpu B --duration-s S --msg-bytes N --out env/loopback_softirq.json`。协调进程（应在第三个核上）起一对绑核的回环 TCP 收发进程，发送端在窗口内全力 `sendall`；窗口前后读两条线程的 `utime/stime` 与两个核的 `/proc/stat` 全部列。输出每个核：各列 tick 增量、忙碌 tick、绑在该核上的线程的 `utime+stime`、两者之差（不属于这对线程的忙碌时间，主要在 softirq/irq 列）。只给数，不下结论。
+
+### `python -m capenv.clockcheck`
+
+INTERFACES §11 的参数。server 写端口文件，client 做 `--round-trips` 次往返：单程差（对端戳 − 本端发送时刻）应落在 `[0, rtt]`；外加 `--back-to-back` 次连读 `monotonic_ns` 的差值分布、两边的 `/proc/self/ns/{pid,mnt}` 与 cgroup。client 写 `clock_check.json`，`consistent` = 往返数 > 0 且没有落在 `[0, rtt]` 之外的单程差。
+
+### `python -m capenv.switchinterval`（D13）
+
+`<身份> --versions-dir raw/env/versions --expected-count N --out env/switchinterval.json`。逐个版本自报文件取 `switchinterval_s`；`N` 由调用方给（`launch.json` 的 `expected_procs` 之和）；`N=0` ⇒ NOT_RUN，少于 N 个或缺字段 ⇒ RED。值只记录不判定。
+
+## 已知限制
+
+- 第 6 项只按核的忙碌比例判，不扣除「本作业自己的进程」的 CPU（按核归属进程时间在 /proc 里拿不到）；pre 阶段本作业只有门禁自己与作业脚本在睡眠，阈值留出这部分。
+- `pins verify` 把「最近运行核不在本角色核集」也判红：线程若在改亲和性之前睡下、之后一直没运行，`processor` 字段是旧值，会误红。E0 冒烟时看是否出现；出现就在判定口径里单列。
+
+## capenv.sidecar（B4）：sidecar v4
+
+
+### 命令行（INTERFACES §11 的参数全部必需）
+
+```
+python -m capenv.sidecar <身份> --run-dir <T> --cpus <sidecar 的核> --stop-grace-s S
+    --shm-dir <本次启动的快照目录> --origin-ns N --roles-file <T>/raw/procs/roles.json
+    --interval-ms 1000 --out-dir <T>/raw/sidecar --cpus-watch {all,LIST}
+    --gpu-every-s S --numa-every-s S --logs-dir <T>/raw/logs
+    [--ready-file PATH] [--pin-table PATH] [--gpu-timeout-s S]
+```
+
+- `--gpu-every-s 0` / `--numa-every-s 0` 关掉对应文件（关掉 GPU 后 GPU-IDLE 只能 NOT_RUN）。
+- `--pin-table`：给了就核对 `--cpus-watch` ⊇ 表里全部角色的核，不覆盖以退出码 3 退出（INTERFACES §5.6 写的是编排器核对，这里多一道）。
+- `--ready-file`：第一拍采完后写就绪文件（INTERFACES §11 的 sidecar 行没有列它，但 §2.2 说长驻进程都要就绪文件，编排器按原点前是否就绪判 NOT_RUN，所以这里做成可选）。
+- 只在收到 SIGTERM / SIGINT 时退出，退出码 0。
+
+### 做什么
+
+- **进程只按 `roles.json` 认**（pid + `starttime_ticks`）；`generation` / mtime 变了就重读。starttime 对不上（pid 复用）或进程没了，记进 `meta.json` 的 `pids_gone`，不再采；同一 pid 以新的 starttime 重新登记会重新采。没有任何按命令行或进程名的匹配。
+- 每拍（绝对时刻 `origin + k × interval`，落后就跳过并计 `missed_ticks`，不补拍）：
+  - `threads.jsonl`：每个登记进程的每条线程 `utime/stime`（分列）、`schedstat` 的运行队列等待 ns、自愿 / 非自愿切换数、最近运行核、`Cpus_allowed_list` 原文（每行都写）。
+  - `procs.jsonl`：`role`、`worker` 取自登记表；RSS、线程数、进程级 `Cpus_allowed_list`。
+  - `cpus.jsonl`：`--cpus-watch` 的每个核的 `/proc/stat` 全部列（tick 原值）与当前频率（先 `scaling_cur_freq`，读不到退回 `/proc/cpuinfo` 的 `cpu MHz`，来源写进 `meta.freq_source`；都没有则写 null）。
+  - `snapshots.jsonl`：`--shm-dir` 里登记进程的快照（含金丝雀发布的 `canary.loop.*` 计数）解码后与 `/proc` 读数用**同一个** `t_rel_ns`；快照 meta 的 pid / starttime 与登记表不符的跳过并计数；未登记 pid 的快照文件列进 `meta.unregistered_snapshot_pids`。
+  - `logs.jsonl`：`--logs-dir` 下每个文件的大小。
+  - `tids.jsonl`（**INTERFACES §5.6 之外新增**，`capkit.sidecar.tids/1`，列 `t_rel_ns, pid, role, tid, event, comm, in_inventory, identified_as`）：线程出现 / 改名 / 消失事件；编排器的线程清单 `procs/threads/<角色>.<pid>.json` 存在时，`in_inventory` 与 `identified_as` 取自它（不在清单里 = 未认出的线程）；清单还没写出时两列为 null。
+- 慢线程（与每拍线程分开，`nvidia-smi` 慢也不拖每拍）：`gpu.jsonl`（开头先做阳性对照，头里写 `gpu_count` 与 `positive_control_ok`；查询失败的那次每张已知卡一行、`query_rc ≠ 0`，已知卡数为 0 时写一行 `gpu_index=null`）与 `numa.jsonl`。
+- `meta.json`（`capkit.sidecar.meta/1`，开始写一次、结束覆盖一次，`final` 标明）：`clk_tck`、周期、`freq_source`、`unreadable`（schedstat、切换数、频率、GPU 读不到的原因与行数）、`stats`（拍数、漏拍、最大迟到、每拍耗时、读失败计数）、`pids_gone`、`roles_generations`、各文件行数、sidecar 自身 CPU、结束时的 `control/stop.json`。
+
+全部文件只在 `--out-dir`（节点本地启动树）里写，逐拍 flush 一次。
+
+## capenv.canary（B4）：并发金丝雀（设计稿 §2.5 D5）
+
+
+```
+python -m capenv.canary <身份> --run-dir <T> --cpus <恰好 1 个核> --stop-grace-s S
+    --origin-ns N --interval-ms 1000 --out <T>/raw/canary/canary.jsonl
+    [--ready-file PATH] [--shm-dir <快照目录>] [--unit-ops N]
+```
+
+- 单线程、绑在一个核上，反复执行固定的纯 Python 工作单元（`UNIT_OPS = 2000` 步 31 位 LCG；`--unit-ops` 可改，实际值写进 `canary.meta.json`）。不建任何别的线程（快照在边界处由主线程内联写，不起 `SnapshotWriter` 线程）。
+- 每到 `origin + k × interval` 之后的第一个单元边界写一行 `canary.jsonl`（`capkit.canary/1`）：`t_rel_ns`（实际时刻）、`iters`（上一行以来完成的单元数）、`thread_cpu_ns`（上一行以来本线程 CPU 时间）、`cpu`（`/proc/thread-self/stat` 的最近运行核）。整段漏掉时重新对齐，不补行。
+- `--shm-dir`：发布快照，计数槽 `canary.loop.iters`（累计单元数）、`canary.loop.thread_cpu_ns`；金丝雀登记进 `roles.json` 后，sidecar 会把它与 `/proc` 读数写进同一拍。
+- `--cpus` 不是恰好 1 个核以退出码 3 退出；SIGTERM / SIGINT 后写 `canary.meta.json`（与输出同目录）并以 0 退出。

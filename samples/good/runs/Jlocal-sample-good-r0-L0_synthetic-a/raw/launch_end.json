@@ -1,0 +1,30 @@
+{
+ "ended_mono_ns": 1021000000000,
+ "exit_codes": {
+  "capload": 0,
+  "nullsse": 0
+ },
+ "gate_outcomes": [],
+ "identity": {
+  "arm": "synthetic-a",
+  "experiment": "E0",
+  "job_id": "local-sample-good",
+  "launch_seq": 0,
+  "pid": null,
+  "register_sha": "384933b4ea618f07c423b1f98e220d311421c3100e4e5e5473414c1abcf6703e",
+  "restart_count": 0,
+  "role": "launch",
+  "tier_label": null,
+  "tier_seq": null,
+  "worker": 0
+ },
+ "ready_at_rel_ns": {
+  "capload": -1000000000,
+  "nullsse": -2000000000
+ },
+ "schema": "capkit.launch_end/1",
+ "stop": null,
+ "tiers_completed": 5,
+ "written_mono_ns": 9746267927993413,
+ "written_wall": "2026-11-13T11:37:24.008Z"
+}

@@ -1,0 +1,301 @@
+{
+ "schema": "capkit.scenario/1",
+ "experiment": "E0",
+ "name": "e0b-s1-single",
+ "tier_table": "02_e0/E0/register/e0b-s1-single.tiers.json",
+ "schedule": "02_e0/E0/register/e0b-s1-single.schedule.capbin",
+ "prompts": "02_e0/E0/register/e0b-s1-single.prompts.json",
+ "probe_tier": null,
+ "probe_groups": [],
+ "stop_grace_s": 10.0,
+ "stop_order": [
+  "drain",
+  "relay1",
+  "beat",
+  "sidecar",
+  "canary"
+ ],
+ "reconcile": {
+  "schema": "capkit.reconcile/1",
+  "chains": [
+   {
+    "name": "requests",
+    "kind": "requests",
+    "gate": null,
+    "include_usage": null,
+    "hops": [
+     {
+      "role": "drain",
+      "source": "summary.counts.ok",
+      "scope": "tier"
+     },
+     {
+      "role": "relay1",
+      "source": "summary.counts.streams_accepted",
+      "scope": "tier"
+     },
+     {
+      "role": "beat",
+      "source": "summary.counts.streams_accepted",
+      "scope": "tier"
+     }
+    ],
+    "corrections": []
+   },
+   {
+    "name": "messages",
+    "kind": "messages",
+    "gate": "product",
+    "include_usage": null,
+    "hops": [
+     {
+      "role": "beat",
+      "source": "summary.counts.msgs_sent",
+      "scope": "tier"
+     },
+     {
+      "role": "relay1",
+      "source": "summary.counts.msgs_received",
+      "scope": "tier"
+     },
+     {
+      "role": "relay1",
+      "source": "summary.counts.msgs_forwarded",
+      "scope": "tier"
+     },
+     {
+      "role": "drain",
+      "source": "summary.msgs.msgs",
+      "scope": "tier"
+     }
+    ],
+    "corrections": []
+   }
+  ]
+ },
+ "roles": [
+  {
+   "role": "beat",
+   "launcher": "capkit",
+   "kind": "server",
+   "start_after": [],
+   "pin_role": "beat",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "stub_out_of_domain",
+   "asyncio": true,
+   "uses_grpc": true,
+   "loop": "asyncio",
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [
+    "backlog.pending_msgs",
+    "backlog.active_streams",
+    "backlog.yielded"
+   ],
+   "snapshots": "all",
+   "args": [
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "0",
+    "--msg-bytes",
+    "{param:beat_msg_bytes}",
+    "--pacing",
+    "beat",
+    "--stamp",
+    "--in-process",
+    "--lag-period-us",
+    "{param:lag_period_us}"
+   ],
+   "env": {},
+   "module": "capgrpc.nullgrpc",
+   "note": "--pacing beat requires --workers 1 (INTERFACES 11); --in-process keeps it one process (expected_procs 1) instead of supervisor + 1 worker"
+  },
+  {
+   "role": "relay1",
+   "launcher": "capkit",
+   "kind": "server",
+   "start_after": [
+    "beat"
+   ],
+   "pin_role": "relay1",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "under_test",
+   "asyncio": true,
+   "uses_grpc": true,
+   "loop": "asyncio",
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [
+    "backlog.queue_msgs",
+    "backlog.active_streams"
+   ],
+   "snapshots": "all",
+   "args": [
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "0",
+    "--upstream-port-file",
+    "{port_file:beat}",
+    "--lag-period-us",
+    "{param:lag_period_us}"
+   ],
+   "env": {},
+   "module": "capselfcheck.relay",
+   "note": "the known answer; injected delta comes from the tier table (role relay1)"
+  },
+  {
+   "role": "drain",
+   "launcher": "capkit",
+   "kind": "client",
+   "start_after": [
+    "relay1"
+   ],
+   "pin_role": "drain",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "stub_out_of_domain",
+   "asyncio": true,
+   "uses_grpc": true,
+   "loop": "asyncio",
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [
+    "backlog.inflight",
+    "backlog.active_streams",
+    "backlog.read"
+   ],
+   "snapshots": "all",
+   "args": [
+    "--target-port-file",
+    "{port_file:relay1}",
+    "--method",
+    "{param:grpc_method}",
+    "--channels-per-worker",
+    "{param:channels_per_worker}",
+    "--request-format",
+    "capkit",
+    "--stamped",
+    "--in-process",
+    "--msg-sample-mod",
+    "{param:msg_sample_mod}",
+    "--schedule",
+    "{input:schedule}",
+    "--prompts",
+    "{input:prompts}",
+    "--lag-period-us",
+    "{param:lag_period_us}",
+    "--max-records-per-worker",
+    "{param:drain_max_records_per_worker}"
+   ],
+   "env": {},
+   "module": "capgrpc.load",
+   "note": "the drain end of design E0 (b); it also places the requests; --in-process = one process (expected_procs 1)"
+  },
+  {
+   "role": "sidecar",
+   "launcher": "capkit",
+   "kind": "aux",
+   "start_after": [
+    "drain"
+   ],
+   "pin_role": "sidecar",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "observer",
+   "asyncio": false,
+   "uses_grpc": false,
+   "loop": null,
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "--interval-ms",
+    "{param:sidecar_interval_ms}",
+    "--gpu-every-s",
+    "{param:sidecar_gpu_every_s}",
+    "--numa-every-s",
+    "{param:sidecar_numa_every_s}"
+   ],
+   "env": {},
+   "module": "capenv.sidecar"
+  },
+  {
+   "role": "canary",
+   "launcher": "capkit",
+   "kind": "aux",
+   "start_after": [],
+   "pin_role": "canary",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "observer",
+   "asyncio": false,
+   "uses_grpc": false,
+   "loop": null,
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "--interval-ms",
+    "{param:canary_interval_ms}"
+   ],
+   "env": {},
+   "module": "capenv.canary"
+  }
+ ],
+ "params_required": [
+  "beat_msg_bytes",
+  "canary_interval_ms",
+  "channels_per_worker",
+  "drain_max_records_per_worker",
+  "grpc_method",
+  "lag_period_us",
+  "msg_sample_mod",
+  "sidecar_gpu_every_s",
+  "sidecar_interval_ms",
+  "sidecar_numa_every_s"
+ ],
+ "dims": {
+  "tokenizer": null,
+  "stub": "capgrpc.nullgrpc --pacing beat (beat source)",
+  "response_timing_switches": "defaults (not set)",
+  "interpretation": "E0 round 1: method self-check / pilot; not a capacity result",
+  "log_sink": "raw/logs on the node-local disk (orchestrator redirect)"
+ },
+ "note": "E0 (b) scenario 1: relay1 busy-waits delta on its event loop per message; tiers sub-saturation / near / over the plateau; >= 3 deltas = >= 3 tier tables"
+}

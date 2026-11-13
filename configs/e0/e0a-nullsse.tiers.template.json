@@ -1,0 +1,116 @@
+{
+ "schema": "capkit.tiers_template/1",
+ "experiment": "E0",
+ "name": "e0a-nullsse",
+ "arrival": {
+  "dist": "fixed",
+  "seed": "TBD:arrival_seed"
+ },
+ "axis": {
+  "name": "R",
+  "load_key": "rate_rps",
+  "unit": "req/s",
+  "order": "asc"
+ },
+ "request_timeout_ns": "TBD:request_timeout_ns",
+ "default_gate": {
+  "mode": "enforce",
+  "rule": "abs_max",
+  "readings": [
+   {
+    "name": "loadgen_inflight",
+    "terms": [
+     {
+      "role": "capload",
+      "slot": "backlog.inflight",
+      "sign": 1,
+      "agg": "sum"
+     }
+    ],
+    "abs_max": 0
+   },
+   {
+    "name": "sink_active",
+    "terms": [
+     {
+      "role": "nullsse",
+      "slot": "backlog.active_streams",
+      "sign": 1,
+      "agg": "sum"
+     }
+    ],
+    "abs_max": 0
+   }
+  ],
+  "poll_ns": "TBD:gate_poll_ns",
+  "settle_polls": "TBD:gate_settle_polls",
+  "deadline_guard_ns": "TBD:gate_deadline_guard_ns",
+  "max_snapshot_age_ns": "TBD:gate_max_snapshot_age_ns"
+ },
+ "launch_inject": [],
+ "common": {
+  "max_tokens": "TBD:max_tokens",
+  "tokens_per_msg": 1,
+  "stream_interval": 1,
+  "prompt_set": "short",
+  "beat_ns": "TBD:beat_ns"
+ },
+ "tiers": [
+  {
+   "label": "warmup",
+   "kind": "warmup",
+   "ramp_ns": 0,
+   "window_ns": "TBD:warmup_ns",
+   "tail_ns": 0,
+   "rate_rps": "TBD:rate_warmup"
+  },
+  {
+   "label": "drain-01",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-sub-lo",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": true,
+   "rate_rps": "TBD:rate_sub_lo"
+  },
+  {
+   "label": "drain-02",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-sub-hi",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": false,
+   "rate_rps": "TBD:rate_sub_hi"
+  },
+  {
+   "label": "drain-03",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "down-sub-lo",
+   "kind": "down",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": false,
+   "rate_rps": "TBD:rate_sub_lo"
+  },
+  {
+   "label": "drain-04",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  }
+ ],
+ "note": "two clearly sub-saturated rates (design E0 'load'); every tier duration must be a multiple of beat_ns"
+}

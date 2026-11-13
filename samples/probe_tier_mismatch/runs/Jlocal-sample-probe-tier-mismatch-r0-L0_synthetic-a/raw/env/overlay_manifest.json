@@ -1,0 +1,25 @@
+{
+ "base_commit": "2f22a98d6e",
+ "capkit_code_sha": "cccccccccccccccccccccccccccccccccccccccc",
+ "capkit_packages": [],
+ "files": [],
+ "groups": [
+  "count"
+ ],
+ "image_commit": "synthetic",
+ "non_python_changed": [],
+ "schema": "capkit.overlay/1",
+ "sites": {
+  "F2": {
+   "file": "synthetic",
+   "group": "count",
+   "line": 1,
+   "proc_kind": "frontend",
+   "slots": [
+    "count.F2.msgs"
+   ]
+  }
+ },
+ "target_commit": "synthetic",
+ "tier": "P1"
+}

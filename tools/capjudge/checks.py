@@ -1,0 +1,781 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+"""Common checks of batch 1 (design 2.7; INTERFACES 10.2) and the other preconditions P.
+
+Every check carries expected_count taken from the configuration (schedule meta.per_tier,
+launch.json roles[].workers / expected_procs, reconcile, chunk_sample_mod, overlay sites, window
+seconds) and the source of that number. expected_count == 0 or checked_count == 0 -> NOT_RUN;
+never PASS.
+"""
+
+from capcommon import expect, hist
+from capcommon.cli import parse_cpu_list
+from capcommon.exitcodes import ConfigError
+from capcommon.gate import check_snapshot, planned_polls
+from capcommon.schedule import per_worker_tier_counts
+from capcommon.versions import check_versions
+
+from . import stats
+from .symptoms import failures_by_class, request_lag_series
+from .thresholds import band_key
+from .treedata import NS, summary_value
+
+PASS, RED, NOT_RUN = "PASS", "RED", "NOT_RUN"
+NOT_IMPLEMENTED = "NOT_IMPLEMENTED_BATCH2"
+
+
+class Result:
+    def __init__(self, check_id, tier_seq, source):
+        self.check_id = check_id
+        self.tier_seq = tier_seq
+        self.source = source
+        self.expected = 0
+        self.checked = 0
+        self.red = 0
+        self.not_run = []
+        self.detail = []
+        self.status = None
+
+    def finish(self, status=None):
+        if status is not None:
+            self.status = status
+        elif self.expected == 0 or self.checked == 0:
+            self.status = NOT_RUN
+        elif self.red > 0:
+            self.status = RED
+        elif self.not_run:
+            self.status = NOT_RUN
+        else:
+            self.status = PASS
+        return self
+
+    def as_row(self):
+        detail = "; ".join(str(d) for d in self.detail + ["NOT_RUN: %s" % n
+                                                        for n in self.not_run])
+        return {"tier_seq": self.tier_seq, "check_id": self.check_id,
+                "expected_count": self.expected, "checked_count": self.checked,
+                "red_count": self.red, "status": self.status,
+                "source_of_expected": self.source, "detail": detail.replace("\t", " ")
+                .replace("\n", " ")[:2000]}
+
+
+def not_implemented(check_id, tier_seq):
+    r = Result(check_id, tier_seq, "n/a")
+    r.not_run.append(NOT_IMPLEMENTED)
+    return r.finish(NOT_RUN)
+
+
+def _p99(values):
+    if not values:
+        return None
+    v = sorted(values)
+    return v[max(0, -(-99 * len(v) // 100) - 1)]
+
+
+def _roles_of(ctx, measure_class):
+    return [r for r in ctx.roles.values() if r["measure_class"] == measure_class]
+
+
+def client_roles(ctx):
+    """Load-generating roles: launch.json roles with kind == 'client' (scenario role kind). None
+    when launch.json does not carry `kind` (then the dependent check is NOT_RUN)."""
+    if not all("kind" in r for r in ctx.roles.values()):
+        return None
+    return [r for r in ctx.roles.values() if r["kind"] == "client"]
+
+
+def _worker_capbin(td, kind, role, worker):
+    for ident, header, cols in td.capbins.get(kind, []):
+        if ident.get("role") == role and ident.get("worker") == worker:
+            return header, cols
+    return None, None
+
+
+# ---- C1 load source health -------------------------------------------------------------------
+
+def check_c1(ctx, td, record):
+    """Per load_source worker: send-lag trend (T1), send-lag p99 and FIONREAD non-zero fraction
+    and event-loop lag p99 (T3 level bands). Any value above its band -> RED."""
+    r = Result("C1", td.tier.seq, "launch.json roles[measure_class=load_source].workers")
+    ws, we = td.tier.window_start_ns, td.tier.window_end_ns
+    for role in _roles_of(ctx, "load_source"):
+        name = role["role"]
+        r.expected += role["workers"]
+        for k in range(role["workers"]):
+            doc = td.summaries.get(name, {}).get(k)
+            header, cols = _worker_capbin(td, "loadgen.requests", name, k)
+            if doc is None or cols is None:
+                r.red += 1
+                r.detail.append("%s.w%d: summary or requests missing" % (name, k))
+                continue
+            series, _ = request_lag_series(cols, td.tier, "send")
+            t1 = stats.t1_trend(series)
+            in_win = [s - p for p, s in zip(cols["planned_rel_ns"], cols["sent_rel_ns"])
+                      if ws <= p < we and s >= 0]
+            fr = doc.get("fionread") or {}
+            frac = (fr["nonzero"] / fr["samples"]) if fr.get("samples") else None
+            lag_hist = summary_value(doc, "loop_lag_ns.hist.counts")
+            loop_p99 = hist.quantile(lag_hist, 0.99) if isinstance(lag_hist, list) and \
+                len(lag_hist) == hist.NBINS else None
+            metrics = [(band_key("T1", "send_lag_p50_ns", name), None if t1 is None else t1[0]),
+                       (band_key("T3", "send_lag_p99_ns", name), _p99(in_win)),
+                       (band_key("T3", "fionread_nonzero_frac", name), frac),
+                       (band_key("T3", "loop_lag_p99_ns", name), loop_p99)]
+            ok = True
+            for key, val in metrics:
+                if val is not None:
+                    record.setdefault(key, []).append(val)
+                band = ctx.bands.get(key)
+                if val is None or band is None:
+                    r.not_run.append("%s.w%d %s: %s" % (name, k, key, "no value" if val is None
+                                                        else "no registered band"))
+                    ok = False
+                    continue
+                if stats.compare_to_band(val, band) == "above":
+                    r.red += 1
+                    r.detail.append("%s.w%d %s=%s above band max %s" % (name, k, key, val,
+                                                                        band["max"]))
+            if ok:
+                r.checked += 1
+    return r.finish()
+
+
+# ---- C3 non-overload failures ----------------------------------------------------------------
+
+def check_c3(ctx, td):
+    r = Result("C3", td.tier.seq, "schedule meta.per_tier")
+    r.expected = int(ctx.schedule_meta["per_tier"].get(str(td.tier.seq), 0))
+    clients = client_roles(ctx)
+    if clients is None:
+        r.not_run.append("launch.json roles lack `kind`; cannot tell load generators")
+        return r.finish(NOT_RUN)
+    for role in clients:
+        for doc in td.summaries.get(role["role"], {}).values():
+            c = doc.get("counts") or {}
+            r.checked += int(c.get("ok", 0)) + int(c.get("failed", 0))
+    f = failures_by_class(td)
+    r.red = f["non_overload"]
+    r.detail.append("non_overload=%d overload=%d by_reason=%s" % (f["non_overload"],
+                                                                 f["overload"], f["by_reason"]))
+    return r.finish()
+
+
+# ---- P-SENT planned == sent per load-generator worker ----------------------------------------
+
+def check_sent(ctx, td):
+    r = Result("P-SENT", td.tier.seq, "launch.json roles[kind=client].workers + schedule meta")
+    clients = client_roles(ctx)
+    if clients is None:
+        r.not_run.append("launch.json roles lack `kind`")
+        return r.finish(NOT_RUN)
+    for role in clients:
+        name, w = role["role"], role["workers"]
+        r.expected += w
+        want = per_worker_tier_counts(ctx.schedule_meta, w)
+        for k in range(w):
+            doc = td.summaries.get(name, {}).get(k)
+            if doc is None:
+                r.red += 1
+                r.detail.append("%s.w%d: no summary" % (name, k))
+                continue
+            r.checked += 1
+            c = doc.get("counts") or {}
+            if doc.get("n_workers") != w:
+                r.red += 1
+                r.detail.append("%s.w%d: n_workers %r != %d" % (name, k, doc.get("n_workers"), w))
+            if c.get("planned") != want.get((k, td.tier.seq), 0):
+                r.red += 1
+                r.detail.append("%s.w%d: planned %r != schedule %d"
+                                % (name, k, c.get("planned"), want.get((k, td.tier.seq), 0)))
+            elif c.get("sent") != c.get("planned"):
+                r.not_run.append("%s.w%d sent %r != planned %r"
+                                 % (name, k, c.get("sent"), c.get("planned")))
+            if doc.get("schedule_sha256") != ctx.launch["schedule"]["sha256"] or \
+                    doc.get("tier_table_sha256") != ctx.tt.sha256:
+                r.red += 1
+                r.detail.append("%s.w%d: schedule/tier table sha differ from launch.json"
+                                % (name, k))
+    return r.finish()
+
+
+# ---- P-PIDS and RECORDS ----------------------------------------------------------------------
+
+def check_pids(td):
+    r = Result("P-PIDS", td.tier.seq, "one tier.json per tier")
+    r.expected = 1
+    tj = td.tier_json
+    if tj is None:
+        r.red = 1
+        r.detail.append("tier.json missing")
+        r.checked = 1
+    else:
+        r.checked = 1
+        if tj.get("pids_stable") is not True:
+            r.red = 1
+            r.detail.append("pids_stable is %r" % tj.get("pids_stable"))
+    return r.finish()
+
+
+def check_records(td):
+    r = Result("RECORDS", td.tier.seq, "one tier directory per tier")
+    r.expected = 1
+    if not td.exists:
+        r.not_run.append("tier directory missing")
+        return r.finish(NOT_RUN)
+    r.checked = 1
+    r.red = len(td.errors)
+    r.detail += td.errors[:20]
+    for pid, snaps in td.snaps.items():
+        if len(snaps) != 2:
+            r.red += 1
+            r.detail.append("pid %s: %d window snapshot copies, expected 2" % (pid, len(snaps)))
+    return r.finish()
+
+
+# ---- C5 / C6 / C7 reconcile chains -----------------------------------------------------------
+
+CHAIN_CHECK = {"requests": "C5", "messages": "C6", "chunks": "C7"}
+
+
+def slot_delta(ld, role, slot, t_from, t_to, min_to=None):
+    """Counter delta of `slot` summed over the role's registered processes, from
+    sidecar/snapshots.jsonl: last row with snap_t_rel_ns <= t_from to last row with
+    snap_t_rel_ns <= t_to (that row must also be >= min_to, e.g. the drain gate's pass time).
+    Returns (delta, reason) with delta None when any process lacks a usable pair."""
+    sc = ld.sidecar("snapshots")
+    if sc is None:
+        return None, "sidecar/snapshots.jsonl missing"
+    pids = [p["pid"] for p in ld.procs_of_role(role)]
+    if not pids:
+        return None, "no registered process for role %s" % role
+    total = 0
+    for pid in pids:
+        a = b = None
+        for row in sc[1]:
+            if row["pid"] != pid or slot not in row["counters"]:
+                continue
+            t = row["snap_t_rel_ns"]
+            if t <= t_from and (a is None or t >= a[0]):
+                a = (t, row["counters"][slot])
+            if t <= t_to and (b is None or t >= b[0]):
+                b = (t, row["counters"][slot])
+        if a is None or b is None:
+            return None, "pid %d: no snapshot row with %s around the interval" % (pid, slot)
+        if min_to is not None and b[0] < min_to:
+            return None, "pid %d: last snapshot before the end precedes the drain pass" % pid
+        total += b[1] - a[1]
+    return total, None
+
+
+def _hop_value(ctx, ld, td, hop, next_drain):
+    src = hop["source"]
+    if src.startswith("summary."):
+        role = ctx.roles[hop["role"]]
+        docs = td.summaries.get(hop["role"], {})
+        missing = [k for k in range(role["workers"]) if k not in docs]
+        if missing:
+            return None, "workers %s have no summary" % missing, True
+        vals = [summary_value(docs[k], src[len("summary."):]) for k in range(role["workers"])]
+        if any(not isinstance(v, int) or isinstance(v, bool) for v in vals):
+            return None, "%s not an integer in every worker summary" % src, True
+        return sum(vals), None, False
+    slot = src[len("slot:"):]
+    if next_drain is None or next_drain.drain_gate is None:
+        return None, "no following drain gate record", False
+    tpass = next_drain.drain_gate.get("t_pass_rel_ns")
+    if not next_drain.drain_gate.get("passed") or tpass is None:
+        return None, "following drain gate did not pass", False
+    v, why = slot_delta(ld, hop["role"], slot, td.tier.start_ns, next_drain.tier.end_ns,
+                        min_to=tpass)
+    return v, why, False
+
+
+def check_chains(ctx, ld, td, next_drain, kind):
+    """One Result per chain kind (C5 requests, C6 messages, C7 chunks); every tier-scope hop of
+    every chain of that kind is one checked item. Expected per hop = expect.expected_hop_count
+    over the schedule's planned requests; overload-type failures widen the range down to the
+    count without them (they may or may not have reached that hop)."""
+    cid = CHAIN_CHECK[kind]
+    r = Result(cid, td.tier.seq, "launch.json reconcile + schedule meta.per_tier")
+    t = td.tier
+    n = int(ctx.schedule_meta["per_tier"].get(str(t.seq), 0))
+    ovl = failures_by_class(td)["overload"]
+    for chain in ctx.launch["reconcile"]["chains"]:
+        if chain["kind"] != kind:
+            continue
+        for hop in chain["hops"]:
+            if hop["scope"] != "tier":
+                continue
+            r.expected += 1
+            try:
+                hi = expect.expected_hop_count(chain, n, t.max_tokens, t.tokens_per_msg,
+                                               t.stream_interval, hop["role"])
+                lo = expect.expected_hop_count(chain, n - ovl, t.max_tokens, t.tokens_per_msg,
+                                               t.stream_interval, hop["role"])
+            except ConfigError as e:
+                r.not_run.append("%s/%s: %s" % (chain["name"], hop["role"], e))
+                continue
+            v, why, is_red = _hop_value(ctx, ld, td, hop, next_drain)
+            if v is None:
+                if is_red:
+                    r.red += 1
+                    r.detail.append("%s/%s: %s" % (chain["name"], hop["role"], why))
+                else:
+                    r.not_run.append("%s/%s: %s" % (chain["name"], hop["role"], why))
+                continue
+            r.checked += 1
+            if not lo <= v <= hi:
+                r.red += 1
+                r.detail.append("%s/%s %s=%d expected %s" % (
+                    chain["name"], hop["role"], hop["source"], v,
+                    hi if lo == hi else "[%d, %d]" % (lo, hi)))
+    if kind == "chunks":
+        _chunk_rows(ctx, td, r)
+    return r.finish()
+
+
+def _chunk_rows(ctx, td, r):
+    """C7 per request: every sampled request (req_id % chunk_sample_mod == 0, planned in this
+    tier, completed OK) must have exactly the chain's frames-per-request chunk rows."""
+    t = td.tier
+    chains = [c for c in ctx.launch["reconcile"]["chains"] if c["kind"] == "chunks"]
+    for role in td.roles_with("loadgen.chunks"):
+        chain = next((c for c in chains if any(h["role"] == role for h in c["hops"])), None)
+        if chain is None:
+            r.not_run.append("chunks of %s: no chunks chain names this role" % role)
+            continue
+        chunks, parts = td.rows("loadgen.chunks", role)
+        mods = {m.get("chunk_sample_mod") for _r, _w, m in parts}
+        if len(mods) != 1 or not isinstance(next(iter(mods)), int) or next(iter(mods)) < 1:
+            r.red += 1
+            r.detail.append("chunks of %s: chunk_sample_mod missing or inconsistent" % role)
+            continue
+        mod = mods.pop()
+        per = expect.expected_hop_count(chain, 1, t.max_tokens, t.tokens_per_msg,
+                                        t.stream_interval, role)
+        reqs, _ = td.rows("loadgen.requests", role)
+        ok_ids = {rid for rid, st in zip(reqs.get("req_id", []), reqs.get("status", []))
+                  if st == 0}
+        sampled = [rid for rid in range(len(ctx.schedule_tier))
+                   if ctx.schedule_tier[rid] == t.seq and rid % mod == 0]
+        r.expected += len(sampled)
+        counts = {}
+        for rid in chunks.get("req_id", []):
+            counts[rid] = counts.get(rid, 0) + 1
+        bad = 0
+        for rid in sampled:
+            if rid not in ok_ids:
+                continue  # failed requests are C3's business
+            r.checked += 1
+            if counts.get(rid, 0) != per:
+                bad += 1
+        sampled_set = set(sampled)
+        stray = [rid for rid in counts if rid not in sampled_set]
+        if bad or stray:
+            r.red += bad + len(stray)
+            r.detail.append("chunks of %s: %d sampled requests with != %d rows, %d stray ids"
+                            % (role, bad, per, len(stray)))
+
+
+# ---- C8 probe attached -----------------------------------------------------------------------
+
+def check_c8(ctx, ld, td):
+    r = Result("C8", td.tier.seq, "env/overlay_manifest.json sites")
+    ov = ld.overlay
+    sites = (ov or {}).get("sites") or {}
+    r.expected = len(sites)
+    for name, site in sorted(sites.items()):
+        slots = site.get("slots") or []
+        if not slots:
+            r.red += 1
+            r.detail.append("site %s lists no slots" % name)
+            continue
+        found_all, positive = True, True
+        for slot in slots:
+            delta, seen = 0, False
+            for pid, snaps in td.snaps.items():
+                if len(snaps) != 2 or slot not in snaps[0].values or slot not in snaps[1].values:
+                    continue
+                seen = True
+                delta += snaps[1].values[slot] - snaps[0].values[slot]
+            if not seen:
+                found_all = False
+            elif delta <= 0:
+                positive = False
+        r.checked += 1
+        if not found_all or not positive:
+            r.red += 1
+            r.detail.append("site %s: %s" % (name, "slot absent from every window snapshot"
+                                             if not found_all else "window delta <= 0"))
+    return r.finish()
+
+
+# ---- C9 pinning readback ---------------------------------------------------------------------
+
+def _role_cpus(ld):
+    pt = ld.pin_table or {}
+    return {role: set(v.get("cpus") or []) for role, v in (pt.get("roles") or {}).items()}
+
+
+def _inventory_threads(ld):
+    """{(pid, tid): inventory entry} over every procs/threads/*.json."""
+    out = {}
+    for doc, _p in ld.thread_inventories():
+        if not isinstance(doc, dict):
+            continue
+        for th in doc.get("threads") or []:
+            out[(doc.get("pid"), th.get("tid"))] = th
+    return out
+
+
+def check_c9(ctx, ld, td):
+    """Every sidecar thread row in the window: cpus_allowed within the role's pinned cpus and
+    disjoint from every other role's, last_cpu inside the role's cpus. Expected rows = window
+    samples (window / sidecar interval) x threads in the thread inventories."""
+    r = Result("C9", td.tier.seq, "window_ns / sidecar meta.interval_ns x inventory threads")
+    interval = ld.sidecar_interval_ns()
+    inv = _inventory_threads(ld)
+    th = ld.sidecar("threads")
+    cpus = _role_cpus(ld)
+    if interval is None or th is None or not cpus:
+        r.not_run.append("sidecar meta.interval_ns / threads.jsonl / pin_table.json missing")
+        return r.finish(NOT_RUN)
+    ws, we = td.tier.window_start_ns, td.tier.window_end_ns
+    r.expected = ((we - ws) // interval) * len(inv)
+    by_pid = ld.procs_by_pid()
+    for row in th[1]:
+        if not ws <= row["t_rel_ns"] < we or row["pid"] not in by_pid:
+            continue
+        role = by_pid[row["pid"]]["role"]
+        mine = cpus.get(role)
+        if (row["pid"], row["tid"]) in inv:
+            r.checked += 1
+        if mine is None:
+            r.red += 1
+            r.detail.append("role %s has no pin table entry" % role)
+            continue
+        try:
+            allowed = set(parse_cpu_list(row["cpus_allowed"]))
+        except (ConfigError, ValueError, TypeError):
+            r.red += 1
+            r.detail.append("pid %s tid %s: unparsable cpus_allowed %r"
+                            % (row["pid"], row["tid"], row["cpus_allowed"]))
+            continue
+        others = set().union(*[c for k, c in cpus.items() if k != role]) if len(cpus) > 1 \
+            else set()
+        if not allowed <= mine or allowed & others or row["last_cpu"] not in mine:
+            r.red += 1
+            if len(r.detail) < 10:
+                r.detail.append("t=%d pid %s tid %s role %s: allowed %s last_cpu %s, pinned %s"
+                                % (row["t_rel_ns"], row["pid"], row["tid"], role,
+                                   sorted(allowed), row["last_cpu"], sorted(mine)))
+    if r.checked < r.expected:
+        r.red += 1
+        r.detail.append("only %d of %d expected thread rows in the window"
+                        % (r.checked, r.expected))
+    return r.finish()
+
+
+# ---- C10 version self-report (launch level; failure -> NOT_RUN per D11) ----------------------
+
+def check_c10(ctx, ld):
+    r = Result("C10", "launch", "launch.json roles[].expected_procs")
+    recs, errors = ld.version_records()
+    records, decls = [], {}
+    for name, role in sorted(ctx.roles.items()):
+        decls[name] = {k: role[k] for k in ("asyncio", "uses_grpc", "probe_tier", "loop")}
+        pids = sorted(p["pid"] for p in ld.procs_of_role(name))
+        got = [(name, pid, recs.get(pid)) for pid in pids]
+        while len(got) < role["expected_procs"]:
+            got.append((name, None, None))
+        records += got
+    res = check_versions(records, decls)
+    r.expected, r.checked = res["expected_count"], res["checked_count"]
+    r.detail += errors
+    if res["status"] != "PASS" or errors:
+        r.not_run += res["problems"] or ["version records incomplete"]
+        return r.finish(NOT_RUN)
+    return r.finish()
+
+
+# ---- GPU-IDLE (launch level) -----------------------------------------------------------------
+
+def check_gpu_idle(ctx, ld, load_tiers):
+    """Returns (Result, void: bool). void=True when any window row shows a busy GPU."""
+    r = Result("GPU-IDLE", "launch", "sum(window seconds) x gpu.jsonl gpu_count")
+    gi = ld.gpu_idle or {}
+    g = ld.sidecar("gpu")
+    if not gi.get("positive_control_ok") or g is None:
+        r.not_run.append("gpu_idle.json positive control not ok, or gpu.jsonl missing")
+        return r.finish(NOT_RUN), False
+    count = g[0].get("gpu_count")
+    if not isinstance(count, int) or count <= 0:
+        r.not_run.append("gpu_count %r" % (count,))
+        return r.finish(NOT_RUN), False
+    r.expected = sum((t.window_ns // NS) * count for t in load_tiers)
+    void = False
+    for row in g[1]:
+        if not any(t.window_start_ns <= row["t_rel_ns"] < t.window_end_ns for t in load_tiers):
+            continue
+        r.checked += 1
+        if row.get("query_rc") != 0:
+            r.not_run.append("query_rc %r at t=%s" % (row.get("query_rc"), row["t_rel_ns"]))
+            continue
+        if (row.get("util_pct") or 0) > 0 or row.get("compute_pids"):
+            r.red += 1
+            void = True
+            if len(r.detail) < 5:
+                r.detail.append("gpu %s busy at t=%s: util %s pids %s" % (
+                    row.get("gpu_index"), row["t_rel_ns"], row.get("util_pct"),
+                    row.get("compute_pids")))
+    if r.red == 0 and r.checked < r.expected:
+        r.not_run.append("%d of %d expected GPU rows in the windows" % (r.checked, r.expected))
+    return r.finish(), void
+
+
+# ---- PROBE-TIER (launch level) ---------------------------------------------------------------
+
+def check_probe_tier(ctx, ld):
+    """The registered probe tier is the one deployed: overlay manifest tier == launch.json
+    probe_tier == every product role's declared probe_tier. Only when some role is a product
+    process (probe_tier not null)."""
+    product = [r for r in ctx.roles.values() if r["probe_tier"] is not None]
+    if not product:
+        return None
+    r = Result("PROBE-TIER", "launch", "launch.json roles with probe_tier")
+    r.expected = len(product)
+    lt = ctx.launch["probe_tier"]
+    lt = lt.get("tier") if isinstance(lt, dict) else lt
+    ov = ld.overlay
+    if ov is None:
+        r.red += 1
+        r.checked = 1
+        r.detail.append("env/overlay_manifest.json missing")
+        return r.finish()
+    for role in product:
+        r.checked += 1
+        if not role["probe_tier"] == lt == ov.get("tier"):
+            r.red += 1
+            r.detail.append("%s declares %r, launch %r, overlay %r"
+                            % (role["role"], role["probe_tier"], lt, ov.get("tier")))
+    return r.finish()
+
+
+# ---- C11 drain gate --------------------------------------------------------------------------
+
+def check_c11(ctx, ld, td, drain_td):
+    """Re-check the drain tier before load tier `td` from drain_gate.json (INTERFACES 8.3.5):
+    planned poll times, per-poll snapshot usability (gate.check_snapshot on the recorded fields,
+    with every registered process of every gate role required), recorded readings == sum of
+    their terms, the rule, settle_polls -> passed / t_pass. Expected = number of planned polls
+    from the drain start to t_pass (or the deadline)."""
+    r = Result("C11", td.tier.seq, "gate.planned_polls(drain start, t_pass|deadline, poll_ns)")
+    dt = drain_td.tier
+    gate_cfg, _src = ctx.tt.gate_of(dt.seq)
+    dg = drain_td.drain_gate
+    if dg is None:
+        r.expected, r.checked, r.red = 1, 1, 1
+        r.detail.append("drain tier %d has no drain_gate.json" % dt.seq)
+        return r.finish()
+    if dg.get("gate") != gate_cfg:
+        r.expected, r.checked, r.red = 1, 1, 1
+        r.detail.append("recorded gate config differs from the tier table")
+        return r.finish()
+    if gate_cfg["rule"] != "abs_max":
+        r.not_run.append("rule %s re-check: %s" % (gate_cfg["rule"], NOT_IMPLEMENTED))
+        return r.finish(NOT_RUN)
+    deadline = dt.end_ns - gate_cfg["deadline_guard_ns"]
+    rec_pass, rec_t = dg.get("passed") is True, dg.get("t_pass_rel_ns")
+    end = rec_t if rec_pass and isinstance(rec_t, int) else deadline
+    planned = planned_polls(dt.start_ns, end, gate_cfg["poll_ns"])
+    r.expected = len(planned)
+    polls = dg.get("polls") or []
+    if dg.get("n_polls") != len(polls) or len(polls) != len(planned) or \
+            [p.get("planned_rel_ns") for p in polls] != planned:
+        r.red += 1
+        r.detail.append("polls %d (n_polls %r) do not match %d planned polls"
+                        % (len(polls), dg.get("n_polls"), len(planned)))
+    gate_roles = sorted({t["role"] for rd in gate_cfg["readings"] for t in rd["terms"]})
+    by_pid = ld.procs_by_pid()
+    need = {p: by_pid[p] for p in by_pid if by_pid[p].get("role") in gate_roles}
+    n_role = {role: sum(1 for p in need.values() if p["role"] == role) for role in gate_roles}
+    key = ctx.ident.launch_key()
+    prev, consecutive, my_pass, my_t = {}, 0, False, None
+    for poll in polls:
+        r.checked += 1
+        sat, why = _poll_satisfied(poll, gate_cfg, need, n_role, key, prev)
+        consecutive = consecutive + 1 if sat else 0
+        if not my_pass and consecutive >= gate_cfg["settle_polls"]:
+            my_pass, my_t = True, poll
+        if why and len(r.detail) < 8:
+            r.detail.append("poll@%s: %s" % (poll.get("planned_rel_ns"), why))
+    if my_pass != rec_pass or (my_pass and rec_t not in (my_t.get("planned_rel_ns"),
+                                                         my_t.get("actual_rel_ns"))):
+        r.red += 1
+        r.detail.append("recorded passed=%r t=%r, re-check passed=%r t=%r" % (
+            rec_pass, rec_t, my_pass, None if my_t is None else my_t.get("planned_rel_ns")))
+    elif not my_pass:
+        if gate_cfg["mode"] == "record_only":
+            r.red += 1
+            r.detail.append("record_only gate did not pass before this tier")
+        else:
+            r.not_run.append("enforced gate did not pass: launch stopped")
+    return r.finish()
+
+
+def _poll_satisfied(poll, gate_cfg, need, n_role, key, prev):
+    snaps = {int(k): v for k, v in (poll.get("snapshots") or {}).items()}
+    usable = set()
+    reasons = []
+    for pid, proc in need.items():
+        f = snaps.get(pid)
+        if f is None:
+            reasons.append("pid %d no snapshot" % pid)
+            continue
+        ok, why = check_snapshot(f, proc, poll.get("now_ns"), gate_cfg["max_snapshot_age_ns"],
+                                 prev.get(pid), key)
+        prev[pid] = f.get("seq")
+        if ok:
+            usable.add(pid)
+        else:
+            reasons.append("pid %d %s" % (pid, why))
+    sat = not reasons
+    values = poll.get("values") or {}
+    details = poll.get("details") or {}
+    for rd in gate_cfg["readings"]:
+        v = values.get(rd["name"])
+        terms = details.get(rd["name"])
+        if v is None or not isinstance(terms, list):
+            sat = False
+            reasons.append("reading %s not computed" % rd["name"])
+            continue
+        if sum(t["sign"] * t["value"] for t in terms) != v:
+            sat = False
+            reasons.append("reading %s != sum of its terms" % rd["name"])
+        for t in terms:
+            if t.get("n_procs") != n_role.get(t["role"]):
+                sat = False
+                reasons.append("reading %s used %s of %s %s processes" % (
+                    rd["name"], t.get("n_procs"), n_role.get(t["role"]), t["role"]))
+        if v > rd["abs_max"]:
+            sat = False
+    return sat, "; ".join(reasons)
+
+
+# ---- C13 thread inventory and foreign busy time ----------------------------------------------
+
+def check_c13_launch(ctx, ld):
+    """Launch-level first half: an inventory for every under_test process (expected =
+    expected_procs of under_test roles), every thread identified, no unattributed process."""
+    r = Result("C13", "launch", "launch.json roles[measure_class=under_test].expected_procs")
+    ut = [x["role"] for x in _roles_of(ctx, "under_test")]
+    r.expected = sum(ctx.roles[x]["expected_procs"] for x in ut)
+    by_pid = ld.procs_by_pid()
+    seen = set()
+    for doc, p in ld.thread_inventories():
+        pid = (doc or {}).get("pid")
+        if by_pid.get(pid, {}).get("role") not in ut:
+            continue
+        seen.add(pid)
+        r.checked += 1
+        unknown = [t.get("tid") for t in doc.get("threads") or [] if t.get("identified_as")
+                   is None]
+        if unknown:
+            r.red += 1
+            r.detail.append("pid %s: unidentified threads %s" % (pid, unknown[:10]))
+    if r.checked < r.expected:
+        r.red += 1
+        r.detail.append("%d of %d under_test processes have a thread inventory"
+                        % (r.checked, r.expected))
+    un = (ld.roles_json or {}).get("unattributed") or []
+    if un:
+        r.red += 1
+        r.detail.append("%d unattributed process(es) in roles.json" % len(un))
+    return r.finish()
+
+
+def check_c13_tier(ctx, ld, td, record):
+    """Per tier: window-boundary thread lists all identified; second half: busy ticks on each
+    under_test role's cores not explained by registered threads (minus irq/softirq when the
+    pilot's D14 result attributes it to the experiment), as a fraction of the cores' ticks."""
+    r = Result("C13", td.tier.seq, "launch.json roles[measure_class=under_test] + pin_table")
+    ut = [x["role"] for x in _roles_of(ctx, "under_test")]
+    r.expected = len(ut)
+    tj = td.tier_json or {}
+    for edge in ("wstart", "wend"):
+        for pid, ths in ((tj.get("threads") or {}).get(edge) or {}).items():
+            unknown = [t.get("tid") for t in ths if t.get("identified_as") is None]
+            if unknown:
+                r.red += 1
+                r.detail.append("%s pid %s unidentified %s" % (edge, pid, unknown[:10]))
+    if not tj.get("threads"):
+        r.red += 1
+        r.detail.append("tier.json has no window-boundary thread lists")
+    pilot = ctx.bands.extras.get("pilot") or {}
+    d14 = pilot.get("d14_softirq")
+    if not isinstance(d14, dict) or not isinstance(d14.get("irq_softirq_is_experiment"), bool):
+        r.not_run.append("second half: pilot.json has no D14 result")
+        r.checked = len(ut)
+        return r.finish()
+    cpus = _role_cpus(ld)
+    cpu_rows, th_rows = ld.sidecar("cpus"), ld.sidecar("threads")
+    clk = (ld.sidecar_meta or {}).get("clk_tck")
+    if cpu_rows is None or th_rows is None or not isinstance(clk, int):
+        r.not_run.append("second half: sidecar cpus/threads/clk_tck missing")
+        r.checked = len(ut)
+        return r.finish()
+    ws, we = td.tier.window_start_ns, td.tier.window_end_ns
+    by_pid = ld.procs_by_pid()
+    for role in ut:
+        r.checked += 1
+        cores = cpus.get(role) or set()
+        frac = _foreign_frac(cpu_rows[1], th_rows[1], by_pid, role, cores, ws, we, clk,
+                             d14["irq_softirq_is_experiment"])
+        key = band_key("T3", "foreign_busy_frac", role)
+        if frac is None:
+            r.not_run.append("%s: no cpu rows for its cores in the window" % role)
+            continue
+        record.setdefault(key, []).append(frac)
+        band = ctx.bands.get(key)
+        if band is None:
+            r.not_run.append("no registered band %s" % key)
+        elif stats.compare_to_band(frac, band) == "above":
+            r.red += 1
+            r.detail.append("%s foreign busy fraction %.4f above band max %s"
+                            % (role, frac, band["max"]))
+    return r.finish()
+
+
+def _first_last(rows, keyf, ws, we):
+    first, last = {}, {}
+    for row in rows:
+        t = row["t_rel_ns"]
+        if not ws <= t < we:
+            continue
+        k = keyf(row)
+        if k is None:
+            continue
+        if k not in first or t < first[k]["t_rel_ns"]:
+            first[k] = row
+        if k not in last or t > last[k]["t_rel_ns"]:
+            last[k] = row
+    return first, last
+
+
+def _foreign_frac(cpu_rows, th_rows, by_pid, role, cores, ws, we, clk, irq_is_ours):
+    f, l = _first_last(cpu_rows, lambda x: x["cpu"] if x["cpu"] in cores else None, ws, we)
+    if not f or set(f) != cores:
+        return None
+    busy_keys = ("user", "nice", "system", "irq", "softirq", "steal")
+    busy = sum(l[c][k] - f[c][k] for c in cores for k in busy_keys)
+    irq = sum(l[c][k] - f[c][k] for c in cores for k in ("irq", "softirq"))
+    span_ns = max(l[c]["t_rel_ns"] - f[c]["t_rel_ns"] for c in cores)
+    if span_ns <= 0:
+        return None
+    tf, tl = _first_last(th_rows, lambda x: (x["pid"], x["tid"])
+                         if by_pid.get(x["pid"], {}).get("role") == role else None, ws, we)
+    threads = sum((tl[k]["utime_ticks"] + tl[k]["stime_ticks"])
+                  - (tf[k]["utime_ticks"] + tf[k]["stime_ticks"]) for k in tf)
+    foreign = busy - threads - (irq if irq_is_ours else 0)
+    total = len(cores) * span_ns * clk / NS
+    return foreign / total

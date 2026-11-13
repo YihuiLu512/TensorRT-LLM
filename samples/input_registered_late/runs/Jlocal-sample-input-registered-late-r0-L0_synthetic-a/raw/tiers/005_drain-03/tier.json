@@ -1,0 +1,124 @@
+{
+ "abs_end_ns": 1020000000000,
+ "abs_start_ns": 1018000000000,
+ "abs_window_end_ns": 1020000000000,
+ "abs_window_start_ns": 1018000000000,
+ "identity": {
+  "arm": "synthetic-a",
+  "experiment": "E0",
+  "job_id": "local-sample-input-registered-late",
+  "launch_seq": 0,
+  "pid": null,
+  "register_sha": "384933b4ea618f07c423b1f98e220d311421c3100e4e5e5473414c1abcf6703e",
+  "restart_count": 0,
+  "role": "launch",
+  "tier_label": "drain-03",
+  "tier_seq": 5,
+  "worker": 0
+ },
+ "nic_counters": {
+  "unreadable": "synthetic sample"
+ },
+ "pids_stable": true,
+ "pids_window_end": [
+  1001,
+  1002,
+  2001
+ ],
+ "pids_window_start": [
+  1001,
+  1002,
+  2001
+ ],
+ "schema": "capkit.tier/1",
+ "snapshot_copies": [],
+ "threads": {
+  "wend": {
+   "1001": [
+    {
+     "comm": "python",
+     "identified_as": "event_loop",
+     "py_name": null,
+     "tid": 1001
+    }
+   ],
+   "1002": [
+    {
+     "comm": "python",
+     "identified_as": "event_loop",
+     "py_name": null,
+     "tid": 1002
+    }
+   ],
+   "2001": [
+    {
+     "comm": "python",
+     "identified_as": "event_loop",
+     "py_name": null,
+     "tid": 2001
+    },
+    {
+     "comm": "capkit-snap",
+     "identified_as": "snapshot_writer",
+     "py_name": null,
+     "tid": 2002
+    }
+   ]
+  },
+  "wstart": {
+   "1001": [
+    {
+     "comm": "python",
+     "identified_as": "event_loop",
+     "py_name": null,
+     "tid": 1001
+    }
+   ],
+   "1002": [
+    {
+     "comm": "python",
+     "identified_as": "event_loop",
+     "py_name": null,
+     "tid": 1002
+    }
+   ],
+   "2001": [
+    {
+     "comm": "python",
+     "identified_as": "event_loop",
+     "py_name": null,
+     "tid": 2001
+    },
+    {
+     "comm": "capkit-snap",
+     "identified_as": "snapshot_writer",
+     "py_name": null,
+     "tid": 2002
+    }
+   ]
+  }
+ },
+ "tier": {
+  "baseline": false,
+  "beat_ns": 20000000,
+  "gate": null,
+  "inject": [],
+  "kind": "drain",
+  "label": "drain-03",
+  "load_value": null,
+  "max_tokens": 0,
+  "note": "synthetic",
+  "prompt_set": null,
+  "ramp_ns": 0,
+  "rate_rps": 0.0,
+  "seq": 5,
+  "start_ns": 18000000000,
+  "stream_interval": 1,
+  "streams_c": null,
+  "tail_ns": 0,
+  "tokens_per_msg": 1,
+  "window_ns": 2000000000
+ },
+ "written_mono_ns": 9746271934410121,
+ "written_wall": "2026-11-13T11:37:28.014Z"
+}

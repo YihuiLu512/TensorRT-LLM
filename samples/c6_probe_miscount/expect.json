@@ -1,0 +1,11 @@
+{
+ "exit_code": 10,
+ "red_checks": [
+  "C6"
+ ],
+ "synthetic": true,
+ "tier_verdicts": {
+  "4": "VOID"
+ },
+ "tree": "runs/Jlocal-sample-c6-probe-miscount-r0-L0_synthetic-a"
+}

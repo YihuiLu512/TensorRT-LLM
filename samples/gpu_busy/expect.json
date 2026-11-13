@@ -1,0 +1,12 @@
+{
+ "exit_code": 10,
+ "red_checks": [
+  "GPU-IDLE"
+ ],
+ "synthetic": true,
+ "tier_verdicts": {
+  "2": "VOID",
+  "4": "VOID"
+ },
+ "tree": "runs/Jlocal-sample-gpu-busy-r0-L0_synthetic-a"
+}

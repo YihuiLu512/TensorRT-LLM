@@ -1,0 +1,24 @@
+{
+ "schema": "capkit.prompts/1",
+ "sets": {
+  "tok8": {
+   "items": [
+    [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7,
+     8
+    ]
+   ],
+   "kind": "token_ids"
+  }
+ },
+ "source": {
+  "note": "synthetic",
+  "tokenizer": "none"
+ }
+}
