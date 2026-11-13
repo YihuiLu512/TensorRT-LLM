@@ -13,6 +13,15 @@
   "5910462": {
    "head": "a5ba8df9a4d62fba8d6ecafbb51056cdd6d23a9e",
    "followup": "FOLLOWUP_RC 0"
+  },
+  "5911451": {
+   "head": "e1940769c9c56bac861a7fb4670c359533fca8a5",
+   "nt041": [
+    "NT041_1_RC 0",
+    "NT041_2_RC 0",
+    "NT041_3_RC 0"
+   ],
+   "followup": "FOLLOWUP_RC 0"
   }
  },
  "nt041_retests": [
@@ -171,24 +180,6 @@
    }
   ],
   "transceiver_resolved": "cache_transceiver_config=CacheTransceiverConfig(backend='NIXL', transceiver_runtime='PYTHON', max_tokens_in_buffer=40960, kv_transfer_timeout_ms=60000, kv_transfer_sender_future_timeout_ms=1000, kv_transfer_poll_interval_ms=5000, kv_cache_bounce_size_mb=0, enable_pipelined_transfer=False, agent_bounce_buffer_enable=False, agent_bounce_params=None)",
-  "log_keywords_ctx": {
-   "Using KvCacheTransceiverV2": 2,
-   "KvCacheTransceiver": 14,
-   "[Tt]imed? ?out": 32,
-   "kv_transfer_timeout": 10,
-   "Traceback": 0,
-   "ERROR": 0,
-   "\\[E\\]": 0
-  },
-  "log_keywords_gen": {
-   "Using KvCacheTransceiverV2": 2,
-   "KvCacheTransceiver": 14,
-   "[Tt]imed? ?out": 8,
-   "kv_transfer_timeout": 2,
-   "Traceback": 0,
-   "ERROR": 0,
-   "\\[E\\]": 1
-  },
   "reference_matrix_equal_to_handoff": {
    "prompt0": [
     {
@@ -478,8 +469,29 @@
   "other_timeout_log": [
    "[11/13/2026-23:45:56] [TRT-LLM] [W] [_torch] Observed timeout on context request 5798157910057845935 due to KV cache transfer timeout: elapsed 123009ms > kv_transfer_timeout_ms=60000ms",
    "[11/13/2026-23:50:31] [TRT-LLM] [W] [_torch] Observed timeout on context request 6420188600621778459 due to KV cache transfer timeout: elapsed 74102ms > kv_transfer_timeout_ms=60000ms"
-  ],
-  "used_kv_blocks_end_of_phase": "1"
+  ]
+ },
+ "main_run_end": {
+  "ctx_used_kv_blocks": "1",
+  "gen_used_kv_blocks": "0",
+  "log_keywords_ctx": {
+   "Using KvCacheTransceiverV2": 2,
+   "KvCacheTransceiver": 14,
+   "[Tt]imed? ?out": 32,
+   "kv_transfer_timeout": 10,
+   "Traceback": 0,
+   "ERROR": 0,
+   "\\[E\\]": 0
+  },
+  "log_keywords_gen": {
+   "Using KvCacheTransceiverV2": 2,
+   "KvCacheTransceiver": 14,
+   "[Tt]imed? ?out": 8,
+   "kv_transfer_timeout": 2,
+   "Traceback": 0,
+   "ERROR": 0,
+   "\\[E\\]": 1
+  }
  },
  "m4_x_ne_y": {
   "ids": {

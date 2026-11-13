@@ -19,8 +19,11 @@ Keys of `readings.json`, by measurement:
 - `m1_handoff`: context_only, PrefillReady, kv.session, decode. First token, usage,
   bytes sent and received, the resolved transceiver, and the reference matrix.
 - `m3_orphans`: KV held by context legs whose generation leg never comes, and when
-  the transfer timeout frees it. `other_timeout_log` holds the timeouts the context
-  engine logged for other requests of the same run.
+  the context engine logs their transfer timeouts. `other_timeout_log` holds the
+  timeouts it logged for other requests in the same job.
+- `main_run_end`: the first context and generation engines of job 5909835, read at the
+  end of the run that used them for measurement 3 and parts of 1, 4 and 8, right after
+  one more handoff: used KV blocks, and keyword counts over each engine's log up to then.
 - `m4_x_ne_y`: `disagg_request_id` replaced while `session_id` is kept, and the other
   way round.
 - `m5_gen_only`: `TRTLLM_DISAGG_BENCHMARK_GEN_ONLY` with and without the session check
