@@ -6,16 +6,27 @@
 
 | 入口 | 用途 |
 |---|---|
-| `import capprobe`（产品代码，经探针补丁） | 导入时读一次 `CAPPROBE_*` 环境变量（§6.5）；打开的组与注入决定哪些位点生效 |
+| `import capprobe`（产品代码，经探针补丁） | 导入时读一次 `CAPPROBE_*` 环境变量（§6.5）；只有命令行与 `CAPPROBE_ENTRY` 匹配的进程才可能启用（勘误 R1b），打开的组与注入决定哪些位点生效 |
 | `python -m capprobe.decode FILE [--no-hist]` | 把一个快照解码成 JSON；坏文件退出码 3，读不到 4 |
 | `python -m capprobe.patchcheck --probe-tree P --base-commit SHA [--rev REV] [--out F]` | 补丁静态检查（见下）；PASS 退出 0，FAIL / NOT_RUN 退出 3 |
 | `python -m capprobe.overlay …`（§11 的参数） | 生成 `env/overlay_manifest.json`（§6.6） |
 
-工具进程（`python -m capprobe.decode|overlay|patchcheck`）按原始命令行里 `-m` 后的模块名进入「工具模式」：不读环境变量、不起探针，所以在 P2 的环境里运行也不会在快照目录里多出一个 `<pid>.bin`。其他任何进程导入 `capprobe` 都会严格校验开关。
+工具进程（`python -m capprobe.decode|overlay|patchcheck`）按原始命令行里 `-m` 后的模块名进入「工具模式」：不读环境变量、不起探针，所以在 P2 的环境里运行也不会在快照目录里多出一个 `<pid>.bin`。
+
+## 只在被测入口进程里启用（勘误 R1b，实现在 `capprobe.config` 与 `capcommon.probe_entry`）
+
+| 进程 | 结果 |
+|---|---|
+| 没有任何 `CAPPROBE_*` 变量 | 全关（`ENABLED`、`ACTIVE`、各 `ON_*` 都是 False，不起线程、不写快照、不报错；`CONFIG.reason = no_capprobe_env`） |
+| 有 `CAPPROBE_*`，没有 `CAPPROBE_ENTRY` | 先校验在场的值（见下），之后全关（`no_entry_rule`） |
+| 有 `CAPPROBE_*`，命令行与 `CAPPROBE_ENTRY` 不匹配（spawn 池子进程、MPI worker、其他导入者） | 先校验在场的值，之后全关（`not_the_registered_entry`），不读身份文件 |
+| 命令行匹配（编排器起的产品进程，及其重新执行同一命令行的附属前端） | 全套规则：`CAPPROBE_TIER` 缺失报错，`P0` 报错（P0 的覆盖层不应含探针补丁），其余同下 |
+
+`CAPPROBE_ENTRY` 由编排器给每个产品角色写（`capkit.probe_entry/1`：`program` 是该角色 argv[0] 按角色的 PATH 或工作目录解析后的 realpath，`args` 是其余 argv 原样）。匹配：进程的 `sys.orig_argv` 以 `args` 结尾，且紧挨着的前一个元素解析后等于 `program`（`#!` 脚本由内核在前面加解释器，也能匹配）。fork 出来、没有 exec 的子进程命令行不变，仍启用（各自归零计数、按自己的 pid 写快照，同 R1 之前）。
 
 ## 开关的补充规则（在 §6.5 之上，全部是导入时 `CapprobeConfigError`，它是 `RuntimeError`）
 
-- `CAPPROBE_TIER` 未设置也报错（不悄悄关掉）。`P0` 下导入 `capprobe` 报错：P0 的覆盖层不应含探针补丁。辅助进程若会导入打过补丁的模块（如 import 了 `tensorrt_llm.serve`），要显式设 `CAPPROBE_TIER=P1`、其余 `CAPPROBE_*` 不设；**`CAPPROBE_*` 只能给被测产品进程**，否则辅助进程也会写快照（判定器会把它当作未登记进程）。
+- 只要有 `CAPPROBE_*`，不论哪个进程都校验在场的值：未知的 `CAPPROBE_` 变量名、非法 `CAPPROBE_TIER`、`CAPPROBE_GROUPS` 与 TIER 不符（P0、P1 ⇒ 组为空；P2 ⇒ 组非空；没有 TIER 却有组或注入）、未知组名、坏注入规格、坏 `CAPPROBE_ENTRY`、非正整数周期、相对路径 `CAPPROBE_SHM_DIR` 都报错。
 - 本版本只实现 `count`、`lag` 两组；`bytes`、`queue`、`ts`、`pin` 是已知组名但未实现，打开即报错。
 - 任何组或注入打开时，`CAPPROBE_SHM_DIR`（绝对路径）、`CAPPROBE_INTERVAL_MS`、`CAPPROBE_IDENTITY_FILE` 必需；`lag` 打开时 `CAPPROBE_LAG_PERIOD_US` 必需。
 - 注入只支持位点 `H1`、`H3`、`F2`、`F4`，模式只支持 `busy`、`sleep`、`miscount`；`miscount` 要求 `count` 组打开（否则误计不可见）。注入打开时，四个位点都会经过注入器，没有规格的位点也计 `inject.<site>.hits`。

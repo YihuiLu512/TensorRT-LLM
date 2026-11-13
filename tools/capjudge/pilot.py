@@ -2,14 +2,17 @@
 # SPDX-License-Identifier: Apache-2.0
 """capjudge.pilot: build E0's pilot.json (INTERFACES 9.4) from sub-saturation tiers.
 
-    python3 -m capjudge.pilot --inputs <list file> --workdir <W> --out <new pilot.json>
+    python3 -m capjudge.pilot --inputs <list file> --workdir <W> --d14-rule <rule.json>
+        --out <new pilot.json>
 
 The list file names every input explicitly, one per line: `<launch tree>\t<seq>[,<seq>...]`
 (the sub-saturation tiers of that tree to use; no globs, no default "all tiers"). Every tree
 must already be judged: noise bands (T3) are the empirical [min, max] of the statistics the
 judge wrote into verdicts.json `stats` for those tiers, so judge and pilot share one code path.
 Tiers with any RED check or a VOID verdict are excluded and listed. Raw data are re-read (via
-the same verified inputs) only for the steady-window and warm-up lengths.
+the same verified inputs) only for the steady-window and warm-up lengths and for the D14
+readings (capjudge.d14: idle window vs the used load tiers, decided by the registered rule
+--d14-rule).
 """
 
 import argparse
@@ -21,8 +24,10 @@ from capcommon.exitcodes import ConfigError
 from capcommon.hashing import sha256_file
 from capcommon.jsonio import atomic_write_bytes, dumps, read_json
 
+from . import d14 as D14
 from . import inputs as I
 from . import stats
+from .checks import _role_cpus
 from .symptoms import msg_lag_from_chunks, request_lag_series
 from .treedata import NS, LaunchData, TierData
 
@@ -97,13 +102,17 @@ def _inflight_from(rows, start, k):
             - bisect.bisect_right(done, start + i * NS + NS // 2) for i in range(k)]
 
 
-def build(list_path, W):
+def build(list_path, W, d14_rule_path):
     W = os.path.abspath(W)
     entries = read_list(list_path)
+    try:
+        d14_rule, d14_rule_rec = D14.load_rule(d14_rule_path, W)
+    except D14.D14RuleError as e:
+        raise PilotError(str(e))
     values, sources, inputs, env, experiment = {}, {}, [], None, None
     used = []  # (ctx, td) of every included tier
     drain_waits, switch = [], set()
-    d14 = []
+    d14_trees, d14_submitted = [], {}
     for tree, seqs in entries:
         tree = os.path.abspath(tree)
         vpath = os.path.join(tree, "judge", "verdicts.json")
@@ -146,9 +155,9 @@ def build(list_path, W):
                     drain_waits.append(dg["t_pass_rel_ns"] - t.start_ns)
         recs, _errs = ld.version_records()
         switch |= {r.get("switchinterval_s") for r in recs.values()}
-        lb = ld._json(ctx.tree.env("loopback_softirq.json"))
-        if isinstance(lb, dict) and isinstance(lb.get("irq_softirq_is_experiment"), bool):
-            d14.append(lb["irq_softirq_is_experiment"])
+        d14_trees.append((rec["tree"], D14.tree_readings(ctx, ld, _role_cpus(ld),
+                                                          rec["tiers_used"])))
+        d14_submitted[rec["tree"]] = (ctx.launch.get("submission") or {}).get("submitted_at")
     if not used:
         raise PilotError("no tier survived; nothing to build a noise band from")
     bands = {}
@@ -164,8 +173,7 @@ def build(list_path, W):
             "drain_max_wait_ns": max(drain_waits) if drain_waits else None,
             "d13_switchinterval_s": {"values": sorted(v for v in switch if v is not None)}
             if switch else None,
-            "d14_softirq": {"irq_softirq_is_experiment": d14[0]}
-            if d14 and len(set(d14)) == 1 else None,
+            "d14_softirq": D14.conclude(d14_rule, d14_rule_rec, d14_trees, d14_submitted),
             "tier_resolution": None, "launches_per_arm": None, "min_detectable_diff": None,
             "i2_calibration": {"enters_criteria": False, "per_loop_impl": {}},
             "core_budget": None, "canary_band": None,
@@ -226,20 +234,24 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="capjudge.pilot", description=__doc__.split("\n")[0])
     ap.add_argument("--inputs", required=True)
     ap.add_argument("--workdir", required=True)
+    ap.add_argument("--d14-rule", required=True,
+                    help="capkit.d14_rule/1 file registered in <W>/REGISTRY.tsv (kind=d14_rule)")
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     if os.path.exists(a.out):
         sys.stderr.write("capjudge.pilot: refusing to overwrite %s\n" % a.out)
         return 3
     try:
-        doc = build(a.inputs, a.workdir)
+        doc = build(a.inputs, a.workdir, a.d14_rule)
     except (PilotError, ConfigError, OSError, ValueError) as e:
         sys.stderr.write("capjudge.pilot: %s\n" % e)
         return 3
     atomic_write_bytes(a.out, (dumps(doc) + "\n").encode("utf-8"))
-    print("wrote %s: %d noise bands from %d tiers; window_ns=%s warmup_ns=%s" % (
+    d14 = doc["d14_softirq"]
+    print("wrote %s: %d noise bands from %d tiers; window_ns=%s warmup_ns=%s; d14=%s (%s)" % (
         a.out, len(doc["noise_bands"]), sum(len(i["tiers_used"]) for i in doc["inputs"]),
-        doc["window_ns"], doc["warmup_ns"]))
+        doc["window_ns"], doc["warmup_ns"], d14.get("irq_softirq_is_experiment"),
+        d14["conclusion_reason"]))
     return 0
 
 

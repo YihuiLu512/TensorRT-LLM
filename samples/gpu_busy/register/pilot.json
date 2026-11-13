@@ -3,8 +3,12 @@
  "core_budget": null,
  "d13_switchinterval_s": null,
  "d14_softirq": {
+  "conclusion_reason": "synthetic",
   "irq_softirq_is_experiment": true,
-  "note": "synthetic"
+  "n_trees_complete": 0,
+  "readings": {},
+  "rule": null,
+  "rule_file": null
  },
  "drain_max_wait_ns": null,
  "environment": {

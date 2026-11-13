@@ -33,6 +33,20 @@ def probe_child():
     w.stop()
 
 
+def entry_report(path):
+    """Record whether this process is the CAPPROBE_ENTRY process (capcommon.probe_entry, the
+    rule capprobe applies at import)."""
+    from capcommon import probe_entry  # noqa: PLC0415
+    raw = os.environ.get(probe_entry.ENV_VAR)
+    rule = probe_entry.parse(raw) if raw else None
+    argv = probe_entry.process_argv()
+    doc = {"pid": os.getpid(), "argv": argv, "rule": rule,
+           "match": None if rule is None else probe_entry.match(rule, argv)}
+    with open(path + ".tmp", "w") as f:
+        json.dump(doc, f)
+    os.replace(path + ".tmp", path)
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--host", required=True)
@@ -47,9 +61,18 @@ def main():
     p.add_argument("--churn-every-ms", type=int, default=0,
                    help="start a short-lived child this often")
     p.add_argument("--role-child", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--entry-report", help="dir: main.json (this process), spawn.json (a "
+                   "multiprocessing spawn child)")
     a = p.parse_args()
     if a.role_child:
         return probe_child()
+    if a.entry_report:
+        import multiprocessing  # noqa: PLC0415
+        entry_report(os.path.join(a.entry_report, "main.json"))
+        sp = multiprocessing.get_context("spawn").Process(
+            target=entry_report, args=(os.path.join(a.entry_report, "spawn.json"),))
+        sp.start()
+        sp.join(60)
     stop = threading.Event()
     if a.ignore_term:
         signal.signal(signal.SIGTERM, signal.SIG_IGN)

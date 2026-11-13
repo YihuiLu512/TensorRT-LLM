@@ -20,6 +20,7 @@ import sys
 import time
 
 from capcommon import gate as gatemod
+from capcommon import probe_entry
 from capcommon.capbin import read_capbin
 from capcommon.clock import now_ns, wall_iso
 from capcommon.exitcodes import OK, RUNTIME, STOPPED_EARLY, ConfigError
@@ -126,6 +127,7 @@ class RoleRT:
         self.argv = None
         self.logs = None
         self.forced = None
+        self.probe_entry = None  # product roles: the CAPPROBE_ENTRY rule it was started with
 
 
 class Launch:
@@ -329,7 +331,7 @@ class Launch:
             self.own[n] = {"ready_file": T.ready_file(n),
                            "port_file": T.procs("ports", "%s.port" % n),
                            "report_addr": T.procs("ports", "%s.addr" % n)}
-            os.makedirs(os.path.join(T.control_dir, "cwd", n), exist_ok=True)
+            os.makedirs(self._role_cwd(n), exist_ok=True)
 
     def _ctx(self):
         return sc.ArgvContext(
@@ -393,6 +395,7 @@ class Launch:
             "roles": roles, "reconcile": self.scen["reconcile"],
             "hw_profile_sha": _opt(a.hw_profile_sha), "submission": sub,
             "overlay_manifest": self.overlay_record, "nvidia_smi": self.nvsmi_record,
+            "probe_entry": self._probe_entry_record(),
             "pin_table": {"path": a.pin_table, "sha256": self.pin_sha},
             "params": self.params, "launch_mark": self.mark,
             "argv_runtime_placeholders": "{addr:<role>} is resolved when the role starts; "
@@ -414,6 +417,26 @@ class Launch:
                                    (dumps({"schema": "capkit.identity/1",
                                            "identity": ident}) + "\n").encode())
 
+    def _probe_entry_record(self):
+        """launch.json `probe_entry`: the CAPPROBE_ENTRY rule of each product role. The exact
+        rule (with {addr:...} resolved) is fixed when the role starts and is recorded on its
+        roles.json procs[] entry (`probe_entry`) and in the start event."""
+        ctx = self._ctx()
+        roles = {}
+        for n, d in self.roles.items():
+            if d["launcher"] != "product":
+                continue
+            argv = sc.build_argv(d, ctx, self.cpus_of[n], sys.executable, runtime=False)
+            path = d["env"].get("PATH", os.environ.get("PATH", os.defpath))
+            try:
+                prog, err = probe_entry.build_rule(argv, self._role_cwd(n), path)["program"], None
+            except probe_entry.EntryRuleError as e:
+                prog, err = None, str(e)
+            roles[n] = {"program": prog, "args_template": argv[1:], "error": err}
+        return {"env": probe_entry.ENV_VAR, "schema": probe_entry.SCHEMA,
+                "match": probe_entry.MATCH_RULE,
+                "exact_rule_in": "procs/roles.json procs[].probe_entry", "roles": roles}
+
     def _write_roles(self):
         self.generation += 1
         write_json_stamped(self.tree.roles_json, "capkit.roles/1", self.ident,
@@ -421,9 +444,14 @@ class Launch:
                             "unattributed": self.unattributed, "aux_helpers": self.aux_helpers})
 
     # ---- processes ---------------------------------------------------------------------------
-    def _role_env(self, d):
+    def _role_env(self, d, argv=None):
+        """Environment of one role. Product roles get the capprobe switches and CAPPROBE_ENTRY,
+        the rule that names exactly the command line `argv` this role is started with (only that
+        process may switch probes on; INTERFACES erratum R1b). Other roles never carry an entry
+        rule."""
         env = dict(os.environ)
         env.update(d["env"])
+        env.pop(probe_entry.ENV_VAR, None)
         k, _, v = self.mark.partition("=")
         env[k] = v
         if d["launcher"] == "product":
@@ -439,7 +467,17 @@ class Launch:
             env["CAPPROBE_INTERVAL_MS"] = str(self.a.snapshot_interval_ms)
             env["CAPPROBE_IDENTITY_FILE"] = self.tree.procs("identity", "%s.json" % d["role"])
             env["CAPPROBE_ROLE_HINT"] = d["role"]
+            try:
+                rule = probe_entry.build_rule(argv, self._role_cwd(d["role"]),
+                                              env.get("PATH", os.defpath))
+            except probe_entry.EntryRuleError as e:
+                raise LaunchAbort("NOT_RUN", "role %s: %s" % (d["role"], e), RUNTIME)
+            env[probe_entry.ENV_VAR] = probe_entry.encode(rule)
+            self.rt[d["role"]].probe_entry = rule
         return env
+
+    def _role_cwd(self, name):
+        return os.path.join(self.tree.control_dir, "cwd", name)
 
     def _register(self, pid, role, worker, parent, via, cpus):
         st = procfs.starttime_ticks(pid, self.proc_root)
@@ -468,10 +506,9 @@ class Launch:
         tmp_err = os.path.join(logdir, "%s.w0.starting.err" % name)
         with open(tmp_out, "wb") as fo, open(tmp_err, "wb") as fe:
             try:
-                rt.popen = subprocess.Popen(full, env=self._role_env(d), stdout=fo, stderr=fe,
-                                            stdin=subprocess.DEVNULL, start_new_session=True,
-                                            cwd=os.path.join(self.tree.control_dir, "cwd",
-                                                             name))
+                rt.popen = subprocess.Popen(full, env=self._role_env(d, argv), stdout=fo,
+                                            stderr=fe, stdin=subprocess.DEVNULL,
+                                            start_new_session=True, cwd=self._role_cwd(name))
             except OSError as e:
                 raise LaunchAbort("NOT_RUN", "cannot start role %s: %s" % (name, e), RUNTIME)
         rt.pid = rt.popen.pid
@@ -482,8 +519,11 @@ class Launch:
         os.replace(tmp_err, err)
         rt.logs = [out, err]
         rt.starttime = procfs.starttime_ticks(rt.pid, self.proc_root)
-        self._register(rt.pid, name, 0, os.getpid(), "launched", rt.cpus)
-        self._log("start", role=name, pid=rt.pid, argv=full)
+        entry = self._register(rt.pid, name, 0, os.getpid(), "launched", rt.cpus)
+        if rt.probe_entry is not None:
+            entry["probe_entry"] = rt.probe_entry
+            self._write_roles()
+        self._log("start", role=name, pid=rt.pid, argv=full, probe_entry=rt.probe_entry)
 
     def _log(self, what, **kw):
         kw.update({"event": what, "t_mono_ns": now_ns(), "wall": wall_iso()})
@@ -1236,7 +1276,8 @@ class Launch:
                                                         "CAPPROBE_TIER", "CAPPROBE_GROUPS",
                                                         "CAPPROBE_SHM_DIR", "CAPPROBE_INTERVAL_MS",
                                                         "CAPPROBE_IDENTITY_FILE",
-                                                        "CAPPROBE_ROLE_HINT"]},
+                                                        "CAPPROBE_ROLE_HINT",
+                                                        probe_entry.ENV_VAR]},
             "stub": d["stub"],
             "load_shape": {"tier_table": self.tt.name, "axis": axis, "dist": self.tt.dist,
                            "seed": self.tt.seed,

@@ -194,6 +194,34 @@ def test_probe_children_registered_by_snapshot(tmp_path):
     _no_leftovers(T)
 
 
+def test_product_role_gets_an_entry_rule_for_its_own_command_line(tmp_path, monkeypatch):
+    """R1b (P3): the product role's CAPPROBE_ENTRY matches the process the orchestrator started
+    and no spawn child of it; an inherited outer value is replaced; launch.json and roles.json
+    record the rule."""
+    rep = tmp_path / "entry"
+    rep.mkdir()
+    roles = cf.default_roles(product_args=["--entry-report", str(rep)], with_observers=False)
+    monkeypatch.setenv("CAPPROBE_ENTRY", "outer-value-must-not-reach-any-role")
+    r, T = _launch(tmp_path, roles)
+    assert r.returncode == 0, r.stderr
+    main, spawn = (json.loads((rep / n).read_text()) for n in ("main.json", "spawn.json"))
+    assert main["rule"] is not None and main["match"] is not None, main
+    assert main["rule"]["program"] == os.path.realpath(cf.sys.executable)
+    assert main["rule"]["args"][0] == cf.DUMMY and "--entry-report" in main["rule"]["args"]
+    assert spawn["rule"] == main["rule"] and spawn["match"] is None, spawn  # inherited, no match
+    rj = _j(T, "raw", "procs", "roles.json")
+    launched = [p for p in rj["procs"] if p["role"] == "product"
+                and p["discovered_via"] == "launched"]
+    assert len(launched) == 1 and launched[0]["probe_entry"] == main["rule"]
+    lj = _j(T, "raw", "launch.json")["probe_entry"]
+    assert lj["env"] == "CAPPROBE_ENTRY" and lj["schema"] == "capkit.probe_entry/1"
+    assert set(lj["roles"]) == {"product"}
+    pr = lj["roles"]["product"]
+    assert pr["program"] == main["rule"]["program"] and pr["error"] is None
+    assert pr["args_template"] == main["rule"]["args"]  # no {addr:...} in this role's args
+    _no_leftovers(T)
+
+
 def test_overlay_missing_with_probe_role_is_not_run(tmp_path):
     """K2: a probe-tier role and no overlay manifest -> NOT_RUN before any role starts."""
     roles = cf.default_roles(with_observers=False)

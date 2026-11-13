@@ -242,7 +242,10 @@ class Builder:
             "launches_per_arm": None, "min_detectable_diff": None,
             "i2_calibration": {"enters_criteria": False, "per_loop_impl": {}},
             "d13_switchinterval_s": None,
-            "d14_softirq": {"irq_softirq_is_experiment": True, "note": "synthetic"},
+            # the key set capjudge.d14.conclude writes; the judge (C13) reads only the bool
+            "d14_softirq": {"rule": None, "rule_file": None, "readings": {},
+                            "n_trees_complete": 0, "irq_softirq_is_experiment": True,
+                            "conclusion_reason": "synthetic"},
             "core_budget": None, "drain_max_wait_ns": None, "canary_band": None})
         self.files = {"tier_table": self.register_file(tt_rel, "tier_table"),
                       "schedule": self.register_file(sc_rel, "schedule"),
@@ -372,6 +375,22 @@ class Builder:
             "positive_control": {"status": "PASS", "why": "listed 1 GPU(s)"},
             "apps_check": {"status": "PASS", "why": "0 compute process(es)"},
             "positive_control_ok": True, "gpu_count": 1, "passed": True, "outcome": "PASS"})
+        # capenv.gate --phase pre's exclusivity.json, copied into raw/env/ by the orchestrator
+        # (only item 6, the idle window, is synthesised: it is the D14 idle reading; 30 s at
+        # 100 ticks/s, no softirq tick on any core)
+        win_ticks = 3000
+        write_json_stamped(self.T.env("exclusivity.json"), "capkit.exclusivity/1",
+                           self.ident("gate"), {
+            "phase": "pre", "expected_items": 1, "positive_control_ok": True,
+            "slurm_view_file": "synthetic", "slurm_view_error": None,
+            "items": [{"id": 6, "cmd": ["read", "/proc/stat", "x2"], "rc": 0,
+                       "stdout_sha": None, "passed": True, "status": "PASS",
+                       "source": "container", "detail": {
+                           "window_ns": 30 * S, "max_frac": 0.02, "expected_cores": 3,
+                           "checked_cores": 3, "busy_cores": [], "missing": [],
+                           "per_core": {str(c): {"busy_ticks": 3, "total_ticks": win_ticks,
+                                                 "busy_frac": 3 / win_ticks, "irq_ticks": 0,
+                                                 "softirq_ticks": 0} for c in (2, 3, 4)}}}]})
         write_plain(self.T.env("overlay_manifest.json"), {
             "schema": "capkit.overlay/1", "tier": "P1" if self.opts.get("probe_mismatch")
             else "P2", "image_commit": "synthetic", "base_commit": "2f22a98d6e",

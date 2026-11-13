@@ -5,7 +5,7 @@
   "job_id": "local-sample-p-sent-short",
   "launch_seq": 0,
   "pid": 1001,
-  "register_sha": "be46e6c7b803ee059787205a2ee58007b70efd5dff877f1ea4974c726a6a16e9",
+  "register_sha": "1000cb5256bf50e139e06f2462b9ff0fc84a09e684c2527ec78a894a8988b881",
   "restart_count": 0,
   "role": "capload",
   "tier_label": null,
@@ -31,6 +31,6 @@
   "python": "3.12.3 synthetic",
   "switchinterval_s": 0.005
  },
- "written_mono_ns": 9752458464500698,
- "written_wall": "2026-11-13T13:20:34.545Z"
+ "written_mono_ns": 9756177521638869,
+ "written_wall": "2026-11-13T14:22:33.602Z"
 }

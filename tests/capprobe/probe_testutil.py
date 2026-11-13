@@ -33,10 +33,24 @@ def clean_env(**extra):
     return env
 
 
+def entry_rule(argv):
+    """CAPPROBE_ENTRY value that registers exactly this command line (what the orchestrator
+    writes for a product role)."""
+    from capcommon import probe_entry  # noqa: PLC0415
+
+    return probe_entry.encode(probe_entry.build_rule(list(argv), os.getcwd(),
+                                                     os.environ.get("PATH", "")))
+
+
 def run_py(code, env, timeout=60, args=()):
-    """Run `python -c code` in a fresh interpreter; returns CompletedProcess (text)."""
-    return subprocess.run([sys.executable, "-c", code, *args], env=env, capture_output=True,
-                          text=True, timeout=timeout, cwd=os.path.dirname(__file__))
+    """Run `python -c code` in a fresh interpreter; returns CompletedProcess (text). An env that
+    carries CAPPROBE_* but no CAPPROBE_ENTRY gets the rule for this very command line, so the
+    snippet is the registered entry process (pass CAPPROBE_ENTRY explicitly to test others)."""
+    argv = [sys.executable, "-c", code, *args]
+    if any(k.startswith("CAPPROBE_") for k in env) and "CAPPROBE_ENTRY" not in env:
+        env = dict(env, CAPPROBE_ENTRY=entry_rule(argv))
+    return subprocess.run(argv, env=env, capture_output=True, text=True, timeout=timeout,
+                          cwd=os.path.dirname(__file__))
 
 
 def run_json(code, env, timeout=60):

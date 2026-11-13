@@ -6,8 +6,8 @@ plan CONSTRAINTS section 2, RESOURCES sections 3-4).
     PYTHONPATH=<C>/tools:<C>/jobs python3.11 -m capjobs.submit <sub-command> ...
 
 Sub-commands: probe (the only path that runs `sbatch --test-only`), submit, reconcile-submit,
-local-record, slurm-view, jobstate, record-end, exclude, prep-tokenizer (draft: dry-run only). See
-jobs/README.md. Nothing has a default resource value; every cluster command goes through
+local-record, slurm-view, jobstate, record-end, exclude, prep-tokenizer (the tokenizer copy, the
+only job that may mount a registered model dir read-only). See jobs/README.md. Nothing has a default resource value; every cluster command goes through
 capjobs.remote (ssh, allow-listed commands).
 """
 
@@ -34,7 +34,7 @@ MODULE_RE = re.compile(r"^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)*$")
 EXE_RE = re.compile(r"^[A-Za-z0-9._/+-]+$")
 JOBSTATE_EXIT = {jobstate.ENDED: 0, jobstate.NOT_ENDED: 20, jobstate.UNKNOWN: 21}
 SBATCH_TEMPLATE = "jobs/capkit_job.sbatch"
-PREP_TOKENIZER_TEMPLATE = "jobs/prep_tokenizer.sbatch.draft"
+PREP_TOKENIZER_TEMPLATE = "jobs/prep_tokenizer.sbatch"
 REGISTER_SCHEMA = "capkit.register/1"
 # register.json "environment" section: the job-level hard limits the job passes to its checks
 # (exactly these keys, all required; see jobs/README.md).
@@ -588,7 +588,8 @@ def cmd_reconcile_submit(a, runner):
     if not a.reason.strip() or "\t" in a.reason or "\n" in a.reason:
         raise SubmitError("--reason must be one non-empty line")
     snap = cur["snapshot_dir"]
-    script = os.path.join(snap, SBATCH_TEMPLATE)
+    prep = plan_purpose(ledger_path, a.plan_id) == policy.PREP_TOKENIZER_PURPOSE
+    script = os.path.join(snap, PREP_TOKENIZER_TEMPLATE if prep else SBATCH_TEMPLATE)
     run_root = _snap_run_root(snap)
     mine = [p for p, pid in _batch_tsv_plans(run_root).items() if pid == a.plan_id]
     common = {"plan_id": a.plan_id, "experiment": cur["experiment"]}
@@ -741,29 +742,111 @@ def cmd_exclude(a, runner):
     return OK
 
 
-def cmd_prep_tokenizer(a):
-    """Draft only: prints the would-be sbatch command; never submits (needs user approval and
-    a new, approved entry; CONSTRAINTS 2 item 3, RESOURCES 9.1 tokenizer note)."""
-    if not a.dry_run:
-        raise SubmitError("prep-tokenizer is a draft that needs user approval: only --dry-run "
-                          "is implemented, nothing is submitted")
+def cmd_prep_tokenizer(a, runner):
+    """The tokenizer copy job (purpose=prep_tokenizer; user decision 2026-11-13). The only job
+    that may mount (part of) the model library: a registered model dir, read-only; no GPU, no
+    --exclusive; the job body is bash + coreutils (jobs/prep_tokenizer.sbatch). Order: checks
+    (no file written) -> plan dir <snapshot root>/<plan id>/ with job.env, mounts.json and the
+    script (read-only) -> PLANNED row -> ssh sbatch --parsable -> SUBMITTED row (unknown outcome
+    and refusal as in `submit`)."""
+    workdir = check_path(os.path.abspath(a.workdir), "--workdir")
     code_root = check_path(os.path.abspath(a.code_root), "--code-root")
-    model_dir = check_path(os.path.abspath(a.model_dir), "--model-dir")
+    snap_root = check_path(os.path.abspath(a.snapshot_root), "--snapshot-root")
+    model_dir = check_path(a.model_dir, "--model-dir")
+    if model_dir not in policy.PREP_TOKENIZER_MODEL_DIRS:
+        raise SubmitError("--model-dir %s is not a registered model dir %s"
+                          % (model_dir, list(policy.PREP_TOKENIZER_MODEL_DIRS)))
     if not ARM_RE.match(a.name):
         raise SubmitError("bad tokenizer --name %r" % a.name)
-    dest = os.path.join(code_root, "configs", "tokenizers", a.name)
-    if os.path.exists(dest):
-        raise SubmitError("destination %s already exists" % dest)
-    res = resources_from_args(a)
-    if res["gpus"] != 0:
-        raise SubmitError("prep-tokenizer requests no GPU (--gpus 0)")
-    script = os.path.join(code_root, PREP_TOKENIZER_TEMPLATE)
-    log = os.path.join(code_root, "configs", "tokenizers", "%x-%j.log")
-    remote_argv = ["sbatch", "--parsable"] + resources.resource_flags(res) + [
-        "--output=" + log, "--export=NONE", script, model_dir, dest]
-    emit({"dry_run": True, "draft": True, "remote_argv": remote_argv,
-          "argv": remote.ssh_argv(a.login_host, remote_argv),
-          "note": "not submitted; the template is jobs/prep_tokenizer.sbatch.draft"})
+    dest_parent = os.path.join(code_root, policy.PREP_TOKENIZER_DEST_REL)
+    dest = os.path.join(dest_parent, a.name)
+    if os.path.lexists(dest) or os.path.lexists(dest + ".partial"):
+        raise SubmitError("destination %s (or .partial) already exists" % dest)
+    basis_line_present(workdir, a.basis)
+    image = check_path(os.path.abspath(a.image), "--image")
+    if not os.path.isfile(image):
+        raise SubmitError("--image %s is not a file" % image)
+    st = os.stat(image)
+    try:
+        exclude = resources.normalize_exclude(a.exclude)
+        flags = resources.prep_tokenizer_flags({
+            "account": a.account, "qos": a.qos, "time": a.time, "mem": a.mem,
+            "cpus_per_task": a.cpus_per_task, "job_name": a.job_name,
+            "partition": a.partition, "exclude": exclude})
+    except resources.ResourceError as e:
+        raise SubmitError(str(e))
+    plan_id = make_plan_id(policy.PREP_TOKENIZER_EXPERIMENT)
+    plan_dir = os.path.join(snap_root, plan_id)
+    mounts = ["%s:%s:ro" % (model_dir, model_dir), "%s:%s:rw" % (dest_parent, dest_parent),
+              "%s:%s:rw" % (plan_dir, plan_dir)]
+    assertions = policy.check_prep_tokenizer_submission(0, mounts, a.basis)
+    script = os.path.join(plan_dir, PREP_TOKENIZER_TEMPLATE)
+    remote_argv = ["sbatch", "--parsable"] + flags + [
+        "--output=" + os.path.join(plan_dir, "%x-%j.log"), "--open-mode=append",
+        "--export=ALL", script, plan_dir]  # ALL as for `submit`: srun must be on PATH
+    argv = remote.ssh_argv(a.login_host, remote_argv)
+    env_values = {
+        "CAPJOBS_PLAN_ID": plan_id, "CAPJOBS_RUN_ROOT": plan_dir, "CAPJOBS_IMAGE": image,
+        "CAPJOBS_IMAGE_SIZE": st.st_size, "CAPJOBS_IMAGE_MTIME_NS": st.st_mtime_ns,
+        "CAPJOBS_MOUNTS": ",".join(mounts),
+        "CAPJOBS_PREP_MODEL_DIR": model_dir, "CAPJOBS_PREP_DEST": dest,
+        "CAPJOBS_PREP_ALLOW_GLOBS": " ".join(policy.PREP_TOKENIZER_ALLOW_GLOBS),
+        "CAPJOBS_PREP_VOCAB_GLOBS": " ".join(policy.PREP_TOKENIZER_VOCAB_GLOBS),
+        "CAPJOBS_PREP_WEIGHT_SUFFIXES": " ".join(policy.WEIGHT_SUFFIXES),
+        "CAPJOBS_PREP_MAX_FILE_BYTES": policy.PREP_TOKENIZER_MAX_FILE_BYTES,
+        "CAPJOBS_PREP_LIBRARY_ROOTS": " ".join(policy.FORBIDDEN_MOUNT_PATHS)}
+    summary = {"plan_id": plan_id, "plan_dir": plan_dir, "dest": dest, "mounts": mounts,
+               "assertions": assertions, "remote_argv": remote_argv, "argv": argv,
+               "job_env": env_values}
+    if a.dry_run:
+        summary["dry_run"] = True
+        emit(summary)
+        return OK
+    os.makedirs(dest_parent, exist_ok=True)
+    os.makedirs(os.path.join(plan_dir, "jobs"))
+    with open(os.path.join(code_root, PREP_TOKENIZER_TEMPLATE), "rb") as f:
+        body = f.read()
+    for rel, data in ((PREP_TOKENIZER_TEMPLATE, body), ("job.env", job_env_bytes(env_values)),
+                      ("mounts.json", (json.dumps(mounts) + "\n").encode("utf-8"))):
+        path = os.path.join(plan_dir, rel)
+        with open(path, "xb") as f:
+            f.write(data)
+        os.chmod(path, 0o444)
+    ledger_path = os.path.join(workdir, "submissions.tsv")
+    common = {"plan_id": plan_id, "experiment": policy.PREP_TOKENIZER_EXPERIMENT}
+    purpose = policy.PREP_TOKENIZER_PURPOSE
+    ledger.submissions_append(ledger_path, ledger_row(
+        event="PLANNED", reason=purpose, arms=a.name, launches=0, basis=a.basis,
+        account=a.account, partition=a.partition or "", qos=a.qos,
+        exclude=",".join(exclude) or resources.EXCLUDE_NONE, time_limit=a.time, mem=a.mem,
+        cpus_per_task=a.cpus_per_task, gpus=0, exclusive="false", snapshot_dir=plan_dir,
+        snapshot_sha256=sha256_file(os.path.join(plan_dir, "job.env")),
+        sbatch_argv=json.dumps(remote_argv), mounts_json=json.dumps(mounts),
+        tokenizer_dir_sha256="none", assertions_json=json.dumps(assertions), **common))
+    attempted_at = wall_iso()
+    rc, out, err = get_runner(a, runner).run(argv)
+    job_id = parse_parsable(out) if rc == 0 else None
+    if job_id is None:
+        reason = _one_line("sbatch rc=%r stdout=%r stderr=%r"
+                           % (rc, (out or "")[-300:], (err or "")[-300:]))
+        if submit_outcome_unknown(rc):
+            ledger.submissions_append(ledger_path, ledger_row(
+                event="NOTE", status=UNKNOWN_SUBMIT, submitted_at=attempted_at,
+                reason="%s; %s; reconcile with `reconcile-submit` after checking squeue/sacct"
+                % (purpose, reason), **common))
+            summary.update({"submitted": None, "unknown_submit": True, "rc": rc})
+            emit(summary)
+            return RUNTIME
+        ledger.submissions_append(ledger_path, ledger_row(
+            event="ENDED", status="SUBMIT_FAILED", reason="%s; %s" % (purpose, reason),
+            **common))
+        summary.update({"submitted": False, "rc": rc, "stdout": out, "stderr": err})
+        emit(summary)
+        return RUNTIME
+    ledger.submissions_append(ledger_path, ledger_row(
+        event="SUBMITTED", job_id=job_id, submitted_at=wall_iso(), **common))
+    summary.update({"submitted": True, "job_id": job_id})
+    emit(summary)
     return OK
 
 # ---- SECTION: main ------------------------------------------------------------------------------
@@ -863,12 +946,23 @@ def build_parser():
     p.add_argument("--partition", required=True)
     p.add_argument("--out", required=True)
 
-    p = sub.add_parser("prep-tokenizer", help="DRAFT: dry-run only, needs user approval")
-    add_resource_args(p)
-    p.add_argument("--login-host", required=True)
+    p = sub.add_parser("prep-tokenizer", help="tokenizer copy job (registered model dir, ro)")
+    add_remote_args(p)
+    p.add_argument("--account", required=True)
+    p.add_argument("--qos", required=True)
+    p.add_argument("--partition", help="optional comma list; omitted = scheduler's choice")
+    p.add_argument("--exclude", required=True, help="comma list of nodes, or the literal 'none'")
+    p.add_argument("--time", required=True, help="[D-]HH:MM:SS")
+    p.add_argument("--mem", required=True, help="e.g. 4G")
+    p.add_argument("--cpus-per-task", required=True, type=int)
+    p.add_argument("--job-name", required=True)
+    p.add_argument("--workdir", required=True)
     p.add_argument("--code-root", required=True)
+    p.add_argument("--snapshot-root", required=True)
     p.add_argument("--model-dir", required=True)
     p.add_argument("--name", required=True)
+    p.add_argument("--image", required=True, help="container image with bash and coreutils")
+    p.add_argument("--basis", required=True)
     p.add_argument("--dry-run", action="store_true")
     return ap
 
@@ -894,7 +988,7 @@ def main(argv=None, runner=None, code_state_fn=None):
         if a.cmd == "exclude":
             return cmd_exclude(a, runner)
         if a.cmd == "prep-tokenizer":
-            return cmd_prep_tokenizer(a)
+            return cmd_prep_tokenizer(a, runner)
     except CapkitError as e:
         print("capjobs.submit: %s" % e, file=sys.stderr)
         return e.exit_code

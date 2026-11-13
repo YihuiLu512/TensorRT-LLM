@@ -12,12 +12,14 @@ import os
 from .clock import parse_wall_iso, wall_iso
 from .exitcodes import ConfigError
 from .hashing import is_sha256_hex
-from .policy import ASSERTION_KEYS, NO_MODEL_EXPERIMENTS, PolicyError, check_mounts
+from .policy import (ASSERTION_KEYS, NO_MODEL_EXPERIMENTS, PREP_ASSERTION_KEYS,
+                     PREP_TOKENIZER_EXPERIMENT, PREP_TOKENIZER_PURPOSE, PolicyError,
+                     check_mounts, check_prep_tokenizer_mounts)
 
 REGISTRY_COLUMNS = ("registered_at", "experiment", "relpath", "sha256", "note")
 REGISTRY_KINDS = ("register", "register_md", "tier_table", "schedule", "prompts", "scenario",
                   "pilot", "loadgen_band", "stub_calib", "near_boundary_noise", "prediction",
-                  "hw_profile")
+                  "hw_profile", "d14_rule")
 SUBMISSION_COLUMNS = ("event_at", "plan_id", "event", "job_id", "status", "reason", "experiment",
                       "arms", "launches", "basis", "account", "partition", "qos", "exclude",
                       "time_limit", "mem", "cpus_per_task", "gpus", "exclusive", "snapshot_dir",
@@ -175,7 +177,10 @@ def submissions_append(path, row):
 
 
 def _check_planned_assertions(row):
-    """PLANNED rows must carry the evidence that policy.check_no_model_submission ran and passed."""
+    """PLANNED rows must carry the evidence that policy.check_no_model_submission (or, for the
+    tokenizer copy, policy.check_prep_tokenizer_submission) ran and passed."""
+    if row.get("reason") == PREP_TOKENIZER_PURPOSE:
+        return _check_prep_tokenizer_planned(row)
     if row.get("experiment") not in NO_MODEL_EXPERIMENTS:
         raise LedgerError("experiment %r is not in the no-model list" % row.get("experiment"))
     try:
@@ -194,6 +199,31 @@ def _check_planned_assertions(row):
     tok = row.get("tokenizer_dir_sha256", "")
     if tok != "none" and not is_sha256_hex(tok):
         raise LedgerError("tokenizer_dir_sha256 must be 64 hex or 'none'")
+
+
+def _check_prep_tokenizer_planned(row):
+    """The one PLANNED row kind allowed to mount (part of) a model library."""
+    if row.get("experiment") != PREP_TOKENIZER_EXPERIMENT:
+        raise LedgerError("a %s row must have experiment %s"
+                          % (PREP_TOKENIZER_PURPOSE, PREP_TOKENIZER_EXPERIMENT))
+    if str(row.get("gpus")) != "0":
+        raise LedgerError("a %s row requests no GPU" % PREP_TOKENIZER_PURPOSE)
+    try:
+        mounts = json.loads(row.get("mounts_json") or "")
+        assertions = json.loads(row.get("assertions_json") or "")
+    except ValueError:
+        raise LedgerError("PLANNED rows need mounts_json and assertions_json as JSON")
+    try:
+        check_prep_tokenizer_mounts(mounts)
+    except PolicyError as e:
+        raise LedgerError(str(e))
+    if not isinstance(assertions, dict) or set(assertions) != set(PREP_ASSERTION_KEYS) \
+            or not all(v is True for v in assertions.values()):
+        raise LedgerError("assertions_json must have every key of %s set to true"
+                          % (PREP_ASSERTION_KEYS,))
+    if row.get("tokenizer_dir_sha256") != "none":
+        raise LedgerError("a %s row has tokenizer_dir_sha256 'none' (it creates the copy)"
+                          % PREP_TOKENIZER_PURPOSE)
 
 
 def submissions_current(path):

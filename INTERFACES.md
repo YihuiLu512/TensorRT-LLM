@@ -489,7 +489,7 @@ JSON 头：
 | `pin_table.json` | B4 `capenv.pins` | 绑核表（§5.5.1） |
 | `pin_readback.json` | B4 | 启动时一次：每个登记进程每条线程的 `Cpus_allowed_list` 与最近运行核；与表比对的结果。**运行中的逐秒读数在 `sidecar/threads.jsonl` 的 `cpus_allowed` 列**（D2：worker 会在运行中自己解除绑核，只读一次抓不到），C9 用逐秒读数 |
 | `switchinterval.json` | B4 | 每个被测进程的 `sys.getswitchinterval()`（D13，取自版本自报）汇总 |
-| `loopback_softirq.json` | B4 `capenv.loopback` | D14 小程序的结果（只在 E0 的专门一步里有） |
+| `loopback_softirq.json` | B4 `capenv.loopback` | 回环 softirq 小程序的结果（只在 E0 的专门一步里有；不进 D14 结论，见勘误 R1b-4） |
 | `overlay_manifest.json` | B3 `capprobe.overlay` | 覆盖清单（§6.6） |
 | `overlay_verify.json` | B6 内层脚本 | 拷进容器后逐文件 sha256 的读回比对 |
 | `image.json`、`mounts.json`、`local_disk.json`、`gpu_idle.json` | B6 | 镜像 sha、挂载检查（含模型库不在场）、本地盘余量、`nvidia-smi` 计算进程与利用率（`gpu_idle.json` 含阳性对照 `positive_control_ok`：查询本身列出了本节点的 GPU，张数写进 `gpu_count`）。判定见 §10.2 的 `GPU-IDLE`；`gpu_idle.json` 的形状与 GPU 数口径见勘误 R1-8 |
@@ -624,7 +624,7 @@ offset 40  meta_len 字节 JSON 元数据
 - 写进快照的槽：`lag.<名字>`（hist）及 `.n`、`.sum`、`.max`、`.neg`；可选逐样本记录（`RecordArray`，`lag` 文件，§5.4.2）。
 - 周期由调用方给（`--lag-period-us`，探针为 `CAPPROBE_LAG_PERIOD_US`），没有默认值。uvloop 的定时器只有毫秒精度【读码：libuv `uv_now`】，所以同一读数在两种循环实现下不可直接比；I2 的标定按实现分开做（设计稿 §2.6）。
 
-### 6.5 capprobe 的开关（环境变量，模块导入时读一次）
+### 6.5 capprobe 的开关（环境变量，模块导入时读一次；只在被测入口进程里启用，见勘误 R1b-1）
 
 | 变量 | 取值 | 缺省 / 校验 |
 |---|---|---|
@@ -791,13 +791,13 @@ E0 已知答案链上的消息由 capkit 自己产生，不是产品 protobuf，
 | `experiment` | 如 `E0` |
 | `relpath` | 相对 `<W>` |
 | `sha256` | 文件 sha |
-| `note` | 说明；以 `kind=<种类>;` 开头（`register`、`register_md`、`tier_table`、`schedule`、`prompts`、`scenario`、`pilot`、`loadgen_band`、`stub_calib`、`near_boundary_noise`、`prediction`、`hw_profile`） |
+| `note` | 说明；以 `kind=<种类>;` 开头（`register`、`register_md`、`tier_table`、`schedule`、`prompts`、`scenario`、`pilot`、`loadgen_band`、`stub_calib`、`near_boundary_noise`、`prediction`、`hw_profile`；`d14_rule` 见勘误 R1b-4） |
 
 用 `capcommon.ledger.registry_append(path, experiment, relpath, sha256, note)` 写（文件不存在则先写表头；同一 sha 已登记过则拒绝，提示用已有的那行；只用追加模式打开，从不重写）。查：`registry_lookup(path, sha256) -> 行 | None`。
 
 ### 9.4 `pilot.json`（E0 的试点产出，`schema: capkit.pilot/1`）
 
-由 B5 的 `capjudge.pilot` 从 E0 的亚饱和档构建；只从 `judge/` 输出与原始数据算，不手填。
+由 B5 的 `capjudge.pilot` 从 E0 的亚饱和档构建；只从 `judge/` 输出与原始数据算，不手填。`d14_softirq` 的算法与形状见勘误 R1b-4。
 
 ```json
 {"schema":"capkit.pilot/1","experiment":"E0",
@@ -824,7 +824,7 @@ E0 已知答案链上的消息由 capkit 自己产生，不是产品 protobuf，
 - `basis`：「依据哪条批准」的原文（CONSTRAINTS §2 第 6 条）；`PLANNED` 行缺它 → 拒绝提交。
 - `gpus` 是申请的 GPU 张数（> 1 拒绝提交）；`sbatch_argv` 是 JSON 数组形式的完整命令。
 - 写：`capcommon.ledger.submissions_append(path, row_dict)`（缺列或多列即报错）。
-- **提交前的五项断言**（CONSTRAINTS §2「靠机制落实」第 1、2、5、6 条；`capcommon.policy`）：`capjobs.submit` 在写 `PLANNED` 行之前调用 `policy.check_no_model_submission(experiment, gpus, mounts, tokenizer_dir, basis)`，按固定顺序断言 ① 实验编号在 `policy.NO_MODEL_EXPERIMENTS` 里（E0～E9 及 E2a、E2b、E15-A；E10 替身臂与 E13 主体与要加载模型的部分共用编号，**不在表里**，要先由用户定出独立编号、在本文件追加勘误）；② 申请的 GPU ≤ 1；③ 挂载清单里没有任何一项等于、位于或包含模型库路径（`policy.FORBIDDEN_MOUNT_PATHS`；挂 `/home` 也算包含）；④ tokenizer 副本里没有权重后缀（`policy.WEIGHT_SUFFIXES`）、没有软链，并算出 `tokenizer_dir_sha256`（不用 tokenizer 的作业写 `none`）；⑤ 依据原文非空。任一不过即退出、不写台账、不提交。`PLANNED` 行必须带 `mounts_json`（挂载清单 JSON 数组）、`tokenizer_dir_sha256`、`assertions_json`（五个键全为 `true`），`submissions_append` 在缺列、断言不全为真、挂载复核不过、实验编号不在表里时拒绝写入。`probe` 子命令的命令行必须过 `policy.check_test_only_argv`（`sbatch` 之后有 `--test-only`）。
+- **提交前的五项断言**（CONSTRAINTS §2「靠机制落实」第 1、2、5、6 条；`capcommon.policy`）：`capjobs.submit` 在写 `PLANNED` 行之前调用 `policy.check_no_model_submission(experiment, gpus, mounts, tokenizer_dir, basis)`，按固定顺序断言 ① 实验编号在 `policy.NO_MODEL_EXPERIMENTS` 里（E0～E9 及 E2a、E2b、E15-A；E10 替身臂与 E13 主体与要加载模型的部分共用编号，**不在表里**，要先由用户定出独立编号、在本文件追加勘误）；② 申请的 GPU ≤ 1；③ 挂载清单里没有任何一项等于、位于或包含模型库路径（`policy.FORBIDDEN_MOUNT_PATHS`；挂 `/home` 也算包含）；④ tokenizer 副本里没有权重后缀（`policy.WEIGHT_SUFFIXES`）、没有软链，并算出 `tokenizer_dir_sha256`（不用 tokenizer 的作业写 `none`）；⑤ 依据原文非空。任一不过即退出、不写台账、不提交。`PLANNED` 行必须带 `mounts_json`（挂载清单 JSON 数组）、`tokenizer_dir_sha256`、`assertions_json`（五个键全为 `true`），`submissions_append` 在缺列、断言不全为真、挂载复核不过、实验编号不在表里时拒绝写入。`probe` 子命令的命令行必须过 `policy.check_test_only_argv`（`sbatch` 之后有 `--test-only`）。tokenizer 拷贝作业（唯一允许挂模型库的作业）走另一套断言，见勘误 R1b-5。
 - **本机运行**（冒烟、判定器自测）的作业号是 `local-<任意>`，由 `capjobs.submit --local-record` 写 `PLANNED` 与 `SUBMITTED` 两行（同样过五项断言，`gpus = 0`、`sbatch_argv` 为空），判定器对它们**不放宽**任何规则。
 
 ## 10. 判定器的输入、输出与退出码
@@ -1005,6 +1005,17 @@ python3 -m capjudge --tree <启动树的路径> --workdir <W>
 19. **§10.2 C8 适用位点**：C8 只检查 `proc_kind` 属于 `launch.json` 各角色 `proc_kinds` 并集的位点，应检条数 = 这些位点的个数；其余位点在 `checks.tsv` 明细里列为「本拓扑不适用」，不算 PASS 也不算 RED。覆盖清单缺失或无位点、没有角色声明 `proc_kinds`、或没有一个适用位点 ⇒ C8 NOT_RUN。直方图槽（lag 组）按各桶计数之和算窗口增量。
 20. **§10.4 自测**：`run_selftest.py --expect-samples N` 必填（N ≥ 1，由调用方给出，等于样本目录数）；期望 13 的样本另断言没有 `judge/`、`judge.attempts/` 下恰有一条 `INPUT_INVALID` 记录、再判仍为 13；良品另断言 `judge/attempt.json` 为 `JUDGED`、再判 12 且不新增尝试记录。新增样本 `gpu_util_unreadable`。
 21. **§11 命令行**：`capenv.gate` 新增必填 `--max-alloc-gpus N`（向 Slurm 申请的 GPU 数）与 `--nvidia-smi PATH`；`--phase pre` 另需 `--idle-window-s S`、`--idle-busy-max-frac F`（取自登记表 `environment` 段，门禁不设缺省，缺了以退出码 3 退出）；`--registered-hw-sha` 可取 `UNREGISTERED`（第 9 条）。`capenv.hwprofile` 新增必填 `--nvidia-smi PATH`。`capenv.sidecar` 新增可选 `--nvidia-smi PATH`（第 10 条）。`capjobs.submit` 新增子命令 `reconcile-submit`（第 14 条），删除 `--slurm-view-wait-s`（第 13 条）。**§11.1 速查**补一行：nvidia-smi 查询只由 `capenv.gpu` 实现（`query_gpus`、`query_apps`、`positive_control`、`sample`、`check_visible`、`idle_check`，关键字参数 `nvsmi` 显式传入可执行文件，生产调用方不靠 PATH）。
+
+### R1b（2026-11-14）
+
+用户 2026-11-13 23:5x 的三项裁决（`00_plan/DECISIONS.md`「勘误与补充」末条第 2～4 项：P3 只在指定进程启用、D14 按 E0 实测定、批准 tokenizer 拷贝作业）落实后的约定。格式版本号不变（没有已发布的数据按旧口径写出过）；新增的 schema 是 `capkit.probe_entry/1`、`capkit.d14_rule/1`。
+
+1. **§6.5 capprobe 只在被测入口进程里启用**（`capprobe.config`、`capcommon.probe_entry`）：新增环境变量 `CAPPROBE_ENTRY`，值为一个 JSON 对象 `{"schema":"capkit.probe_entry/1","program":"<绝对 realpath>","args":[…]}`。导入 `capprobe` 的进程按下面的顺序定状态（`capprobe.ENABLED`、`CONFIG.reason`）：① 没有任何 `CAPPROBE_*` ⇒ 全关（全部开关 False、不起线程、不写快照、不报错；`no_capprobe_env`）；② 有 `CAPPROBE_*` ⇒ 先校验在场的值，不论是哪个进程：未知的 `CAPPROBE_` 变量名、非法 `CAPPROBE_TIER`、`CAPPROBE_GROUPS` 与 TIER 不符（P0、P1 ⇒ 组为空，P2 ⇒ 组非空，没有 TIER 却有组或注入）、未知组名、坏注入规格、坏 `CAPPROBE_ENTRY`、非正整数周期、相对路径 `CAPPROBE_SHM_DIR` ⇒ `RuntimeError`；③ 没有 `CAPPROBE_ENTRY`（`no_entry_rule`）或本进程命令行与它不匹配（`not_the_registered_entry`：spawn 池子进程、MPI worker、其他导入者）⇒ 全关，不读身份文件；④ 匹配的进程 ⇒ 原 §6.5 的全套规则，另加「`CAPPROBE_TIER` 缺失 ⇒ `RuntimeError`」。匹配 = 进程的 `sys.orig_argv`（3.10 之前读 `/proc/self/cmdline`；不用 `sys.argv`，spawn 子进程会把它换成父进程的）以 `args` 原样结尾，且紧挨着的前一个元素解析后等于 `program`（含 `/` 的取 realpath；只有第 0 个元素是裸名时按 PATH 查）。所以 `#!` 脚本（内核在前面加解释器）和多前端 launcher 重新执行的同一命令行都匹配。fork 出来、没有 exec 的子进程命令行不变，仍启用（与之前一样各自归零、按自己的 pid 写快照）。工具模式（`python -m capprobe.decode|overlay|patchcheck`）不变。原 §6.5「`CAPPROBE_TIER` … 不一致 → `RuntimeError`」与 capprobe README「`CAPPROBE_TIER` 未设置也报错」按本条读：缺 TIER 只在匹配的进程里报错。
+2. **§5.2 / §5.3 编排器写入入口规则**：编排器给每个 `launcher: product` 的角色在起进程时写 `CAPPROBE_ENTRY`：`program` = 该角色实际 argv（taskset 之后、`{addr:…}` 已解析）的第 0 个元素按该角色环境的 `PATH`（含 `/` 时按角色工作目录 `control/cwd/<角色>`）解析后的 realpath，`args` = 其余 argv 原样；解析不出 ⇒ 本次启动 NOT_RUN。非产品角色的环境里一律去掉 `CAPPROBE_ENTRY`（外层环境里的值不会传下去）。记录：`launch.json` 新增 `probe_entry`（`env`、`schema`、`match`（匹配规则原文）、`exact_rule_in`、`roles{<产品角色>: {program, args_template（argv 的非运行期展开，`{addr:…}` 仍是占位）, error}}`）；精确规则在该角色起进程时定，记在 `roles.json` 该进程 `procs[]` 项的 `probe_entry` 与 `orchestrator` 事件日志的 `start` 事件里。`dims.json` 的 `injected_for_product_roles` 加上 `CAPPROBE_ENTRY`。
+3. **§5.5 门禁第 6 项**：`exclusivity.json` 第 6 项 `detail.per_core[<核>]` 新增 `irq_ticks`、`softirq_ticks`（空转窗口内的 tick 增量），作为 D14 的空载读数。它经 `--job-env-dir` 拷进每棵启动树的 `raw/env/exclusivity.json`。
+4. **§9.3 / §9.4 D14 由登记的规则算**（`capjudge.d14`）：`capjudge.pilot` 新增必填 `--d14-rule <文件>`（`capkit.d14_rule/1`：恰好 `schema`、`idle_softirq_frac_max`、`load_min_excess_frac`、`monotonic_slack_frac`（三者为 [0, 1] 的数）、`min_trees`（≥ 1 的整数）），文件必须已在 `<W>/REGISTRY.tsv` 以新增的 kind `d14_rule` 登记，否则 pilot 退出码 3。读数：每棵输入树、每个 `under_test` 角色、它在 `pin_table.json` 里的核——空载取 `raw/env/exclusivity.json` 第 6 项，负载取本树入选的每个负载档稳态窗口内 `sidecar/cpus.jsonl` 各核首末两行之差；`softirq_frac` = softirq tick ÷ 同区间八列 tick 之和。规则：空载 `softirq_frac ≤ idle_softirq_frac_max`（接近 0），每个负载档 ≥ 空载 + `load_min_excess_frac`，按负载（档位表轴的方向）排序后相邻两档下降不超过 `monotonic_slack_frac`（随负载增长）。完整树（每个 `under_test` 角色都有空载读数和至少一个负载档读数）≥ `min_trees` 时写 `irq_softirq_is_experiment` = 全部完整树的全部角色都满足；完整树不够、或规则的登记时刻不严格早于某棵输入树 `launch.json` 的 `submission.submitted_at`，**不写**这个键（C13 第二半保持 NOT_RUN）。`d14_softirq` 的形状：`{rule, rule_file{relpath,sha256,registered_at}, readings{<树>: {roles{<角色>: {cores, idle, load[], why, idle_close_to_zero, grows_with_load}}, complete, why}}, n_trees_complete, conclusion_reason[, irq_softirq_is_experiment]}`。pilot 不再读 `env/loopback_softirq.json`（`capenv.loopback` 仍是 E0 冒烟的一项读数，不进结论）。判定器只读布尔键，不变。**执行要求**：规则文件要在第一个 E0 (a)(b) 作业提交之前写好并登记，否则 E0 的数据不能用于 D14 结论。
+5. **§9.5 / §11 tokenizer 拷贝作业**（`capjobs.submit prep-tokenizer`，`jobs/prep_tokenizer.sbatch`，原 `.draft` 改名）：唯一允许挂模型库的作业。登记值在 `capcommon.policy`：`PREP_TOKENIZER_MODEL_DIRS`（`/home/scratch.trt_llm_data_ci/llm-models/GLM-5.3-Flash`）、目的地 `<代码根>/configs/tokenizers/<名字>`、白名单 `PREP_TOKENIZER_ALLOW_GLOBS`、词表 `PREP_TOKENIZER_VOCAB_GLOBS`、单文件上限 `PREP_TOKENIZER_MAX_FILE_BYTES`（64 MiB）、权重后缀仍是 `WEIGHT_SUFFIXES`。`PLANNED` 行：`reason = purpose=prep_tokenizer`、`experiment = PREP-TOKENIZER`、`gpus = 0`、`exclusive = false`、`tokenizer_dir_sha256 = none`、`assertions_json` 的键为 `PREP_ASSERTION_KEYS`（`purpose_prep_tokenizer gpus_zero model_mount_registered_ro other_mounts_no_model basis_present`），`mounts_json` 过 `policy.check_prep_tokenizer_mounts`：恰好一个挂载碰到模型库，且是登记的目录、同路径、`ro`，其余挂载按 `check_mounts`。其他计划（任何别的 `reason`）挂模型库仍被 `submissions_append` 拒绝。资源：不申请 GPU、不带 `--exclusive`、`--nodes=1 --ntasks=1`，`--partition` 可不给（不给就不加）。作业体只用 bash 与 coreutils；容器内核对模型目录是只读挂载、模型库其余部分不可见，只拷顶层白名单文件、拒绝权重后缀与指向目录外的软链、白名单文件超限即失败，逐文件核对源与副本 sha256，写 `COPY_MANIFEST.tsv`（文件名、字节数、sha256）与 `PROVENANCE.txt`，结束前再核一遍没有任何权重文件与清单外文件。细节见 `jobs/README.md`「tokenizer 拷贝作业」。测量作业的快照不含这个脚本。
+6. **§10.4 自测样本**：样本树新增 `raw/env/exclusivity.json`（只合成第 6 项，D14 的空载读数），合成 `pilot.json` 的 `d14_softirq` 改为第 4 条的键集。
 
 ## 审阅记录（r2，2026-11-13）
 

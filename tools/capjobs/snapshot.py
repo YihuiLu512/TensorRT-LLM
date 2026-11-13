@@ -5,7 +5,8 @@ edits of the sources never reach a queued or running job).
 
 Layout of <snapshot_root>/<plan_id>/:
   jobs/ tools/          copies of <code_root>/jobs and <code_root>/tools (no __pycache__, *.pyc,
-                        *.draft)
+                        *.draft, and not jobs/prep_tokenizer.sbatch: the tokenizer copy job has
+                        its own plan dir, see capjobs.submit prep-tokenizer)
   <include relpaths>    configs and other inputs named by the caller (relative to code_root)
   <overlay srcs>        every src of the overlay manifest (probe-tree files), sha-verified
   overlay_manifest.json launch_plan.json mounts.json job.env   generated / copied inputs
@@ -25,6 +26,7 @@ from capcommon.jsonio import dumps
 MANIFEST = "MANIFEST.json"
 SKIP_DIRS = ("__pycache__",)
 SKIP_SUFFIXES = (".pyc", ".draft")
+SKIP_RELPATHS = ("jobs/prep_tokenizer.sbatch",)
 GENERATED = ("overlay_manifest.json", "launch_plan.json", "mounts.json", "job.env", MANIFEST)
 
 
@@ -58,6 +60,8 @@ def _walk_files(base, rel_top):
             if name.endswith(SKIP_SUFFIXES):
                 continue
             src = os.path.join(root, name)
+            if os.path.relpath(src, base) in SKIP_RELPATHS:
+                continue
             if os.path.islink(src) or not os.path.isfile(src):
                 raise SnapshotError("not a regular file: %s" % src)
             yield src, os.path.relpath(src, base)

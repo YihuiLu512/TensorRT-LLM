@@ -25,7 +25,7 @@
   "job_id": "local-sample-x-contradiction",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "be46e6c7b803ee059787205a2ee58007b70efd5dff877f1ea4974c726a6a16e9",
+  "register_sha": "1000cb5256bf50e139e06f2462b9ff0fc84a09e684c2527ec78a894a8988b881",
   "restart_count": 0,
   "role": "sidecar",
   "tier_label": null,
@@ -58,6 +58,6 @@
  "stop": null,
  "unreadable": {},
  "unregistered_snapshot_pids": [],
- "written_mono_ns": 9752459202325971,
- "written_wall": "2026-11-13T13:20:35.282Z"
+ "written_mono_ns": 9756178239346740,
+ "written_wall": "2026-11-13T14:22:34.319Z"
 }

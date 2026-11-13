@@ -17,7 +17,8 @@ Items (RESOURCES.md 3, "in-job exclusivity"), each with the command, rc, stdout 
     (positive control, else NOT_RUN); requesting 0 needs nvidia-smi to report no GPU (the
     positive control and the compute-process check are then NOT_RUN, "needs a listed GPU")
   6 idle window: per-core /proc/stat busy fraction <= --idle-busy-max-frac on every online
-    core over --idle-window-s (pre phase only; the sidecar keeps watching during the run)
+    core over --idle-window-s (pre phase only; the sidecar keeps watching during the run); each
+    core's irq and softirq ticks are recorded too (the idle reading of D14, capjudge.pilot)
 Items 1-3 fall back to <job>/env/slurm_view.json (written from the login node by capjobs)
 when the command is missing or fails in the container; the gate waits for that file at most
 --slurm-view-wait-s seconds. Any item that is not PASS (RED or NOT_RUN) makes the gate
@@ -241,7 +242,9 @@ def item6(window_s, max_frac, proc_root=procfs.PROC, sys_root=procfs.SYS, sleep=
         tot = sum(d.values())
         busy = sum(d[k] for k in procfs.BUSY_COLS)
         frac = busy / tot if tot > 0 else None
-        per[str(c)] = {"busy_ticks": busy, "total_ticks": tot, "busy_frac": frac}
+        # irq / softirq per core: the idle-window reading of the D14 rule (capjudge.pilot)
+        per[str(c)] = {"busy_ticks": busy, "total_ticks": tot, "busy_frac": frac,
+                       "irq_ticks": d["irq"], "softirq_ticks": d["softirq"]}
         if frac is None or frac > max_frac:
             busy_cores.append(c)
     checked = len(per)

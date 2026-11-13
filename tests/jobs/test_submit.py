@@ -9,7 +9,7 @@ import subprocess
 import pytest
 from conftest import CODE_ROOT, DATA, SAVED_CDB, external_input
 
-from capcommon import ledger
+from capcommon import ledger, policy
 from capcommon.hashing import sha256_bytes, sha256_file
 from capjobs import snapshot, submit
 
@@ -169,7 +169,7 @@ def test_submit_end_to_end(env, stub_runner, capsys):
         assert sha256_bytes(f.read()) == planned["snapshot_sha256"]
     assert not os.access(os.path.join(snap, "jobs", "capkit_job.sbatch"), os.W_OK)
     assert os.path.isfile(os.path.join(snap, "tools", "capjobs", "submit.py"))
-    assert not os.path.exists(os.path.join(snap, "jobs", "prep_tokenizer.sbatch.draft"))
+    assert not os.path.exists(os.path.join(snap, "jobs", "prep_tokenizer.sbatch"))
     assert json.loads(planned["sbatch_argv"])[-1] == snap
     sh = subprocess.run(["bash", "-c", 'source "$1/job.env"; printf "%s|%s|%s" '
                          '"$CAPJOBS_SNAP" "$CAPJOBS_MOUNTS" "$CAPJOBS_TIME_LIMIT_S"', "x", snap],
@@ -514,18 +514,131 @@ def test_jobstate_and_slurm_view_cmds(env, stub_runner, capsys):
     assert json.load(open(os.path.join(jd, "env", "slurm_view.json")))["node"] == "n1"
 
 
-def test_prep_tokenizer_is_draft_only(env, stub_runner, capsys):
-    base = ["prep-tokenizer", "--account", "acct", "--partition", PARTS, "--qos", "batch",
-            "--exclude", "none", "--time", "00:30:00", "--mem", "8G", "--cpus-per-task", "2",
-            "--gpus", "0", "--job-name", "capkit-tok", "--login-host", "fe", "--code-root",
-            env.root, "--model-dir", "/home/scratch.trt_llm_data_ci/llm-models/GLM-5.3-Flash",
-            "--name", "glm53"]
-    r = stub_runner({})
-    assert run(base, r) == 3 and r.calls == []
-    assert run(base + ["--dry-run"], r) == 0 and r.calls == []
+MODEL_DIR = "/home/scratch.trt_llm_data_ci/llm-models/GLM-5.3-Flash"
+
+
+def prep_args(env, *extra, partition=None):
+    a = ["prep-tokenizer", "--account", "acct", "--qos", "batch", "--exclude", "none",
+         "--time", "00:30:00", "--mem", "4G", "--cpus-per-task", "2", "--job-name", "capkit-tok",
+         "--login-host", "fe", "--ssh-timeout-s", "60", "--workdir", env.w,
+         "--code-root", env.root, "--snapshot-root", os.path.join(env.root, "snaps"),
+         "--model-dir", MODEL_DIR, "--name", "glm53", "--image", env.image, "--basis", BASIS]
+    if partition:
+        a += ["--partition", partition]
+    return a + list(extra)
+
+
+def _prep_code_root(env):
+    os.makedirs(os.path.join(env.root, "jobs"), exist_ok=True)
+    with open(os.path.join(CODE_ROOT, "jobs", "prep_tokenizer.sbatch"), "rb") as f, \
+            open(os.path.join(env.root, "jobs", "prep_tokenizer.sbatch"), "wb") as g:
+        g.write(f.read())
+
+
+def test_prep_tokenizer_submits_a_minimal_ro_job(env, stub_runner, capsys):
+    """R1b: the formal tokenizer-copy entry; no GPU, no --exclusive, no partition unless given;
+    the registered model dir read-only is its only model-library mount."""
+    _prep_code_root(env)
+    r = stub_runner({"sbatch": (0, "777\n", "")})
+    assert run(prep_args(env), r) == 0, capsys.readouterr().err
     out = json.loads(capsys.readouterr().out)
-    assert out["draft"] is True and not any(x.startswith("--gres") for x in out["remote_argv"])
-    assert run([x if x != "0" else "1" for x in base] + ["--dry-run"], r) == 3
+    ra = out["remote_argv"]
+    assert ra[:2] == ["sbatch", "--parsable"] and ra[-1] == out["plan_dir"]
+    assert ra[-2] == os.path.join(out["plan_dir"], "jobs", "prep_tokenizer.sbatch")
+    assert not [x for x in ra if x.startswith(("--gres", "--gpus", "--exclusive", "--partition"))]
+    assert "--nodes=1" in ra and "--ntasks=1" in ra and "--cpus-per-task=2" in ra
+    assert out["mounts"][0] == "%s:%s:ro" % (MODEL_DIR, MODEL_DIR)
+    assert out["dest"] == os.path.join(env.root, "configs", "tokenizers", "glm53")
+    rows = ledger.read_tsv(os.path.join(env.w, "submissions.tsv"), ledger.SUBMISSION_COLUMNS)
+    assert [x["event"] for x in rows] == ["PLANNED", "SUBMITTED"]
+    pl = rows[0]
+    assert pl["reason"] == "purpose=prep_tokenizer" and pl["experiment"] == "PREP-TOKENIZER"
+    assert pl["gpus"] == "0" and pl["exclusive"] == "false" and pl["partition"] == ""
+    assert json.loads(pl["mounts_json"]) == out["mounts"] and pl["tokenizer_dir_sha256"] == "none"
+    assert rows[1]["job_id"] == "777"
+    plan = out["plan_dir"]
+    for rel in ("jobs/prep_tokenizer.sbatch", "job.env", "mounts.json"):
+        assert not os.access(os.path.join(plan, rel), os.W_OK), rel
+    sh = subprocess.run(["bash", "-c", 'source "$1/job.env"; printf "%s|%s|%s|%s" '
+                         '"$CAPJOBS_PREP_MODEL_DIR" "$CAPJOBS_PREP_MAX_FILE_BYTES" '
+                         '"$CAPJOBS_PREP_WEIGHT_SUFFIXES" "$CAPJOBS_RUN_ROOT"', "x", plan],
+                        capture_output=True, text=True, check=True)
+    assert sh.stdout == "%s|%d|%s|%s" % (MODEL_DIR, policy.PREP_TOKENIZER_MAX_FILE_BYTES,
+                                         " ".join(policy.WEIGHT_SUFFIXES), plan)
+    # RS1: the batch step reads every value from the job.env written here (fake srun records)
+    bindir = os.path.join(env.root, "bin")
+    os.makedirs(bindir)
+    rec = os.path.join(env.root, "srun_calls.txt")
+    with open(os.path.join(bindir, "srun"), "w") as f:
+        f.write('#!/bin/bash\nprintf "%%s\\n" "$*" >> "%s"\nexit 0\n' % rec)
+    os.chmod(os.path.join(bindir, "srun"), 0o755)
+    b = subprocess.run(["bash", ra[-2], plan], capture_output=True, text=True,
+                       env=dict(os.environ, PATH=bindir + ":" + os.environ["PATH"],
+                                SLURM_JOB_ID="777"))
+    assert b.returncode == 0, b.stdout + b.stderr
+    call = open(rec).read()
+    assert "--container-mounts=%s" % ",".join(out["mounts"]) in call
+    assert "--container-image=%s" % env.image in call and " inner %s " % plan in call
+    # a partition is passed through only when given
+    assert run(prep_args(env, "--dry-run", partition="cpu_a,cpu_b"), r) == 0
+    ra = json.loads(capsys.readouterr().out)["remote_argv"]
+    assert "--partition=cpu_a,cpu_b" in ra
+
+
+@pytest.mark.parametrize("change,msg", [
+    ({"--model-dir": "/home/scratch.trt_llm_data_ci/llm-models/Other"}, "not a registered"),
+    ({"--model-dir": "/home/scratch.trt_llm_data_ci/llm-models"}, "not a registered"),
+    ({"--name": "../x"}, "bad tokenizer --name"),
+    ({"--basis": "not in STATUS.md"}, "--basis"),
+])
+def test_prep_tokenizer_refusals(env, stub_runner, capsys, change, msg):
+    _prep_code_root(env)
+    a = prep_args(env)
+    for k, v in change.items():
+        a[a.index(k) + 1] = v
+    r = stub_runner({})
+    assert run(a, r) == 3 and r.calls == []
+    assert msg in capsys.readouterr().err
+    assert not os.path.exists(os.path.join(env.w, "submissions.tsv"))
+
+
+def test_prep_tokenizer_destination_must_be_new(env, stub_runner, capsys):
+    _prep_code_root(env)
+    os.makedirs(os.path.join(env.root, "configs", "tokenizers", "glm53"))
+    r = stub_runner({})
+    assert run(prep_args(env), r) == 3 and r.calls == []
+    assert "already exists" in capsys.readouterr().err
+
+
+def test_model_library_mounts_only_for_prep_tokenizer(env):
+    """The ledger refuses a model-library mount on every other plan, and any prep plan that is
+    not exactly the registered dir read-only without a GPU."""
+    ok = ["%s:%s:ro" % (MODEL_DIR, MODEL_DIR), "/x/configs/tokenizers:/x/configs/tokenizers:rw"]
+    path = os.path.join(env.w, "submissions.tsv")
+    good = submit.ledger_row(
+        plan_id="P1", event="PLANNED", reason="purpose=prep_tokenizer",
+        experiment="PREP-TOKENIZER", basis=BASIS, gpus="0", mounts_json=json.dumps(ok),
+        tokenizer_dir_sha256="none",
+        assertions_json=json.dumps({k: True for k in policy.PREP_ASSERTION_KEYS}))
+    ledger.submissions_append(path, good)
+    bad = [
+        dict(good, reason="purpose=measurement"),  # a measurement plan with the model mount
+        dict(good, experiment="E0"),
+        dict(good, gpus="1"),
+        dict(good, mounts_json=json.dumps(["%s:%s:rw" % (MODEL_DIR, MODEL_DIR)])),
+        dict(good, mounts_json=json.dumps(["%s:%s" % (MODEL_DIR, MODEL_DIR)])),  # rw default
+        dict(good, mounts_json=json.dumps(["%s:/mnt/m:ro" % MODEL_DIR])),
+        dict(good, mounts_json=json.dumps(ok + ["/home/scratch.trt_llm_data:/d:ro"])),
+        dict(good, mounts_json=json.dumps(["/home/scratch.trt_llm_data_ci:/home/"
+                                           "scratch.trt_llm_data_ci:ro"])),
+        dict(good, mounts_json=json.dumps(["/home:/home:ro"])),
+        dict(good, assertions_json=json.dumps({k: True for k in policy.ASSERTION_KEYS})),
+    ]
+    for row in bad:
+        with pytest.raises(ledger.LedgerError):
+            ledger.submissions_append(path, row)
+    with pytest.raises(policy.PolicyError):
+        policy.check_mounts(ok)  # every other job: the model dir mount is refused
 
 
 def test_exclude_live_raw_text(env, stub_runner, capsys):

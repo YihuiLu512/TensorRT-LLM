@@ -30,7 +30,7 @@
   "job_id": "local-sample-records-overflow",
   "launch_seq": 0,
   "pid": 1001,
-  "register_sha": "be46e6c7b803ee059787205a2ee58007b70efd5dff877f1ea4974c726a6a16e9",
+  "register_sha": "1000cb5256bf50e139e06f2462b9ff0fc84a09e684c2527ec78a894a8988b881",
   "restart_count": 0,
   "role": "capload",
   "tier_label": "up-r20",
@@ -455,6 +455,6 @@
  "stop": null,
  "tier_table_sha256": "9ec2e9504387d851b23a6054f90df5b2f04de7e8eb81493c87e89591cb70e2a9",
  "tool": "capload",
- "written_mono_ns": 9752458715185526,
- "written_wall": "2026-11-13T13:20:34.795Z"
+ "written_mono_ns": 9756177766837858,
+ "written_wall": "2026-11-13T14:22:33.847Z"
 }

@@ -3,3 +3,4 @@ probe-tree-glm/
 __pycache__/
 *.pyc
 /_local/
+/configs/tokenizers/

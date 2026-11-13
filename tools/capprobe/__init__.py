@@ -4,7 +4,11 @@
 
 Imported by the probe patch in the TRT-LLM probe tree. It does not depend on tensorrt_llm.
 Switches are read ONCE at import from CAPPROBE_* environment variables (capprobe.config) into
-module-level constants. Every code location of a patched site is one guarded call:
+module-level constants. Probes can only switch on in the registered entry process (the command
+line in CAPPROBE_ENTRY, written by the orchestrator for each product role): a process without
+CAPPROBE_* variables, or whose command line does not match (spawn pool children, MPI workers,
+other importers), gets every switch False, no thread and no snapshot (ENABLED False; the
+reason is CONFIG.reason). Every code location of a patched site is one guarded call:
 
     if _capprobe.ON_F2:
         _capprobe.F2()
@@ -36,7 +40,7 @@ from capcommon import versions as _versions
 from . import sites as _sites
 from .config import CapprobeConfigError, parse_config
 
-__all__ = ["CONFIG", "TIER", "GROUPS", "COUNT", "LAG", "ACTIVE", "SITES", "SLOTS",
+__all__ = ["CONFIG", "TIER", "GROUPS", "COUNT", "LAG", "ACTIVE", "ENABLED", "SITES", "SLOTS",
            "install_loop_lag", "flush", "snapshot_path", "CapprobeConfigError"]
 
 SITES = _sites.SITES
@@ -45,7 +49,8 @@ SLOTS = _sites.SLOTS
 # `python -m capprobe.decode|overlay|patchcheck` imports this package first. Those tool processes
 # must never activate probes (they would leave an unattributed <pid>.bin in the snapshot dir), so
 # the exact module named after `-m` in the original command line selects tool mode: no env parse,
-# everything off. Product processes always parse the switches (and fail loudly when they are bad).
+# everything off. Every other process parses the switches (capprobe.config: bad values fail
+# loudly; only the registered entry process switches anything on).
 TOOL_MODULES = ("capprobe.decode", "capprobe.overlay", "capprobe.patchcheck")
 
 
@@ -63,6 +68,7 @@ GROUPS = () if TOOL_MODE else CONFIG.groups
 COUNT = False if TOOL_MODE else CONFIG.count
 LAG = False if TOOL_MODE else CONFIG.lag
 ACTIVE = False if TOOL_MODE else CONFIG.active
+ENABLED = False if TOOL_MODE else CONFIG.enabled
 
 
 def _noop():

@@ -1,13 +1,13 @@
 # jobs/：作业脚手架（B6）
 
-本目录是 capkit 的作业层：提交入口、批处理脚本、容器内脚本、tokenizer 拷贝作业草稿。
+本目录是 capkit 的作业层：提交入口、批处理脚本、容器内脚本、tokenizer 拷贝作业。
 接口以 `../INTERFACES.md`（§5.5、§5.7、§5.9、§9.5、§11）为准；与它不一致的地方列在文末「偏差与未决」。
 
 ## 文件
 
 | 文件 | 在哪里跑 | 作用 |
 |---|---|---|
-| `tools/capjobs/submit.py` | agent VM（`python3.11`，只用标准库） | 唯一提交入口：`probe`、`submit`、`reconcile-submit`、`local-record`、`slurm-view`、`jobstate`、`record-end`、`exclude`、`prep-tokenizer`（只 dry-run） |
+| `tools/capjobs/submit.py` | agent VM（`python3.11`，只用标准库） | 唯一提交入口：`probe`、`submit`、`reconcile-submit`、`local-record`、`slurm-view`、`jobstate`、`record-end`、`exclude`、`prep-tokenizer` |
 | `tools/capjobs/remote.py` | VM | ssh 命令构造与唯一执行点；远端命令白名单 `sbatch squeue sacct scontrol show cdb find`（没有 `scancel`） |
 | `tools/capjobs/resources.py` | VM | 资源参数校验与 sbatch 参数拼装（新写，不继承 WT-21 的资源段） |
 | `tools/capjobs/snapshot.py` | VM / 容器 | 不可变快照目录与 `MANIFEST.json`；`verify()` 在作业开头重算 |
@@ -21,7 +21,7 @@
 | `tools/capjobs/copyback.py` | 容器 | 拷回与核对；收尾 `sweep` |
 | `capkit_job.sbatch` | 计算节点宿主（批处理层，不用 Python） | 作业目录、镜像大小与 mtime（sha256 由提交端算）、`srun` 进容器、兜底收尾步骤 |
 | `capkit_inner.sh` | 容器内（与被测进程同一 srun 步骤） | 本地盘目录、覆盖、环境文件、硬件画像、门禁、启动、收尾删除 |
-| `prep_tokenizer.sbatch.draft` | 计算节点宿主（草稿，**需用户批准**） | 只拷白名单里的非权重文件，写 `SHA256SUMS.txt` 与 `PROVENANCE.txt` |
+| `prep_tokenizer.sbatch` | 宿主（批处理层）+ 容器（拷贝），只用 bash 与 coreutils | tokenizer 拷贝作业（见下节）；不进测量作业的快照 |
 
 ## 调用方式
 
@@ -51,7 +51,17 @@
 - `jobstate`：退出码 0 = ENDED（squeue 不再列出该作业，**并且** `sacct` 给出终态）、20 = 未结束、21 = 不知道（任一命令出错）。「不再列出」= `squeue -h -j J` 退出 0 且输出为空，或退出非 0 且 stderr 是 `Invalid job id specified`（作业已被 slurmctld 清出内存，此时只看 sacct）；其他 squeue 错误一律 21。
 - `record-end`：写 `ENDED` 行（`reason` 前面带上计划的用途标记）；集群作业必须先过 `jobstate` 的 ENDED 判据，`--status` 只能是 VALID / VOID / NOT_RUN / ENV_INVALID / CANCELLED；`UNKNOWN_SUBMIT` 的计划先走 `reconcile-submit`。
 - `slurm-view`：`scontrol show job`、`scontrol show node <NodeList>`、`squeue -h -w <node> -o '%i %u %T'` 原文与 sha 写进 `<作业目录>/env/slurm_view.json`；作业目录必须已存在（由作业建）。
-- `prep-tokenizer`：草稿，只接受 `--dry-run` 并打印命令；不带 `--dry-run` 退出码 3。
+- `prep-tokenizer`：tokenizer 拷贝作业的正式入口（用户 2026-11-13 批准，见下节「tokenizer 拷贝作业」）。
+
+## tokenizer 拷贝作业（`prep-tokenizer`，`purpose=prep_tokenizer`）
+
+用户 2026-11-13 批准（`00_plan/DECISIONS.md`「勘误与补充」末条第 4 项）。这是**唯一**允许挂模型库的作业类型，登记在 `capcommon.policy`（`PREP_TOKENIZER_*`）：
+
+- 模型目录只认 `policy.PREP_TOKENIZER_MODEL_DIRS`（`/home/scratch.trt_llm_data_ci/llm-models/GLM-5.3-Flash`），以同一路径**只读**挂进容器；挂载清单另有目的地父目录 `<代码根>/configs/tokenizers`（rw）与计划目录（rw）。`policy.check_prep_tokenizer_mounts`：恰好一个挂载碰到模型库，且它就是登记的目录、同路径、`ro`；其余挂载按普通作业的 `check_mounts` 查。`ledger.submissions_append` 只对 `reason = purpose=prep_tokenizer`、`experiment = PREP-TOKENIZER`、`gpus = 0`、断言键为 `PREP_ASSERTION_KEYS` 的 `PLANNED` 行放行这类挂载；其他任何计划挂模型库仍拒绝。
+- 命令：`capjobs.submit prep-tokenizer --account A --qos Q [--partition P] --exclude none|… --time T --mem M --cpus-per-task N --job-name J --login-host H --ssh-timeout-s S --workdir <W> --code-root <C> --snapshot-root R --model-dir D --name NAME --image <sqsh> --basis <STATUS.md 整行> [--dry-run]`。不申请 GPU（不带 `--gres`/`--gpus`）、不带 `--exclusive`；`--partition` 不给就不加（全局规则「分区能不加就不加」；本集群 `sacctmgr` 的关联不限分区，见 `00_plan/RESOURCES.md` 9.1），给了原样传。
+- 提交前（任一不过退出码 3，不写任何文件）：模型目录在登记表里、`--name` 合法、`<C>/configs/tokenizers/<NAME>`（及 `.partial`）不存在、依据是 `STATUS.md` 的整行、镜像是文件、资源参数合法、挂载断言。之后建计划目录 `<R>/<计划号>/`（`jobs/prep_tokenizer.sbatch`、`job.env`、`mounts.json`，都只读）→ `PLANNED` 行 → ssh `sbatch --parsable` → `SUBMITTED` 行；结果不明与明确失败的处理同 `submit`（`reconcile-submit` 也认这类计划）。镜像只核大小与 `mtime_ns`（拷贝结果由逐文件 sha256 核对，不依赖镜像内容）。
+- 作业（`prep_tokenizer.sbatch`，宿主层 → 一个 `srun --container-mounts=… --no-container-mount-home` 步骤，全程只有 bash 与 coreutils）：作业目录 `<计划目录>/J<作业号>-r<重启次数>/`（已存在即退出 3）→ 镜像大小与 `mtime_ns` → 容器内：模型目录在 `/proc/self/mountinfo` 里是只读挂载、模型库除了通往它的路径外什么都看不见（否则退出 6）→ 只看模型目录顶层：权重后缀（`policy.WEIGHT_SUFFIXES`，不分大小写）一律拒绝并记下，其余名字匹配白名单（`tokenizer* *.json *.jinja *.txt *.model *.tiktoken`）才拷，指向模型目录之外的软链拒绝，白名单文件超过 `PREP_TOKENIZER_MAX_FILE_BYTES`（64 MiB）作业失败（退出 4）→ 每个文件源与副本 sha256 相等 → 至少拷到一个词表文件 → `COPY_MANIFEST.tsv`（文件名、字节数、sha256，另存一份在作业目录）与 `PROVENANCE.txt`（拷了、跳过、拒绝的清单）→ 结束前核对副本：只有清单里的普通文件、没有任何权重后缀、没有超限文件、`sha256sum -c` 通过 → 只读、改名为最终目录 → 再核一遍。
+- 拷完的目录 `configs/tokenizers/<NAME>/` 不进 git（`.gitignore`），测量作业用 `--tokenizer-dir` 挂它，`policy.tokenizer_dir_sha256` 再核一次没有权重、没有软链。
 
 ## 登记表的 `environment` 段（`register.json` 顶层，必填）
 
@@ -103,4 +113,4 @@ cd <C> && bash -c 'ulimit -v 8388608; exec systemd-run --user --scope -q -p Memo
 4. 作业级 `STATE`（`<作业目录>/STATE`）与 `import_origin.json`、`launches.json`、`batch.tsv`、`copyback/`、`local_leftovers/`、`shm_leftovers/` 是 INTERFACES 之外新增的作业目录内容。
 5. `srun` 显式带 `--cpus-per-task=$SLURM_CPUS_PER_TASK`：较新的 Slurm 里 srun 不再继承 sbatch 的 `--cpus-per-task`【推断，未在本集群核对】，缺了它步骤可能只拿到 1 个核。
 6. `--export=ALL`（与 WT-21 一致）：前端的环境变量会带进作业；容器内 `unset PYTHONPATH`，其余未清理。
-7. `prep-tokenizer` 走的资源参数与 `submit` 相同，因此也带 `--exclusive`（整机独占，只为拷几个小文件）；批准时再定。
+7. `prep-tokenizer` 只申请最小资源（不带 `--exclusive`、不申请 GPU、分区可不给），见下节。

@@ -6,7 +6,7 @@
   {
    "kind": "pilot",
    "relpath": "register/pilot.json",
-   "sha256": "09a538f4ed87d8fc78aa7450b948caa4e5dbcdbb28db8dca92d26d61ebb6c238"
+   "sha256": "e45774a5f61362ef4856b6c7bab2371889f4b26b456dc3a9433bd896ecdd4986"
   }
  ],
  "expected": {

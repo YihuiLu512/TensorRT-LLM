@@ -239,6 +239,26 @@ def test_item6_synthetic_red_and_pass(tmp_path):
     assert it["status"] == "PASS"
 
 
+def test_item6_records_irq_and_softirq_per_core(tmp_path):
+    """R1b (D14): the idle window keeps each core's irq and softirq ticks for capjudge.pilot."""
+    proc, sysr = tmp_path / "proc", tmp_path / "sys"
+    proc.mkdir()
+    (sysr / "devices/system/cpu").mkdir(parents=True)
+    (sysr / "devices/system/cpu/online").write_text("0-1\n")
+
+    def stat(rows):  # cpuN user nice system idle iowait irq softirq steal guest guest_nice
+        with open(str(proc / "stat"), "w") as f:
+            f.write("cpu  0 0 0 0 0 0 0 0 0 0\n")
+            for c, (idle, irq, sirq) in rows.items():
+                f.write("cpu%d 0 0 0 %d 0 %d %d 0 0 0\n" % (c, idle, irq, sirq))
+    stat({0: (0, 0, 0), 1: (0, 0, 0)})
+    it = gate.item6(1.0, 0.5, str(proc), str(sysr),
+                    sleep=lambda s: stat({0: (97, 1, 2), 1: (100, 0, 0)}))
+    per = it["detail"]["per_core"]
+    assert per["0"]["softirq_ticks"] == 2 and per["0"]["irq_ticks"] == 1
+    assert per["0"]["total_ticks"] == 100 and per["1"]["softirq_ticks"] == 0
+
+
 def test_item6_real_spinner_positive_control():
     cpus = sorted(os.sched_getaffinity(0))
     target = cpus[-1]

@@ -9,7 +9,7 @@
 | 命令 | 作用 |
 |---|---|
 | `PYTHONPATH=<C>/tools python3.11 -m capjudge --tree <T> --workdir <W>` | 判一棵启动树（INTERFACES §10.1，只接受这两个参数） |
-| `PYTHONPATH=<C>/tools python3.11 -m capjudge.pilot --inputs <列表> --workdir <W> --out <pilot.json>`，或 `python3.11 <C>/analysis/pilot_build.py …`（同一实现） | 从已判过的亚饱和档构建 E0 的 `pilot.json`（INTERFACES §9.4） |
+| `PYTHONPATH=<C>/tools python3.11 -m capjudge.pilot --inputs <列表> --workdir <W> --d14-rule <规则> --out <pilot.json>`，或 `python3.11 <C>/analysis/pilot_build.py …`（同一实现） | 从已判过的亚饱和档构建 E0 的 `pilot.json`（INTERFACES §9.4） |
 | `python3.11 <C>/samples/make_samples.py --out <目录>` | 生成自测样本（合成，`launch.json` 带 `"synthetic": true`） |
 | `python3.11 <C>/samples/run_selftest.py --tools <C>/tools --package capjudge --tmp <已存在的临时目录> --expect-samples <样本数>` | 跑全部样本并逐条断言；`--expect-samples` 必填，由调用方给出（当前样本数见 `samples/README.md`） |
 
@@ -80,9 +80,24 @@
 - `sidecar/meta.json` 带 `interval_ns`（采样周期，整数 ns，`capenv.sidecar` 的写法）与 `clk_tck`。
 - `env/versions/*.json` 是版本记录本身，或 `{"versions": 记录}`；pid 取自记录里的 `pid`，角色经 `roles.json` 按 pid 查。
 - `env/gpu_idle.json` 带 `positive_control_ok`、`gpu_count`；`sidecar/gpu.jsonl` 头带 `gpu_count`。
-- `pilot.json` 的 `d14_softirq` = `{"irq_softirq_is_experiment": bool}`；`pilot` 从 `env/loopback_softirq.json` 的同名键取（B4）。
+- `pilot.json` 的 `d14_softirq`：判定器（C13 第二半）只读其中的布尔 `irq_softirq_is_experiment`，没有这个键 ⇒ NOT_RUN。它由 `pilot` 按登记的规则算出（见下节）。
 - 窗口快照副本：每进程按 `t_mono_ns` 排序取首末两份，不按文件名里的 `wstart`/`wend`。
 
 ## pilot 列表文件
 
-每行 `<启动树>\t<档序号,档序号…>`（必须写明用哪几档；不接受通配符、同一树两行）。每棵树必须已判过；任一检查 RED 或 VOID 的档被剔除并列在 `inputs[].tiers_excluded`。全部树的环境（画像 sha、镜像 sha、capkit sha、基线 sha）必须相同。产出：`noise_bands`（T3：各键在入选档上的 [min, max]、n、来源档）、`window_ns`（前 L 秒的 T1 都落进全窗口噪声带的最短偶数秒 L）、`warmup_ns`（从档开始偏移 w 秒后在途数无趋势的最小 w）、`drain_max_wait_ns`、`d13_switchinterval_s`、`d14_softirq`；`tier_resolution`、`launches_per_arm`、`min_detectable_diff`、`i2_calibration`、`core_budget`、`canary_band` 写 `null` 并列在 `not_computed`（第二批）。不覆盖已有文件。
+每行 `<启动树>\t<档序号,档序号…>`（必须写明用哪几档；不接受通配符、同一树两行）。每棵树必须已判过；任一检查 RED 或 VOID 的档被剔除并列在 `inputs[].tiers_excluded`。全部树的环境（画像 sha、镜像 sha、capkit sha、基线 sha）必须相同。产出：`noise_bands`（T3：各键在入选档上的 [min, max]、n、来源档）、`window_ns`（前 L 秒的 T1 都落进全窗口噪声带的最短偶数秒 L）、`warmup_ns`（从档开始偏移 w 秒后在途数无趋势的最小 w）、`drain_max_wait_ns`、`d13_switchinterval_s`、`d14_softirq`（下节）；`tier_resolution`、`launches_per_arm`、`min_detectable_diff`、`i2_calibration`、`core_budget`、`canary_band` 写 `null` 并列在 `not_computed`（第二批）。不覆盖已有文件。
+
+## D14：被测核上的 softirq 算不算实验自己的 CPU 时间（`capjudge.d14`，勘误 R1b）
+
+用户 2026-11-13 的裁决：按 E0 实测、按登记的规则定。`--d14-rule` 必填，是一个 `capkit.d14_rule/1` 文件，必须已在 `<W>/REGISTRY.tsv` 以 `kind=d14_rule` 登记（未登记、键不全、取值越界 ⇒ 退出码 3）：
+
+```json
+{"schema":"capkit.d14_rule/1","idle_softirq_frac_max":0.002,"load_min_excess_frac":0.005,
+ "monotonic_slack_frac":0.002,"min_trees":1}
+```
+
+- 读数（每棵树、每个 `under_test` 角色、该角色在 `pin_table.json` 里的核）：空载 = `raw/env/exclusivity.json` 第 6 项（门禁空转窗口，作业里第一个启动之前）各核的 `softirq_ticks`、`irq_ticks`、`total_ticks`；负载 = 本树入选的每个负载档，`sidecar/cpus.jsonl` 在档稳态窗口内各核首末两行之差。`softirq_frac` = softirq tick ÷ 同区间全部 tick（user nice system idle iowait irq softirq steal）。
+- 规则：空载 `softirq_frac` ≤ `idle_softirq_frac_max`（接近 0）；每个负载档 ≥ 空载 + `load_min_excess_frac`，且按负载（档位表轴的方向）排序后相邻两档下降不超过 `monotonic_slack_frac`（随负载增长）。
+- 结论：完整的树（每个 `under_test` 角色都有空载读数和至少一个负载档读数）≥ `min_trees` 时，`irq_softirq_is_experiment` = 全部完整树的全部角色都满足规则；否则、或规则文件的登记时刻不严格早于某棵输入树的 `submitted_at`，不写这个键（C13 第二半保持 NOT_RUN），`conclusion_reason` 写明原因。
+- `d14_softirq` 另带 `rule`、`rule_file`（`relpath sha256 registered_at`）、`readings`（逐树逐角色的原始读数与 `idle_close_to_zero`、`grows_with_load`）、`n_trees_complete`。
+- 没有 `under_test` 角色的树（如 `e0a-nullsse`）不完整，只列出不计数。

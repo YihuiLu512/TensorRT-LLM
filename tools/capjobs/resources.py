@@ -110,6 +110,42 @@ def resource_flags(res):
     return flags
 
 
+def prep_tokenizer_flags(res):
+    """sbatch flags of the tokenizer-copy job: the smallest request that works. No GPU (no
+    --gres), no --exclusive, one task on one node; --partition only when given (None = let the
+    scheduler pick, the global partition rule) and --exclude only when non-empty.
+    res: account, qos, time, mem, cpus_per_task, job_name, partition (str or None), exclude."""
+    need = ("account", "qos", "time", "mem", "cpus_per_task", "job_name", "partition",
+            "exclude")
+    missing = [k for k in need if k not in res]
+    if missing:
+        raise ResourceError("missing resource fields %s" % missing)
+    if not ACCOUNT_RE.match(res["account"] or "") or not QOS_RE.match(res["qos"] or ""):
+        raise ResourceError("bad account %r or qos %r" % (res["account"], res["qos"]))
+    parse_time_s(res["time"])
+    if not MEM_RE.match(res["mem"] or ""):
+        raise ResourceError("mem must be like 4G, got %r" % (res["mem"],))
+    c = res["cpus_per_task"]
+    if not isinstance(c, int) or isinstance(c, bool) or c <= 0:
+        raise ResourceError("cpus_per_task must be an int > 0")
+    if not JOB_NAME_RE.match(res["job_name"] or ""):
+        raise ResourceError("bad job name %r" % (res["job_name"],))
+    if not isinstance(res["exclude"], list) or any(not NODE_RE.match(n) for n in res["exclude"]):
+        raise ResourceError("exclude must be a validated node list")
+    flags = ["--job-name=" + res["job_name"], "--account=" + res["account"],
+             "--qos=" + res["qos"], "--time=" + res["time"], "--mem=" + res["mem"],
+             "--cpus-per-task=%d" % c, "--nodes=1", "--ntasks=1"]
+    if res["partition"] is not None:
+        flags.append("--partition=" + ",".join(split_list(res["partition"], PARTITION_RE,
+                                                          "partition")))
+    if res["exclude"]:
+        flags.append("--exclude=" + ",".join(res["exclude"]))
+    bad = [f for f in flags if f.startswith(("--gres", "--gpus", "--exclusive"))]
+    if bad:
+        raise ResourceError("the tokenizer copy must not request %s" % bad)
+    return flags
+
+
 def submit_argv(res, log_path_pattern, script, script_args):
     """Remote argv for the real submission. Never contains --test-only."""
     argv = ["sbatch", "--parsable"] + resource_flags(res) + [

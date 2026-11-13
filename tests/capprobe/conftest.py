@@ -4,8 +4,8 @@
 
 capprobe reads its switches once at import, so every runtime behaviour is exercised in a fresh
 subprocess with an explicit environment. The pytest process itself imports capprobe (for
-capprobe.config / overlay / patchcheck) under CAPPROBE_TIER=P1 with every group off, so it never
-starts a snapshot writer. Helpers live in probe_testutil (never import from conftest).
+capprobe.config / overlay / patchcheck) without any CAPPROBE_* variable, so capprobe stays off and
+never starts a snapshot writer. Helpers live in probe_testutil (never import from conftest).
 """
 
 import json
@@ -24,7 +24,6 @@ from probe_testutil import IDENTITY, clean_env  # noqa: E402
 
 for _k in [k for k in os.environ if k.startswith("CAPPROBE_")]:
     del os.environ[_k]
-os.environ["CAPPROBE_TIER"] = "P1"
 
 
 @pytest.fixture

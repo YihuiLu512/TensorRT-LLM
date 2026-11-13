@@ -18,7 +18,7 @@ from capcommon.runtree import read_state
 JOBS = os.path.join(CODE_ROOT, "jobs")
 SBATCH = os.path.join(JOBS, "capkit_job.sbatch")
 INNER = os.path.join(JOBS, "capkit_inner.sh")
-DRAFT = os.path.join(JOBS, "prep_tokenizer.sbatch.draft")
+PREP = os.path.join(JOBS, "prep_tokenizer.sbatch")
 
 
 def read(p):
@@ -26,7 +26,7 @@ def read(p):
         return f.read()
 
 
-@pytest.mark.parametrize("path", [SBATCH, INNER, DRAFT])
+@pytest.mark.parametrize("path", [SBATCH, INNER, PREP])
 def test_bash_syntax(path):
     r = subprocess.run(["bash", "-n", path], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
@@ -42,7 +42,7 @@ def hardcoded(text):
 def test_no_hardcoded_resources_or_paths():
     assert hardcoded(read(external_input(WT21_SBATCH))), \
         "positive control: the WT-21 script must be flagged"
-    for p in (SBATCH, INNER, DRAFT):
+    for p in (SBATCH, INNER, PREP):
         assert hardcoded(read(p)) == [], p
     assert not [ln for ln in read(SBATCH).splitlines() if ln.startswith("#SBATCH")]
     for p in (SBATCH, INNER):
@@ -69,64 +69,190 @@ def test_required_mechanisms_present():
         rm_lines
     assert [ln for ln in read(SBATCH).splitlines()
             if re.search(r"\brm\b", ln) and not ln.lstrip().startswith("#")] == []
-    d = read(DRAFT)
-    assert "DRAFT - NOT SUBMITTABLE" in d and "python" not in d.lower().replace(
-        "no python", "")
+    d = read(PREP)
+    code = [ln for ln in d.splitlines() if not ln.lstrip().startswith("#")]
+    assert "python" not in "\n".join(code).lower()  # bash + coreutils only
+    for tool in ("find", "awk", "grep", "sed", "python3"):
+        assert not [ln for ln in code if re.search(r"(^|[|;&(]\s*)%s\b" % tool, ln.strip())], tool
+    assert not [ln for ln in d.splitlines() if ln.startswith("#SBATCH")]
+    for tok in ('--container-mounts="$CAPJOBS_MOUNTS"', "--no-container-mount-home",
+                "/proc/self/mountinfo", "sha256sum", '[[ $n == $g ]]'):
+        assert tok in d, tok
+    for tok in ("--gres", "--gpus", "--exclusive"):
+        assert tok not in "\n".join(code), tok
+    assert not [ln for ln in code if re.search(r"(^|[;&|]\s*)rm\s", ln.strip())]  # no delete
 
 
-# ---- prep_tokenizer draft run locally on a fake model dir ---------------------------------------
+# ---- prep_tokenizer inner step run locally on a fake model dir ---------------------------------
 
 def fake_model(root, with_vocab=True):
     os.makedirs(root)
     files = {"tokenizer_config.json": "{}", "config.json": "{}", "generation_config.json": "{}",
              "special_tokens_map.json": "{}", "chat_template.jinja": "{{x}}",
              "model-00001-of-00002.safetensors": "W", "pytorch_model.bin": "W",
-             "consolidated.pth": "W", "README.md": "readme", "o200k.tiktoken": "t"}
+             "consolidated.pth": "W", "Model.GGUF": "W", "README.md": "readme",
+             "o200k.tiktoken": "t", "merges.txt": "m", "model.safetensors.index.json": "{}"}
     if with_vocab:
         files["tokenizer.json"] = '{"v":1}'
     for n, d in files.items():
         with open(os.path.join(root, n), "w") as f:
             f.write(d)
-    blob = os.path.join(os.path.dirname(root), "blob-tokmodel")
-    with open(blob, "w") as f:
+    with open(os.path.join(root, "blob-tokmodel.data"), "w") as f:
         f.write("spm")
-    os.symlink(blob, os.path.join(root, "tokenizer.model"))
+    os.symlink(os.path.join(root, "blob-tokmodel.data"), os.path.join(root, "tokenizer.model"))
+    # outside the library root (root = <tmp>/lib/llm-models/<model>)
+    outside = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(root))),
+                           "outside.json")
+    with open(outside, "w") as f:
+        f.write("{}")
+    os.symlink(outside, os.path.join(root, "linked_outside.json"))
     os.makedirs(os.path.join(root, "subdir"))
     with open(os.path.join(root, "subdir", "tokenizer.json"), "w") as f:
         f.write("nested is not copied")
 
 
-def test_prep_tokenizer_draft(tmp_path):
-    src = str(tmp_path / "model")
-    fake_model(src)
-    dest = str(tmp_path / "configs" / "tokenizers" / "glm")
-    r = subprocess.run(["bash", DRAFT, src, dest], capture_output=True, text=True)
+EXPECT_COPIED = sorted(["tokenizer.json", "tokenizer_config.json", "config.json",
+                        "generation_config.json", "special_tokens_map.json",
+                        "chat_template.jinja", "o200k.tiktoken", "tokenizer.model", "merges.txt",
+                        "model.safetensors.index.json"])
+
+
+def prep_world(tmp_path, max_bytes=policy.PREP_TOKENIZER_MAX_FILE_BYTES, ro=True,
+               extra_lib_entry=False, with_vocab=True):
+    """A plan dir with the job.env capjobs.submit writes, a fake library root holding the model
+    dir, and a fake mountinfo for the inner step."""
+    lib = tmp_path / "lib"
+    model = lib / "llm-models" / "GLM"
+    fake_model(str(model), with_vocab=with_vocab)
+    if extra_lib_entry:
+        (lib / "llm-models" / "Other").mkdir()
+    plan = tmp_path / "plan"
+    (plan / "jobs").mkdir(parents=True)
+    dest_parent = tmp_path / "configs" / "tokenizers"
+    dest_parent.mkdir(parents=True)
+    env = {"CAPJOBS_PLAN_ID": "Pxyz", "CAPJOBS_RUN_ROOT": str(plan),
+           "CAPJOBS_IMAGE": str(tmp_path / "img.sqsh"), "CAPJOBS_IMAGE_SIZE": "1",
+           "CAPJOBS_IMAGE_MTIME_NS": "1", "CAPJOBS_MOUNTS": "m:m:ro",
+           "CAPJOBS_PREP_MODEL_DIR": str(model), "CAPJOBS_PREP_DEST": str(dest_parent / "glm"),
+           "CAPJOBS_PREP_ALLOW_GLOBS": " ".join(policy.PREP_TOKENIZER_ALLOW_GLOBS),
+           "CAPJOBS_PREP_VOCAB_GLOBS": " ".join(policy.PREP_TOKENIZER_VOCAB_GLOBS),
+           "CAPJOBS_PREP_WEIGHT_SUFFIXES": " ".join(policy.WEIGHT_SUFFIXES),
+           "CAPJOBS_PREP_MAX_FILE_BYTES": str(max_bytes),
+           "CAPJOBS_PREP_LIBRARY_ROOTS": "%s %s" % (lib, tmp_path / "lib2")}
+    from capjobs.submit import job_env_bytes
+    (plan / "job.env").write_bytes(job_env_bytes(env))
+    jd = plan / "J1-r0"
+    jd.mkdir()
+    info = tmp_path / "mountinfo"
+    info.write_text("22 1 0:21 / /proc rw,nosuid - proc proc rw\n"
+                    "40 22 0:50 / %s %s,relatime - nfs srv:/x rw\n" % (model, "ro" if ro else "rw"))
+    return {"plan": str(plan), "jd": str(jd), "info": str(info), "dest": str(dest_parent / "glm"),
+            "model": str(model)}
+
+
+def run_inner(w):
+    return subprocess.run(["bash", PREP, "inner", w["plan"], w["jd"], w["info"]],
+                          capture_output=True, text=True, timeout=120)
+
+
+def test_prep_tokenizer_copies_the_whitelist_only(tmp_path):
+    w = prep_world(tmp_path)
+    r = run_inner(w)
     assert r.returncode == 0, r.stderr
+    dest = w["dest"]
     got = sorted(os.listdir(dest))
-    assert got == sorted(["tokenizer.json", "tokenizer_config.json", "config.json",
-                          "generation_config.json", "special_tokens_map.json",
-                          "chat_template.jinja", "o200k.tiktoken", "tokenizer.model",
-                          "SHA256SUMS.txt", "PROVENANCE.txt"])
+    assert got == sorted(EXPECT_COPIED + ["COPY_MANIFEST.tsv", "PROVENANCE.txt"])
     assert not os.path.islink(os.path.join(dest, "tokenizer.model"))
-    c = subprocess.run(["sha256sum", "-c", "SHA256SUMS.txt"], cwd=dest, capture_output=True,
-                       text=True)
-    assert c.returncode == 0 and c.stdout.count(": OK") == 8
+    rows = [ln.split("\t") for ln in read(os.path.join(dest, "COPY_MANIFEST.tsv")).splitlines()]
+    assert sorted(x[0] for x in rows) == EXPECT_COPIED
+    for name, size, sha in rows:  # manifest = name, size, sha256 of the copied bytes
+        with open(os.path.join(w["model"], name), "rb") as f:
+            data = f.read()
+        import hashlib
+        assert int(size) == len(data) and sha == hashlib.sha256(data).hexdigest()
+    assert read(os.path.join(w["jd"], "copy_manifest.tsv")) == read(
+        os.path.join(dest, "COPY_MANIFEST.tsv"))
     prov = read(os.path.join(dest, "PROVENANCE.txt"))
-    assert "model-00001-of-00002.safetensors" in prov and "pytorch_model.bin" in prov
-    assert policy.tokenizer_dir_sha256(dest) != "none"
+    for n in ("model-00001-of-00002.safetensors:weight", "pytorch_model.bin:weight",
+              "consolidated.pth:weight", "Model.GGUF:weight", "linked_outside.json:link-outside"):
+        assert n in prov, n
+    assert not any(n.lower().endswith(policy.WEIGHT_SUFFIXES) for n in got)
+    assert policy.tokenizer_dir_sha256(dest) != "none"  # what `submit` will accept
     assert not os.access(dest, os.W_OK)
-    r = subprocess.run(["bash", DRAFT, src, dest], capture_output=True, text=True)
-    assert r.returncode == 3
-    src2 = str(tmp_path / "model2")
-    fake_model(src2, with_vocab=False)
-    os.unlink(os.path.join(src2, "tokenizer.model"))
-    os.unlink(os.path.join(src2, "o200k.tiktoken"))
-    r = subprocess.run(["bash", DRAFT, src2, str(tmp_path / "t2")], capture_output=True,
-                       text=True)
+    r = run_inner(w)
+    assert r.returncode == 3  # never overwrites an existing copy
+
+
+def test_prep_tokenizer_oversize_whitelisted_file_fails(tmp_path):
+    w = prep_world(tmp_path, max_bytes=5)  # tokenizer.json is 7 bytes
+    r = run_inner(w)
+    assert r.returncode == 4 and "> limit 5" in r.stderr, r.stderr
+    assert not os.path.exists(w["dest"])
+
+
+def test_prep_tokenizer_needs_a_vocabulary(tmp_path):
+    w = prep_world(tmp_path, with_vocab=False)
+    for n in ("tokenizer.model", "o200k.tiktoken"):
+        os.unlink(os.path.join(w["model"], n))
+    r = run_inner(w)
     assert r.returncode == 4 and "vocabulary" in r.stderr
-    assert not os.path.exists(str(tmp_path / "t2"))
-    r = subprocess.run(["bash", DRAFT, "rel", dest], capture_output=True, text=True)
-    assert r.returncode == 2
+    assert not os.path.exists(w["dest"])
+
+
+def test_prep_tokenizer_refuses_a_writable_model_mount(tmp_path):
+    w = prep_world(tmp_path, ro=False)
+    r = run_inner(w)
+    assert r.returncode == 6 and "read-only mount" in r.stderr
+    assert not os.path.exists(w["dest"]) and not os.path.exists(w["dest"] + ".partial")
+
+
+def test_prep_tokenizer_refuses_a_visible_library(tmp_path):
+    w = prep_world(tmp_path, extra_lib_entry=True)
+    r = run_inner(w)
+    assert r.returncode == 6 and "more of the model library" in r.stderr
+    assert not os.path.exists(w["dest"] + ".partial")
+
+
+def test_prep_tokenizer_weight_suffix_beats_the_whitelist(tmp_path):
+    """`tokenizer*` would admit tokenizer.bin / tokenizer.PT: the weight refusal comes first."""
+    w = prep_world(tmp_path)
+    for n in ("tokenizer.bin", "tokenizer.PT", "added.safetensors.json.bin"):
+        with open(os.path.join(w["model"], n), "w") as f:
+            f.write("W")
+    r = run_inner(w)
+    assert r.returncode == 0, r.stderr
+    got = os.listdir(w["dest"])
+    assert "tokenizer.bin" not in got and "tokenizer.PT" not in got
+    prov = read(os.path.join(w["dest"], "PROVENANCE.txt"))
+    assert "tokenizer.bin:weight" in prov and "tokenizer.PT:weight" in prov
+
+
+def test_prep_tokenizer_batch_step_mounts_and_steps(tmp_path):
+    w = prep_world(tmp_path)
+    img = tmp_path / "img.sqsh"
+    img.write_bytes(b"x")
+    env_path = os.path.join(w["plan"], "job.env")
+    text = read(env_path).replace("CAPJOBS_IMAGE_MTIME_NS=1", "CAPJOBS_IMAGE_MTIME_NS=%d"
+                                  % os.stat(img).st_mtime_ns)
+    with open(env_path, "w") as f:
+        f.write(text)
+    b, rec = fake_srun_path(tmp_path)
+    env = dict(os.environ, PATH=b + ":" + os.environ["PATH"], SLURM_JOB_ID="77",
+               SLURM_RESTART_COUNT="1")
+    r = subprocess.run(["bash", PREP, w["plan"]], capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stdout + r.stderr
+    calls = rec.read_text().splitlines()
+    assert len(calls) == 1
+    jd = os.path.join(w["plan"], "J77-r1")
+    assert calls[0].endswith("%s/jobs/prep_tokenizer.sbatch inner %s %s /proc/self/mountinfo"
+                             % (w["plan"], w["plan"], jd))
+    for tok in ("--container-mounts=m:m:ro", "--no-container-mount-home",
+                "--container-image=%s" % img):
+        assert tok in calls[0], tok
+    assert "gpu" not in calls[0] and "--exclusive" not in calls[0]
+    assert "plan_id\tPxyz" in read(os.path.join(jd, "batch.tsv"))
+    r = subprocess.run(["bash", PREP, w["plan"]], capture_output=True, text=True, env=env)
+    assert r.returncode == 3  # the job dir exists: never reused
 
 
 # ---- inner script, finalize-only, with nothing to delete ----------------------------------------
