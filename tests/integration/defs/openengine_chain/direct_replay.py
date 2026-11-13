@@ -10,14 +10,15 @@ arrival time, so a caller can check the first token, the usage and the KV transf
 
 This is the single-request version of the tool. It also starts engines
 (``trtllm-serve <model> --grpc --grpc-protocol openengine``), each in its own
-session, so that stopping one ends its worker processes as well.
+session, so that stopping one also stops the worker processes of it that can
+still be found.
 
 Import it as ``openengine_chain.direct_replay`` with ``tests/integration/defs`` on
 the import path. Besides ``grpc``, ``grpc_health`` and ``protobuf`` it imports
 TensorRT-LLM's OpenEngine bindings, which loads the ``tensorrt_llm`` package, and
-the port check of ``openengine_chain.launch``; it starts and stops engines with its
-own helpers, not with ``launch.py``'s server registry. Run it as
-``python -m openengine_chain.direct_replay --help`` from that directory.
+the port check of ``openengine_chain.launch``, which needs PyYAML; it starts and
+stops engines with its own helpers, not with ``launch.py``'s server registry. Run
+it as ``python -m openengine_chain.direct_replay --help`` from that directory.
 """
 
 from __future__ import annotations
@@ -171,13 +172,14 @@ class Engine:
         self.tree.update((pid, table[pid][3]) for pid in found if pid in table)
 
     def stop(self, grace: float = 30.0) -> int | None:
-        """Stop the engine and everything it started; never raises.
+        """Stop the engine and every process of it that can still be found; never raises.
 
         While the leader runs, SIGTERM goes to its process group, SIGKILL after
         ``grace`` seconds. Then, if the leader is reaped and no other process has
         taken its pid, every process still in its process group or session gets
-        SIGKILL, and so does every recorded process (:meth:`remember_tree`) that is
-        still the same process. Returns the leader's exit code (negative for a
+        SIGKILL. Every recorded process (:meth:`remember_tree`) that is still the
+        same process gets SIGKILL as well. A worker that left the session before it
+        was recorded is not found. Returns the leader's exit code (negative for a
         signal), or None if it could not be reaped.
         """
         self.remember_tree()
@@ -565,8 +567,9 @@ def kv_transfer_rows(directory: str) -> dict[str, list[dict[str, str]]]:
     transceiver, ``transceiver_runtime: PYTHON``, puts the received size in
     ``kv_cache_size``), and from the other files ``send`` (``task_type``
     ``KVSendTask``, sizes in ``transfer_size_bytes``) and ``recv`` (``KVRecvTask``,
-    size columns empty). Other rows are left out, and so is a row the engine is
-    still writing (fewer fields than the header). Missing files give empty lists.
+    size columns empty). Other rows are left out, and so is a row with fewer fields
+    than the header, as a row the engine is still writing may be; a row cut inside
+    its last field is kept. Missing files give empty lists.
     """
     rows: dict[str, list[dict[str, str]]] = {"send": [], "recv": [], "summary": []}
     for path in sorted(glob.glob(os.path.join(directory, "*.csv"))):

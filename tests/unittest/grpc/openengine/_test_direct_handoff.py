@@ -31,9 +31,9 @@ ENGINE_READY_TIMEOUT_S = 1200
 REQUEST_TIMEOUT_S = 120
 KV_ROWS_WAIT_S = 30
 # One GPU holds both engines, so each takes a small share of the free memory. Block
-# reuse is off so that every request prefills from scratch: a request that reuses a
-# cached prefix can pick a different greedy token at a near tie than one that
-# prefills it, and the reference below is compared token for token.
+# reuse is off so that no prefill reuses a cached prefix: a request that does can
+# pick a different greedy token at a near tie than one that prefills the whole
+# prompt, and the reference below is compared token for token.
 KV_CACHE_CONFIG = {"free_gpu_memory_fraction": 0.2, "enable_block_reuse": False}
 TRANSCEIVER_CONFIG = {"backend": "DEFAULT"}
 CTX_CONFIG = {
