@@ -1,0 +1,170 @@
+xd	entry	group	gpus	gpu_model	outcome	time_s	job	rerun_outcome	rerun_time_s	rerun_job	verdict	reason	waived_in
+XD-001	disaggregated/test_disaggregated.py::test_disaggregated_diff_max_tokens	b200	1	B200	passed	49.064	job-5910614_0-r0				passed		-
+XD-002	disaggregated/test_disaggregated.py::test_disaggregated_single_gpu	b200	1	B200	passed	72.215	job-5910614_0-r0				passed		-
+XD-003	disaggregated/test_disaggregated.py::test_disaggregated_mamba_bs1_concurrency2	b200	2	B200	failed	4.730	job-5910615_0-r0				not-runnable	the test puts the source tree on PYTHONPATH; a tree without built bindings fails to import	-
+XD-004	disaggregated/test_disaggregated.py::test_disaggregated_qwen3_multi_orchestrator	b200	1	B200	passed	59.587	job-5910614_0-r0				passed		-
+XD-005	disaggregated/test_disaggregated.py::test_disaggregated_benchmark_gen_only	b200	2	B200	passed	72.829	job-5910615_1-r0				passed		-
+XD-006	disaggregated/test_disaggregated.py::test_disaggregated_router[load_balancing]	b200	4	B200	passed	77.996	job-5914563_4-r0				passed		-
+XD-007	disaggregated/test_disaggregated.py::test_disaggregated_router[kv_cache_aware]	b200	4	B200	passed	75.563	job-5914563_4-r0				passed		-
+XD-008	disaggregated/test_disaggregated.py::test_disaggregated_router[conversation]	b200	4	B200	passed	75.207	job-5914563_4-r0				passed		-
+XD-009	disaggregated/test_disaggregated.py::test_disaggregated_benchmark_gen_only_insufficient_kv	b200	1	B200	passed	56.055	job-5910614_0-r0				passed		-
+XD-010	disaggregated/test_disaggregated.py::test_disaggregated_genbs1	b200	4	B200	passed	103.926	job-5914563_4-r0				passed		any
+XD-011	disaggregated/test_disaggregated.py::test_disaggregated_multi_gpu	b200	4	B200	passed	77.744	job-5914563_4-r0				passed		-
+XD-012	disaggregated/test_disaggregated.py::test_disaggregated_cuda_graph	b200	1	B200	passed	48.640	job-5910614_0-r0				passed		-
+XD-013	disaggregated/test_disaggregated.py::test_disaggregated_mixed	b200	1	B200	passed	100.408	job-5910614_0-r0				passed		-
+XD-014	disaggregated/test_disaggregated.py::test_disaggregated_overlap	b200	1	B200	passed	90.629	job-5910614_0-r0				passed		-
+XD-015	disaggregated/test_disaggregated.py::test_disaggregated_overlap_gen_first[ctx_pp1]	b200	8	B200	passed	201.841	job-5910617_6-r0				passed		-
+XD-016	disaggregated/test_disaggregated.py::test_disaggregated_overlap_gen_first[ctx_pp4]	b200	8	B200	passed	178.776	job-5914575_7-r0				passed		-
+XD-017	disaggregated/test_disaggregated.py::test_disaggregated_overlap_transceiver_runtime_python	b200	4	B200	passed	84.488	job-5914563_4-r0				passed		-
+XD-018	disaggregated/test_disaggregated.py::test_disaggregated_context_first_bf16_ownership	b200	4	B200	passed	95.846	job-5914563_4-r0				passed		-
+XD-019	disaggregated/test_disaggregated.py::test_disaggregated_overlap_transceiver_runtime_python_fabric_memory	b200	4	B200	skipped	0.146	job-5914563_4-r0				not-runnable	Device GPU 0: NVIDIA B200 does not contain keyword in ['GB200', 'GB300'].	-
+XD-020	disaggregated/test_disaggregated.py::test_disaggregated_overlap_transceiver_runtime_python_bounce	b200	4	B200	skipped	0.143	job-5910616_3-r0				not-runnable	Device GPU 0: NVIDIA B200 does not contain keyword in ['GB200', 'GB300'].	-
+XD-021	disaggregated/test_disaggregated.py::test_disaggregated_perf_metrics	b200	1	B200	passed	73.054	job-5910614_0-r0				passed		-
+XD-022	disaggregated/test_disaggregated.py::test_disaggregated_chat_completion_tool_calls	b200	1	B200	passed	54.468	job-5910614_0-r0				passed		-
+XD-023	disaggregated/test_disaggregated.py::test_disaggregated_kv_cache_time_output	b200	1	B200	passed	66.565	job-5910614_0-r0				passed		-
+XD-024	disaggregated/test_disaggregated.py::test_disaggregated_load_balance	b200	1	B200	passed	75.699	job-5910614_0-r0				passed		-
+XD-025	disaggregated/test_disaggregated.py::test_disaggregated_cache_aware_balance	b200	1	B200	passed	82.167	job-5910614_0-r0				passed		-
+XD-026	disaggregated/test_disaggregated.py::test_disaggregated_conditional	b200	1	B200	passed	75.463	job-5910614_0-r0				passed		-
+XD-027	disaggregated/test_disaggregated.py::test_disaggregated_ngram	b200	1	B200	passed	70.748	job-5910614_0-r0				passed		-
+XD-028	disaggregated/test_disaggregated.py::test_disaggregated_sa	b200	1	B200	passed	66.645	job-5910614_0-r0				passed		-
+XD-029	disaggregated/test_disaggregated.py::test_disaggregated_ctxpp2_genpp2	b200	4	B200	passed	92.843	job-5914563_4-r0				passed		-
+XD-030	disaggregated/test_disaggregated.py::test_disaggregated_ctxtp2_genpp2	b200	4	B200	passed	97.408	job-5914563_4-r0				passed		-
+XD-031	disaggregated/test_disaggregated.py::test_disaggregated_ctxpp2_gentp2	b200	4	B200	passed	89.791	job-5914563_4-r0				passed		-
+XD-032	disaggregated/test_disaggregated.py::test_disaggregated_ctxtp2pp2_gentp2pp2	b200	8	B200	passed	115.117	job-5910617_11-r0				passed		-
+XD-033	disaggregated/test_disaggregated.py::test_disaggregated_ctxpp4_genpp4	b200	8	B200	passed	167.069	job-5910617_11-r0				passed		-
+XD-034	disaggregated/test_disaggregated.py::test_disaggregated_ctxpp4_gentp4	b200	8	B200	passed	108.217	job-5910617_10-r0				passed		-
+XD-035	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_tp1_single_gpu[DeepSeek-V3-Lite-fp8]	hopper	1	H200	failed	301.735	job-5910628_0-r0	passed	346.867	job-5918878_0-r0	passed		any
+XD-036	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_tp1_single_gpu_mtp[DeepSeek-V3-Lite-fp8]	hopper	1	H200	passed	261.433	job-5910628_0-r0				passed		any
+XD-037	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_ctxpp2_gentp2_one_mtp[DeepSeek-V3-Lite-fp8]	hopper	4	H200	passed	269.678	job-5910630_1-r0				passed		any
+XD-038	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_ctxtp2ep2pp2_gentp4_one_mtp_block_reuse[DeepSeek-V3-Lite-fp8]	hopper	8	H200	passed	231.902	job-5910631_1-r0				passed		any
+XD-039	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_ctxtp2ep2pp2_gentp4_one_mtp_block_reuse_long_prompt[DeepSeek-V3-Lite-fp8]	hopper	8	H200	passed	106.648	job-5910631_1-r0				passed		any
+XD-040	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_nixl[DeepSeek-V3-Lite-fp8]	b200	4	B200	passed	414.260	job-5910616_3-r0				passed		-
+XD-041	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_attention_dp[DeepSeek-V3-Lite-fp8]	hopper	4	H200	passed	146.811	job-5910630_1-r0				passed		-
+XD-042	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_attention_dp_gen_only[DeepSeek-V3-Lite-fp8]	hopper	4	H200	passed	142.928	job-5910630_1-r0				passed		any
+XD-043	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_attention_dp_overlap[DeepSeek-V3-Lite-fp8]	b200	4	B200	passed	261.646	job-5914563_4-r0				passed		A100,GB300,L40S
+XD-044	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_attention_dp_overlap_cuda_graph[DeepSeek-V3-Lite-fp8]	hopper	4	H200	passed	159.923	job-5910630_1-r0				passed		any
+XD-045	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_overlap_cuda_graph[DeepSeek-V3-Lite-fp8]	hopper	4	H200	passed	114.495	job-5910630_1-r0				passed		any
+XD-046	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_attention_dp_one[DeepSeek-V3-Lite-fp8]	hopper	4	H100-80GB	passed	234.912	job-5910630_2-r0				passed		any
+XD-047	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_attention_dp_one_mtp[DeepSeek-V3-Lite-fp8]	hopper	4	H100-80GB	passed	123.953	job-5910630_2-r0				passed		any
+XD-048	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_tp1_attention_dp_overlap_one_mtp[DeepSeek-V3-Lite-fp8]	hopper	4	H100-80GB	passed	182.949	job-5910630_2-r0				passed		any
+XD-049	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_bf16_cache_aware_balance[DeepSeek-V3-Lite-bf16]	hopper	4	H100-80GB	passed	114.957	job-5910630_2-r0				passed		any
+XD-050	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_bf16_conditional[DeepSeek-V3-Lite-bf16]	hopper	4	H100-80GB	passed	190.496	job-5910630_3-r0				passed		any
+XD-051	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_bf16_conditional_v2[DeepSeek-V3-Lite-bf16]	hopper	4	H200	passed	127.774	job-5910630_1-r0				passed		-
+XD-052	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_tp1_two_mtp[DeepSeek-V3-Lite-fp8]	hopper	1	H200	passed	256.057	job-5910628_0-r0				passed		any
+XD-053	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_bf16_empty_batch[DeepSeek-V3-Lite-bf16]	b200	4	B200	passed	192.650	job-5914563_4-r0				passed		-
+XD-054	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_bf16_tllm_gen_helix[DeepSeek-V3-Lite-bf16-short_prompt]	b200	4	B200	failed	301.610	job-5910616_2-r0	passed	282.438	job-5918875_0-r0	passed		-
+XD-055	disaggregated/test_disaggregated.py::test_disaggregated_cancel_large_context_requests[DeepSeek-V3-Lite-bf16]	b200	2	B200	failed	214.752	job-5910615_0-r0	passed	205.641	job-5918874_0-r0	passed		any
+XD-056	disaggregated/test_disaggregated.py::test_llama4_long_context_kv_cache_overflow[llama4-models/nvidia/Llama-4-Maverick-17B-128E-Instruct-FP8]	b200	8	B200	failed	260.029	job-5914575_7-r0				failed	requests rejected: 400 extra_forbidden validation error	-
+XD-057	disaggregated/test_disaggregated.py::test_disaggregated_gpt_oss_120b_harmony[gpt_oss/gpt-oss-120b]	b200	4	B200	passed	261.885	job-5914563_4-r0				passed		any
+XD-058	disaggregated/test_disaggregated.py::test_disaggregated_gpt_oss_20b_kv_cache_aware[gpt_oss/gpt-oss-20b]	b200	4	B200	passed	87.931	job-5914563_4-r0				passed		-
+XD-059	disaggregated/test_disaggregated.py::test_disaggregated_qwen3_32b_fp8[Qwen3/Qwen3-32B-FP8]	b200	8	B200	passed	504.272	job-5910617_8-r0				passed		-
+XD-060	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v41_gsm8k_ctxtp4_gentp4[DeepSeek-V4.1-Flash-NVFP4]	b200	8	B200	failed	355.883	job-5910617_5-r0				failed	ctx worker exits (rc 1) during warmup; the part of its log the test prints has no error line, cause not identified	-
+XD-061	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v41_gsm8k_ctxdp4_gendp4[DeepSeek-V4.1-Flash-NVFP4]	b200	8	B200	passed	626.708	job-5910617_6-r0				passed		-
+XD-062	disaggregated/test_disaggregated.py::test_disaggregated_logprobs_serving	b200	4	B200	passed	120.739	job-5910616_2-r0				passed		-
+XD-063	disaggregated/test_disaggregated.py::test_disaggregated_stress_test[input8k-output1k-conc512-deepseek_r1_v2_fp4_stress]	b200	8	B200	passed	5514.758	job-5910617_0-r0				passed		-
+XD-064	disaggregated/test_disaggregated.py::test_disaggregated_stress_test[input8k-output1k-conc512-deepseek_r1_v2_fp4_mtp_stress]	b200	8	B200	passed	8938.197	job-5910617_1-r0				passed		-
+XD-065	disaggregated/test_disaggregated.py::test_disaggregated_stress_test[input8k-output1k-conc512-gpt_oss_120b_trtllm_stress]	b200	4	B200	passed	3816.094	job-5910616_0-r0				passed		-
+XD-066	disaggregated/test_disaggregated.py::test_disaggregated_stress_test[input8k-output1k-conc512-gpt_oss_120b_eagle_triton_stress]	hopper	8	H200	passed	6326.869	job-5910631_0-r1				passed		any
+XD-067	disaggregated/test_disaggregated.py::test_disaggregated_stress_test[input8k-output1k-conc512-gpt_oss_120b_eagle_trtllm_stress]	b200	8	B200	passed	2514.376	job-5910617_2-r0				passed		-
+XD-068	disaggregated/test_disaggregated.py::test_disaggregated_stress_test[input8k-output1k-conc512-gpt_oss_120b_triton_stress]	hopper	4	H200	passed	4246.024	job-5910630_0-r0				passed		-
+XD-069	disaggregated/test_disaggregated.py::test_disaggregated_stress_test[input8k-output1k-conc512-qwen3_5_4b_fp8_stress]	hopper	2	H100-80GB	passed	613.024	job-5910629_0-r0				passed		any
+XD-070	disaggregated/test_disaggregated.py::test_disaggregated_stress_test[input8k-output1k-conc512-glm5_nvfp4_tp4_ep4_dp_stress]	b200	8	B200	passed	6356.421	job-5910617_3-r0				passed		-
+XD-071	disaggregated/test_disaggregated.py::test_disaggregated_stress_test[input8k-output1k-conc512-qwen3_32b_fp8_stress]	b200	8	B200	failed	3757.289	job-5910617_4-r0				failed	98% request errors (500, and 400 'Error in kv cache transfer')	B200,H100
+XD-072	disaggregated/test_disaggregated.py::test_disaggregated_mamba_conc_greater_than_mbs[NVIDIA-Nemotron-3-Super-120B-A12B-FP8]	b200	8	B200	failed	301.764	job-5910617_9-r0	failed	302.274	job-5918879_0-r0	failed	server start exceeded the test's 300 s limit in both runs, each the first entry of its job; cause not measured	B300
+XD-073	disaggregated/test_disaggregated.py::test_disaggregated_mixed_stress_test[req120-conc64-qwen3_32b_fp8_mixed_stress]	b200	8	B200	failed	424.563	job-5910617_10-r0	passed	433.975	job-5918879_0-r0	passed		-
+XD-074	disaggregated/test_disaggregated.py::test_disaggregated_mixed_stress_test[req10k-conc512-qwen3_32b_fp8_mixed_stress]	b200	8	B200	failed	1415.342	job-5910617_9-r0	passed	1233.634	job-5918879_0-r0	passed		-
+XD-101	disaggregated/test_disaggregated_etcd.py::test_automated_disaggregated_complete	b200	8	B200	failed	0.439	job-5910618_0-r0				not-runnable	first run: read-only source mount (output.json); not rerun: the test also writes examples/disaggregated/* relative to the defs directory, where it does not exist (read from the test)	-
+XD-102	disaggregated/test_auto_scaling.py::test_service_discovery[etcd-round_robin]	b200	8	B200	passed	211.863	job-5910618_0-r0				passed		-
+XD-103	disaggregated/test_auto_scaling.py::test_service_discovery[etcd-load_balancing]	b200	8	B200	passed	73.491	job-5910618_0-r0				passed		-
+XD-104	disaggregated/test_auto_scaling.py::test_service_discovery[etcd-kv_cache_aware]	b200	8	B200	passed	73.795	job-5910618_0-r0				passed		-
+XD-105	disaggregated/test_auto_scaling.py::test_service_discovery[http-round_robin]	b200	8	B200	passed	70.501	job-5910618_0-r0				passed		-
+XD-106	disaggregated/test_auto_scaling.py::test_service_discovery[http-load_balancing]	b200	8	B200	passed	73.454	job-5910618_0-r0				passed		-
+XD-107	disaggregated/test_auto_scaling.py::test_service_discovery[http-kv_cache_aware]	b200	8	B200	passed	70.832	job-5910618_0-r0				passed		-
+XD-108	disaggregated/test_auto_scaling.py::test_minimal_instances[etcd-round_robin]	b200	8	B200	passed	138.558	job-5910618_0-r0				passed		-
+XD-109	disaggregated/test_auto_scaling.py::test_minimal_instances[http-round_robin]	b200	4	B200	passed	144.360	job-5914563_4-r0				passed		-
+XD-110	disaggregated/test_auto_scaling.py::test_worker_restart[etcd-round_robin]	b200	8	B200	passed	285.846	job-5910618_0-r0				passed		-
+XD-111	disaggregated/test_auto_scaling.py::test_worker_restart[etcd-load_balancing]	b200	8	B200	passed	284.453	job-5910618_0-r0				passed		-
+XD-112	disaggregated/test_auto_scaling.py::test_worker_restart[etcd-kv_cache_aware]	b200	8	B200	passed	281.808	job-5910618_0-r0				passed		-
+XD-113	disaggregated/test_auto_scaling.py::test_worker_restart[http-round_robin]	b200	2	B200	passed	281.467	job-5910615_1-r0				passed		-
+XD-114	disaggregated/test_auto_scaling.py::test_worker_restart[http-load_balancing]	b200	4	B200	passed	408.263	job-5914563_4-r0				passed		-
+XD-115	disaggregated/test_auto_scaling.py::test_worker_restart[http-kv_cache_aware]	b200	2	B200	passed	289.060	job-5910615_1-r0				passed		-
+XD-116	disaggregated/test_auto_scaling.py::test_disagg_server_restart[etcd-round_robin]	b200	8	B200	passed	151.813	job-5910618_0-r0				passed		-
+XD-117	disaggregated/test_auto_scaling.py::test_disagg_server_restart[http-round_robin]	b200	4	B200	passed	152.335	job-5914563_4-r0				passed		-
+XD-118	disaggregated/test_workers.py::test_workers_conditional_disaggregation	b200	1	B200	skipped	0.096	job-5910614_0-r0				skipped	nvbugs 5372970	-
+XD-119	disaggregated/test_workers.py::test_workers_conditional_disaggregation_deepseek_v3_lite_bf16[DeepSeek-V3-Lite-bf16]	b200	4	B200	passed	170.375	job-5910616_2-r0				passed		-
+XD-120	disaggregated/test_workers.py::test_workers_kv_cache_events	b200	1	B200	passed	68.050	job-5910614_0-r0				passed		-
+XD-121	disaggregated/test_workers.py::test_workers_kv_cache_aware_router	b200	1	B200	passed	97.682	job-5910614_0-r0				passed		-
+XD-122	disaggregated/test_workers.py::test_workers_kv_cache_aware_router_deepseek_v3_lite_bf16[DeepSeek-V3-Lite-bf16]	hopper	4	H100-80GB	passed	110.705	job-5910630_3-r0				passed		any
+XD-123	disaggregated/test_workers.py::test_workers_kv_cache_aware_router_eviction	b200	1	B200	failed	190.354	job-5910614_0-r0				failed	assert 2016 < 1984	any
+XD-124	disaggregated/test_workers.py::test_workers_conversation_router	hopper	4	H200	passed	138.153	job-5910630_1-r0				passed		any
+XD-125	stress_test/disagg_cancel/test_disagg_cancel_stress.py::test_disagg_cancellation_marathon[marathon_python_v2_deepseek.yaml]	b200	8	B200	failed	0.373	job-5910617_9-r0				not-runnable	the harness imports test_disaggregated by bare name; each entry here runs in its own pytest session, where that name does not resolve (ModuleNotFoundError)	-
+XD-201	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_gen_only_sync	hopper	2	H100-80GB	failed	356.560	job-5910629_1-r0				failed	executor creation failed: insufficient GPU memory for the KV cache (CuOOMError)	-
+XD-202	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_nvfp4_kv_cache_nixl	b200	2	B200	skipped	0.002	job-5910615_0-r0				not-runnable	This test is only supported in Rubin architecture	-
+XD-203	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_symmetric	b200	8	B200	passed	451.554	job-5910617_11-r0				passed		-
+XD-204	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1dp2cp2-overlap_off]	b200	8	B200	passed	303.550	job-5910617_11-r0				passed		-
+XD-204	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1dp2cp2-overlap_on]	b200	8	B200	passed	263.575	job-5910617_11-r0				passed		-
+XD-204	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1tp2cp2-overlap_off]	b200	8	B200	passed	265.384	job-5910617_11-r0				passed		-
+XD-204	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1tp2cp2-overlap_on]	b200	8	B200	passed	254.179	job-5910617_11-r0				passed		-
+XD-205	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype[mtp_nextn=0-overlap_scheduler=False]	b200	8	B200	passed	498.823	job-5910617_8-r0				passed		RTX_PRO_6000_Blackwell_Server_Edition
+XD-205	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype[mtp_nextn=0-overlap_scheduler=True]	b200	8	B200	passed	357.343	job-5910617_9-r0				passed		RTX_PRO_6000_Blackwell_Server_Edition
+XD-205	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype[mtp_nextn=2-overlap_scheduler=False]	b200	8	B200	passed	496.747	job-5910617_10-r0				passed		RTX_PRO_6000_Blackwell_Server_Edition
+XD-205	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype[mtp_nextn=2-overlap_scheduler=True]	b200	8	B200	passed	425.284	job-5910617_10-r0				passed		RTX_PRO_6000_Blackwell_Server_Edition
+XD-206	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_guided_decoding[xgrammar-mtp_nextn=0]	b200	2	B200	passed	192.458	job-5910615_0-r0				passed		RTX_PRO_6000_Blackwell_Server_Edition
+XD-206	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_guided_decoding[xgrammar-mtp_nextn=2]	b200	2	B200	passed	237.800	job-5910615_0-r0				passed		RTX_PRO_6000_Blackwell_Server_Edition
+XD-207	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_gen_first[adp-mtp2]	b200	4	B200	passed	431.716	job-5910616_3-r0				passed		-
+XD-207	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_gen_first[noadp-mtp0]	b200	4	B200	passed	636.701	job-5910616_3-r0				passed		-
+XD-208	accuracy/test_disaggregated_serving.py::TestGPTOSS::test_auto_dtype[False]	b200	8	B200	failed	251.435	job-5910617_9-r0				failed	executor creation failed: insufficient GPU memory for the KV cache (CuOOMError)	-
+XD-208	accuracy/test_disaggregated_serving.py::TestGPTOSS::test_auto_dtype[True]	b200	8	B200	failed	337.217	job-5910617_10-r0				failed	executor creation failed: insufficient GPU memory for the KV cache (CuOOMError)	-
+XD-209	accuracy/test_disaggregated_serving.py::TestGPTOSS::test_kv_cache_v2_nixl_python[cache_mgr_v2]	b200	4	B200	failed	234.197	job-5910616_3-r0				failed	executor creation failed: insufficient GPU memory for the KV cache (CuOOMError)	any
+XD-210	accuracy/test_disaggregated_serving.py::TestGPTOSS::test_eagle3[overlap_scheduler=False]	b200	8	B200	failed	344.202	job-5914575_7-r0				failed	executor creation failed: insufficient GPU memory for the KV cache (CuOOMError)	-
+XD-210	accuracy/test_disaggregated_serving.py::TestGPTOSS::test_eagle3[overlap_scheduler=True]	b200	8	B200	failed	414.292	job-5910617_8-r0				failed	executor creation failed: insufficient GPU memory for the KV cache (CuOOMError)	-
+XD-211	accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_nixl_backend	b200	2	B200	passed	338.132	job-5910615_1-r0				passed		-
+XD-212	accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype[False-False]	b200	2	B200	passed	795.358	job-5910615_0-r0				passed		-
+XD-212	accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype[False-True]	b200	2	B200	passed	482.393	job-5910615_0-r0				passed		-
+XD-212	accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype[True-False]	b200	2	B200	passed	495.539	job-5910615_0-r0				passed		-
+XD-212	accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype[True-True]	b200	2	B200	passed	459.262	job-5910615_0-r0				passed		-
+XD-213	accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_chunked_prefill	b200	2	B200	passed	485.043	job-5910615_0-r0				passed		-
+XD-214	accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1dp2cp2-overlap_off]	b200	8	B200	passed	436.891	job-5910617_11-r0				passed		-
+XD-214	accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1dp2cp2-overlap_on]	b200	8	B200	passed	236.618	job-5910617_11-r0				passed		-
+XD-214	accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1tp2cp2-overlap_off]	b200	8	B200	passed	244.174	job-5910617_11-r0				passed		-
+XD-214	accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1tp2cp2-overlap_on]	b200	8	B200	passed	188.912	job-5910617_11-r0				passed		-
+XD-215	accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_gen_first[block_reuse]	b200	4	B200	passed	324.054	job-5914563_4-r0				passed		-
+XD-215	accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_gen_first[no_reuse]	b200	4	B200	passed	161.740	job-5914563_4-r0				passed		-
+XD-216	accuracy/test_disaggregated_serving.py::TestQwen3_30B_A3B::test_mixed_ctx_gen_model[ctxpp2gentp2]	b200	4	B200	passed	398.518	job-5910616_2-r0				passed		any
+XD-217	accuracy/test_disaggregated_serving.py::TestQwen3_5_4B::test_mismatched_block_reuse	b200	2	B200	passed	552.500	job-5910615_1-r0				passed		-
+XD-218	accuracy/test_disaggregated_serving.py::TestQwen3_5_4B::test_ctx_pp_gen_tp_asymmetric	b200	4	B200	passed	423.272	job-5914563_4-r0				passed		-
+XD-219	accuracy/test_disaggregated_serving.py::TestGPTOSS20B::test_beam_search	b200	2	B200	passed	181.959	job-5910615_0-r0				passed		-
+XD-220	accuracy/test_disaggregated_serving.py::TestKimiK25::test_nvfp4	b200	8	B200	passed	963.652	job-5910617_10-r0				passed		-
+XD-221	accuracy/test_disaggregated_serving.py::TestNemotron3Super120B::test_auto_dtype[mtp_nextn=0-block_reuse=False-use_py_transceiver=True]	b200	8	B200	passed	524.510	job-5910617_6-r0				passed		-
+XD-221	accuracy/test_disaggregated_serving.py::TestNemotron3Super120B::test_auto_dtype[mtp_nextn=3-block_reuse=True-use_py_transceiver=True]	b200	8	B200	failed	374.847	job-5914575_7-r0				failed	executor creation failed: insufficient GPU memory for the KV cache (torch.OutOfMemoryError)	-
+XD-222	accuracy/test_disaggregated_serving.py::TestNemotron3Super120B::test_ctx_dp2_gen_tp4	b200	8	B200	passed	343.457	job-5910617_9-r0				passed		-
+XD-223	accuracy/test_disaggregated_serving.py::TestQwen3NextInstruct::test_auto_dtype[use_py_transceiver=True]	b200	8	B200	passed	492.725	job-5910617_8-r0				passed		-
+XD-224	accuracy/test_disaggregated_serving.py::TestQwen3_8_Flash_Next::test_fp8_nixl_python[no_reuse]	b200	4	B200	passed	450.383	job-5910616_3-r0				passed		-
+XD-224	accuracy/test_disaggregated_serving.py::TestQwen3_8_Flash_Next::test_fp8_nixl_python[prefix_cache]	b200	4	B200	failed	202.312	job-5910616_3-r0				failed	executor creation failed: insufficient GPU memory for the KV cache (CuOOMError)	-
+XD-224	accuracy/test_disaggregated_serving.py::TestQwen3_8_Flash_Next::test_fp8_nixl_python[prefix_cache_offsets]	b200	4	B200	passed	410.775	job-5910616_3-r0				passed		-
+XD-225	accuracy/test_disaggregated_serving.py::TestGLM52NVFP4::test_nvfp4_nixl[cache_mgr_v2]	b200	8	B200	passed	677.743	job-5910617_5-r0				passed		-
+XD-226	accuracy/test_disaggregated_serving.py::TestDeepSeekV4Flash::test_auto_dtype	b200	4	B200	passed	1061.373	job-5910616_3-r0				passed		-
+XD-227	accuracy/test_disaggregated_serving.py::TestDeepSeekV4Flash::test_gen_first	b200	4	B200	passed	790.866	job-5910616_2-r0				passed		-
+XD-228	accuracy/test_disaggregated_serving.py::TestDeepSeekV4FlashDSpark::test_gsm8k_1p1d_dep4	b200	8	B200	passed	1006.503	job-5910617_10-r0				passed		-
+XD-229	accuracy/test_disaggregated_serving.py::TestDeepSeekV4FlashBase::test_auto_dtype	b200	4	B200	passed	950.543	job-5910616_1-r0				passed		-
+XD-230	accuracy/test_disaggregated_serving.py::TestDeepSeekR1::test_kv_cache_v2_nixl_python[cache_mgr_v2]	b200	4	B200	skipped	0.140	job-5910616_2-r0				not-runnable	Device memory 183359 is less than 200000	-
+XD-231	accuracy/test_disaggregated_serving.py::TestMiniMaxM3::test_nvfp4_eagle3_disagg_head_mismatched_bounce	b200	8	B200	passed	1000.356	job-5910617_10-r0				passed		-
+XD-301	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp2pp1-gen_tp2pp1]	2node	8	B200	failed	764.478	job-5910632_0-r0				failed	cross-node KV transfer failed (NIXL transfer state FAILURE; gen returns 400 'Error in kv cache transfer')	-
+XD-302	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp2pp1-gen_tp1pp2]	2node	8	B200	failed	594.578	job-5910632_0-r0				failed	cross-node KV transfer failed (NIXL transfer state FAILURE; gen returns 400 'Error in kv cache transfer')	-
+XD-303	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp2pp1-gen_tp1pp1]	2node	8	B200	failed	740.239	job-5910632_0-r0				failed	cross-node KV transfer failed (NIXL transfer state FAILURE; gen returns 400 'Error in kv cache transfer')	-
+XD-304	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp1pp2-gen_tp2pp1]	2node	8	B200	failed	645.331	job-5910632_0-r0				failed	cross-node KV transfer failed (NIXL transfer state FAILURE; gen returns 400 'Error in kv cache transfer')	-
+XD-305	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp1pp2-gen_tp1pp2]	2node	8	B200	failed	426.304	job-5910632_0-r0				failed	cross-node KV transfer failed (NIXL transfer state FAILURE; gen returns 400 'Error in kv cache transfer')	-
+XD-306	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp1pp2-gen_tp1pp1]	2node	8	B200	failed	620.313	job-5910632_0-r0				failed	cross-node KV transfer failed (NIXL transfer state FAILURE; gen returns 400 'Error in kv cache transfer')	-
+XD-307	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp1pp1-gen_tp2pp1]	2node	8	B200	failed	762.691	job-5910632_0-r0				failed	cross-node KV transfer failed (NIXL transfer state FAILURE; gen returns 400 'Error in kv cache transfer')	-
+XD-308	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp1pp1-gen_tp1pp2]	2node	8	B200	failed	632.986	job-5910632_0-r0				failed	cross-node KV transfer failed (NIXL transfer state FAILURE; gen returns 400 'Error in kv cache transfer')	-
+XD-309	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp1pp1-gen_tp1pp1]	2node	8	B200	failed	635.002	job-5910632_0-r0				failed	cross-node KV transfer failed (NIXL transfer state FAILURE; gen returns 400 'Error in kv cache transfer')	-
+XD-310	test_e2e.py::test_openai_disagg_multi_nodes_completion_service_discovery[etcd]	2node	8	B200	failed	612.127	job-5910632_0-r0				failed	requests answered 400 (no response body logged; no KV transfer failure in the logs); cause not identified	-
+XD-311	unittest/llmapi/apps/_test_disagg_serving_multi_nodes_service_discovery.py::test_completion[http]	2node	8	B200	failed	879.818	job-5910632_0-r0				failed	the disagg server exits at start: HTTP cluster storage is only supported for loopback-only serving, and the test's cluster URI names the first node; /health never answers	-
+XD-312	unittest/llmapi/apps/test_disagg_serving_perf_metrics.py::test_return_perf_metrics_and_jsonl_dump	b200	2	B200	failed	19.647	job-5910615_1-r0	passed	156.759	job-5918874_0-r0	passed		-
+XD-313	unittest/llmapi/apps/test_disagg_serving_perf_metrics.py::test_completion_metrics	b200	2	B200	failed	19.817	job-5910615_1-r0	passed	87.192	job-5918874_0-r0	passed		-
+XD-314	accuracy/test_disaggregated_multinode.py::TestDeepSeekV4ProDSparkMultinode::test_gsm8k_1p1d_dep4	2node	8	B200	killed		job-5910632_0-r0				killed	last of the 12 entries of the 4 h 2-node job: started with about 94 min left and ended by the driver's timeout on the container step (rc 124), before its own 7200 s server-start limit; no junit	-
+XD-315	accuracy/test_dwdp_disaggregated_serving.py::TestDwdpDeepSeekV3Lite::test_dwdp_accuracy	b200	4	B200	failed	10.825	job-5910616_3-r0	passed	311.294	job-5918877_0-r0	passed		-
+XD-316	accuracy/test_dwdp_disaggregated_serving.py::TestDwdpDeepSeekV3Lite::test_dwdp_accuracy_contention_opt	b200	4	B200	failed	10.829	job-5910616_3-r0	passed	236.539	job-5918877_0-r0	passed		-
+XD-317	accuracy/test_dwdp_disaggregated_serving.py::TestDwdpDeepSeekV3Lite::test_dwdp_accuracy_mode_b_overlap	b200	4	B200	failed	10.887	job-5914563_4-r0	passed	237.762	job-5918877_0-r0	passed		-
+XD-318	examples/test_ray.py::test_ray_disaggregated_serving[tp1]	b200	8	B200	failed	0.635	job-5910618_0-r0				not-runnable	the image has no Ray	-
+XD-319	examples/test_ray.py::test_ray_disaggregated_serving[tp2]	b200	8	B200	failed	0.661	job-5910618_0-r0				not-runnable	the image has no Ray	-
