@@ -13,10 +13,10 @@ This is the single-request version of the tool. It also starts engines
 session, so that stopping one ends its worker processes as well.
 
 Import it as ``openengine_chain.direct_replay`` with ``tests/integration/defs`` on
-the import path. Its imports are the standard library, ``grpc``, ``grpc_health``,
-``protobuf`` and TensorRT-LLM's OpenEngine bindings; it does not import the rest of
-the harness, and keeps its own small process helpers instead of the ones in
-``launch.py``, which hold per-process server state. Run it as
+the import path. Besides ``grpc``, ``grpc_health`` and ``protobuf`` it imports
+TensorRT-LLM's OpenEngine bindings, which loads the ``tensorrt_llm`` package, and
+the port check of ``openengine_chain.launch``; it starts and stops engines with its
+own helpers, not with ``launch.py``'s server registry. Run it as
 ``python -m openengine_chain.direct_replay --help`` from that directory.
 """
 
@@ -49,6 +49,8 @@ from tensorrt_llm.grpc.openengine.bindings import (
     server_pb2,
 )
 
+from .launch import foreign_listeners
+
 ENGINE_HOST = "127.0.0.1"
 DEFAULT_LAUNCHER = ("trtllm-serve",)
 # An engine with Prometheus enabled binds 8001 unless given a port; 0 is an ephemeral one,
@@ -56,6 +58,8 @@ DEFAULT_LAUNCHER = ("trtllm-serve",)
 METRICS_PORT_OPTION = "--openengine-metrics-port"
 # extra["request_type"] selects the context phase on a TensorRT-LLM OpenEngine server.
 CONTEXT_ONLY_EXTRA = {"request_type": "context_only"}
+# build_request arguments run_handoff sets the same on both legs.
+_PROMPT_KEYS = frozenset({"model", "prompt", "token_ids"})
 # The KV transfer CSV files written under TRTLLM_KVCACHE_TIME_OUTPUT_PATH.
 KV_TASK_SEND = "KVSendTask"
 KV_TASK_RECV = "KVRecvTask"
@@ -74,7 +78,7 @@ def free_port() -> int:
 
     Never the same port twice in one process, so two engines started back to back
     get different ports. Another process may still take the port before the engine
-    binds it; this tool does not check who answers on it.
+    binds it; :meth:`Engine.wait_serving` fails if it sees such a listener.
     """
     while True:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
@@ -107,46 +111,57 @@ class Engine:
         return self.process.poll()
 
     def wait_serving(self, timeout: float, interval: float = 2.0) -> float:
-        """Wait until the gRPC health service ``inference`` reports SERVING.
+        """Wait until this engine's gRPC health service ``inference`` reports SERVING.
 
-        Returns the seconds waited. Raises :class:`EngineStartError` if the process
-        exits first or the deadline passes.
+        Each poll records the engine's processes (:meth:`remember_tree`) and uses a
+        new channel. Returns the seconds waited. Raises :class:`EngineStartError` if
+        the process exits first, the deadline passes, or, once SERVING is seen, the
+        port also has a listener that is not one of the engine's processes.
         """
         start = time.monotonic()
         deadline = start + timeout
-        with grpc.insecure_channel(self.endpoint) as channel:
-            stub = health_pb2_grpc.HealthStub(channel)
-            while True:
-                code = self.process.poll()
-                if code is not None:
-                    raise EngineStartError(
-                        f"engine {self.name} exited with code {code}; log {self.log_path}"
-                    )
-                try:
-                    reply = stub.Check(
+        port = int(self.endpoint.rsplit(":", 1)[1])
+        while True:
+            self.remember_tree()
+            code = self.process.poll()
+            if code is not None:
+                raise EngineStartError(
+                    f"engine {self.name} exited with code {code}; log {self.log_path}"
+                )
+            try:
+                with grpc.insecure_channel(self.endpoint) as channel:
+                    reply = health_pb2_grpc.HealthStub(channel).Check(
                         health_pb2.HealthCheckRequest(service="inference"), timeout=5
                     )
-                    if reply.status == health_pb2.HealthCheckResponse.SERVING:
-                        self.remember_tree()
-                        return time.monotonic() - start
-                except grpc.RpcError:
-                    pass
-                if time.monotonic() > deadline:
+            except grpc.RpcError:
+                reply = None
+            if reply is not None and reply.status == health_pb2.HealthCheckResponse.SERVING:
+                self.remember_tree()
+                pids = {self.process.pid} | {pid for pid, _ in self.tree}
+                foreign = foreign_listeners(port, pids)
+                if foreign:
                     raise EngineStartError(
-                        f"engine {self.name} at {self.endpoint} not SERVING within "
-                        f"{timeout:.0f} s; log {self.log_path}"
+                        f"engine {self.name}: port {port} also has listening sockets "
+                        f"{sorted(foreign)} of other processes; log {self.log_path}"
                     )
-                time.sleep(interval)
+                return time.monotonic() - start
+            if time.monotonic() > deadline:
+                raise EngineStartError(
+                    f"engine {self.name} at {self.endpoint} not SERVING within "
+                    f"{timeout:.0f} s; log {self.log_path}"
+                )
+            time.sleep(interval)
 
-    def remember_tree(self) -> set[int]:
-        """Record the processes under the leader; returns their pids.
+    def remember_tree(self) -> None:
+        """Record the processes under the leader while it runs.
 
         These are the leader's descendants and the members of its session. Nothing
         is recorded once the leader has exited, because its pid may then belong to
-        another process.
+        another process; :meth:`stop` finds what is left of its session and process
+        group then.
         """
         if self.process.poll() is not None:
-            return set()
+            return
         table = _process_table()
         found = _descendants(self.process.pid, table) | {
             pid
@@ -154,15 +169,16 @@ class Engine:
             if session == self.process.pid and pid != self.process.pid
         }
         self.tree.update((pid, table[pid][3]) for pid in found if pid in table)
-        return found
 
     def stop(self, grace: float = 30.0) -> int | None:
         """Stop the engine and everything it started; never raises.
 
-        SIGTERM goes to the process group, SIGKILL after ``grace`` seconds; then every
-        recorded process (:meth:`remember_tree`) that is still the same process gets
-        SIGKILL, including ones that left the group. Returns the leader's exit code
-        (negative for a signal), or None if it could not be reaped.
+        While the leader runs, SIGTERM goes to its process group, SIGKILL after
+        ``grace`` seconds. Then, if the leader is reaped and no other process has
+        taken its pid, every process still in its process group or session gets
+        SIGKILL, and so does every recorded process (:meth:`remember_tree`) that is
+        still the same process. Returns the leader's exit code (negative for a
+        signal), or None if it could not be reaped.
         """
         self.remember_tree()
         leader = self.process.pid
@@ -177,11 +193,21 @@ class Engine:
                 except subprocess.TimeoutExpired:
                     pass
         table = _process_table()
-        # The leader is reaped now. While members of its group live, Linux does not
-        # reuse the group's id as a pid; if a process with the leader's pid exists,
-        # the group is gone and the id belongs to someone else.
-        if leader not in table:
-            _signal_group(leader, signal.SIGKILL)
+        # Linux does not give a new process a pid that is still some process's group
+        # or session id. So once the leader is reaped, processes whose group or session
+        # is the leader's pid are the engine's; if the leader is not reaped, or its pid
+        # is taken, nothing is killed by that id.
+        if self.process.returncode is not None and leader not in table:
+            members = {
+                pid for pid, (_, group, session, _) in table.items() if leader in (group, session)
+            }
+            if any(table[pid][1] == leader for pid in members):
+                _signal_group(leader, signal.SIGKILL)
+            for pid in members:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
         for pid, started in self.tree:
             # A recorded pid is killed only while it is still the same process.
             if pid in table and table[pid][3] == started:
@@ -288,9 +314,10 @@ class Leg:
     """Everything one Generate stream returned.
 
     ``events`` holds one dict per response, in arrival order: ``t`` (seconds since
-    the call started, including connecting a new channel), ``kind`` (the response's ``event`` field, or ``None`` when it
-    carries only usage) and ``body`` (the response as JSON). ``status`` is ``"OK"``
-    or the gRPC status code name the stream ended with.
+    the call started, including connecting a new channel), ``kind`` (the response's
+    ``event`` field, or ``None`` when it carries only usage) and ``body`` (the
+    response as JSON). ``status`` is ``"OK"`` or the gRPC status code name the
+    stream ended with.
     """
 
     request_id: str
@@ -426,7 +453,7 @@ class Handoff:
 
     ``gen`` is ``None`` when the context leg returned no ``PrefillReady``.
     ``received`` is the session the context engine returned, ``sent`` the one the
-    generation leg carried (they differ only if the caller rewrote it).
+    generation request carried (``None`` if it carried none).
     """
 
     ctx: Leg
@@ -474,18 +501,23 @@ def run_handoff(
     The context leg asks for ``ctx_max_tokens`` tokens (default 1: a context-only
     request produces the first token only). ``rewrite_session`` may edit a copy of
     the returned session in place before it is sent. ``ctx_options`` /
-    ``gen_options`` are :func:`build_request` keyword arguments for one leg; they
-    override what this function sets for that leg (``max_tokens``, ``request_id``,
-    ``extra`` on the context leg, ``session`` on the generation leg).
+    ``gen_options`` are further :func:`build_request` keyword arguments for one leg
+    except ``model``, ``prompt`` and ``token_ids`` (both legs send the same ones);
+    they override ``max_tokens``, ``request_id`` and, on the generation leg,
+    ``session``. An ``extra`` on the context leg is merged over
+    :data:`CONTEXT_ONLY_EXTRA`.
     """
+    for options in (ctx_options, gen_options):
+        if options and _PROMPT_KEYS & set(options):
+            raise ValueError(f"leg options may not contain {sorted(_PROMPT_KEYS)}")
     request_id = uuid.uuid4().hex
     ctx_kwargs: dict[str, Any] = {
         "token_ids": token_ids,
         "max_tokens": ctx_max_tokens,
         "request_id": f"{request_id}-ctx",
-        "extra": CONTEXT_ONLY_EXTRA,
     }
     ctx_kwargs.update(ctx_options or {})
+    ctx_kwargs["extra"] = {**CONTEXT_ONLY_EXTRA, **(ctx_kwargs.get("extra") or {})}
     ctx_request = build_request(model, prompt, **ctx_kwargs)
     ctx = generate(ctx_endpoint, ctx_request, timeout=timeout)
     if ctx.session is None:
@@ -502,8 +534,12 @@ def run_handoff(
     }
     gen_kwargs.update(gen_options or {})
     gen_request = build_request(model, prompt, **gen_kwargs)
+    carried = None
+    if gen_request.HasField("kv") and gen_request.kv.HasField("session"):
+        carried = kv_pb2.KvSessionRef()
+        carried.CopyFrom(gen_request.kv.session)
     gen = generate(gen_endpoint, gen_request, timeout=timeout)
-    return Handoff(ctx, gen, ctx.session, sent)
+    return Handoff(ctx, gen, ctx.session, carried)
 
 
 def server_info(endpoint: str, *, timeout: float = 30.0) -> dict[str, Any]:
@@ -525,13 +561,12 @@ def get_load(endpoint: str, *, timeout: float = 30.0) -> dict[str, Any]:
 def kv_transfer_rows(directory: str) -> dict[str, list[dict[str, str]]]:
     """The rows of the KV transfer CSV files an engine wrote under ``directory``.
 
-    Reads the files of the Python transceiver (``transceiver_runtime: PYTHON``, the
-    default). Keys: ``send`` (``KVSendTask`` rows, sizes in ``transfer_size_bytes``),
-    ``recv`` (``KVRecvTask`` rows, which leave the size columns empty) and
-    ``summary`` (generation-side summaries, received size in ``kv_cache_size``).
-    Missing files give empty lists; a row the engine is still writing (fewer fields
-    than the header) is left out. Other files, such as the C++ transceiver's, have no
-    ``task_type`` column and contribute nothing.
+    Keys: ``summary`` (rows of ``*_gen_transfer_summary.csv``; the Python
+    transceiver, ``transceiver_runtime: PYTHON``, puts the received size in
+    ``kv_cache_size``), and from the other files ``send`` (``task_type``
+    ``KVSendTask``, sizes in ``transfer_size_bytes``) and ``recv`` (``KVRecvTask``,
+    size columns empty). Other rows are left out, and so is a row the engine is
+    still writing (fewer fields than the header). Missing files give empty lists.
     """
     rows: dict[str, list[dict[str, str]]] = {"send": [], "recv": [], "summary": []}
     for path in sorted(glob.glob(os.path.join(directory, "*.csv"))):
@@ -551,6 +586,16 @@ def kv_transfer_rows(directory: str) -> dict[str, list[dict[str, str]]]:
 _NORMAL_FINISH_REASONS = ("FINISH_REASON_STOP", "FINISH_REASON_LENGTH")
 
 
+def _token_ids(value: str) -> list[int]:
+    try:
+        ids = [int(item) for item in value.split(",") if item.strip()]
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a list of integers: {value!r}") from None
+    if not ids:
+        raise argparse.ArgumentTypeError("no token ids given")
+    return ids
+
+
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--ctx", required=True, help="context engine host:port")
@@ -558,7 +603,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser.add_argument("--model", required=True, help="model name sent in the requests")
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--prompt")
-    source.add_argument("--token-ids", help="comma-separated prompt token ids")
+    source.add_argument("--token-ids", type=_token_ids, help="comma-separated prompt token ids")
     parser.add_argument("--max-tokens", type=int, default=16)
     parser.add_argument("--timeout", type=float, default=120.0)
     parser.add_argument("--out", help="write the full result as JSON to this file")
@@ -566,17 +611,18 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Replay one request; exit 0 if the generation leg finished by stop or length, else 1."""
+    """Replay one request.
+
+    Exit 0 if both streams ended with status OK and the generation leg finished by
+    stop or length, else 1.
+    """
     args = _parse_args(argv)
-    token_ids = None
-    if args.token_ids is not None:
-        token_ids = [int(value) for value in args.token_ids.split(",") if value]
     handoff = run_handoff(
         args.ctx,
         args.gen,
         args.model,
         args.prompt,
-        token_ids=token_ids,
+        token_ids=args.token_ids,
         max_tokens=args.max_tokens,
         timeout=args.timeout,
     )

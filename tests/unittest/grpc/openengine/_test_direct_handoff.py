@@ -11,6 +11,7 @@ Needs one GPU of Hopper or later and ``${LLM_MODELS_ROOT}/Qwen3/Qwen3-0.6B``.
 """
 
 import os
+import platform
 import time
 
 import pytest
@@ -39,7 +40,15 @@ CTX_CONFIG = {
 }
 GEN_CONFIG = {"kv_cache_config": KV_CACHE_CONFIG, "cache_transceiver_config": TRANSCEIVER_CONFIG}
 # Both engines are on this host: loopback is the only network device UCX needs.
-UCX_ENV = {"UCX_TLS": "^ib,gdr_copy", "UCX_NET_DEVICES": "lo"}
+UCX_NET_DEVICES = "lo"
+
+
+def _ucx_tls() -> str:
+    """The UCX transports that ``get_ucx_tls`` (``tests/integration/defs/common.py``) picks
+    on Hopper or later."""
+    if torch.cuda.get_device_capability(0) == (10, 3) and "aarch" in platform.machine().lower():
+        return "cuda_copy,cuda_ipc,sm,self,tcp"
+    return "^ib,gdr_copy"
 
 
 def _model_dir() -> str:
@@ -58,13 +67,19 @@ def engines(tmp_path_factory):
     started = []
     kv_dirs = {}
     try:
+        # One after the other, so that neither measures free memory while the other
+        # is loading.
         for name, config in (("ctx", CTX_CONFIG), ("gen", GEN_CONFIG)):
             kv_dirs[name] = os.path.join(workdir, f"kv-{name}")
-            env = dict(os.environ, **UCX_ENV, TRTLLM_KVCACHE_TIME_OUTPUT_PATH=kv_dirs[name])
+            env = dict(
+                os.environ,
+                UCX_TLS=_ucx_tls(),
+                UCX_NET_DEVICES=UCX_NET_DEVICES,
+                TRTLLM_KVCACHE_TIME_OUTPUT_PATH=kv_dirs[name],
+            )
             env["CUDA_VISIBLE_DEVICES"] = env.get("CUDA_VISIBLE_DEVICES", "0").split(",")[0]
             started.append(dr.start_engine(name, model, workdir, config=config, env=env))
-        for engine in started:
-            engine.wait_serving(ENGINE_READY_TIMEOUT_S)
+            started[-1].wait_serving(ENGINE_READY_TIMEOUT_S)
         yield started[0], started[1], kv_dirs
     finally:
         # Engine.stop() never raises, so every engine is stopped.
