@@ -1,0 +1,170 @@
+xd	entry	group	gpus	shard	est_s	timeout_s	list_timeout_s	etcd	ray	waives	model
+XD-001	disaggregated/test_disaggregated.py::test_disaggregated_diff_max_tokens	b200	1	b200-1g-s00	91	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-002	disaggregated/test_disaggregated.py::test_disaggregated_single_gpu	b200	1	b200-1g-s00	124	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-003	disaggregated/test_disaggregated.py::test_disaggregated_mamba_bs1_concurrency2	b200	2	b200-2g-s00	900	900	3600	False	False		NVIDIA-Nemotron-Nano-9B-v2
+XD-004	disaggregated/test_disaggregated.py::test_disaggregated_qwen3_multi_orchestrator	b200	1	b200-1g-s00	94	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-005	disaggregated/test_disaggregated.py::test_disaggregated_benchmark_gen_only	b200	2	b200-2g-s01	300	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-006	disaggregated/test_disaggregated.py::test_disaggregated_router[load_balancing]	b200	4	b200-4g-s04	300	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-007	disaggregated/test_disaggregated.py::test_disaggregated_router[kv_cache_aware]	b200	4	b200-4g-s04	300	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-008	disaggregated/test_disaggregated.py::test_disaggregated_router[conversation]	b200	4	b200-4g-s04	300	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-009	disaggregated/test_disaggregated.py::test_disaggregated_benchmark_gen_only_insufficient_kv	b200	1	b200-1g-s00	244	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-010	disaggregated/test_disaggregated.py::test_disaggregated_genbs1	b200	4	b200-4g-s04	300	3600	3600	False	False	43:disaggregated/test_disaggregated.py::test_disaggregated_genbs1 SKIP (https://nvbugs/6162322)	Qwen3/Qwen3-0.6B
+XD-011	disaggregated/test_disaggregated.py::test_disaggregated_multi_gpu	b200	4	b200-4g-s04	115	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-012	disaggregated/test_disaggregated.py::test_disaggregated_cuda_graph	b200	1	b200-1g-s00	112	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-013	disaggregated/test_disaggregated.py::test_disaggregated_mixed	b200	1	b200-1g-s00	154	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-014	disaggregated/test_disaggregated.py::test_disaggregated_overlap	b200	1	b200-1g-s00	169	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-015	disaggregated/test_disaggregated.py::test_disaggregated_overlap_gen_first[ctx_pp1]	b200	8	b200-8g-s06	300	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-016	disaggregated/test_disaggregated.py::test_disaggregated_overlap_gen_first[ctx_pp4]	b200	8	b200-8g-s07	300	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-017	disaggregated/test_disaggregated.py::test_disaggregated_overlap_transceiver_runtime_python	b200	4	b200-4g-s04	130	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-018	disaggregated/test_disaggregated.py::test_disaggregated_context_first_bf16_ownership	b200	4	b200-4g-s04	300	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-019	disaggregated/test_disaggregated.py::test_disaggregated_overlap_transceiver_runtime_python_fabric_memory	b200	4	b200-4g-s04	390	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-020	disaggregated/test_disaggregated.py::test_disaggregated_overlap_transceiver_runtime_python_bounce	b200	4	b200-4g-s03	393	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-021	disaggregated/test_disaggregated.py::test_disaggregated_perf_metrics	b200	1	b200-1g-s00	130	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-022	disaggregated/test_disaggregated.py::test_disaggregated_chat_completion_tool_calls	b200	1	b200-1g-s00	162	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-023	disaggregated/test_disaggregated.py::test_disaggregated_kv_cache_time_output	b200	1	b200-1g-s00	130	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-024	disaggregated/test_disaggregated.py::test_disaggregated_load_balance	b200	1	b200-1g-s00	115	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-025	disaggregated/test_disaggregated.py::test_disaggregated_cache_aware_balance	b200	1	b200-1g-s00	289	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-026	disaggregated/test_disaggregated.py::test_disaggregated_conditional	b200	1	b200-1g-s00	213	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-027	disaggregated/test_disaggregated.py::test_disaggregated_ngram	b200	1	b200-1g-s00	127	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-028	disaggregated/test_disaggregated.py::test_disaggregated_sa	b200	1	b200-1g-s00	142	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-029	disaggregated/test_disaggregated.py::test_disaggregated_ctxpp2_genpp2	b200	4	b200-4g-s04	103	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-030	disaggregated/test_disaggregated.py::test_disaggregated_ctxtp2_genpp2	b200	4	b200-4g-s04	108	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-031	disaggregated/test_disaggregated.py::test_disaggregated_ctxpp2_gentp2	b200	4	b200-4g-s04	109	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-032	disaggregated/test_disaggregated.py::test_disaggregated_ctxtp2pp2_gentp2pp2	b200	8	b200-8g-s11	141	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-033	disaggregated/test_disaggregated.py::test_disaggregated_ctxpp4_genpp4	b200	8	b200-8g-s11	265	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-034	disaggregated/test_disaggregated.py::test_disaggregated_ctxpp4_gentp4	b200	8	b200-8g-s10	300	3600	3600	False	False		Qwen3/Qwen3-0.6B
+XD-035	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_tp1_single_gpu[DeepSeek-V3-Lite-fp8]	hopper	1	hopper-1g-s00	900	3600	3600	False	False	40:disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_tp1_single_gpu[DeepSeek-V3-Lite-fp8] SKIP (	DeepSeek-V3-Lite/fp8
+XD-036	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_tp1_single_gpu_mtp[DeepSeek-V3-Lite-fp8]	hopper	1	hopper-1g-s00	900	3600	3600	False	False	41:disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_tp1_single_gpu_mtp[DeepSeek-V3-Lite-fp8] SK	DeepSeek-V3-Lite/fp8
+XD-037	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_ctxpp2_gentp2_one_mtp[DeepSeek-V3-Lite-fp8]	hopper	4	hopper-4g-s01	1800	3600	3600	False	False	35:disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_ctxpp2_gentp2_one_mtp[DeepSeek-V3-Lite-fp8]	DeepSeek-V3-Lite/fp8
+XD-038	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_ctxtp2ep2pp2_gentp4_one_mtp_block_reuse[DeepSeek-V3-Lite-fp8]	hopper	8	hopper-8g-s01	1800	3600	3600	False	False	36:disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_ctxtp2ep2pp2_gentp4_one_mtp_block_reuse[Dee	DeepSeek-V3-Lite/fp8
+XD-039	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_ctxtp2ep2pp2_gentp4_one_mtp_block_reuse_long_prompt[DeepSeek-V3-Lite-fp8]	hopper	8	hopper-8g-s01	1800	3600	3600	False	False	37:disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_ctxtp2ep2pp2_gentp4_one_mtp_block_reuse_lon	DeepSeek-V3-Lite/fp8
+XD-040	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_nixl[DeepSeek-V3-Lite-fp8]	b200	4	b200-4g-s03	559	3600	3600	False	False		DeepSeek-V3-Lite/fp8
+XD-041	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_attention_dp[DeepSeek-V3-Lite-fp8]	hopper	4	hopper-4g-s01	306	3600	3600	False	False		DeepSeek-V3-Lite/fp8
+XD-042	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_attention_dp_gen_only[DeepSeek-V3-Lite-fp8]	hopper	4	hopper-4g-s01	1800	3600	3600	False	False	31:disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_attention_dp_gen_only[DeepSeek-V3-Lite-fp8]	DeepSeek-V3-Lite/fp8
+XD-043	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_attention_dp_overlap[DeepSeek-V3-Lite-fp8]	b200	4	b200-4g-s04	178	3600	3600	False	False	64:full:A100/disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_attention_dp_overlap[DeepSeek-V3-;95:full:GB300/disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_attention_dp_overlap[DeepSeek-V3;111:full:L40S/disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_attention_dp_overlap[DeepSeek-V3-	DeepSeek-V3-Lite/fp8
+XD-044	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_attention_dp_overlap_cuda_graph[DeepSeek-V3-Lite-fp8]	hopper	4	hopper-4g-s01	1800	3600	3600	False	False	34:disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_attention_dp_overlap_cuda_graph[DeepSeek-V3	DeepSeek-V3-Lite/fp8
+XD-045	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_overlap_cuda_graph[DeepSeek-V3-Lite-fp8]	hopper	4	hopper-4g-s01	1800	3600	3600	False	False	38:disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_overlap_cuda_graph[DeepSeek-V3-Lite-fp8] SK	DeepSeek-V3-Lite/fp8
+XD-046	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_attention_dp_one[DeepSeek-V3-Lite-fp8]	hopper	4	hopper-4g-s02	1800	3600	3600	False	False	32:disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_attention_dp_one[DeepSeek-V3-Lite-fp8] SKIP	DeepSeek-V3-Lite/fp8
+XD-047	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_attention_dp_one_mtp[DeepSeek-V3-Lite-fp8]	hopper	4	hopper-4g-s02	1800	3600	3600	False	False	33:disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_attention_dp_one_mtp[DeepSeek-V3-Lite-fp8] 	DeepSeek-V3-Lite/fp8
+XD-048	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_tp1_attention_dp_overlap_one_mtp[DeepSeek-V3-Lite-fp8]	hopper	4	hopper-4g-s02	1800	3600	3600	False	False	39:disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_tp1_attention_dp_overlap_one_mtp[DeepSeek-V	DeepSeek-V3-Lite/fp8
+XD-049	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_bf16_cache_aware_balance[DeepSeek-V3-Lite-bf16]	hopper	4	hopper-4g-s02	1800	3600	3600	False	False	29:disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_bf16_cache_aware_balance[DeepSeek-V3-Lite-bf16]	DeepSeek-V3-Lite/bf16
+XD-050	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_bf16_conditional[DeepSeek-V3-Lite-bf16]	hopper	4	hopper-4g-s03	1800	3600	3600	False	False	30:disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_bf16_conditional[DeepSeek-V3-Lite-bf16] SKIP (h	DeepSeek-V3-Lite/bf16
+XD-051	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_bf16_conditional_v2[DeepSeek-V3-Lite-bf16]	hopper	4	hopper-4g-s01	187	3600	3600	False	False		DeepSeek-V3-Lite/bf16
+XD-052	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_tp1_two_mtp[DeepSeek-V3-Lite-fp8]	hopper	1	hopper-1g-s00	900	3600	3600	False	False	42:disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_tp1_two_mtp[DeepSeek-V3-Lite-fp8] SKIP (htt	DeepSeek-V3-Lite/fp8
+XD-053	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_bf16_empty_batch[DeepSeek-V3-Lite-bf16]	b200	4	b200-4g-s04	328	3600	3600	False	False		DeepSeek-V3-Lite/bf16
+XD-054	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_bf16_tllm_gen_helix[DeepSeek-V3-Lite-bf16-short_prompt]	b200	4	b200-4g-s02	1800	3600	3600	False	False		DeepSeek-V3-Lite/bf16
+XD-055	disaggregated/test_disaggregated.py::test_disaggregated_cancel_large_context_requests[DeepSeek-V3-Lite-bf16]	b200	2	b200-2g-s00	900	3600	3600	False	False	28:disaggregated/test_disaggregated.py::test_disaggregated_cancel_large_context_requests[DeepSeek-V3-Lite-bf16] SKIP (https	DeepSeek-V3-Lite/bf16
+XD-056	disaggregated/test_disaggregated.py::test_llama4_long_context_kv_cache_overflow[llama4-models/nvidia/Llama-4-Maverick-17B-128E-Instruct-FP8]	b200	8	b200-8g-s07	1800	3600	3600	False	False		Llama-4-Maverick-17B-128E-Instruct-FP8
+XD-057	disaggregated/test_disaggregated.py::test_disaggregated_gpt_oss_120b_harmony[gpt_oss/gpt-oss-120b]	b200	4	b200-4g-s04	352	3600	3600	False	False	44:disaggregated/test_disaggregated.py::test_disaggregated_gpt_oss_120b_harmony[gpt_oss/gpt-oss-120b] SKIP (https://nvbugs/	gpt_oss/gpt-oss-120b
+XD-058	disaggregated/test_disaggregated.py::test_disaggregated_gpt_oss_20b_kv_cache_aware[gpt_oss/gpt-oss-20b]	b200	4	b200-4g-s04	330	3600	3600	False	False		gpt_oss/gpt-oss-20b
+XD-059	disaggregated/test_disaggregated.py::test_disaggregated_qwen3_32b_fp8[Qwen3/Qwen3-32B-FP8]	b200	8	b200-8g-s08	1800	3600	3600	False	False		Qwen3/Qwen3-32B-FP8
+XD-060	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v41_gsm8k_ctxtp4_gentp4[DeepSeek-V4.1-Flash-NVFP4]	b200	8	b200-8g-s05	7200	7200	7200	False	False		DeepSeek-V4.1-Flash-NVFP4
+XD-061	disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v41_gsm8k_ctxdp4_gendp4[DeepSeek-V4.1-Flash-NVFP4]	b200	8	b200-8g-s06	7200	7200	7200	False	False		DeepSeek-V4.1-Flash-NVFP4
+XD-062	disaggregated/test_disaggregated.py::test_disaggregated_logprobs_serving	b200	4	b200-4g-s02	1800	3600	3600	False	False		Qwen3/Qwen3-8B
+XD-063	disaggregated/test_disaggregated.py::test_disaggregated_stress_test[input8k-output1k-conc512-deepseek_r1_v2_fp4_stress]	b200	8	b200-8g-s00	9000	12600	12600	False	False		DeepSeek-R1/DeepSeek-R1-0528-FP4-v2
+XD-064	disaggregated/test_disaggregated.py::test_disaggregated_stress_test[input8k-output1k-conc512-deepseek_r1_v2_fp4_mtp_stress]	b200	8	b200-8g-s01	9000	12600	12600	False	False		DeepSeek-R1/DeepSeek-R1-0528-FP4-v2
+XD-065	disaggregated/test_disaggregated.py::test_disaggregated_stress_test[input8k-output1k-conc512-gpt_oss_120b_trtllm_stress]	b200	4	b200-4g-s00	9000	12600	12600	False	False		gpt_oss/gpt-oss-120b
+XD-066	disaggregated/test_disaggregated.py::test_disaggregated_stress_test[input8k-output1k-conc512-gpt_oss_120b_eagle_triton_stress]	hopper	8	hopper-8g-s00	9000	12600	12600	False	False	45:disaggregated/test_disaggregated.py::test_disaggregated_stress_test[input8k-output1k-conc512-gpt_oss_120b_eagle_triton_s	gpt_oss/gpt-oss-120b
+XD-067	disaggregated/test_disaggregated.py::test_disaggregated_stress_test[input8k-output1k-conc512-gpt_oss_120b_eagle_trtllm_stress]	b200	8	b200-8g-s02	9000	12600	12600	False	False		gpt_oss/gpt-oss-120b
+XD-068	disaggregated/test_disaggregated.py::test_disaggregated_stress_test[input8k-output1k-conc512-gpt_oss_120b_triton_stress]	hopper	4	hopper-4g-s00	9000	12600	12600	False	False		gpt_oss/gpt-oss-120b
+XD-069	disaggregated/test_disaggregated.py::test_disaggregated_stress_test[input8k-output1k-conc512-qwen3_5_4b_fp8_stress]	hopper	2	hopper-2g-s00	9000	12600	12600	False	False	46:disaggregated/test_disaggregated.py::test_disaggregated_stress_test[input8k-output1k-conc512-qwen3_5_4b_fp8_stress] SKIP	Qwen3.5-4B-FP8
+XD-070	disaggregated/test_disaggregated.py::test_disaggregated_stress_test[input8k-output1k-conc512-glm5_nvfp4_tp4_ep4_dp_stress]	b200	8	b200-8g-s03	9000	12600	12600	False	False		GLM-5-NVFP4
+XD-071	disaggregated/test_disaggregated.py::test_disaggregated_stress_test[input8k-output1k-conc512-qwen3_32b_fp8_stress]	b200	8	b200-8g-s04	9000	12600	12600	False	False	69:full:B200/disaggregated/test_disaggregated.py::test_disaggregated_stress_test[input8k-output1k-conc512-qwen3_32b_fp8_str;103:full:H100/disaggregated/test_disaggregated.py::test_disaggregated_stress_test[input8k-output1k-conc512-qwen3_32b_fp8_str	Qwen3/Qwen3-32B-FP8
+XD-072	disaggregated/test_disaggregated.py::test_disaggregated_mamba_conc_greater_than_mbs[NVIDIA-Nemotron-3-Super-120B-A12B-FP8]	b200	8	b200-8g-s09	1800	3600	3600	False	False	81:full:B300/disaggregated/test_disaggregated.py::test_disaggregated_mamba_conc_greater_than_mbs[NVIDIA-Nemotron-3-Super-12	NVIDIA-Nemotron-3-Super-120B-A12B-FP8
+XD-073	disaggregated/test_disaggregated.py::test_disaggregated_mixed_stress_test[req120-conc64-qwen3_32b_fp8_mixed_stress]	b200	8	b200-8g-s10	504	3600	3600	False	False		Qwen3/Qwen3-32B-FP8
+XD-074	disaggregated/test_disaggregated.py::test_disaggregated_mixed_stress_test[req10k-conc512-qwen3_32b_fp8_mixed_stress]	b200	8	b200-8g-s09	1800	3600	3600	False	False		Qwen3/Qwen3-32B-FP8
+XD-101	disaggregated/test_disaggregated_etcd.py::test_automated_disaggregated_complete	b200	8	b200-8g-ports-s00	300	3600	3600	True	False		Qwen3-0.6B
+XD-102	disaggregated/test_auto_scaling.py::test_service_discovery[etcd-round_robin]	b200	8	b200-8g-ports-s00	95	900	3600	True	False		Qwen3-0.6B
+XD-103	disaggregated/test_auto_scaling.py::test_service_discovery[etcd-load_balancing]	b200	8	b200-8g-ports-s00	300	900	3600	True	False		Qwen3-0.6B
+XD-104	disaggregated/test_auto_scaling.py::test_service_discovery[etcd-kv_cache_aware]	b200	8	b200-8g-ports-s00	300	900	3600	True	False		Qwen3-0.6B
+XD-105	disaggregated/test_auto_scaling.py::test_service_discovery[http-round_robin]	b200	8	b200-8g-ports-s00	98	900	3600	True	False		Qwen3-0.6B
+XD-106	disaggregated/test_auto_scaling.py::test_service_discovery[http-load_balancing]	b200	8	b200-8g-ports-s00	300	900	3600	True	False		Qwen3-0.6B
+XD-107	disaggregated/test_auto_scaling.py::test_service_discovery[http-kv_cache_aware]	b200	8	b200-8g-ports-s00	98	900	3600	True	False		Qwen3-0.6B
+XD-108	disaggregated/test_auto_scaling.py::test_minimal_instances[etcd-round_robin]	b200	8	b200-8g-ports-s00	189	900	3600	True	False		Qwen3-0.6B
+XD-109	disaggregated/test_auto_scaling.py::test_minimal_instances[http-round_robin]	b200	4	b200-4g-s04	189	900	3600	False	False		Qwen3-0.6B
+XD-110	disaggregated/test_auto_scaling.py::test_worker_restart[etcd-round_robin]	b200	8	b200-8g-ports-s00	393	900	3600	True	False		Qwen3-0.6B
+XD-111	disaggregated/test_auto_scaling.py::test_worker_restart[etcd-load_balancing]	b200	8	b200-8g-ports-s00	384	900	3600	True	False		Qwen3-0.6B
+XD-112	disaggregated/test_auto_scaling.py::test_worker_restart[etcd-kv_cache_aware]	b200	8	b200-8g-ports-s00	300	900	3600	True	False		Qwen3-0.6B
+XD-113	disaggregated/test_auto_scaling.py::test_worker_restart[http-round_robin]	b200	2	b200-2g-s01	300	900	3600	False	False		Qwen3-0.6B
+XD-114	disaggregated/test_auto_scaling.py::test_worker_restart[http-load_balancing]	b200	4	b200-4g-s04	393	900	3600	False	False		Qwen3-0.6B
+XD-115	disaggregated/test_auto_scaling.py::test_worker_restart[http-kv_cache_aware]	b200	2	b200-2g-s01	300	900	3600	False	False		Qwen3-0.6B
+XD-116	disaggregated/test_auto_scaling.py::test_disagg_server_restart[etcd-round_robin]	b200	8	b200-8g-ports-s00	174	900	3600	True	False		Qwen3-0.6B
+XD-117	disaggregated/test_auto_scaling.py::test_disagg_server_restart[http-round_robin]	b200	4	b200-4g-s04	221	900	3600	False	False		Qwen3-0.6B
+XD-118	disaggregated/test_workers.py::test_workers_conditional_disaggregation	b200	1	b200-1g-s00	300	3600	3600	False	False		Qwen3-0.6B
+XD-119	disaggregated/test_workers.py::test_workers_conditional_disaggregation_deepseek_v3_lite_bf16[DeepSeek-V3-Lite-bf16]	b200	4	b200-4g-s02	239	3600	3600	False	False		DeepSeek-V3-Lite/bf16
+XD-120	disaggregated/test_workers.py::test_workers_kv_cache_events	b200	1	b200-1g-s00	119	3600	3600	False	False		Qwen3-0.6B
+XD-121	disaggregated/test_workers.py::test_workers_kv_cache_aware_router	b200	1	b200-1g-s00	153	3600	3600	False	False		Qwen3-0.6B
+XD-122	disaggregated/test_workers.py::test_workers_kv_cache_aware_router_deepseek_v3_lite_bf16[DeepSeek-V3-Lite-bf16]	hopper	4	hopper-4g-s03	1800	3600	3600	False	False	48:disaggregated/test_workers.py::test_workers_kv_cache_aware_router_deepseek_v3_lite_bf16[DeepSeek-V3-Lite-bf16] SKIP (htt	DeepSeek-V3-Lite/bf16
+XD-123	disaggregated/test_workers.py::test_workers_kv_cache_aware_router_eviction	b200	1	b200-1g-s00	300	3600	3600	False	False	49:disaggregated/test_workers.py::test_workers_kv_cache_aware_router_eviction SKIP (https://nvbugs/6162322)	Qwen3-0.6B
+XD-124	disaggregated/test_workers.py::test_workers_conversation_router	hopper	4	hopper-4g-s01	300	3600	3600	False	False	47:disaggregated/test_workers.py::test_workers_conversation_router SKIP (https://nvbugs/6162322)	Qwen3-0.6B
+XD-125	stress_test/disagg_cancel/test_disagg_cancel_stress.py::test_disagg_cancellation_marathon[marathon_python_v2_deepseek.yaml]	b200	8	b200-8g-s09	1800	2700	3600	False	False		DeepSeek-V3-Lite/bf16
+XD-201	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_gen_only_sync	hopper	2	hopper-2g-s01	513	3600	3600	False	False		DeepSeek-V3-Lite/bf16
+XD-202	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_nvfp4_kv_cache_nixl	b200	2	b200-2g-s00	900	3600	3600	False	False		DeepSeek-V3-Lite/nvfp4_moe_only_mtp
+XD-203	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_symmetric	b200	8	b200-8g-s11	438	3600	3600	False	False		DeepSeek-V3-Lite/bf16
+XD-204	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1dp2cp2-overlap_off]	b200	8	b200-8g-s11	491	3600	3600	False	False		DeepSeek-V3-Lite/bf16
+XD-204	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1dp2cp2-overlap_on]	b200	8	b200-8g-s11	491	3600	3600	False	False		DeepSeek-V3-Lite/bf16
+XD-204	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1tp2cp2-overlap_off]	b200	8	b200-8g-s11	491	3600	3600	False	False		DeepSeek-V3-Lite/bf16
+XD-204	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1tp2cp2-overlap_on]	b200	8	b200-8g-s11	491	3600	3600	False	False		DeepSeek-V3-Lite/bf16
+XD-205	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype[mtp_nextn=0-overlap_scheduler=False]	b200	8	b200-8g-s08	522	3600	3600	False	False	113:full:RTX_PRO_6000_Blackwell_Server_Edition/accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype[m	DeepSeek-V3-Lite/bf16
+XD-205	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype[mtp_nextn=0-overlap_scheduler=True]	b200	8	b200-8g-s09	522	3600	3600	False	False	114:full:RTX_PRO_6000_Blackwell_Server_Edition/accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype[m	DeepSeek-V3-Lite/bf16
+XD-205	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype[mtp_nextn=2-overlap_scheduler=False]	b200	8	b200-8g-s10	522	3600	3600	False	False	115:full:RTX_PRO_6000_Blackwell_Server_Edition/accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype[m	DeepSeek-V3-Lite/bf16
+XD-205	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype[mtp_nextn=2-overlap_scheduler=True]	b200	8	b200-8g-s10	522	3600	3600	False	False	116:full:RTX_PRO_6000_Blackwell_Server_Edition/accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype[m	DeepSeek-V3-Lite/bf16
+XD-206	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_guided_decoding[xgrammar-mtp_nextn=0]	b200	2	b200-2g-s00	483	3600	3600	False	False	117:full:RTX_PRO_6000_Blackwell_Server_Edition/accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_guided_decod	DeepSeek-V3-Lite/bf16
+XD-206	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_guided_decoding[xgrammar-mtp_nextn=2]	b200	2	b200-2g-s00	483	3600	3600	False	False	118:full:RTX_PRO_6000_Blackwell_Server_Edition/accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_guided_decod	DeepSeek-V3-Lite/bf16
+XD-207	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_gen_first[adp-mtp2]	b200	4	b200-4g-s03	869	3600	3600	False	False		DeepSeek-V3-Lite/bf16
+XD-207	accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_gen_first[noadp-mtp0]	b200	4	b200-4g-s03	869	3600	3600	False	False		DeepSeek-V3-Lite/bf16
+XD-208	accuracy/test_disaggregated_serving.py::TestGPTOSS::test_auto_dtype[False]	b200	8	b200-8g-s09	1800	3600	3600	False	False		gpt-oss-120b
+XD-208	accuracy/test_disaggregated_serving.py::TestGPTOSS::test_auto_dtype[True]	b200	8	b200-8g-s10	1800	3600	3600	False	False		gpt-oss-120b
+XD-209	accuracy/test_disaggregated_serving.py::TestGPTOSS::test_kv_cache_v2_nixl_python[cache_mgr_v2]	b200	4	b200-4g-s03	662	3600	3600	False	False	3:accuracy/test_disaggregated_serving.py::TestGPTOSS::test_kv_cache_v2_nixl_python[cache_mgr_v2] SKIP (https://nvbugs/7023	gpt-oss-120b
+XD-210	accuracy/test_disaggregated_serving.py::TestGPTOSS::test_eagle3[overlap_scheduler=False]	b200	8	b200-8g-s07	5400	5400	5400	False	False		gpt-oss-120b + gpt-oss-120b-Eagle3
+XD-210	accuracy/test_disaggregated_serving.py::TestGPTOSS::test_eagle3[overlap_scheduler=True]	b200	8	b200-8g-s08	5400	5400	5400	False	False		gpt-oss-120b + gpt-oss-120b-Eagle3
+XD-211	accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_nixl_backend	b200	2	b200-2g-s01	392	3600	3600	False	False		Qwen3-8B-FP8
+XD-212	accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype[False-False]	b200	2	b200-2g-s00	818	3600	3600	False	False		Qwen3-8B-FP8
+XD-212	accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype[False-True]	b200	2	b200-2g-s00	818	3600	3600	False	False		Qwen3-8B-FP8
+XD-212	accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype[True-False]	b200	2	b200-2g-s00	818	3600	3600	False	False		Qwen3-8B-FP8
+XD-212	accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype[True-True]	b200	2	b200-2g-s00	818	3600	3600	False	False		Qwen3-8B-FP8
+XD-213	accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_chunked_prefill	b200	2	b200-2g-s00	783	3600	3600	False	False		Qwen3-8B-FP8
+XD-214	accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1dp2cp2-overlap_off]	b200	8	b200-8g-s11	494	3600	3600	False	False		Qwen3-8B-FP8
+XD-214	accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1dp2cp2-overlap_on]	b200	8	b200-8g-s11	494	3600	3600	False	False		Qwen3-8B-FP8
+XD-214	accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1tp2cp2-overlap_off]	b200	8	b200-8g-s11	494	3600	3600	False	False		Qwen3-8B-FP8
+XD-214	accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1tp2cp2-overlap_on]	b200	8	b200-8g-s11	494	3600	3600	False	False		Qwen3-8B-FP8
+XD-215	accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_gen_first[block_reuse]	b200	4	b200-4g-s04	379	3600	3600	False	False		Qwen3-8B-FP8
+XD-215	accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_gen_first[no_reuse]	b200	4	b200-4g-s04	379	3600	3600	False	False		Qwen3-8B-FP8
+XD-216	accuracy/test_disaggregated_serving.py::TestQwen3_30B_A3B::test_mixed_ctx_gen_model[ctxpp2gentp2]	b200	4	b200-4g-s02	1800	3600	3600	False	False	4:accuracy/test_disaggregated_serving.py::TestQwen3_30B_A3B::test_mixed_ctx_gen_model[ctxpp2gentp2] SKIP (https://nvbugs/5	Qwen3-30B-A3B（ctx 用 NVFP4、gen 用 FP8 checkpoint）
+XD-217	accuracy/test_disaggregated_serving.py::TestQwen3_5_4B::test_mismatched_block_reuse	b200	2	b200-2g-s01	405	3600	3600	False	False		Qwen3.5-4B-FP8
+XD-218	accuracy/test_disaggregated_serving.py::TestQwen3_5_4B::test_ctx_pp_gen_tp_asymmetric	b200	4	b200-4g-s04	348	3600	3600	False	False		Qwen3.5-4B-FP8
+XD-219	accuracy/test_disaggregated_serving.py::TestGPTOSS20B::test_beam_search	b200	2	b200-2g-s00	613	3600	3600	False	False		gpt-oss-20b
+XD-220	accuracy/test_disaggregated_serving.py::TestKimiK25::test_nvfp4	b200	8	b200-8g-s10	1480	10800	10800	False	False		Kimi-K2.5-NVFP4
+XD-221	accuracy/test_disaggregated_serving.py::TestNemotron3Super120B::test_auto_dtype[mtp_nextn=0-block_reuse=False-use_py_transceiver=True]	b200	8	b200-8g-s06	777	3600	3600	False	False		NVIDIA-Nemotron-3-Super-120B-A12B-FP8
+XD-221	accuracy/test_disaggregated_serving.py::TestNemotron3Super120B::test_auto_dtype[mtp_nextn=3-block_reuse=True-use_py_transceiver=True]	b200	8	b200-8g-s07	777	3600	3600	False	False		NVIDIA-Nemotron-3-Super-120B-A12B-FP8
+XD-222	accuracy/test_disaggregated_serving.py::TestNemotron3Super120B::test_ctx_dp2_gen_tp4	b200	8	b200-8g-s09	547	3600	3600	False	False		NVIDIA-Nemotron-3-Super-120B-A12B-FP8
+XD-223	accuracy/test_disaggregated_serving.py::TestQwen3NextInstruct::test_auto_dtype[use_py_transceiver=True]	b200	8	b200-8g-s08	665	3600	3600	False	False		Qwen3-Next-80B-A3B-Instruct
+XD-224	accuracy/test_disaggregated_serving.py::TestQwen3_8_Flash_Next::test_fp8_nixl_python[no_reuse]	b200	4	b200-4g-s03	781	3600	3600	False	False		Qwen3.8-Flash-Next-FP8
+XD-224	accuracy/test_disaggregated_serving.py::TestQwen3_8_Flash_Next::test_fp8_nixl_python[prefix_cache]	b200	4	b200-4g-s03	781	3600	3600	False	False		Qwen3.8-Flash-Next-FP8
+XD-224	accuracy/test_disaggregated_serving.py::TestQwen3_8_Flash_Next::test_fp8_nixl_python[prefix_cache_offsets]	b200	4	b200-4g-s03	781	3600	3600	False	False		Qwen3.8-Flash-Next-FP8
+XD-225	accuracy/test_disaggregated_serving.py::TestGLM52NVFP4::test_nvfp4_nixl[cache_mgr_v2]	b200	8	b200-8g-s05	1094	3600	3600	False	False		GLM-5.2-NVFP4
+XD-226	accuracy/test_disaggregated_serving.py::TestDeepSeekV4Flash::test_auto_dtype	b200	4	b200-4g-s03	1671	3600	3600	False	False		DeepSeek-V4-Flash
+XD-227	accuracy/test_disaggregated_serving.py::TestDeepSeekV4Flash::test_gen_first	b200	4	b200-4g-s02	1800	3600	3600	False	False		DeepSeek-V4-Flash
+XD-228	accuracy/test_disaggregated_serving.py::TestDeepSeekV4FlashDSpark::test_gsm8k_1p1d_dep4	b200	8	b200-8g-s10	1481	5400	5400	False	False		DeepSeek-V4-Flash-nvfp4-DSpark
+XD-229	accuracy/test_disaggregated_serving.py::TestDeepSeekV4FlashBase::test_auto_dtype	b200	4	b200-4g-s01	9000	14400	12900	False	False		DeepSeek-V4-Flash-Base
+XD-230	accuracy/test_disaggregated_serving.py::TestDeepSeekR1::test_kv_cache_v2_nixl_python[cache_mgr_v2]	b200	4	b200-4g-s02	910	3600	3600	False	False		DeepSeek-R1-0528-FP4-v2
+XD-231	accuracy/test_disaggregated_serving.py::TestMiniMaxM3::test_nvfp4_eagle3_disagg_head_mismatched_bounce	b200	8	b200-8g-s10	1776	3600	3600	False	False		MiniMax-M3-NVFP4 + MiniMax-M3-EAGLE3-GQA
+XD-301	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp2pp1-gen_tp2pp1]	2node	8	2node-8g-s00	1800	3600	3600	False	False		Qwen3.5-4B
+XD-302	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp2pp1-gen_tp1pp2]	2node	8	2node-8g-s00	1800	3600	3600	False	False		Qwen3.5-4B
+XD-303	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp2pp1-gen_tp1pp1]	2node	8	2node-8g-s00	1800	3600	3600	False	False		Qwen3.5-4B
+XD-304	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp1pp2-gen_tp2pp1]	2node	8	2node-8g-s00	1800	3600	3600	False	False		Qwen3.5-4B
+XD-305	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp1pp2-gen_tp1pp2]	2node	8	2node-8g-s00	1800	3600	3600	False	False		Qwen3.5-4B
+XD-306	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp1pp2-gen_tp1pp1]	2node	8	2node-8g-s00	1800	3600	3600	False	False		Qwen3.5-4B
+XD-307	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp1pp1-gen_tp2pp1]	2node	8	2node-8g-s00	1800	3600	3600	False	False		Qwen3.5-4B
+XD-308	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp1pp1-gen_tp1pp2]	2node	8	2node-8g-s00	1800	3600	3600	False	False		Qwen3.5-4B
+XD-309	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp1pp1-gen_tp1pp1]	2node	8	2node-8g-s00	1800	3600	3600	False	False		Qwen3.5-4B
+XD-310	test_e2e.py::test_openai_disagg_multi_nodes_completion_service_discovery[etcd]	2node	8	2node-8g-s00	1800	3600	3600	True	False		Qwen3.5-4B
+XD-311	unittest/llmapi/apps/_test_disagg_serving_multi_nodes_service_discovery.py::test_completion[http]	2node	8	2node-8g-s00	1800	3600	3600	True	False		Qwen3.5-4B
+XD-312	unittest/llmapi/apps/test_disagg_serving_perf_metrics.py::test_return_perf_metrics_and_jsonl_dump	b200	2	b200-2g-s01	248	300	3600	False	False		Qwen3-0.6B
+XD-313	unittest/llmapi/apps/test_disagg_serving_perf_metrics.py::test_completion_metrics	b200	2	b200-2g-s01	248	300	3600	False	False		Qwen3-0.6B
+XD-314	accuracy/test_disaggregated_multinode.py::TestDeepSeekV4ProDSparkMultinode::test_gsm8k_1p1d_dep4	2node	8	2node-8g-s00	9000	14400	12900	False	False		DeepSeek-V4-Pro-nvfp4-DSpark
+XD-315	accuracy/test_dwdp_disaggregated_serving.py::TestDwdpDeepSeekV3Lite::test_dwdp_accuracy	b200	4	b200-4g-s03	485	3600	3600	False	False		DeepSeek-V3-Lite/nvfp4_moe_only_mtp
+XD-316	accuracy/test_dwdp_disaggregated_serving.py::TestDwdpDeepSeekV3Lite::test_dwdp_accuracy_contention_opt	b200	4	b200-4g-s03	497	3600	3600	False	False		DeepSeek-V3-Lite/nvfp4_moe_only_mtp
+XD-317	accuracy/test_dwdp_disaggregated_serving.py::TestDwdpDeepSeekV3Lite::test_dwdp_accuracy_mode_b_overlap	b200	4	b200-4g-s04	481	3600	3600	False	False		DeepSeek-V3-Lite/nvfp4_moe_only_mtp
+XD-318	examples/test_ray.py::test_ray_disaggregated_serving[tp1]	b200	8	b200-8g-ports-s00	130	3600	3600	False	True		Qwen3-0.6B
+XD-319	examples/test_ray.py::test_ray_disaggregated_serving[tp2]	b200	8	b200-8g-ports-s00	200	3600	3600	False	True		Qwen3-0.6B
