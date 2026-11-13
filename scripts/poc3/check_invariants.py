@@ -6,9 +6,10 @@
 PoC-S3 puts OpenEngine worker front ends behind the existing disaggregated
 orchestrator without changing the orchestrator. Three checks hold that line:
 
-1. **Whole files unchanged**: ``git diff --quiet <base> [<head>] -- <file>``
-   finds no difference in any of the orchestrator's seven main files (contents,
-   line endings and file mode).
+1. **Whole files unchanged**: none of the orchestrator's seven main files
+   differs from the base in contents, line endings or file mode
+   (``git diff --quiet <base> <head>``; files on disk are compared byte for
+   byte with the base).
 2. **Definitions unchanged**: the two conversion functions of
    ``openai_protocol.py`` and the ``disaggregated`` / ``disaggregated_mpi_worker``
    subcommands of ``commands/serve.py`` have the same source text as at the
@@ -21,7 +22,9 @@ orchestrator without changing the orchestrator. Three checks hold that line:
    captures, walrus targets evaluated at module scope (in decorators, default
    values and base classes too), and a ``global`` declaration of the name
    anywhere in the file all fail the check. Bindings made without that syntax,
-   such as through ``globals()`` or ``setattr`` on the module, are not seen.
+   such as through ``globals()`` or ``setattr`` on the module, are not seen;
+   neither are assignments to the definition's attributes
+   (``disaggregated.callback = ...``), which bind nothing.
    Helpers the definitions call, and the command table that maps CLI names to
    the subcommands, are not covered.
 3. **Registered additions only**: the HTTP ``DisaggregatedParams`` class of
@@ -37,16 +40,18 @@ Usage::
     python3 scripts/poc3/check_invariants.py --head <rev>
     python3 scripts/poc3/check_invariants.py --working-tree       # files on disk
 
-Exit status: 0 when all three checks pass, 1 otherwise. A checked file or a
-registry in the repository that cannot be read or parsed fails its own check;
-an unknown revision or an unreadable ``--registry`` file fails the whole run
-with one line. The scripts need Python 3.9 or newer.
+Exit status: 0 when all three checks pass, 1 otherwise, 2 when the arguments
+cannot be parsed. A checked file or a registry in the repository that cannot be
+read or parsed fails its own check; a ``--repo`` that is not a git checkout, an
+unknown revision or an unreadable ``--registry`` file fails the whole run with
+one line. The scripts need Python 3.9 or newer.
 """
 
 from __future__ import annotations
 
 import argparse
 import ast
+import stat
 import subprocess
 import sys
 from collections import Counter
@@ -54,6 +59,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import yaml
+from poc3_common import git, git_error
 
 # The commit PoC-S3 starts from: the PoC-S2 branch fork/feat/engine_integration at that point.
 FROZEN_BASE = "2f22a98d6e8b32ed185bcdfe051ef0e4405ae4e8"
@@ -118,10 +124,32 @@ def _exists(read: Reader, rev: str, path: str) -> bool:
 
 
 def git_differ(repo: str | Path) -> Differ:
-    """Whether ``path`` differs between ``base`` and ``head`` (head "" is the disk), by git diff."""
+    """Whether ``path`` differs between ``base`` and ``head`` in contents or mode.
+
+    Two revisions are compared by git diff. The disk (head "") is compared
+    byte for byte with the file at ``base``, so the index and git's settings
+    for the working tree (``core.fileMode``, ``core.autocrlf``, attributes,
+    index flags such as ``--assume-unchanged``) cannot hide a change.
+    """
+    top = Path(git(repo, "rev-parse", "--show-toplevel").strip())
+
+    def differs_on_disk(base: str, path: str) -> bool:
+        entry = git(repo, "ls-tree", "-z", "--full-tree", base, "--", path).rstrip("\0")
+        file = top / path
+        if not entry:
+            return file.exists() or file.is_symlink()
+        mode, _, oid = entry.split("\t", 1)[0].split()
+        if mode not in ("100644", "100755") or file.is_symlink() or not file.is_file():
+            return True  # only regular files are compared; anything else counts as a change
+        blob = subprocess.run(
+            ["git", "-C", str(repo), "cat-file", "blob", oid], check=True, capture_output=True
+        ).stdout
+        executable = bool(file.stat().st_mode & stat.S_IXUSR)
+        return executable != (mode == "100755") or file.read_bytes() != blob
 
     def differs(base: str, head: str, path: str) -> bool:
-        revs = [base, head] if head else [base]
+        if not head:
+            return differs_on_disk(base, path)
         result = subprocess.run(
             [
                 "git",
@@ -131,7 +159,9 @@ def git_differ(repo: str | Path) -> Differ:
                 "--quiet",
                 "--no-ext-diff",
                 "--no-relative",
-                *revs,
+                "--ignore-submodules=none",
+                base,
+                head,
                 "--",
                 f":(top){path}",
             ],
@@ -213,8 +243,11 @@ def _statement_bindings(body: list[ast.stmt], name: str) -> int:
             )
             continue
         if isinstance(node, ast.AnnAssign) and node.value is None:
-            # A bare annotation binds nothing; only its expression is evaluated.
+            # A bare annotation binds no simple name; its annotation is evaluated, and so is
+            # an attribute or subscript target up to the last attribute or subscript.
             fields = [node.annotation]
+            if not isinstance(node.target, ast.Name):
+                fields.append(node.target)
         else:
             fields = [value for field, value in ast.iter_fields(node) if field not in _BLOCKS]
         count += _expression_bindings(fields, name)
@@ -298,8 +331,9 @@ def load_registry(text: str | None) -> tuple[dict[tuple[str, str], Counter[str]]
         return registered, [f"registry {REGISTRY_PATH} is missing"]
     try:
         data = yaml.safe_load(text) or {}
-    except yaml.YAMLError as error:
-        return registered, [f"the registry is not valid YAML: {error}"]
+    except (yaml.YAMLError, ValueError) as error:
+        # ValueError: a value YAML cannot convert, such as the date 2026-02-30.
+        return registered, [f"the registry is not valid YAML: {type(error).__name__}: {error}"]
     if not isinstance(data, dict) or not isinstance(data.get("additions") or [], list):
         return registered, ["the registry is not a mapping with a list of additions"]
     problems = []
@@ -334,12 +368,14 @@ def run(
     """Every check as ``(name, passed, detail)``; ``head`` "" checks the files on disk.
 
     Raises:
+        subprocess.CalledProcessError: ``repo`` is not a git checkout.
         RuntimeError: ``base`` or ``head`` is not a commit.
 
     The registry is ``registry_text`` when given, else the one in ``head``, else
     (for a head without ``scripts/poc3``, such as the frozen base) the one next
     to this script.
     """
+    read, differs = git_reader(repo), git_differ(repo)
     for rev in (base, head):
         if (
             rev
@@ -349,10 +385,13 @@ def run(
             ).returncode
         ):
             raise RuntimeError(f"unknown revision {rev!r}")
-    read, differs = git_reader(repo), git_differ(repo)
     results = []
     for path in ORCHESTRATOR_FILES:
-        same = _exists(read, base, path) and not differs(base, head, path)
+        try:
+            same = _exists(read, base, path) and not differs(base, head, path)
+        except OSError as error:
+            results.append((f"file {path}", False, f"{type(error).__name__}: {error}"))
+            continue
         results.append(
             (f"file {path}", same, "" if same else "differs from the base (or is missing)")
         )
@@ -361,8 +400,8 @@ def run(
         try:
             old_text = definition_text(read(base, path) or "", name)
             new_text = definition_text(read(head, path) or "", name)
-        except (LookupError, SyntaxError, ValueError) as error:
-            # ValueError: not UTF-8, or (before Python 3.12) a NUL byte ast cannot parse.
+        except (LookupError, SyntaxError, ValueError, OSError) as error:
+            # ValueError: not UTF-8, or (on older Pythons) a NUL byte ast cannot parse.
             results.append((f"def {path}:{name}", False, f"{type(error).__name__}: {error}"))
             continue
         same = old_text == new_text
@@ -377,7 +416,7 @@ def run(
         if registry_text is None and not head_has_gate and REGISTRY.is_file():
             # The head predates scripts/poc3 (the frozen base, for example).
             registry_text, source = REGISTRY.read_bytes().decode(), str(REGISTRY)
-    except ValueError as error:
+    except (ValueError, OSError) as error:
         registered = _no_registered_lines()
         problems = [f"the registry cannot be read: {type(error).__name__}: {error}"]
     else:
@@ -394,7 +433,7 @@ def run(
             else:
                 old_text = definition_text(old_src, region, ast.ClassDef)
                 new_text = definition_text(new_src, region, ast.ClassDef)
-        except (LookupError, SyntaxError, ValueError) as error:
+        except (LookupError, SyntaxError, ValueError, OSError) as error:
             results.append((label, False, f"{type(error).__name__}: {error}"))
             continue
         extra = extra_lines(old_text.splitlines(keepends=True), new_text.splitlines(keepends=True))
@@ -426,7 +465,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         registry_text = args.registry.read_bytes().decode() if args.registry else None
         results = run(args.repo, args.base, head, registry_text)
-    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+    except subprocess.CalledProcessError as error:
+        print(f"FAIL: {git_error(error)}")
+        return 1
+    except (OSError, ValueError, RuntimeError) as error:
         print(f"FAIL: {type(error).__name__}: {error}")
         return 1
     for name, passed, detail in results:

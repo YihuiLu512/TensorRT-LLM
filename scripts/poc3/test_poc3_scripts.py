@@ -24,7 +24,7 @@ import pending_e2e
 import pytest
 import sync_feature_deps
 import yaml
-from poc3_common import landed_tasks, parse_task, trailer_log
+from poc3_common import landed_tasks, parse_task, task_lines, trailer_log
 
 # tasks.md §1.1: the work items PoC-S3 uses.
 WORK_ITEMS = {
@@ -109,7 +109,66 @@ def test_trailers_read_only_the_poc3_key_in_the_trailer_block(tmp_path):
     _commit(repo, {}, "Subject\n\nPoC3-Task: WT-51\nis quoted in the body\n\nPoC3-Task: WT-35")
     values = [record.values for record in trailer_log(repo, "main")]
     assert values == [["WT-35"], [], ["WT-30"]]
+    assert [record.malformed for record in trailer_log(repo, "main")] == [["WT-51"], [], []]
     assert landed_tasks(repo, "main") == {"WT-30", "WT-35"}
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["add\n\nPoC3-Task: WT-51\nquoted in the body\n\nPoC3-Task: WT-30", "PoC3-Task: WT-51"],
+    ids=["earlier-paragraph", "subject"],
+)
+def test_an_exact_line_outside_the_trailers_fails_the_gate(tmp_path, capsys, message):
+    # The §0.2 grep would find the line and count WT-51 as landed.
+    repo, base = _two_commit_repo(tmp_path, {"scripts/poc3/x.py": "x\n"}, message)
+    [record] = trailer_log(repo, f"{base}..HEAD")
+    assert record.malformed == ["WT-51"]
+    assert check_ownership.check("WT-30", f"{base}..HEAD", str(repo)) == 1
+    assert "BAD TRAILER" in capsys.readouterr().out
+    assert "WT-51" not in landed_tasks(repo, "main")
+    assert "malformed PoC3-Task line ('WT-51')" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "message, values, malformed",
+    [
+        ("s\n\nPoC3-Task: WT-30\n   \n", ["WT-30"], []),
+        ("s\n\nPoC3-Task: WT-35\n \nPoC3-Task: WT-30", ["WT-30"], ["WT-35"]),
+        ("s\n\nPoC3-Task:", [], ["PoC3-Task:"]),
+        ("s\n\nPoC3-Task: WT-30\r", [], ["WT-30"]),
+    ],
+    ids=["trailing-blank-line", "blank-line-separates", "empty-value", "carriage-return"],
+)
+def test_task_lines_of_unusual_messages(message, values, malformed):
+    assert task_lines(message) == (values, malformed)
+
+
+def test_a_message_that_is_not_utf8_is_read_without_failing(tmp_path, capsys):
+    repo = _repo(tmp_path)
+    tree = _git(repo, "mktree").strip()
+    person = "t <t@example.com> 0 +0000"
+    # git commit would re-encode the message; write the commit object as it is.
+    commit = f"tree {tree}\nauthor {person}\ncommitter {person}\n\n".encode()
+    sha = (
+        subprocess.run(
+            ["git", "-C", str(repo), "hash-object", "-t", "commit", "-w", "--stdin"],
+            input=commit + b"s3 \xff\n\nPoC3-Task: WT-30\xff\n",
+            check=True,
+            capture_output=True,
+        )
+        .stdout.decode()
+        .strip()
+    )
+    _git(repo, "update-ref", "refs/heads/main", sha)
+    assert landed_tasks(repo, "main") == set()
+    assert "is not a PoC-S3 work item" in capsys.readouterr().err
+
+
+def test_a_well_formed_line_naming_no_poc3_item_is_reported(tmp_path, capsys):
+    repo = _repo(tmp_path)
+    _commit(repo, {}, "s3\n\nPoC3-Task: WT-35: contract")
+    assert landed_tasks(repo, "main") == set()
+    assert "names 'WT-35: contract', which is not a PoC-S3 work item" in capsys.readouterr().err
 
 
 def test_landed_tasks_ignore_poc2_trailers(tmp_path):
@@ -153,7 +212,7 @@ def test_an_exact_line_in_the_body_does_not_excuse_a_malformed_trailer(tmp_path,
     message = "add\n\nPoC3-Task: WT-30\nquoted in the body\n\npoc3-task: WT-30"
     repo, base = _two_commit_repo(tmp_path, {"scripts/poc3/x.py": "x\n"}, message)
     [record] = trailer_log(repo, f"{base}..HEAD")
-    assert record.values == [] and record.malformed == ["WT-30"]
+    assert record.values == [] and record.malformed == ["WT-30", "WT-30"]
     assert check_ownership.check("WT-30", f"{base}..HEAD", str(repo)) == 1
     assert landed_tasks(repo, "main") == set()
 
@@ -183,6 +242,7 @@ def test_landed_tasks_do_not_depend_on_the_grep_configuration(tmp_path):
         ("trailer.separators", "#"),
         ("trailer.poc3-task.key", "Other"),
         ("log.showSignature", "true"),
+        ("i18n.logOutputEncoding", "UTF-16"),
     ],
 )
 def test_trailers_do_not_depend_on_the_git_configuration(tmp_path, key, value):
@@ -574,6 +634,27 @@ def test_a_version_pin_exception_sees_every_change_whatever_the_configuration(
     assert f"OUT OF BOUNDS  {path}" in capsys.readouterr().out
 
 
+def test_a_version_pin_exception_ignores_the_color_and_context_settings(tmp_path, monkeypatch):
+    path, rule = _pin_rule()
+    old, new = VERSION_PINS[path]
+    repo, base = _pin_repo(tmp_path, path, lambda text: text.replace(old, new))
+    _git(repo, "config", "color.ui", "always")
+    _git(repo, "config", "color.diff", "always")
+    monkeypatch.setenv("GIT_DIFF_OPTS", "--unified=3")
+    assert check_ownership.disallowed_lines(rule, str(repo), base, "HEAD", path) == []
+
+
+def test_a_submodule_pointer_is_seen_whatever_the_configuration(tmp_path, capsys):
+    repo = _repo(tmp_path)
+    base = _commit(repo, {"tensorrt_llm/__init__.py": ""}, "base")
+    sha = _git(repo, "rev-parse", "HEAD").strip()
+    _git(repo, "update-index", "--add", "--cacheinfo", f"160000,{sha},tensorrt_llm/serve/vendored")
+    _git(repo, "commit", "-q", "-m", "vendor\n\nPoC3-Task: WT-30")
+    _git(repo, "config", "diff.ignoreSubmodules", "all")
+    assert check_ownership.check("WT-30", f"{base}..HEAD", str(repo)) == 1
+    assert "OUT OF BOUNDS  tensorrt_llm/serve/vendored" in capsys.readouterr().out
+
+
 def test_a_version_pin_exception_reads_the_change_against_the_merge_base(tmp_path):
     path, rule = _pin_rule()
     old, new = VERSION_PINS[path]
@@ -690,6 +771,30 @@ def test_a_verification_record_that_is_not_yaml_is_reported_and_ignored(tmp_path
     assert "WT-51.yaml is not valid YAML" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize(
+    "data",
+    [b"entries:\n  - row: F-01\n    date: 2026-02-30\n", b"entries: [\xff]\n"],
+    ids=["bad-date", "not-utf8"],
+)
+def test_a_verification_record_yaml_cannot_convert_is_reported_and_ignored(tmp_path, capsys, data):
+    repo = _repo(tmp_path)
+    record = repo / pending_e2e.VERIFIED_DIR / "WT-51.yaml"
+    record.parent.mkdir(parents=True)
+    record.write_bytes(data)
+    _git(repo, "add", ".")
+    _commit(repo, {}, "bad record")
+    assert pending_e2e.read_verified(repo, "main") == set()
+    assert "WT-51.yaml is not valid YAML" in capsys.readouterr().err
+
+
+def test_a_missing_git_is_a_usage_error(tmp_path, capsys, monkeypatch):
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    with pytest.raises(SystemExit) as raised:
+        pending_e2e.main(["--landed", "--repo", str(tmp_path)])
+    assert raised.value.code == 2
+    assert "FileNotFoundError" in capsys.readouterr().err
+
+
 def test_groups_match_tasks_md_section_3_2():
     groups = pending_e2e.load_rows()[0]
     assert set(groups["link"]) == LINK
@@ -767,7 +872,14 @@ def test_case03_rows_go_to_r13_or_its_fallback(rows):
 def test_a_fallback_landing_before_r13_owes_and_reports_no_case03_row(rows):
     ds_landed = (DS_LINK | {"WT-35", "WT-36", "WT-41"}) - {"WT-62"}
     result = pending_e2e.obligations("WT-79", ds_landed, rows)
-    case03 = [row.id for row in result.owed + result.too_early if row.chain == "case-03"]
+    reported = (
+        result.owed
+        + result.too_early
+        + result.left_to_fallback
+        + result.unverified
+        + result.orphaned
+    )
+    case03 = [row.id for row in reported if row.chain == "case-03"]
     assert case03 == []
 
 
@@ -1303,6 +1415,8 @@ def test_whole_files_compare_bytes_and_mode(invariant_repo, change):
         "f = lambda *, a=(disaggregated := 1): a\n",
         "names = [x for x in () if (disaggregated := x)]\n",
         "try:\n    pass\nexcept (disaggregated := Exception):\n    pass\n",
+        "x: (disaggregated := int)\n",
+        "(disaggregated := print).x: int\n",
     ],
     ids=[
         "def-in-if",
@@ -1330,6 +1444,8 @@ def test_whole_files_compare_bytes_and_mode(invariant_repo, change):
         "lambda-keyword-default-walrus",
         "comprehension-condition-walrus",
         "except-type-walrus",
+        "bare-annotation-walrus",
+        "bare-annotation-target-walrus",
     ],
 )
 def test_a_second_module_scope_binding_fails(invariant_repo, addition):
@@ -1387,6 +1503,61 @@ def test_local_names_in_nested_bodies_are_not_bindings(invariant_repo):
     assert _invariants(repo, base, files) == set()
 
 
+@pytest.mark.parametrize("setting", ["fileMode", "autocrlf", "attributes", "assume", "skip"])
+def test_working_tree_settings_do_not_hide_a_changed_file(invariant_repo, setting):
+    repo, base = invariant_repo
+    path = "tensorrt_llm/serve/router.py"
+    file = repo / path
+    if setting == "fileMode":
+        _git(repo, "config", "core.fileMode", "false")
+        file.chmod(0o755)
+    elif setting in ("autocrlf", "attributes"):
+        if setting == "autocrlf":
+            _git(repo, "config", "core.autocrlf", "true")
+        else:
+            (repo / ".git/info/attributes").write_text("*.py text\n")
+        file.write_bytes(f"# {path}\r\n".encode())
+    else:
+        flag = "--assume-unchanged" if setting == "assume" else "--skip-worktree"
+        _git(repo, "update-index", flag, path)
+        file.write_text("# changed\n")
+    results = check_invariants.run(repo, base, "")
+    assert {name for name, passed, _ in results if not passed} == {f"file {path}"}
+
+
+def test_a_symlink_on_disk_is_a_change_even_to_the_same_bytes(invariant_repo, tmp_path):
+    repo, base = invariant_repo
+    path = "tensorrt_llm/serve/router.py"
+    copy = tmp_path / "router.py"
+    copy.write_bytes((repo / path).read_bytes())
+    (repo / path).unlink()
+    (repo / path).symlink_to(copy)
+    results = check_invariants.run(repo, base, "")
+    assert {name for name, passed, _ in results if not passed} == {f"file {path}"}
+
+
+def test_working_tree_files_match_the_base_byte_for_byte(invariant_repo):
+    repo, base = invariant_repo
+    _git(repo, "config", "core.autocrlf", "true")
+    results = check_invariants.run(repo, base, "")
+    assert all(passed for _, passed, _ in results)
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+def test_an_unreadable_file_on_disk_fails_its_own_check(invariant_repo):
+    repo, base = invariant_repo
+    (repo / check_invariants.SERVE).chmod(0)
+    try:
+        results = check_invariants.run(repo, base, "")
+    finally:
+        (repo / check_invariants.SERVE).chmod(0o644)
+    failed = {name for name, passed, _ in results if not passed}
+    assert failed == {
+        f"def {check_invariants.SERVE}:disaggregated",
+        f"def {check_invariants.SERVE}:disaggregated_mpi_worker",
+    }
+
+
 def test_crlf_inside_a_frozen_definition_fails(invariant_repo):
     repo, base = invariant_repo
     text = SERVE_SRC.replace("    return None\n", "    return None\r\n")
@@ -1413,8 +1584,16 @@ def test_crlf_on_disk_inside_a_frozen_definition_fails(invariant_repo):
         (check_invariants.AUTH, b"\xff\n", "file"),
         (check_invariants.REGISTRY_PATH, b"additions: [\n", "registry"),
         (check_invariants.REGISTRY_PATH, b"\xff\n", "registry"),
+        (check_invariants.REGISTRY_PATH, b"version: 1\nwhen: 2026-02-30\n", "registry"),
     ],
-    ids=["non-utf8-definition", "nul-byte", "non-utf8-region", "registry-yaml", "registry-bytes"],
+    ids=[
+        "non-utf8-definition",
+        "nul-byte",
+        "non-utf8-region",
+        "registry-yaml",
+        "registry-bytes",
+        "registry-value",
+    ],
 )
 def test_unreadable_input_fails_its_check_without_a_traceback(invariant_repo, path, data, failing):
     repo, base = invariant_repo
@@ -1441,6 +1620,9 @@ def test_bad_arguments_fail_the_invariants_with_a_message(invariant_repo, tmp_pa
     assert "FAIL: RuntimeError: unknown revision 'no-such-rev'" in capsys.readouterr().out
     assert check_invariants.main(["--repo", str(repo), "--registry", str(tmp_path / "none")]) == 1
     assert "FAIL: FileNotFoundError" in capsys.readouterr().out
+    (tmp_path / "plain").mkdir()
+    assert check_invariants.main(["--repo", str(tmp_path / "plain")]) == 1
+    assert "not a git repository" in capsys.readouterr().out
 
 
 def test_a_head_whose_gate_file_is_not_utf8_still_needs_its_registry(invariant_repo):

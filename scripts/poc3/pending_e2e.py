@@ -32,8 +32,8 @@ branch (``tests/integration/defs/openengine_chain/verified/<item>.yaml``, where
 entry whose ``row`` is the row id (feature ids alone are ambiguous: a feature
 can have a case-04 row, a case-03 row and a ``+rest`` row). PoC-S2's records in
 the same directory reuse row ids such as ``F-06`` for other rows and are not
-read. Entries without ``row``, or naming no row of ``feature_deps.yaml``, are
-reported and ignored::
+read. Records that cannot be read as YAML, and entries without ``row`` or
+naming no row of ``feature_deps.yaml``, are reported and ignored::
 
     entries:
       - row: F-01
@@ -73,7 +73,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from poc3_common import DEFAULT_REF, DS_DEFAULT_REF, git, landed_tasks, parse_task
+from poc3_common import DEFAULT_REF, DS_DEFAULT_REF, git, git_error, landed_tasks, parse_task
 
 FEATURE_DEPS = Path(__file__).resolve().parent / "feature_deps.yaml"
 VERIFIED_DIR = "tests/integration/defs/openengine_chain/verified"
@@ -211,8 +211,12 @@ def read_verified(repo: str | Path, ref: str, known: Iterable[str] | None = None
             continue
         try:
             records.append(yaml.safe_load(git(repo, "show", f"{ref}:{VERIFIED_DIR}/{name}")))
-        except yaml.YAMLError as error:
-            print(f"warning: {name} is not valid YAML, ignored: {error}", file=sys.stderr)
+        except (yaml.YAMLError, ValueError) as error:
+            # ValueError: not UTF-8, or a value YAML cannot convert, such as the date 2026-02-30.
+            print(
+                f"warning: {name} is not valid YAML, ignored: {type(error).__name__}: {error}",
+                file=sys.stderr,
+            )
     return verified_rows(records, known)
 
 
@@ -336,8 +340,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return _run(args, parser)
     except subprocess.CalledProcessError as error:
-        stderr = error.stderr.strip() if isinstance(error.stderr, str) else ""
-        parser.exit(2, f"{parser.prog}: error: {' '.join(map(str, error.cmd))}: {stderr}\n")
+        parser.exit(2, f"{parser.prog}: error: {git_error(error)}\n")
+    except OSError as error:
+        parser.exit(2, f"{parser.prog}: error: {type(error).__name__}: {error}\n")
 
 
 def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:

@@ -42,7 +42,8 @@ Usage::
     python3 <trtllm>/scripts/poc3/check_ownership.py --task WT-41 origin/feat/engine_integration-stage03..HEAD
 
 Both ends of the range are required. Exit status: 0 when every path and commit
-is in bounds, 1 otherwise (a bad ``--task`` or range, or a git error, included).
+is in bounds, 1 otherwise (a bad ``--task`` or range, or a git error, included);
+2 when the arguments cannot be parsed.
 The scripts need Python 3.9 or newer.
 """
 
@@ -56,7 +57,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from poc3_common import TRAILER, git, parse_task, trailer_log
+from poc3_common import TRAILER, git, git_env, git_error, parse_task, trailer_log
 
 TRTLLM = "trtllm"
 DS = "ds"
@@ -543,12 +544,14 @@ def disallowed_lines(
             "--no-textconv",
             "--no-renames",
             "--no-relative",
+            "--ignore-submodules=none",
             f"{base_ref}...{head_ref}",
             "--",
             f":(top,literal){path}",
         ],
         check=True,
         capture_output=True,
+        env=git_env(),
     ).stdout.decode("utf-8", errors="replace")
     patterns = [re.compile(line) for line in rule.lines]
     bad = []
@@ -593,6 +596,7 @@ def check(task: str, revision_range: str, repo_dir: str = ".", repo: str | None 
         "-z",
         "--no-renames",
         "--no-relative",
+        "--ignore-submodules=none",
         f"{base_ref}...{head_ref}",
     ).split("\0")
     review = []
@@ -648,12 +652,7 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as error:
         print(f"FAIL: {type(error).__name__}: {error}")
     except subprocess.CalledProcessError as error:
-        stderr = (
-            error.stderr.decode(errors="replace")
-            if isinstance(error.stderr, bytes)
-            else error.stderr
-        )
-        print(f"FAIL: {' '.join(map(str, error.cmd))}: {(stderr or '').strip()}")
+        print(f"FAIL: {git_error(error)}")
     return 1
 
 
