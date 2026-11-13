@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Lines that check_invariants.py lets PoC-S3 add to the HTTP DisaggregatedParams
+# class (tensorrt_llm/serve/openai_protocol.py) and to
+# tensorrt_llm/serve/disagg_auth.py. Only change item CS-20 may register lines;
+# existing lines of those regions may never change. Each entry:
+#
+#   - change: CS-20
+#     file: tensorrt_llm/serve/openai_protocol.py   # or tensorrt_llm/serve/disagg_auth.py
+#     region: DisaggregatedParams                    # "file" for disagg_auth.py
+#     lines:                                         # exact text, indentation included
+#       - "    openengine_handoff_attributes: Optional[str] = None"
+version: 1
+additions: []
