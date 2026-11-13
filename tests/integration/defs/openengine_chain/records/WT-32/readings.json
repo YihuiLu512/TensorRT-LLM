@@ -466,7 +466,6 @@
   "watch_s": 195.4,
   "kv_transfer_timeout_ms": "60000 (default)",
   "timeout_log": [
-   "[11/13/2026-23:45:56] [TRT-LLM] [W] [_torch] Observed timeout on context request 5798157910057845935 due to KV cache transfer timeout: elapsed 123009ms > kv_transfer_timeout_ms=60000ms",
    "[11/13/2026-23:49:17] [TRT-LLM] [W] [_torch] Observed timeout on context request 8873148294949206674 due to KV cache transfer timeout: elapsed 200382ms > kv_transfer_timeout_ms=60000ms",
    "[11/13/2026-23:49:17] [TRT-LLM] [W] [_torch] Observed timeout on context request 6306968763143029120 due to KV cache transfer timeout: elapsed 200347ms > kv_transfer_timeout_ms=60000ms",
    "[11/13/2026-23:49:17] [TRT-LLM] [W] [_torch] Observed timeout on context request 5056139914378779434 due to KV cache transfer timeout: elapsed 200312ms > kv_transfer_timeout_ms=60000ms",
@@ -474,7 +473,10 @@
    "[11/13/2026-23:49:17] [TRT-LLM] [W] [_torch] Observed timeout on context request 343652126659336519 due to KV cache transfer timeout: elapsed 200244ms > kv_transfer_timeout_ms=60000ms",
    "[11/13/2026-23:49:17] [TRT-LLM] [W] [_torch] Observed timeout on context request 2501396640529367419 due to KV cache transfer timeout: elapsed 200219ms > kv_transfer_timeout_ms=60000ms",
    "[11/13/2026-23:49:17] [TRT-LLM] [W] [_torch] Observed timeout on context request 5177388992943739849 due to KV cache transfer timeout: elapsed 200197ms > kv_transfer_timeout_ms=60000ms",
-   "[11/13/2026-23:49:17] [TRT-LLM] [W] [_torch] Observed timeout on context request 6483528658509334163 due to KV cache transfer timeout: elapsed 200175ms > kv_transfer_timeout_ms=60000ms",
+   "[11/13/2026-23:49:17] [TRT-LLM] [W] [_torch] Observed timeout on context request 6483528658509334163 due to KV cache transfer timeout: elapsed 200175ms > kv_transfer_timeout_ms=60000ms"
+  ],
+  "other_timeout_log": [
+   "[11/13/2026-23:45:56] [TRT-LLM] [W] [_torch] Observed timeout on context request 5798157910057845935 due to KV cache transfer timeout: elapsed 123009ms > kv_transfer_timeout_ms=60000ms",
    "[11/13/2026-23:50:31] [TRT-LLM] [W] [_torch] Observed timeout on context request 6420188600621778459 due to KV cache transfer timeout: elapsed 74102ms > kv_transfer_timeout_ms=60000ms"
   ],
   "used_kv_blocks_end_of_phase": "1"
