@@ -132,10 +132,10 @@ def launch_openengine_server(
         # As launch_server does.
         if os.getenv("TRTLLM_SERVER_DISABLE_GC", "0") == "1":
             gc.disable()
-        if _capprobe.LAG:
-            _capprobe.install_loop_lag("Lfe")
         try:
             await facade.start()
+            if _capprobe.LAG:
+                _capprobe.install_loop_lag("Lfe")
             logger.info(f"Serving the OpenEngine engine at {endpoint} on {host}:{port}")
             await server(host, port, sockets=sockets)
         finally:

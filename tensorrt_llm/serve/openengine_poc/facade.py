@@ -1421,6 +1421,8 @@ class OpenEngineRequestOutput:
                 if isinstance(item, BaseException):
                     results.put_nowait(self._call_failure(item))
                     return
+                if _capprobe.ON_F4:
+                    _capprobe.F4()
                 cancelled = self._engine_cancelled(item)
                 if cancelled is not None:
                     results.put_nowait(cancelled)

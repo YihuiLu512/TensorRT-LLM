@@ -482,8 +482,6 @@ async def _run_launcher(
 ) -> None:
     sigterm.cancel_on_signal(asyncio.current_task())
     _maybe_disable_gc()
-    if _capprobe.LAG:
-        _capprobe.install_loop_lag("Lmfl")
     cancelled = threading.Event()
     spawn: asyncio.Future | None = None
     children: list = []
@@ -508,6 +506,8 @@ async def _run_launcher(
             f"All {num_frontends} serving frontends are connected to the OpenEngine engine "
             f"at {config.endpoint}; serving on {config.host}:{config.port}"
         )
+        if _capprobe.LAG:
+            _capprobe.install_loop_lag("Lmfl")
         await _serve(server, config, sockets, sigterm)
     finally:
         sigterm.stop_cancelling()
@@ -646,13 +646,13 @@ async def _run_attached(
 ) -> None:
     sigterm.cancel_on_signal(asyncio.current_task())
     _maybe_disable_gc()
-    if _capprobe.LAG:
-        _capprobe.install_loop_lag("Lmfa")
     try:
         await facade.start()
         # Only a frontend connected to the engine counts as started.
         _signal_frontend_ready(mode)
         await _wait_for_launcher(launcher_uds, launcher_pid)
+        if _capprobe.LAG:
+            _capprobe.install_loop_lag("Lmfa")
         await _serve(server, config, sockets, sigterm)
     finally:
         sigterm.stop_cancelling()

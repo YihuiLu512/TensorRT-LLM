@@ -3536,7 +3536,7 @@ class ServerArrivalTimeMiddleware:
             # Add arrival time to scope
             scope["state"] = {}
             scope["state"]["server_arrival_time"] = self._adjusted_clock.now()
-            if _capprobe.ON_H1:
+            if _capprobe.ON_H1 and scope["path"].startswith("/v1/"):
                 _capprobe.H1()
 
         # Pass through the original receive/send - no wrapping!
