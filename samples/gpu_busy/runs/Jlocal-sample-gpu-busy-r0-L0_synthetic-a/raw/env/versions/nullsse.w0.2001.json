@@ -5,7 +5,7 @@
   "job_id": "local-sample-gpu-busy",
   "launch_seq": 0,
   "pid": 2001,
-  "register_sha": "1000cb5256bf50e139e06f2462b9ff0fc84a09e684c2527ec78a894a8988b881",
+  "register_sha": "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013",
   "restart_count": 0,
   "role": "nullsse",
   "tier_label": null,
@@ -33,6 +33,6 @@
   "python": "3.12.3 synthetic",
   "switchinterval_s": 0.005
  },
- "written_mono_ns": 9756177121377059,
- "written_wall": "2026-11-13T14:22:33.201Z"
+ "written_mono_ns": 9758838750004863,
+ "written_wall": "2026-11-13T15:06:54.830Z"
 }

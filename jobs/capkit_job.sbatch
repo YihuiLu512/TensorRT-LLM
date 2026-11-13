@@ -32,8 +32,9 @@ START_EPOCH=$(date +%s)
 DEADLINE_EPOCH=$((START_EPOCH + CAPJOBS_TIME_LIMIT_S))
 
 # A requeued job gets a new restart count, hence a new job dir; an existing dir is never reused.
-mkdir "$JOB_DIR" || { echo "capkit_job: job dir $JOB_DIR exists or cannot be created" >&2; exit 3; }
-mkdir "$JOB_DIR/env" || exit 3
+# -m 700: the mode is set as given, whatever the umask (no group/other write on shared scratch)
+mkdir -m 700 "$JOB_DIR" || { echo "capkit_job: job dir $JOB_DIR exists or cannot be created" >&2; exit 3; }
+mkdir -m 700 "$JOB_DIR/env" || exit 3
 LOG="$JOB_DIR/batch.log"
 
 ts() { date -u +%Y-%m-%dT%H:%M:%S.%3NZ; }

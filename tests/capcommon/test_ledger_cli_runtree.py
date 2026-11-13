@@ -187,3 +187,30 @@ def test_runtree(tmp_path, ident):
         runtree.append_state(t.root, "OK", "x", "y")
     with pytest.raises(ConfigError):
         t.log_file("capload", 0, 1, "stdout")
+
+
+def test_state_severity_is_one_order():
+    """RS15: the launch-level severity order lives only in runtree; every STATE value has a rank,
+    and worst_state never returns a better status than any of its inputs."""
+    assert runtree.STATE_SEVERITY == ("VALID", "NOT_RUN", "VOID", "ENV_INVALID")
+    assert set(runtree.STATE_SEVERITY) == set(runtree.STATE_VALUES)
+    vals = runtree.STATE_SEVERITY
+    for a in vals:
+        for b in vals:
+            w = runtree.worst_state([a, b])
+            assert runtree.state_rank(w) == max(runtree.state_rank(a), runtree.state_rank(b))
+    assert runtree.worst_state(iter(["NOT_RUN", "VALID"])) == "NOT_RUN"
+    for bad in ([], ["VALID", "PASS"], [None]):
+        with pytest.raises(ConfigError):
+            runtree.worst_state(bad)
+
+
+def test_no_second_state_order_in_the_tools():
+    """RS15: no tool keeps its own copy of the STATE ranking; capjudge and capjobs.launches use
+    runtree.worst_state."""
+    from capjobs import launches
+    from capjudge import inputs, judge
+    assert launches.worst_state is runtree.worst_state
+    assert judge.worst_state is runtree.worst_state
+    assert inputs.worst_state is runtree.worst_state
+    assert not hasattr(inputs, "STATE_RANK")

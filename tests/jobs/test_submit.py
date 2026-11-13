@@ -19,6 +19,7 @@ REG_ENV = {"gpus": 1, "idle_window_s": 30, "idle_busy_max_frac": 0.02, "slurm_vi
 BASIS = "2026-11-13 18:00 user approved E0 smoke (DECISIONS 1, item 7) -> submit E0 job"
 PARTS = ("b200@cr+mp-1000W/umbriel-b200@ts4/8gpu-224cpu-2048gb,"
          "b200@500-1000W/umbriel-b200@ts4/8gpu-224cpu-2048gb")
+SEC = "%s:%s" % ((submit.REQUIRED_IDENTITY_MOUNTS[0],) * 2)  # the secondary scratch disk
 
 
 class Env:
@@ -91,7 +92,7 @@ class Env:
              "--basis": BASIS, "--launch-plan": self.plan_path,
              "--overlay-manifest": self.manifest_path, "--image": self.image,
              "--image-sha256": self.image_sha, "--image-size": "1000",
-             "--mount": "%s:%s" % (self.root, self.root), "--tokenizer-dir": self.tok,
+             "--mount": ["%s:%s" % (self.root, self.root), SEC], "--tokenizer-dir": self.tok,
              "--snapshot-root": os.path.join(self.w, "snapshots"),
              "--run-root": os.path.join(self.w, "runs"),
              "--local-base": os.path.join(self.root, "local"),
@@ -174,7 +175,7 @@ def test_submit_end_to_end(env, stub_runner, capsys):
     sh = subprocess.run(["bash", "-c", 'source "$1/job.env"; printf "%s|%s|%s" '
                          '"$CAPJOBS_SNAP" "$CAPJOBS_MOUNTS" "$CAPJOBS_TIME_LIMIT_S"', "x", snap],
                         capture_output=True, text=True, check=True)
-    assert sh.stdout == "%s|%s:%s|3600" % (snap, env.root, env.root)
+    assert sh.stdout == "%s|%s:%s,%s|3600" % (snap, env.root, env.root, SEC)
     # K1/K6/K23: the job's hard limits come from register.json "environment"; the image sha256
     # is the one computed here, and the job re-checks size and mtime_ns only.
     sh = subprocess.run(["bash", "-c", 'source "$1/job.env"; printf "%s|%s|%s|%s|%s|%s|%s" '
@@ -323,11 +324,12 @@ def _forbidden_cases(env):
         "experiment_E13_main": exp("E13-main"),
         "experiment_E11": exp("E11"),
         "gpus_2": {"--gpus": "2"},
-        "mount_model_lib": {"--mount": [mount, "/home/scratch.trt_llm_data_ci:"
+        "mount_model_lib": {"--mount": [mount, SEC, "/home/scratch.trt_llm_data_ci:"
                                                "/home/scratch.trt_llm_data_ci:ro"]},
-        "mount_model_lib_2": {"--mount": [mount, "/home/scratch.trt_llm_data:/data:ro"]},
-        "mount_ancestor": {"--mount": [mount, "/home:/home"]},
-        "mount_child": {"--mount": [mount, "/home/scratch.trt_llm_data_ci/llm-models:/m"]},
+        "mount_model_lib_2": {"--mount": [mount, SEC, "/home/scratch.trt_llm_data:/data:ro"]},
+        "mount_ancestor": {"--mount": [mount, SEC, "/home:/home"]},
+        "mount_child": {"--mount": [mount, SEC,
+                                    "/home/scratch.trt_llm_data_ci/llm-models:/m"]},
         "tokenizer_weights": {"--tokenizer-dir": weights},
         "tokenizer_symlink": {"--tokenizer-dir": linked},
         "basis_missing_line": {"--basis": "approved by nobody"},
@@ -341,9 +343,11 @@ def _forbidden_cases(env):
         "arms_vs_plan": {"--launch-plan": env.write_json("p2.json", other_arms)},
         "launches_mismatch": {"--launches": "3"},
         "time_too_short": {"--time": "00:20:00"},
-        "mount_not_covering": {"--mount": "%s:%s" % (env.w, env.w)},
-        "mount_not_identity": {"--mount": "%s:/x" % env.root},
-        "mount_readonly_for_writes": {"--mount": "%s:%s:ro" % (env.root, env.root)},
+        "mount_not_covering": {"--mount": ["%s:%s" % (env.w, env.w), SEC]},
+        "mount_not_identity": {"--mount": ["%s:/x" % env.root, SEC]},
+        "mount_readonly_for_writes": {"--mount": ["%s:%s:ro" % (env.root, env.root), SEC]},
+        "mount_no_secondary_disk": {"--mount": mount},
+        "mount_secondary_not_identity": {"--mount": [mount, "%s:/sec" % SEC.split(":")[0]]},
         "overlay_sha_mismatch": {"--overlay-manifest": env.write_json("m1.json",
                                                                        bad_manifest)},
         "overlay_head_mismatch": {"--overlay-manifest": env.write_json("m2.json", other_head)},
@@ -353,7 +357,7 @@ def _forbidden_cases(env):
         "gate_module": {"--gate-module": "capenv.gate; rm"},
         "relative_path_chars": {"--run-root": env.root + "/runs dir"},
         "exclude_bad": {"--exclude": "a b"},
-        "mount_symlink_to_lib": {"--mount": [mount, "%s:/data:ro" % lib_link]},
+        "mount_symlink_to_lib": {"--mount": [mount, SEC, "%s:/data:ro" % lib_link]},
         "register_no_environment": {"--register-sha": no_env,
                                     "--launch-plan": env.plan_for("pn.json", no_env)},
         "register_env_extra_key": {"--register-sha": env_extra,
@@ -387,6 +391,11 @@ EXPECTED_REASON = {
     "image_sha_wrong": "!= --image-sha256", "hw_sha_format": "UNREGISTERED",
     "nvidia_smi_from_path": "--nvidia-smi must be an absolute path",
     "kill_grace_below_worst_stop": "worst-case orchestrator stop 52.0",
+    "mount_not_covering": "is not under an identity rw mount",
+    "mount_not_identity": "is not under an identity rw mount",
+    "mount_readonly_for_writes": "is not under an identity rw mount",
+    "mount_no_secondary_disk": "secondary scratch disk",
+    "mount_secondary_not_identity": "secondary scratch disk",
     "scenario_not_in_snapshot": "not in the job snapshot",
 }
 
@@ -522,17 +531,31 @@ def prep_args(env, *extra, partition=None):
          "--time", "00:30:00", "--mem", "4G", "--cpus-per-task", "2", "--job-name", "capkit-tok",
          "--login-host", "fe", "--ssh-timeout-s", "60", "--workdir", env.w,
          "--code-root", env.root, "--snapshot-root", os.path.join(env.root, "snaps"),
-         "--model-dir", MODEL_DIR, "--name", "glm53", "--image", env.image, "--basis", BASIS]
+         "--model-dir", MODEL_DIR, "--name", "glm53", "--image", env.image, "--basis", BASIS,
+         "--mount", "%s:%s:rw" % (env.root, env.root), "--mount", SEC]
     if partition:
         a += ["--partition", partition]
     return a + list(extra)
 
 
-def _prep_code_root(env):
+def _git(root, *args):
+    return subprocess.run(["git", "-C", root, "-c", "user.name=t", "-c", "user.email=t@t",
+                           "-c", "commit.gpgsign=false"] + list(args),
+                          capture_output=True, check=True).stdout
+
+
+def _prep_code_root(env, commit=True):
+    """env.root as the code repo: a git repo whose HEAD holds jobs/prep_tokenizer.sbatch."""
     os.makedirs(os.path.join(env.root, "jobs"), exist_ok=True)
     with open(os.path.join(CODE_ROOT, "jobs", "prep_tokenizer.sbatch"), "rb") as f, \
             open(os.path.join(env.root, "jobs", "prep_tokenizer.sbatch"), "wb") as g:
         g.write(f.read())
+    with open(os.path.join(env.root, "README"), "w") as f:
+        f.write("x\n")
+    _git(env.root, "init", "-q")
+    _git(env.root, "add", "README", *(["jobs/prep_tokenizer.sbatch"] if commit else []))
+    _git(env.root, "commit", "-q", "-m", "c")
+    return _git(env.root, "rev-parse", "HEAD").decode().strip()
 
 
 def test_prep_tokenizer_submits_a_minimal_ro_job(env, stub_runner, capsys):
@@ -583,6 +606,124 @@ def test_prep_tokenizer_submits_a_minimal_ro_job(env, stub_runner, capsys):
     assert run(prep_args(env, "--dry-run", partition="cpu_a,cpu_b"), r) == 0
     ra = json.loads(capsys.readouterr().out)["remote_argv"]
     assert "--partition=cpu_a,cpu_b" in ra
+
+
+def test_prep_tokenizer_records_the_committed_script(env, stub_runner, capsys):
+    """Q8: the plan holds the job script as committed at HEAD; MANIFEST.json names HEAD and the
+    sha256 of every plan file, and the PLANNED row's snapshot_sha256 is MANIFEST.json's."""
+    head = _prep_code_root(env)
+    committed = _git(env.root, "cat-file", "blob", "HEAD:jobs/prep_tokenizer.sbatch")
+    r = stub_runner({"sbatch": (0, "778\n", "")})
+    assert run(prep_args(env), r) == 0, capsys.readouterr().err
+    out = json.loads(capsys.readouterr().out)
+    plan = out["plan_dir"]
+    pl = env.ledger_rows()[0]
+    assert pl["snapshot_sha256"] == sha256_file(os.path.join(plan, "MANIFEST.json"))
+    man = json.load(open(os.path.join(plan, "MANIFEST.json")))
+    assert man["code_sha"] == head == out["code_head"]
+    files = {x["path"]: x for x in man["files"]}
+    assert sorted(files) == ["job.env", "jobs/prep_tokenizer.sbatch", "mounts.json"]
+    for rel, x in files.items():
+        assert sha256_file(os.path.join(plan, rel)) == x["sha256"], rel
+    assert files["jobs/prep_tokenizer.sbatch"]["sha256"] == sha256_bytes(committed)
+    assert out["job_env"]["CAPJOBS_CODE_SHA"] == head
+    assert out["job_env"]["CAPJOBS_PREP_SCRIPT_SHA256"] == sha256_bytes(committed)
+    assert not os.access(os.path.join(plan, "MANIFEST.json"), os.W_OK)
+
+
+def test_prep_tokenizer_library_roots_include_realpaths(env, stub_runner, capsys, monkeypatch,
+                                                         tmp_path_factory):
+    """Q19 (C-O5): the job's "nothing else of the library is visible" check gets each library's
+    realpath too, so a library seen in the container under its resolved path is checked."""
+    _prep_code_root(env)
+    elsewhere = str(tmp_path_factory.mktemp("libs"))  # not under the mounted env.root
+    real = os.path.join(elsewhere, "real-lib")
+    os.makedirs(real)
+    link = os.path.join(elsewhere, "lib-link")
+    os.symlink(real, link)
+    monkeypatch.setattr(policy, "FORBIDDEN_MOUNT_PATHS", policy.FORBIDDEN_MOUNT_PATHS + (link,))
+    assert run(prep_args(env, "--dry-run"), stub_runner({})) == 0, capsys.readouterr().err
+    roots = json.loads(capsys.readouterr().out)["job_env"]["CAPJOBS_PREP_LIBRARY_ROOTS"].split()
+    assert link in roots and real in roots
+
+
+@pytest.mark.parametrize("state", ["modified", "untracked"])
+def test_prep_tokenizer_refuses_an_uncommitted_script(env, stub_runner, capsys, state):
+    """Q8: a job script that is not at HEAD, or differs from it in the working tree, is refused
+    before any write; --dry-run only reports it."""
+    _prep_code_root(env, commit=state == "modified")
+    if state == "modified":
+        with open(os.path.join(env.root, "jobs", "prep_tokenizer.sbatch"), "a") as f:
+            f.write("# local edit\n")
+    r = stub_runner({})
+    assert run(prep_args(env), r) == 3 and r.calls == []
+    err = capsys.readouterr().err
+    assert ("differs from HEAD" if state == "modified" else "not committed at HEAD") in err, err
+    assert not os.path.exists(os.path.join(env.w, "submissions.tsv"))
+    assert not os.path.exists(os.path.join(env.root, "snaps"))
+    assert run(prep_args(env, "--dry-run"), r) == 0
+    assert json.loads(capsys.readouterr().out)["would_refuse_uncommitted"]
+
+
+@pytest.mark.parametrize("mounts,msg", [
+    (["{root}:{root}:rw"], "secondary scratch disk"),
+    (["{w}:{w}:rw", SEC], "is not under an identity rw mount"),
+    (["{root}:{root}:ro", SEC], "is not under an identity rw mount"),
+    (["{root}:{root}:rw", SEC, "/home/scratch.trt_llm_data:/d:ro"], "exactly one model-library"),
+    (["{root}:{root}:rw", SEC, MODEL_DIR + ":" + MODEL_DIR + ":ro"], "exactly one model-library"),
+])
+def test_prep_tokenizer_mounts_go_through_the_job_checks(env, stub_runner, capsys, mounts, msg):
+    """Q15: --mount is parsed and checked like `submit`'s (secondary disk, coverage of the
+    destination parent and the plan dir); the model dir is added by the entry, never by --mount."""
+    _prep_code_root(env)
+    a = prep_args(env)
+    i = a.index("--mount")
+    a = a[:i] + [x for m in mounts for x in ("--mount", m.format(root=env.root, w=env.w))]
+    r = stub_runner({})
+    assert run(a, r) == 3 and r.calls == []
+    assert msg in capsys.readouterr().err
+    assert not os.path.exists(os.path.join(env.w, "submissions.tsv"))
+
+
+def test_tokenizer_dir_refuses_weight_content(tmp_path):
+    """RS16 (sweep of Q9): the measurement submit's tokenizer check also reads each file's
+    header, so weights under a tokenizer-like name never reach a no-model job."""
+    tok = tmp_path / "tok"
+    tok.mkdir()
+    (tok / "tokenizer.json").write_text('        {"a": 1}\n')  # '{"' at byte 8, not safetensors
+    (tok / "empty.txt").write_bytes(b"")
+    assert policy.tokenizer_dir_sha256(str(tok)) != "none"
+    hdr = b'{"w":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}'
+    for data in (len(hdr).to_bytes(8, "little") + hdr + b"\0" * 4, b"\x80\x02}q\x00.",
+                 b"PK\x03\x04rest", b"GGUF\x03\x00\x00\x00"):
+        (tok / "weights.json").write_bytes(data)
+        with pytest.raises(policy.PolicyError, match="weight content"):
+            policy.tokenizer_dir_sha256(str(tok))
+
+
+def test_policy_refuses_mount_separators(tmp_path, monkeypatch):
+    """Q19: pyxis splits --container-mounts at ',' and ':'; the policy layer refuses both on its
+    own (the entries' parse_mount also does), and compares library realpaths."""
+    sneak = "/a:/a,/home/scratch.trt_llm_data:/lib"
+    with pytest.raises(policy.PolicyError):
+        policy.check_mounts([sneak])
+    with pytest.raises(policy.PolicyError):
+        policy.check_mounts([{"src": "/a", "dst": "/b,/home/scratch.trt_llm_data:/lib"}])
+    with pytest.raises(policy.PolicyError):
+        policy.check_mounts(["/a:/b:ro:x"])
+    ok = "%s:%s:ro" % (MODEL_DIR, MODEL_DIR)
+    for bad in (["%s,rbind" % ok], [ok, "/x:/x:ro,rbind"], [ok, sneak], [ok, "/x:/x:rx"]):
+        with pytest.raises(policy.PolicyError):
+            policy.check_prep_tokenizer_mounts(bad)
+    policy.check_prep_tokenizer_mounts([ok, "/x:/x:rw"])  # positive control
+    real = tmp_path / "real-lib"
+    real.mkdir()
+    link = tmp_path / "lib-link"
+    os.symlink(str(real), str(link))
+    monkeypatch.setattr(policy, "FORBIDDEN_MOUNT_PATHS", (str(link),))
+    assert policy.library_roots() == sorted([str(link), str(real)])
+    with pytest.raises(policy.PolicyError):
+        policy.check_mounts(["%s:/m:ro" % real])
 
 
 @pytest.mark.parametrize("change,msg", [

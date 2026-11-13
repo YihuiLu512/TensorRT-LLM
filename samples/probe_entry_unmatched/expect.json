@@ -1,0 +1,13 @@
+{
+ "exit_code": 10,
+ "red_checks": [
+  "RECORDS",
+  "C8"
+ ],
+ "synthetic": true,
+ "tier_verdicts": {
+  "2": "STABLE",
+  "4": "VOID"
+ },
+ "tree": "runs/Jlocal-sample-probe-entry-unmatched-r0-L0_synthetic-a"
+}

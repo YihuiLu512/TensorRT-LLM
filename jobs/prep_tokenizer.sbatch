@@ -9,18 +9,26 @@
 #   sbatch <minimal flags: no GPU, no --exclusive> <plan dir>/jobs/prep_tokenizer.sbatch <plan dir>
 # No Python anywhere, no #SBATCH lines, no hard-coded paths: every value comes from job.env.
 #
-# Batch step (node host): job dir <plan dir>/J<job>-r<restart>/ (never reused) -> image size and
-# mtime still the recorded ones -> one srun step into the container with the registered model
-# dir mounted read-only:   prep_tokenizer.sbatch inner <plan dir> <job dir> <mountinfo file>
+# Batch step (node host): job dir <plan dir>/J<job>-r<restart>/ (never reused) -> the plan's copy
+# of this script has the sha256 recorded in job.env -> image size and mtime still the recorded
+# ones -> one srun step into the container with the registered model dir mounted read-only:
+#   prep_tokenizer.sbatch inner <plan dir> <job dir> <mountinfo file>
 # Inner step (container, bash + coreutils only): the model dir is a read-only mount and nothing else of
-# the model library is visible -> copy whitelisted top-level non-weight files into
-# <dest>.partial (weight suffixes refused, any whitelisted file above the registered size limit
-# fails the job) -> source and copy sha256 equal -> COPY_MANIFEST.tsv (name, size, sha256) ->
-# re-check the copy (regular files only, no weight file, nothing unlisted) -> read-only, rename
-# to <dest> -> sha256sum -c. Exit 0 ok, 2 usage, 3 config, 4 copy check failed, 6 environment.
+# the model library is visible -> copy whitelisted top-level files into <dest>.partial. Refused
+# and recorded: a weight suffix on the name or, for a symlink, on its resolved target; a symlink
+# whose target is not a regular file inside the model dir; the job's own output names
+# (COPY_MANIFEST.tsv, PROVENANCE.txt); a backslash in the name; content that starts like a weight
+# file (pickle, zip, GGUF, safetensors). A whitelisted file above the registered size limit fails
+# the job -> source and copy sha256 equal -> COPY_MANIFEST.tsv (name, size, sha256) -> re-check
+# the copy (regular files only, no weight name or content, nothing unlisted, sha256sum -c --strict
+# confirms every listed file) -> read-only, rename to <dest> -> re-check.
+# Exit 0 ok, 2 usage, 3 config, 4 copy check failed, 6 environment.
 set -uo pipefail
 export LC_ALL=C
 shopt -s nullglob dotglob
+# The job's own files in the copy; a source file with either name is refused.
+MANIFEST_NAME=COPY_MANIFEST.tsv
+PROVENANCE_NAME=PROVENANCE.txt
 
 ts() { date -u +%Y-%m-%dT%H:%M:%S.%3NZ; }
 
@@ -30,6 +38,7 @@ load_env() {
     source "$plan/job.env" || { echo "prep_tokenizer: cannot source $plan/job.env" >&2; exit 3; }
     [[ $CAPJOBS_RUN_ROOT == "$plan" ]] || { echo "prep_tokenizer: job.env belongs to $CAPJOBS_RUN_ROOT" >&2; exit 3; }
     for v in CAPJOBS_PLAN_ID CAPJOBS_IMAGE CAPJOBS_IMAGE_SIZE CAPJOBS_IMAGE_MTIME_NS CAPJOBS_MOUNTS \
+             CAPJOBS_CODE_SHA CAPJOBS_PREP_SCRIPT_SHA256 \
              CAPJOBS_PREP_MODEL_DIR CAPJOBS_PREP_DEST CAPJOBS_PREP_ALLOW_GLOBS \
              CAPJOBS_PREP_VOCAB_GLOBS CAPJOBS_PREP_WEIGHT_SUFFIXES CAPJOBS_PREP_MAX_FILE_BYTES \
              CAPJOBS_PREP_LIBRARY_ROOTS; do
@@ -48,7 +57,7 @@ batch() {
     job=${SLURM_JOB_ID:?not inside a Slurm job}
     rst=${SLURM_RESTART_COUNT:-0}
     jd="$plan/J${job}-r${rst}"
-    mkdir "$jd" || { echo "prep_tokenizer: job dir $jd exists or cannot be created" >&2; exit 3; }
+    mkdir -m 700 "$jd" || { echo "prep_tokenizer: job dir $jd exists or cannot be created" >&2; exit 3; }
     {
         printf 'plan_id\t%s\n' "$CAPJOBS_PLAN_ID"
         printf 'job_id\t%s\n' "$job"
@@ -56,7 +65,15 @@ batch() {
         printf 'node\t%s\n' "${SLURMD_NODENAME:-unknown}"
         printf 'started_at\t%s\n' "$(ts)"
     } > "$jd/batch.tsv"
-    local size mtime
+    local size mtime ssha
+    ssha=$(sha256sum -- "$plan/jobs/prep_tokenizer.sbatch" | cut -d' ' -f1)
+    printf 'script_sha256\t%s\nexpected_script_sha256\t%s\n' "$ssha" "$CAPJOBS_PREP_SCRIPT_SHA256" \
+        >> "$jd/batch.tsv"
+    if [[ $ssha != "$CAPJOBS_PREP_SCRIPT_SHA256" ]]; then
+        echo "prep_tokenizer: the plan's job script differs from the submitted one" >&2
+        printf '%s\tFAILED\tjob script sha256 differs from job.env\n' "$(ts)" >> "$jd/STATE"
+        exit 3
+    fi
     size=$(stat -c %s -- "$CAPJOBS_IMAGE" 2>/dev/null) || size=""
     mtime=$(date -r "$CAPJOBS_IMAGE" +%s%N 2>/dev/null) || mtime=""
     printf 'image\t%s\nexpected_size\t%s\nmeasured_size\t%s\nexpected_mtime_ns\t%s\nmeasured_mtime_ns\t%s\n' \
@@ -111,6 +128,21 @@ has_weight_suffix() {
     return 1
 }
 
+weight_content() {  # file, size: does it start like pickle, zip, GGUF or safetensors?
+    local f=$1 size=$2 b n
+    (( size > 0 )) || return 1
+    read -r -a b < <(od -An -v -tx1 -w16 -N16 -- "$f") || fail 4 "cannot read the start of $f"
+    [[ ${b[0]:-} == 80 ]] && return 0                                        # pickle (protocol >= 2)
+    [[ "${b[*]:0:4}" == "50 4b 03 04" ]] && return 0                         # zip (torch .pt/.bin)
+    [[ "${b[*]:0:4}" == "47 47 55 46" ]] && return 0                         # GGUF
+    # safetensors: little-endian u64 header length N <= size - 8, then the JSON header '{"'
+    if (( ${#b[@]} >= 10 )) && [[ ${b[8]} == 7b && ${b[9]} == 22 && "${b[*]:4:4}" == "00 00 00 00" ]]; then
+        n=$((16#${b[3]}${b[2]}${b[1]}${b[0]}))
+        (( n >= 2 && n <= size - 8 )) && return 0
+    fi
+    return 1
+}
+
 matches_any() {  # name, globs...
     local n=$1 g
     shift
@@ -136,6 +168,7 @@ inner() {
     [[ -d $SRC ]] || fail 6 "model dir $SRC is not visible"
     ro_mount "$SRC" "$info" || fail 6 "model dir $SRC is not a read-only mount ($info)"
     local root
+    # ROOTS lists each library's literal path and its realpath on the submit host
     for root in "${ROOTS[@]}"; do
         only_path_visible "$root" "$SRC" || fail 6 "more of the model library $root is visible than $SRC"
     done
@@ -150,13 +183,19 @@ inner() {
         n=${f##*/}
         if has_weight_suffix "$n"; then refused+=("$n:weight"); continue; fi
         if ! matches_any "$n" "${ALLOW[@]}"; then skipped+=("$n"); continue; fi
+        if [[ $n == "$MANIFEST_NAME" || $n == "$PROVENANCE_NAME" ]]; then
+            refused+=("$n:reserved-name"); continue
+        fi
+        if [[ $n == *\\* ]]; then refused+=("$n:backslash"); continue; fi
         if [[ -L $f ]]; then
             real=$(readlink -f -- "$f") || real=""
             [[ $real == "$SRC"/* && -f $real ]] || { refused+=("$n:link-outside"); continue; }
+            if has_weight_suffix "${real##*/}"; then refused+=("$n:link-to-weight"); continue; fi
         fi
         [[ -f $f ]] || { skipped+=("$n:not-a-file"); continue; }
         size=$(stat -L -c %s -- "$f") || fail 4 "cannot stat $f"
         (( size <= MAX )) || fail 4 "whitelisted $n is $size bytes > limit $MAX"
+        if weight_content "$f" "$size"; then refused+=("$n:weight-content"); continue; fi
         cp -L -- "$f" "$DEST.partial/$n" || fail 4 "copy of $n failed"
         a=$(sha256sum -- "$f" | cut -d' ' -f1)
         b=$(sha256sum -- "$DEST.partial/$n" | cut -d' ' -f1)
@@ -170,16 +209,18 @@ inner() {
     log "refused: ${refused[*]}"
     (( ${#copied[@]} > 0 )) || fail 4 "no whitelisted file in $SRC"
     (( have_vocab == 1 )) || fail 4 "no tokenizer vocabulary file copied"
-    cp -- "$jd/copy_manifest.tsv" "$DEST.partial/COPY_MANIFEST.tsv" || fail 4 "manifest copy failed"
+    cp -- "$jd/copy_manifest.tsv" "$DEST.partial/$MANIFEST_NAME" || fail 4 "manifest copy failed"
     {
         printf 'source\t%s\n' "$SRC"
         printf 'plan_id\t%s\n' "$CAPJOBS_PLAN_ID"
         printf 'job_dir\t%s\n' "$jd"
+        printf 'code_sha\t%s\n' "$CAPJOBS_CODE_SHA"
+        printf 'script_sha256\t%s\n' "$CAPJOBS_PREP_SCRIPT_SHA256"
         printf 'copied_at\t%s\n' "$(ts)"
         printf 'copied\t%s\n' "${copied[*]}"
         printf 'skipped\t%s\n' "${skipped[*]}"
         printf 'refused\t%s\n' "${refused[*]}"
-    } > "$DEST.partial/PROVENANCE.txt"
+    } > "$DEST.partial/$PROVENANCE_NAME"
     verify_copy "$DEST.partial" "${#copied[@]}"
     chmod -R a-w -- "$DEST.partial" || fail 4 "chmod failed"
     mv -T -- "$DEST.partial" "$DEST" || fail 4 "rename to $DEST failed"
@@ -189,22 +230,28 @@ inner() {
 }
 
 verify_copy() {  # dir, expected file count: only listed regular files, no weight, sums match
-    local d=$1 want=$2 e n count=0 name size sum
+    local d=$1 want=$2 e n count=0 name size sum out line ok=0
     local -A listed=()
-    while IFS=$'\t' read -r name size sum; do listed[$name]=$sum; done < "$d/COPY_MANIFEST.tsv"
+    while IFS=$'\t' read -r name size sum; do listed[$name]=$sum; done < "$d/$MANIFEST_NAME"
     (( ${#listed[@]} == want )) || fail 4 "manifest lists ${#listed[@]} files, expected $want"
     for e in "$d"/*; do
         n=${e##*/}
         [[ -f $e && ! -L $e ]] || fail 4 "non-regular entry in the copy: $e"
         has_weight_suffix "$n" && fail 4 "weight file in the copy: $e"
-        [[ $n == COPY_MANIFEST.tsv || $n == PROVENANCE.txt ]] && continue
+        [[ $n == "$MANIFEST_NAME" || $n == "$PROVENANCE_NAME" ]] && continue
         [[ -n ${listed[$n]+x} ]] || fail 4 "unlisted file in the copy: $n"
-        (( $(stat -c %s -- "$e") <= CAPJOBS_PREP_MAX_FILE_BYTES )) || fail 4 "oversize file in the copy: $n"
+        size=$(stat -c %s -- "$e") || fail 4 "cannot stat $e"
+        (( size <= CAPJOBS_PREP_MAX_FILE_BYTES )) || fail 4 "oversize file in the copy: $n"
+        weight_content "$e" "$size" && fail 4 "weight content in the copy: $n"
         count=$((count + 1))
     done
     (( count == want )) || fail 4 "copy has $count listed files, expected $want"
-    for name in "${!listed[@]}"; do printf '%s  %s\n' "${listed[$name]}" "$name"; done \
-        | (cd -- "$d" && sha256sum -c --quiet -) || fail 4 "sha256sum -c of $d failed"
+    # --strict: a line sha256sum cannot parse is an error, not a warning; and every listed file
+    # must have been confirmed (one "<name>: OK" line each)
+    out=$(for name in "${!listed[@]}"; do printf '%s  %s\n' "${listed[$name]}" "$name"; done \
+        | (cd -- "$d" && sha256sum -c --strict -)) || fail 4 "sha256sum -c of $d failed"
+    while IFS= read -r line; do [[ $line == *": OK" ]] && ok=$((ok + 1)); done <<< "$out"
+    (( ok == want )) || fail 4 "sha256sum -c of $d confirmed $ok files, expected $want"
 }
 
 case ${1:-} in

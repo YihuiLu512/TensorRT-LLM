@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Pilot builder: bands from judged sub-saturation tiers; RED tiers excluded; explicit inputs;
-D14 from the registered rule (idle window vs load tiers)."""
+"""Pilot builder: bands from judged sub-saturation tiers; RED tiers and trees recorded
+non-VALID before the judge excluded; explicit inputs; D14 from the registered rule (idle window
+per job run vs load tiers)."""
 
 import json
 import os
@@ -181,3 +182,72 @@ def test_d14_rule_growth_and_monotonicity():
     assert D14.evaluate_role(_role(0.0, [(20, 0.01), (10, 0.03)]), RULE) == (True, False)
     assert D14.evaluate_role(_role(0.0, [(20, 0.0285), (10, 0.03)]), RULE) == (True, True)
     assert D14.evaluate_role(_role(0.01, [(10, 0.05)]), RULE) == (False, True)
+
+
+# ---- trees whose launch was recorded VOID / NOT_RUN before the judge never enter a band ------
+
+def test_pilot_excludes_a_tree_recorded_void_before_the_judge(tmp_path):
+    W, tree = _judged(tmp_path, "upstream_void")
+    p, _ = _pilot(tmp_path, W, ["%s\t2,4\n" % tree])
+    assert p.returncode == 3 and "no tier survived" in p.stderr
+
+
+def test_pilot_excludes_a_tree_whose_state_turned_void_after_judging(tmp_path):
+    W, tree = _judged(tmp_path, "good")
+    with open(tree / "STATE", "a") as f:
+        f.write("2026-11-13T00:10:00.000Z\tVOID\tcapjobs.launches\tlate copy-back mismatch\n")
+    p, _ = _pilot(tmp_path, W, ["%s\t2,4\n" % tree])
+    assert p.returncode == 3 and "no tier survived" in p.stderr
+
+
+def test_pilot_refuses_verdicts_without_the_launch_state_check(tmp_path):
+    W, tree = _judged(tmp_path, "good")
+    vp = tree / "judge" / "verdicts.json"
+    doc = json.loads(vp.read_text())
+    del doc["launch_checks"]["LAUNCH-STATE"]
+    vp.chmod(0o644)
+    vp.write_text(json.dumps(doc))
+    p, _ = _pilot(tmp_path, W, ["%s\t2,4\n" % tree])
+    assert p.returncode == 3 and "LAUNCH-STATE" in p.stderr
+
+
+# ---- D14: an offline core, and independent idle readings ---------------------------------------
+
+def test_d14_offline_core_makes_the_tier_reading_incomplete_not_a_crash(tmp_path):
+    W, tree = _judged(tmp_path, "good")
+    cpus = tree / "raw" / "sidecar" / "cpus.jsonl"
+    lines = cpus.read_text().splitlines()
+    head, rows = lines[0], [json.loads(x) for x in lines[1:]]
+    cols = json.loads(head)["columns"]
+    i_t, i_c = cols.index("t_rel_ns"), cols.index("cpu")
+    for r in rows:  # core 4 offline at t = 14 s (inside tier 4's window)
+        if r[i_t] == 14 * 10 ** 9 and r[i_c] == 4:
+            for k in ("user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal"):
+                r[cols.index(k)] = None
+    cpus.chmod(0o644)
+    cpus.write_text("\n".join([head] + [json.dumps(r) for r in rows]) + "\n")
+    p, out = _pilot(tmp_path, W, ["%s\t2,4\n" % tree])
+    assert p.returncode == 0, p.stderr
+    r = _d14(out)["readings"][os.path.relpath(str(tree), str(W))]["roles"]["nullsse"]
+    assert [x["tier_seq"] for x in r["load"]] == [2]
+    assert any("tier 4" in w and "offline" in w for w in r["why"])
+
+
+def _complete(job):
+    role = _role(0.0, [(10, 0.02)])
+    return {"roles": {"fe": role}, "complete": True, "why": None, "job_run": job}
+
+
+def test_d14_trees_of_one_job_run_share_one_idle_reading():
+    rule = dict(RULE, min_trees=2)
+    rec = {"relpath": "r", "sha256": "0" * 64, "registered_at": EARLY}
+    same = [("t1", _complete(["j1", 0])), ("t2", _complete(["j1", 0]))]
+    d = D14.conclude(rule, rec, same, {"t1": "2026-11-13T00:00:10.000Z",
+                                       "t2": "2026-11-13T00:00:10.000Z"})
+    assert "irq_softirq_is_experiment" not in d
+    assert d["n_trees_complete"] == 2 and d["n_job_runs_complete"] == 1
+    assert "job run" in d["conclusion_reason"]
+    two = [("t1", _complete(["j1", 0])), ("t2", _complete(["j1", 1]))]
+    d = D14.conclude(rule, rec, two, {"t1": "2026-11-13T00:00:10.000Z",
+                                      "t2": "2026-11-13T00:00:10.000Z"})
+    assert d["irq_softirq_is_experiment"] is True and d["n_job_runs_complete"] == 2

@@ -341,6 +341,14 @@ if a.mode == "notready":
     sys.exit(5)
 if a.mode == "sleep":
     time.sleep(60)
+if a.mode == "owndir":  # caplaunch's own --run-dir check (capcommon.snapshot.ensure_own_dir)
+    from capcommon.snapshot import SnapshotError, ensure_own_dir
+    try:
+        ensure_own_dir(a.run_dir)
+    except SnapshotError as e:
+        print(e, file=sys.stderr)
+        sys.exit(3)
+    sys.exit(0)
 sys.exit({"ok": 0, "env": 6, "fail": 4, "notready": 5}[a.mode])
 '''
 
@@ -365,6 +373,7 @@ def launch_env(tmp_path, modes, budgets=None, margin=1):
         nvidia_smi="/opt/x/nvidia-smi")
     os.makedirs(a.job_dir)
     os.makedirs(a.snap)
+    os.mkdir(a.local_root, 0o700)  # capkit_inner.sh creates it (mkdir -m 700) before launches
     with open(os.path.join(a.snap, "scen.json"), "w") as f:  # worst-case stop 0.4 s <= 1 s
         json.dump({"stop_grace_s": 0.1, "stop_order": ["role"]}, f)
     manifest = {"tier": "P2", "groups": ["count", "lag"], "capkit_code_sha": "c" * 40,
@@ -393,11 +402,30 @@ def test_launches_statuses(tmp_path):
     assert rec["passed"] and rec["files_expected"] == 1
 
 
+def test_launch_trees_are_private_under_umask_002(tmp_path, monkeypatch):
+    """The local launch tree (caplaunch's --run-dir) and its parents are 0700 whatever the
+    container's umask: under umask 002 caplaunch's ensure_own_dir still accepts --run-dir."""
+    monkeypatch.setenv("PYTHONPATH", os.path.join(CODE_ROOT, "tools"))
+    a, plan, manifest = launch_env(tmp_path, ["owndir"])
+    old = os.umask(0o002)
+    try:
+        res = launches.run_all(a, plan, manifest)
+    finally:
+        os.umask(old)
+    assert res[0]["status"] == "VALID", res[0]["reason"]
+    for d in ("runs", "logs", os.path.join("runs", "J9-r0-L0_arm0")):
+        assert stat.S_IMODE(os.lstat(os.path.join(a.local_root, d)).st_mode) == 0o700, d
+    os.symlink(str(tmp_path), os.path.join(str(tmp_path), "lnk"))
+    with pytest.raises(OSError):
+        launches.private_mkdir(os.path.join(str(tmp_path), "lnk"), exist_ok=True)
+
+
 def test_launches_deadline_and_timeout(tmp_path):
     a, plan, manifest = launch_env(tmp_path, ["sleep", "ok"], budgets={0: 1, 1: 100}, margin=5)
     res = launches.run_all(a, plan, manifest, now_fn=lambda: a.deadline_epoch - 50)
     assert [r["status"] for r in res] == ["VOID", "NOT_RUN"]
     assert res[0]["timed_out"] is True and "budget" in res[0]["reason"]
+    assert res[0]["terminated"] is False
     assert "left < budget" in res[1]["reason"]
 
 
@@ -424,6 +452,35 @@ def test_launcher_stop_reasons_are_not_run(stop):
     assert launches.classify(5, False, stop, None)[0] == "NOT_RUN"
     assert launches.classify(1, False, stop, None)[0] == "VOID"
     assert launches.classify(5, True, stop, rec)[0] == "VOID"  # killed for its budget
+
+
+def test_job_sigterm_is_not_run_unless_the_launcher_recorded_worse():
+    """Q10: a launch stopped because the job got SIGTERM did not finish measuring: NOT_RUN (as
+    caplaunch records its own signal stop), never VOID by itself; a non-VALID launcher STATE is
+    kept, a VALID one is not upgraded past NOT_RUN."""
+    def st(status):
+        return ("", status, "caplaunch", "x")
+    assert launches.classify(None, False, None, None, terminated=True)[0] == "NOT_RUN"
+    assert launches.classify(-15, False, None, None, terminated=True)[1].startswith("terminated")
+    assert launches.classify(5, False, "orchestrator_signalled", st("NOT_RUN"),
+                             terminated=True)[0] == "NOT_RUN"
+    assert launches.classify(0, False, None, st("VALID"), terminated=True)[0] == "NOT_RUN"
+    assert launches.classify(6, False, None, st("ENV_INVALID"), terminated=True)[0] == \
+        "ENV_INVALID"
+    assert launches.classify(0, False, None, st("VOID"), terminated=True)[0] == "VOID"
+    assert launches.classify(None, True, None, None, terminated=False)[0] == "VOID"
+
+
+def test_budget_kill_never_improves_the_launcher_record():
+    """RS14: a budget kill makes the launcher's record worse (VALID/NOT_RUN -> VOID) but keeps an
+    ENV_INVALID it already recorded."""
+    def st(status):
+        return ("", status, "caplaunch", "x")
+    assert launches.classify(None, True, None, st("VALID"))[0] == "VOID"
+    assert launches.classify(None, True, None, st("NOT_RUN"))[0] == "VOID"
+    assert launches.classify(-9, True, None, st("ENV_INVALID"))[0] == "ENV_INVALID"
+    assert launches.classify(6, True, None, st("ENV_INVALID"), terminated=True)[0] == \
+        "ENV_INVALID"
 
 
 def test_launcher_state_is_kept(tmp_path):
@@ -548,7 +605,10 @@ def test_sigterm_stops_launch_and_skips_the_rest(tmp_path):
     assert p.wait(timeout=60) == 0
     doc = json.load(open(out))
     res = doc["launches"]
-    assert res[0]["status"] == "VOID" and res[0].get("terminated") is True, res[0]["reason"]
+    assert res[0]["status"] == "NOT_RUN" and res[0]["terminated"] is True, res[0]["reason"]
+    assert res[0]["timed_out"] is False and res[0]["reason"].startswith("terminated")
+    assert doc["statuses"]["VOID"] == 0
+    assert read_state(os.path.join(a.run_root, "J9-r0-L0_arm0"))[-1][1] == "NOT_RUN"
     assert res[1]["status"] == "NOT_RUN" and "SIGTERM" in res[1]["reason"]
     orphan = int(open(os.path.join(a.run_root, "J9-r0-L0_arm0", "raw", "orphan.pid")).read())
     assert _gone(orphan)

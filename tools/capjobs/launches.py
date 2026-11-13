@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Run the launches of one job inside the container, then copy back, verify, lock raw/ and write
-the first STATE line of each launch tree (INTERFACES.md 5.1, 5.7, 5.9).
+"""Run the launches of one job inside the container, then copy back, verify, lock raw/ and append
+the job's STATE line to each launch tree, after the launcher's own (INTERFACES.md 5.1, 5.7, 5.9).
 
     python -m capjobs.launches --plan <snap>/launch_plan.json --overlay-manifest <snap>/... \
         --nvidia-smi PATH --snap S --job-dir JD --local-root L --shm-root SH --run-root R \
@@ -13,7 +13,11 @@ survived SIGKILL; otherwise run the plan's argv with --overlay-manifest, --nvidi
 --job-env-dir <job dir>/env and the identity arguments appended, under a budget_s timeout; kill
 whatever the launch left behind; copy <L>/runs/<tree> to <R>/<tree>; verify; chmod a-w raw/;
 append STATE. Status of that STATE line:
-  copy-back not verified -> VOID; budget exceeded (killed) -> VOID;
+  copy-back not verified -> VOID; a process survived SIGKILL -> VOID; budget exceeded (killed) ->
+  VOID;
+  stopped because the job itself got SIGTERM -> NOT_RUN (as the orchestrator records its own
+  signal stop); each of these only makes the launcher's own STATE worse, never better
+  (capcommon.runtree.worst_state: VALID < NOT_RUN < VOID < ENV_INVALID);
   otherwise the launcher's own last STATE line in the tree (by "caplaunch") when it wrote one and
   its exit code agrees (0 or 5 for VALID) -> that status; disagreement -> VOID;
   no launcher STATE: a control/stop.json reason in NOT_RUN_STOPS with exit 5 -> NOT_RUN;
@@ -31,6 +35,7 @@ import ctypes
 import json
 import os
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -39,7 +44,7 @@ from capcommon.clock import wall_iso
 from capcommon.exitcodes import ENV_INVALID, OK, RUNTIME, STOPPED_EARLY, CapkitError
 from capcommon.identity import Identity
 from capcommon.jsonio import write_json_stamped
-from capcommon.runtree import append_state, read_state, tree_dir_name
+from capcommon.runtree import append_state, read_state, tree_dir_name, worst_state
 
 from . import copyback, launchplan
 
@@ -49,6 +54,25 @@ TERM_GRACE_S = 10  # after the job itself got SIGTERM (Slurm's KillWait is short
 _TERMINATED = []  # set by the SIGTERM handler of main(); polled, never raised into copy-back
 PR_SET_CHILD_SUBREAPER = 36
 LAUNCHER_BY = "caplaunch"
+
+
+def private_mkdir(path, exist_ok=False):
+    """Create `path` as this user's directory with mode exactly 0700 whatever the umask (caplaunch
+    refuses a group/other-writable --run-dir): mkdir, chmod, then read the mode back. An existing
+    path (exist_ok) must be this user's real directory; it is chmod-ed the same way."""
+    try:
+        os.mkdir(path, 0o700)
+    except FileExistsError:
+        if not exist_ok:
+            raise
+    st = os.lstat(path)
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid():
+        raise OSError("%s is not a real directory owned by this user" % path)
+    os.chmod(path, 0o700)
+    mode = stat.S_IMODE(os.lstat(path).st_mode)
+    if mode != 0o700:
+        raise OSError("%s has mode %o after chmod 0700" % (path, mode))
+    return path
 
 
 def probe_env(manifest_doc, base_env):
@@ -184,16 +208,19 @@ def kill_leftovers(seen, grace_s, sleep=time.sleep, clock=time.monotonic):
 
 
 def run_with_budget(argv, env, budget_s, grace_s, out_path, err_path):
-    """(rc, timed_out, leftovers). On timeout, or when this process got SIGTERM: SIGTERM to the
+    """(rc, timed_out, terminated, leftovers). timed_out: the launcher overran budget_s;
+    terminated: this process got SIGTERM while the launcher ran. Either way: SIGTERM to the
     launcher's process group, SIGKILL after the grace; in every case the launch's remaining
     descendants are killed afterwards."""
     seen = {}
+    terminated = False
     with open(out_path, "wb") as out, open(err_path, "wb") as err:
         p = subprocess.Popen(argv, env=env, stdout=out, stderr=err, start_new_session=True)
         rc = _wait_tracking(p, seen, budget_s)
-        timed_out = rc is None
-        if timed_out:
+        stopped = rc is None
+        if stopped:
             if _TERMINATED:
+                terminated = True
                 grace_s = min(grace_s, TERM_GRACE_S)
             os.killpg(p.pid, signal.SIGTERM)
             rc = _wait_tracking(p, seen, grace_s, stop_on_term=False)
@@ -202,8 +229,8 @@ def run_with_budget(argv, env, budget_s, grace_s, out_path, err_path):
                 os.killpg(p.pid, signal.SIGKILL)
                 rc = p.wait()
     seen.pop(p.pid, None)
-    return rc, timed_out, kill_leftovers(seen, min(grace_s, TERM_GRACE_S) if _TERMINATED
-                                         else grace_s)
+    return rc, stopped and not terminated, terminated, kill_leftovers(
+        seen, min(grace_s, TERM_GRACE_S) if _TERMINATED else grace_s)
 
 
 def _on_sigterm(_signum, _frame):
@@ -233,11 +260,19 @@ NOT_RUN_STOPS = ("not_ready_before_origin", "overlay_manifest_missing", "job_env
                  "orchestrator_signalled")
 
 
-def classify(rc, timed_out, stop, recorded=None):
+def classify(rc, timed_out, stop, recorded=None, terminated=False):
     """The launcher's recorded STATE is the more specific record and wins unless the launch was
-    killed for overrunning its budget or the exit code contradicts it."""
-    if timed_out:
-        return "VOID", "launcher exceeded its budget and was killed (rc=%r)" % rc
+    killed for overrunning its budget or the exit code contradicts it. A launch stopped because
+    the job got SIGTERM did not finish measuring: NOT_RUN. A budget kill or SIGTERM only makes the
+    launcher's own record worse (runtree.worst_state), never better."""
+    if timed_out or terminated:
+        mine = "VOID" if timed_out else "NOT_RUN"
+        why = ("launcher exceeded its budget and was killed (rc=%r)" % rc if timed_out else
+               "terminated: the job received SIGTERM; launcher stopped (rc=%r)" % rc)
+        if recorded is None:
+            return mine, why
+        return worst_state([mine, recorded[1]]), "%s; launcher STATE %s: %s" % (
+            why, recorded[1], recorded[3])
     if recorded is not None:
         status, why = recorded[1], recorded[3]
         if status != "VALID" or rc in (OK, STOPPED_EARLY):
@@ -257,8 +292,8 @@ def run_all(a, plan, manifest_doc, now_fn=time.time):
     env = probe_env(manifest_doc, os.environ)
     values = {"PY": a.python, "SNAP": a.snap, "JOB_DIR": a.job_dir, "SHM_ROOT": a.shm_root,
               "LOCAL_ROOT": a.local_root, "JOB_ID": a.job_id, "RESTART_COUNT": a.restart_count}
-    os.makedirs(os.path.join(a.local_root, "runs"), exist_ok=True)
-    os.makedirs(os.path.join(a.local_root, "logs"), exist_ok=True)
+    private_mkdir(os.path.join(a.local_root, "runs"), exist_ok=True)
+    private_mkdir(os.path.join(a.local_root, "logs"), exist_ok=True)
     halted = None
     for ln in plan["launches"]:
         name = tree_dir_name(a.job_id, a.restart_count, ln["launch_seq"], ln["arm"])
@@ -277,27 +312,25 @@ def run_all(a, plan, manifest_doc, now_fn=time.time):
                                                         plan["margin_s"]))
             continue
         local = os.path.join(a.local_root, "runs", name)
-        os.mkdir(local)
+        private_mkdir(local)
         argv = launch_argv(plan, ln, values, a.job_id, a.restart_count, local, a.overlay_manifest,
                            a.nvidia_smi, os.path.join(a.job_dir, "env"))
         r["argv"] = argv
         r["started_wall"] = wall_iso()
         logs = os.path.join(a.local_root, "logs", name)
-        rc, timed_out, leftovers = run_with_budget(argv, env, ln["budget_s"], grace,
-                                                   logs + ".launcher.out",
-                                                   logs + ".launcher.err")
-        r.update(ran=True, rc=rc, timed_out=timed_out, ended_wall=wall_iso(),
-                 leftovers=leftovers)
-        status, reason = classify(rc, timed_out, stop_reason(local), launcher_state(local))
-        if timed_out and _TERMINATED:
-            r["terminated"] = True
-            reason = "the job received SIGTERM; launcher stopped (rc=%r)" % rc
+        rc, timed_out, terminated, leftovers = run_with_budget(
+            argv, env, ln["budget_s"], grace, logs + ".launcher.out", logs + ".launcher.err")
+        r.update(ran=True, rc=rc, timed_out=timed_out, terminated=terminated,
+                 ended_wall=wall_iso(), leftovers=leftovers)
+        status, reason = classify(rc, timed_out, stop_reason(local), launcher_state(local),
+                                  terminated)
         survived = [x["pid"] for x in leftovers if x["survived_sigkill"]]
         if leftovers:
             reason = "%s; %d leftover process(es) killed after the launcher exited" % (
                 reason, len(leftovers))
         if survived:
-            status, reason = "VOID", "%s; pids %s survived SIGKILL" % (reason, survived)
+            status = worst_state([status, "VOID"])
+            reason = "%s; pids %s survived SIGKILL" % (reason, survived)
         dst = os.path.join(a.run_root, name)
         try:
             rec = copyback.copy_tree(local, dst)
@@ -310,7 +343,8 @@ def run_all(a, plan, manifest_doc, now_fn=time.time):
             reason = "%s; copy-back verified %d files %d bytes" % (
                 reason, rec["files_expected"], rec["bytes_expected"])
         else:
-            status, reason = "VOID", "copy-back not verified (%s); %s" % (rec["outcome"], reason)
+            status = worst_state([status, "VOID"])
+            reason = "copy-back not verified (%s); %s" % (rec["outcome"], reason)
         if os.path.isdir(dst):
             append_state(dst, status, reason, "capjobs.launches")
         r.update(status=status, reason=reason)

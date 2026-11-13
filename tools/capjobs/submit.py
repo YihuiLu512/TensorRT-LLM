@@ -24,7 +24,7 @@ import sys
 from capcommon import ledger, policy
 from capcommon.clock import wall_iso
 from capcommon.exitcodes import CONFIG, OK, RUNTIME, CapkitError, ConfigError
-from capcommon.hashing import is_git_sha, is_sha256_hex, sha256_file
+from capcommon.hashing import is_git_sha, is_sha256_hex, sha256_bytes, sha256_file
 from capcommon.identity import ARM_RE, JOB_ID_RE
 
 from . import cdbexclude, jobstate, launchplan, remote, resources, slurmview, snapshot
@@ -52,6 +52,11 @@ PURPOSE_HW_CAPTURE = "purpose=hw_profile_capture"
 # resubmit).
 UNKNOWN_SUBMIT = ledger.UNKNOWN_SUBMIT
 SSH_FAILED_RC = 255
+# Every job's container mounts include an identity mount of each of these: the secondary scratch
+# disk, where primary-disk directories may resolve (plan RESOURCES section 6).
+REQUIRED_IDENTITY_MOUNTS = ("/home/scratch.yihlu_coreai_1",)
+PREP_PLAN_SCHEMA = "capkit.prep_plan/1"
+PREP_PLAN_MANIFEST = "MANIFEST.json"
 
 
 class SubmitError(ConfigError):
@@ -117,17 +122,54 @@ def check_coverage(mounts, need_rw, need_ro):
     return checks
 
 
-def code_state(code_root, paths):
-    """(HEAD sha, porcelain status lines limited to paths) of the code repo; read-only git."""
+def job_mounts(mounts, need_rw, need_ro):
+    """The mount checks of every job (submit and prep-tokenizer) on parse_mount results: an
+    identity mount of every REQUIRED_IDENTITY_MOUNTS root, then check_coverage of the needed
+    paths. Returns the coverage checks."""
+    for root in REQUIRED_IDENTITY_MOUNTS:
+        if not any(m["src"] == m["dst"] == root for m in mounts):
+            raise SubmitError("the mounts must include %s:%s (secondary scratch disk; "
+                              "primary-disk directories may be symlinks into it)" % (root, root))
+    return check_coverage(mounts, need_rw, need_ro)
+
+
+def git_head(code_root):
     head = subprocess.run(["git", "-C", code_root, "rev-parse", "HEAD"], capture_output=True,
                           text=True, check=False)
     if head.returncode != 0:
         raise SubmitError("git rev-parse failed in %s: %s" % (code_root, head.stderr.strip()))
+    sha = head.stdout.strip()
+    if not is_git_sha(sha):
+        raise SubmitError("code HEAD %r is not a 40-hex sha" % sha)
+    return sha
+
+
+def committed_file(code_root, rel):
+    """(HEAD sha, bytes of rel at HEAD, problem). problem is None when the working-tree file is
+    byte-identical to the committed one, else why it is not; read-only git."""
+    head = git_head(code_root)
+    blob = subprocess.run(["git", "-C", code_root, "cat-file", "blob", "%s:%s" % (head, rel)],
+                          capture_output=True, check=False)
+    if blob.returncode != 0:
+        return head, None, "%s is not committed at HEAD %s" % (rel, head)
+    try:
+        with open(os.path.join(code_root, rel), "rb") as f:
+            work = f.read()
+    except OSError as e:
+        return head, blob.stdout, "cannot read the working-tree %s: %s" % (rel, e)
+    if work != blob.stdout:
+        return head, blob.stdout, "the working-tree %s differs from HEAD %s" % (rel, head)
+    return head, blob.stdout, None
+
+
+def code_state(code_root, paths):
+    """(HEAD sha, porcelain status lines limited to paths) of the code repo; read-only git."""
+    head = git_head(code_root)
     st = subprocess.run(["git", "-C", code_root, "status", "--porcelain", "--"] + list(paths),
                         capture_output=True, text=True, check=False)
     if st.returncode != 0:
         raise SubmitError("git status failed in %s: %s" % (code_root, st.stderr.strip()))
-    return head.stdout.strip(), [ln for ln in st.stdout.splitlines() if ln.strip()]
+    return head, [ln for ln in st.stdout.splitlines() if ln.strip()]
 
 
 def make_plan_id(experiment):
@@ -346,7 +388,7 @@ def prepare_submit(a, code_state_fn):
     res = resources_from_args(a)
     paths = {k: check_path(os.path.abspath(getattr(a, k)), "--" + k.replace("_", "-"))
              for k in ("snapshot_root", "run_root", "local_base", "shm_base", "image")}
-    coverage = check_coverage(
+    coverage = job_mounts(
         mounts, [paths["run_root"], paths["local_base"], paths["shm_base"]],
         [paths["snapshot_root"]] + ([tok] if tok else []))
     reg = register_environment(workdir, _check_registry(workdir, a.register_sha),
@@ -746,8 +788,10 @@ def cmd_prep_tokenizer(a, runner):
     """The tokenizer copy job (purpose=prep_tokenizer; user decision 2026-11-13). The only job
     that may mount (part of) the model library: a registered model dir, read-only; no GPU, no
     --exclusive; the job body is bash + coreutils (jobs/prep_tokenizer.sbatch). Order: checks
-    (no file written) -> plan dir <snapshot root>/<plan id>/ with job.env, mounts.json and the
-    script (read-only) -> PLANNED row -> ssh sbatch --parsable -> SUBMITTED row (unknown outcome
+    (no file written; the job script must be committed at HEAD and the working tree identical)
+    -> plan dir <snapshot root>/<plan id>/ with the script as committed, job.env, mounts.json and
+    MANIFEST.json (code HEAD + sha256 and size of each file; all read-only) -> PLANNED row whose
+    snapshot_sha256 is MANIFEST.json's -> ssh sbatch --parsable -> SUBMITTED row (unknown outcome
     and refusal as in `submit`)."""
     workdir = check_path(os.path.abspath(a.workdir), "--workdir")
     code_root = check_path(os.path.abspath(a.code_root), "--code-root")
@@ -777,9 +821,11 @@ def cmd_prep_tokenizer(a, runner):
         raise SubmitError(str(e))
     plan_id = make_plan_id(policy.PREP_TOKENIZER_EXPERIMENT)
     plan_dir = os.path.join(snap_root, plan_id)
-    mounts = ["%s:%s:ro" % (model_dir, model_dir), "%s:%s:rw" % (dest_parent, dest_parent),
-              "%s:%s:rw" % (plan_dir, plan_dir)]
+    user_mounts = [parse_mount(m) for m in a.mount]
+    mounts = ["%s:%s:ro" % (model_dir, model_dir)] + [m["text"] for m in user_mounts]
     assertions = policy.check_prep_tokenizer_submission(0, mounts, a.basis)
+    coverage = job_mounts(user_mounts, [dest_parent, plan_dir], [])
+    head, script_body, uncommitted = committed_file(code_root, PREP_TOKENIZER_TEMPLATE)
     script = os.path.join(plan_dir, PREP_TOKENIZER_TEMPLATE)
     remote_argv = ["sbatch", "--parsable"] + flags + [
         "--output=" + os.path.join(plan_dir, "%x-%j.log"), "--open-mode=append",
@@ -788,26 +834,34 @@ def cmd_prep_tokenizer(a, runner):
     env_values = {
         "CAPJOBS_PLAN_ID": plan_id, "CAPJOBS_RUN_ROOT": plan_dir, "CAPJOBS_IMAGE": image,
         "CAPJOBS_IMAGE_SIZE": st.st_size, "CAPJOBS_IMAGE_MTIME_NS": st.st_mtime_ns,
-        "CAPJOBS_MOUNTS": ",".join(mounts),
+        "CAPJOBS_MOUNTS": ",".join(mounts), "CAPJOBS_CODE_SHA": head,
+        "CAPJOBS_PREP_SCRIPT_SHA256": sha256_bytes(script_body or b""),
         "CAPJOBS_PREP_MODEL_DIR": model_dir, "CAPJOBS_PREP_DEST": dest,
         "CAPJOBS_PREP_ALLOW_GLOBS": " ".join(policy.PREP_TOKENIZER_ALLOW_GLOBS),
         "CAPJOBS_PREP_VOCAB_GLOBS": " ".join(policy.PREP_TOKENIZER_VOCAB_GLOBS),
         "CAPJOBS_PREP_WEIGHT_SUFFIXES": " ".join(policy.WEIGHT_SUFFIXES),
         "CAPJOBS_PREP_MAX_FILE_BYTES": policy.PREP_TOKENIZER_MAX_FILE_BYTES,
-        "CAPJOBS_PREP_LIBRARY_ROOTS": " ".join(policy.FORBIDDEN_MOUNT_PATHS)}
+        "CAPJOBS_PREP_LIBRARY_ROOTS": " ".join(policy.library_roots())}
     summary = {"plan_id": plan_id, "plan_dir": plan_dir, "dest": dest, "mounts": mounts,
-               "assertions": assertions, "remote_argv": remote_argv, "argv": argv,
-               "job_env": env_values}
+               "coverage": coverage, "assertions": assertions, "remote_argv": remote_argv,
+               "argv": argv, "job_env": env_values, "code_head": head,
+               "script_sha256": env_values["CAPJOBS_PREP_SCRIPT_SHA256"]}
     if a.dry_run:
         summary["dry_run"] = True
+        summary["would_refuse_uncommitted"] = uncommitted or False
         emit(summary)
         return OK
+    if uncommitted:
+        raise SubmitError("the tokenizer copy job script must be committed: %s" % uncommitted)
+    files = ((PREP_TOKENIZER_TEMPLATE, script_body), ("job.env", job_env_bytes(env_values)),
+             ("mounts.json", (json.dumps(mounts) + "\n").encode("utf-8")))
+    manifest = (json.dumps({"schema": PREP_PLAN_SCHEMA, "plan_id": plan_id, "code_sha": head,
+                            "files": [{"path": rel, "sha256": sha256_bytes(data),
+                                       "size": len(data)} for rel, data in files]},
+                           sort_keys=True, indent=1) + "\n").encode("utf-8")
     os.makedirs(dest_parent, exist_ok=True)
     os.makedirs(os.path.join(plan_dir, "jobs"))
-    with open(os.path.join(code_root, PREP_TOKENIZER_TEMPLATE), "rb") as f:
-        body = f.read()
-    for rel, data in ((PREP_TOKENIZER_TEMPLATE, body), ("job.env", job_env_bytes(env_values)),
-                      ("mounts.json", (json.dumps(mounts) + "\n").encode("utf-8"))):
+    for rel, data in files + ((PREP_PLAN_MANIFEST, manifest),):
         path = os.path.join(plan_dir, rel)
         with open(path, "xb") as f:
             f.write(data)
@@ -820,7 +874,7 @@ def cmd_prep_tokenizer(a, runner):
         account=a.account, partition=a.partition or "", qos=a.qos,
         exclude=",".join(exclude) or resources.EXCLUDE_NONE, time_limit=a.time, mem=a.mem,
         cpus_per_task=a.cpus_per_task, gpus=0, exclusive="false", snapshot_dir=plan_dir,
-        snapshot_sha256=sha256_file(os.path.join(plan_dir, "job.env")),
+        snapshot_sha256=sha256_bytes(manifest),
         sbatch_argv=json.dumps(remote_argv), mounts_json=json.dumps(mounts),
         tokenizer_dir_sha256="none", assertions_json=json.dumps(assertions), **common))
     attempted_at = wall_iso()
@@ -845,7 +899,7 @@ def cmd_prep_tokenizer(a, runner):
         return RUNTIME
     ledger.submissions_append(ledger_path, ledger_row(
         event="SUBMITTED", job_id=job_id, submitted_at=wall_iso(), **common))
-    summary.update({"submitted": True, "job_id": job_id})
+    summary.update({"submitted": True, "job_id": job_id, "snapshot_sha256": sha256_bytes(manifest)})
     emit(summary)
     return OK
 
@@ -962,6 +1016,8 @@ def build_parser():
     p.add_argument("--model-dir", required=True)
     p.add_argument("--name", required=True)
     p.add_argument("--image", required=True, help="container image with bash and coreutils")
+    p.add_argument("--mount", required=True, action="append",
+                   help="SRC:DST[:ro|rw], as for `submit`; the registered model dir is added")
     p.add_argument("--basis", required=True)
     p.add_argument("--dry-run", action="store_true")
     return ap

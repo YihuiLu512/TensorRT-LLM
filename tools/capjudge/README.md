@@ -17,16 +17,18 @@
 
 ## 判定流程（一棵树）
 
-1. 参数核对（`* ? [` → 2）→ `JUDGED.tsv` 已有同一 `(job_id, restart_count, launch_seq, arm)` → 12 → `<T>/judge` 已存在 → 12。这两步不写任何文件。之后新建一个本次尝试的目录 `<T>/judge.attempts/<UTC 时刻>-p<pid>/`，以下输出都先写在这里。
-2. 输入核对（`inputs.py`，任一不过 → 尝试目录里的 `inputs.json` 写明哪一项，13）：`launch.json`；`submissions.tsv` 里该作业的 `submitted_at`；`register.json` 与它列出的每个文件、每个标定文件现算 sha、已登记、登记时刻严格早于提交；`launch.json` 的 tier_table/schedule/prompts/scenario 与 `register.json` 一致；`inline_thresholds` 只许 E0；pilot 的 `environment` 与本树一致；时间表头的档位表 sha；`reconcile` 过 `expect.validate_reconcile`；`raw/` 下全部带 `identity` 的文件（json、jsonl 头、capbin 头、快照元数据）前六个字段一致。
+1. 参数核对（`* ? [` → 2）→ `<T>/judge` 已存在 → 见下文「补写」，否则 12 → `JUDGED.tsv` 已有同一 `(job_id, restart_count, launch_seq, arm)` → 12。这两步除补写外不写任何文件。之后新建一个本次尝试的目录 `<T>/judge.attempts/<UTC 时刻>-p<pid>/`，以下输出都先写在这里。
+2. 输入核对（`inputs.py`，任一不过 → 尝试目录里的 `inputs.json` 写明哪一项，13）：`launch.json`；`submissions.tsv` 里该作业的 `submitted_at`；`register.json` 与它列出的每个文件、每个标定文件现算 sha、已登记、登记时刻严格早于提交；`launch.json` 的 tier_table/schedule/prompts/scenario 与 `register.json` 一致；`inline_thresholds` 只许 E0；pilot 的 `environment` 与本树一致；时间表头的档位表 sha；`reconcile` 过 `expect.validate_reconcile`；`raw/` 下全部带 `identity` 的文件（json、jsonl 头、capbin 头、快照元数据）前六个字段一致；最后读判定之前已记下的启动级结论（上游）：`STATE` 里全部非 `capjudge` 写的行（caplaunch、capjobs.launches）、`raw/launch_end.json` 的 `state`（缺失或不是四个状态之一按 NOT_RUN）与 `leftovers.after`（非空按 VOID），取最差（VALID < NOT_RUN < VOID < ENV_INVALID）。`STATE` 读不了、或没有任何非 `capjudge` 的行（作业还没记下结果）⇒ 13。
 3. 判定器代码 sha：`CAPKIT_CODE_SHA`（40 位）优先；否则 `git rev-parse HEAD` 且 `git status --porcelain -- tools` 为空。取不到或工作树脏 ⇒ 整次判定 `NOT_RUN`。
-4. 启动级前提：C10、GPU-IDLE、C13（第一半，登记了 C13 时）、PROBE-TIER（有产品角色时）。任一 RED ⇒ 全部被判档 VOID；任一 NOT_RUN ⇒ 全部 NOT_RUN。另：缺 `launch_end.json` 的 `tiers_completed`、档位表没有基线档 ⇒ NOT_RUN。
+4. 启动级前提：LAUNCH-STATE（上游 VALID ⇒ PASS，NOT_RUN ⇒ NOT_RUN，VOID / ENV_INVALID ⇒ RED）、C10、GPU-IDLE、C13（第一半，登记了 C13 时）、PROBE-TIER（有产品角色时）。任一 RED ⇒ 全部被判档 VOID；任一 NOT_RUN ⇒ 全部 NOT_RUN。另：缺 `launch_end.json` 的 `tiers_completed`、档位表没有基线档 ⇒ NOT_RUN。
 5. 逐档（只判 `up` / `down`；`warmup`、`drain` 档 `judged: false`、`verdict: null`）：前提 P = RECORDS、P-PIDS、P-SENT + 适用检查；P 有 RED ⇒ VOID；有 NOT_RUN ⇒ NOT_RUN；否则看 X：矛盾 ⇒ VOID；X 算不出 ⇒ NOT_RUN；X 成立 ⇒ UNSTABLE，否则 STABLE。
-6. 在尝试目录写 `inputs.json`、`verdicts.json`、`checks.tsv`、`judge.log`、`attempt.json`（`status = JUDGED`）；再查一次 `JUDGED.tsv`，然后把尝试目录原子改名为 `<T>/judge`（这一步就是「已判」标记；期间别的判定先建了 `judge/` 或台账行 ⇒ 12，本次尝试记 `ALREADY_JUDGED` 留在原处）；最后追加 `JUDGED.tsv` 一行、`STATE` 一行（`by = capjudge`）。
+6. 在尝试目录写 `inputs.json`、`verdicts.json`、`checks.tsv`、`judge.log`、`attempt.json`（`status = JUDGED`）；再查一次 `JUDGED.tsv`，然后把尝试目录原子改名为 `<T>/judge`（这一步就是「已判」标记；期间别的判定先建了 `judge/` 或台账行 ⇒ 12，本次尝试记 `ALREADY_JUDGED` 留在原处）；最后追加 `JUDGED.tsv` 一行、`STATE` 一行（`by = capjudge`；状态 = 上游与本次 `launch_verdict` 中较差者，所以判定器不会把 caplaunch / capjobs 记的 VOID、ENV_INVALID、NOT_RUN 改好；原因写 `launch_verdict=… upstream=… verdicts_sha=…`；这一行的状态与原因也记在 `verdicts.json` 的 `state_line`，上游明细记在 `upstream`）。
 
 **一棵树只判一次，失败可复查**：只有产出了判定结果的那次运行会建立 `judge/`。输入无效（13）或异常中断（1）时，尝试目录留在 `judge.attempts/` 下（`attempt.json` 记 `status`：`INPUT_INVALID` / `ERROR`（含 traceback），连同 `inputs.json`、`judge.log`），不建 `judge/`、不写台账；输入修好后可以再判，已判过的树再判 ⇒ 12。
 
-**适用检查** = 强制集 `{C3, C10, C11, GPU-IDLE}` ∪ `register.json` 的 `judge.checks`。登记表可以加检查，不能去掉强制集。登记了但属于第二批的（C2、C4、C12）→ 每档 `NOT_RUN`（`NOT_IMPLEMENTED_BATCH2`），所以第一批的登记表不要列它们。另有三项始终跑的前提：`RECORDS`（档目录可读、文件 identity 的档号与所在档一致、capbin `meta.overflow == 0`、每进程恰好两份窗口快照）、`P-PIDS`（`tier.json` 的 `pids_stable`）、`P-SENT`（负载器每 worker 的 `planned` = 时间表推出的条数，否则 RED；`sent ≠ planned` ⇒ NOT_RUN）。
+**补写**：改名为 `judge/` 之后、追加台账行或 `STATE` 行之前出错或被杀时，树已是「已判」，但缺台账行或 `STATE` 行。再跑同一命令时：`judge/` 存在而台账行（按启动键）或带本 `verdicts_sha` 的 `capjudge` 行缺失 ⇒ 按 `judge/verdicts.json`（`identity`、`state_line`、文件 sha）补上缺的那一项，不重判，`judge/attempt.json` 改回 `JUDGED` 并记 `commit_completed`，退出码取 `verdicts.json` 的 `exit_code`。两项都在 ⇒ 12。台账行的 `verdicts_sha256` 与 `judge/verdicts.json` 不符、`judge/` 读不了、或 `attempt.json` 记的写者在本机仍在运行（可能还在提交）⇒ 12，不补写。
+
+**适用检查** = 强制集 `{C3, C10, C11, GPU-IDLE}` ∪ `register.json` 的 `judge.checks`。登记表可以加检查，不能去掉强制集。登记了但属于第二批的（C2、C4、C12）→ 每档 `NOT_RUN`（`NOT_IMPLEMENTED_BATCH2`），所以第一批的登记表不要列它们。另有三项始终跑的前提：`RECORDS`（档目录可读、文件 identity 的档号与所在档一致、capbin `meta.overflow == 0`、每进程恰好两份窗口快照；`tier.json` 的 `snapshot_copies` 必须是列表，其中记 `snapshot_missing` 的项（编排器按角色 `snapshots` 范围应拷而在两个快照周期内没等到的进程，例如命令行与 `CAPPROBE_ENTRY` 不匹配、探针没启用的产品进程）或列了却读不到副本的项 ⇒ RED）、`P-PIDS`（`tier.json` 的 `pids_stable`）、`P-SENT`（负载器每 worker 的 `planned` = 时间表推出的条数，否则 RED；`sent ≠ planned` ⇒ NOT_RUN）。
 
 ## 各检查的应检条数与口径
 
@@ -41,8 +43,8 @@
 | C9 | 窗口长 ÷ `sidecar/meta.json` 的 `interval_ns` × 线程清单里的线程数 | 任一行 `cpus_allowed` 越出本角色核或与他角色核相交、`last_cpu` 不在本角色核 ⇒ RED；已检行数 < 应检 ⇒ RED |
 | C10 | 各角色 `expected_procs` 之和 | `versions.check_versions` 不过 ⇒ 整次启动 NOT_RUN（D11） |
 | C11 | `planned_polls(清空档开始, t_pass 或期限, poll_ns)` | 逐次复核快照字段（`gate.check_snapshot`，门涉及角色的**全部**登记进程都必须有可用快照）、读数 = 各项之和、每项 `n_procs` = 该角色登记进程数、规则、`settle_polls`；复核的 passed / t_pass 与记录不符 ⇒ RED；`record_only` 未过 ⇒ RED；`enforce` 未过 ⇒ NOT_RUN；`baseline_band` 规则的复核 ⇒ NOT_RUN（第二批） |
-| C13 | 启动级：`under_test` 角色 `expected_procs` 之和；逐档：`under_test` 角色数 | 线程清单缺、任一线程 `identified_as` 为空、`roles.json` 有 `unattributed`（`aux_helpers` 里的辅助进程归属其父角色，只在明细里列出，不算被测进程、不进任何角色的进程集合）、`tier.json` 窗口始末线程未认出 ⇒ RED；第二半「外来忙碌占比」超带 ⇒ RED；`pilot.json` 无 `d14_softirq` ⇒ 第二半 NOT_RUN |
-| GPU-IDLE | 被判档 Σ(窗口长 ÷ `sidecar/meta.json` 的 `gpu_every_ns`) × `gpu.jsonl` 头的 `gpu_count` | `util_pct > 0` 或 `compute_pids` 非空 ⇒ 整次启动 VOID；`gpu_idle.json` 或 `gpu.jsonl` 头的阳性对照不过、`gpu_count ≤ 0`、`gpu_every_ns` 缺失或 ≤ 0 ⇒ NOT_RUN；读不出的行（`query_rc ≠ 0`、`util_pct` 不是数（`[N/A]`）、`compute_pids` 不是列表）不计入已检并记 NOT_RUN；已检行数不足 ⇒ NOT_RUN |
+| C13 | 启动级：`under_test` 角色 `expected_procs` 之和；逐档：`under_test` 角色数 | 线程清单缺、任一线程 `identified_as` 为空、`roles.json` 有 `unattributed`（`aux_helpers` 里的辅助进程归属其父角色，只在明细里列出，不算被测进程、不进任何角色的进程集合）、`tier.json` 窗口始末线程未认出 ⇒ RED；第二半「外来忙碌占比」（被测核窗口内忙碌 tick（user nice system irq softirq steal）− 本角色登记线程的 utime+stime；D14 结论为真时再减 softirq，只减 softirq，硬中断 irq 照算外来，因为登记的 D14 规则只裁决 softirq）超带 ⇒ RED；`pilot.json` 无 `d14_softirq` ⇒ 第二半 NOT_RUN；被测核窗口内有整行 null（核下线）或不足两行 ⇒ 该角色第二半 NOT_RUN |
+| GPU-IDLE | 被判档 Σ(窗口长 ÷ `sidecar/meta.json` 的 `gpu_every_ns`) × `gpu.jsonl` 头的 `gpu_count` | `util_pct > 0`，或 `compute_pids` 里有不属于本次启动的进程（本次启动的进程 = `roles.json` 的 `procs` 与 `aux_helpers`，加上各档 `tier.json` 窗口边界扫描记下的 `descendants`、`monitor_descendants`、`aux_helpers`；pid 为 null 的不算本次启动的）⇒ 整次启动 VOID；本次启动的进程在利用率 0 时持有计算上下文（如空 executor 启动时的 CUDA 调用）不判红，按 pid 在明细里逐条列出（行数、首末时刻）；`gpu_idle.json` 或 `gpu.jsonl` 头的阳性对照不过、`gpu_count ≤ 0`、`gpu_every_ns` 缺失或 ≤ 0 ⇒ NOT_RUN；读不出的行（`query_rc ≠ 0`、`util_pct` 不是数（`[N/A]`）、`compute_pids` 不是列表）不计入已检并记 NOT_RUN；已检行数不足 ⇒ NOT_RUN |
 | PROBE-TIER | `probe_tier` 非空的角色数 | 覆盖清单 `tier`、`launch.json` 的 `probe_tier`、角色声明三者不一致 ⇒ RED |
 
 ## 外部症状 X（设计稿 §2.6）
@@ -85,7 +87,7 @@
 
 ## pilot 列表文件
 
-每行 `<启动树>\t<档序号,档序号…>`（必须写明用哪几档；不接受通配符、同一树两行）。每棵树必须已判过；任一检查 RED 或 VOID 的档被剔除并列在 `inputs[].tiers_excluded`。全部树的环境（画像 sha、镜像 sha、capkit sha、基线 sha）必须相同。产出：`noise_bands`（T3：各键在入选档上的 [min, max]、n、来源档）、`window_ns`（前 L 秒的 T1 都落进全窗口噪声带的最短偶数秒 L）、`warmup_ns`（从档开始偏移 w 秒后在途数无趋势的最小 w）、`drain_max_wait_ns`、`d13_switchinterval_s`、`d14_softirq`（下节）；`tier_resolution`、`launches_per_arm`、`min_detectable_diff`、`i2_calibration`、`core_budget`、`canary_band` 写 `null` 并列在 `not_computed`（第二批）。不覆盖已有文件。
+每行 `<启动树>\t<档序号,档序号…>`（必须写明用哪几档；不接受通配符、同一树两行）。每棵树必须已判过；任一检查 RED 或 VOID 的档被剔除并列在 `inputs[].tiers_excluded`。判定之前已记下的启动级结论不是 VALID 的整棵树被剔除（`inputs[].tree_excluded` 写原因，全部档列进 `tiers_excluded`，也不进 D14 读数）：判定时记下的 `verdicts.json` `launch_checks.LAUNCH-STATE` 不是 PASS，或现在重读的 `STATE`（非 `capjudge` 行）与 `launch_end.json` 不是 VALID；`verdicts.json` 没有 `LAUNCH-STATE`（旧版判定器判的）⇒ 3。判定器自己的 `launch_verdict` 不要求 VALID（E0 判定时还没有噪声带，那里是 NOT_RUN）。全部树的环境（画像 sha、镜像 sha、capkit sha、基线 sha）必须相同。产出：`noise_bands`（T3：各键在入选档上的 [min, max]、n、来源档）、`window_ns`（前 L 秒的 T1 都落进全窗口噪声带的最短偶数秒 L）、`warmup_ns`（从档开始偏移 w 秒后在途数无趋势的最小 w）、`drain_max_wait_ns`、`d13_switchinterval_s`、`d14_softirq`（下节）；`tier_resolution`、`launches_per_arm`、`min_detectable_diff`、`i2_calibration`、`core_budget`、`canary_band` 写 `null` 并列在 `not_computed`（第二批）。不覆盖已有文件。
 
 ## D14：被测核上的 softirq 算不算实验自己的 CPU 时间（`capjudge.d14`，勘误 R1b）
 
@@ -96,8 +98,8 @@
  "monotonic_slack_frac":0.002,"min_trees":1}
 ```
 
-- 读数（每棵树、每个 `under_test` 角色、该角色在 `pin_table.json` 里的核）：空载 = `raw/env/exclusivity.json` 第 6 项（门禁空转窗口，作业里第一个启动之前）各核的 `softirq_ticks`、`irq_ticks`、`total_ticks`；负载 = 本树入选的每个负载档，`sidecar/cpus.jsonl` 在档稳态窗口内各核首末两行之差。`softirq_frac` = softirq tick ÷ 同区间全部 tick（user nice system idle iowait irq softirq steal）。
+- 读数（每棵树、每个 `under_test` 角色、该角色在 `pin_table.json` 里的核）：空载 = `raw/env/exclusivity.json` 第 6 项（门禁空转窗口，作业里第一个启动之前）各核的 `softirq_ticks`、`irq_ticks`、`total_ticks`；负载 = 本树入选的每个负载档，`sidecar/cpus.jsonl` 在档稳态窗口内各核首末两行之差（与 C13 第二半同一实现 `treedata.cpu_tick_deltas`；窗口内有整行 null（核下线）或不足两行的核使这一档读数不完整，记进 `why`，不计入）。`softirq_frac` = softirq tick ÷ 同区间全部 tick（user nice system idle iowait irq softirq steal）。
 - 规则：空载 `softirq_frac` ≤ `idle_softirq_frac_max`（接近 0）；每个负载档 ≥ 空载 + `load_min_excess_frac`，且按负载（档位表轴的方向）排序后相邻两档下降不超过 `monotonic_slack_frac`（随负载增长）。
-- 结论：完整的树（每个 `under_test` 角色都有空载读数和至少一个负载档读数）≥ `min_trees` 时，`irq_softirq_is_experiment` = 全部完整树的全部角色都满足规则；否则、或规则文件的登记时刻不严格早于某棵输入树的 `submitted_at`，不写这个键（C13 第二半保持 NOT_RUN），`conclusion_reason` 写明原因。
-- `d14_softirq` 另带 `rule`、`rule_file`（`relpath sha256 registered_at`）、`readings`（逐树逐角色的原始读数与 `idle_close_to_zero`、`grows_with_load`）、`n_trees_complete`。
+- 结论：空载读数是作业级的（门禁每次作业运行做一次，拷进该次运行的每棵树），所以完整的树另按作业运行 `(job_id, restart_count)` 计数。完整的树（每个 `under_test` 角色都有空载读数和至少一个负载档读数）≥ `min_trees`、且这些树来自 ≥ `min_trees` 个作业运行时，`irq_softirq_is_experiment` = 全部完整树的全部角色都满足规则；否则、或规则文件的登记时刻不严格早于某棵输入树的 `submitted_at`，不写这个键（C13 第二半保持 NOT_RUN），`conclusion_reason` 写明原因。
+- `d14_softirq` 另带 `rule`、`rule_file`（`relpath sha256 registered_at`）、`readings`（逐树逐角色的原始读数与 `idle_close_to_zero`、`grows_with_load`，逐树的 `job_run`）、`n_trees_complete`、`n_job_runs_complete`。
 - 没有 `under_test` 角色的树（如 `e0a-nullsse`）不完整，只列出不计数。

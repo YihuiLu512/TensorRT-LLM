@@ -31,6 +31,22 @@ WEIGHT_SUFFIXES = (".safetensors", ".bin", ".pt", ".pth", ".gguf", ".engine")
 
 MAX_GPUS = 1
 
+
+def weight_content(prefix, size):
+    """True if a file of `size` bytes starting with `prefix` (its first >= 16 bytes, or all of it)
+    has a weight-format header: pickle (protocol >= 2), zip (torch .pt/.bin), GGUF, or
+    safetensors (little-endian u64 header length N <= size - 8, then '{"'). The bash tokenizer
+    copy (jobs/prep_tokenizer.sbatch weight_content) applies the same four rules."""
+    if size <= 0 or not prefix:
+        return False
+    if prefix[:1] == b"\x80" or prefix[:4] in (b"PK\x03\x04", b"GGUF"):
+        return True
+    if len(prefix) >= 10 and prefix[8:10] == b'{"' and prefix[4:8] == b"\0\0\0\0":
+        n = int.from_bytes(prefix[:8], "little")
+        return 2 <= n <= size - 8
+    return False
+
+
 ASSERTION_KEYS = ("experiment_no_model", "gpus_le_1", "no_model_mounts", "tokenizer_no_weights",
                   "basis_present")
 
@@ -74,15 +90,33 @@ def paths_related(a, b):
     return a.startswith(b + "/") or b.startswith(a + "/")
 
 
+def library_roots():
+    """Every model library path to compare against: the literal and the realpath of each."""
+    return sorted({x for f in FORBIDDEN_MOUNT_PATHS for x in (f, os.path.realpath(f))})
+
+
+def _no_separator(mount, paths):
+    """pyxis splits --container-mounts at ',' and each entry at ':': a mount string with a ','
+    anywhere, or a path holding either, would name other mounts than the ones checked here."""
+    if isinstance(mount, str) and "," in mount:
+        raise PolicyError("mount contains ',': %r" % mount)
+    for p in paths:
+        if isinstance(p, str) and ("," in p or ":" in p):
+            raise PolicyError("mount path contains ',' or ':': %r" % (mount,))
+
+
 def mount_paths(mount):
     """Paths named by one mount entry: 'src:dst[:opts]' string or {'src':..,'dst':..} dict."""
     if isinstance(mount, dict):
         out = [mount.get("src"), mount.get("dst")]
     elif isinstance(mount, str):
         parts = mount.split(":")
+        if len(parts) not in (2, 3):
+            raise PolicyError("mount must be 'src:dst[:opts]': %r" % mount)
         out = parts[:2]
     else:
         raise PolicyError("mount entry must be a string or object: %r" % (mount,))
+    _no_separator(mount, out)
     return [p for p in out if p]
 
 
@@ -94,7 +128,7 @@ def check_mounts(mounts):
     if not isinstance(mounts, list):
         raise PolicyError("mounts must be a list")
     bad = []
-    libs = sorted({x for f in FORBIDDEN_MOUNT_PATHS for x in (f, os.path.realpath(f))})
+    libs = library_roots()
     for m in mounts:
         for p in mount_paths(m):
             if not p.startswith("/"):
@@ -108,7 +142,8 @@ def check_mounts(mounts):
 
 
 def tokenizer_dir_sha256(path):
-    """sha256 over sorted (relpath, file sha256) of every file; refuses symlinks and weights.
+    """sha256 over sorted (relpath, file sha256) of every file; refuses symlinks and weights (by
+    name suffix and by weight_content).
 
     Returns the string "none" when path is None (the job mounts no tokenizer copy).
     """
@@ -130,6 +165,10 @@ def tokenizer_dir_sha256(path):
                 raise PolicyError("weight file in tokenizer copy: %s" % rel)
             h = hashlib.sha256()
             with open(full, "rb") as f:
+                head = f.read(16)
+                if weight_content(head, os.fstat(f.fileno()).st_size):
+                    raise PolicyError("weight content in tokenizer copy: %s" % rel)
+                h.update(head)
                 for block in iter(lambda: f.read(1 << 20), b""):
                     h.update(block)
             entries.append((rel, h.hexdigest()))
@@ -172,12 +211,16 @@ def _mount_parts(mount):
     parts = mount.split(":")
     if len(parts) not in (2, 3) or not all(parts[:2]):
         raise PolicyError("bad mount %r" % mount)
-    return parts[0], parts[1], parts[2] if len(parts) == 3 else "rw"
+    _no_separator(mount, parts[:2])
+    mode = parts[2] if len(parts) == 3 else "rw"
+    if mode not in ("ro", "rw"):
+        raise PolicyError("prep_tokenizer mount mode must be ro or rw: %r" % mount)
+    return parts[0], parts[1], mode
 
 
 def _touches_library(path):
-    libs = {x for f in FORBIDDEN_MOUNT_PATHS for x in (f, os.path.realpath(f))}
-    return any(paths_related(q, f) for q in {path, os.path.realpath(path)} for f in libs)
+    return any(paths_related(q, f) for q in {path, os.path.realpath(path)}
+               for f in library_roots())
 
 
 def check_prep_tokenizer_mounts(mounts):

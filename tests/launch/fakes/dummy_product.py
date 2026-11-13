@@ -58,6 +58,7 @@ def main():
     p.add_argument("--probe-child", action="store_true")
     p.add_argument("--orphan", action="store_true", help="setsid grandchild ignoring SIGTERM")
     p.add_argument("--ignore-term", action="store_true")
+    p.add_argument("--peer-label", help="ignored (lets a test put {addr:...} in the argv)")
     p.add_argument("--churn-every-ms", type=int, default=0,
                    help="start a short-lived child this often")
     p.add_argument("--role-child", action="store_true", help=argparse.SUPPRESS)

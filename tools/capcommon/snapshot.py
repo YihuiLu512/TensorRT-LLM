@@ -248,9 +248,10 @@ def snapshot_path(shm_dir, pid=None):
 
 def ensure_own_dir(path):
     """Create the snapshot directory `path` (mode 0700, parents as needed) unless it exists, then
-    require it to be a real directory owned by this user: a symlink, a non-directory or another
-    user's directory is refused, so snapshot files are never written where someone else decides.
-    """
+    require its last component to be a real directory owned by this user that group and others
+    cannot write: a symlink, a non-directory, another user's directory or a group/other-writable
+    one is refused. Only the last component is checked; the parent directories are the caller's
+    to trust (in a launch they are the job's private 0700 snapshot root)."""
     try:
         os.makedirs(path, mode=0o700, exist_ok=True)
     except FileExistsError:
@@ -261,6 +262,10 @@ def ensure_own_dir(path):
     if st.st_uid != os.geteuid():
         raise SnapshotError("snapshot dir %s is owned by uid %d, not by this user (uid %d)"
                             % (path, st.st_uid, os.geteuid()))
+    mode = stat.S_IMODE(st.st_mode)
+    if mode & 0o022:
+        raise SnapshotError("snapshot dir %s must not be writable by group or others (mode %o)"
+                            % (path, mode))
     return path
 
 

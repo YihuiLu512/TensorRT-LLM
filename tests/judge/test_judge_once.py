@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """A tree is judged once: only a run that produced verdicts creates <tree>/judge (and the
 JUDGED.tsv row). INPUT_INVALID and exceptions leave a reviewable judge.attempts/*/ record and
-no judge/, so the tree can be judged after the cause is fixed; a second judgement is refused."""
+no judge/, so the tree can be judged after the cause is fixed; a second judgement is refused,
+except that a run which died after creating judge/ gets its ledger row / STATE line completed
+from judge/. The judge's STATE line never improves on the conclusion recorded before it."""
 
 import json
 import os
@@ -133,3 +135,113 @@ def test_ledger_row_added_meanwhile_loses_the_race(good, monkeypatch):
     assert not os.path.lexists(os.path.join(tree, "judge"))
     (a,) = attempts(tree)
     assert attempt_doc(tree, a)["status"] == "ALREADY_JUDGED"
+
+
+# ---- the launch-level conclusion recorded before the judge (STATE, launch_end.json) ----------
+
+def state_lines(tree):
+    with open(os.path.join(tree, "STATE")) as f:
+        return [ln.split("\t") for ln in f.read().splitlines() if ln.strip()]
+
+
+def test_judge_never_improves_on_an_earlier_void(good):
+    W, tree = good
+    J.append_state(tree, "VOID", "copy-back not verified (test)", "capjobs.launches")
+    assert run(W, tree) == 10
+    last = state_lines(tree)[-1]
+    assert last[1:3] == ["VOID", "capjudge"] and "upstream=VOID" in last[3]
+    with open(os.path.join(tree, "judge", "verdicts.json")) as f:
+        v = json.load(f)
+    assert v["launch_checks"]["LAUNCH-STATE"] == "RED" and v["launch_verdict"] == "VOID"
+    assert {t["verdict"] for t in v["tiers"] if t["judged"]} == {"VOID"}
+
+
+def test_env_invalid_before_the_judge_stays_env_invalid(good):
+    W, tree = good
+    J.append_state(tree, "ENV_INVALID", "gate failed (test)", "capjobs.launches")
+    assert run(W, tree) == 10
+    assert state_lines(tree)[-1][1] == "ENV_INVALID"
+
+
+def test_upstream_not_run_makes_every_tier_not_run(good):
+    W, tree = good
+    J.append_state(tree, "NOT_RUN", "terminated (test)", "capjobs.launches")
+    assert run(W, tree) == 11
+    assert state_lines(tree)[-1][1] == "NOT_RUN"
+
+
+def test_leftovers_in_launch_end_void_the_launch(good):
+    W, tree = good
+    p = os.path.join(tree, "raw", "launch_end.json")
+    with open(p) as f:
+        doc = json.load(f)
+    doc["leftovers"]["after"] = [[4242, 1, "survived"]]
+    os.chmod(p, 0o644)
+    with open(p, "w") as f:
+        json.dump(doc, f)
+    assert run(W, tree) == 10
+    assert state_lines(tree)[-1][1] == "VOID"
+
+
+def test_no_state_line_before_the_judge_is_input_invalid(good):
+    W, tree = good
+    os.rename(os.path.join(tree, "STATE"), os.path.join(W, "STATE.aside"))
+    assert run(W, tree) == 13
+    assert not os.path.lexists(os.path.join(tree, "judge"))
+    os.rename(os.path.join(W, "STATE.aside"), os.path.join(tree, "STATE"))
+    assert run(W, tree) == 0
+
+
+# ---- judge/ exists but the run died before its ledger row / STATE line -------------------------
+
+def _die_in(monkeypatch, where):
+    def boom(*_a, **_k):
+        raise OSError("disk gone while appending (%r)" % (where,))
+    monkeypatch.setattr(*where, boom)
+
+
+@pytest.mark.parametrize("where", ["state", "ledger"])
+def test_commit_interrupted_after_the_rename_is_completed_by_the_next_run(good, monkeypatch,
+                                                                         where):
+    W, tree = good
+    n_state = len(state_lines(tree))
+    target = (J, "append_state") if where == "state" else (J.ledger, "judged_append")
+    _die_in(monkeypatch, target)
+    with pytest.raises(OSError):
+        run(W, tree)
+    monkeypatch.undo()
+    monkeypatch.setenv("CAPKIT_CODE_SHA", "b" * 40)
+    assert os.path.isdir(os.path.join(tree, "judge"))
+    assert len(state_lines(tree)) == n_state  # no capjudge line yet
+    assert len(judged_rows(W)) == (0 if where == "ledger" else 1)
+    with open(os.path.join(tree, "judge", "verdicts.json")) as f:
+        recorded = json.load(f)
+    before = sorted(os.listdir(os.path.join(tree, "judge")))
+    assert run(W, tree) == recorded["exit_code"] == 0  # completed, not re-judged
+    assert sorted(os.listdir(os.path.join(tree, "judge"))) == before
+    assert len(judged_rows(W)) == 1
+    lines = state_lines(tree)
+    assert len(lines) == n_state + 1 and lines[-1][2] == "capjudge"
+    with open(os.path.join(tree, "judge", "attempt.json")) as f:
+        att = json.load(f)
+    assert att["status"] == "JUDGED" and att["commit_completed"]["appended"]
+    assert run(W, tree) == 12  # now complete: refused, nothing appended
+    assert len(state_lines(tree)) == n_state + 1 and len(judged_rows(W)) == 1
+
+
+def test_commit_of_a_live_writer_is_not_completed(good, monkeypatch):
+    W, tree = good
+    assert run(W, tree) == 0
+    # simulate "renamed, still committing": drop the STATE line, mark the writer as this process
+    with open(os.path.join(tree, "STATE")) as f:
+        keep = [ln for ln in f if "\tcapjudge\t" not in ln]
+    with open(os.path.join(tree, "STATE"), "w") as f:
+        f.writelines(keep)
+    p = os.path.join(tree, "judge", "attempt.json")
+    with open(p) as f:
+        att = json.load(f)
+    att["pid"] = os.getpid()
+    with open(p, "w") as f:
+        json.dump(att, f)
+    assert run(W, tree) == 12
+    assert not any(ln[2] == "capjudge" for ln in state_lines(tree))

@@ -4,7 +4,9 @@
 
 For every sample W under --samples: copy it to a fresh temp dir, run the judge exactly as
 documented (`python -m <pkg> --tree <T> --workdir <W>`, one tree, no globs), and assert the
-exit code, the listed tier verdicts and that every listed check is RED / NOT_RUN. Plus:
+exit code, the listed tier verdicts, that every listed check is RED / NOT_RUN and, when the
+sample lists state_last, the status of the tree's last STATE line (the judge's line must not
+improve on what caplaunch / capjobs recorded before it). Plus:
   * the good sample judged a second time -> 12 without a new attempt record; its tree copied
     elsewhere (JUDGED.tsv) -> 12;
   * an INPUT_INVALID sample leaves no judge/ but one judge.attempts/*/ record (attempt.json and
@@ -51,6 +53,15 @@ def read_checks(tree):
     return [dict(zip(cols, ln.split("\t"))) for ln in lines[1:]]
 
 
+def last_state(tree):
+    try:
+        with open(os.path.join(tree, "STATE")) as f:
+            lines = [ln for ln in f.read().splitlines() if ln.strip()]
+    except OSError:
+        return None
+    return lines[-1].split("\t")[1] if lines else None
+
+
 def compare(name, exp, rc, tree, errs):
     if rc != exp["exit_code"]:
         errs.append("%s: exit %d != expected %d" % (name, rc, exp["exit_code"]))
@@ -67,6 +78,11 @@ def compare(name, exp, rc, tree, errs):
             if got.get(seq) != want:
                 errs.append("%s: tier %s verdict %r != expected %r" % (name, seq, got.get(seq),
                                                                        want))
+    if "state_last" in exp:
+        got = last_state(tree)
+        if got != exp["state_last"]:
+            errs.append("%s: last STATE line status %r != expected %r" % (name, got,
+                                                                         exp["state_last"]))
     rows = read_checks(tree)
     for key, status in (("red_checks", "RED"), ("not_run_checks", "NOT_RUN")):
         for cid in exp.get(key) or []:

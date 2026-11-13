@@ -144,6 +144,72 @@ def per_second(times, values, start_ns, end_ns, reducer=stats.median):
     return [reducer(b) if b else None for b in buckets]
 
 
+STAT_COLS = ("user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal")
+
+
+def _is_int(v):
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def first_last_in_window(rows, keyf, ws, we):
+    """({key: first row}, {key: last row}) by t_rel_ns over the rows with ws <= t_rel_ns < we;
+    keyf(row) gives the key, None skips the row (it is only called on rows inside the window)."""
+    first, last = {}, {}
+    for row in rows:
+        t = row.get("t_rel_ns")
+        if not _is_int(t) or not ws <= t < we:
+            continue
+        k = keyf(row)
+        if k is None:
+            continue
+        if k not in first or t < first[k]["t_rel_ns"]:
+            first[k] = row
+        if k not in last or t > last[k]["t_rel_ns"]:
+            last[k] = row
+    return first, last
+
+
+def cpu_tick_deltas(cpu_rows, cores, ws, we):
+    """/proc/stat tick deltas of `cores` over [ws, we) from sidecar cpus.jsonl rows: the last
+    minus the first row of each core inside the window. Returns ({core: {<STAT_COLS>: delta,
+    "t_first_rel_ns", "t_last_rel_ns"}}, None) or (None, why). Unusable (why) when `cores` is
+    empty, a core has fewer than two rows in the window, or any of its rows in the window has a
+    non-integer tick column (the sidecar writes a row of nulls while a watched core is offline;
+    such a core is not counted, and the reading is incomplete rather than partial)."""
+    if not cores:
+        return None, "no cores"
+    bad = {}
+
+    def key(row):
+        c = row.get("cpu")
+        if c not in cores:
+            return None
+        if not all(_is_int(row.get(k)) for k in STAT_COLS):
+            bad.setdefault(c, []).append(row.get("t_rel_ns"))
+            return None
+        return c
+
+    first, last = first_last_in_window(cpu_rows, key, ws, we)
+    if bad:
+        return None, "core(s) %s offline or unreadable in the window (rows of nulls at " \
+                     "t_rel_ns %s)" % (sorted(bad), {c: v[:3] for c, v in sorted(bad.items())})
+    missing = sorted(c for c in cores if c not in first or first[c] is last[c])
+    if missing:
+        return None, "fewer than two sidecar cpu rows in the window for cores %s" % missing
+    out = {}
+    for c in sorted(cores):
+        d = {k: last[c][k] - first[c][k] for k in STAT_COLS}
+        d.update(t_first_rel_ns=first[c]["t_rel_ns"], t_last_rel_ns=last[c]["t_rel_ns"])
+        out[c] = d
+    return out, None
+
+
+def role_cpus(pin_table):
+    """{role: set of cpus} from pin_table.json (None -> {})."""
+    return {role: set(v.get("cpus") or [])
+            for role, v in ((pin_table or {}).get("roles") or {}).items()}
+
+
 class LaunchData:
     """Launch-level raw files, loaded lazily and cached."""
 

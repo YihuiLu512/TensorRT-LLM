@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""capcommon.snapshot.SnapshotWriter only writes into a real directory owned by this user and
-never follows a symlink at its temporary file name (the writer behind every capprobe snapshot)."""
+"""capcommon.snapshot.SnapshotWriter only writes into a real directory owned by this user that
+group and others cannot write, and never follows a symlink at its temporary file name (the
+writer behind every capprobe snapshot)."""
 
 import os
 import stat
@@ -60,6 +61,16 @@ def test_other_users_dir_refused(tmp_path, monkeypatch):
     monkeypatch.setattr(snapshot.os, "geteuid", lambda: owner + 1)
     with pytest.raises(SnapshotError, match="owned by uid"):
         writer(d)
+
+
+@pytest.mark.parametrize("mode", [0o770, 0o707, 0o722, 0o1777])
+def test_group_or_other_writable_dir_refused(tmp_path, mode):
+    d = tmp_path / "snap"
+    d.mkdir()
+    os.chmod(d, mode)
+    with pytest.raises(SnapshotError, match="must not be writable by group or others"):
+        writer(d)
+    assert os.listdir(d) == []
 
 
 def test_symlink_at_tmp_name_not_followed(tmp_path):

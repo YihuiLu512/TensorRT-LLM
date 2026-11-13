@@ -19,7 +19,7 @@
    "lines": [
     1
    ],
-   "proc_kind": "frontend",
+   "proc_kind": "frontend_openengine",
    "slots": [
     "count.F2.msgs"
    ]

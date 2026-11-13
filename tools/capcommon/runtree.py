@@ -14,6 +14,28 @@ from .tiers import POST_LABEL, POST_SEQ, PRE_LABEL, PRE_SEQ
 
 STATE_VALUES = ("VALID", "VOID", "NOT_RUN", "ENV_INVALID")
 
+# Launch-level conclusions from best to worst (INTERFACES.md 5.7). Every writer that records a
+# conclusion on top of an earlier one combines them with worst_state: a later record can make a
+# launch worse, never better.
+STATE_SEVERITY = ("VALID", "NOT_RUN", "VOID", "ENV_INVALID")
+assert sorted(STATE_SEVERITY) == sorted(STATE_VALUES)
+
+
+def state_rank(status):
+    """Position of `status` in STATE_SEVERITY (0 = VALID); ConfigError for anything else."""
+    try:
+        return STATE_SEVERITY.index(status)
+    except ValueError:
+        raise ConfigError("not a STATE value: %r" % (status,)) from None
+
+
+def worst_state(statuses):
+    """The worst of one or more STATE values; ConfigError on an empty input or a non-STATE value."""
+    statuses = list(statuses)
+    if not statuses:
+        raise ConfigError("worst_state of nothing")
+    return max(statuses, key=state_rank)
+
 
 def tree_dir_name(job_id, restart_count, launch_seq, arm):
     """runs/J<job>-r<restart>-L<seq>_<arm>/ (DATA-AND-ANALYSIS 3). For humans only."""

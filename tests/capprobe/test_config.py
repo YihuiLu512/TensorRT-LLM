@@ -18,7 +18,7 @@ from capprobe.config import CapprobeConfigError
 PROGRAM = os.path.realpath("/usr/bin/env")
 ARGV = ["/usr/bin/env", "probe-unit", "--x", "1"]
 ENTRY = probe_entry.encode({"schema": probe_entry.SCHEMA, "program": PROGRAM,
-                            "args": ["probe-unit", "--x", "1"]})
+                            "args": ["probe-unit", "--x", "1"], "cwd": "/"})
 
 
 def parse_config(e, argv=ARGV):
@@ -226,7 +226,11 @@ def test_entry_matches_a_shebang_start_and_a_path_lookup(identity_file):
     ({"CAPPROBE_SHM_DIR": "rel"}, "absolute"),
     ({"CAPPROBE_ENTRY": "{not json"}, "not JSON"),
     ({"CAPPROBE_ENTRY": json.dumps({"schema": probe_entry.SCHEMA, "program": "rel/x",
-                                    "args": []})}, "absolute"),
+                                    "args": [], "cwd": "/"})}, "program must be a normalised"),
+    ({"CAPPROBE_ENTRY": json.dumps({"schema": probe_entry.SCHEMA, "program": PROGRAM,
+                                    "args": [], "cwd": "rel"})}, "cwd must be a normalised"),
+    ({"CAPPROBE_ENTRY": json.dumps({"schema": probe_entry.SCHEMA, "program": PROGRAM,
+                                    "args": []})}, "exactly"),
     ({"CAPPROBE_GROUP": "count"}, "unknown capprobe variable"),
 ])
 def test_contradictions_fail_in_every_process(identity_file, kw, msg):
@@ -245,10 +249,53 @@ def test_matched_entry_without_tier_fails():
 
 def test_build_rule_resolves_like_exec(tmp_path):
     rule = probe_entry.build_rule(["env", "a"], str(tmp_path), "/usr/bin")
-    assert rule == {"schema": probe_entry.SCHEMA, "program": PROGRAM, "args": ["a"]}
+    assert rule == {"schema": probe_entry.SCHEMA, "program": PROGRAM, "args": ["a"],
+                    "cwd": os.path.realpath(str(tmp_path))}
     (tmp_path / "s.py").write_text("")
     rule = probe_entry.build_rule(["./s.py", "b"], str(tmp_path), "/usr/bin")
     assert rule["program"] == os.path.realpath(str(tmp_path / "s.py"))
     with pytest.raises(probe_entry.EntryRuleError):
         probe_entry.build_rule(["no-such-program-xyz"], str(tmp_path), "/usr/bin")
     assert probe_entry.parse(probe_entry.encode(rule)) == rule
+
+
+def test_relative_path_entries_resolve_against_the_rule_cwd(tmp_path):
+    """A relative PATH entry and a relative program name are taken against the role's cwd (as
+    exec does after the chdir), never against the importing process's current directory."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    exe = bin_dir / "tool"
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    rule = probe_entry.build_rule(["tool", "x"], str(tmp_path), "bin")
+    assert rule["program"] == os.path.realpath(str(exe))
+    assert probe_entry.match(rule, ["tool", "x"], path="bin") == 0
+    assert probe_entry.match(rule, ["./bin/tool", "x"]) == 0
+    assert probe_entry.match(rule, ["/usr/bin/python3", "bin/tool", "x"]) == 1
+    other = dict(rule, cwd="/")
+    assert probe_entry.match(other, ["./bin/tool", "x"]) is None
+
+
+@pytest.mark.parametrize("argv,expected", [
+    (["/usr/bin/env", "/a/b/pkg/mod.py", "r1"], 0),        # re-exec of `-m pkg.mod r1`
+    (["/usr/bin/env", "pkg/mod.py", "r1"], 0),             # relative module file
+    (["/usr/bin/env", "/a/pkg/mod/__main__.py", "r1"], 0),  # package run with -m
+    (["/usr/bin/env", "-m", "pkg.mod", "r1"], 0),          # the original module start
+    (["/usr/bin/env", "/a/b/xpkg/mod.py", "r1"], None),    # suffix must start at a /
+    (["/usr/bin/env", "/a/b/pkg/other.py", "r1"], None),   # another module
+    (["/usr/bin/env", "/a/b/pkg/mod.py", "r2"], None),     # other arguments
+    (["/a/b/pkg/mod.py", "r1"], None),                     # no program before the file
+    (["/usr/bin/python3", "/a/b/pkg/mod.py", "r1"], None),  # another program
+])
+def test_module_form_matches_the_reexec_of_a_dash_m_start(argv, expected):
+    rule = {"schema": probe_entry.SCHEMA, "program": PROGRAM, "args": ["-m", "pkg.mod", "r1"],
+            "cwd": "/"}
+    assert probe_entry.match(rule, argv) == expected
+
+
+def test_module_form_needs_dash_m_first():
+    # interpreter options before -m are not in sys.argv either: no re-exec form for them
+    rule = {"schema": probe_entry.SCHEMA, "program": PROGRAM,
+            "args": ["-u", "-m", "pkg.mod", "r1"], "cwd": "/"}
+    assert probe_entry.match(rule, ["/usr/bin/env", "-u", "-m", "pkg.mod", "r1"]) == 0
+    assert probe_entry.match(rule, ["/usr/bin/env", "/a/pkg/mod.py", "r1"]) is None

@@ -82,7 +82,9 @@
    "module": "capload.nullsse",
    "probe_tier": "P2",
    "proc_kinds": [
-    "frontend"
+    "frontend",
+    "frontend_openengine",
+    "frontend_single"
    ],
    "role": "nullsse",
    "uses_grpc": false,

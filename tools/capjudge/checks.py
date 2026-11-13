@@ -19,7 +19,7 @@ from capcommon.versions import check_versions
 from . import stats
 from .symptoms import failures_by_class, request_lag_series
 from .thresholds import band_key
-from .treedata import NS, summary_value
+from .treedata import NS, cpu_tick_deltas, first_last_in_window, role_cpus, summary_value
 
 PASS, RED, NOT_RUN = "PASS", "RED", "NOT_RUN"
 NOT_IMPLEMENTED = "NOT_IMPLEMENTED_BATCH2"
@@ -221,6 +221,11 @@ def check_pids(td):
 
 
 def check_records(td):
+    """Record integrity of one tier directory, and its window snapshots: every pid has exactly
+    the two copies, and caplaunch's tier.json snapshot_copies (one entry per registered process
+    expected to write snapshots, per window edge) has no snapshot_missing entry. A missing copy
+    is how a product process whose capprobe stayed off (command line not matching
+    CAPPROBE_ENTRY) shows up: RED, not a smaller sum."""
     r = Result("RECORDS", td.tier.seq, "one tier directory per tier")
     r.expected = 1
     if not td.exists:
@@ -233,6 +238,23 @@ def check_records(td):
         if len(snaps) != 2:
             r.red += 1
             r.detail.append("pid %s: %d window snapshot copies, expected 2" % (pid, len(snaps)))
+    copies = (td.tier_json or {}).get("snapshot_copies")
+    if not isinstance(copies, list):
+        r.red += 1
+        r.detail.append("tier.json has no snapshot_copies list")
+        return r.finish()
+    for c in copies:
+        if not isinstance(c, dict):
+            r.red += 1
+            r.detail.append("tier.json snapshot_copies entry %r is not an object" % (c,))
+        elif c.get("snapshot_missing"):
+            r.red += 1
+            r.detail.append("%s pid %s: no %s window snapshot (%s)" % (
+                c.get("role"), c.get("pid"), c.get("which"), c.get("detail")))
+        elif c.get("pid") not in td.snaps:
+            r.red += 1
+            r.detail.append("%s pid %s: snapshot_copies lists %s but no copy was read" % (
+                c.get("role"), c.get("pid"), c.get("file")))
     return r.finish()
 
 
@@ -468,11 +490,6 @@ def check_c8(ctx, ld, td):
 
 # ---- C9 pinning readback ---------------------------------------------------------------------
 
-def _role_cpus(ld):
-    pt = ld.pin_table or {}
-    return {role: set(v.get("cpus") or []) for role, v in (pt.get("roles") or {}).items()}
-
-
 def _inventory_threads(ld):
     """{(pid, tid): inventory entry} over every procs/threads/*.json."""
     out = {}
@@ -492,7 +509,7 @@ def check_c9(ctx, ld, td):
     interval = ld.sidecar_interval_ns()
     inv = _inventory_threads(ld)
     th = ld.sidecar("threads")
-    cpus = _role_cpus(ld)
+    cpus = role_cpus(ld.pin_table)
     if interval is None or th is None or not cpus:
         r.not_run.append("sidecar meta.interval_ns / threads.jsonl / pin_table.json missing")
         return r.finish(NOT_RUN)
@@ -560,13 +577,38 @@ def _is_num(v):
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
-def check_gpu_idle(ctx, ld, load_tiers):
+def launch_pids(ld, tds):
+    """{pid: how it belongs} for the processes of this launch: roles.json procs and aux_helpers,
+    and every pid the window-boundary scans (tier.json scans: descendants, monitor_descendants,
+    aux_helpers, all [pid, starttime, ...]) recorded under them."""
+    rj = ld.roles_json or {}
+    own = {}
+    for p in rj.get("procs") or []:
+        if isinstance(p, dict):
+            own[p.get("pid")] = "registered process of role %s" % p.get("role")
+    for p in rj.get("aux_helpers") or []:
+        if isinstance(p, dict):
+            own.setdefault(p.get("pid"), "aux helper of role %s" % p.get("role"))
+    for td in tds:
+        for edge, sc in sorted(((td.tier_json or {}).get("scans") or {}).items()):
+            for k in ("descendants", "monitor_descendants", "aux_helpers"):
+                for e in (sc or {}).get(k) or []:
+                    if isinstance(e, list) and e:
+                        own.setdefault(e[0], "%s in the tier %d %s scan" % (k, td.tier.seq, edge))
+    own.pop(None, None)
+    return own
+
+
+def check_gpu_idle(ctx, ld, load_tiers, own_pids=None):
     """Returns (Result, void: bool). void=True when any window row shows a busy GPU.
 
     Expected rows per window = window_ns // sidecar meta.gpu_every_ns (the sidecar samples on
     origin-aligned ticks of that period) x gpu.jsonl gpu_count. A row counts as checked only
     when it is readable: query_rc 0, a numeric util_pct and a compute_pids list. Busy evidence
-    (util_pct > 0 or any compute pid) is RED even on a row whose other reading is missing."""
+    is RED even on a row whose other reading is missing: util_pct > 0, or a compute pid that is
+    not a process of this launch (own_pids, see launch_pids; a null pid is never this launch's).
+    A process of this launch holding a CUDA context at 0 % utilisation (e.g. a null executor's
+    startup CUDA call) is not foreign occupancy: it is listed per pid in the detail."""
     r = Result("GPU-IDLE", "launch",
                "sum(window_ns // sidecar meta.gpu_every_ns) x gpu.jsonl gpu_count")
     gi = ld.gpu_idle or {}
@@ -587,20 +629,27 @@ def check_gpu_idle(ctx, ld, load_tiers):
         r.not_run.append("sidecar meta.json gpu_every_ns %r" % (every,))
         return r.finish(NOT_RUN), False
     r.expected = sum((t.window_ns // every) * count for t in load_tiers)
+    own_pids = own_pids or {}
     void = False
     unreadable = 0
+    own_seen = {}
     for row in g[1]:
         if not any(t.window_start_ns <= row["t_rel_ns"] < t.window_end_ns for t in load_tiers):
             continue
         util, pids = row.get("util_pct"), row.get("compute_pids")
-        if (_is_num(util) and util > 0) or (isinstance(pids, list) and pids):
+        foreign = [p for p in pids if p not in own_pids] if isinstance(pids, list) else []
+        if (_is_num(util) and util > 0) or foreign:
             r.checked += 1
             r.red += 1
             void = True
             if len(r.detail) < 5:
-                r.detail.append("gpu %s busy at t=%s: util %s pids %s" % (
-                    row.get("gpu_index"), row["t_rel_ns"], util, pids))
+                r.detail.append("gpu %s busy at t=%s: util %s pids %s (not of this launch: %s)"
+                                % (row.get("gpu_index"), row["t_rel_ns"], util, pids, foreign))
             continue
+        for p in pids if isinstance(pids, list) else []:
+            e = own_seen.setdefault((row.get("gpu_index"), p), [0, row["t_rel_ns"], None])
+            e[0] += 1
+            e[2] = row["t_rel_ns"]
         if row.get("query_rc") != 0 or not _is_num(util) or not isinstance(pids, list):
             unreadable += 1
             if unreadable <= 5:
@@ -610,9 +659,35 @@ def check_gpu_idle(ctx, ld, load_tiers):
         r.checked += 1
     if unreadable > 5:
         r.not_run.append("%d unreadable rows in the windows" % unreadable)
+    for (gi, p), (n, t0, t1) in sorted(own_seen.items(), key=lambda kv: str(kv[0])):
+        r.detail.append("gpu %s: pid %s (%s) held a compute context at util 0 in %d window "
+                        "row(s), t=%s..%s; not foreign" % (gi, p, own_pids[p], n, t0, t1))
     if r.red == 0 and r.checked < r.expected:
         r.not_run.append("%d of %d expected GPU rows in the windows" % (r.checked, r.expected))
     return r.finish(), void
+
+
+# ---- LAUNCH-STATE (launch level) -------------------------------------------------------------
+
+def check_launch_state(ctx):
+    """The launch-level conclusion of the writers before the judge (inputs._load_upstream:
+    STATE lines of caplaunch / capjobs, launch_end.json state and leftovers): VALID -> PASS,
+    NOT_RUN -> NOT_RUN, VOID / ENV_INVALID -> RED. The judge only sees the measurement files, so
+    it can make that conclusion worse but never better."""
+    r = Result("LAUNCH-STATE", "launch", "STATE lines before capjudge + launch_end.json")
+    up = ctx.upstream
+    r.expected = 1
+    r.checked = 1
+    for src in up["sources"]:
+        if src["status"] != "VALID":
+            r.detail.append("%s%s: %s (%s)" % (src["source"], " by %s" % src["by"]
+                                               if src.get("by") else "", src["status"],
+                                               src["reason"]))
+    if up["status"] in ("VOID", "ENV_INVALID"):
+        r.red = 1
+    elif up["status"] == "NOT_RUN":
+        r.not_run.append("launch recorded NOT_RUN before the judge")
+    return r.finish()
 
 
 # ---- PROBE-TIER (launch level) ---------------------------------------------------------------
@@ -785,8 +860,10 @@ def check_c13_launch(ctx, ld):
 
 def check_c13_tier(ctx, ld, td, record):
     """Per tier: window-boundary thread lists all identified; second half: busy ticks on each
-    under_test role's cores not explained by registered threads (minus irq/softirq when the
-    pilot's D14 result attributes it to the experiment), as a fraction of the cores' ticks."""
+    under_test role's cores not explained by registered threads, as a fraction of the cores'
+    ticks. Only softirq ticks are further subtracted, and only when the pilot's D14 result
+    (`irq_softirq_is_experiment`) is true: the registered D14 rule decides on softirq ticks
+    alone (capjudge.d14), so hard-irq ticks stay foreign."""
     r = Result("C13", td.tier.seq, "launch.json roles[measure_class=under_test] + pin_table")
     ut = [x["role"] for x in _roles_of(ctx, "under_test")]
     r.expected = len(ut)
@@ -806,7 +883,7 @@ def check_c13_tier(ctx, ld, td, record):
         r.not_run.append("second half: pilot.json has no D14 result")
         r.checked = len(ut)
         return r.finish()
-    cpus = _role_cpus(ld)
+    cpus = role_cpus(ld.pin_table)
     cpu_rows, th_rows = ld.sidecar("cpus"), ld.sidecar("threads")
     clk = (ld.sidecar_meta or {}).get("clk_tck")
     if cpu_rows is None or th_rows is None or not isinstance(clk, int):
@@ -818,11 +895,11 @@ def check_c13_tier(ctx, ld, td, record):
     for role in ut:
         r.checked += 1
         cores = cpus.get(role) or set()
-        frac = _foreign_frac(cpu_rows[1], th_rows[1], by_pid, role, cores, ws, we, clk,
-                             d14["irq_softirq_is_experiment"])
+        frac, why = _foreign_frac(cpu_rows[1], th_rows[1], by_pid, role, cores, ws, we, clk,
+                                  d14["irq_softirq_is_experiment"])
         key = band_key("T3", "foreign_busy_frac", role)
         if frac is None:
-            r.not_run.append("%s: no cpu rows for its cores in the window" % role)
+            r.not_run.append("%s: %s" % (role, why))
             continue
         record.setdefault(key, []).append(frac)
         band = ctx.bands.get(key)
@@ -835,36 +912,25 @@ def check_c13_tier(ctx, ld, td, record):
     return r.finish()
 
 
-def _first_last(rows, keyf, ws, we):
-    first, last = {}, {}
-    for row in rows:
-        t = row["t_rel_ns"]
-        if not ws <= t < we:
-            continue
-        k = keyf(row)
-        if k is None:
-            continue
-        if k not in first or t < first[k]["t_rel_ns"]:
-            first[k] = row
-        if k not in last or t > last[k]["t_rel_ns"]:
-            last[k] = row
-    return first, last
+BUSY_COLS = ("user", "nice", "system", "irq", "softirq", "steal")
 
 
-def _foreign_frac(cpu_rows, th_rows, by_pid, role, cores, ws, we, clk, irq_is_ours):
-    f, l = _first_last(cpu_rows, lambda x: x["cpu"] if x["cpu"] in cores else None, ws, we)
-    if not f or set(f) != cores:
-        return None
-    busy_keys = ("user", "nice", "system", "irq", "softirq", "steal")
-    busy = sum(l[c][k] - f[c][k] for c in cores for k in busy_keys)
-    irq = sum(l[c][k] - f[c][k] for c in cores for k in ("irq", "softirq"))
-    span_ns = max(l[c]["t_rel_ns"] - f[c]["t_rel_ns"] for c in cores)
+def _foreign_frac(cpu_rows, th_rows, by_pid, role, cores, ws, we, clk, softirq_is_ours):
+    """(fraction, None) or (None, why): busy ticks of `cores` minus the registered threads of
+    `role` (minus softirq when softirq_is_ours), over the cores' ticks in the window."""
+    d, why = cpu_tick_deltas(cpu_rows, cores, ws, we)
+    if why:
+        return None, why
+    busy = sum(d[c][k] for c in cores for k in BUSY_COLS)
+    own_softirq = sum(d[c]["softirq"] for c in cores) if softirq_is_ours else 0
+    span_ns = max(d[c]["t_last_rel_ns"] - d[c]["t_first_rel_ns"] for c in cores)
     if span_ns <= 0:
-        return None
-    tf, tl = _first_last(th_rows, lambda x: (x["pid"], x["tid"])
-                         if by_pid.get(x["pid"], {}).get("role") == role else None, ws, we)
+        return None, "cpu rows of cores %s span no time in the window" % sorted(cores)
+    tf, tl = first_last_in_window(th_rows, lambda x: (x["pid"], x["tid"])
+                                  if by_pid.get(x["pid"], {}).get("role") == role else None,
+                                  ws, we)
     threads = sum((tl[k]["utime_ticks"] + tl[k]["stime_ticks"])
                   - (tf[k]["utime_ticks"] + tf[k]["stime_ticks"]) for k in tf)
-    foreign = busy - threads - (irq if irq_is_ours else 0)
+    foreign = busy - threads - own_softirq
     total = len(cores) * span_ns * clk / NS
-    return foreign / total
+    return foreign / total, None

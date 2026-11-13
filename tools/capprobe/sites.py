@@ -4,12 +4,18 @@
 
 Pure data, no side effects: imported by capprobe itself (in product processes), by
 capprobe.overlay (written into the overlay manifest) and by capprobe.patchcheck (which verifies
-that every listed file:line in the probe tree really holds the guarded call for that site).
+that every listed file:line in the probe tree really holds the guarded call for that site), and
+loaded alone by path by caplaunch.scenario (PROC_KINDS validates each role's proc_kinds without
+importing the capprobe package). Keep it free of imports and side effects.
 
 `lines` lists, in ascending order, the line of the guarding `if` at every code location of the
 site in the PATCHED probe tree (branch capprobe-J17871). A site has one slot and one probe
 callable; when the event it counts is handled on more than one code path, each path carries the
 same guarded call and the site lists one line per path.
+
+`proc_kind` names the kind of process that passes the site (PROC_KINDS). A product role declares
+in its scenario `proc_kinds` every kind its process tree contains; the judge (C8) expects a
+window delta exactly at the sites whose kind is declared.
 """
 
 # Every group named in the design. Only IMPLEMENTED_GROUPS may be switched on in this build;
@@ -17,6 +23,24 @@ same guarded call and the site lists one line per path.
 ALL_GROUPS = ("count", "bytes", "lag", "queue", "ts", "pin")
 IMPLEMENTED_GROUPS = ("count", "lag")
 RESERVED_GROUPS = tuple(g for g in ALL_GROUPS if g not in IMPLEMENTED_GROUPS)
+
+# Process kinds: each kind is the set of sites that every process of that kind passes while it
+# serves the study's load (streaming /v1/completions). Roles declare kinds, never sites:
+#   new-architecture single frontend:  frontend, frontend_openengine, frontend_single
+#   new-architecture multi-frontend:   frontend, frontend_openengine, frontend_launcher,
+#                                      frontend_attached (one role: launcher + attached frontends)
+#   old-architecture trtllm-serve:     frontend
+PROC_KINDS = {
+    "frontend": "a process serving the OpenAI HTTP API through OpenAIServer: the new-architecture "
+                "single frontend, the multi-frontend launcher and its attached frontends, and "
+                "the old-architecture trtllm-serve frontend",
+    "frontend_openengine": "a new-architecture frontend (single, launcher or attached) reaching "
+                           "the engine through the OpenEngine client and facade",
+    "frontend_single": "the new-architecture single frontend (--num_serve_frontends 1, "
+                       "openengine_poc/launch.py)",
+    "frontend_launcher": "the new-architecture multi-frontend launcher process",
+    "frontend_attached": "a new-architecture multi-frontend attached frontend process",
+}
 
 # Count sites: one guarded call per pass on each code path; also the injection sites.
 COUNT_SITES = {
@@ -38,13 +62,13 @@ SITES = {
     "H3": {"group": "count", "proc_kind": "frontend",
            "file": "tensorrt_llm/serve/openai_server.py",
            "lines": [3064], "slots": ["count.H3.chunks"]},
-    "F2": {"group": "count", "proc_kind": "frontend",
+    "F2": {"group": "count", "proc_kind": "frontend_openengine",
            "file": "tensorrt_llm/grpc/openengine_client/stream.py",
            "lines": [267], "slots": ["count.F2.msgs"]},
-    "F4": {"group": "count", "proc_kind": "frontend",
+    "F4": {"group": "count", "proc_kind": "frontend_openengine",
            "file": "tensorrt_llm/serve/openengine_poc/facade.py",
            "lines": [1424, 1630], "slots": ["count.F4.dequeued"]},
-    "Lfe": {"group": "lag", "proc_kind": "frontend",
+    "Lfe": {"group": "lag", "proc_kind": "frontend_single",
            "file": "tensorrt_llm/serve/openengine_poc/launch.py",
            "lines": [137], "slots": ["lag.Lfe"]},
     "Lmfl": {"group": "lag", "proc_kind": "frontend_launcher",
@@ -56,19 +80,32 @@ SITES = {
 }
 
 # What one pass means (cross-reference only, not part of the INTERFACES.md SITES contract).
+# The lag sites share LAG_NOTE.
 SITE_NOTES = {
     "H1": {"what": "ServerArrivalTimeMiddleware.__call__: every ASGI scope of type http whose "
-                   "path starts with /v1/ (health checks, /metrics and other routes are not "
-                   "counted)"},
+                   "path starts with /v1/, whatever the route and status: generation requests, "
+                   "but also GET /v1/models, other /v1/ routes and 404s under /v1/ (capkit's "
+                   "load generators send only /v1/completions and /v1/chat/completions; /health "
+                   "and /metrics are outside /v1/). Counted again per process a request passes: "
+                   "an attached frontend forwards /v1/messages/batches routes to the launcher, "
+                   "which counts them a second time, and the disagg router installs the same "
+                   "middleware, so a request is counted at each probed hop"},
     "H3": {"what": "completion_generator: every pp_res before it is yielded "
                    "(/v1/completions streaming only; the chat stream generator is not "
                    "instrumented)"},
     "F2": {"what": "GenerateStream._read: every message read from the Generate call (not "
                    "EOF, not local cancellation; includes reads while draining after the "
                    "terminal event)"},
-    "F4": {"what": "OpenEngineRequestOutput: every event item dequeued from the per-request "
-                   "queue, on both paths that drain it: __anext__ without a postprocessing "
-                   "pool and _feed with one (end markers and error items are not counted)"},
+    "F4": {"what": "OpenEngineRequestOutput: every event item taken from the per-request queue "
+                   "while the request is live (end markers and error items are not counted; "
+                   "an item the engine cancelled is). Without a postprocessing pool, __anext__ "
+                   "takes items only while the response handler waits for its next output and "
+                   "stops once the request has finished, so F2 - F4 is the backlog in the "
+                   "queue. With a pool, _feed takes every item as soon as it arrives and counts "
+                   "it while the postprocessing session is open, so F2 - F4 stays near 0 and the "
+                   "backlog sits after F4 (in the pool and the result queue); items _feed takes "
+                   "between handing the final event to the pool and the session closing are "
+                   "counted, which the path without a pool does not count"},
     "Lfe": {"what": "single new-architecture frontend: run() on its uvloop, once "
                     "facade.start() has returned, before the HTTP server starts"},
     "Lmfl": {"what": "multi-frontend launcher: _run_launcher on its loop, once every attached "
@@ -76,6 +113,15 @@ SITE_NOTES = {
     "Lmfa": {"what": "multi-frontend attached frontend: _run_attached on its loop, once the "
                      "launcher listens, before serving"},
 }
+
+# What every lag.<site> histogram contains beyond the serving period.
+LAG_NOTE = ("The probe runs from installation until the process exits and is never stopped: "
+            "the HTTP server's own start-up (uvicorn start, the application lifespan start-up) "
+            "and the shutdown (draining, closing the facade, stopping attached frontends) are "
+            "in the histogram, in every snapshot after them and in the exit snapshot. The "
+            "judge reads only the change between the two snapshots of a tier window. On "
+            "uvloop, call_at has millisecond resolution, so every sample may be up to about "
+            "1 ms late on top of any real stall: lag below 1 ms is not resolved.")
 
 
 def _build_slots():

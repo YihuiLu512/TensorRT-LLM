@@ -11,20 +11,27 @@
   "job_id": "local-sample-gpu-util-unreadable",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "1000cb5256bf50e139e06f2462b9ff0fc84a09e684c2527ec78a894a8988b881",
+  "register_sha": "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013",
   "restart_count": 0,
   "role": "launch",
   "tier_label": null,
   "tier_seq": null,
   "worker": 0
  },
+ "leftovers": {
+  "after": [],
+  "before": [],
+  "marker_scan": "synthetic"
+ },
  "ready_at_rel_ns": {
   "capload": -1000000000,
   "nullsse": -2000000000
  },
+ "reason": "completed all tiers",
  "schema": "capkit.launch_end/1",
+ "state": "VALID",
  "stop": null,
  "tiers_completed": 5,
- "written_mono_ns": 9756177328591904,
- "written_wall": "2026-11-13T14:22:33.409Z"
+ "written_mono_ns": 9758838970838454,
+ "written_wall": "2026-11-13T15:06:55.051Z"
 }

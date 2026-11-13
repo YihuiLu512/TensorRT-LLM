@@ -6,6 +6,9 @@ The orchestrator builds every command line only from this table (INTERFACES.md 1
 scenario's verbatim extra args; it never guesses arguments from module or role names.
 """
 
+import functools
+import importlib.util
+import os
 import re
 
 from capcommon.exitcodes import ConfigError
@@ -13,6 +16,24 @@ from capcommon.expect import validate_reconcile
 from capcommon.identity import EXPERIMENT_RE, ROLE_RE
 
 SCHEMA = "capkit.scenario/1"
+
+_CAPPROBE_SITES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "capprobe", "sites.py")
+
+
+@functools.lru_cache(maxsize=None)
+def probe_proc_kinds():
+    """capprobe's process kinds (PROC_KINDS of tools/capprobe/sites.py). sites.py is loaded
+    alone, by path: importing the capprobe package would parse this process's CAPPROBE_*."""
+    try:
+        spec = importlib.util.spec_from_file_location("_caplaunch_capprobe_sites",
+                                                      _CAPPROBE_SITES)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return frozenset(mod.PROC_KINDS)
+    except (OSError, AttributeError) as e:
+        raise ConfigError("cannot read capprobe process kinds from %s: %s"
+                          % (_CAPPROBE_SITES, e)) from e
 
 # Which INTERFACES.md 11 argument groups each capkit tool takes. identity, --run-dir,
 # --stop-grace-s and --cpus ("common") are passed to every capkit tool.
@@ -191,13 +212,18 @@ def validate_role(r, role_names, params):
                                              for k, v in r["env"].items()):
         _err(where, "env must map str -> str")
     # proc_kinds: the capprobe process kinds (capprobe SITES proc_kind) this role runs; the judge
-    # decides from them which overlay sites C8 expects. Only product roles run probed code.
+    # decides from them which overlay sites C8 expects, so an unknown name (a typo) would only
+    # drop sites from C8. Only product roles run probed code.
     pk = r["proc_kinds"]
     if not isinstance(pk, list) or any(not isinstance(k, str) or not k for k in pk) \
             or len(set(pk)) != len(pk):
         _err(where, "proc_kinds must be a list of distinct non-empty strings")
     if pk and r["launcher"] != "product":
         _err(where, "only product roles run probed code; proc_kinds must be []")
+    unknown = sorted(set(pk) - probe_proc_kinds()) if pk else []
+    if unknown:
+        _err(where, "unknown proc_kinds %s (capprobe PROC_KINDS: %s)"
+             % (unknown, sorted(probe_proc_kinds())))
     tool = {}
     if r["launcher"] == "capkit":
         if r.get("module") not in TOOL_TABLE or "command" in r:
@@ -221,6 +247,12 @@ def validate_role(r, role_names, params):
             _err(where, "product roles need a non-empty command list and no module")
         if r["probe_tier"] not in PROBE_TIERS:
             _err(where, "product roles need probe_tier in %s" % (PROBE_TIERS,))
+        # With P1/P2 the role's processes run probe groups and write snapshots; scope none would
+        # drop them from the expected snapshot writers, so a probe that stayed off (e.g. its
+        # CAPPROBE_ENTRY rule did not match) would leave no missing snapshot for RECORDS to see.
+        if r["probe_tier"] in ("P1", "P2") and r["snapshots"] == "none":
+            _err(where, "probe_tier %s runs probe groups; snapshots must not be none"
+                 % r["probe_tier"])
         port = r.get("port")
         if not isinstance(port, dict) or port.get("kind") not in PORT_KINDS:
             _err(where, "product roles need port {kind: %s, host}" % (PORT_KINDS,))

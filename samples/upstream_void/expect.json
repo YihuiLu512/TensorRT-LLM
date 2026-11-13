@@ -1,0 +1,13 @@
+{
+ "exit_code": 10,
+ "red_checks": [
+  "LAUNCH-STATE"
+ ],
+ "state_last": "VOID",
+ "synthetic": true,
+ "tier_verdicts": {
+  "2": "VOID",
+  "4": "VOID"
+ },
+ "tree": "runs/Jlocal-sample-upstream-void-r0-L0_synthetic-a"
+}

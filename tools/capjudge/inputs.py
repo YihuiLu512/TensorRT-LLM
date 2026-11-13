@@ -15,7 +15,7 @@ from capcommon.exitcodes import ConfigError
 from capcommon.hashing import is_sha256_hex, sha256_file
 from capcommon.identity import LAUNCH_KEY_FIELDS
 from capcommon.jsonio import read_json, read_json_stamped
-from capcommon.runtree import RunTree
+from capcommon.runtree import STATE_VALUES, RunTree, read_state, worst_state
 from capcommon.snapshot import SnapshotError, read_snapshot_file
 from capcommon.tiers import TierTable, TierTableError
 
@@ -64,6 +64,7 @@ class Ctx:
         self.checks_applied = []
         self.submission = None
         self.identity_scan = None
+        self.upstream = None  # launch-level conclusion of the writers before the judge
 
     def note_file(self, path, sha=None):
         rel = os.path.relpath(path, self.root)
@@ -331,6 +332,47 @@ def _file_identity(p):
     return _NO_IDENTITY
 
 
+JUDGE_WRITER = "capjudge"
+
+
+def _load_upstream(ctx):
+    """The launch-level conclusion recorded before the judge (INTERFACES 5.7): every STATE line
+    not written by capjudge (caplaunch, capjobs.launches, ...) plus raw/launch_end.json `state`
+    and `leftovers.after`. ctx.upstream = {status: the worst of them, sources: [...]}. The judge
+    can make this worse, never better (it does not see leftovers, budget kills or copy-back
+    checks). No STATE line from any earlier writer -> INPUT_INVALID (the tree is not finished:
+    judge it once the job has recorded its outcome)."""
+    try:
+        lines = read_state(ctx.root)
+    except (ConfigError, OSError, UnicodeDecodeError) as e:
+        raise InputInvalid("STATE", "unreadable: %s" % e)
+    srcs = [{"source": "STATE", "by": by, "status": st, "reason": reason, "at": at}
+            for at, st, by, reason in lines if by != JUDGE_WRITER]
+    if not srcs:
+        raise InputInvalid("STATE", "no line from caplaunch or capjobs (%d line(s) in all): the "
+                                    "launch outcome is not recorded yet" % len(lines))
+    ctx.note_file(ctx.tree.state_file)
+    le_path = ctx.tree.launch_end_json
+    try:
+        le = read_json(le_path) if os.path.isfile(le_path) else None
+    except (OSError, ValueError) as e:
+        raise InputInvalid("launch_end.json", "unreadable: %s" % e)
+    if not isinstance(le, dict):
+        srcs.append({"source": "launch_end.json", "status": "NOT_RUN",
+                     "reason": "raw/launch_end.json missing or not an object"})
+    else:
+        ctx.note_file(le_path)
+        st = le.get("state")
+        srcs.append({"source": "launch_end.json state", "status": st if st in STATE_VALUES
+                     else "NOT_RUN", "reason": "state %r: %s" % (st, le.get("reason"))})
+        after = (le.get("leftovers") or {}).get("after") if isinstance(le.get("leftovers"),
+                                                                        dict) else None
+        if after:
+            srcs.append({"source": "launch_end.json leftovers.after", "status": "VOID",
+                         "reason": "%d process(es) of this launch outlived it" % len(after)})
+    ctx.upstream = {"status": worst_state(s["status"] for s in srcs), "sources": srcs}
+
+
 def verify(workdir, tree_root):
     """Run every input check in the fixed order of INTERFACES 10.1; return the Ctx."""
     ctx = Ctx(workdir, tree_root)
@@ -342,4 +384,5 @@ def verify(workdir, tree_root):
     _load_tier_table_and_schedule(ctx)
     _check_reconcile_and_scenario(ctx)
     _scan_identities(ctx)
+    _load_upstream(ctx)
     return ctx

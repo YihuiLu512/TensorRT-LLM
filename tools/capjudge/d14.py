@@ -23,9 +23,13 @@ A role satisfies the rule when its idle softirq_frac <= idle_softirq_frac_max ("
 every load tier's softirq_frac >= idle softirq_frac + load_min_excess_frac, and the load tiers'
 softirq_frac, ordered by load (tier table axis order), never drop by more than
 monotonic_slack_frac ("grows with load"). A tree is complete when every under_test role has the
-idle reading and at least one load reading. With at least min_trees complete trees the result
-is irq_softirq_is_experiment = every role of every complete tree satisfies the rule; otherwise
-(or when the rule was registered too late) no conclusion is written and C13 stays NOT_RUN.
+idle reading and at least one load reading. The idle reading is per job (the gate runs once per
+job run, and every tree of that run carries a copy), so complete trees are also counted by their
+job run (job_id, restart_count): min_trees applies to both counts, i.e. a conclusion needs at
+least min_trees complete trees (independent load readings) coming from at least min_trees job
+runs (independent idle readings). With both counts reached the result is
+irq_softirq_is_experiment = every role of every complete tree satisfies the rule; otherwise (or
+when the rule was registered too late) no conclusion is written and C13 stays NOT_RUN.
 """
 
 import json
@@ -34,10 +38,11 @@ import os
 from capcommon import ledger
 from capcommon.hashing import sha256_file
 
+from .treedata import STAT_COLS, cpu_tick_deltas
+
 RULE_SCHEMA = "capkit.d14_rule/1"
 REGISTRY_KIND = "d14_rule"
 FRAC_KEYS = ("idle_softirq_frac_max", "load_min_excess_frac", "monotonic_slack_frac")
-STAT_COLS = ("user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal")
 GATE_FILE = "exclusivity.json"
 IDLE_ITEM = 6
 
@@ -111,33 +116,26 @@ def _totals(rd):
 
 
 def load_reading(cpu_rows, cores, ws, we):
-    """Reading of `cores` over [ws, we) from sidecar cpus rows, or (None, why)."""
-    first, last = {}, {}
-    for row in cpu_rows:
-        t, c = row.get("t_rel_ns"), row.get("cpu")
-        if c not in cores or not isinstance(t, int) or not ws <= t < we:
-            continue
-        if c not in first or t < first[c]["t_rel_ns"]:
-            first[c] = row
-        if c not in last or t > last[c]["t_rel_ns"]:
-            last[c] = row
-    missing = sorted(set(cores) - {c for c in first if last[c] is not first[c]})
-    if missing:
-        return None, "fewer than two sidecar cpu rows in the window for cores %s" % missing
+    """Reading of `cores` over [ws, we) from sidecar cpus rows, or (None, why); the window scan
+    is treedata.cpu_tick_deltas, shared with C13 (an offline core makes the reading
+    incomplete)."""
+    deltas, why = cpu_tick_deltas(cpu_rows, cores, ws, we)
+    if why:
+        return None, why
     out = {"source": "raw/sidecar/cpus.jsonl", "per_core": {}}
-    for c in sorted(cores):
-        d = {k: last[c][k] - first[c][k] for k in STAT_COLS}
+    for c, d in sorted(deltas.items()):
         out["per_core"][str(c)] = {"softirq_ticks": d["softirq"], "irq_ticks": d["irq"],
-                                   "total_ticks": sum(d.values()),
-                                   "t_first_rel_ns": first[c]["t_rel_ns"],
-                                   "t_last_rel_ns": last[c]["t_rel_ns"]}
+                                   "total_ticks": sum(d[k] for k in STAT_COLS),
+                                   "t_first_rel_ns": d["t_first_rel_ns"],
+                                   "t_last_rel_ns": d["t_last_rel_ns"]}
     return _totals(out), None
 
 
 def tree_readings(ctx, ld, role_cpus, seqs):
     """Readings of one launch tree: {"roles": {role: {...}}, "complete": bool, "why": ...}."""
     ut = sorted(r["role"] for r in ctx.roles.values() if r.get("measure_class") == "under_test")
-    rec = {"roles": {}, "complete": False, "why": None}
+    rec = {"roles": {}, "complete": False, "why": None,
+           "job_run": [ctx.ident.job_id, ctx.ident.restart_count]}
     if not ut:
         rec["why"] = "no under_test role"
         return rec
@@ -193,7 +191,8 @@ def conclude(rule, rule_rec, trees, submitted_at):
     """The pilot.json d14_softirq object. trees: [(tree relpath, readings)]; submitted_at:
     {tree relpath: submitted_at or None}."""
     out = {"rule": rule, "rule_file": rule_rec, "readings": {}, "n_trees_complete": 0,
-           "conclusion_reason": None}
+           "n_job_runs_complete": 0, "conclusion_reason": None}
+    job_runs = set()
     late = sorted(t for t, at in submitted_at.items()
                   if not at or not ledger.registered_before(rule_rec, at))
     verdicts = []
@@ -204,12 +203,19 @@ def conclude(rule, rule_rec, trees, submitted_at):
                 verdicts.append((r["idle_close_to_zero"], r["grows_with_load"]))
         out["readings"][tree] = rec
         out["n_trees_complete"] += bool(rec["complete"])
+        if rec["complete"]:
+            job_runs.add(tuple(rec["job_run"]))
+    out["n_job_runs_complete"] = len(job_runs)
     if late:
         out["conclusion_reason"] = ("rule not registered before the submission of %s (or no "
                                     "submitted_at): no conclusion" % late)
     elif out["n_trees_complete"] < rule["min_trees"]:
         out["conclusion_reason"] = ("%d complete tree(s) < min_trees %d: no conclusion"
                                     % (out["n_trees_complete"], rule["min_trees"]))
+    elif out["n_job_runs_complete"] < rule["min_trees"]:
+        out["conclusion_reason"] = ("complete trees come from %d job run(s) (one idle reading "
+                                    "each) < min_trees %d: no conclusion"
+                                    % (out["n_job_runs_complete"], rule["min_trees"]))
     elif any(a is None or b is None for a, b in verdicts):
         out["conclusion_reason"] = "a reading has no tick total or no load order: no conclusion"
     else:

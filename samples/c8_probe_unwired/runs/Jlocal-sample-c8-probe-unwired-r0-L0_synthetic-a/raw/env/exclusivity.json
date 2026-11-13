@@ -6,7 +6,7 @@
   "job_id": "local-sample-c8-probe-unwired",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "1000cb5256bf50e139e06f2462b9ff0fc84a09e684c2527ec78a894a8988b881",
+  "register_sha": "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013",
   "restart_count": 0,
   "role": "gate",
   "tier_label": null,
@@ -64,6 +64,6 @@
  "schema": "capkit.exclusivity/1",
  "slurm_view_error": null,
  "slurm_view_file": "synthetic",
- "written_mono_ns": 9756175932017271,
- "written_wall": "2026-11-13T14:22:32.012Z"
+ "written_mono_ns": 9758837435284142,
+ "written_wall": "2026-11-13T15:06:53.515Z"
 }

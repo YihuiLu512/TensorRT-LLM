@@ -14,7 +14,6 @@ import re
 import secrets
 import shutil
 import signal
-import stat
 import subprocess
 import sys
 import time
@@ -88,15 +87,12 @@ def _rel_inside(path, root, what):
 
 
 def _private_dir(path, what):
-    """capcommon.snapshot.ensure_own_dir (create 0700; refuse a symlink, a non-directory or
-    another user's directory), and also refuse a directory group or others can write into: they
-    could plant <pid>.bin symlinks there that the orchestrator would read."""
-    ensure_own_dir(path)
-    mode = stat.S_IMODE(os.lstat(os.path.normpath(path)).st_mode)
-    if mode & 0o022:
-        raise ConfigError("%s %s must not be writable by group or others (mode %o)"
-                          % (what, path, mode))
-    return path
+    """capcommon.snapshot.ensure_own_dir (its checks cover the last path component only); `what`
+    names the option or directory in the error."""
+    try:
+        return ensure_own_dir(path)
+    except SnapshotError as e:
+        raise ConfigError("%s: %s" % (what, e)) from e
 
 
 class _GateTimeout(Exception):
@@ -157,6 +153,7 @@ class Launch:
         self._check_provenance()
         self._check_nvidia_smi()
         self._load_inputs()
+        self._check_outer_probe_env()
         self._load_overlay()
         self.taskset = shutil.which("taskset")
         if self.taskset is None:
@@ -178,6 +175,20 @@ class Launch:
         self.cleaning = False  # set by the first stop signal or when the timeline is over
         self.hurry = False  # a stop signal arrived during cleanup: SIGKILL without grace
         self.signals = []
+
+    def _check_outer_probe_env(self):
+        """An outer CAPPROBE_TIER / CAPPROBE_GROUPS that contradicts the scenario is a config
+        error before anything is written or started (product roles get the scenario's values)."""
+        if not any(d["launcher"] == "product" for d in self.roles.values()):
+            return
+        for key, val in self._probe_switches():
+            if key in os.environ and os.environ[key] != val:
+                raise ConfigError("environment %s=%r conflicts with scenario %r"
+                                  % (key, os.environ[key], val))
+
+    def _probe_switches(self):
+        return (("CAPPROBE_TIER", self.scen["probe_tier"]),
+                ("CAPPROBE_GROUPS", ",".join(self.scen["probe_groups"])))
 
     def _check_provenance(self):
         a = self.a
@@ -307,8 +318,11 @@ class Launch:
     def _prepare_tree(self):
         T = self.tree
         _private_dir(T.root, "--run-dir")
-        if os.path.exists(T.launch_json):
-            raise ConfigError("%s already has raw/launch.json (one launch per tree)" % T.root)
+        # the orchestrator is the first writer of a fresh tree: never after another STATE line
+        for f in (T.launch_json, T.state_file):
+            if os.path.exists(f):
+                raise ConfigError("%s already has %s (one launch per tree)"
+                                  % (T.root, os.path.relpath(f, T.root)))
         self.shm_dir = launch_shm_subdir(self.a.shm_dir, self.a.restart_count, self.a.launch_seq)
         _private_dir(self.a.shm_dir, "--shm-dir")
         _private_dir(self.shm_dir, "snapshot dir")
@@ -418,24 +432,14 @@ class Launch:
                                            "identity": ident}) + "\n").encode())
 
     def _probe_entry_record(self):
-        """launch.json `probe_entry`: the CAPPROBE_ENTRY rule of each product role. The exact
-        rule (with {addr:...} resolved) is fixed when the role starts and is recorded on its
-        roles.json procs[] entry (`probe_entry`) and in the start event."""
-        ctx = self._ctx()
-        roles = {}
-        for n, d in self.roles.items():
-            if d["launcher"] != "product":
-                continue
-            argv = sc.build_argv(d, ctx, self.cpus_of[n], sys.executable, runtime=False)
-            path = d["env"].get("PATH", os.environ.get("PATH", os.defpath))
-            try:
-                prog, err = probe_entry.build_rule(argv, self._role_cwd(n), path)["program"], None
-            except probe_entry.EntryRuleError as e:
-                prog, err = None, str(e)
-            roles[n] = {"program": prog, "args_template": argv[1:], "error": err}
+        """launch.json `probe_entry`: which roles get a CAPPROBE_ENTRY rule and how it matches.
+        The rule itself is built once, from the role's runtime argv, when the role starts; that
+        object is what is injected and what roles.json procs[].probe_entry and the start event
+        record."""
         return {"env": probe_entry.ENV_VAR, "schema": probe_entry.SCHEMA,
                 "match": probe_entry.MATCH_RULE,
-                "exact_rule_in": "procs/roles.json procs[].probe_entry", "roles": roles}
+                "exact_rule_in": "procs/roles.json procs[].probe_entry",
+                "roles": sorted(n for n, d in self.roles.items() if d["launcher"] == "product")}
 
     def _write_roles(self):
         self.generation += 1
@@ -444,11 +448,9 @@ class Launch:
                             "unattributed": self.unattributed, "aux_helpers": self.aux_helpers})
 
     # ---- processes ---------------------------------------------------------------------------
-    def _role_env(self, d, argv=None):
-        """Environment of one role. Product roles get the capprobe switches and CAPPROBE_ENTRY,
-        the rule that names exactly the command line `argv` this role is started with (only that
-        process may switch probes on; INTERFACES erratum R1b). Other roles never carry an entry
-        rule."""
+    def _role_env(self, d):
+        """Environment of one role, without an entry rule (see _entry_rule). Product roles get
+        the capprobe switches; no role inherits an outer CAPPROBE_ENTRY."""
         env = dict(os.environ)
         env.update(d["env"])
         env.pop(probe_entry.ENV_VAR, None)
@@ -457,29 +459,29 @@ class Launch:
         if d["launcher"] == "product":
             if not d.get("keep_numa_affinity_env", False):
                 env["TLLM_NUMA_AWARE_WORKER_AFFINITY"] = "0"  # D2: worker must not unpin
-            for key, val in (("CAPPROBE_TIER", self.scen["probe_tier"]),
-                             ("CAPPROBE_GROUPS", ",".join(self.scen["probe_groups"]))):
-                if key in os.environ and os.environ[key] != val:
-                    raise ConfigError("environment %s=%r conflicts with scenario %r"
-                                      % (key, os.environ[key], val))
-                env[key] = val
+            env.update(self._probe_switches())  # outer conflicts: _check_outer_probe_env
             env["CAPPROBE_SHM_DIR"] = self.shm_dir
             env["CAPPROBE_INTERVAL_MS"] = str(self.a.snapshot_interval_ms)
             env["CAPPROBE_IDENTITY_FILE"] = self.tree.procs("identity", "%s.json" % d["role"])
             env["CAPPROBE_ROLE_HINT"] = d["role"]
-            try:
-                rule = probe_entry.build_rule(argv, self._role_cwd(d["role"]),
-                                              env.get("PATH", os.defpath))
-            except probe_entry.EntryRuleError as e:
-                raise LaunchAbort("NOT_RUN", "role %s: %s" % (d["role"], e), RUNTIME)
-            env[probe_entry.ENV_VAR] = probe_entry.encode(rule)
-            self.rt[d["role"]].probe_entry = rule
         return env
+
+    def _entry_rule(self, d, argv, env):
+        """CAPPROBE_ENTRY rule of a product role: names exactly the command line `argv` it is
+        started with, resolved with that role's own PATH and cwd (only that process may switch
+        probes on; INTERFACES erratum R1b). None for other roles."""
+        if d["launcher"] != "product":
+            return None
+        try:
+            return probe_entry.build_rule(argv, self._role_cwd(d["role"]),
+                                          env.get("PATH", os.defpath))
+        except probe_entry.EntryRuleError as e:
+            raise LaunchAbort("NOT_RUN", "role %s: %s" % (d["role"], e), RUNTIME)
 
     def _role_cwd(self, name):
         return os.path.join(self.tree.control_dir, "cwd", name)
 
-    def _register(self, pid, role, worker, parent, via, cpus):
+    def _register(self, pid, role, worker, parent, via, cpus, probe_entry_rule=None):
         st = procfs.starttime_ticks(pid, self.proc_root)
         for p in self.procs:
             if p["pid"] == pid and p["starttime_ticks"] == st:
@@ -489,6 +491,8 @@ class Launch:
                  "cpus": cpus, "cpus_readback": procfs.cpus_allowed_list(pid, None,
                                                                           self.proc_root),
                  "discovered_via": via, "registered_mono_ns": now_ns()}
+        if probe_entry_rule is not None:
+            entry["probe_entry"] = probe_entry_rule
         self.procs.append(entry)
         self.unattributed = [u for u in self.unattributed
                              if not (u["pid"] == pid and u["starttime_ticks"] == st)]
@@ -504,13 +508,18 @@ class Launch:
         logdir = os.path.join(self.tree.raw, "logs")
         tmp_out = os.path.join(logdir, "%s.w0.starting.out" % name)
         tmp_err = os.path.join(logdir, "%s.w0.starting.err" % name)
+        env = self._role_env(d)
+        rule = self._entry_rule(d, argv, env)
+        if rule is not None:
+            env[probe_entry.ENV_VAR] = probe_entry.encode(rule)
         with open(tmp_out, "wb") as fo, open(tmp_err, "wb") as fe:
             try:
-                rt.popen = subprocess.Popen(full, env=self._role_env(d, argv), stdout=fo,
+                rt.popen = subprocess.Popen(full, env=env, stdout=fo,
                                             stderr=fe, stdin=subprocess.DEVNULL,
                                             start_new_session=True, cwd=self._role_cwd(name))
             except OSError as e:
                 raise LaunchAbort("NOT_RUN", "cannot start role %s: %s" % (name, e), RUNTIME)
+        rt.probe_entry = rule
         rt.pid = rt.popen.pid
         rt.started_ns = now_ns()
         rt.argv = full
@@ -519,10 +528,7 @@ class Launch:
         os.replace(tmp_err, err)
         rt.logs = [out, err]
         rt.starttime = procfs.starttime_ticks(rt.pid, self.proc_root)
-        entry = self._register(rt.pid, name, 0, os.getpid(), "launched", rt.cpus)
-        if rt.probe_entry is not None:
-            entry["probe_entry"] = rt.probe_entry
-            self._write_roles()
+        self._register(rt.pid, name, 0, os.getpid(), "launched", rt.cpus, rule)
         self._log("start", role=name, pid=rt.pid, argv=full, probe_entry=rt.probe_entry)
 
     def _log(self, what, **kw):
@@ -1151,8 +1157,8 @@ class Launch:
                     rt.forced = ("SIGKILL to process group after a stop signal during cleanup"
                                  if self.hurry else
                                  "SIGKILL to process group after %.1fs" % grace)
-                    try:
-                        os.killpg(rt.pid, signal.SIGKILL)
+                    try:  # popen.pid: a stop signal can land before rt.pid is assigned
+                        os.killpg(rt.popen.pid, signal.SIGKILL)
                     except (ProcessLookupError, PermissionError):
                         rt.popen.kill()
                     rt.popen.wait()

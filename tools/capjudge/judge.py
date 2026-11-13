@@ -5,16 +5,21 @@
     python3 -m capjudge --tree <launch tree> --workdir <W>
 
 Exactly one tree, no globs; a tree is judged once. Every run that gets past the two
-already-judged checks (JUDGED.tsv row, <tree>/judge exists) writes into a fresh attempt
+already-judged checks (<tree>/judge exists, JUDGED.tsv row) writes into a fresh attempt
 directory <tree>/judge.attempts/<attempt>/ with attempt.json. Only a run that produced verdicts
 renames its attempt directory to <tree>/judge (atomic; that rename is the judged-once mark),
-then appends one JUDGED.tsv row and one STATE line. INPUT_INVALID and exceptions leave their
-attempt directory (inputs.json / judge.log / attempt.json) for review and no judge/, so the
-tree can be judged once its inputs are fixed.
+then appends one JUDGED.tsv row and one STATE line. The STATE line is the worse of the judge's
+launch verdict and the conclusion recorded before it (caplaunch / capjobs STATE lines,
+launch_end.json): the judge never improves on it. A later run that finds judge/ without its
+ledger row or STATE line (the committing run died after the rename) appends the missing ones
+from judge/ as written, without judging again. INPUT_INVALID and exceptions before the rename
+leave their attempt directory (inputs.json / judge.log / attempt.json) for review and no
+judge/, so the tree can be judged once its inputs are fixed.
 """
 
 import argparse
 import os
+import socket
 import subprocess
 import sys
 import traceback
@@ -23,7 +28,7 @@ from capcommon import exitcodes, ledger
 from capcommon.clock import wall_iso
 from capcommon.hashing import is_git_sha, sha256_file
 from capcommon.jsonio import atomic_write_bytes, dumps, read_json, write_json_stamped
-from capcommon.runtree import append_state
+from capcommon.runtree import append_state, read_state, worst_state
 
 from . import checks as C
 from . import inputs as I
@@ -51,6 +56,12 @@ class Log:
 
     def close(self):
         self.f.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
 
 
 def code_sha():
@@ -100,6 +111,9 @@ def main(argv=None):
         return exitcodes.JUDGE_NOT_RUN
     key = _judged_key(launch_path)
     judged_tsv = os.path.join(W, "JUDGED.tsv")
+    jdir = os.path.join(tree, "judge")
+    if os.path.lexists(jdir):
+        return _finish_commit(tree, W, jdir, key, judged_tsv)
     if key is not None:
         try:
             hit = ledger.judged_lookup(judged_tsv, *key)
@@ -109,13 +123,9 @@ def main(argv=None):
             sys.stderr.write("capjudge: ALREADY_JUDGED: %s judged at %s (%s)\n"
                              % (key, hit["judged_at"], hit["tree_relpath"]))
             return exitcodes.JUDGE_ALREADY_JUDGED
-    jdir = os.path.join(tree, "judge")
-    if os.path.lexists(jdir):
-        sys.stderr.write("capjudge: ALREADY_JUDGED: %s exists\n" % jdir)
-        return exitcodes.JUDGE_ALREADY_JUDGED
     adir = _new_attempt_dir(tree)
     att = {"schema": ATTEMPT_SCHEMA, "tree": tree, "workdir": W, "pid": os.getpid(),
-           "started_wall": wall_iso()}
+           "host": socket.gethostname(), "started_wall": wall_iso()}
     cur = adir  # where the attempt's files are now (adir, or jdir once committed)
     log = Log(os.path.join(adir, "judge.log"))
     try:
@@ -182,14 +192,94 @@ def _lost_race(adir, att, log, why):
 
 
 def _commit(tree, W, c):
+    _append_judged(tree, W, c["ident"].to_dict(), c["vsha"])
+    sl = c["state_line"]
+    append_state(tree, sl["status"], _state_reason(sl, c["vsha"]), I.JUDGE_WRITER)
+
+
+def _append_judged(tree, W, ident, vsha):
     ledger.judged_append(os.path.join(W, "JUDGED.tsv"), {
-        "job_id": c["ident"].job_id, "restart_count": c["ident"].restart_count,
-        "launch_seq": c["ident"].launch_seq, "arm": c["ident"].arm,
-        "experiment": c["ident"].experiment, "tree_relpath": os.path.relpath(tree, W),
-        "verdicts_sha256": c["vsha"]})
-    lv = c["launch_verdict"]
-    append_state(tree, STATE_OF[lv], "launch_verdict=%s verdicts_sha=%s" % (lv, c["vsha"][:12]),
-                 "capjudge")
+        "job_id": ident["job_id"], "restart_count": ident["restart_count"],
+        "launch_seq": ident["launch_seq"], "arm": ident["arm"],
+        "experiment": ident["experiment"], "tree_relpath": os.path.relpath(tree, W),
+        "verdicts_sha256": vsha})
+
+
+def _state_reason(sl, vsha):
+    return "%s verdicts_sha=%s" % (sl["reason"], vsha[:12])
+
+
+def _finish_commit(tree, W, jdir, key, judged_tsv):
+    """<tree>/judge exists: the tree is judged. If the run that renamed its attempt directory
+    to judge/ died before appending its JUDGED.tsv row or its STATE line, append the missing
+    one(s) now from judge/ as written (verdicts.json state_line and sha; nothing is re-judged)
+    and return the recorded exit code. Otherwise (both present, or judge/ cannot be read, or
+    its writer may still be running) ALREADY_JUDGED."""
+    def refuse(why):
+        sys.stderr.write("capjudge: ALREADY_JUDGED: %s exists (%s)\n" % (jdir, why))
+        return exitcodes.JUDGE_ALREADY_JUDGED
+
+    vpath = os.path.join(jdir, "verdicts.json")
+    try:
+        att = read_json(os.path.join(jdir, "attempt.json"))
+        verdicts = read_json(vpath)
+        vsha = sha256_file(vpath)
+        sl = verdicts["state_line"]
+        code = verdicts["exit_code"]
+        ident = verdicts["identity"]
+        state_lines = read_state(tree)
+        hit = ledger.judged_lookup(judged_tsv, *key) if key is not None else None
+        if not isinstance(att, dict) or not isinstance(ident, dict):
+            raise TypeError("attempt.json or verdicts.json identity is not an object")
+    except (OSError, ValueError, KeyError, TypeError, exitcodes.ConfigError) as e:
+        return refuse("cannot check that its ledger row and STATE line exist: %s" % (e,))
+    mark = "verdicts_sha=%s" % vsha[:12]
+    has_state = any(by == I.JUDGE_WRITER and reason.endswith(mark)
+                    for _at, _st, by, reason in state_lines)
+    if hit is not None and hit["verdicts_sha256"] != vsha:
+        return refuse("JUDGED.tsv row has verdicts_sha256 %s, judge/verdicts.json is %s"
+                      % (hit["verdicts_sha256"], vsha))
+    if hit is not None and has_state:
+        return refuse("judged at %s" % hit["judged_at"])
+    if key is None:
+        return refuse("no launch key in raw/launch.json: cannot complete the JUDGED.tsv row")
+    if att.get("status") == "JUDGED" and att.get("host") == socket.gethostname() \
+            and _pid_alive(att.get("pid")):
+        return refuse("its writer pid %s may still be committing" % att.get("pid"))
+    done = []
+    with Log(os.path.join(jdir, "judge.log")) as log:
+        log("completing the commit of %s (pid %d): ledger row %s, STATE line %s"
+            % (jdir, os.getpid(), "present" if hit else "missing",
+               "present" if has_state else "missing"))
+        if hit is None:
+            try:
+                _append_judged(tree, W, ident, vsha)
+            except exitcodes.ConfigError as e:  # another run added the row meanwhile
+                log("JUDGED.tsv append refused: %s" % e)
+                return refuse("JUDGED.tsv append refused: %s" % e)
+            done.append("JUDGED.tsv row")
+        if not has_state:
+            append_state(tree, sl["status"], _state_reason(sl, vsha), I.JUDGE_WRITER)
+            done.append("STATE line")
+        att = dict(att, status="JUDGED", exit_code=code, commit_completed={
+            "pid": os.getpid(), "host": socket.gethostname(), "wall": wall_iso(),
+            "appended": done})
+        atomic_write_bytes(os.path.join(jdir, "attempt.json"), (dumps(att) + "\n").encode())
+        log("done: appended %s from judge/ (not re-judged); exit=%d" % (done, code))
+    sys.stderr.write("capjudge: completed the commit of %s: appended %s\n" % (jdir, done))
+    return code
+
+
+def _pid_alive(pid):
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _judged_key(launch_path):
@@ -229,7 +319,8 @@ def _judge(tree, W, adir, log):
     lv = result["verdicts"]["launch_verdict"]
     log("verdicts written: launch_verdict=%s exit=%d" % (lv, result["verdicts"]["exit_code"]))
     return result["verdicts"]["exit_code"], {"ident": ctx.ident, "vsha": sha256_file(vpath),
-                                             "launch_verdict": lv}
+                                             "launch_verdict": lv,
+                                             "state_line": result["verdicts"]["state_line"]}
 
 
 def _write_checks_tsv(path, rows):
@@ -256,9 +347,10 @@ def judge_tree(ctx, log, code_ok=True, code_note=""):
     applied = set(ctx.checks_applied)
     rows = []
     # ---- launch-level preconditions -----------------------------------------------------
-    launch_res = [C.check_c10(ctx, ld)]
+    launch_res = [C.check_launch_state(ctx), C.check_c10(ctx, ld)]
     load_tiers = [t for t in tt.tiers if t.kind in ("up", "down")]
-    gpu, gpu_void = C.check_gpu_idle(ctx, ld, load_tiers)
+    gpu, gpu_void = C.check_gpu_idle(ctx, ld, load_tiers,
+                                     own_pids=C.launch_pids(ld, tds.values()))
     launch_res.append(gpu)
     if "C13" in applied:
         launch_res.append(C.check_c13_launch(ctx, ld))
@@ -364,10 +456,14 @@ def _launch_verdict(ctx, tier_out, launch_res, launch_p, gpu_void):
         lv, code = "NOT_RUN", exitcodes.JUDGE_NOT_RUN
     else:
         lv, code = "VALID", exitcodes.JUDGE_PASS
+    up = ctx.upstream
+    state = worst_state([STATE_OF[lv], up["status"]])
+    reason = "launch_verdict=%s upstream=%s" % (lv, up["status"])
     boundary = stats.t4_boundary([{"seq": e["tier_seq"], "order_key": e.get("order_key"),
                                    "load_value": e["load_value"], "verdict": e["verdict"]}
                                   for e in judged])
     return {"launch_verdict": lv, "exit_code": code, "tiers": tier_out,
+            "upstream": up, "state_line": {"status": state, "reason": reason, "by": "capjudge"},
             "launch_checks": {r.check_id: r.status for r in launch_res},
             "axis": ctx.tt.axis, "boundary_T4": boundary,
             "localisation_I": "NOT_IMPLEMENTED_BATCH2", "intervention_V": "NOT_IMPLEMENTED_BATCH2",

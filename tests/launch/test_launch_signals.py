@@ -129,3 +129,40 @@ def test_gate_survives_orchestrator_stalls(tmp_path):
     acts = [x["actual_rel_ns"] for x in g["polls"]]
     assert all(b - a >= 150 * MS for a, b in zip(acts, acts[1:])), acts
     assert rc == 0, open(os.path.join(str(tmp_path), "launch.err")).read()
+
+
+def test_signal_between_popen_and_pid_still_kills_and_finalizes(tmp_path, monkeypatch):
+    """A stop signal lands after Popen returned the product process and before the orchestrator
+    read its pid (fakes/hooked_launch.py raises SIGTERM inside that read; the product ignores
+    SIGTERM from birth). Cleanup must still SIGKILL the product's process group and write
+    launch_end.json / STATE instead of failing on the pid it never stored."""
+    roles = cf.default_roles(product_args=["--ignore-term"], with_observers=False)
+    wd = cf.make_workdir(tmp_path, cf.tier_doc(cf.gate([("nullsse", "backlog.active_streams"),
+                                                         ("capload", "backlog.inflight")])),
+                         roles)
+    T = os.path.join(str(tmp_path), "T")
+    argv = cf.launch_argv(wd, T, os.path.join(str(tmp_path), "shm"), lead_ms=2500)
+    assert argv[1:3] == ["-m", "caplaunch"]
+    argv[1:3] = [os.path.join(cf.HERE, "fakes", "hooked_launch.py")]
+    monkeypatch.setenv("HOOKED_LAUNCH_SIGNAL_ON_PID_READ", "1")
+    p = cf.start_launch(argv, str(tmp_path))
+    try:
+        rc = p.wait(timeout=60)
+    finally:
+        if p.poll() is None:
+            p.kill()
+            p.wait()
+        left = _kill_marked(T)
+    err = open(os.path.join(str(tmp_path), "launch.err")).read()
+    assert rc == 5, err
+    assert left == []
+    st = read_state(T)
+    assert st[-1][1] == "NOT_RUN" and "signal 15" in st[-1][3]
+    end = _j(T, "raw", "launch_end.json")
+    assert [s["during_cleanup"] for s in end["signals"]] == [False]
+    # the signal landed in the window: the product was started but nothing after the pid read ran
+    assert end["argv"]["product"] is None
+    assert not any(e["event"] == "start" and e["role"] == "product" for e in end["events"])
+    assert end["exit_codes"]["product"] == -9
+    assert "SIGKILL to process group" in end["forced_kills"]["product"]
+    assert end["leftovers"]["after"] == []

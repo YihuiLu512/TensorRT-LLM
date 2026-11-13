@@ -215,10 +215,45 @@ def test_product_role_gets_an_entry_rule_for_its_own_command_line(tmp_path, monk
     assert len(launched) == 1 and launched[0]["probe_entry"] == main["rule"]
     lj = _j(T, "raw", "launch.json")["probe_entry"]
     assert lj["env"] == "CAPPROBE_ENTRY" and lj["schema"] == "capkit.probe_entry/1"
-    assert set(lj["roles"]) == {"product"}
-    pr = lj["roles"]["product"]
-    assert pr["program"] == main["rule"]["program"] and pr["error"] is None
-    assert pr["args_template"] == main["rule"]["args"]  # no {addr:...} in this role's args
+    assert lj["roles"] == ["product"]  # names only: the rule is built once, at the role's start
+    assert lj["exact_rule_in"] == "procs/roles.json procs[].probe_entry"
+    _no_leftovers(T)
+
+
+def test_entry_rule_recorded_is_the_injected_one_from_the_first_roles_write(tmp_path,
+                                                                            monkeypatch):
+    """The CAPPROBE_ENTRY rule is computed once per start: the rule the product process got in
+    its environment is the one in the start event, and every roles.json write that lists the
+    launched product process already carries it (no write without it). The product's argv has
+    an {addr:...} placeholder, resolved only at start."""
+    rep = tmp_path / "entry"
+    rep.mkdir()
+    writes = tmp_path / "roles_writes.jsonl"
+    roles = cf.default_roles(product_args=["--entry-report", str(rep)], with_observers=False)
+    for rr in roles:
+        if rr["role"] == "product":
+            rr["start_after"] = ["nullsse"]
+            rr["args"] += ["--peer-label", "{addr:nullsse}"]
+    wd = cf.make_workdir(tmp_path, cf.tier_doc(_gate()), roles)
+    T = os.path.join(str(tmp_path), "T")
+    argv = cf.launch_argv(wd, T, os.path.join(str(tmp_path), "shm"), lead_ms=2500)
+    assert argv[1:3] == ["-m", "caplaunch"]
+    argv[1:3] = [os.path.join(cf.HERE, "fakes", "hooked_launch.py")]
+    monkeypatch.setenv("HOOKED_LAUNCH_ROLES_WRITES", str(writes))
+    r = cf.run_launch(argv)
+    assert r.returncode == 0, r.stderr
+    main = json.loads((rep / "main.json").read_text())
+    rule = main["rule"]
+    assert rule is not None and main["match"] is not None, main
+    assert "{addr:" not in " ".join(rule["args"]) and "--peer-label" in rule["args"]
+    end = _j(T, "raw", "launch_end.json")
+    starts = [e for e in end["events"] if e["event"] == "start" and e["role"] == "product"]
+    assert len(starts) == 1 and starts[0]["probe_entry"] == rule
+    seen = []
+    for line in writes.read_text().splitlines():
+        procs = json.loads(line)["procs"]
+        seen += [p for p in procs if p["role"] == "product" and p["discovered_via"] == "launched"]
+    assert seen and all(p.get("probe_entry") == rule for p in seen), seen
     _no_leftovers(T)
 
 
@@ -385,3 +420,33 @@ def test_tool_runtime_helper_is_attributed_not_unattributed(tmp_path):
             assert [x[0] for x in sc["aux_helpers"]] == [hp]
             assert hp not in [x[0] for x in sc["descendants"]]
     _no_leftovers(T)
+
+
+def test_outer_capprobe_tier_conflict_fails_before_anything_starts(tmp_path):
+    """An outer CAPPROBE_TIER that contradicts the scenario (P0 here) is a config error found
+    before the launch tree is written or any role starts, not halfway through the role starts
+    (which left launch.json without STATE / launch_end.json)."""
+    roles = cf.default_roles(with_observers=False)
+    wd = cf.make_workdir(tmp_path, cf.tier_doc(_gate()), roles)
+    T = os.path.join(str(tmp_path), "T")
+    env = cf._env()
+    env["CAPPROBE_TIER"] = "P2"
+    r = cf.subprocess.run(cf.launch_argv(wd, T, os.path.join(str(tmp_path), "shm")), env=env,
+                          capture_output=True, text=True, timeout=120)
+    assert r.returncode == 3 and "CAPPROBE_TIER" in r.stderr, (r.returncode, r.stderr)
+    assert not os.path.exists(os.path.join(T, "raw", "launch.json"))
+
+
+def test_tree_with_a_state_line_is_refused(tmp_path):
+    """The orchestrator only starts in a fresh tree: an existing STATE (another writer's
+    conclusion) is never followed by this launch's line."""
+    roles = cf.default_roles(with_observers=False)
+    wd = cf.make_workdir(tmp_path, cf.tier_doc(_gate()), roles)
+    T = os.path.join(str(tmp_path), "T")
+    os.makedirs(T, mode=0o700)
+    with open(os.path.join(T, "STATE"), "w") as f:
+        f.write("2026-11-13T00:00:00Z\tVOID\tcapjobs.launches\tearlier\n")
+    r = cf.run_launch(cf.launch_argv(wd, T, os.path.join(str(tmp_path), "shm")))
+    assert r.returncode == 3 and "STATE" in r.stderr, (r.returncode, r.stderr)
+    assert [s[1] for s in read_state(T)] == ["VOID"]
+    assert not os.path.exists(os.path.join(T, "raw", "launch.json"))

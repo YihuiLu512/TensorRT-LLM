@@ -20,7 +20,8 @@ writer thread, no locks on the hot path) and a background thread copies the whol
 
 Event-loop lag: `install_loop_lag(site)` is called from inside the running loop (guarded by
 `if _capprobe.LAG:`); it starts a capcommon.aio.LoopLagProbe writing the hist slot lag.<site>
-and refreshes the D11 version self-report in the snapshot meta with the loop class.
+(it runs until the process exits; what the histogram holds: sites.LAG_NOTE) and refreshes the
+D11 version self-report in the snapshot meta with the loop class.
 
 Self-check injection (CAPPROBE_INJECT, capcommon.inject) is fixed for the process lifetime and
 supports busy / sleep / miscount at the count sites; heartbeat counters inject.<site>.* appear

@@ -138,7 +138,9 @@
    ],
    "env": {},
    "proc_kinds": [
-    "frontend"
+    "frontend",
+    "frontend_openengine",
+    "frontend_single"
    ],
    "command": [
     "{param:trtllm_serve}"

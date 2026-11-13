@@ -33,12 +33,12 @@ def clean_env(**extra):
     return env
 
 
-def entry_rule(argv):
-    """CAPPROBE_ENTRY value that registers exactly this command line (what the orchestrator
-    writes for a product role)."""
+def entry_rule(argv, cwd):
+    """CAPPROBE_ENTRY value that registers exactly this command line started in `cwd` (what the
+    orchestrator writes for a product role)."""
     from capcommon import probe_entry  # noqa: PLC0415
 
-    return probe_entry.encode(probe_entry.build_rule(list(argv), os.getcwd(),
+    return probe_entry.encode(probe_entry.build_rule(list(argv), cwd,
                                                      os.environ.get("PATH", "")))
 
 
@@ -46,11 +46,11 @@ def run_py(code, env, timeout=60, args=()):
     """Run `python -c code` in a fresh interpreter; returns CompletedProcess (text). An env that
     carries CAPPROBE_* but no CAPPROBE_ENTRY gets the rule for this very command line, so the
     snippet is the registered entry process (pass CAPPROBE_ENTRY explicitly to test others)."""
-    argv = [sys.executable, "-c", code, *args]
+    argv, cwd = [sys.executable, "-c", code, *args], os.path.dirname(os.path.abspath(__file__))
     if any(k.startswith("CAPPROBE_") for k in env) and "CAPPROBE_ENTRY" not in env:
-        env = dict(env, CAPPROBE_ENTRY=entry_rule(argv))
+        env = dict(env, CAPPROBE_ENTRY=entry_rule(argv, cwd))
     return subprocess.run(argv, env=env, capture_output=True, text=True, timeout=timeout,
-                          cwd=os.path.dirname(__file__))
+                          cwd=cwd)
 
 
 def run_json(code, env, timeout=60):

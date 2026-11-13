@@ -28,7 +28,7 @@ from capcommon.capbin import write_capbin  # noqa: E402
 from capcommon.hashing import sha256_bytes, sha256_file  # noqa: E402
 from capcommon.identity import Identity  # noqa: E402
 from capcommon.jsonio import JsonlWriter, atomic_write_bytes, dumps, write_json_stamped  # noqa
-from capcommon.runtree import RunTree, tree_dir_name  # noqa: E402
+from capcommon.runtree import RunTree, append_state, tree_dir_name  # noqa: E402
 from capcommon.schedule import BeatSchedule, write_schedule  # noqa: E402
 from capcommon.snapshot import SCHEMA as SNAP_SCHEMA  # noqa: E402
 from capcommon.snapshot import SlotRegistry, encode_snapshot  # noqa: E402
@@ -169,7 +169,8 @@ ROLES = [
      "loop": "asyncio", "probe_tier": None, "kind": "client"},
     {"role": "nullsse", "module": "capload.nullsse", "args": [], "cpus": [4], "workers": 1,
      "expected_procs": 1, "measure_class": "under_test", "asyncio": True, "uses_grpc": False,
-     "loop": "asyncio", "probe_tier": "P2", "kind": "server", "proc_kinds": ["frontend"]},
+     "loop": "asyncio", "probe_tier": "P2", "kind": "server",
+     "proc_kinds": ["frontend", "frontend_openengine", "frontend_single"]},
 ]
 # capload's multiprocessing.resource_tracker: caplaunch attributes it to capload as an aux helper
 # (roles.json aux_helpers, tier.json scans), never as a process of the role nor unattributed.
@@ -343,7 +344,16 @@ class Builder:
             "stop": None, "ready_at_rel_ns": {"capload": -S, "nullsse": -2 * S},
             "tiers_completed": 5, "gate_outcomes": [], "exit_codes": {"capload": 0,
                                                                       "nullsse": 0},
-            "ended_mono_ns": ORIGIN + 21 * S})
+            "ended_mono_ns": ORIGIN + 21 * S, "state": "VALID", "reason": "completed all tiers",
+            "leftovers": {"before": [], "after": [], "marker_scan": "synthetic"}})
+        # the launch-level outcome caplaunch and then capjobs.launches record before the judge
+        append_state(self.T.root, "VALID", "completed all tiers", "caplaunch")
+        if self.opts.get("upstream_void"):
+            append_state(self.T.root, "VOID", "pids survived SIGKILL (synthetic)",
+                         "capjobs.launches")
+        else:
+            append_state(self.T.root, "VALID", "copy-back verified (synthetic)",
+                         "capjobs.launches")
 
     def build_env(self, L):
         write_plain(self.T.env("pin_table.json"), {
@@ -397,7 +407,8 @@ class Builder:
             "target_commit": "synthetic", "image_is_ancestor_of_target": True,
             "groups": ["count"], "files": [], "capkit_packages": [], "capkit_code_sha": CODE_SHA,
             "non_python_changed": [], "unshipped_allowed": [],
-            "sites": {"F2": {"group": "count", "proc_kind": "frontend", "file": "synthetic",
+            "sites": {"F2": {"group": "count", "proc_kind": "frontend_openengine",
+                             "file": "synthetic",
                              "lines": [1], "slots": ["count.F2.msgs"]},
                       # no worker process in this topology: C8 lists it as not applicable
                       "W1": {"group": "count", "proc_kind": "worker", "file": "synthetic",
@@ -479,6 +490,12 @@ class Builder:
                 self.write_records(t)
                 for edge, at in (("wstart", t.window_start_ns), ("wend", t.window_end_ns)):
                     for pid, (role, _k) in self.pid_role().items():
+                        if self.opts.get("probe_off") and role == "nullsse" and t.seq == 4:
+                            copies.append({"pid": pid, "role": role, "which": edge,
+                                           "snapshot_missing": True,
+                                           "detail": "no snapshot with t_mono_ns >= boundary "
+                                                     "within 2 periods"})
+                            continue
                         ts = at + 30 * MS
                         stuck = (self.opts.get("c8") and t.seq == 4 and edge == "wend")
                         b = self.snapshot_bytes(pid, ts, ts // (100 * MS) + 1,
@@ -723,7 +740,17 @@ class Builder:
 # are compared), red_checks (must all be RED somewhere in checks.tsv), not_run_checks likewise.
 GOOD_V = {"2": "STABLE", "4": "STABLE"}
 SAMPLES = {
-    "good": ({}, {"exit_code": 0, "tier_verdicts": GOOD_V, "red_checks": []}),
+    "good": ({}, {"exit_code": 0, "tier_verdicts": GOOD_V, "red_checks": [],
+                  "state_last": "VALID"}),
+    # capjobs.launches recorded VOID before the judge: the judge's own result must not replace it
+    "upstream_void": ({"upstream_void": True}, {
+        "exit_code": 10, "tier_verdicts": {"2": "VOID", "4": "VOID"},
+        "red_checks": ["LAUNCH-STATE"], "state_last": "VOID"}),
+    # the product process wrote no snapshot in tier 4 (capprobe off: its command line did not
+    # match CAPPROBE_ENTRY); caplaunch recorded snapshot_missing
+    "probe_entry_unmatched": ({"probe_off": True}, {
+        "exit_code": 10, "tier_verdicts": {"2": "STABLE", "4": "VOID"},
+        "red_checks": ["RECORDS", "C8"]}),
     "c1_send_lag": ({"c1": True}, {"exit_code": 10, "tier_verdicts": {"2": "STABLE",
                                                                       "4": "VOID"},
                                    "red_checks": ["C1"]}),

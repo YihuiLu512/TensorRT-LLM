@@ -55,6 +55,8 @@ def test_valid_default_scenario():
     (lambda d: d["roles"][1].update(proc_kinds="frontend"), "proc_kinds"),
     (lambda d: d["roles"][1].update(proc_kinds=["frontend", "frontend"]), "proc_kinds"),
     (lambda d: d["roles"][2].update(proc_kinds=["frontend"]), "proc_kinds must be []"),
+    (lambda d: d["roles"][1].update(proc_kinds=["frontend", "frontend_singel"]),
+     "unknown proc_kinds ['frontend_singel']"),
 ])
 def test_invalid_scenarios_rejected(mutate, needle):
     d = _doc()
@@ -62,6 +64,21 @@ def test_invalid_scenarios_rejected(mutate, needle):
     with pytest.raises(ConfigError) as e:
         sc.validate_scenario(d)
     assert needle in str(e.value)
+
+
+@pytest.mark.parametrize("tier", ["P1", "P2"])
+def test_probed_product_role_must_expect_snapshots(tier):
+    """A product role with probe groups on (P1/P2) must be an expected snapshot writer: with
+    snapshots none a probe silently switched off would leave nothing missing for the judge."""
+    d = _doc()
+    d["probe_tier"] = tier
+    d["probe_groups"] = ["count"] if tier == "P2" else []
+    d["roles"][1].update(probe_tier=tier, snapshots="none")
+    with pytest.raises(ConfigError) as e:
+        sc.validate_scenario(d)
+    assert "runs probe groups; snapshots must not be none" in str(e.value)
+    d["roles"][1].update(snapshots="all")
+    sc.validate_scenario(d)
 
 
 def _tt(gate_cfg):
@@ -139,13 +156,16 @@ def test_shipped_e0_scenarios_validate():
 
 def test_e0_proc_kinds_are_capprobe_process_kinds():
     """Every proc_kinds value in configs/e0 is a capprobe SITES proc_kind (the judge's C8 picks
-    the expected sites by it), and every product role of a probed scenario declares its kinds."""
+    the expected sites by it), and every product role of a probed scenario declares its kinds.
+    A new-architecture single frontend (--num_serve_frontends 1) passes the count sites of
+    `frontend` and `frontend_openengine` and the lag site of `frontend_single`, and no other."""
     import importlib.util  # noqa: PLC0415
     spec = importlib.util.spec_from_file_location(
         "_capprobe_sites", os.path.join(cf.TOOLS, "capprobe", "sites.py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)  # sites.py alone: importing capprobe would parse CAPPROBE_*
     vocab = {v["proc_kind"] for v in mod.SITES.values()}
+    assert vocab == set(mod.PROC_KINDS) == sc.probe_proc_kinds()  # every kind has a site
     seen = 0
     for n in sorted(os.listdir(CONFIGS)):
         if not n.endswith(".scenario.json"):
@@ -157,4 +177,8 @@ def test_e0_proc_kinds_are_capprobe_process_kinds():
             if r["measure_class"] == "under_test" and r["launcher"] == "product":
                 assert r["proc_kinds"], (n, r["role"])
                 seen += 1
+            args = [a for a in r["args"] if isinstance(a, str)]
+            if any(args[i:i + 2] == ["--num_serve_frontends", "1"] for i in range(len(args))):
+                assert r["proc_kinds"] == ["frontend", "frontend_openengine",
+                                           "frontend_single"], (n, r["role"])
     assert seen >= 2

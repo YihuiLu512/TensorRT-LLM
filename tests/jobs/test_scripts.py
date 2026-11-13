@@ -13,6 +13,7 @@ import pytest
 from conftest import CODE_ROOT, WT21_SBATCH, external_input
 
 from capcommon import policy
+from capcommon.hashing import sha256_bytes
 from capcommon.runtree import read_state
 
 JOBS = os.path.join(CODE_ROOT, "jobs")
@@ -76,7 +77,8 @@ def test_required_mechanisms_present():
         assert not [ln for ln in code if re.search(r"(^|[|;&(]\s*)%s\b" % tool, ln.strip())], tool
     assert not [ln for ln in d.splitlines() if ln.startswith("#SBATCH")]
     for tok in ('--container-mounts="$CAPJOBS_MOUNTS"', "--no-container-mount-home",
-                "/proc/self/mountinfo", "sha256sum", '[[ $n == $g ]]'):
+                "/proc/self/mountinfo", "sha256sum", '[[ $n == $g ]]', "sha256sum -c --strict",
+                "CAPJOBS_PREP_SCRIPT_SHA256"):
         assert tok in d, tok
     for tok in ("--gres", "--gpus", "--exclusive"):
         assert tok not in "\n".join(code), tok
@@ -128,11 +130,14 @@ def prep_world(tmp_path, max_bytes=policy.PREP_TOKENIZER_MAX_FILE_BYTES, ro=True
         (lib / "llm-models" / "Other").mkdir()
     plan = tmp_path / "plan"
     (plan / "jobs").mkdir(parents=True)
+    script = read(PREP).encode("utf-8")
+    (plan / "jobs" / "prep_tokenizer.sbatch").write_bytes(script)
     dest_parent = tmp_path / "configs" / "tokenizers"
     dest_parent.mkdir(parents=True)
     env = {"CAPJOBS_PLAN_ID": "Pxyz", "CAPJOBS_RUN_ROOT": str(plan),
            "CAPJOBS_IMAGE": str(tmp_path / "img.sqsh"), "CAPJOBS_IMAGE_SIZE": "1",
            "CAPJOBS_IMAGE_MTIME_NS": "1", "CAPJOBS_MOUNTS": "m:m:ro",
+           "CAPJOBS_CODE_SHA": "c" * 40, "CAPJOBS_PREP_SCRIPT_SHA256": sha256_bytes(script),
            "CAPJOBS_PREP_MODEL_DIR": str(model), "CAPJOBS_PREP_DEST": str(dest_parent / "glm"),
            "CAPJOBS_PREP_ALLOW_GLOBS": " ".join(policy.PREP_TOKENIZER_ALLOW_GLOBS),
            "CAPJOBS_PREP_VOCAB_GLOBS": " ".join(policy.PREP_TOKENIZER_VOCAB_GLOBS),
@@ -253,6 +258,109 @@ def test_prep_tokenizer_batch_step_mounts_and_steps(tmp_path):
     assert "plan_id\tPxyz" in read(os.path.join(jd, "batch.tsv"))
     r = subprocess.run(["bash", PREP, w["plan"]], capture_output=True, text=True, env=env)
     assert r.returncode == 3  # the job dir exists: never reused
+
+
+def test_prep_tokenizer_batch_step_checks_the_plan_script(tmp_path):
+    """Q8: the inner step runs the plan's copy of the script; a copy whose sha256 differs from
+    the one capjobs.submit recorded in job.env stops the job before srun."""
+    w = prep_world(tmp_path)
+    img = tmp_path / "img.sqsh"
+    img.write_bytes(b"x")
+    env_path = os.path.join(w["plan"], "job.env")
+    with open(env_path) as f:
+        text = f.read().replace("CAPJOBS_IMAGE_MTIME_NS=1", "CAPJOBS_IMAGE_MTIME_NS=%d"
+                                % os.stat(img).st_mtime_ns)
+    with open(env_path, "w") as f:
+        f.write(text)
+    with open(os.path.join(w["plan"], "jobs", "prep_tokenizer.sbatch"), "a") as f:
+        f.write("# edited after submission\n")
+    b, rec = fake_srun_path(tmp_path)
+    env = dict(os.environ, PATH=b + ":" + os.environ["PATH"], SLURM_JOB_ID="78")
+    r = subprocess.run(["bash", PREP, w["plan"]], capture_output=True, text=True, env=env)
+    assert r.returncode == 3 and "differs from the submitted one" in r.stderr, r.stderr
+    assert not rec.exists() or rec.read_text() == ""
+    assert "FAILED" in read(os.path.join(w["plan"], "J78-r0", "STATE"))
+
+
+# Q9 / Q14 / Q18: ways around the whitelist that the R2 review reproduced on a fake model dir
+# (each copied the bytes, overwrote the job's own file, or skipped the final check); every one
+# must now be refused and recorded in PROVENANCE.txt while the rest of the copy succeeds.
+def _st(n=4000):
+    hdr = b'{"w":{"dtype":"F32","shape":[1],"data_offsets":[0,4]}}'
+    return len(hdr).to_bytes(8, "little") + hdr + os.urandom(n)
+
+
+def _bypass_link_to_weight(model):
+    with open(os.path.join(model, "model.safetensors"), "wb") as f:  # no header: name only
+        f.write(os.urandom(4096))
+    os.symlink(os.path.join(model, "model.safetensors"), os.path.join(model, "tok_shard.json"))
+    return "tok_shard.json", "link-to-weight"
+
+
+def _bypass_link_to_blob(model):
+    with open(os.path.join(model, "blob-1a2b"), "wb") as f:
+        f.write(_st())
+    os.symlink("blob-1a2b", os.path.join(model, "tokenizer_extra.json"))
+    return "tokenizer_extra.json", "weight-content"
+
+
+def _bypass_renamed(name, data):
+    def make(model):
+        with open(os.path.join(model, name), "wb") as f:
+            f.write(data)
+        return name, "weight-content"
+    return make
+
+
+def _bypass_provenance_name(model):
+    with open(os.path.join(model, "PROVENANCE.txt"), "w") as f:
+        f.write("from the model dir\n")
+    return "PROVENANCE.txt", "reserved-name"
+
+
+def _bypass_backslash(model):
+    with open(os.path.join(model, "tok\\en.json"), "w") as f:
+        f.write("{}")
+    return "tok\\en.json", "backslash"
+
+
+@pytest.mark.parametrize("make", [
+    _bypass_link_to_weight, _bypass_link_to_blob,
+    _bypass_renamed("weights.json", _st()),
+    _bypass_renamed("weights.txt", b"\x80\x02}q\x00." + os.urandom(4000)),
+    _bypass_renamed("weights.model", b"PK\x03\x04" + os.urandom(4000)),
+    _bypass_renamed("tokenizer_q4.json", b"GGUF\x03\x00\x00\x00" + os.urandom(4000)),
+    _bypass_provenance_name, _bypass_backslash,
+], ids=["link_to_weight", "link_to_blob", "safetensors_as_json", "pickle_as_txt", "zip_as_model",
+        "gguf_as_json", "provenance_name", "backslash"])
+def test_prep_tokenizer_refuses_whitelist_bypasses(tmp_path, make):
+    w = prep_world(tmp_path)
+    name, why = make(w["model"])
+    r = run_inner(w)
+    assert r.returncode == 0, r.stderr
+    got = sorted(os.listdir(w["dest"]))
+    assert got == sorted(EXPECT_COPIED + ["COPY_MANIFEST.tsv", "PROVENANCE.txt"])
+    prov = read(os.path.join(w["dest"], "PROVENANCE.txt"))
+    assert "%s:%s" % (name, why) in prov, prov
+    assert prov.startswith("source\t") and "plan_id\tPxyz" in prov
+    assert name not in [x.split("\t")[0] for x in
+                        read(os.path.join(w["dest"], "COPY_MANIFEST.tsv")).splitlines()]
+    assert "WARNING" not in r.stderr
+
+
+def test_prep_tokenizer_content_check_keeps_text_files(tmp_path):
+    """Negative control for the weight-content check: JSON that has '{"' at byte 8 (leading
+    spaces) and an empty whitelisted file are still copied."""
+    w = prep_world(tmp_path)
+    with open(os.path.join(w["model"], "added_tokens.json"), "w") as f:
+        f.write('        {"a": 1}\n')
+    open(os.path.join(w["model"], "empty.txt"), "w").close()
+    r = run_inner(w)
+    assert r.returncode == 0, r.stderr
+    got = os.listdir(w["dest"])
+    assert "added_tokens.json" in got and "empty.txt" in got
+    prov = read(os.path.join(w["dest"], "PROVENANCE.txt"))
+    assert "code_sha\t" + "c" * 40 in prov and "script_sha256\t" in prov
 
 
 # ---- inner script, finalize-only, with nothing to delete ----------------------------------------

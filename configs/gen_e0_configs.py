@@ -126,7 +126,7 @@ a2 = [
           "--report_addr", "{own:report_addr}", "--openengine-endpoint", "{addr:sfe}",
           "--num_serve_frontends", "1", "--num_postprocess_workers", "0"],
          command=["{param:trtllm_serve}"], start_after=["sfe"], cpus_needed=2,
-         proc_kinds=["frontend"],
+         proc_kinds=["frontend", "frontend_openengine", "frontend_single"],
          port={"kind": "report_addr", "host": "127.0.0.1"},
          note="options at 2f22a98d6e: --openengine-endpoint serve.py:1343, --num_serve_frontends "
               ":1187, --num_postprocess_workers :1180, --report_addr :1442; uvloop per "

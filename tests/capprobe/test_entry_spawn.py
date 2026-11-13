@@ -64,7 +64,7 @@ def _run(tmp_path, env):
     other.write_text(OTHER)
     argv = [sys.executable, str(demo), str(other)]
     if env.get("CAPPROBE_ENTRY") == "THIS":
-        env = dict(env, CAPPROBE_ENTRY=entry_rule(argv))
+        env = dict(env, CAPPROBE_ENTRY=entry_rule(argv, str(tmp_path)))
     r = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=180,
                        cwd=str(tmp_path))
     assert r.returncode == 0, "rc=%d\n%s\n%s" % (r.returncode, r.stdout, r.stderr)
@@ -98,7 +98,7 @@ def test_only_the_entry_writes_a_snapshot(tmp_path, identity_file):
 
 
 def test_entry_registered_for_another_command_line_switches_nothing_on(tmp_path, identity_file):
-    rule = entry_rule([sys.executable, str(tmp_path / "not_this.py")])
+    rule = entry_rule([sys.executable, str(tmp_path / "not_this.py")], str(tmp_path))
     out = _run(tmp_path, _p2_env(tmp_path, identity_file, rule))
     assert not os.path.exists(tmp_path / "shm") or not os.listdir(tmp_path / "shm")
     assert out["parent"]["active"] is False and out["spawn"]["active"] is False

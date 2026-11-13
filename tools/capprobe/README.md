@@ -20,9 +20,15 @@
 | 没有任何 `CAPPROBE_*` 变量 | 全关（`ENABLED`、`ACTIVE`、各 `ON_*` 都是 False，不起线程、不写快照、不报错；`CONFIG.reason = no_capprobe_env`） |
 | 有 `CAPPROBE_*`，没有 `CAPPROBE_ENTRY` | 先校验在场的值（见下），之后全关（`no_entry_rule`） |
 | 有 `CAPPROBE_*`，命令行与 `CAPPROBE_ENTRY` 不匹配（spawn 池子进程、MPI worker、其他导入者） | 先校验在场的值，之后全关（`not_the_registered_entry`），不读身份文件 |
-| 命令行匹配（编排器起的产品进程，及其重新执行同一命令行的附属前端） | 全套规则：`CAPPROBE_TIER` 缺失报错，`P0` 报错（P0 的覆盖层不应含探针补丁），其余同下 |
+| 命令行匹配（编排器起的产品进程，及多前端 launcher 用 `[sys.executable] + sys.argv` 重新执行出来的附属前端；匹配形式见下） | 全套规则：`CAPPROBE_TIER` 缺失报错，`P0` 报错（P0 的覆盖层不应含探针补丁），其余同下 |
 
-`CAPPROBE_ENTRY` 由编排器给每个产品角色写（`capkit.probe_entry/1`：`program` 是该角色 argv[0] 按角色的 PATH 或工作目录解析后的 realpath，`args` 是其余 argv 原样）。匹配：进程的 `sys.orig_argv` 以 `args` 结尾，且紧挨着的前一个元素解析后等于 `program`（`#!` 脚本由内核在前面加解释器，也能匹配）。fork 出来、没有 exec 的子进程命令行不变，仍启用（各自归零计数、按自己的 pid 写快照，同 R1 之前）。
+`CAPPROBE_ENTRY` 由编排器给每个产品角色写（`capkit.probe_entry/1`：`cwd` 是该角色工作目录的 realpath；`program` 是该角色 argv[0] 解析后的 realpath，含 `/` 的按 `cwd` 解析，裸名按角色的 PATH 查、PATH 里的相对项也按 `cwd`；`args` 是其余 argv 原样）。规则全文与两种匹配形式以 `capcommon.probe_entry` 模块说明为准，要点：
+
+- 解析一律按规则里的 `cwd`，不按进程当前目录，所以产品先 `chdir` 再导入 `capprobe` 也照样匹配；只解析含 `/` 的元素和第 0 个位置的裸名。
+- 直接形式：命令行以 `args` 结尾，紧挨着的前一个元素是 `program`。覆盖原生程序、`python 脚本`、`python -m 模块`、`#!` 脚本（内核在前面加解释器）、相对路径启动，以及脚本启动后的重新执行（命令行与原来相同）。
+- 模块重新执行形式：只在 `args` 以 `-m <模块>` 开头时适用。`python -m 模块` 启动后 Python 把 `sys.argv[0]` 换成模块文件，重新执行变成 `python <模块文件> <其余参数>`；命令行以其余参数结尾、前一个元素是以 `<模块路径>.py` 或 `<模块路径>/__main__.py` 结尾的路径（只看名字，不 import）、再前一个元素是 `program`，就算匹配。`-m` 之前有解释器选项（`python -u -m 模块`）时这些选项也不在 `sys.argv` 里，重新执行出来的进程**不匹配**（探针关）。
+
+fork 出来、没有 exec 的子进程命令行不变，仍启用（各自归零计数、按自己的 pid 写快照，同 R1 之前）。
 
 ## 开关的补充规则（在 §6.5 之上，全部是导入时 `CapprobeConfigError`，它是 `RuntimeError`）
 
@@ -33,19 +39,34 @@
 
 ## 位点（`capprobe.SITES`）
 
+每个位点标一个进程类（`proc_kind`，词表 `capprobe.sites.PROC_KINDS`）：一个类 = 该类进程在服务本研究的负载（`/v1/completions` 流）时都会经过的那些位点。产品角色在场景里用 `proc_kinds` 声明自己的进程树里有哪些类，判定器 C8 只在声明了的类的位点上要求窗口增量。
+
+| 进程类 | 位点 | 哪些进程 |
+|---|---|---|
+| `frontend` | H1、H3 | 经 `OpenAIServer` 服务 OpenAI HTTP 接口的前端：新架构单前端、多前端 launcher 与附属前端、原架构 `trtllm-serve` 前端 |
+| `frontend_openengine` | F2、F4 | 经 OpenEngine 客户端与 facade 连 engine 的新架构前端（单前端、launcher、附属前端） |
+| `frontend_single` | Lfe | 新架构单前端（`--num_serve_frontends 1`，走 `launch.py`） |
+| `frontend_launcher` | Lmfl | 多前端的 launcher |
+| `frontend_attached` | Lmfa | 多前端的附属前端 |
+
+角色的 `proc_kinds`：新架构单前端 `["frontend", "frontend_openengine", "frontend_single"]`；新架构多前端（launcher 与附属前端同一个角色）`["frontend", "frontend_openengine", "frontend_launcher", "frontend_attached"]`；原架构前端 `["frontend"]`；不跑探针代码的角色 `[]`。
+
 文件与行号只以 `capprobe.SITES` 为准（`lines` 是打过补丁的探针树里每处守卫 `if` 所在行；同一事件有几条代码路径，就在每条路径上放同一个守卫调用、列几个行号，共用一个槽）。本表不复述行号。
 
 | 位点 | 文件 | 槽 | 一次经过的含义 |
 |---|---|---|---|
-| H1 | `tensorrt_llm/serve/responses_utils.py` | `count.H1.arrivals` | 路径以 `/v1/` 开头的每个 `http` 类型 ASGI 请求（健康检查、`/metrics` 等不计） |
+| H1 | `tensorrt_llm/serve/responses_utils.py` | `count.H1.arrivals` | 路径以 `/v1/` 开头的每个 `http` 类型 ASGI 请求，不论路由与状态码：生成请求之外，`GET /v1/models`、其他 `/v1/` 路由和 `/v1/` 下的 404 也计（capkit 的负载器只发 `/v1/completions`、`/v1/chat/completions`；`/health`、`/metrics` 不在 `/v1/` 下）。请求经过几个打了探针的进程就计几次：多前端时附属前端把 `/v1/messages/batches` 系列路由转发给 launcher，launcher 再计一次；disagg 路由也装同一个中间件，每一跳各计一次 |
 | H3 | `tensorrt_llm/serve/openai_server.py` | `count.H3.chunks` | `completion_generator` 每个 `pp_res`（只有 `/v1/completions` 流；chat 流未打点） |
 | F2 | `tensorrt_llm/grpc/openengine_client/stream.py` | `count.F2.msgs` | `_read` 读到的每条消息（不含 EOF 与本地取消；含终止事件之后排空读到的） |
-| F4 | `tensorrt_llm/serve/openengine_poc/facade.py` | `count.F4.dequeued` | 每请求队列里出队的每个事件项，两条出队路径都计：无 postproc 池时的 `__anext__`、有池时的 `_feed`（结束标记与错误项不计） |
+| F4 | `tensorrt_llm/serve/openengine_poc/facade.py` | `count.F4.dequeued` | 请求仍在进行时从每请求队列取出的每个事件项（结束标记与错误项不计，engine 取消的那一项计）。无 postproc 池：`__anext__` 只在响应处理方等下一个输出时取，请求结束后不再取，F2 − F4 是队列里的积压。有池：`_feed` 一到就取，只在后处理会话打开时计，F2 − F4 接近 0，积压在 F4 之后（池里与结果队列里）；`_feed` 把终止事件交给池之后、会话关闭之前取到的项会计入，无池路径不计这些 |
 | Lfe | `tensorrt_llm/serve/openengine_poc/launch.py` | `lag.Lfe`（hist）及 `.n/.sum/.max/.neg`、`lag.Lfe.installs` | 单前端事件循环；`facade.start()` 返回之后、HTTP 服务启动之前安装 |
 | Lmfl | `tensorrt_llm/serve/openengine_poc/multi_frontend.py` | `lag.Lmfl` … | 多前端的 launcher 循环；全部附属前端连上之后、开始服务之前安装 |
 | Lmfa | `tensorrt_llm/serve/openengine_poc/multi_frontend.py` | `lag.Lmfa` … | 多前端的附属前端循环；launcher 开始监听之后、开始服务之前安装 |
 
-三个安装点都在各自 `try`（其 `finally` 负责关闭 facade 等清理）之内，所以安装出错时清理照常执行；启动期的事件循环阻塞不进 `lag.*`。
+三个安装点都在各自 `try`（其 `finally` 负责关闭 facade 等清理）之内，所以安装出错时清理照常执行。`lag.<位点>` 直方图的口径（`capprobe.sites.LAG_NOTE`）：
+
+- 探针从安装起一直跑到进程退出，不会停：HTTP 服务自己的启动（uvicorn 启动、应用 lifespan 的启动部分）和关停（排空、关闭 facade、停掉附属前端）都在直方图里，也在其后的每份快照和退出时的终值快照里。判定器只读每档窗口首末两份快照之差。
+- uvloop 的 `call_at` 是毫秒精度，每个样本可能在真实停顿之外再晚最多约 1 ms：1 ms 以下的滞后分辨不出。
 
 注入心跳槽：`inject.<H1|H3|F2|F4>.{hits,applied,applied_ns}`。机器可读清单：`capprobe.SLOTS`（组打开时在导入时一次性登记，没经过的位点表现为「槽在、值为 0」）。`SITE_NOTES` 只写每个位点「一次经过」的含义。
 

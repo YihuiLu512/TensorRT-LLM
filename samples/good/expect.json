@@ -1,6 +1,7 @@
 {
  "exit_code": 0,
  "red_checks": [],
+ "state_last": "VALID",
  "synthetic": true,
  "tier_verdicts": {
   "2": "STABLE",

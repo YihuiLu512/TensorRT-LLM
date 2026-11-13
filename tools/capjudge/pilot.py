@@ -9,7 +9,13 @@ The list file names every input explicitly, one per line: `<launch tree>\t<seq>[
 (the sub-saturation tiers of that tree to use; no globs, no default "all tiers"). Every tree
 must already be judged: noise bands (T3) are the empirical [min, max] of the statistics the
 judge wrote into verdicts.json `stats` for those tiers, so judge and pilot share one code path.
-Tiers with any RED check or a VOID verdict are excluded and listed. Raw data are re-read (via
+Tiers with any RED check or a VOID verdict are excluded and listed. A whole tree is excluded
+(listed with the reason, all its tiers unused) unless the launch-level conclusion recorded
+before the judge is VALID, both as the judge recorded it (verdicts.json launch_checks
+LAUNCH-STATE PASS) and as STATE / launch_end.json read now: a launch that caplaunch or capjobs
+recorded VOID, ENV_INVALID or NOT_RUN never enters a noise band. The judge's own launch verdict
+is not required to be VALID (E0 trees are judged without noise bands, so it is NOT_RUN there).
+Raw data are re-read (via
 the same verified inputs) only for the steady-window and warm-up lengths and for the D14
 readings (capjudge.d14: idle window vs the used load tiers, decided by the registered rule
 --d14-rule).
@@ -27,9 +33,8 @@ from capcommon.jsonio import atomic_write_bytes, dumps, read_json
 from . import d14 as D14
 from . import inputs as I
 from . import stats
-from .checks import _role_cpus
 from .symptoms import msg_lag_from_chunks, request_lag_series
-from .treedata import NS, LaunchData, TierData
+from .treedata import NS, LaunchData, TierData, role_cpus
 
 SCHEMA = "capkit.pilot/1"
 NOT_COMPUTED = "NOT_IMPLEMENTED_BATCH2"
@@ -132,6 +137,18 @@ def build(list_path, W, d14_rule_path):
         by_seq = {t["tier_seq"]: t for t in verdicts["tiers"]}
         rec = {"tree": os.path.relpath(tree, W), "judge_verdicts_sha256": sha256_file(vpath),
                "tiers_used": [], "tiers_excluded": {}}
+        launch_state = (verdicts.get("launch_checks") or {}).get("LAUNCH-STATE")
+        if launch_state is None:
+            raise PilotError("%s: verdicts.json has no LAUNCH-STATE check (judged by an older "
+                             "capjudge): cannot tell the launch-level conclusion" % tree)
+        if launch_state != "PASS" or ctx.upstream["status"] != "VALID":
+            rec["tree_excluded"] = "launch-level conclusion before the judge: %s (judged %s)" % (
+                "; ".join("%s %s: %s" % (x["source"], x["status"], x["reason"])
+                          for x in ctx.upstream["sources"] if x["status"] != "VALID")
+                or ctx.upstream["status"], launch_state)
+            rec["tiers_excluded"] = {str(q): "tree excluded" for q in seqs}
+            inputs.append(rec)
+            continue
         for seq in seqs:
             t = by_seq.get(seq)
             if t is None or not t.get("judged"):
@@ -155,7 +172,7 @@ def build(list_path, W, d14_rule_path):
                     drain_waits.append(dg["t_pass_rel_ns"] - t.start_ns)
         recs, _errs = ld.version_records()
         switch |= {r.get("switchinterval_s") for r in recs.values()}
-        d14_trees.append((rec["tree"], D14.tree_readings(ctx, ld, _role_cpus(ld),
+        d14_trees.append((rec["tree"], D14.tree_readings(ctx, ld, role_cpus(ld.pin_table),
                                                           rec["tiers_used"])))
         d14_submitted[rec["tree"]] = (ctx.launch.get("submission") or {}).get("submitted_at")
     if not used:
