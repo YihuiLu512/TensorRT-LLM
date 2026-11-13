@@ -65,6 +65,7 @@ from tensorrt_llm.grpc.openengine_conventions import (
     SERVE_COUNTER_ADDRESS,
     SERVE_COUNTER_DIR_ENV,
     SERVE_COUNTER_GENERATE_SENT,
+    SERVE_COUNTER_GENERATE_SENT_BUCKETS,
     SERVE_COUNTERS,
 )
 from tensorrt_llm.logger import logger
@@ -187,9 +188,6 @@ class GenerateOptions:
         disaggregated_params: The request's LLM-level ``DisaggregatedParams``
             (``tensorrt_llm.disaggregated_params``), or None for a request
             that is not served disaggregated.
-        handoff_attributes: The request's HTTP ``openengine_handoff_attributes``,
-            the handoff attributes that have no ``DisaggregatedParams`` field,
-            as :func:`dump_handoff_attributes` wrote them; None when it has none.
     """
 
     streaming: bool = False
@@ -206,7 +204,6 @@ class GenerateOptions:
     logit_bias: Mapping[str, float] | None = None
     reasoning_parser: str | None = None
     tokenizer: Any = None
-    handoff_attributes: str | None = None
 
 
 def takes_request_data(generator: Any) -> bool:
@@ -447,7 +444,10 @@ class DecodeKvSession(Protocol):
         """Return the LLM-level ``DisaggregatedParams`` and the ``openengine_handoff_attributes``.
 
         The second item is None when the session has no attribute outside
-        ``HANDOFF_MAPPED_ATTRIBUTES``. Values are carried unchanged.
+        ``HANDOFF_MAPPED_ATTRIBUTES``. A mapped attribute changes type only
+        where the field's type requires it (``opaque_state`` from base64 text
+        to bytes, ``disagg_request_id`` from a decimal string to an int); no
+        value is changed.
         """
         ...
 
@@ -475,29 +475,39 @@ class EncodeKvSession(Protocol):
 def dump_handoff_attributes(attributes: Mapping[str, Any]) -> str | None:
     """The ``openengine_handoff_attributes`` value for some handoff attributes; None for none.
 
-    A JSON object with sorted keys and no spaces, so the value a context worker
-    signs is the same however the attributes were ordered.
+    A JSON object with sorted keys and no spaces, so equal attributes always
+    give the same text.
 
     Raises:
-        ValueError: A value is not JSON data, or is a NaN or an infinity.
+        ValueError: A key is not a string, or a value is not JSON data or is a
+            NaN or an infinity.
     """
     if not attributes:
         return None
+    if not all(isinstance(key, str) for key in attributes):
+        raise ValueError("handoff attribute names must be strings")
     try:
         return json.dumps(dict(attributes), sort_keys=True, separators=(",", ":"), allow_nan=False)
     except TypeError as error:
         raise ValueError(f"handoff attributes are not JSON data: {error}") from error
 
 
+def _refuse_json_constant(name: str) -> Any:
+    raise ValueError(f"openengine_handoff_attributes holds {name}, which is not JSON data")
+
+
 def load_handoff_attributes(text: str | None) -> dict[str, Any]:
     """The handoff attributes held by an ``openengine_handoff_attributes`` value; empty for None.
 
     Raises:
-        ValueError: ``text`` is not a JSON object.
+        ValueError: ``text`` is not a JSON object, or holds a NaN or an infinity.
     """
     if text is None:
         return {}
-    attributes = json.loads(text)
+    try:
+        attributes = json.loads(text, parse_constant=_refuse_json_constant)
+    except RecursionError as error:
+        raise ValueError("openengine_handoff_attributes is nested too deeply") from error
     if not isinstance(attributes, dict):
         raise ValueError("openengine_handoff_attributes is not a JSON object")
     return attributes
@@ -1551,6 +1561,16 @@ COUNTER_READ_TIMEOUT_S = 5.0
 _COUNTER_ACCEPT_RETRY_S = 0.1
 
 
+_GENERATE_SENT_KEYS = frozenset(
+    (SERVE_COUNTER_GENERATE_SENT, *SERVE_COUNTER_GENERATE_SENT_BUCKETS.values())
+)
+
+
+def _check_count(count: Any) -> None:
+    if type(count) is not int or count < 0:
+        raise ValueError(f"a count is a non-negative int, got {count!r}")
+
+
 class GenerateCounter:
     """Counts the Generate calls a frontend sent, for proving requests went through the engine.
 
@@ -1562,7 +1582,8 @@ class GenerateCounter:
     count: it writes ``{"pid": ..., "generate_sent": ..., "address": ...}`` to
     ``<counter_dir>/<pid>.json`` (the directory is created if missing) and
     answers each connection to ``address``, the name of a Linux abstract Unix
-    socket, with ``{"pid": ..., "generate_sent": ...}`` holding the current count.
+    socket, with ``{"pid": ..., "generate_sent": ...}`` holding the current counts.
+    Both also hold every other counter counted so far (see below).
     Once started, :meth:`close` rewrites the file with the final count and no
     ``address``, then stops answering; each call counted after that rewrites
     the file.
@@ -1571,8 +1592,10 @@ class GenerateCounter:
     of every frontend in it.
 
     The other serving-side counters of the conventions (``SERVE_COUNTERS``)
-    are counted with :meth:`add` and published the same way, next to
-    ``generate_sent``, once counted; :func:`read_serve_counters` adds them up.
+    are published the same way, next to ``generate_sent``, once counted:
+    ``generate_sent.<bucket>`` through :meth:`increment`, which counts the
+    bucket and the total together, the others through :meth:`add`.
+    :func:`read_serve_counters` adds them up.
 
     Args:
         counter_dir: Where to publish the count; defaults to ``$TRTLLM_OPENENGINE_COUNTER_DIR``.
@@ -1584,6 +1607,8 @@ class GenerateCounter:
         self._dir = Path(counter_dir) if counter_dir is not None else None
         self._value = 0
         self._counts: dict[str, int] = {}
+        # Replaced, never changed, under the lock; read without it.
+        self._published: dict[str, int] = {SERVE_COUNTER_GENERATE_SENT: 0}
         self._lock = threading.Lock()
         self._listener: socket.socket | None = None
         self._server: threading.Thread | None = None
@@ -1594,51 +1619,66 @@ class GenerateCounter:
     def value(self) -> int:
         return self._value
 
-    def increment(self, count: int = 1) -> int:
+    def increment(self, count: int = 1, bucket: str | None = None) -> int:
         """Add ``count`` calls and return the new total.
 
+        Args:
+            count: The calls sent.
+            bucket: Their request bucket (``REQUEST_BUCKETS``), counted in
+                ``generate_sent.<bucket>`` together with the total; None to
+                count the total alone.
+
         Raises:
-            ValueError: ``count`` is negative.
+            ValueError: ``count`` is not a non-negative int, or ``bucket`` is not a bucket.
             OSError: After :meth:`close`, the file could not be rewritten. The
                 calls are counted anyway, and the next write that succeeds
                 brings the file up to date.
         """
-        if count < 0:
-            raise ValueError(f"the count only grows, got {count}")
+        _check_count(count)
+        key = None
+        if bucket is not None:
+            key = SERVE_COUNTER_GENERATE_SENT_BUCKETS.get(bucket)
+            if key is None:
+                raise ValueError(f"not a request bucket: {bucket!r}")
         with self._lock:
             self._value += count
-            if self._closed and self._started:
-                self._write(None)
+            if key is not None:
+                self._counts[key] = self._counts.get(key, 0) + count
+            self._publish()
             return self._value
 
     @property
     def counts(self) -> dict[str, int]:
         """Every counter counted so far, ``generate_sent`` included, by its key."""
-        with self._lock:
-            return self._record()
+        return dict(self._published)
 
     def add(self, key: str, count: int = 1) -> int:
         """Add ``count`` to the serving-side counter ``key`` and return its new value.
 
         Raises:
             ValueError: ``key`` is not one of ``SERVE_COUNTERS``, or is
-                ``generate_sent`` (see :meth:`increment`), or ``count`` is negative.
+                ``generate_sent`` or one of its buckets (see :meth:`increment`),
+                or ``count`` is not a non-negative int.
             OSError: As :meth:`increment`.
         """
-        if key not in SERVE_COUNTERS or key == SERVE_COUNTER_GENERATE_SENT:
+        if key not in SERVE_COUNTERS or key in _GENERATE_SENT_KEYS:
             raise ValueError(f"not a serving-side counter other than generate_sent: {key!r}")
-        if count < 0:
-            raise ValueError(f"the count only grows, got {count}")
+        _check_count(count)
         with self._lock:
             value = self._counts.get(key, 0) + count
             self._counts[key] = value
-            if self._closed and self._started:
-                self._write(None)
+            self._publish()
             return value
 
+    def _publish(self) -> None:
+        """Publish the counts in memory, and in the file once closed; the caller holds the lock."""
+        self._published = {SERVE_COUNTER_GENERATE_SENT: self._value, **self._counts}
+        if self._closed and self._started:
+            self._write(None)
+
     def _record(self) -> dict[str, int]:
-        """The counts to publish; the caller holds the lock."""
-        return {SERVE_COUNTER_GENERATE_SENT: self._value, **self._counts}
+        """The counts to publish."""
+        return self._published
 
     def start(self) -> None:
         """Publish the count in ``counter_dir``; nothing to do without one, or once started or closed.
@@ -1714,8 +1754,7 @@ class GenerateCounter:
                 continue
             failing = False
             with connection:
-                with self._lock:
-                    answer = {"pid": os.getpid(), **self._record()}
+                answer = {"pid": os.getpid(), **self._record()}
                 try:
                     connection.settimeout(COUNTER_READ_TIMEOUT_S)
                     connection.sendall(json.dumps(answer).encode())

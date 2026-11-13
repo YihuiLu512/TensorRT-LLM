@@ -33,7 +33,7 @@ additions:
     file: tensorrt_llm/serve/disagg_auth.py
     region: file
     lines:
-      - "# Signed only when set, so requests without it sign as before."
+      - "# Left out of the signed payload when unset: a request without it signs the other fields alone."
       - "_OPTIONAL_INTERNAL_DISAGG_AUTH_FIELDS = (\"openengine_handoff_attributes\",)"
       - "_INTERNAL_DISAGG_AUTH_FIELDS += _OPTIONAL_INTERNAL_DISAGG_AUTH_FIELDS"
       - "    for field_name in _OPTIONAL_INTERNAL_DISAGG_AUTH_FIELDS:"

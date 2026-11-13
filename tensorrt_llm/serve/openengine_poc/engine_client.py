@@ -15,8 +15,9 @@ Served disaggregated, a request is two Generate calls on two engines: a
 prefill call (``request_type="context_only"``), which ends with a
 :class:`PrefillReady` event carrying the handoff, and a decode call, which
 carries that handoff in ``kv_session``. A prefill call is not cancelled once
-its :class:`PrefillReady` has arrived: the engine would free the KV cache it
-just handed over.
+its :class:`PrefillReady` has arrived, since the engine would free the KV
+cache it just handed over: the caller reads such a stream to its end rather
+than closing the iterator.
 """
 
 from __future__ import annotations
@@ -121,7 +122,9 @@ class KvSessionSpec:
             since ``attributes["ctx_info_endpoint"]`` holds it as the engine wrote it.
         attributes: ``attributes_struct`` as plain data: the keys named in
             ``HANDOFF_MAPPED_ATTRIBUTES`` of the conventions, and any other key
-            passed through unread. Integers above 2**53 are decimal strings.
+            passed through unread. Values are as the engine packed them:
+            ``disagg_request_id`` is a decimal string and ``opaque_state``
+            base64 text.
     """
 
     session_id: str
@@ -149,9 +152,10 @@ class EngineRequest:
         extra: ``GenerateRequest.extra`` entries; only keys the conventions define.
         metadata: gRPC metadata such as ``traceparent``, ``openengine-priority``
             and ``openengine-target-dp-rank``.
-        request_type: The ``request_type`` sent in ``extra``: ``"context_only"``
-            for the prefill call of a disaggregated request,
-            ``"context_and_generation"`` when the request asked for it, None otherwise.
+        request_type: The ``request_type`` the client sends in ``extra``:
+            ``"context_only"`` for the prefill call of a disaggregated request,
+            ``"context_and_generation"`` when the request asked for it, None
+            otherwise. ``extra`` itself does not hold ``request_type``.
         kv_session: The handoff a decode call carries in ``kv.session``; set
             only on a decode call, whose ``request_type`` is None.
     """
@@ -293,7 +297,7 @@ class EngineLoad:
 
 @dataclass(frozen=True)
 class KvConnectorInfo:
-    """An engine's ``ServerInfo.kv_connector``; a field the engine leaves unset reads as False or empty.
+    """An engine's ``ServerInfo.kv_connector``; a field the engine leaves unset reads as its default.
 
     Attributes:
         enabled: KV transfer is enabled; required to serve disaggregated requests.

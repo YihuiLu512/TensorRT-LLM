@@ -120,10 +120,13 @@ def prefill_ready_script(request: EngineRequest) -> list[Step]:
     """A prefill call gets its first token, then ``PrefillReady``; any other call the default script.
 
     The handoff's ``session_id`` is ``"7"`` and its ``disagg_request_id`` is
-    the call's ``extra["disagg_request_id"]`` when it has one.
+    the call's ``extra["disagg_request_id"]`` when it has one. A prefill call
+    for more than one sequence is rejected, as the engines reject it.
     """
     if request.request_type != REQUEST_TYPE_CONTEXT_ONLY:
         return default_script(request)
+    if request.num_sequences != 1:
+        return [Reject(ValueError("a prefill call has one sequence"))]
     first = DEFAULT_TOKENS[0]
     attributes: dict[str, Any] = {
         "ctx_info_endpoint": FAKE_CTX_INFO_ENDPOINT,

@@ -107,6 +107,9 @@ def test_request_bucket(has_kv_session, request_type, bucket):
         (" 1099511627776", None),
         ("1099511627776\n", None),
         ("１" * 13, None),  # fullwidth digits are digits to int() but not ASCII
+        ("0001099511627776", 1 << 40),
+        ("0" * 20, None),
+        ("1" * 4301, None),  # longer than int() converts by default
         ("", None),
         (1 << 40, None),
         (float(1 << 40), None),
@@ -136,6 +139,21 @@ def test_leg_specific_fields():
     }
     with pytest.raises(TypeError):
         conv.LEG_SPECIFIC_FIELDS["sampling"] = "both"  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "LEG_SPECIFIC_FIELDS",
+        "DISAGG_REQUEST_KEY_CAPABILITY",
+        "COUNTER_GENERATE_ACCEPTED_BUCKETS",
+        "SERVE_COUNTER_GENERATE_SENT_BUCKETS",
+        "SERVE_COUNTER_HTTP_RECEIVED_BUCKETS",
+    ],
+)
+def test_version_4_tables_are_read_only(name):
+    with pytest.raises(TypeError):
+        getattr(conv, name)["x"] = "y"
 
 
 def test_counter_keys():

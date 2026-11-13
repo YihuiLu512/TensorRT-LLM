@@ -31,7 +31,7 @@ INTERNAL_DISAGG_AUTH_HEADER = "x-trtllm-disagg-auth"
 SUBAGENT_AFFINITY_AUTH_HEADER = "x-trtllm-subagent-affinity-auth"
 _SIGNATURE_PREFIX = "sha256="
 _INTERNAL_DISAGG_AUTH_FIELDS = ("encoded_opaque_state", "ctx_info_endpoint")
-# Signed only when set, so requests without it sign as before.
+# Left out of the signed payload when unset: a request without it signs the other fields alone.
 _OPTIONAL_INTERNAL_DISAGG_AUTH_FIELDS = ("openengine_handoff_attributes",)
 _INTERNAL_DISAGG_AUTH_FIELDS += _OPTIONAL_INTERNAL_DISAGG_AUTH_FIELDS
 _MISSING_AUTH_KEY_WARNING = (

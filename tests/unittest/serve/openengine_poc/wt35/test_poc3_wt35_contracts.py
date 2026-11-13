@@ -8,6 +8,7 @@ import asyncio
 import dataclasses
 import inspect
 import json
+import os
 import pickle
 import typing
 
@@ -73,11 +74,6 @@ def test_a_prefill_ready_event_crosses_into_a_postprocessing_process():
     assert pickle.loads(pickle.dumps(message)) == message
 
 
-def test_generate_options_carry_the_handoff_attributes():
-    assert contracts.GenerateOptions().handoff_attributes is None
-    assert contracts.GenerateOptions(handoff_attributes='{"k":1}').handoff_attributes == '{"k":1}'
-
-
 def test_frontend_launch_config_worker_fields():
     config = contracts.FrontendLaunchConfig(
         host="h", port=0, llm_args={}, endpoint="e:1", internal_disagg_auth_key="secret-key"
@@ -111,13 +107,18 @@ def test_handoff_attributes_round_trip_in_a_canonical_form():
     assert contracts.load_handoff_attributes(text) == attributes
 
 
-@pytest.mark.parametrize("bad", [{"x": float("nan")}, {"x": float("inf")}, {"x": object()}])
+@pytest.mark.parametrize(
+    "bad", [{"x": float("nan")}, {"x": float("inf")}, {"x": object()}, {1: "x"}, {None: "x"}]
+)
 def test_handoff_attributes_must_be_json_data(bad):
     with pytest.raises(ValueError):
         contracts.dump_handoff_attributes(bad)
 
 
-@pytest.mark.parametrize("text", ["[1]", '"x"', "1", "null", "not json"])
+@pytest.mark.parametrize(
+    "text",
+    ["[1]", '"x"', "1", "null", "not json", '{"x":NaN}', '{"x":-Infinity}', "[" * 100_000],
+)
 def test_handoff_attributes_must_load_as_an_object(text):
     with pytest.raises(ValueError):
         contracts.load_handoff_attributes(text)
@@ -135,26 +136,44 @@ def test_counter_add_counts_named_counters(tmp_path):
     assert counter.counts == {"generate_sent": 1, "prefill_ready_received": 3}
 
 
-@pytest.mark.parametrize("key", ["generate_sent", "bogus", "trtllm.counters.generate_received"])
+@pytest.mark.parametrize(
+    "key",
+    ["generate_sent", "generate_sent.context_only", "bogus", "trtllm.counters.generate_received"],
+)
 def test_counter_add_refuses_other_keys(key):
     with pytest.raises(ValueError):
         contracts.GenerateCounter(None).add(key)
 
 
-def test_counter_add_refuses_a_negative_count():
+@pytest.mark.parametrize("count", [-1, 1.0, True, "1"])
+def test_counters_refuse_a_count_that_is_not_a_non_negative_int(count):
+    counter = contracts.GenerateCounter(None)
     with pytest.raises(ValueError):
-        contracts.GenerateCounter(None).add("http_rejected", -1)
+        counter.add("http_rejected", count)
+    with pytest.raises(ValueError):
+        counter.increment(count)
+    assert counter.counts == {"generate_sent": 0}
+
+
+def test_increment_counts_a_bucket_with_the_total():
+    counter = contracts.GenerateCounter(None)
+    assert counter.increment(2, bucket="context_only") == 2
+    assert counter.increment() == 3
+    assert counter.counts == {"generate_sent": 3, "generate_sent.context_only": 2}
+    with pytest.raises(ValueError):
+        counter.increment(bucket="bogus")
+    assert counter.value == 3
 
 
 def test_read_serve_counters_adds_up_open_and_closed_frontends(tmp_path):
     open_counter = contracts.GenerateCounter(tmp_path)
     open_counter.start()
     try:
-        open_counter.increment(2)
-        open_counter.add("generate_sent.context_only", 2)
+        open_counter.increment(2, bucket="context_only")
         # A second frontend that has closed its counter, as another process leaves it.
-        record = {"pid": 1, "generate_sent": 5, "http_rejected": 1}
-        (tmp_path / "1.json").write_text(json.dumps(record))
+        other = os.getpid() + 1
+        record = {"pid": other, "generate_sent": 5, "http_rejected": 1}
+        (tmp_path / f"{other}.json").write_text(json.dumps(record))
         totals = contracts.read_serve_counters(tmp_path)
         assert set(totals) == set(conv.SERVE_COUNTERS)
         assert totals["generate_sent"] == 7
@@ -164,7 +183,7 @@ def test_read_serve_counters_adds_up_open_and_closed_frontends(tmp_path):
         # The PoC-S2 reader still reads generate_sent alone.
         assert contracts.read_generate_sent(tmp_path) == 7
         by_pid = contracts.read_serve_counters_by_pid(tmp_path)
-        assert by_pid[1]["generate_sent"] == 5
+        assert by_pid[other]["generate_sent"] == 5
     finally:
         open_counter.close()
     # Closed, the counter leaves its final counts in its file.
@@ -195,6 +214,19 @@ def _run(client: FakeEngineClient, request: ec.EngineRequest) -> list[ec.EngineE
         return [event async for event in client.generate(request)]
 
     return asyncio.run(collect())
+
+
+def test_the_fake_rejects_a_prefill_call_for_several_sequences():
+    client = FakeEngineClient(script=prefill_ready_script)
+    request = ec.EngineRequest(
+        request_id="r",
+        prompt_token_ids=[1],
+        max_tokens=4,
+        num_sequences=2,
+        request_type="context_only",
+    )
+    with pytest.raises(ValueError):
+        _run(client, request)
 
 
 def test_the_fake_ends_a_prefill_call_with_prefill_ready():

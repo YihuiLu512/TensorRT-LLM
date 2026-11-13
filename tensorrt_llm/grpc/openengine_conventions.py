@@ -169,11 +169,13 @@ VERSION_4_CAPABILITY_KEYS = (
 # The capability a disaggregated request key needs. ``request_type`` needs none:
 # a prefill call needs ``ServerInfo.kv_connector`` to be enabled with
 # ``supports_remote_prefill``.
-DISAGG_REQUEST_KEY_CAPABILITY = {
-    REQ_DISAGG_REQUEST_ID: CAP_REQ_DISAGG_REQUEST_ID,
-    REQ_SCHEDULE_STYLE: CAP_DISAGG_GENERATION_FIRST,
-    REQ_ORIG_ELAPSED_S: CAP_DISAGG_ORIG_ELAPSED_S,
-}
+DISAGG_REQUEST_KEY_CAPABILITY: Mapping[str, str] = MappingProxyType(
+    {
+        REQ_DISAGG_REQUEST_ID: CAP_REQ_DISAGG_REQUEST_ID,
+        REQ_SCHEDULE_STYLE: CAP_DISAGG_GENERATION_FIRST,
+        REQ_ORIG_ELAPSED_S: CAP_DISAGG_ORIG_ELAPSED_S,
+    }
+)
 
 # The parts of a GenerateRequest in which the prefill and the decode call of
 # one user request may differ, and on which call each appears ("both": on both,
@@ -224,7 +226,8 @@ def request_bucket(*, has_kv_session: bool, request_type: Any) -> str:
     return BUCKET_AGGREGATED
 
 
-_DISAGG_REQUEST_ID = re.compile(r"[0-9]+")
+# DISAGG_REQUEST_ID_LIMIT - 1 has 19 digits; the bound keeps int() off long strings.
+_DISAGG_REQUEST_ID = re.compile(r"[0-9]{1,19}")
 
 
 def parse_disagg_request_id(value: Any) -> int | None:
@@ -300,9 +303,9 @@ SERVE_COUNTER_ADDRESS = "address"
 # Version 4 engine counters (LoadInfo.attributes): generate_accepted by request
 # bucket, whose sum is generate_accepted, and the PrefillReady events sent.
 # generate_received has no buckets: it counts before the request is read.
-COUNTER_GENERATE_ACCEPTED_BUCKETS = {
-    bucket: f"{COUNTER_GENERATE_ACCEPTED}.{bucket}" for bucket in REQUEST_BUCKETS
-}
+COUNTER_GENERATE_ACCEPTED_BUCKETS: Mapping[str, str] = MappingProxyType(
+    {bucket: f"{COUNTER_GENERATE_ACCEPTED}.{bucket}" for bucket in REQUEST_BUCKETS}
+)
 COUNTER_PREFILL_READY_SENT = "trtllm.counters.prefill_ready_sent"
 VERSION_4_ENGINE_COUNTERS = (
     *COUNTER_GENERATE_ACCEPTED_BUCKETS.values(),
@@ -319,13 +322,13 @@ VERSION_4_ENGINE_COUNTERS = (
 # - handoff_unregistered_attributes: handoff attributes passed through that are
 #   neither mapped nor registered (HANDOFF_MAPPED_ATTRIBUTES,
 #   HANDOFF_REGISTERED_PASSTHROUGH_ATTRIBUTES), one per key per handoff.
-SERVE_COUNTER_GENERATE_SENT_BUCKETS = {
-    bucket: f"{SERVE_COUNTER_GENERATE_SENT}.{bucket}" for bucket in REQUEST_BUCKETS
-}
+SERVE_COUNTER_GENERATE_SENT_BUCKETS: Mapping[str, str] = MappingProxyType(
+    {bucket: f"{SERVE_COUNTER_GENERATE_SENT}.{bucket}" for bucket in REQUEST_BUCKETS}
+)
 SERVE_COUNTER_PREFILL_READY_RECEIVED = "prefill_ready_received"
-SERVE_COUNTER_HTTP_RECEIVED_BUCKETS = {
-    bucket: f"http_received.{bucket}" for bucket in REQUEST_BUCKETS
-}
+SERVE_COUNTER_HTTP_RECEIVED_BUCKETS: Mapping[str, str] = MappingProxyType(
+    {bucket: f"http_received.{bucket}" for bucket in REQUEST_BUCKETS}
+)
 SERVE_COUNTER_HTTP_REJECTED = "http_rejected"
 SERVE_COUNTER_HANDOFF_UNREGISTERED_ATTRIBUTES = "handoff_unregistered_attributes"
 # Every serving-side counter, generate_sent first.
@@ -338,9 +341,8 @@ SERVE_COUNTERS = (
     SERVE_COUNTER_HANDOFF_UNREGISTERED_ATTRIBUTES,
 )
 
-# Set on a serving frontend, the directory it writes each GenerateRequest it
-# sends to, one JSON file per request id, prompt token ids reduced to their
-# count and a digest; unset, nothing is written.
+# Set on a serving frontend, the directory it writes the GenerateRequests it
+# sends to; unset, nothing is written.
 SERVE_REQUEST_DUMP_DIR_ENV = "TRTLLM_OPENENGINE_REQUEST_DUMP_DIR"
 
 # --- Request metadata ---------------------------------------------------------
