@@ -1,0 +1,737 @@
+{
+ "work_item": "WT-32",
+ "jira": "TRTLLM-17875",
+ "machine": "1x B200 (ctx and gen engines share GPU 0)",
+ "model": "Qwen3/Qwen3-0.6B",
+ "image": "e17503-9fd3822a00-x86-sm100-cv2.ready.sqsh with the branch's tensorrt_llm/**.py overlaid",
+ "jobs": {
+  "5909835": {
+   "head": "a5ba8df9a4d62fba8d6ecafbb51056cdd6d23a9e",
+   "nt041": "NT041_RC 0",
+   "probe": "PROBE_RC 0"
+  },
+  "5910462": {
+   "head": "a5ba8df9a4d62fba8d6ecafbb51056cdd6d23a9e",
+   "followup": "FOLLOWUP_RC 0"
+  }
+ },
+ "nt041_retests": [
+  {
+   "job": "job-5911451-r0",
+   "head": "e1940769c9c56bac861a7fb4670c359533fca8a5",
+   "nt041_runs": [
+    {
+     "errors": "0",
+     "failures": "0",
+     "skipped": "0",
+     "tests": "1",
+     "time": "239.738"
+    },
+    {
+     "errors": "0",
+     "failures": "0",
+     "skipped": "0",
+     "tests": "1",
+     "time": "130.812"
+    },
+    {
+     "errors": "0",
+     "failures": "0",
+     "skipped": "0",
+     "tests": "1",
+     "time": "129.478"
+    }
+   ],
+   "rc_lines": [
+    "NT041_1_RC 0",
+    "NT041_2_RC 0",
+    "NT041_3_RC 0",
+    "FOLLOWUP_RC 0"
+   ]
+  }
+ ],
+ "m1_handoff": {
+  "runs": [
+   {
+    "prompt": "The capital of France is Paris. The capital of Germany is",
+    "ctx_terminal": "prefill_ready",
+    "ctx_kinds": [
+     "token",
+     "prefill_ready"
+    ],
+    "ctx_token_ids": [
+     19846
+    ],
+    "first_gen_tokens": [
+     19846
+    ],
+    "gen_status": "OK",
+    "gen_terminal": "finished",
+    "gen_first_token_equals_ctx_token": true,
+    "ctx_usage": {
+     "prompt_tokens": 12,
+     "completion_tokens": 1,
+     "total_tokens": 13,
+     "cached_prompt_tokens": 0
+    },
+    "gen_usage": {
+     "prompt_tokens": 12,
+     "completion_tokens": 16,
+     "total_tokens": 28,
+     "cached_prompt_tokens": 0
+    },
+    "reference_usage": {
+     "prompt_tokens": 12,
+     "completion_tokens": 16,
+     "total_tokens": 28,
+     "cached_prompt_tokens": 11
+    },
+    "gen_equals_reference": true,
+    "kv_bytes_sent_delta": 3670016,
+    "kv_bytes_received_delta": 3670016,
+    "gen_first_token_s": 0.124921
+   },
+   {
+    "prompt": "Write one sentence about disaggregated inference:",
+    "ctx_terminal": "prefill_ready",
+    "ctx_kinds": [
+     "token",
+     "prefill_ready"
+    ],
+    "ctx_token_ids": [
+     330
+    ],
+    "first_gen_tokens": [
+     330
+    ],
+    "gen_status": "OK",
+    "gen_terminal": "finished",
+    "gen_first_token_equals_ctx_token": true,
+    "ctx_usage": {
+     "prompt_tokens": 8,
+     "completion_tokens": 1,
+     "total_tokens": 9,
+     "cached_prompt_tokens": 0
+    },
+    "gen_usage": {
+     "prompt_tokens": 8,
+     "completion_tokens": 16,
+     "total_tokens": 24,
+     "cached_prompt_tokens": 0
+    },
+    "reference_usage": {
+     "prompt_tokens": 8,
+     "completion_tokens": 16,
+     "total_tokens": 24,
+     "cached_prompt_tokens": 7
+    },
+    "gen_equals_reference": false,
+    "kv_bytes_sent_delta": 3670016,
+    "kv_bytes_received_delta": 3670016,
+    "gen_first_token_s": 0.007852
+   },
+   {
+    "prompt": "List three prime numbers greater than ten:",
+    "ctx_terminal": "prefill_ready",
+    "ctx_kinds": [
+     "token",
+     "prefill_ready"
+    ],
+    "ctx_token_ids": [
+     220
+    ],
+    "first_gen_tokens": [
+     220
+    ],
+    "gen_status": "OK",
+    "gen_terminal": "finished",
+    "gen_first_token_equals_ctx_token": true,
+    "ctx_usage": {
+     "prompt_tokens": 8,
+     "completion_tokens": 1,
+     "total_tokens": 9,
+     "cached_prompt_tokens": 0
+    },
+    "gen_usage": {
+     "prompt_tokens": 8,
+     "completion_tokens": 16,
+     "total_tokens": 24,
+     "cached_prompt_tokens": 0
+    },
+    "reference_usage": {
+     "prompt_tokens": 8,
+     "completion_tokens": 16,
+     "total_tokens": 24,
+     "cached_prompt_tokens": 7
+    },
+    "gen_equals_reference": true,
+    "kv_bytes_sent_delta": 3670016,
+    "kv_bytes_received_delta": 3670016,
+    "gen_first_token_s": 0.006211
+   }
+  ],
+  "transceiver_resolved": "cache_transceiver_config=CacheTransceiverConfig(backend='NIXL', transceiver_runtime='PYTHON', max_tokens_in_buffer=40960, kv_transfer_timeout_ms=60000, kv_transfer_sender_future_timeout_ms=1000, kv_transfer_poll_interval_ms=5000, kv_cache_bounce_size_mb=0, enable_pipelined_transfer=False, agent_bounce_buffer_enable=False, agent_bounce_params=None)",
+  "log_keywords_ctx": {
+   "Using KvCacheTransceiverV2": 2,
+   "KvCacheTransceiver": 14,
+   "[Tt]imed? ?out": 32,
+   "kv_transfer_timeout": 10,
+   "Traceback": 0,
+   "ERROR": 0,
+   "\\[E\\]": 0
+  },
+  "log_keywords_gen": {
+   "Using KvCacheTransceiverV2": 2,
+   "KvCacheTransceiver": 14,
+   "[Tt]imed? ?out": 8,
+   "kv_transfer_timeout": 2,
+   "Traceback": 0,
+   "ERROR": 0,
+   "\\[E\\]": 1
+  },
+  "reference_matrix_equal_to_handoff": {
+   "prompt0": [
+    {
+     "agg_gen_fresh": true,
+     "agg_ctx_fresh": true,
+     "handoff": true,
+     "agg_ctx_cached": true,
+     "agg_gen_cached": true
+    },
+    {
+     "agg_gen_fresh": true,
+     "agg_ctx_fresh": true,
+     "handoff": true,
+     "agg_ctx_cached": true,
+     "agg_gen_cached": true
+    },
+    {
+     "agg_gen_fresh": true,
+     "agg_ctx_fresh": true,
+     "handoff": true,
+     "agg_ctx_cached": true,
+     "agg_gen_cached": true
+    }
+   ],
+   "prompt1": [
+    {
+     "agg_gen_fresh": true,
+     "agg_ctx_fresh": true,
+     "handoff": true,
+     "agg_ctx_cached": true,
+     "agg_gen_cached": true
+    },
+    {
+     "agg_gen_fresh": false,
+     "agg_ctx_fresh": false,
+     "handoff": true,
+     "agg_ctx_cached": false,
+     "agg_gen_cached": false
+    },
+    {
+     "agg_gen_fresh": true,
+     "agg_ctx_fresh": true,
+     "handoff": true,
+     "agg_ctx_cached": true,
+     "agg_gen_cached": true
+    }
+   ],
+   "prompt2": [
+    {
+     "agg_gen_fresh": true,
+     "agg_ctx_fresh": true,
+     "handoff": true,
+     "agg_ctx_cached": true,
+     "agg_gen_cached": true
+    },
+    {
+     "agg_gen_fresh": true,
+     "agg_ctx_fresh": true,
+     "handoff": true,
+     "agg_ctx_cached": true,
+     "agg_gen_cached": true
+    },
+    {
+     "agg_gen_fresh": true,
+     "agg_ctx_fresh": true,
+     "handoff": true,
+     "agg_ctx_cached": true,
+     "agg_gen_cached": true
+    }
+   ]
+  },
+  "reference_matrix_reuse_off": {
+   "job": "job-5911451-r0",
+   "equal_to_handoff": {
+    "prompt0": [
+     {
+      "agg_gen_fresh": true,
+      "agg_ctx_fresh": true,
+      "handoff": true,
+      "agg_ctx_cached": true,
+      "agg_gen_cached": true
+     },
+     {
+      "agg_gen_fresh": true,
+      "agg_ctx_fresh": true,
+      "handoff": true,
+      "agg_ctx_cached": true,
+      "agg_gen_cached": true
+     },
+     {
+      "agg_gen_fresh": true,
+      "agg_ctx_fresh": true,
+      "handoff": true,
+      "agg_ctx_cached": true,
+      "agg_gen_cached": true
+     }
+    ],
+    "prompt1": [
+     {
+      "agg_gen_fresh": true,
+      "agg_ctx_fresh": true,
+      "handoff": true,
+      "agg_ctx_cached": true,
+      "agg_gen_cached": true
+     },
+     {
+      "agg_gen_fresh": true,
+      "agg_ctx_fresh": true,
+      "handoff": true,
+      "agg_ctx_cached": true,
+      "agg_gen_cached": true
+     },
+     {
+      "agg_gen_fresh": true,
+      "agg_ctx_fresh": true,
+      "handoff": true,
+      "agg_ctx_cached": true,
+      "agg_gen_cached": true
+     }
+    ],
+    "prompt2": [
+     {
+      "agg_gen_fresh": true,
+      "agg_ctx_fresh": true,
+      "handoff": true,
+      "agg_ctx_cached": true,
+      "agg_gen_cached": true
+     },
+     {
+      "agg_gen_fresh": true,
+      "agg_ctx_fresh": true,
+      "handoff": true,
+      "agg_ctx_cached": true,
+      "agg_gen_cached": true
+     },
+     {
+      "agg_gen_fresh": true,
+      "agg_ctx_fresh": true,
+      "handoff": true,
+      "agg_ctx_cached": true,
+      "agg_gen_cached": true
+     }
+    ]
+   },
+   "cached_prompt_tokens": {
+    "prompt0": [
+     {
+      "agg_ctx_fresh": 0,
+      "agg_ctx_cached": 0
+     },
+     {
+      "agg_ctx_fresh": 0,
+      "agg_ctx_cached": 0
+     },
+     {
+      "agg_ctx_fresh": 0,
+      "agg_ctx_cached": 0
+     }
+    ],
+    "prompt1": [
+     {
+      "agg_ctx_fresh": 0,
+      "agg_ctx_cached": 0
+     },
+     {
+      "agg_ctx_fresh": 0,
+      "agg_ctx_cached": 0
+     },
+     {
+      "agg_ctx_fresh": 0,
+      "agg_ctx_cached": 0
+     }
+    ],
+    "prompt2": [
+     {
+      "agg_ctx_fresh": 0,
+      "agg_ctx_cached": 0
+     },
+     {
+      "agg_ctx_fresh": 0,
+      "agg_ctx_cached": 0
+     },
+     {
+      "agg_ctx_fresh": 0,
+      "agg_ctx_cached": 0
+     }
+    ]
+   },
+   "fresh_engines_prompt1_equal": [
+    true,
+    true
+   ]
+  },
+  "reference_matrix_ctx_leg_cache": {
+   "prompt0": [
+    {
+     "ctx_leg_cached_prompt_tokens": 37
+    },
+    {
+     "ctx_leg_cached_prompt_tokens": 37
+    },
+    {
+     "ctx_leg_cached_prompt_tokens": 37
+    }
+   ],
+   "prompt1": [
+    {
+     "ctx_leg_cached_prompt_tokens": 33
+    },
+    {
+     "ctx_leg_cached_prompt_tokens": 33
+    },
+    {
+     "ctx_leg_cached_prompt_tokens": 33
+    }
+   ],
+   "prompt2": [
+    {
+     "ctx_leg_cached_prompt_tokens": 33
+    },
+    {
+     "ctx_leg_cached_prompt_tokens": 33
+    },
+    {
+     "ctx_leg_cached_prompt_tokens": 33
+    }
+   ]
+  },
+  "fresh_engines_prompt1": {
+   "handoff_equals_agg_gen": true,
+   "handoff_equals_agg_ctx": true
+  }
+ },
+ "m3_orphans": {
+  "n": 8,
+  "prompt_len": 600,
+  "ctx_legs": [
+   [
+    "OK",
+    "prefill_ready"
+   ],
+   [
+    "OK",
+    "prefill_ready"
+   ],
+   [
+    "OK",
+    "prefill_ready"
+   ],
+   [
+    "OK",
+    "prefill_ready"
+   ],
+   [
+    "OK",
+    "prefill_ready"
+   ],
+   [
+    "OK",
+    "prefill_ready"
+   ],
+   [
+    "OK",
+    "prefill_ready"
+   ],
+   [
+    "OK",
+    "prefill_ready"
+   ]
+  ],
+  "used_kv_blocks_baseline": "0",
+  "used_kv_blocks_over_watch": [
+   "152"
+  ],
+  "watch_s": 195.4,
+  "kv_transfer_timeout_ms": "60000 (default)",
+  "timeout_log": [
+   "[11/13/2026-23:45:56] [TRT-LLM] [W] [_torch] Observed timeout on context request 5798157910057845935 due to KV cache transfer timeout: elapsed 123009ms > kv_transfer_timeout_ms=60000ms",
+   "[11/13/2026-23:49:17] [TRT-LLM] [W] [_torch] Observed timeout on context request 8873148294949206674 due to KV cache transfer timeout: elapsed 200382ms > kv_transfer_timeout_ms=60000ms",
+   "[11/13/2026-23:49:17] [TRT-LLM] [W] [_torch] Observed timeout on context request 6306968763143029120 due to KV cache transfer timeout: elapsed 200347ms > kv_transfer_timeout_ms=60000ms",
+   "[11/13/2026-23:49:17] [TRT-LLM] [W] [_torch] Observed timeout on context request 5056139914378779434 due to KV cache transfer timeout: elapsed 200312ms > kv_transfer_timeout_ms=60000ms",
+   "[11/13/2026-23:49:17] [TRT-LLM] [W] [_torch] Observed timeout on context request 5332649219416271718 due to KV cache transfer timeout: elapsed 200278ms > kv_transfer_timeout_ms=60000ms",
+   "[11/13/2026-23:49:17] [TRT-LLM] [W] [_torch] Observed timeout on context request 343652126659336519 due to KV cache transfer timeout: elapsed 200244ms > kv_transfer_timeout_ms=60000ms",
+   "[11/13/2026-23:49:17] [TRT-LLM] [W] [_torch] Observed timeout on context request 2501396640529367419 due to KV cache transfer timeout: elapsed 200219ms > kv_transfer_timeout_ms=60000ms",
+   "[11/13/2026-23:49:17] [TRT-LLM] [W] [_torch] Observed timeout on context request 5177388992943739849 due to KV cache transfer timeout: elapsed 200197ms > kv_transfer_timeout_ms=60000ms",
+   "[11/13/2026-23:49:17] [TRT-LLM] [W] [_torch] Observed timeout on context request 6483528658509334163 due to KV cache transfer timeout: elapsed 200175ms > kv_transfer_timeout_ms=60000ms",
+   "[11/13/2026-23:50:31] [TRT-LLM] [W] [_torch] Observed timeout on context request 6420188600621778459 due to KV cache transfer timeout: elapsed 74102ms > kv_transfer_timeout_ms=60000ms"
+  ],
+  "used_kv_blocks_end_of_phase": "1"
+ },
+ "m4_x_ne_y": {
+  "ids": {
+   "original": "5798157910057845935",
+   "session_id": "5798157910057845935",
+   "replaced_with": "2576381243098071169"
+  },
+  "gen_status_120s": "DEADLINE_EXCEEDED",
+  "kv_sent_delta": 0,
+  "gen_log": [
+   "[11/13/2026-23:44:53] [TRT-LLM] [W] [_torch] Observed timeout on generation request 2576381243098071169 due to KV cache transfer timeout: elapsed 60000ms > kv_transfer_timeout_ms=60000ms",
+   "[11/13/2026-23:45:56] [TRT-LLM] [E] [_torch] KV transfer failed for request 2576381243098071169 slice=0 peer_rank=0 is_last_slice=True (reported by remote agent; see sender-side log for nixl_status)",
+   "[11/13/2026-23:45:56] [TRT-LLM] [W] [_torch] Disagg gen transfer FAILED rank=0 rids=[2576381243098071169] gen_need_sync=False"
+  ],
+  "long_deadline": {
+   "gen_status": "DEADLINE_EXCEEDED",
+   "returned_after_s": 300.0,
+   "gen_events": 0,
+   "log": {
+    "ctxA": {
+     "Observed timeout": 1,
+     "KV transfer failed": 0,
+     "Disagg gen transfer FAILED": 0
+    },
+    "genB": {
+     "Observed timeout": 1,
+     "KV transfer failed": 1,
+     "Disagg gen transfer FAILED": 1
+    }
+   },
+   "normal_handoff_after": "finished"
+  },
+  "session_id_changed_only": {
+   "ids": {
+    "original": "956371591933847951",
+    "replaced_with": "956371591933855870"
+   },
+   "gen_status": "OK",
+   "gen_terminal": "finished"
+  }
+ },
+ "m5_gen_only": {
+  "env_in_engine": "1",
+  "unpatched": {
+   "status": "INVALID_ARGUMENT",
+   "details": "kv.session carries neither a ctx_info_endpoint nor an opaque_state"
+  },
+  "patched_single": {
+   "status": "OK",
+   "terminal": "finished",
+   "completion_tokens": 10
+  },
+  "patched_concurrent4": [
+   [
+    "OK",
+    "finished",
+    10
+   ],
+   [
+    "OK",
+    "finished",
+    10
+   ],
+   [
+    "OK",
+    "finished",
+    10
+   ],
+   [
+    "OK",
+    "finished",
+    10
+   ]
+  ],
+  "patched_kv_rows": {
+   "send": 0,
+   "recv": 0,
+   "summary": 0,
+   "bytes_send": 0,
+   "bytes_summary": 0
+  },
+  "insufficient_kv_64": {
+   "OK|error|Insufficient KV cache for gen-only benchmark mode: one or more requests are waiting for KV cache allocation on a model-parallel rank whose scheduler could not f": 64
+  },
+  "insufficient_engine_alive_after": true
+ },
+ "m6_engine_killers": {
+  "a_unreachable_ctx_info_endpoint": {
+   "request": "DEADLINE_EXCEEDED",
+   "request_elapsed_s": 240.003463,
+   "aggregated_during": [
+    [
+     "t+15s",
+     "DEADLINE_EXCEEDED"
+    ],
+    [
+     "t+60s",
+     "DEADLINE_EXCEEDED"
+    ],
+    [
+     "t+120s",
+     "DEADLINE_EXCEEDED"
+    ]
+   ],
+   "aggregated_after": "DEADLINE_EXCEEDED",
+   "stop": {
+    "rc": -9,
+    "stop_s": 60.3
+   },
+   "log": [
+    "[11/13/2026-23:54:53] [TRT-LLM] [I] [_torch] Registering peer in first request to endpoint 'tcp://127.0.0.1:33697'",
+    "[11/13/2026-23:59:53] [TRT-LLM] [E] [_torch] Hang detected after 300 seconds.",
+    "[11/13/2026-23:59:53] [TRT-LLM] [E] [_torch] Hang detected on rank 0 in PyExecutor; hard-killing and propagating to peer ranks.",
+    "[11/13/2026-23:59:53] [TRT-LLM] [E] [_torch] HangDetector: propagating hard-kill to all ranks via MPI_Abort."
+   ]
+  },
+  "b_no_transceiver": {
+   "kv_connector_in_server_info": null,
+   "context_only": "DEADLINE_EXCEEDED",
+   "generation_only": "DEADLINE_EXCEEDED",
+   "alive_after": true,
+   "aggregated_after": "DEADLINE_EXCEEDED",
+   "stop": {
+    "rc": -9,
+    "stop_s": 60.4
+   },
+   "log_grep": {
+    "AssertionError": 4,
+    "assert": 0,
+    "Traceback": 2,
+    "MPI_ABORT|mpi.*abort": 0,
+    "fatal": 0
+   },
+   "log": [
+    "AssertionError: kv_cache_transceiver is disabled, please set 'cache_transceiver_config: backend:<backend_type>` in config file for disaggregated serving",
+    "AssertionError: kv_cache_transceiver is disabled, please set 'cache_transceiver_config: backend:<backend_type>` in config file for disaggregated serving",
+    "[11/14/2026-00:01:27] [TRT-LLM] [E] [grpc] OpenEngine request d4d8f011eb8041ab8df44836ffe59a7b failed after acceptance: Engine has died: AssertionError: kv_cache_transceiver is disabled, please set 'cache_transceiver_config: backend:<backend_type>` in config file for disaggregated serving"
+   ]
+  }
+ },
+ "m7_fill_gate": {
+  "env_in_engine": {
+   "TLLM_BENCHMARK_REQ_QUEUES_SIZE": "2",
+   "TRTLLM_DISABLE_KV_CACHE_TRANSFER_OVERLAP": "1"
+  },
+  "first_completed_alone_within_30s": false,
+  "first_gen_first_token_s": 30.066654,
+  "second_submitted_at_s": 30.0,
+  "log": [
+   "[11/13/2026-23:51:01] [TRT-LLM] [I] [_torch] Benchmark disagg fill complete: 2 active requests ready, gate opening."
+  ]
+ },
+ "m8": {
+  "a_server_info_kv_connector": {
+   "enabled": true,
+   "transfer_backend": "DEFAULT",
+   "supports_remote_prefill": true,
+   "supports_decode_pull": false,
+   "supports_abort_cleanup": false,
+   "schema_version": 1
+  },
+  "a_prefill_ready_session": {
+   "session_id": "847359795981014786",
+   "transfer_backend": "DEFAULT",
+   "endpoints": [
+    {
+     "host": "<node-ip>",
+     "port": 35333,
+     "protocol": "tcp"
+    }
+   ],
+   "attributes_struct": {
+    "disagg_request_id": "847359795981014786",
+    "ctx_dp_rank": 0.0,
+    "first_gen_tokens": [
+     19846.0
+    ],
+    "ctx_info_endpoint": "tcp://<node-ip>:35333"
+   }
+  },
+  "b_ctx_terminals": {
+   "first_token_is_stop": "prefill_ready",
+   "ctx_max_tokens_4": "prefill_ready",
+   "ctx_ignore_eos": "prefill_ready"
+  },
+  "c_ray": {
+   "started": false,
+   "error": "engine ctxRay exited with code 1; log <results>/job-5909835-r0/engines/ctxRay.log",
+   "cause": [
+    "ModuleNotFoundError: Cannot import Ray. Please install 'ray' package to use ray orchestrator"
+   ]
+  },
+  "d_prompt_logprobs": {
+   "ctx_kinds": [
+    "prompt",
+    "token",
+    "prefill_ready"
+   ],
+   "fresh_logprob_positions": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33
+   ],
+   "cached_prompt_tokens_when_cached": 33,
+   "cached_logprob_positions": [
+    1
+   ],
+   "cached_position1": {
+    "token_id": 220,
+    "token": " ",
+    "logprob": -6.904485702514648,
+    "rank": 19,
+    "candidates": [
+     {
+      "token_id": 19846,
+      "logprob": -0.091985784471035,
+      "token": " Berlin",
+      "rank": 1
+     }
+    ]
+   },
+   "aggregated_cached_logprob_positions": [
+    1
+   ]
+  }
+ }
+}

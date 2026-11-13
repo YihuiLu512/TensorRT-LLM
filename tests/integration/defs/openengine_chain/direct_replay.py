@@ -68,7 +68,7 @@ KV_SUMMARY_SUFFIX = "_gen_transfer_summary.csv"
 
 
 class EngineStartError(RuntimeError):
-    """An engine exited, or did not report SERVING, before the deadline."""
+    """An engine exited, did not serve in time, or another process listens on its port."""
 
 
 _HANDED_OUT_PORTS: set[int] = set()
@@ -178,8 +178,10 @@ class Engine:
         ``grace`` seconds. Then, if the leader is reaped and no other process has
         taken its pid, every process still in its process group or session gets
         SIGKILL. Every recorded process (:meth:`remember_tree`) that is still the
-        same process gets SIGKILL as well. A worker that left the session before it
-        was recorded is not found. Returns the leader's exit code (negative for a
+        same process gets SIGKILL as well. Not found is a process that is in neither
+        the group nor the session and was not below the leader at any recording, such
+        as one that daemonized or one orphaned by a leader that exited between
+        recordings. Returns the leader's exit code (negative for a
         signal), or None if it could not be reaped.
         """
         self.remember_tree()
@@ -270,8 +272,9 @@ def start_engine(
 ) -> Engine:
     """Start ``launcher <model> --grpc --grpc-protocol openengine`` on a free local port.
 
-    ``config`` is written to ``<workdir>/<name>.yaml`` (as JSON, which YAML accepts)
-    and passed with ``--config``. Unless ``extra_args`` gives
+    ``config`` is written to ``<workdir>/<name>.yaml`` as JSON and passed with
+    ``--config``; the server reads it as YAML, which loads a float in exponent form
+    such as ``1e-05`` as a string. Unless ``extra_args`` gives
     ``--openengine-metrics-port``, the engine gets ``--openengine-metrics-port 0``.
     Output goes to ``<workdir>/<name>.log``. ``env`` defaults to this process's
     environment. The caller waits with :meth:`Engine.wait_serving` and must call
@@ -617,7 +620,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Replay one request.
 
     Exit 0 if both streams ended with status OK and the generation leg finished by
-    stop or length, else 1.
+    stop or length, else 1; invalid arguments exit 2.
     """
     args = _parse_args(argv)
     handoff = run_handoff(
