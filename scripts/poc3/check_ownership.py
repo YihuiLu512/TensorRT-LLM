@@ -5,18 +5,21 @@
 
 Every path changed in ``<base>...<head>`` must match one of the work item's
 rules in :data:`OWNERSHIP`, and every commit in ``<base>..<head>`` must carry
-the trailer ``PoC3-Task: <work item>``. A fix (``WT-xx-fixN``) owns what WT-xx
-owns, plus the per-item files named after the fix itself; WT-xx and its other
-fixes do not own those. The gate files under ``scripts/poc3/`` (all but the
-invariant registry) can only be changed by WT-30 and its fixes, whatever the
-table says.
+the trailer ``PoC3-Task: <work item>``, and the range must hold at least one
+commit. A fix (``WT-xx-fixN``) owns what WT-xx owns, plus the per-item files
+named after the fix itself; WT-xx and its other fixes do not own those. The gate
+files (``scripts/poc3/`` except the invariant registry and ``wt54_*``) can only
+be changed by WT-30 and its fixes, whatever the table says.
 
 A rule is ``own`` (no other item owns the path; another item may change it only
 under a ``shared`` or ``exception`` rule of its own), ``shared`` (this item may
 change only the part the note names; the rest of the file belongs to its owner,
 which may be another item or code outside PoC-S3) or ``exception`` (a one-off
 allowance the note describes). Paths changed under ``shared`` and ``exception``
-rules are listed for a reviewer to check by hand.
+rules are listed for a reviewer to check by hand. Test files that already exist
+at the base are ``shared`` even for the item they belong to: tasks.md §0.3 lets
+existing assertions change only for the flips it names, so changes there are
+listed too.
 A pattern starting with ``!`` excludes paths from the rules before it.
 
 Paths that belong to no work item (the orchestrator's main files, the two
@@ -42,7 +45,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from poc3_common import TRAILER, git, parse_task, trailers
+from poc3_common import TRAILER, git, parse_task, trailer_log
 
 TRTLLM = "trtllm"
 DS = "ds"
@@ -79,6 +82,9 @@ PERF = "tests/integration/defs/perf"
 DS_OE = "python/dsv4_serve/openengine"
 # The registry of lines check_invariants.py lets CS-20 add.
 INVARIANT_ADDITIONS = "scripts/poc3/invariant_additions.yaml"
+# Gate files only WT-30 and its fixes may change (see the module docstring).
+GATE_FILES = ("scripts/poc3/**", f"!{INVARIANT_ADDITIONS}", "!scripts/poc3/wt54_*")
+EXISTING_TESTS = "add tests; existing assertions unchanged (tasks.md §0.3)"
 
 
 def _per_item(item: str) -> list[Rule]:
@@ -99,9 +105,10 @@ def _per_item(item: str) -> list[Rule]:
 # cpu_disagg_chain*.py, check_case_lists.py, handoff*.py, wt54_*, records/<item>/, and the ds
 # scripts dev/openengine_disagg* and dev/openengine_stress*).
 OWNERSHIP: dict[str, list[Rule]] = {
-    "WT-30": _own("scripts/poc3/**", f"!{INVARIANT_ADDITIONS}", "!scripts/poc3/wt54_*")
+    "WT-30": _own(*GATE_FILES)
     + [_exception(INVARIANT_ADDITIONS, "only creating it with an empty list of additions")],
     "WT-31": [],
+    # WT-32 creates the NT-041 file; §3.3 makes NT-041 WT-40's to finish and re-run.
     "WT-32": _own(f"{CHAIN}/direct_replay*.py", f"{OE_SERVER_TESTS}/_test_direct_handoff.py"),
     "WT-33": [],
     "WT-34": [],
@@ -127,16 +134,18 @@ OWNERSHIP: dict[str, list[Rule]] = {
     ],
     "WT-36": _own(
         f"{CLIENT_TESTS}/fake_openengine.py",
-        f"{CLIENT_TESTS}/test_fake_openengine*.py",
+        f"{CLIENT_TESTS}/test_fake_openengine_*.py",
         f"{POC_TESTS}/cpu_disagg_chain*.py",
-    ),
-    "WT-37": _own(
-        f"{CHAIN}/split.py",
-        f"{CHAIN}/tests/test_split.py",
-        f"{CHAIN}/tests/test_launch.py",
-        f"{CHAIN}/tests/test_remote_server.py",
     )
+    + [_shared(f"{CLIENT_TESTS}/test_fake_openengine.py", EXISTING_TESTS)],
+    "WT-37": _own(f"{CHAIN}/split.py")
     + [
+        _shared(f"{CHAIN}/tests/test_split.py", EXISTING_TESTS),
+        _shared(f"{CHAIN}/tests/test_launch.py", EXISTING_TESTS),
+        _shared(
+            f"{CHAIN}/tests/test_remote_server.py",
+            EXISTING_TESTS + "; CT-14 ④ flips the role refusal (:230-232)",
+        ),
         _shared(f"{CHAIN}/remote.py", "CT-03: allowing role (CT-14 ④ asserts it)"),
         _shared(
             f"{CHAIN}/launch.py",
@@ -163,14 +172,21 @@ OWNERSHIP: dict[str, list[Rule]] = {
         f"{CHAIN}/check_case_lists.py",
         f"{CHAIN}/new_cases/README.md",
         f"{CHAIN}/migrated/README.md",
-        f"{CHAIN}/tests/test_proof.py",
         f"{CHAIN}/tests/test_proof_disagg.py",
-        f"{CHAIN}/tests/test_expectations.py",
-        f"{CHAIN}/tests/test_plugin.py",
-        f"{CHAIN}/tests/test_runner.py",
         f"{CHAIN}/tests/test_check_case_lists.py",
     )
-    + [_shared(f"{CHAIN}/launch.py", "CT-05: ServeHandle's role fields")],
+    + [
+        _shared(f"{CHAIN}/launch.py", "CT-05: ServeHandle's role fields"),
+        *(
+            _shared(f"{CHAIN}/tests/{name}", EXISTING_TESTS)
+            for name in (
+                "test_proof.py",
+                "test_expectations.py",
+                "test_plugin.py",
+                "test_runner.py",
+            )
+        ),
+    ],
     "WT-40": _own(
         f"{OE_SERVER}/disagg.py",
         f"{OE_SERVER}/servicer.py",
@@ -178,7 +194,9 @@ OWNERSHIP: dict[str, list[Rule]] = {
         f"{OE_SERVER}/capabilities.py",
         f"{OE_SERVER_TESTS}/test_disagg_servicer.py",
         f"{OE_SERVER_TESTS}/test_disagg_control.py",
-    ),
+        f"{APPS}/_test_openengine_disagg_direct.py",
+    )
+    + [_shared(f"{OE_SERVER_TESTS}/_test_direct_handoff.py", "NT-041 (§3.3)")],
     "WT-41": _own(
         f"{DS_OE}/**",
         "tests/openengine/**",
@@ -194,6 +212,8 @@ OWNERSHIP: dict[str, list[Rule]] = {
         _shared("README.md", "the OpenEngine section", DS),
     ],
     "WT-42": _own("tests/openengine/test_disagg_roles.py", "dev/openengine_disagg*", repo=DS)
+    # NT-042/043: §3.3 names WT-42 the author of this TRT-LLM test file.
+    + _own(f"{APPS}/_test_openengine_ds_disagg_direct.py")
     + [
         _shared(
             f"{DS_OE}/**",
@@ -346,6 +366,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
         f"{APPS}/_test_openengine_ds_disagg_*.py",
         f"!{APPS}/_test_openengine_ds_disagg_basic.py",
         f"!{APPS}/_test_openengine_ds_disagg_frontend.py",
+        f"!{APPS}/_test_openengine_ds_disagg_direct.py",
     )
     + [
         _shared(
@@ -389,8 +410,6 @@ OWNERSHIP["WT-57"] += [
 for _name in OWNERSHIP:
     OWNERSHIP[_name] = OWNERSHIP[_name] + _per_item(_name)
     OWNERSHIP[_name] += _own(f"{POC_TESTS}/wt{_name.removeprefix('WT-')}/**")
-# Gate files only WT-30 and its fixes may change (see the module docstring).
-GATE_FILES = ("scripts/poc3/**", f"!{INVARIANT_ADDITIONS}", "!scripts/poc3/wt54_*")
 
 
 @lru_cache(maxsize=None)
@@ -481,8 +500,14 @@ def check(task: str, revision_range: str, repo_dir: str = ".", repo: str | None 
 
     status = 0
     changed = git(
-        repo_dir, "diff", "--name-only", "--no-renames", f"{base_ref}...{head_ref}"
-    ).split("\n")
+        repo_dir,
+        "diff",
+        "--name-only",
+        "-z",
+        "--no-renames",
+        "--no-relative",
+        f"{base_ref}...{head_ref}",
+    ).split("\0")
     review = []
     for path in filter(None, changed):
         rule = match_rule(task, path, repo)
@@ -495,10 +520,11 @@ def check(task: str, revision_range: str, repo_dir: str = ".", repo: str | None 
     for line in review:
         print(f"CHECK BY HAND  {line}")
 
-    log = git(repo_dir, "log", "--format=%H%x00%B%x01", f"{base_ref}..{head_ref}")
-    for record in filter(None, (r.strip("\n") for r in log.split("\x01"))):
-        sha, _, message = record.partition("\0")
-        values = trailers(message)
+    commits = trailer_log(repo_dir, f"{base_ref}..{head_ref}")
+    if not commits:
+        print(f"NO COMMITS     in {revision_range}")
+        status = 1
+    for sha, values in commits:
         if values != [task]:
             print(
                 f"BAD TRAILER    {sha[:12]}  has {values or 'no trailer'}, expected {TRAILER}: {task}"

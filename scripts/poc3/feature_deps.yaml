@@ -26,9 +26,9 @@
 #   not_runnable  Cases the PoC machines cannot run.
 #   notes         Clauses of the tables this file does not model, verbatim.
 #
-# The verifier of a case-04 row is the dependency that lands last, unless the
-# row has an assignee. A case-03 row is verified by R13 (WT-62), or by its
-# fallback when it completes after R13 landed.
+# A row with an assignee is verified by it. Otherwise the verifier of a case-04
+# row is the dependency that lands last, and a case-03 row is verified by R13
+# (WT-62), or by its fallback when it completes after R13 landed.
 
 version: 1
 groups:
@@ -362,6 +362,7 @@ rows:
   deps: []
   chain: case-04
   deferred: true
+  notes: ["\u4E0D\u8BBE E2E\uFF1A\u4E24\u4E2A case \u90FD\u662F \u2014\uFF08\u4E0D\u9002\u7528\uFF09"]
 - id: F-22
   features: [F-22]
   cases: [T3, T4]
@@ -800,6 +801,8 @@ rows:
   author: [existing]
   deps: [link]
   chain: case-04
+  notes: ["\u94FE\u8DEF\uFF08\u9996 token \u4E0E usage \u7684\u65AD\u8A00\u968F DG-86\u3001F-30 \u7B49\
+      \ WT-52\uFF09"]
 - id: DG-13+rest
   features: [DG-13]
   cases: [T2]
@@ -949,7 +952,8 @@ rows:
   deps: []
   chain: case-04
   deferred: true
-  notes: ["XD-101 \u662F\u6B7B\u7528\u4F8B\uFF0C\u4E0D\u63A5\u94FE"]
+  notes: ["XD-101 \u662F\u6B7B\u7528\u4F8B\uFF0C\u4E0D\u63A5\u94FE", "\u4E0D\u8BBE E2E\uFF1A\U0001F173\
+      \uFF08DQ-08\uFF0C\u5F85\u7528\u6237\u5B9A\uFF09"]
 - id: DG-31
   features: [DG-31]
   cases: [XD-108, XD-109, NT-002]
@@ -1146,6 +1150,8 @@ rows:
   deps: []
   chain: case-04
   deferred: true
+  notes: ["\u4E0D\u8BBE E2E\uFF1A\u2014\uFF08remote-tail \u5728\u94FE\u8DEF\u5F62\u6001\u4E0A\u542F\u52A8\
+      \u5373\u62D2\uFF0C\u5224\u5B9A\u5728 EG-19\uFF09"]
 - id: DG-49
   features: [DG-49]
   cases: [XD-002]
@@ -1251,6 +1257,7 @@ rows:
   deps: []
   chain: case-04
   deferred: true
+  notes: ["\u4E0D\u8BBE E2E\uFF1A\U0001F173\uFF08DQ-33\uFF0C\u5F85\u7528\u6237\u5B9A\uFF09"]
 - id: DG-77
   features: [DG-77]
   cases: []
@@ -1258,6 +1265,7 @@ rows:
   deps: []
   chain: case-04
   deferred: true
+  notes: ["\u4E0D\u8BBE E2E\uFF1A\U0001F173\uFF08DQ-33\uFF0C\u5F85\u7528\u6237\u5B9A\uFF09"]
 - id: DG-78
   features: [DG-78]
   cases: [XD-004]
@@ -1404,6 +1412,7 @@ rows:
   deps: []
   chain: case-04
   deferred: true
+  notes: ["\u4E0D\u8BBE E2E\uFF1A\U0001F173\uFF08DQ-33\uFF0C\u5F85\u7528\u6237\u5B9A\uFF09"]
 - id: EG-01a
   features: [EG-01a]
   cases: [XD-225, XD-205, NT-189]
@@ -1526,6 +1535,8 @@ rows:
   deps: []
   chain: case-04
   deferred: true
+  notes: ["\u4E0D\u8BBE E2E\uFF1A\u2014\uFF08\u4E0D\u9002\u7528\uFF1A\u4E24\u79CD\u5F62\u6001\u7684 HTTP\
+      \ \u5165\u53E3\u90FD\u5E26\u4E0D\u4E0A\uFF09"]
 - id: EG-11
   features: [EG-11]
   cases: [NT-193, NT-194, XD-701]
@@ -1616,7 +1627,8 @@ rows:
   deps: []
   chain: case-04
   deferred: true
-  notes: ["XD-623\u3001XD-627 \u7559\u5728 CPU \u95E8\u69DB\u91CC\u9489\u4F4F `UNIMPLEMENTED`"]
+  notes: ["\u4E0D\u8BBE E2E\uFF1A\u2260 \u51ED DV-04 \u7684\u7528\u6237\u7B7E\u5B57", "XD-623\u3001XD-627\
+      \ \u7559\u5728 CPU \u95E8\u69DB\u91CC\u9489\u4F4F `UNIMPLEMENTED`"]
 - id: EG-17
   features: [EG-17]
   cases: []
@@ -1625,7 +1637,9 @@ rows:
   chain: case-04
   deferred: true
   notes: ["CPU \u5C42\u53E6\u6709 NT-170 \u9489\u4F4F\u5916\u89C2\u5BF9 `logits_processor` \u7684\u62D2\
-      \u7EDD\uFF0C\u4E0D\u4F5C\u672C\u884C\u7684\u5224\u5B9A"]
+      \u7EDD\uFF0C\u4E0D\u4F5C\u672C\u884C\u7684\u5224\u5B9A", "\u4E0D\u8BBE E2E\uFF1A\u2014\uFF08\u4E0D\
+      \u9002\u7528\uFF1Alogits post processor \u662F Python \u53EF\u8C03\u7528\u5BF9\u8C61\uFF0C\u4E24\
+      \u79CD\u5F62\u6001\u7684 HTTP \u5165\u53E3\u90FD\u5E26\u4E0D\u4E0A\uFF09"]
 - id: EG-18
   features: [EG-18]
   cases: [XD-012, XD-014, XD-043, XD-204, XD-212]
@@ -1704,8 +1718,9 @@ rows:
   deps: []
   chain: case-04
   deferred: true
-  notes: ["XD-019 \u53EA\u5728 GB200 / GB300 \u4E0A\u8DD1", "PB-3 \u8D70 GB \u8DEF\u7EBF\u65F6\u7531 WT-72\
-      \ \u987A\u5E26\u53D6\u8BC1\uFF08DQ-23\uFF0C\u5F85\u7528\u6237\u5B9A\uFF09"]
+  notes: ["XD-019 \u53EA\u5728 GB200 / GB300 \u4E0A\u8DD1", "\u4E0D\u8BBE E2E\uFF1A\u672A\u9A8C\u8BC1\uFF08\
+      \u786C\u4EF6\uFF09", "PB-3 \u8D70 GB \u8DEF\u7EBF\u65F6\u7531 WT-72 \u987A\u5E26\u53D6\u8BC1\uFF08\
+      DQ-23\uFF0C\u5F85\u7528\u6237\u5B9A\uFF09"]
 - id: EG-26
   features: [EG-26]
   cases: [XD-231]
@@ -1729,7 +1744,8 @@ rows:
   chain: case-04
   assignee: WT-61
   hopper_cases: [XD-042]
-  notes: ["XD-009 \u5728 CO-12 \u5408\u5165\u540E\u7531 WT-40 \u5148\u8865\u8DD1"]
+  notes: ["R12 \u9A8C\u6536\uFF08\u6761\u4EF6\uFF1ADQ-42\uFF0C\u5F85\u7528\u6237\u5B9A\uFF09", "XD-009\
+      \ \u5728 CO-12 \u5408\u5165\u540E\u7531 WT-40 \u5148\u8865\u8DD1"]
 - id: EG-29
   features: [EG-29]
   cases: [NT-204]
@@ -1755,6 +1771,8 @@ rows:
   deps: []
   chain: case-04
   deferred: true
+  notes: ["\u4E0D\u8BBE E2E\uFF1A\u2014\uFF08\u524D\u63D0\u5728\u94FE\u8DEF\u5F62\u6001\u4E0B\u4E0D\u5B58\
+      \u5728\uFF1BDQ-33\uFF0C\u5F85\u7528\u6237\u5B9A\uFF09"]
 - id: EG-33
   features: [EG-33]
   cases: [NT-208]
@@ -1776,6 +1794,9 @@ rows:
   deps: []
   chain: case-04
   deferred: true
+  notes: ["\u4E0D\u8BBE E2E\uFF1A\u2014\uFF08\u4E0D\u9002\u7528\uFF1A\u73B0\u6210\u8D77\u6CD5\u662F MPI\
+      \ worker \u5F62\u6001\uFF0C\u94FE\u8DEF\u5F62\u6001\u4E0B\u4E0D\u5B58\u5728\uFF1BDQ-33\uFF0C\u5F85\
+      \u7528\u6237\u5B9A\uFF09"]
 - id: EG-36
   features: [EG-36]
   cases: [NT-211]
@@ -1804,7 +1825,7 @@ rows:
   deps: [link, WT-38]
   chain: case-04
   assignee: WT-61
-  notes: ["\u53E6\u8981 2 \u8282\u70B9\u8D44\u6E90\u4E0E G1b"]
+  notes: ["\u94FE\u8DEF\u3001WT-38\uFF08CT-15\uFF09", "\u53E6\u8981 2 \u8282\u70B9\u8D44\u6E90\u4E0E G1b"]
 - id: EP-01
   features: [EP-01]
   cases: [NT-172, NT-173]
@@ -1992,6 +2013,7 @@ rows:
   deps: []
   chain: case-03
   deferred: true
+  notes: ["\u4E0D\u8BBE E2E\uFF1A\u2260 \u51ED DV-12 \u7684\u7528\u6237\u786E\u8BA4"]
 - id: DS-S18b
   features: [DS-S18b]
   cases: [NT-129]
@@ -2005,8 +2027,9 @@ rows:
   deps: [ds-link, WT-71]
   chain: case-03
   fallback: WT-73
-  notes: ["\u53E6\u8981\u7528\u6237\u6279 2 \u8282\u70B9\u8D44\u6E90\uFF0C\u4E0D\u6279\u65F6\u8BB0\u300C\
-      \u672A\u9A8C\u8BC1\uFF08\u786C\u4EF6\uFF09\u300D"]
+  notes: ["ds \u94FE\u8DEF\u3001WT-71\uFF08CP-11 (a)\u3001CP-06\uFF09", "\u53E6\u8981\u7528\u6237\u6279\
+      \ 2 \u8282\u70B9\u8D44\u6E90\uFF0C\u4E0D\u6279\u65F6\u8BB0\u300C\u672A\u9A8C\u8BC1\uFF08\u786C\u4EF6\
+      \uFF09\u300D"]
 - id: DS-S19b
   features: [DS-S19b]
   cases: [NT-147]
@@ -2014,6 +2037,9 @@ rows:
   deps: [ds-link, WT-71]
   chain: case-03
   assignee: WT-73
+  notes: ["ds \u94FE\u8DEF\u3001WT-71\uFF08CP-11\uFF09", "\u7531 WT-73 \u505A\u591A\u8282\u70B9\u5192\u70DF\
+      \uFF083 \u8282\u70B9\uFF0CPB-2a \u4E4B\u540E\u3001PB-2b \u4E4B\u524D\uFF09\uFF0C\u8D44\u6E90\u4E0D\
+      \u6279\u65F6\u8BB0\u300C\u672A\u9A8C\u8BC1\uFF08\u786C\u4EF6\uFF09\u300D"]
 - id: DS-S19c
   features: [DS-S19c]
   cases: [NT-217, NT-218]
@@ -2033,6 +2059,7 @@ rows:
   deps: []
   chain: case-03
   deferred: true
+  notes: ["\u4E0D\u8BBE E2E\uFF1A\u2260 \u51ED DV-04 \u7684\u7528\u6237\u7B7E\u5B57"]
 - id: DS-R01
   features: [DS-R01]
   cases: [NT-138, NT-150]
@@ -2064,6 +2091,8 @@ rows:
   deps: []
   chain: case-03
   deferred: true
+  notes: ["\u4E0D\u8BBE E2E\uFF1A\uFF1D\uFF08\u672A\u5B9E\u6D4B\uFF09\uFF0C`\u786C\u4EF6\u4E0D\u5177\u5907\
+      `\uFF0C\u7528\u6237\u7B7E\u5B57"]
 - id: DS-U01
   features: [DS-U01]
   cases: [NT-120, NT-151]
@@ -2095,6 +2124,8 @@ rows:
   deps: []
   chain: case-03
   deferred: true
+  notes: ["\u4E0D\u8BBE E2E\uFF1A\uFF1D\uFF08\u672A\u5B9E\u6D4B\uFF09\uFF0C`\u672A\u5B9A\u4E49\u884C\u4E3A\
+      `\uFF0C\u7528\u6237\u7B7E\u5B57"]
 - id: DS-U06
   features: [DS-U06]
   cases: []
@@ -2102,6 +2133,8 @@ rows:
   deps: []
   chain: case-03
   deferred: true
+  notes: ["\u4E0D\u8BBE E2E\uFF1A\uFF1D\uFF08\u672A\u5B9E\u6D4B\uFF09\uFF0C`\u6302\u8D77`\uFF0C\u7528\u6237\
+      \u7B7E\u5B57"]
 - id: DS-I01
   features: [DS-I01]
   cases: [NT-119, NT-154]
@@ -2170,7 +2203,9 @@ rows:
   chain: case-03
   deferred: true
   notes: ["CPU \u5C42\u53E6\u6709 NT-152 \u9489\u4F4F ds OE server \u53EA\u4E0B\u53D1 engine \u8BA4\u8BC6\
-      \u7684\u952E\uFF0C\u4E0D\u4F5C\u672C\u884C\u7684\u5224\u5B9A"]
+      \u7684\u952E\uFF0C\u4E0D\u4F5C\u672C\u884C\u7684\u5224\u5B9A", "\u4E0D\u8BBE E2E\uFF1A\u2014\uFF08\
+      \u4E0D\u9002\u7528\uFF1A\u4E24\u79CD\u5F62\u6001\u7684 HTTP \u5165\u53E3\u90FD\u5230\u4E0D\u4E86\
+      \u8FD9\u4E2A\u8F93\u5165\uFF09"]
 - id: DS-O01
   features: [DS-O01]
   cases: [NT-146]
@@ -2190,6 +2225,8 @@ rows:
   deps: []
   chain: case-03
   deferred: true
+  notes: ["\u4E0D\u8BBE E2E\uFF1A\u6709\u5DEE\u5F02\uFF08DV-14\uFF09\uFF0C\u91CF\u7EA7\u53D6\u81EA\u6027\
+      \u80FD\u89C2\u6D4B\u70B9"]
 - id: DS-O04
   features: [DS-O04]
   cases: [NT-128]
@@ -2203,6 +2240,7 @@ rows:
   deps: []
   chain: case-03
   deferred: true
+  notes: ["\u4E0D\u8BBE E2E\uFF1A\u4E22\u5931\uFF08DV-13\uFF09\u51ED\u7528\u6237\u786E\u8BA4"]
 - id: DS-O06
   features: [DS-O06]
   cases: [NT-143]
@@ -2240,6 +2278,7 @@ rows:
   deps: []
   chain: case-03
   deferred: true
+  notes: ["\u4E0D\u8BBE E2E\uFF1A\u9ED8\u8BA4\u672A\u7528\uFF0C\u4E24\u81C2\u90FD\u4E0D\u8BBE"]
 - id: DS-O12
   features: [DS-O12]
   cases: []
@@ -2247,4 +2286,5 @@ rows:
   deps: []
   chain: case-03
   deferred: true
-  notes: ["\u529F\u80FD\u5224\u5B9A\u5728 DS-S18a"]
+  notes: ["\u4E0D\u8BBE E2E\uFF1A\u4E22\u5931\uFF08DV-12\uFF09\u51ED\u7528\u6237\u786E\u8BA4", "\u529F\u80FD\
+      \u5224\u5B9A\u5728 DS-S18a"]

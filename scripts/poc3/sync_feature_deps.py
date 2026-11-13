@@ -25,8 +25,12 @@ file no longer matches the tables:
 - Cases in parentheses are not the row's evidence: Hopper-shard cases (with
   their "第一批" / "第二批" batch notes) and two-node cases are kept as
   supplementary lists, unrunnable ones as ``not_runnable``.
-- Any other clause of the dependency cell, and any other parenthesised note
-  that names a case, is kept verbatim in the row's ``notes``.
+- The dependency set when it carries a parenthesised qualifier, the reason
+  of a "不设 E2E" row, any clause of the dependency cell that is not exactly
+  one of the forms above, and any other parenthesised note of the case cell
+  that names a case are kept verbatim in the row's ``notes``.
+- The ds-engine repository's items (group ``ds-repo``) come from the
+  repository table of tasks.md §0.2.
 
 The scripts need Python 3.9 or newer.
 
@@ -53,9 +57,6 @@ import yaml
 
 FEATURE_DEPS = Path(__file__).resolve().parent / "feature_deps.yaml"
 
-# Items that land on the ds-engine repository (tasks.md §0.2); pending_e2e.py looks for their
-# trailers there.
-DS_REPO_GROUP = ["WT-41", "WT-42", "WT-43"]
 _GROUP_WORDS = {"链路": "link", "ds 链路": "ds-link", "R11 前提": "r11-prereqs"}
 R11, R12 = "WT-60", "WT-61"
 
@@ -88,12 +89,14 @@ HEADER = """\
 #   not_runnable  Cases the PoC machines cannot run.
 #   notes         Clauses of the tables this file does not model, verbatim.
 #
-# The verifier of a case-04 row is the dependency that lands last, unless the
-# row has an assignee. A case-03 row is verified by R13 (WT-62), or by its
-# fallback when it completes after R13 landed.
+# A row with an assignee is verified by it. Otherwise the verifier of a case-04
+# row is the dependency that lands last, and a case-03 row is verified by R13
+# (WT-62), or by its fallback when it completes after R13 landed.
 """
 
-_CASE_RE = re.compile(r"\b(XD-\d{3}|NT-\d{3}|T\d+|PU-\d+)\b")
+# Not \b: in the plan's Chinese text a case id can touch a CJK character, which \b treats as a word
+# character.
+_CASE_RE = re.compile(r"(?<![A-Za-z0-9-])(XD-\d{3}|NT-\d{3}|T\d+|PU-\d+)(?![0-9])")
 _TASK_RE = re.compile(r"WT-\d\d")
 _SECTION_RE = re.compile(r"^### 3\.([2-7]) ")
 _MAIN_ROWS_RE = re.compile(r"（(\d+) 个主行）")
@@ -219,9 +222,12 @@ def parse_deps(parts: list[str]) -> dict[str, Any]:
     }
     if first.startswith("不设 E2E"):
         out["deferred"] = True
-        out["notes"] = parts[1:]
+        out["notes"] = parts
         return out
-    for token in split_top(first, "、"):
+    tokens = split_top(first, "、")
+    if any(outside_parens(token)[1] for token in tokens):
+        out["notes"].append(first)
+    for token in tokens:
         word = outside_parens(token)[0].strip()
         if word in _GROUP_WORDS:
             out["deps"].append(_GROUP_WORDS[word])
@@ -231,7 +237,10 @@ def parse_deps(parts: list[str]) -> dict[str, Any]:
             raise ValueError(f"unknown dependency {token!r} in {first!r}")
     if "r11-prereqs" in out["deps"]:
         out["assignee"] = R11
+    exact = re.compile(r"其余用例另等 WT-\d\d(、WT-\d\d)*|R12 验收|由 WT-\d\d 做|.*由 WT-\d\d 补")
     for part in parts[1:]:
+        if not exact.fullmatch(part) and not _PU_RULE_RE.search(part):
+            out["notes"].append(part)
         if part.startswith("其余用例另等"):
             out["rest"] = _TASK_RE.findall(part)
         elif part.startswith("R12 验收"):
@@ -242,8 +251,6 @@ def parse_deps(parts: list[str]) -> dict[str, Any]:
             out["fallback"] = match.group(1)
         elif match := _PU_RULE_RE.search(part):
             out["performance"].append((match.group(1), match.group(2), part))
-        else:
-            out["notes"].append(part)
     return out
 
 
@@ -376,10 +383,14 @@ def main_row_count(tasks_md: str) -> int:
 
 
 def derive_groups(tasks_md: str) -> dict[str, list[str]]:
-    """The dependency groups of §3.2, plus the ds-engine repository's items."""
+    """The dependency groups of §3.2, plus the ds-engine repository's items (§0.2)."""
     groups: dict[str, list[str]] = {}
     in_section = False
     for line in tasks_md.splitlines():
+        if line.startswith("| ds-engine 自有仓库 |"):
+            # The last cell lists the items on that repository before the first "；".
+            last = line.strip().strip("|").split(" | ")[-1]
+            groups["ds-repo"] = _TASK_RE.findall(last.split("；")[0])
         if line.startswith("### "):
             match = _SECTION_RE.match(line)
             in_section = bool(match) and match.group(1) == "2"
@@ -388,10 +399,11 @@ def derive_groups(tasks_md: str) -> dict[str, list[str]]:
             cells = [cell.strip() for cell in line.strip().strip("|").split(" | ")]
             if cells[0] in _GROUP_WORDS:
                 groups[_GROUP_WORDS[cells[0]]] = _TASK_RE.findall(cells[1])
-    missing = set(_GROUP_WORDS.values()) - set(groups)
+    names = [*_GROUP_WORDS.values(), "ds-repo"]
+    missing = [name for name in names if not groups.get(name)]
     if missing:
-        raise ValueError(f"§3.2 does not define {sorted(missing)}")
-    return {name: groups[name] for name in _GROUP_WORDS.values()} | {"ds-repo": DS_REPO_GROUP}
+        raise ValueError(f"tasks.md does not define the groups {missing}")
+    return {name: groups[name] for name in names}
 
 
 def derive(tasks_md: str) -> list[dict[str, Any]]:
@@ -404,6 +416,9 @@ def derive(tasks_md: str) -> list[dict[str, Any]]:
         cases, authors, deps = segments(case_cell), segments(author_cell), segments(dep_cell)
         if section in ("4", "5"):  # tables A and B: one row per chain segment
             chains = [k for k in ("04", "03") if k in deps] or [""]
+            for cell in (cases, authors, deps):
+                if "" in cell and ("04" in cell or "03" in cell):
+                    raise ValueError(f"{feature}: text before the 04/03 segments: {cell['']}")
             for key in chains:
                 chain = "case-03" if key == "03" else "case-04"
                 row_id = f"{feature}@03" if key == "03" else feature

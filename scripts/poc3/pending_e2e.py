@@ -45,7 +45,9 @@ Without ``--ds-repo`` their landing is unknown: rows waiting only on them are
 listed separately rather than counted as owed or not.
 
 Run it after the last rebase onto the integration branch: pushes only fast
-forward, so whichever item lands second sees the first one as landed.
+forward, so whichever item lands second sees the first one as landed. The rows
+come from the ``feature_deps.yaml`` beside this script, so run the copy in a
+checkout rebased onto ``--ref``.
 
 Usage::
 
@@ -104,8 +106,9 @@ class Obligations:
             have not all landed yet; nobody owes them once this item lands.
         orphaned: Rows this item completes whose fixed verifier has already
             landed; nobody owes them.
-        noted: Rows whose notes name this item (instructions the tables give
-            outside the dependency set, such as an early re-run).
+        noted: Rows, deferred ones included, whose notes name this work item
+            (``WT-xx`` for a fix ``WT-xx-fixN``): instructions the tables give
+            outside the dependency set, such as an early re-run.
     """
 
     task: str
@@ -232,10 +235,12 @@ def obligations(
     result = Obligations(task=task, landed=sorted(landed))
     after = landed_bases | {base} if new else landed_bases
     for row in rows:
-        if row.deferred or row.id in done:
+        if row.id in done:
             continue
         if _names(base, row.notes):
             result.noted.append(row)
+        if row.deferred:
+            continue
         missing = row.deps - after
         if missing and missing <= unchecked:
             result.unknown.append(row)
@@ -291,7 +296,8 @@ def _format(result: Obligations) -> str:
     section("Waiting only on items whose landing was not checked", result.unknown)
     section("Fixed verifier is this item, dependencies not all landed: report it", result.too_early)
     section("Completed here after its fixed verifier landed: report it", result.orphaned)
-    lines.append(f"\nRows whose notes name {result.task} ({len(result.noted)}):")
+    base = parse_task(result.task)[0]
+    lines.append(f"\nRows whose notes name {base}, deferred rows included ({len(result.noted)}):")
     for row in result.noted:
         lines.append(f"  {row.id:<16} " + " / ".join(row.notes))
     if not result.noted:

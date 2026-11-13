@@ -23,7 +23,7 @@ import pending_e2e
 import pytest
 import sync_feature_deps
 import yaml
-from poc3_common import landed_tasks, parse_task, trailers
+from poc3_common import landed_tasks, parse_task, trailer_log
 
 # tasks.md §1.1: the work items PoC-S3 uses.
 WORK_ITEMS = {
@@ -99,10 +99,16 @@ def test_task_names_reject_poc2_and_malformed(name):
         parse_task(name)
 
 
-def test_trailers_read_only_the_poc3_key():
-    message = "Subject\n\nBody\n\nPoC2-Task: WT-10\nPoC3-Task: WT-30\n"
-    assert trailers(message) == ["WT-30"]
-    assert trailers("PoC2-Task: WT-10\n") == []
+def test_trailers_read_only_the_poc3_key_in_the_trailer_block(tmp_path):
+    repo = _repo(tmp_path)
+    _commit(
+        repo, {}, "Subject\n\nBody\n\nPoC2-Task: WT-10\nPoC3-Task: WT-30\nSigned-off-by: x <x@y>"
+    )
+    _commit(repo, {}, "Subject\n\nPoC2-Task: WT-10")
+    _commit(repo, {}, "Subject\n\nPoC3-Task: WT-51\nis quoted in the body\n\nPoC3-Task: WT-35")
+    values = [v for _, v in trailer_log(repo, "main")]
+    assert values == [["WT-35"], [], ["WT-30"]]
+    assert landed_tasks(repo, "main") == {"WT-30", "WT-35"}
 
 
 def test_landed_tasks_ignore_poc2_trailers(tmp_path):
@@ -262,9 +268,75 @@ def test_wt57_leaves_the_domains_of_other_items_alone():
         for rule in rules
         if rule.kind == "own" and "/_test_openengine_disagg_" in rule.pattern
     ]
-    assert len(taken) == 17
+    assert len(taken) == 18  # the 17 domains of other items, and WT-40's NT-040 file
     for path in taken:
         assert check_ownership.match_rule("WT-57", path) is None, path
+
+
+def test_moving_a_file_counts_its_old_path(tmp_path, capsys):
+    repo = _repo(tmp_path)
+    base = _commit(
+        repo, {"tensorrt_llm/__init__.py": "", "tensorrt_llm/serve/router.py": "r\n"}, "base"
+    )
+    (repo / "scripts/poc3").mkdir(parents=True)
+    _git(repo, "mv", "tensorrt_llm/serve/router.py", "scripts/poc3/router.py")
+    _commit(repo, {}, "move\n\nPoC3-Task: WT-30")
+    assert check_ownership.check("WT-30", f"{base}..HEAD", str(repo)) == 1
+    assert "OUT OF BOUNDS  tensorrt_llm/serve/router.py" in capsys.readouterr().out
+
+
+def test_check_fails_an_empty_range(tmp_path, capsys):
+    repo, _ = _two_commit_repo(tmp_path, {"scripts/poc3/x.py": "x\n"}, "add\n\nPoC3-Task: WT-30")
+    assert check_ownership.check("WT-30", "HEAD..HEAD", str(repo)) == 1
+    assert "NO COMMITS" in capsys.readouterr().out
+
+
+def test_the_gate_files_hold_even_if_the_table_grants_them(monkeypatch):
+    rules = check_ownership.OWNERSHIP["WT-54"] + check_ownership._own("scripts/poc3/**")
+    monkeypatch.setitem(check_ownership.OWNERSHIP, "WT-54", rules)
+    assert check_ownership.match_rule("WT-54", "scripts/poc3/check_ownership.py") is None
+
+
+def test_unusual_path_names_are_matched_as_they_are(tmp_path, capsys):
+    path = "tests/integration/defs/openengine_chain/records/WT-31/b200 é.txt"
+    repo, base = _two_commit_repo(tmp_path, {path: "x\n"}, "add\n\nPoC3-Task: WT-31")
+    assert check_ownership.check("WT-31", f"{base}..HEAD", str(repo)) == 0
+
+
+def test_a_relative_diff_config_does_not_hide_changes(tmp_path, capsys):
+    repo, base = _two_commit_repo(
+        tmp_path, {"tensorrt_llm/serve/router.py": "changed\n"}, "add\n\nPoC3-Task: WT-30"
+    )
+    _git(repo, "config", "diff.relative", "true")
+    assert check_ownership.check("WT-30", f"{base}..HEAD", str(repo / "tensorrt_llm")) == 1
+
+
+@pytest.mark.parametrize(
+    "path, task",
+    [
+        ("tests/integration/defs/openengine_chain/tests/test_remote_server.py", "WT-37"),
+        ("tests/integration/defs/openengine_chain/tests/test_proof.py", "WT-38"),
+        ("tests/unittest/grpc/openengine_client/test_fake_openengine.py", "WT-36"),
+    ],
+)
+def test_existing_test_files_are_listed_for_review(path, task):
+    rule = check_ownership.match_rule(task, path)
+    assert rule is not None and rule.kind == "shared"
+    assert [n for n, r in check_ownership.owners(path) if r.kind == "own"] == []
+
+
+@pytest.mark.parametrize(
+    "path, owner",
+    [
+        ("tests/unittest/llmapi/apps/_test_openengine_disagg_direct.py", "WT-40"),
+        ("tests/unittest/llmapi/apps/_test_openengine_ds_disagg_direct.py", "WT-42"),
+        ("tests/unittest/grpc/openengine/_test_direct_handoff.py", "WT-32"),
+    ],
+)
+def test_direct_case_files_follow_section_3_3(path, owner):
+    assert [n for n, r in check_ownership.owners(path) if r.kind == "own"] == [owner]
+    if owner == "WT-32":
+        assert check_ownership.match_rule("WT-40", path).kind == "shared"
 
 
 @pytest.mark.parametrize("revision_range", ["..HEAD", "HEAD..", "HEAD...HEAD", "HEAD"])
@@ -435,6 +507,19 @@ def test_rows_left_without_a_verifier_are_reported(rows):
     assert "F-33" not in _owed("WT-57", landed, rows)[0]
 
 
+def test_case03_rows_left_without_a_verifier_are_reported(rows):
+    ds_landed = (DS_LINK | {"WT-35", "WT-36", "WT-41"}) - {"WT-62"}
+    # R14 landing while F-06@03 still waits for WT-53.
+    assert "F-06@03" in _extra("WT-79", ds_landed | {"WT-62"}, rows)[0]
+    # WT-53 completing F-06@03 after R14 landed.
+    assert "F-06@03" in _extra("WT-53", ds_landed | {"WT-62", "WT-79"}, rows)[1]
+
+
+def test_notes_on_deferred_rows_reach_the_item_they_name(rows):
+    # §3.6 EG-25 (不设 E2E): PB-3 走 GB 路线时由 WT-72 顺带取证.
+    assert "EG-25" in _extra("WT-72", set(), rows)[2]
+
+
 def test_notes_naming_an_item_reach_it(rows):
     # §3.6 EG-28: XD-009 在 CO-12 合入后由 WT-40 先补跑.
     assert "EG-28" in _extra("WT-40", set(), rows)[2]
@@ -576,26 +661,45 @@ def test_the_table_parser():
         "WT-57"
     ]
     assert rows["F-90@03"]["chain"] == "case-03" and rows["F-90@03"]["deps"] == ["ds-link", "WT-53"]
-    assert rows["F-91"]["deferred"] is True and rows["F-91"]["notes"] == ["XD-623 留在 CPU 门槛里"]
+    assert rows["F-91"]["deferred"] is True and rows["F-91"]["notes"] == [
+        "不设 E2E：两个 case 都是 —（不适用）",
+        "XD-623 留在 CPU 门槛里",
+    ]
     assert rows["EG-90"]["assignee"] == "WT-60" and rows["EG-90"]["deps"] == ["r11-prereqs"]
     assert rows["EG-91"]["assignee"] == "WT-61" and rows["EG-91"]["deps"] == ["link", "WT-38"]
     assert rows["EG-91"]["hopper_cases"] == ["XD-041", "XD-042"]
-    assert rows["EG-91"]["notes"] == ["XD-101 是死用例", "XD-009 由 WT-40 先补跑"]
+    assert rows["EG-91"]["notes"] == [
+        "XD-101 是死用例",
+        "链路、WT-38（CT-15）",
+        "XD-009 由 WT-40 先补跑",
+    ]
     assert rows["EG-92"]["cases"] == ["XD-005"] and "assignee" not in rows["EG-92"]
     assert rows["EG-92+PU-02"]["cases"] == ["PU-02"] and rows["EG-92+PU-02"]["assignee"] == "WT-70"
     assert rows["EG-92+PU-02"]["deps"] == ["link", "WT-70"]
     assert rows["DS-90"]["fallback"] == "WT-73" and rows["DS-90"]["deps"] == ["ds-link", "WT-71"]
 
 
+REPO_TABLE = """\
+### 0.2 仓库分支与合入标记
+| 仓库 | 地址 | 集成分支 | 起点 | 适用工作项 |
+|---|---|---|---|---|
+| ds-engine 自有仓库 | x | y | z | WT-41、WT-42、WT-43；WT-71 的 `E3-mid` 部分（CD-09） |
+"""
+
+
 def test_the_groups_come_from_section_3_2():
-    assert sync_feature_deps.derive_groups(GROUPS_TABLE) == {
+    assert sync_feature_deps.derive_groups(REPO_TABLE + GROUPS_TABLE) == {
         "link": ["WT-35", "WT-37"],
         "ds-link": ["WT-33", "WT-62"],
         "r11-prereqs": ["WT-37", "WT-57"],
         "ds-repo": ["WT-41", "WT-42", "WT-43"],
     }
     with pytest.raises(ValueError, match="does not define"):
-        sync_feature_deps.derive_groups(GROUPS_TABLE.replace("| R11 前提 |", "| R12 |"))
+        sync_feature_deps.derive_groups(
+            REPO_TABLE + GROUPS_TABLE.replace("| R11 前提 |", "| R12 |")
+        )
+    with pytest.raises(ValueError, match="ds-repo"):
+        sync_feature_deps.derive_groups(GROUPS_TABLE)
 
 
 def test_the_table_parser_rejects_unknown_dependencies():
@@ -607,6 +711,27 @@ def test_the_table_parser_rejects_unknown_dependencies():
 def test_the_table_parser_rejects_a_row_without_cases():
     bad = SECTION.replace("| EG-90 z（✅） | XD-213 |", "| EG-90 z（✅） | — |")
     with pytest.raises(ValueError, match="no case verifies"):
+        sync_feature_deps.derive(bad.replace("（3 个", "（4 个"))
+
+
+def test_qualifiers_and_reasons_are_kept_as_notes():
+    deps = sync_feature_deps.parse_deps(["链路（断言随 WT-52）", "R12 验收（条件：DQ-42）"])
+    assert deps["deps"] == ["link"] and deps["assignee"] == "WT-61"
+    assert deps["notes"] == ["链路（断言随 WT-52）", "R12 验收（条件：DQ-42）"]
+    deferred = sync_feature_deps.parse_deps(["不设 E2E：—（不适用）", "另见 DG-1"])
+    assert deferred["deferred"] and deferred["notes"] == ["不设 E2E：—（不适用）", "另见 DG-1"]
+    plain = sync_feature_deps.parse_deps(["链路、WT-57", "其余用例另等 WT-57"])
+    assert plain["notes"] == []
+
+
+def test_case_ids_next_to_chinese_text_are_found():
+    assert sync_feature_deps._cases("用XD-001与NT-002、T3跑") == ["XD-001", "NT-002", "T3"]
+    assert sync_feature_deps._cases("CT-15、XD-0011") == []
+
+
+def test_text_before_the_chain_segments_is_rejected():
+    bad = SECTION.replace("| 04：链路；其余", "| 链路；04：链路；其余")
+    with pytest.raises(ValueError, match="before the 04/03 segments"):
         sync_feature_deps.derive(bad.replace("（3 个", "（4 个"))
 
 
@@ -822,6 +947,99 @@ def test_whole_files_compare_bytes_and_mode(invariant_repo, change):
         (repo / path).chmod(0o755)
     _git(repo, "add", path)
     assert _invariants(repo, base, {}) == {f"file {path}"}
+
+
+@pytest.mark.parametrize(
+    "addition",
+    [
+        "if True:\n    def disaggregated():\n        return 1\n",
+        "try:\n    from x import y as disaggregated\nexcept ImportError:\n    pass\n",
+        "for disaggregated in ():\n    pass\n",
+        "with open(__file__) as disaggregated:\n    pass\n",
+        "if (disaggregated := None):\n    pass\n",
+    ],
+    ids=["def-in-if", "import-in-try", "for-target", "with-target", "walrus"],
+)
+def test_a_second_module_scope_binding_fails(invariant_repo, addition):
+    repo, base = invariant_repo
+    files = {check_invariants.SERVE: SERVE_SRC + "\n\n" + addition}
+    assert _invariants(repo, base, files) == {f"def {check_invariants.SERVE}:disaggregated"}
+
+
+def test_local_names_in_nested_bodies_are_not_bindings(invariant_repo):
+    repo, base = invariant_repo
+    addition = (
+        "if True:\n    def helper():\n        disaggregated = 1\n        return disaggregated\n"
+    )
+    files = {check_invariants.SERVE: SERVE_SRC + "\n\n" + addition}
+    assert _invariants(repo, base, files) == set()
+
+
+def test_crlf_inside_a_frozen_definition_fails(invariant_repo):
+    repo, base = invariant_repo
+    text = SERVE_SRC.replace("    return None\n", "    return None\r\n")
+    assert _invariants(repo, base, {check_invariants.SERVE: text}) == {
+        f"def {check_invariants.SERVE}:disaggregated_mpi_worker"
+    }
+
+
+@pytest.mark.parametrize(
+    "old, new",
+    [
+        ('"encoded_opaque_state")\n', '"encoded_opaque_state")\n'.replace("\n", "")),
+        (
+            '_INTERNAL_DISAGG_AUTH_FIELDS = ("ctx_info_endpoint", "encoded_opaque_state")\n\n\n',
+            "\n\n",
+        ),
+    ],
+    ids=["joined-line", "deleted-line"],
+)
+def test_removing_an_existing_auth_line_fails(invariant_repo, old, new):
+    repo, base = invariant_repo
+    text = AUTH_SRC.replace(old, new, 1)
+    assert text != AUTH_SRC
+    assert _invariants(repo, base, {check_invariants.AUTH: text}, TEST_REGISTRY) == {
+        f"additions {check_invariants.AUTH}:file"
+    }
+
+
+def test_reordering_existing_lines_fails(invariant_repo):
+    repo, base = invariant_repo
+    lines = AUTH_SRC.splitlines(keepends=True)
+    reordered = "".join([lines[-1], *lines[:-1]])
+    assert _invariants(repo, base, {check_invariants.AUTH: reordered}) == {
+        f"additions {check_invariants.AUTH}:file"
+    }
+
+
+def test_a_head_with_the_gate_but_no_registry_fails(invariant_repo):
+    repo, base = invariant_repo
+    _commit(repo, {"scripts/poc3/check_invariants.py": "# gate\n"}, "gate")
+    _git(repo, "rm", "-q", check_invariants.REGISTRY_PATH)
+    results = {name: detail for name, passed, detail in _results(repo, base, {}) if not passed}
+    assert list(results) == ["registry"] and "missing" in results["registry"]
+
+
+def _results(repo, base, files, head="HEAD"):
+    _commit(repo, files, "change")
+    return check_invariants.run(repo, base, head)
+
+
+def test_the_head_and_the_working_tree_are_told_apart(invariant_repo):
+    repo, base = invariant_repo
+    (repo / "tensorrt_llm/serve/router.py").write_text("# on disk only\n")
+    assert {n for n, ok, _ in check_invariants.run(repo, base, "HEAD") if not ok} == set()
+    assert {n for n, ok, _ in check_invariants.run(repo, base, "") if not ok} == {
+        "file tensorrt_llm/serve/router.py"
+    }
+
+
+def test_a_relative_diff_config_does_not_hide_a_changed_file(invariant_repo):
+    repo, base = invariant_repo
+    _git(repo, "config", "diff.relative", "true")
+    _commit(repo, {"tensorrt_llm/serve/router.py": "# changed\n"}, "change")
+    results = check_invariants.run(repo / "tensorrt_llm/serve", base, "HEAD")
+    assert {n for n, ok, _ in results if not ok} == {"file tensorrt_llm/serve/router.py"}
 
 
 def test_the_working_tree_is_checked_from_a_subdirectory(invariant_repo):

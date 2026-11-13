@@ -15,8 +15,10 @@ orchestrator without changing the orchestrator. Three checks hold that line:
    base. Each definition is located with ``ast`` and compared from its first
    decorator to its last line, comment lines indented into its body included,
    so moving it inside the file is fine but any change to its decorators,
-   signature or body is not. The name must not be bound a second time at the
-   top level of the file. Helpers the definitions call are not covered.
+   signature or body is not. No other statement may bind the name at module
+   scope (as far as the syntax shows: ``globals()[...]`` is not seen). Helpers
+   the definitions call, and the command table that maps CLI names to the
+   subcommands, are not covered.
 3. **Registered additions only**: the HTTP ``DisaggregatedParams`` class of
    ``openai_protocol.py`` and the whole of ``disagg_auth.py`` may only gain the
    lines listed in ``invariant_additions.yaml``: the base text must be a
@@ -89,13 +91,14 @@ def git_reader(repo: str | Path) -> Reader:
     )
 
     def read(rev: str, path: str) -> str | None:
+        # Line endings are kept as they are, so a CRLF change is a change.
         if not rev:
             file = top / path
-            return file.read_text() if file.is_file() else None
+            return file.read_bytes().decode() if file.is_file() else None
         result = subprocess.run(
-            ["git", "-C", str(repo), "show", f"{rev}:{path}"], capture_output=True, text=True
+            ["git", "-C", str(repo), "show", f"{rev}:{path}"], capture_output=True
         )
-        return result.stdout if result.returncode == 0 else None
+        return result.stdout.decode() if result.returncode == 0 else None
 
     return read
 
@@ -106,7 +109,18 @@ def git_differ(repo: str | Path) -> Differ:
     def differs(base: str, head: str, path: str) -> bool:
         revs = [base, head] if head else [base]
         result = subprocess.run(
-            ["git", "-C", str(repo), "diff", "--quiet", *revs, "--", f":(top){path}"],
+            [
+                "git",
+                "-C",
+                str(repo),
+                "diff",
+                "--quiet",
+                "--no-ext-diff",
+                "--no-relative",
+                *revs,
+                "--",
+                f":(top){path}",
+            ],
             capture_output=True,
         )
         if result.returncode not in (0, 1):
@@ -116,26 +130,51 @@ def git_differ(repo: str | Path) -> Differ:
     return differs
 
 
-def _top_level_bindings(tree: ast.Module, name: str) -> int:
-    """How many top-level statements bind ``name``."""
+def _bound_names(target: ast.AST) -> list[str]:
+    return [n.id for n in ast.walk(target) if isinstance(n, ast.Name)]
+
+
+def _module_bindings(body: list[ast.stmt], name: str) -> int:
+    """How many statements of a module body bind ``name`` at module scope.
+
+    Blocks that run at module scope (``if``, ``try``, ``with``, ``for``,
+    ``while``, ``match``) are searched; function and class bodies are not.
+    Only bindings visible in the syntax count (not ``globals()[...]``).
+    """
     count = 0
-    for node in tree.body:
+    for node in body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             count += node.name == name
-        elif isinstance(node, (ast.Import, ast.ImportFrom)):
-            count += any((a.asname or a.name.split(".")[0]) == name for a in node.names)
-        else:
-            targets = [
-                t
-                for stmt in ast.walk(node)
-                if isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr))
-                for t in (stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target])
-            ]
-            count += any(
-                isinstance(sub, ast.Name) and sub.id == name
-                for target in targets
-                for sub in ast.walk(target)
-            )
+            continue
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            count += sum((a.asname or a.name.split(".")[0]) == name for a in node.names)
+            continue
+        targets: list[ast.AST] = []
+        if isinstance(node, ast.Assign):
+            targets = list(node.targets)
+        elif isinstance(node, (ast.AnnAssign, ast.AugAssign, ast.For, ast.AsyncFor)):
+            targets = [node.target]
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            targets = [item.optional_vars for item in node.items if item.optional_vars]
+        elif isinstance(node, ast.Try) or type(node).__name__ == "TryStar":
+            targets = [ast.Name(id=h.name) for h in node.handlers if h.name]
+        count += sum(_bound_names(t).count(name) for t in targets)
+        # Walrus targets in the statement's own expressions bind at module scope.
+        count += sum(
+            n.target.id == name
+            for field, value in ast.iter_fields(node)
+            if field not in ("body", "orelse", "finalbody", "handlers", "cases")
+            for item in (value if isinstance(value, list) else [value])
+            if isinstance(item, ast.AST)
+            for n in ast.walk(item)
+            if isinstance(n, ast.NamedExpr)
+        )
+        for field in ("body", "orelse", "finalbody"):
+            count += _module_bindings(getattr(node, field, []) or [], name)
+        for handler in getattr(node, "handlers", []) or []:
+            count += _module_bindings(handler.body, name)
+        for case in getattr(node, "cases", []) or []:
+            count += _module_bindings(case.body, name)
     return count
 
 
@@ -153,9 +192,9 @@ def definition_text(source: str, name: str, kind: type = ast.FunctionDef) -> str
     nodes = [n for n in tree.body if isinstance(n, kind) and n.name == name]
     if len(nodes) != 1:
         raise LookupError(f"expected one top-level {kind.__name__} {name!r}, found {len(nodes)}")
-    bindings = _top_level_bindings(tree, name)
+    bindings = _module_bindings(tree.body, name)
     if bindings != 1:
-        raise LookupError(f"{name!r} is bound {bindings} times at the top level")
+        raise LookupError(f"{name!r} is bound {bindings} times at module scope")
     node = nodes[0]
     lines = source.splitlines(keepends=True)
     first = min([node.lineno] + [d.lineno for d in node.decorator_list])
@@ -202,7 +241,9 @@ def load_registry(text: str | None) -> tuple[dict[tuple[str, str], Counter[str]]
             problems.append(f"{where} is not a mapping")
             continue
         region = (entry.get("file"), entry.get("region"))
-        if entry.get("change") != ALLOWED_CHANGE:
+        if not all(isinstance(x, str) for x in region):
+            problems.append(f"{where} has no file and region names")
+        elif entry.get("change") != ALLOWED_CHANGE:
             problems.append(
                 f"{where} belongs to {entry.get('change')!r}; only {ALLOWED_CHANGE} may register lines"
             )
@@ -248,8 +289,10 @@ def run(
 
     source = "given"
     if registry_text is None:
-        registry_text, source = read(head, REGISTRY_PATH), "head"
-    if registry_text is None and REGISTRY.is_file():
+        registry_text, source = read(head, REGISTRY_PATH), "head" if head else "the working tree"
+    head_has_gate = read(head, f"{Path(REGISTRY_PATH).parent}/check_invariants.py") is not None
+    if registry_text is None and not head_has_gate and REGISTRY.is_file():
+        # The head predates scripts/poc3 (the frozen base, for example).
         registry_text, source = REGISTRY.read_text(), str(REGISTRY)
     registered, problems = load_registry(registry_text)
     results.append(("registry", not problems, "; ".join(problems) or f"from {source}"))
