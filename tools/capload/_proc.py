@@ -95,6 +95,7 @@ class ParentRunner:
         self.infos = [None] * n_workers
         self.codes = [None] * n_workers
         self.errors = []
+        self.ready_fail_code = None  # set when on_ready raised: the role never became ready
         self.all_ready = False
         self.on_ready = None
         self.versions = None
@@ -147,7 +148,8 @@ class ParentRunner:
             await asyncio.sleep(0)
         for e in self.errors:
             print("capload parent: %s" % (e,), file=sys.stderr)
-        return fold_exit_codes(self.codes)
+        extra = [] if self.ready_fail_code is None else [self.ready_fail_code]
+        return fold_exit_codes(list(self.codes) + extra)
 
     def _forward_stop(self, hard):
         msg = "hard" if hard else "stop"
@@ -175,8 +177,9 @@ class ParentRunner:
                 self.all_ready = True
                 try:
                     self.on_ready(self.infos)
-                except CapkitError as e:
+                except (CapkitError, OSError) as e:
                     self.errors.append("on_ready failed: %s" % e)
+                    self.ready_fail_code = getattr(e, "exit_code", exitcodes.RUNTIME)
                     self._forward_stop(True)
         elif kind == "error":
             self.errors.append("worker %d: %s" % (k, msg[1]))

@@ -4,8 +4,9 @@
 
 Every check carries expected_count taken from the configuration (schedule meta.per_tier,
 launch.json roles[].workers / expected_procs, reconcile, chunk_sample_mod, overlay sites, window
-seconds) and the source of that number. expected_count == 0 or checked_count == 0 -> NOT_RUN;
-never PASS.
+length / sampling period) and the source of that number. Status order RED > NOT_RUN > PASS:
+any red evidence is RED even when nothing else could be checked; otherwise expected_count == 0
+or checked_count == 0 -> NOT_RUN; never PASS.
 """
 
 from capcommon import expect, hist
@@ -39,10 +40,10 @@ class Result:
     def finish(self, status=None):
         if status is not None:
             self.status = status
-        elif self.expected == 0 or self.checked == 0:
-            self.status = NOT_RUN
         elif self.red > 0:
             self.status = RED
+        elif self.expected == 0 or self.checked == 0:
+            self.status = NOT_RUN
         elif self.not_run:
             self.status = NOT_RUN
         else:
@@ -157,6 +158,9 @@ def check_c3(ctx, td):
     r.red = f["non_overload"]
     r.detail.append("non_overload=%d overload=%d by_reason=%s" % (f["non_overload"],
                                                                  f["overload"], f["by_reason"]))
+    if r.checked < r.expected:
+        r.not_run.append("%d of %d planned requests have an outcome (ok + failed)"
+                         % (r.checked, r.expected))
     return r.finish()
 
 
@@ -379,12 +383,60 @@ def _chunk_rows(ctx, td, r):
 
 # ---- C8 probe attached -----------------------------------------------------------------------
 
+def _slot_total(v):
+    """Event total of one snapshot slot: a counter's value, or the sum of a histogram's bucket
+    counts (lag sites publish loghist/1 slots). None when absent or of another shape."""
+    if isinstance(v, int) and not isinstance(v, bool):
+        return v
+    if isinstance(v, list) and v and all(isinstance(x, int) and not isinstance(x, bool)
+                                         for x in v):
+        return sum(v)
+    return None
+
+
+def launch_proc_kinds(ctx):
+    """Process kinds of this launch: union of launch.json roles[].proc_kinds (product roles
+    declare the capprobe process kinds they run, e.g. ["frontend"]). None when no role declares
+    them or a declaration is not a list of strings."""
+    kinds, declared = set(), False
+    for role in ctx.roles.values():
+        pk = role.get("proc_kinds")
+        if pk is None:
+            continue
+        if not isinstance(pk, list) or not all(isinstance(k, str) and k for k in pk):
+            return None
+        declared = True
+        kinds.update(pk)
+    return kinds if declared else None
+
+
 def check_c8(ctx, ld, td):
-    r = Result("C8", td.tier.seq, "env/overlay_manifest.json sites")
+    """Every overlay site whose proc_kind runs in this launch (launch.json roles[].proc_kinds)
+    must show a positive window delta on its slots. Sites of process kinds absent from the
+    launch are listed as not applicable (neither PASS nor RED); no applicable site -> NOT_RUN."""
+    r = Result("C8", td.tier.seq, "overlay_manifest.json sites with proc_kind in "
+               "launch.json roles[].proc_kinds")
     ov = ld.overlay
     sites = (ov or {}).get("sites") or {}
-    r.expected = len(sites)
-    for name, site in sorted(sites.items()):
+    if not sites:
+        r.not_run.append("env/overlay_manifest.json missing or lists no sites")
+        return r.finish(NOT_RUN)
+    kinds = launch_proc_kinds(ctx)
+    if kinds is None:
+        r.not_run.append("launch.json roles declare no proc_kinds (or a malformed one): cannot "
+                         "tell which sites apply")
+        return r.finish(NOT_RUN)
+    applicable = {k: v for k, v in sites.items() if v.get("proc_kind") is None
+                  or v.get("proc_kind") in kinds}
+    n_a = sorted("%s(%s)" % (k, v.get("proc_kind")) for k, v in sites.items()
+                 if k not in applicable)
+    if n_a:
+        r.detail.append("not applicable in this topology: %s" % ", ".join(n_a))
+    if not applicable:
+        r.not_run.append("no site applies to the process kinds %s" % sorted(kinds))
+        return r.finish(NOT_RUN)
+    r.expected = len(applicable)
+    for name, site in sorted(applicable.items()):
         slots = site.get("slots") or []
         if not slots:
             r.red += 1
@@ -394,10 +446,14 @@ def check_c8(ctx, ld, td):
         for slot in slots:
             delta, seen = 0, False
             for pid, snaps in td.snaps.items():
-                if len(snaps) != 2 or slot not in snaps[0].values or slot not in snaps[1].values:
+                if len(snaps) != 2:
+                    continue
+                a = _slot_total(snaps[0].values.get(slot))
+                b = _slot_total(snaps[1].values.get(slot))
+                if a is None or b is None:
                     continue
                 seen = True
-                delta += snaps[1].values[slot] - snaps[0].values[slot]
+                delta += b - a
             if not seen:
                 found_all = False
             elif delta <= 0:
@@ -500,34 +556,60 @@ def check_c10(ctx, ld):
 
 # ---- GPU-IDLE (launch level) -----------------------------------------------------------------
 
+def _is_num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
 def check_gpu_idle(ctx, ld, load_tiers):
-    """Returns (Result, void: bool). void=True when any window row shows a busy GPU."""
-    r = Result("GPU-IDLE", "launch", "sum(window seconds) x gpu.jsonl gpu_count")
+    """Returns (Result, void: bool). void=True when any window row shows a busy GPU.
+
+    Expected rows per window = window_ns // sidecar meta.gpu_every_ns (the sidecar samples on
+    origin-aligned ticks of that period) x gpu.jsonl gpu_count. A row counts as checked only
+    when it is readable: query_rc 0, a numeric util_pct and a compute_pids list. Busy evidence
+    (util_pct > 0 or any compute pid) is RED even on a row whose other reading is missing."""
+    r = Result("GPU-IDLE", "launch",
+               "sum(window_ns // sidecar meta.gpu_every_ns) x gpu.jsonl gpu_count")
     gi = ld.gpu_idle or {}
     g = ld.sidecar("gpu")
     if not gi.get("positive_control_ok") or g is None:
         r.not_run.append("gpu_idle.json positive control not ok, or gpu.jsonl missing")
         return r.finish(NOT_RUN), False
+    if g[0].get("positive_control_ok") is not True:
+        r.not_run.append("gpu.jsonl header positive_control_ok %r (sidecar's own GPU listing)"
+                         % (g[0].get("positive_control_ok"),))
+        return r.finish(NOT_RUN), False
     count = g[0].get("gpu_count")
-    if not isinstance(count, int) or count <= 0:
+    if not isinstance(count, int) or isinstance(count, bool) or count <= 0:
         r.not_run.append("gpu_count %r" % (count,))
         return r.finish(NOT_RUN), False
-    r.expected = sum((t.window_ns // NS) * count for t in load_tiers)
+    every = (ld.sidecar_meta or {}).get("gpu_every_ns")
+    if not isinstance(every, int) or isinstance(every, bool) or every <= 0:
+        r.not_run.append("sidecar meta.json gpu_every_ns %r" % (every,))
+        return r.finish(NOT_RUN), False
+    r.expected = sum((t.window_ns // every) * count for t in load_tiers)
     void = False
+    unreadable = 0
     for row in g[1]:
         if not any(t.window_start_ns <= row["t_rel_ns"] < t.window_end_ns for t in load_tiers):
             continue
-        r.checked += 1
-        if row.get("query_rc") != 0:
-            r.not_run.append("query_rc %r at t=%s" % (row.get("query_rc"), row["t_rel_ns"]))
-            continue
-        if (row.get("util_pct") or 0) > 0 or row.get("compute_pids"):
+        util, pids = row.get("util_pct"), row.get("compute_pids")
+        if (_is_num(util) and util > 0) or (isinstance(pids, list) and pids):
+            r.checked += 1
             r.red += 1
             void = True
             if len(r.detail) < 5:
                 r.detail.append("gpu %s busy at t=%s: util %s pids %s" % (
-                    row.get("gpu_index"), row["t_rel_ns"], row.get("util_pct"),
-                    row.get("compute_pids")))
+                    row.get("gpu_index"), row["t_rel_ns"], util, pids))
+            continue
+        if row.get("query_rc") != 0 or not _is_num(util) or not isinstance(pids, list):
+            unreadable += 1
+            if unreadable <= 5:
+                r.not_run.append("unreadable row at t=%s: query_rc %r util %r pids %r" % (
+                    row["t_rel_ns"], row.get("query_rc"), util, pids))
+            continue
+        r.checked += 1
+    if unreadable > 5:
+        r.not_run.append("%d unreadable rows in the windows" % unreadable)
     if r.red == 0 and r.checked < r.expected:
         r.not_run.append("%d of %d expected GPU rows in the windows" % (r.checked, r.expected))
     return r.finish(), void
@@ -691,6 +773,13 @@ def check_c13_launch(ctx, ld):
     if un:
         r.red += 1
         r.detail.append("%d unattributed process(es) in roles.json" % len(un))
+    # roles.json aux_helpers (e.g. multiprocessing.resource_tracker of a capkit tool role) are
+    # attributed to their parent role but are not processes of it: never counted here, in procs
+    # or in any per-role process set; only listed for the record.
+    aux = (ld.roles_json or {}).get("aux_helpers") or []
+    if aux:
+        r.detail.append("%d aux helper(s) attributed to %s (not under test)" % (
+            len(aux), sorted({str(a.get("role")) for a in aux if isinstance(a, dict)})))
     return r.finish()
 
 

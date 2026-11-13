@@ -27,6 +27,6 @@
 
 - `streams`（`server.streams`）：每接纳一个请求一行，按请求自带的计划档归档；`first_step`（asap 为 −1）、`n_msgs`（实际交出的消息数）、`tokens`（这些消息的 token 数之和）。
 - `steps`（`beat.steps`，只在 beat）：每步一行，`msgs` = 本步入队的消息数，按步的计划时刻归档。
-- `summary.json`：`counts`（`streams_accepted`、`streams_completed`、`streams_cancelled`、`streams_truncated`、`streams_rejected`、`first_step_bumped`、`msgs_sent`、`bytes_sent`，按计划档）、`beat`（`steps`、`late_steps`、`enqueued`、`max_pending`、`wake_lag_ns`，按事件档）、`yielded_event_time`、`request_types`、`rejects`、`inject`、`loop_lag_ns`、`cpu`、`overflow`。对账段可用的源：`summary.counts.streams_accepted`、`summary.counts.msgs_sent`。
+- `summary.json`：`counts`（`streams_accepted`、`streams_completed`、`streams_cancelled`、`streams_truncated`、`streams_rejected`、`first_step_bumped`、`msgs_sent`、`bytes_sent`，按计划档）、`beat`（`steps`、`late_steps`、`enqueued`、`max_pending`、`wake_lag_ns`，按事件档）、`yielded_event_time`、`request_types`、`rejects`（这两项按事件档，各档只含本档的数）、`inject`、`loop_lag_ns`、`cpu`、`overflow`。对账段可用的源：`summary.counts.streams_accepted`、`summary.counts.msgs_sent`。
 
 服务端只在收到信号时退出（`--stop-grace-s` 内收尾，之后取消仍在发的流，计 `streams_cancelled`），退出码 0；配置错误 3；绑定失败 4。

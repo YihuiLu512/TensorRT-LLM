@@ -514,15 +514,21 @@ def run_supervisor(args, common, n_workers, child_target, tool, slots, poll_s=0.
                 ok_ready = False
                 break
             await asyncio.sleep(poll_s)
+        if ok_ready:
+            try:
+                if on_all_ready is not None:
+                    on_all_ready(ident)
+                write_ready_file(common.ready_file, ident, versions, affinity=affinity,
+                                 children=[{"pid": ready[k]["pid"], "worker": k,
+                                            "role": ident.role} for k in range(n_workers)],
+                                 info={"tool": tool,
+                                       "workers": [ready[k] for k in range(n_workers)]})
+            except (CapkitError, OSError) as e:
+                # the role never became ready: stop the workers instead of leaving them running
+                fails.append((-1, getattr(e, "exit_code", RUNTIME), "port/ready file: %s" % e))
+                ok_ready = False
         if not ok_ready:
             relay_stop(True)
-        else:
-            if on_all_ready is not None:
-                on_all_ready(ident)
-            write_ready_file(common.ready_file, ident, versions, affinity=affinity,
-                             children=[{"pid": ready[k]["pid"], "worker": k, "role": ident.role}
-                                       for k in range(n_workers)],
-                             info={"tool": tool, "workers": [ready[k] for k in range(n_workers)]})
         while any(p.exitcode is None for p in procs):
             if len(stopper.signals) > last_signals:
                 last_signals = len(stopper.signals)

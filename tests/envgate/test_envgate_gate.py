@@ -70,6 +70,7 @@ class Args:
         self.slurm_view_file = os.path.join(run_dir, "env", "slurm_view.json")
         self.slurm_view_wait_s = 0.2
         self.max_alloc_gpus = 1
+        self.nvidia_smi = "nvidia-smi"
         self.idle_window_s = 0.2
         self.idle_busy_max_frac = 1.0
         self.hw_profile = None
@@ -282,23 +283,23 @@ def test_memguard_synthetic(tmp_path):
 
 
 def test_gpu_idle_check_paths():
-    out = gpu.idle_check(2, 0.0, 5, runner=fake_runner({}), sleep=lambda s: None)
+    out = gpu.idle_check(2, 0.0, 5, 1, runner=fake_runner({}), sleep=lambda s: None)
     assert out["verdict"] == "NOT_RUN" and out["positive_control_ok"] is False
-    out = gpu.idle_check(2, 0.0, 5, runner=fake_runner({"nvidia-smi": nvsmi()}),
+    out = gpu.idle_check(2, 0.0, 5, 1, runner=fake_runner({"nvidia-smi": nvsmi()}),
                          sleep=lambda s: None)
     assert out["verdict"] == "PASS" and out["gpu_count"] == 1 and out["checked_samples"] == 2
     busy = GPU_LINE.replace(", 0, 0, 570.1", ", 10, 30, 570.1")
 
     def busy_smi(argv):
         return (0, "") if any(a.startswith("--query-compute-apps") for a in argv) else (0, busy)
-    out = gpu.idle_check(1, 0.0, 5, runner=fake_runner({"nvidia-smi": busy_smi}),
+    out = gpu.idle_check(1, 0.0, 5, 1, runner=fake_runner({"nvidia-smi": busy_smi}),
                          sleep=lambda s: None)
     assert out["verdict"] == "RED"
-    out = gpu.idle_check(1, 0.0, 5, runner=fake_runner(
+    out = gpu.idle_check(1, 0.0, 5, 1, runner=fake_runner(
         {"nvidia-smi": nvsmi("0000:1B:00.0, 31337, 2\n")}), sleep=lambda s: None)
     assert out["verdict"] == "RED" and out["samples"][0]["gpus"][0]["compute_pids"] == [31337]
     # nvidia-smi really absent on this VM -> NOT_RUN, never PASS
-    assert gpu.idle_check(1, 0.0, 5)["verdict"] == "NOT_RUN"
+    assert gpu.idle_check(1, 0.0, 5, 1)["verdict"] == "NOT_RUN"
 
 
 def test_hwprofile_missing_commands_and_sha_stability(tmp_path):
@@ -347,7 +348,7 @@ def test_gate_cli_with_fake_bin(jobdir, tmp_path):
         "--registered-hw-sha", profile_sha256(prof), "--no-comparable",
         "--slurm-view-file", os.path.join(d, "env", "slurm_view.json"),
         "--slurm-view-wait-s", "0.2", "--max-alloc-gpus", "1", "--idle-window-s", "0.2",
-        "--idle-busy-max-frac", "1.0"]
+        "--idle-busy-max-frac", "1.0", "--nvidia-smi", str(fb / "nvidia-smi")]
     cmd[cmd.index("--job-id") + 1] = JOB  # the gate checks this job id against scontrol
     r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
     out = json.loads(r.stdout)

@@ -17,13 +17,13 @@ def w(name, doc):
 
 def role(name, launcher, kind, mclass, asyncio, loop, uses_grpc, probe_tier, readiness,
          backlog, snapshots, args, start_after=(), cpus_needed=1, workers=1,
-         expected=1, env=None, note="", **kw):
+         expected=1, env=None, note="", proc_kinds=(), **kw):
     r = {"role": name, "launcher": launcher, "kind": kind, "start_after": list(start_after),
          "pin_role": name, "cpus_needed": cpus_needed, "numa": None, "workers": workers,
          "expected_procs": expected, "measure_class": mclass, "asyncio": asyncio,
          "uses_grpc": uses_grpc, "loop": loop, "probe_tier": probe_tier,
          "readiness": readiness, "backlog_slots": list(backlog), "snapshots": snapshots,
-         "args": list(args), "env": env or {}}
+         "args": list(args), "env": env or {}, "proc_kinds": list(proc_kinds)}
     r.update(kw)
     if note:
         r["note"] = note
@@ -35,7 +35,8 @@ def observers(after):
         role("sidecar", "capkit", "aux", "observer", False, None, False, None, CAPKIT_READY, [],
              "none", ["--interval-ms", "{param:sidecar_interval_ms}", "--gpu-every-s",
                       "{param:sidecar_gpu_every_s}", "--numa-every-s",
-                      "{param:sidecar_numa_every_s}"], start_after=after, cpus_needed=1,
+                      "{param:sidecar_numa_every_s}", "--nvidia-smi", "{nvidia_smi}"],
+             start_after=after, cpus_needed=1,
              module="capenv.sidecar"),
         role("canary", "capkit", "aux", "observer", False, None, False, None, CAPKIT_READY, [],
              "none", ["--interval-ms", "{param:canary_interval_ms}"], cpus_needed=1,
@@ -125,6 +126,7 @@ a2 = [
           "--report_addr", "{own:report_addr}", "--openengine-endpoint", "{addr:sfe}",
           "--num_serve_frontends", "1", "--num_postprocess_workers", "0"],
          command=["{param:trtllm_serve}"], start_after=["sfe"], cpus_needed=2,
+         proc_kinds=["frontend"],
          port={"kind": "report_addr", "host": "127.0.0.1"},
          note="options at 2f22a98d6e: --openengine-endpoint serve.py:1343, --num_serve_frontends "
               ":1187, --num_postprocess_workers :1180, --report_addr :1442; uvloop per "

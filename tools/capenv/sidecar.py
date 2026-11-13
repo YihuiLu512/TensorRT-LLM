@@ -140,7 +140,7 @@ class Inventory:
 class Sidecar:
     def __init__(self, common, out_dir, shm_dir, roles_file, interval_ns, cpus_watch,
                  gpu_every_ns, numa_every_ns, logs_dir, gpu_timeout_s, proc_root=procfs.PROC,
-                 sys_root=procfs.SYS):
+                 sys_root=procfs.SYS, nvidia_smi=None):
         self.common = common
         self.ident = common.identity
         self.origin = common.origin_ns
@@ -152,6 +152,7 @@ class Sidecar:
         self.numa_every_ns = numa_every_ns
         self.logs_dir = logs_dir
         self.gpu_timeout_s = gpu_timeout_s
+        self.nvidia_smi = nvidia_smi  # None: GPU positive control not run ("path not given")
         self.proc_root, self.sys_root = proc_root, sys_root
         self.watcher = RolesWatcher(roles_file)
         self.inventory = Inventory(common.run_dir)
@@ -164,7 +165,7 @@ class Sidecar:
                       "max_tick_ns": 0, "thread_read_errors": 0, "snapshot_decode_errors": 0,
                       "snapshot_identity_mismatch": 0, "schedstat_missing_rows": 0,
                       "ctxt_missing_rows": 0, "freq_missing_rows": 0, "gpu_samples": 0,
-                      "gpu_failed_samples": 0, "numa_samples": 0, "numa_unreadable": 0}
+                      "gpu_failed_samples": 0, "gpu_util_unreadable_rows": 0, "numa_samples": 0, "numa_unreadable": 0}
         self.unregistered_snapshot_pids = set()
         self.roles_generations = []
         self.gpu_pc = None
@@ -183,7 +184,8 @@ class Sidecar:
                 continue
             extra = None
             if name == "gpu":
-                ok, count, rec = gpu_mod.positive_control(self.gpu_timeout_s)
+                ok, count, rec = gpu_mod.positive_control(self.gpu_timeout_s,
+                                                          nvsmi=self.nvidia_smi)
                 self.gpu_pc = {"ok": ok, "gpu_count": count, "rc": rec.get("rc"),
                                "reason": rec.get("reason"), "cmd": rec.get("cmd")}
                 extra = {"gpu_count": count, "positive_control_ok": ok}
@@ -356,12 +358,14 @@ class Sidecar:
                 nxt_numa = self._next_after(nxt_numa, self.numa_every_ns)
 
     def _gpu_once(self, t_rel):
-        rc, rows = gpu_mod.sample(self.gpu_timeout_s)
+        rc, rows = gpu_mod.sample(self.gpu_timeout_s, nvsmi=self.nvidia_smi)
         w = self.w["gpu"]
         with self.lock:
             self.stats["gpu_samples"] += 1
             if rc != 0:
                 self.stats["gpu_failed_samples"] += 1
+            self.stats["gpu_util_unreadable_rows"] += sum(
+                1 for r in rows if r["util_pct"] is None and r["gpu_index"] is not None)
         if rc != 0:
             n = (self.gpu_pc or {}).get("gpu_count") or 0
             for i in (range(n) if n else [None]):
@@ -447,6 +451,14 @@ class Sidecar:
             self.close_writers()
             self.write_meta(final=True)
 
+    def declared_threads(self):
+        """{native_id: name} of every live Python thread other than the main thread (the slow
+        GPU/numa_maps thread when it runs), for the ready file's info.threads: the orchestrator
+        identifies the sidecar's threads only from what the sidecar declares (INTERFACES 5.3)."""
+        main = threading.main_thread()
+        return {str(t.native_id): t.name for t in threading.enumerate()
+                if t is not main and t.native_id is not None}
+
     def write_meta(self, final):
         with self.lock:
             stats = dict(self.stats)
@@ -489,6 +501,9 @@ class Sidecar:
                 % stats["ctxt_missing_rows"]
         if self.gpu_pc is not None and not self.gpu_pc["ok"]:
             out["gpu"] = "positive control failed: %s" % (self.gpu_pc.get("reason"),)
+        if stats["gpu_util_unreadable_rows"]:
+            out["gpu_util"] = "%d gpu rows with util_pct null ([N/A]): not idle readings" \
+                % stats["gpu_util_unreadable_rows"]
         return out
 
 
@@ -524,6 +539,9 @@ def build_parser():
     o.add_argument("--pin-table", help="exit 3 unless --cpus-watch covers every pinned cpu")
     o.add_argument("--gpu-timeout-s", type=float, default=None,
                    help="nvidia-smi timeout; default = --gpu-every-s")
+    o.add_argument("--nvidia-smi", default=None,
+                   help="nvidia-smi executable; absent with --gpu-every-s > 0 -> the GPU positive "
+                        "control is not run (gpu.jsonl header positive_control_ok false)")
     return ap
 
 
@@ -547,7 +565,7 @@ def main(argv=None):
                      args.interval_ms * 1_000_000, cpus_watch, gpu_every_ns,
                      int(args.numa_every_s * 1e9), args.logs_dir,
                      args.gpu_timeout_s if args.gpu_timeout_s is not None
-                     else max(1.0, args.gpu_every_s))
+                     else max(1.0, args.gpu_every_s), nvidia_smi=args.nvidia_smi)
     except ConfigError as e:
         print("capenv.sidecar: %s" % e, file=sys.stderr)
         return exitcodes.CONFIG
@@ -557,7 +575,8 @@ def main(argv=None):
         if args.ready_file:
             write_ready_file(args.ready_file, common.identity,
                              version_record(include_grpc=False), affinity=affinity,
-                             info={"out_dir": args.out_dir, "cpus_watch": cpus_watch})
+                             info={"out_dir": args.out_dir, "cpus_watch": cpus_watch,
+                                   "threads": sc.declared_threads()})
 
     sc.run(stop, on_first_tick=ready)
     return exitcodes.OK

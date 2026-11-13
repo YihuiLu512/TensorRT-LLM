@@ -21,7 +21,7 @@
   },
   "scenario": {
    "relpath": "register/scenario.json",
-   "sha256": "2dd3f0d6c9a74baa1ed2bc17e0956860b061672aab13d0cffdc29d5b84f9c060"
+   "sha256": "83429c8e9981dafdd094a471297f5f5797936ad083deb22dac37603f072c9119"
   },
   "schedule": {
    "relpath": "register/schedule.capbin",

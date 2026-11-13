@@ -30,7 +30,7 @@
   "job_id": "local-sample-c11-stale-gate",
   "launch_seq": 0,
   "pid": 1002,
-  "register_sha": "384933b4ea618f07c423b1f98e220d311421c3100e4e5e5473414c1abcf6703e",
+  "register_sha": "be46e6c7b803ee059787205a2ee58007b70efd5dff877f1ea4974c726a6a16e9",
   "restart_count": 0,
   "role": "capload",
   "tier_label": "up-r40",
@@ -455,6 +455,6 @@
  "stop": null,
  "tier_table_sha256": "9ec2e9504387d851b23a6054f90df5b2f04de7e8eb81493c87e89591cb70e2a9",
  "tool": "capload",
- "written_mono_ns": 9746269884653734,
- "written_wall": "2026-11-13T11:37:25.965Z"
+ "written_mono_ns": 9752457533024592,
+ "written_wall": "2026-11-13T13:20:33.613Z"
 }

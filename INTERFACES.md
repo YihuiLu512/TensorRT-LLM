@@ -391,6 +391,8 @@ JSON 头：
  "unattributed":[{"pid":4400,"starttime_ticks":…,"seen_via":"probe.snapshot","argv":[…]}]}
 ```
 
+（监测类角色的子进程、工具自起的辅助进程与 `aux_helpers` 键见勘误 R1-4、R1-5。）
+
 - `starttime_ticks` = `/proc/<pid>/stat` 第 22 列，与 pid 一起才唯一（防 pid 复用）。`discovered_via` ∈ `launched`（编排器直接起的）、`ready.children`（就绪文件报的子进程）、`probe.snapshot`（产品进程的探针快照里自报的 pid，§6）、`proc.children`（编排器扫 `/proc` 找到的子孙，**只用于报告「未登记的进程」，不自动给角色**）。
 - 测量期间 pid 集合不变是前提 P 的一项：编排器在每档窗口开始与结束各扫一次，结果写进该档的 `tier.json`（§5.4）。
 - `roles.json` 是**观测**；应有多少进程来自 `launch.json` 的 `roles[].expected_procs`（含产品进程按其参数派生的子进程，如 `--num_postprocess_workers w` 时多出的 w 个池进程）。某个角色没起来或没写就绪文件，它在 `roles.json` 里就少一项，判定器按应有数判红，而不是「少查一个也通过」。
@@ -446,7 +448,7 @@ JSON 头：
 - `n_workers`、`schedule_sha256`（服务端写 `null`）、`tier_table_sha256` 每个工具都写，判定器与 `launch.json` 交叉核对；负载器另写 `request_timeout_ns`（取自档位表）。
 - `inject` 每项由 `capcommon.inject.tier_report(本档开始的 mark, 本档结束的 mark)` 生成（工具在档边界上：先取上一档结束的 `mark()`，再 `apply_tier_specs`，再取本档开始的 `mark()`）。各量都是**本档增量**；选中规则按「生效以来」的经过次数计（§7.3）。
 - `counts` 的五个键对负载器必需；`planned` 是本 worker 在本档按时间表应发的条数（由时间表算出，不由发送路径数），`planned ≠ sent` 时判定器判本档 `NOT_RUN`。服务端类工具（空汇、节拍源）用 `counts` 里与自己相关的键（如 `streams_accepted`、`msgs_sent`、`bytes_sent`、`accepts`），在包的 README 里列出。
-- **失败原因**：`reason` 用下表的固定码，`class_hint` ∈ `overload` / `non_overload` / `unclassified`。负载器只能确定少数类别（事先登记的超时 → `overload`；连接被拒、协议错误 → `non_overload`），其余写 `unclassified`，由判定器结合服务端日志与探针计数改判（设计稿 §2.6）；判定器分不出的按非过载型处理。
+- **失败原因**：`reason` 用下表的固定码，`class_hint` ∈ `overload` / `non_overload` / `unclassified`。负载器只能确定少数类别（事先登记的超时 → `overload`；连接被拒、协议错误 → `non_overload`），其余写 `unclassified`，由判定器结合服务端日志与探针计数改判（设计稿 §2.6）；判定器分不出的按非过载型处理。新增的 `client_error` 见勘误 R1-7。
 
 | `reason` | 含义 | 负载器的 `class_hint` |
 |---|---|---|
@@ -465,7 +467,7 @@ JSON 头：
 
 | 文件名 `<名字>` | `kind` | 列 |
 |---|---|---|
-| `requests` | `loadgen.requests` | `req_id q`、`planned_rel_ns q`、`sent_rel_ns q`（实际写出请求的时刻）、`first_rel_ns q`（首个数据帧，无则 −1）、`done_rel_ns q`（完成或失败时刻）、`frames i`、`bytes q`、`tokens i`、`status h`（0 = 成功，其余为 `meta.status_codes` 里的失败原因编号）、`conn_id i`、`new_conn b`、`tier_seq h` |
+| `requests` | `loadgen.requests` | `req_id q`、`planned_rel_ns q`、`sent_rel_ns q`（实际写出请求的时刻；重连重发见勘误 R1-7）、`first_rel_ns q`（首个数据帧，无则 −1）、`done_rel_ns q`（完成或失败时刻）、`frames i`、`bytes q`、`tokens i`、`status h`（0 = 成功，其余为 `meta.status_codes` 里的失败原因编号）、`conn_id i`、`new_conn b`、`tier_seq h` |
 | `chunks` | `loadgen.chunks` | `req_id q`、`idx i`（该流的第几个数据帧，0 起）、`recv_rel_ns q`、`nbytes i`、`tier_seq h`。只记 `req_id % chunk_sample_mod == 0` 的请求；`meta.chunk_sample_mod` 必写，判定器据此算应有行数 |
 | `fionread` | `loadgen.fionread` | `t_rel_ns q`、`conn_id i`、`bytes i`、`tier_seq h` |
 | `lag` | `loop.lag` | `planned_rel_ns q`、`late_ns q`、`tier_seq h`（只在开了逐样本记录时有，§6.4） |
@@ -490,7 +492,7 @@ JSON 头：
 | `loopback_softirq.json` | B4 `capenv.loopback` | D14 小程序的结果（只在 E0 的专门一步里有） |
 | `overlay_manifest.json` | B3 `capprobe.overlay` | 覆盖清单（§6.6） |
 | `overlay_verify.json` | B6 内层脚本 | 拷进容器后逐文件 sha256 的读回比对 |
-| `image.json`、`mounts.json`、`local_disk.json`、`gpu_idle.json` | B6 | 镜像 sha、挂载检查（含模型库不在场）、本地盘余量、`nvidia-smi` 计算进程与利用率（`gpu_idle.json` 含阳性对照 `positive_control_ok`：查询本身列出了本节点的 GPU，张数写进 `gpu_count`）。判定见 §10.2 的 `GPU-IDLE` |
+| `image.json`、`mounts.json`、`local_disk.json`、`gpu_idle.json` | B6 | 镜像 sha、挂载检查（含模型库不在场）、本地盘余量、`nvidia-smi` 计算进程与利用率（`gpu_idle.json` 含阳性对照 `positive_control_ok`：查询本身列出了本节点的 GPU，张数写进 `gpu_count`）。判定见 §10.2 的 `GPU-IDLE`；`gpu_idle.json` 的形状与 GPU 数口径见勘误 R1-8 |
 | `versions/<角色>[.w<k>].<pid>.json` | 编排器 | 每个进程就绪文件里的版本自报的副本（产品进程取自探针快照的 `meta.versions`） |
 
 #### 5.5.1 绑核表 `pin_table.json`（`capkit.pin_table/1`）
@@ -528,7 +530,7 @@ RESOURCES §3「作业内验证独占」第 1～3 项（`scontrol show job`、`s
 | `sidecar/cpus.jsonl` | `capkit.sidecar.cpus/1` | `t_rel_ns, cpu, user, nice, system, idle, iowait, irq, softirq, steal, freq_khz`（`/proc/stat` 的 tick 计数，原样） |
 | `sidecar/procs.jsonl` | `capkit.sidecar.procs/1` | `t_rel_ns, pid, role, worker, rss_kb, nthreads, cpus_allowed` |
 | `sidecar/snapshots.jsonl` | `capkit.sidecar.snapshots/1` | `t_rel_ns, pid, seq, snap_t_rel_ns, counters, hists`（`counters`：counter 与 gauge 槽的 `{名字: 值}`；`hists`：hist 槽的 `{名字: [194 个累计计数]}`；`snap_t_rel_ns` 是快照自己的 `t_mono_ns` 换算到原点，用来判断读到的是不是旧快照） |
-| `sidecar/gpu.jsonl` | `capkit.sidecar.gpu/1` | `t_rel_ns, gpu_index, util_pct, mem_used_mib, compute_pids, query_rc`；头里写 `gpu_count`（本节点 `nvidia-smi` 列出的 GPU 数）。查询失败的那一秒每张卡一行，`query_rc ≠ 0`、其余为 `null` |
+| `sidecar/gpu.jsonl` | `capkit.sidecar.gpu/1` | `t_rel_ns, gpu_index, util_pct, mem_used_mib, compute_pids, query_rc`；头里写 `gpu_count`（本节点 `nvidia-smi` 列出的 GPU 数）。查询失败的那一秒每张卡一行，`query_rc ≠ 0`、其余为 `null`（成功查询里的 `null` 读数见勘误 R1-10） |
 | `sidecar/numa.jsonl` | `capkit.sidecar.numa/1` | `t_rel_ns, pid, pages_by_node`（`/proc/<pid>/numa_maps` 按 `N<k>=` 汇总的 `{节点: 页数}`；低频，周期由 `--numa-every-s` 给出；读不到写 `{"unreadable": 原因}`）。D4 的数据验证 |
 | `sidecar/logs.jsonl` | `capkit.sidecar.logs/1` | `t_rel_ns, path, bytes`（`raw/logs/` 下每个日志文件的大小，每秒一行）。D8 的「日志字节增长率」 |
 | `sidecar/meta.json` | `capkit.sidecar.meta/1` | `clk_tck`、采样周期、读不到的项（`schedstat`、频率等）及原因 |
@@ -563,7 +565,7 @@ C5、C6、C7 要两样东西：每条链上哪几跳的哪个计数应当相等�
 
 ### 5.9 本地盘与快照目录的清理
 
-只由 B6 的作业内层脚本做，只在**拷回并校验通过之后**做。被删的根路径一律是 `<本地盘>/<用户名>-<作业号>`（`/dev/shm/<用户名>-<作业号>` 同理，它下面的 `snap/…` 随之删掉）。删除前调用 `python3 -m capcommon.scratchpath --path "${P:?}" --base "${BASE:?}" --user "${USER:?}" --job-id "${SLURM_JOB_ID:?}" --verified-file "${V:?}"`，退出码 0 才删（它断言路径**逐字等于** `<base>/<user>-<job>`、不是软链、`--verified-file` 的 `passed` 为真）；删除命令写成 `rm -rf -- "${P:?}"`，命令与结果追加进作业目录的日志。别的路径一律不删（CONSTRAINTS §6）。
+只由 B6 的作业内层脚本做，只在**拷回并校验通过之后**做。被删的根路径一律是 `<本地盘>/<用户名>-<作业号>`（已改为带重启次数，见勘误 R1-11；`/dev/shm/<用户名>-<作业号>` 同理，它下面的 `snap/…` 随之删掉）。删除前调用 `python3 -m capcommon.scratchpath --path "${P:?}" --base "${BASE:?}" --user "${USER:?}" --job-id "${SLURM_JOB_ID:?}" --verified-file "${V:?}"`，退出码 0 才删（它断言路径**逐字等于** `<base>/<user>-<job>`、不是软链、`--verified-file` 的 `passed` 为真）；删除命令写成 `rm -rf -- "${P:?}"`，命令与结果追加进作业目录的日志。别的路径一律不删（CONSTRAINTS §6）。
 
 ## 6. 实时快照（capprobe 与全部 capkit 工具）
 
@@ -639,7 +641,7 @@ offset 40  meta_len 字节 JSON 元数据
 - 探针进程的 pid 自报：快照文件名就是 pid，元数据里有 `pid`、`ppid`、`starttime_ticks`、`argv`。编排器发现 `<shm_dir>` 里出现新的 `<pid>.bin`，按「该 pid 是哪个已登记进程的子孙、`role_hint`」登记为 `discovered_via: probe.snapshot`；对不上任何已登记进程的写进 `roles.json` 的 `unattributed` 列表（判定器 C13 判红）。
 - `ts` 组的环形数组在进程退出时（`atexit`）落到 `<shm_dir>/<pid>.ts.capbin`（`kind: probe.ts`）；作业收尾时由内层脚本拷进对应启动树。
 - 探针自检注入（§7）在探针里由 `CAPPROBE_INJECT` 给出，整个进程生命周期不变（档位表的逐档注入只对 capkit 工具有效）。
-- `capprobe` 另导出 `SITES = {位点编号: {"group": 组, "proc_kind": 所在进程类型（如 frontend、postproc、host、worker）, "file": 相对产品树的路径, "line": 行号, "slots": [该位点的槽名…]}}`，`capprobe.overlay` 把它写进覆盖清单（§6.6）。
+- `capprobe` 另导出 `SITES = {位点编号: {"group": 组, "proc_kind": 所在进程类型（如 frontend、postproc、host、worker）, "file": 相对产品树的路径, "line": 行号, "slots": [该位点的槽名…]}}`，`capprobe.overlay` 把它写进覆盖清单（§6.6）。`line` 已改为 `lines` 列表，见勘误 R1-12。
 
 ### 6.6 覆盖清单（P0 / P1 / P2，B3 的 `capprobe.overlay` 生成）
 
@@ -656,7 +658,7 @@ offset 40  meta_len 字节 JSON 元数据
                "slots":["count.F2.msgs"]}}}
 ```
 
-`sites` = `capprobe.SITES` 里属于本次打开的组的那些位点（P0、P1 为空表）。C8（探针已接上）的应检位点数取自这里，不取自「快照里出现了的槽」：每个应检位点在每个被判档的窗口增量 > 0，且与 §5.8 对账链给出的应有条数一致（该位点在某条链上时）。
+`sites` = `capprobe.SITES` 里属于本次打开的组的那些位点（P0、P1 为空表）。C8（探针已接上）的应检位点数取自这里（只算本拓扑适用的位点，见勘误 R1-19），不取自「快照里出现了的槽」：每个应检位点在每个被判档的窗口增量 > 0，且与 §5.8 对账链给出的应有条数一致（该位点在某条链上时）。
 
 `dst` 相对容器的 `dist-packages`。`non_python_changed` 必须为空（镜像提交到目标提交之间 C++ 与非 Python 的包内容没有变），否则生成器以退出码 3 退出（要重烤镜像，先问用户）。P0 的 `target_commit` = `base_commit`（无探针补丁）；P1 与 P2 的 `files` 相同，只差 `groups`。
 
@@ -763,7 +765,7 @@ E0 已知答案链上的消息由 capkit 自己产生，不是产品 protobuf，
 
 ### 9.2 登记表 `register.json`（每个实验一份或多份，放在实验目录的 `register/`）
 
-`schema: capkit.register/1`。它是一次启动「事先登记」的全部机器可读内容；`--register-sha` 就是它的 sha256。
+`schema: capkit.register/1`。它是一次启动「事先登记」的全部机器可读内容；`--register-sha` 就是它的 sha256。新增的必填段 `environment` 见勘误 R1-13。
 
 ```json
 {"schema":"capkit.register/1","experiment":"E0","register_md":{"relpath":"02_e0/E0/register/REGISTER.md","sha256":…},
@@ -818,7 +820,7 @@ E0 已知答案链上的消息由 capkit 自己产生，不是产品 protobuf，
 
 `event_at, plan_id, event, job_id, status, reason, experiment, arms, launches, basis, account, partition, qos, exclude, time_limit, mem, cpus_per_task, gpus, exclusive, snapshot_dir, snapshot_sha256, sbatch_argv, submitted_at, mounts_json, tokenizer_dir_sha256, assertions_json`
 
-- `event` ∈ `PLANNED` / `SUBMITTED` / `ENDED` / `NOTE`；`status` ∈ 空 / `VALID` / `VOID` / `NOT_RUN` / `ENV_INVALID` / `CANCELLED` / `SUBMIT_FAILED`。
+- `event` ∈ `PLANNED` / `SUBMITTED` / `ENDED` / `NOTE`；`status` ∈ 空 / `VALID` / `VOID` / `NOT_RUN` / `ENV_INVALID` / `CANCELLED` / `SUBMIT_FAILED`（另有 `UNKNOWN_SUBMIT`，见勘误 R1-14）。
 - `basis`：「依据哪条批准」的原文（CONSTRAINTS §2 第 6 条）；`PLANNED` 行缺它 → 拒绝提交。
 - `gpus` 是申请的 GPU 张数（> 1 拒绝提交）；`sbatch_argv` 是 JSON 数组形式的完整命令。
 - 写：`capcommon.ledger.submissions_append(path, row_dict)`（缺列或多列即报错）。
@@ -835,8 +837,8 @@ python3 -m capjudge --tree <启动树的路径> --workdir <W>
 
 - 只接受这两个参数（外加 `--help`）。`--tree` 必须是一个已存在的目录、含 `raw/launch.json`、路径里没有 `* ? [` 字符；不接受多个树、不接受通配符。阈值、标定文件全部从 `launch.json → register.json` 取（§9.2）。
 - 在 VM 上的完整命令是 `PYTHONPATH=<C>/tools python3.11 -m capjudge --tree <T> --workdir <W>`。
-- **一棵树只判一次**：判定器先查 `<W>/JUDGED.tsv`（列 `judged_at, job_id, restart_count, launch_seq, arm, experiment, tree_relpath, verdicts_sha256`），同一 `(job_id, restart_count, launch_seq, arm)` 已在表里 → 退出码 12（防止把树拷到别处再判一次）；再 `os.mkdir(<tree>/judge)`，已存在 → 退出码 12。两步都不写任何东西就退出。判完在 `JUDGED.tsv` 追加一行。
-- 输入核对在 `judge/` 建好之后做（任一不过 → 在 `judge/inputs.json` 写明哪一项，退出码 13，不追加 `JUDGED.tsv`；`judge/` 已存在，所以同一棵树也不能再判）：`launch.json` 的 `register.sha256` 在 `REGISTRY.tsv` 里，且 `registered_at` 早于 `submissions.tsv` 里该作业的 `submitted_at`（毫秒，严格小于；本机运行的 `local-*` 作业同样要有 `--local-record` 写的台账行）；`launch.json` 的 `reconcile` 过 `expect.validate_reconcile`；`register.json` 列出的每个文件现算 sha 与登记一致；每个标定文件同样已登记且早于提交；树内全部文件的 `identity` 前六个字段一致（§2.1）。
+- **一棵树只判一次**（流程已改，见勘误 R1-16）：判定器先查 `<W>/JUDGED.tsv`（列 `judged_at, job_id, restart_count, launch_seq, arm, experiment, tree_relpath, verdicts_sha256`），同一 `(job_id, restart_count, launch_seq, arm)` 已在表里 → 退出码 12（防止把树拷到别处再判一次）；再 `os.mkdir(<tree>/judge)`，已存在 → 退出码 12。两步都不写任何东西就退出。判完在 `JUDGED.tsv` 追加一行。
+- 输入核对在 `judge/` 建好之后做（已改为先写尝试目录，见勘误 R1-16；任一不过 → 在 `judge/inputs.json` 写明哪一项，退出码 13，不追加 `JUDGED.tsv`；`judge/` 已存在，所以同一棵树也不能再判）：`launch.json` 的 `register.sha256` 在 `REGISTRY.tsv` 里，且 `registered_at` 早于 `submissions.tsv` 里该作业的 `submitted_at`（毫秒，严格小于；本机运行的 `local-*` 作业同样要有 `--local-record` 写的台账行）；`launch.json` 的 `reconcile` 过 `expect.validate_reconcile`；`register.json` 列出的每个文件现算 sha 与登记一致；每个标定文件同样已登记且早于提交；树内全部文件的 `identity` 前六个字段一致（§2.1）。
 
 ### 10.2 输出（全部在 `<tree>/judge/`，不写 `raw/`）
 
@@ -847,13 +849,13 @@ python3 -m capjudge --tree <启动树的路径> --workdir <W>
 | `checks.tsv` | 一项检查一行：`tier_seq, check_id, expected_count, checked_count, red_count, status(PASS/RED/NOT_RUN), source_of_expected, detail` |
 | `judge.log` | 过程日志 |
 
-- 每项检查的 `expected_count` 来自配置（时间表 `meta.per_tier`、`launch.json` 的 `roles[].workers` 与 `expected_procs`、`reconcile`、`chunk_sample_mod`、覆盖清单的 `sites`、窗口秒数），写明 `source_of_expected`；`expected_count == 0` 或 `checked_count == 0` → 该项 `NOT_RUN`。
+- 每项检查的 `expected_count` 来自配置（时间表 `meta.per_tier`、`launch.json` 的 `roles[].workers` 与 `expected_procs`、`reconcile`、`chunk_sample_mod`、覆盖清单的 `sites`、窗口秒数），写明 `source_of_expected`；`expected_count == 0` 或 `checked_count == 0` → 该项 `NOT_RUN`（红证据优先，见勘误 R1-17）。
 - **各 C 项作用在哪些角色上，只看 `launch.json` 里每个角色的 `measure_class`**（§11 场景配置），不按角色名或模块名判断：C1（负载源健康）作用于 `load_source`；C2（桩健康）作用于 `stub_out_of_domain`（域外桩：空汇、排空端、节拍源、S-PB / S-FE / S-NL）与 `stub_in_domain`（只查自身需求，不进 P）；被测部件（`under_test`）不做健康检查；`observer`（sidecar、金丝雀）只查它们自己的数据是否齐全。C1、C2 的应检进程数 = 对应类别角色的 `expected_procs` 之和。
 - 几项检查的具体口径：
   - **C9**（绑核读回一致）：用 `sidecar/threads.jsonl` 窗口内的逐秒 `cpus_allowed` 与 `last_cpu`，与 `pin_table.json` 核对；应检条数 = 窗口秒数 × 登记线程数；任一行亲和集合与他角色的核相交、或越出本角色的核 ⇒ 红。
   - **C10**（版本自报）：`versions.check_versions`（§2.5）；不过 ⇒ 整次启动 `NOT_RUN`（不是红）。
-  - **C13**（线程清单与独占核集）：前一半 = 启动时的线程清单与每档窗口始末的 `threads` 全部认出（§5.3）；后一半 = 对每个 `under_test` 角色的核集逐核算「`cpus.jsonl` 里窗口内的忙碌 tick（user+nice+system+irq+softirq+steal）− 绑在这些核上的已登记线程的 `utime + stime` 增量」，减去按 D14 结果（`pilot.json` 的 `d14_softirq`）认定属于本实验的软中断部分，剩余超出噪声带 ⇒ 红；`pilot.json` 还没有 D14 结果时这一半记 `NOT_RUN`。
-  - **GPU-IDLE**（启动级，CONSTRAINTS §2 第 4 条；检查号不用 `G1`，避免与设计稿的位点 G1 撞名）：应检条数 = 测量窗口秒数之和 × `gpu.jsonl` 头里的 `gpu_count`；`gpu_idle.json` 的阳性对照不过、`gpu_count` 为 0、或 `gpu.jsonl` 没有窗口内的行 ⇒ `NOT_RUN`；窗口内有任何 `query_rc ≠ 0` 的行也记 `NOT_RUN`；有任何 `util_pct > 0` 或非空的 `compute_pids` ⇒ 整次启动 `VOID`（`STATE` 写 VOID，并上报）。
+  - **C13**（线程清单与独占核集；辅助进程见勘误 R1-5）：前一半 = 启动时的线程清单与每档窗口始末的 `threads` 全部认出（§5.3）；后一半 = 对每个 `under_test` 角色的核集逐核算「`cpus.jsonl` 里窗口内的忙碌 tick（user+nice+system+irq+softirq+steal）− 绑在这些核上的已登记线程的 `utime + stime` 增量」，减去按 D14 结果（`pilot.json` 的 `d14_softirq`）认定属于本实验的软中断部分，剩余超出噪声带 ⇒ 红；`pilot.json` 还没有 D14 结果时这一半记 `NOT_RUN`。
+  - **GPU-IDLE**（启动级，CONSTRAINTS §2 第 4 条；检查号不用 `G1`，避免与设计稿的位点 G1 撞名）：应检条数 = 测量窗口秒数之和 × `gpu.jsonl` 头里的 `gpu_count`（已改，见勘误 R1-18）；`gpu_idle.json` 的阳性对照不过、`gpu_count` 为 0、或 `gpu.jsonl` 没有窗口内的行 ⇒ `NOT_RUN`；窗口内有任何 `query_rc ≠ 0` 的行也记 `NOT_RUN`；有任何 `util_pct > 0` 或非空的 `compute_pids` ⇒ 整次启动 `VOID`（`STATE` 写 VOID，并上报）。
 - 档的判定：前提 P 任一项 `RED` → `VOID`；任一项 `NOT_RUN` → `NOT_RUN`；P 全过时看 X：成立 → `UNSTABLE`，不成立 → `STABLE`；X 的主量与对账量方向矛盾 → `VOID`（设计稿 §2.6）。第一批只实现 P 与 X；I、V 是第二批，届时 `UNDETERMINED` 才会出现。清空档不判稳定性，只给 C11 的结果。
 - 判定器写完 `judge/` 之后在 `<tree>/STATE` 追加一行（`by = capjudge`，原因 = `launch_verdict` 与 `verdicts.json` 的 sha 前 12 位）。
 
@@ -873,7 +875,7 @@ python3 -m capjudge --tree <启动树的路径> --workdir <W>
 
 ### 10.4 判定器自测样本（`<C>/samples/`）
 
-每个样本是一个**最小工作目录 W**：一棵完整的启动树，加上它自己的 `REGISTRY.tsv`、`submissions.tsv`（`local-*` 作业，用 `--local-record` 的格式）、空的 `JUDGED.tsv`、登记表与被登记的文件，再加一个 `expect.json`（`{"exit_code":…,"tier_verdicts":{…},"red_checks":[…]}`）。自测脚本把整个样本 W 拷到临时目录，用 `--workdir <拷贝的 W>` 判（判定器只判一次；不放宽任何输入核对），比对 `expect.json`；同时对「良品」样本做一次破坏（按样本的 `sabotage.json` 改一处）并断言变红、且断言破坏确实改动了目标文件（陷阱清单 §1）。
+每个样本是一个**最小工作目录 W**：一棵完整的启动树，加上它自己的 `REGISTRY.tsv`、`submissions.tsv`（`local-*` 作业，用 `--local-record` 的格式）、空的 `JUDGED.tsv`、登记表与被登记的文件，再加一个 `expect.json`（`{"exit_code":…,"tier_verdicts":{…},"red_checks":[…]}`）。自测脚本把整个样本 W 拷到临时目录，用 `--workdir <拷贝的 W>` 判（判定器只判一次；不放宽任何输入核对），比对 `expect.json`（`--expect-samples` 必填与新增断言见勘误 R1-20）；同时对「良品」样本做一次破坏（按样本的 `sabotage.json` 改一处）并断言变红、且断言破坏确实改动了目标文件（陷阱清单 §1）。
 
 ## 11. 各组件的最小命令行（编排器据此起进程）
 
@@ -889,14 +891,14 @@ python3 -m capjudge --tree <启动树的路径> --workdir <W>
 | `import capprobe`（B3） | 环境变量 §6.5 | 位点见设计稿 §2.4 位点表（第一批：`count`、`lag` 两组） | 快照 §6、`ts` 落盘 |
 | `python -m capprobe.decode FILE`（B3） | — | — | 把快照解码成 JSON 打到标准输出 |
 | `python -m capprobe.overlay`（B3） | `--tier {P0,P1,P2}`、`--probe-tree PATH`、`--image-commit SHA`、`--base-commit SHA`、`--capkit-root <C>`、`--capkit-sha SHA`、`--packages LIST`、`--groups LIST`、`--out PATH` | — | §6.6 |
-| `python -m capenv.sidecar`（B4） | 通用、快照目录 `--shm-dir`、`--origin-ns`、`--roles-file PATH`、`--interval-ms INT`、`--out-dir PATH`、`--cpus-watch {all,LIST}`（LIST 必须 ⊇ 绑核表全部角色的核，§5.6）、`--gpu-every-s FLOAT`、`--numa-every-s FLOAT`、`--logs-dir PATH` | — | §5.6 |
+| `python -m capenv.sidecar`（B4；新参数见勘误 R1-10） | 通用、快照目录 `--shm-dir`、`--origin-ns`、`--roles-file PATH`、`--interval-ms INT`、`--out-dir PATH`、`--cpus-watch {all,LIST}`（LIST 必须 ⊇ 绑核表全部角色的核，§5.6）、`--gpu-every-s FLOAT`、`--numa-every-s FLOAT`、`--logs-dir PATH` | — | §5.6 |
 | `python -m capenv.canary`（B4） | 通用、`--origin-ns`、`--interval-ms INT`、`--out PATH`（`--cpus` 恰好 1 个核） | — | §5.6 |
-| `python -m capenv.gate`（B4） | `--run-dir`（作业目录）、`--phase {pre,post}`、`--registered-hw-sha SHA`、`--comparable-file PATH` 或 `--no-comparable`、`--slurm-view-file PATH`、`--slurm-view-wait-s FLOAT`（§5.5.2）、身份参数（`--role gate`） | — | 作业目录 `env/` 各文件；退出码 0 / 6 |
+| `python -m capenv.gate`（B4；新参数见勘误 R1-21） | `--run-dir`（作业目录）、`--phase {pre,post}`、`--registered-hw-sha SHA`、`--comparable-file PATH` 或 `--no-comparable`、`--slurm-view-file PATH`、`--slurm-view-wait-s FLOAT`（§5.5.2）、身份参数（`--role gate`） | — | 作业目录 `env/` 各文件；退出码 0 / 6 |
 | `python -m capenv.clockcheck`（B4） | 通用、`--peer-mode {server,client}`、`--port-file PATH`、`--round-trips N`、`--back-to-back N`、`--out PATH` | — | `env/clock_check.json`（§5.5） |
-| `python -m capenv.hwprofile`、`capenv.pins`、`capenv.loopback`（B4） | 各自 README | — | `env/hw_profile.json`、`env/pin_table.json`、`env/loopback_softirq.json` |
+| `python -m capenv.hwprofile`、`capenv.pins`、`capenv.loopback`（B4；hwprofile 新参数见勘误 R1-21） | 各自 README | — | `env/hw_profile.json`、`env/pin_table.json`、`env/loopback_softirq.json` |
 | `python -m capjudge`（B5） | §10.1 | — | §10.2 |
 | `python -m capjudge.pilot`（B5） | `--inputs FILE`（逐行列出启动树，不接受通配符）、`--workdir <W>`、`--out PATH` | — | §9.4 |
-| `python -m caplaunch`（B7） | 身份参数（`--role launch`）、`--run-dir`、`--scenario PATH`、`--pin-table PATH`、快照（`--shm-dir` 给作业级根 `/dev/shm/<用户名>-<作业号>/snap`，编排器自己建本次启动的子目录）、`--origin-lead-ms INT`（**起第一个进程之前**选定 `origin = now + lead`；原点到达时还有角色没就绪 ⇒ 停止、`NOT_RUN`，§0；没有单独的就绪超时参数，就绪期限就是原点） | — | §5.2、§5.3、§5.4 的编排器部分、§8.3 |
+| `python -m caplaunch`（B7；新必填参数见勘误 R1-1） | 身份参数（`--role launch`）、`--run-dir`、`--scenario PATH`、`--pin-table PATH`、快照（`--shm-dir` 给作业级根 `/dev/shm/<用户名>-<作业号>/snap`，编排器自己建本次启动的子目录）、`--origin-lead-ms INT`（**起第一个进程之前**选定 `origin = now + lead`；原点到达时还有角色没就绪 ⇒ 停止、`NOT_RUN`，§0；没有单独的就绪超时参数，就绪期限就是原点） | — | §5.2、§5.3、§5.4 的编排器部分、§8.3 |
 | `python -m capstubs.fingerprint`（B7） | `--tokenizer DIR`、`--out PATH` | — | 指纹 JSON 与生成的 S-FE 命令行 |
 | `python3.11 -m capjobs.submit`（B6） | 子命令 `probe`（只做 `--test-only`，过 `policy.check_test_only_argv`）、`submit`（写 `PLANNED` 前过 §9.5 的五项断言）、`slurm-view`（§5.5.2）、`--local-record`（本机运行的台账行）、`--dry-run`；资源参数全部显式 | — | `submissions.tsv`（§9.5）、快照目录、`env/slurm_view.json` |
 
@@ -976,7 +978,33 @@ python3 -m capjudge --tree <启动树的路径> --workdir <W>
   4. **§5.6 sidecar meta 的采样周期键名是 `interval_ns`**（整数 ns），判定器按它读；判定器自测样本同步改。
   5. **caplaunch 线程规则表**新增 grpcio 1.85 的 `event_engine`、`lifeguard` 两类 grpc 核心线程（`rules_sha` 随之变化）。
   6. **E0(b) 场景**：排空端的消息数在 `summary.msgs.msgs`（不在 `summary.counts`）；对账链把各级中继的 `msgs_received`、`msgs_forwarded` 与 `streams_accepted` 都列为跳；节拍源与排空端加 `--in-process`，使 `expected_procs = 1` 与实际进程数相符（多进程模式是监督者 + W 个 worker，`expected_procs = W + 1`）。
-  7. **未决（E1 之前要定）**：用 `multiprocessing` spawn 起子进程的工具（`capload`、`capload.nullsse`、多进程模式的 `capgrpc.*`）会多出一个 `multiprocessing.resource_tracker` 进程，它不在任何角色的登记里，编排器记为 `unattributed`，判定器的启动级 C13 据此判红（`under_test` 角色存在时）。E0(a) 没有 `under_test` 角色，不受影响；E1 里 `capload` 是 `under_test`，会红。可选做法：工具在就绪文件的 `children` 里自报该进程并把它计入 `expected_procs`，或改用不起 tracker 的启动方式。
+  7. **已解决（见下方勘误 R1-5）**：用 `multiprocessing` spawn 起子进程的工具（`capload`、`capload.nullsse`、多进程模式的 `capgrpc.*`）会多出一个 `multiprocessing.resource_tracker` 进程，它不在任何角色的登记里，原先编排器记为 `unattributed`。原文「E0(a) 没有 `under_test` 角色，不受影响」有误：只有 E0(a) 的 nullsse 线（`e0a-nullsse`）没有 `under_test` 角色，`e0a-frontend-sfe` 的前端就是 `under_test`；且按勘误 R1-17 的状态优先级，没有 `under_test` 角色时 `unattributed` 也判红。现由编排器把它记入 `roles.json` 的 `aux_helpers`，不算 `unattributed`。
+
+### R1 自审修复（2026-11-13）
+
+三路自审 R1（簇 K1–K28、P1–P8，见 `code-review/self-review-compare/capkit-J17871/R1/triage.md`）修复后，各组件修复者给出的勘误原文与集成时补的条目合并在此，按章节排序、去重；正文里与之冲突的句子各加了一句指向本节（写作「见勘误 R1-n」，n 为下列条号）。格式版本号不变（没有已发布的数据按旧口径写出过）。
+
+1. **§5.2 / §11 `caplaunch` 新必填参数**：`--overlay-manifest PATH`、`--nvidia-smi PATH`、`--job-env-dir DIR` 三项必填，与身份参数一样只由 `capjobs.launches` 追加（启动计划里出现即拒绝，见第 15 条）。场景参数可用占位 `{nvidia_smi}`（sidecar 的 `--nvidia-smi` 取它）。覆盖清单原样拷进每棵启动树的 `raw/env/overlay_manifest.json`，`launch.json` 记 `overlay_manifest{source,present,sha256,needed_by_roles}`、`nvidia_smi{path,realpath,sha256}`；场景里有带 `probe_tier` 的角色而清单缺失 ⇒ 不起任何进程，`STATE` NOT_RUN（stop reason `overlay_manifest_missing`，退出码 5）；作业 `env/` 里另有一份内容不同的清单 ⇒ 退出码 3。`--job-env-dir` 不是目录 ⇒ NOT_RUN（`job_env_dir_missing`）。`--shm-dir`、本次启动的快照子目录与 `--run-dir` 在建树之前必须是本人私有目录（`capcommon.snapshot.ensure_own_dir`：新建 0700，拒绝软链、非目录、他人目录；另拒绝组或他人可写）。
+2. **§5.2 场景角色键 `proc_kinds`（必填）**：本角色运行的 capprobe 进程类（词表同 `capprobe.SITES[*].proc_kind`，如单前端 `["frontend"]`）；只有产品角色可以非空，其余必须为 `[]`。`launch.json` 的 `roles[]` 原样带出；判定器 C8 据此判位点适用性（第 15 条）。
+3. **§5.2 编排器收到信号**：第一个停止信号 ⇒ 本次启动 NOT_RUN（stop reason `orchestrator_signalled`，退出码 5），进入收尾；收尾（停各角色、残留核验、写结束文件）期间再收到信号只记录，并跳过剩余宽限直接 SIGKILL，结束文件照写；`launch_end.json` 新增 `signals`。信号中止不再被改写成 `not_ready_before_origin`。编排器被信号停下时的最坏收尾时长 = 场景 `stop_order` 角色数 × (`stop_grace_s` + `--kill-after-s`) + 2 × `--kill-after-s`（残留核验的 SIGTERM、SIGKILL 各最多等一次）。
+4. **§5.3 测量者自己的子进程**：`measure_class` 为 `load_source`、`observer` 的角色（监测类）的未登记子孙（如 sidecar 每次 GPU 采样起的 nvidia-smi）不进 `tier.json` 的 `descendants`、不影响 `pids_stable`，也不写进 `unattributed`；它们逐个记在 `raw/procs/monitor_children.json`（`capkit.monitor_children/1`：`monitor_classes`、`n_proc_scans`、`coverage`、`children[{pid,ppid,comm,starttime_ticks,role,measure_class,exe,is_nvidia_smi,first_seen_mono_ns,last_seen_mono_ns,n_seen,seen_via}]`），并在 `tier.json` 的 `scans.<wstart|wend>.monitor_descendants` 里列出。`tier.json` 的 `scans.<wstart|wend>` = `{t_mono_ns, registered_live, registered_total, descendants, monitor_descendants, aux_helpers}`。非产品角色下未登记、却写快照的进程一律进 `unattributed`（`seen_via: probe.snapshot`，带 `registered_ancestor`）。
+5. **§5.3 / §10.2 工具运行时自起的辅助进程**：`multiprocessing.resource_tracker`、`forkserver`（`AUX_HELPER_RULES`，按 `python -c` 的固定代码匹配）记入 `roles.json` 的 `aux_helpers`（`{pid,ppid,starttime_ticks,cmdline,role,measure_class,category:"aux_helper",rule,first_seen_mono_ns}`）与 `tier.json` 的 `scans.*.aux_helpers`：归属其父角色，但不属于该角色的进程集合；判定器的 C10/C11/C13/快照对账一律只用 `roles.json.procs`，`aux_helpers` 不算 `unattributed`，只在 C13 明细里列出。这解决了上一节第 7 条的未决。
+6. **§5.3 sidecar 的线程自报**：`capenv.sidecar` 开 GPU 或 numa_maps 采样时多一条 Python 线程 `capenv-sidecar-slow`；sidecar 在就绪文件 `info.threads` 里以 `{native_id: 线程名}` 声明主线程以外的全部 Python 线程，编排器据此识别（`source: declared`）。
+7. **§5.4 `requests` 的 `sent_rel_ns`**：实际写出请求的时刻；keep-alive 重连重发时仍为第一次写出的时刻（发送滞后直方图与 `written` 同口径，每个请求只计一次）。收到过不完整响应头的请求不再重发。**§5.4.1 失败原因表**新增 `client_error`：负载器自身在请求处理中抛出的非协议异常（如 gRPC 库用法错误），`class_hint` 为 `unclassified`。nullgrpc 的 `request_types`、`rejects` 与中继的 `upstream_failures` 改为逐档计数（原为整进程累计、每档重复写）。
+8. **§5.5 作业内顺序与环境文件**：内层脚本在门禁之前写 `env/gpu_idle.json`、（`chassis_source = slurm_view` 时先等 `env/slurm_view.json`）`env/hw_profile.json` 与 `env/hw_raw.json`（`capenv.hwprofile`，`--role hwprofile`、`--nvidia-smi` 必填）。`gpu_idle.json`（`capkit.gpu_idle/1`，`capjobs.envfiles gpu-idle` 写）由 `capenv.gpu.check_visible` 产生：可见 GPU 数 == 登记的 `environment.gpus`；≥1 张时先要列出 ≥1 张（阳性对照）；0 张时要求 nvidia-smi 报告没有卡，阳性对照记 NOT_RUN；载荷键为 `status reasons expected_gpus nvidia_smi visible_gpus gpus compute_apps queries count_check positive_control apps_check positive_control_ok gpu_count passed outcome`。`capenv.gpu check` 命令行另写的采样检查改用 schema `capkit.gpu_idle_check/1`（作业流程不调用它，与 `gpu_idle.json` 不同形状）。`image.json` 的 sha256 由提交端计算（`sha256_source`），作业内只核大小与 `mtime_ns`。
+9. **§5.5 门禁 `exclusivity.json` 与 `hw_gate.json`**：第 5 项改为「可见 GPU 数 == `--max-alloc-gpus` 且无计算进程」：请求 ≥1 张时先要列出 ≥1 张（否则 NOT_RUN），请求 0 张时要求 nvidia-smi 报告没有卡，阳性对照与计算进程检查记 NOT_RUN 并写明原因。第 1 项的 `scontrol` 输出没有 TRES 时记红（不再按 0 张计）。`hw_gate.json` 增加 `status`（PASS / RED / NOT_RUN）。`--registered-hw-sha UNREGISTERED`：门禁照常做第 1～6 项并读画像，`hw_gate.json` 记 `status: NOT_RUN` 与 `node_hw_sha`，判定恒为 `ENV_INVALID`（退出码恒为 6），用于某型号第一个作业只采画像、供登记。画像 sha 含可见卡的 `gpu_count` 等键，申请 0 张与 1 张的作业画像 sha 必然不同。
+10. **§5.6 sidecar 的 GPU 读数**：`--nvidia-smi PATH` 可选，不给则不执行任何 nvidia-smi，`gpu.jsonl` 头 `positive_control_ok: false`。`gpu.jsonl` 的 `compute_pids` 可含 `null`（pid 读不到的计算进程，仍算计算进程）；`util_pct` 为 `null` 表示读不到，不是 0，`meta.json` 的 `unreadable.gpu_util` 与 `stats.gpu_util_unreadable_rows` 记录条数。集群作业的 `sidecar_gpu_every_s` 必须 > 0，否则判定器 GPU-IDLE 恒 NOT_RUN。
+11. **§5.9 节点本地目录与拷回**：本地盘与 shm 的作业根改为 `<base>/<用户名>-<作业号>-r<重启次数>`（`capcommon.scratchpath` 的 `--job-id` 传 `<作业号>-r<重启次数>`；重排队回到同一节点不会撞上上一轮的目录）；收尾只处理本轮创建的（`run`）或属主为本用户的真实目录（`finalize-only`），mkdir 失败时不清理该目录。拷回核对比较每个文件的 sha256（不只路径、类型、大小）；启动树顶层 `STATE` 只许追加（副本以原件字节开头）。
+12. **§6.1 / §6.5 / §6.6 capprobe 位点与快照目录**：`SITES` 每项的 `"line": 行号` 改为 `"lines": [行号, …]`（升序、非空）：同一位点的事件若有多条代码路径，每条路径放同一个守卫调用，共用一个槽与一个探针函数；覆盖清单的 `sites` 原样带 `lines`，`patchcheck` 要求每个位点恰好出现在 `lines` 所列的每一行，摘要另带 `expected_location_count`、`found_location_count`。F4 覆盖 `__anext__`（无池）与 `_feed`（有池）两条出队路径；H1 只计路径以 `/v1/` 开头的 http 请求；三个 lag 位点装在启动完成之后、服务调用之前的 `try` 内。`SITE_NOTES` 不再带行号。`capcommon.snapshot` 的快照目录用 `ensure_own_dir` 建（新建 0700，拒绝软链、非目录、他人目录），临时文件以 `O_NOFOLLOW` 打开。
+13. **§9.2 `register.json` 新增顶层必填段 `environment`**：恰好五个键——`gpus`（整数，0 或 1，向 Slurm 申请的 GPU 数；不加载模型的作业取 1）、`idle_window_s`（(0, 3600]，门禁第 6 项空转窗口）、`idle_busy_max_frac`（(0, 1]，第 6 项每核忙碌比例上限）、`slurm_view_wait_s`（(0, 3600]，等 `slurm_view.json` 的最长秒数；§5.5.2 的 S 即此值）、`chassis_source`（`slurm_view` 或 `dmi`，传给 `capenv.hwprofile`）。`capjobs.submit submit` 按 `REGISTRY.tsv` 中该 sha 的 `relpath` 读 `register.json`、现算 sha 核对，缺段、多键、取值越界一律拒绝提交；`--gpus` 必须等于 `environment.gpus`；`--slurm-view-wait-s` 命令行参数删除。这些值经 `job.env`（`CAPJOBS_MAX_ALLOC_GPUS`、`CAPJOBS_IDLE_WINDOW_S`、`CAPJOBS_IDLE_BUSY_MAX_FRAC`、`CAPJOBS_SLURM_VIEW_WAIT_S`、`CAPJOBS_CHASSIS_SOURCE`）由内层脚本显式传给 `capenv.hwprofile`、`capenv.gate` 与 `capjobs.envfiles gpu-idle`，没有缺省值。判定器与编排器不读该段。
+14. **§9.5 `submissions.tsv`**：`status` 新增正式取值 `UNKNOWN_SUBMIT`，只能出现在带 `submitted_at` 的 `NOTE` 行上：sbatch 结果不明（ssh 超时或失败、退出 0 却没有作业号）时写它，`submitted_at` 为 sbatch 时刻，不重投；`record-end` 拒绝此状态，由子命令 `reconcile-submit`（`--job-id J` 或 `--not-submitted`，凭 scontrol / batch.tsv / squeue 证据）落 `SUBMITTED` 或 `ENDED`/`SUBMIT_FAILED`。`submissions_current` 合并时，`SUBMITTED`、`ENDED` 行的 `status` 即使为空也覆盖之前的值（对账后的 `SUBMITTED` 行就此关闭 `UNKNOWN_SUBMIT`）。每个计划的 `PLANNED` 行 `reason` 是用途标记 `purpose=measurement` 或 `purpose=hw_profile_capture`（`--registered-hw-sha UNREGISTERED` 的只采画像作业），`NOTE`、`ENDED` 行的 `reason` 以同一标记开头。作业结束判据：`squeue` 报 `Invalid job id specified` 视为已不在 slurmctld、只看 sacct。
+15. **启动计划 `capkit.launch_plan/1`（`capjobs.launchplan`）**：新增必填 `kill_grace_s`（整数 ≥ 1，启动超预算被 SIGTERM 后到整树 SIGKILL 的宽限），提交端（`capjobs.submit`）与作业内（`capjobs.launches`）都按第 3 条的最坏收尾时长核对：每个启动的 argv 必须带 `--scenario {SNAP}/…`（且该文件在作业快照里）与 `--kill-after-s`，`kill_grace_s` 小于任一启动的最坏收尾时长 ⇒ 拒绝计划。`--overlay-manifest`、`--nvidia-smi`、`--job-env-dir` 与身份参数一样由 `capjobs.launches` 追加，计划里出现即拒绝。每个启动的结论以编排器自己写的最后一行 `STATE` 为准（`capjobs.launches` 再追加一行）；超时被杀、或编排器写 VALID 而退出码不是 0/5 ⇒ VOID；没有编排器 `STATE` 时，`control/stop.json` 的 stop reason 为 `not_ready_before_origin`、`overlay_manifest_missing`、`job_env_dir_missing`、`orchestrator_signalled` 之一且退出码为 5 ⇒ NOT_RUN，其余 VOID。`capjobs.launches` 是 child subreaper：编排器退出或超时被杀后，对仍存活的后代 SIGTERM → `kill_grace_s` → SIGKILL，记 `leftovers`；作业收到 SIGTERM 时停下当前启动、其余启动记 NOT_RUN，照常写记录。
+16. **§10.1 一棵树只判一次**：判定器先查 `<W>/JUDGED.tsv`，同一 `(job_id, restart_count, launch_seq, arm)` 已在表里 → 12；再查 `<tree>/judge`，已存在 → 12；这两步不写任何文件。之后新建本次尝试目录 `<tree>/judge.attempts/<UTC 时刻>-p<pid>/`，输入核对与判定的全部输出（`inputs.json`、`verdicts.json`、`checks.tsv`、`judge.log`，以及新增的 `attempt.json`：`status` ∈ `JUDGED` / `INPUT_INVALID` / `ERROR` / `ALREADY_JUDGED`、`exit_code`、起止时刻、异常时的 traceback）先写在这里。只有产出了判定结果的运行，才在再查一次 `JUDGED.tsv` 后把尝试目录原子改名为 `<tree>/judge`（这一步即「已判」标记），然后追加 `JUDGED.tsv` 一行、`STATE` 一行；改名时 `judge/` 已被别的运行建立，或台账已有该行 → 12，本次尝试记 `ALREADY_JUDGED` 留在 `judge.attempts/`。输入核对不过（13）或异常中断（1）时不建 `judge/`、不写台账、不写 `STATE`，尝试目录留作复查；输入修好后可以再判。原文「`os.mkdir(<tree>/judge)`」与「输入核对在 `judge/` 建好之后做……`judge/` 已存在，所以同一棵树也不能再判」两句作废。
+17. **§10.2 检查状态优先级**：每项检查的状态按 RED > NOT_RUN > PASS 取：有任何红证据即 RED（即使应检为 0）；否则 `expected_count == 0` 或 `checked_count == 0`、或有 NOT_RUN 理由 ⇒ NOT_RUN；都没有才 PASS。原文「`expected_count == 0` 或 `checked_count == 0` → 该项 `NOT_RUN`」按此读。C3 已检条数少于应检（部分 worker 缺结果）⇒ NOT_RUN。
+18. **§10.2 GPU-IDLE 应检条数**：应检条数 = 各被判档 `window_ns // gpu_every_ns`（`sidecar/meta.json`）之和 × `gpu.jsonl` 头的 `gpu_count`；`gpu_every_ns` 缺失或 ≤ 0、`gpu_idle.json` 或 `gpu.jsonl` 头的 `positive_control_ok` 不为 true ⇒ NOT_RUN。窗口内读不出的行（`query_rc ≠ 0`、`util_pct` 不是数值（`[N/A]`）、`compute_pids` 不是列表）不计入已检并记 NOT_RUN；`util_pct > 0` 或 `compute_pids` 非空的行即使另一读数缺失也判 VOID。原文「测量窗口秒数之和 × gpu_count」作废。请求 0 张 GPU 的作业 GPU-IDLE 恒 NOT_RUN（不加载模型的作业一律申请 1 张）。
+19. **§10.2 C8 适用位点**：C8 只检查 `proc_kind` 属于 `launch.json` 各角色 `proc_kinds` 并集的位点，应检条数 = 这些位点的个数；其余位点在 `checks.tsv` 明细里列为「本拓扑不适用」，不算 PASS 也不算 RED。覆盖清单缺失或无位点、没有角色声明 `proc_kinds`、或没有一个适用位点 ⇒ C8 NOT_RUN。直方图槽（lag 组）按各桶计数之和算窗口增量。
+20. **§10.4 自测**：`run_selftest.py --expect-samples N` 必填（N ≥ 1，由调用方给出，等于样本目录数）；期望 13 的样本另断言没有 `judge/`、`judge.attempts/` 下恰有一条 `INPUT_INVALID` 记录、再判仍为 13；良品另断言 `judge/attempt.json` 为 `JUDGED`、再判 12 且不新增尝试记录。新增样本 `gpu_util_unreadable`。
+21. **§11 命令行**：`capenv.gate` 新增必填 `--max-alloc-gpus N`（向 Slurm 申请的 GPU 数）与 `--nvidia-smi PATH`；`--phase pre` 另需 `--idle-window-s S`、`--idle-busy-max-frac F`（取自登记表 `environment` 段，门禁不设缺省，缺了以退出码 3 退出）；`--registered-hw-sha` 可取 `UNREGISTERED`（第 9 条）。`capenv.hwprofile` 新增必填 `--nvidia-smi PATH`。`capenv.sidecar` 新增可选 `--nvidia-smi PATH`（第 10 条）。`capjobs.submit` 新增子命令 `reconcile-submit`（第 14 条），删除 `--slurm-view-wait-s`（第 13 条）。**§11.1 速查**补一行：nvidia-smi 查询只由 `capenv.gpu` 实现（`query_gpus`、`query_apps`、`positive_control`、`sample`、`check_visible`、`idle_check`，关键字参数 `nvsmi` 显式传入可执行文件，生产调用方不靠 PATH）。
 
 ## 审阅记录（r2，2026-11-13）
 

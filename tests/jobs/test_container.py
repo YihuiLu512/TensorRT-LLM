@@ -5,13 +5,17 @@
 import json
 import os
 import stat
+import subprocess
 import sys
+import time
 import types
 
 import pytest
 
 from capcommon.hashing import sha256_bytes
 from capcommon.runtree import read_state
+from conftest import CODE_ROOT
+
 from capjobs import copyback, envfiles, launches, overlay
 
 REG = "a" * 64
@@ -92,12 +96,24 @@ def test_check_mounts(tmp_path):
     assert not r["passed"]
     r = envfiles.check_mounts([], [], forbidden=())
     assert r["outcome"] == "NOT_RUN" and not r["passed"]
+    # K9: a mounted path whose realpath is inside a model library fails even if it is readable
+    lib = tmp_path / "lib"
+    (lib / "m").mkdir(parents=True)
+    (lib / "m" / "w").write_text("x")
+    link = tmp_path / "data"
+    os.symlink(str(lib / "m"), str(link))
+    r = envfiles.check_mounts(["%s:%s" % (link, link)], [], forbidden=(str(lib),))
+    assert not r["passed"] and "model library" in r["items"][-1]["state"]
+    r = envfiles.check_mounts(["%s:%s" % (good, good)], [], forbidden=(str(lib),))
+    assert not r["passed"]  # positive control of the fixture: lib itself is present, non-empty
+    r = envfiles.check_mounts(["%s:%s" % (good, good)], [], forbidden=(absent,))
+    assert r["passed"]
 
 
-def fake_smi(tmp_path, gpus, apps, rc=0):
-    tag = "%d-%d-%d" % (len(gpus), len(apps), rc)
+def fake_smi(tmp_path, gpus, apps, rc=0, text=""):
+    tag = "%d-%d-%d-%d" % (len(gpus), len(apps), rc, len(text))
     g, c = tmp_path / ("gpus-" + tag), tmp_path / ("apps-" + tag)
-    g.write_text("".join(x + "\n" for x in gpus))
+    g.write_text("".join(x + "\n" for x in gpus) + text)
     c.write_text("".join(x + "\n" for x in apps))
     p = tmp_path / ("smi-" + tag)
     p.write_text('#!/bin/bash\nif [[ $1 == --query-gpu=* ]]; then cat "%s"; else cat "%s"; fi\n'
@@ -106,31 +122,58 @@ def fake_smi(tmp_path, gpus, apps, rc=0):
     return str(p)
 
 
+def gpu_row(i):
+    return "%d, GPU-%d, 00000000:%02X:00.0, NVIDIA B200, 183359, 0, 0, 580.1" % (i, i, 0x1B + i)
+
+
 def test_gpu_idle(tmp_path):
-    two = ["0, NVIDIA B200, 0, 0", "1, NVIDIA B200, 0, 0"]
+    one, two = [gpu_row(0)], [gpu_row(0), gpu_row(1)]
+    r = envfiles.check_gpu_idle(fake_smi(tmp_path, one, []), 1)
+    assert r["passed"] and r["positive_control_ok"] and r["gpu_count"] == 1
+    assert r["queries"][0]["cmd"][0].startswith(str(tmp_path))  # the explicit path was run
+    # K6: visible != requested is a failure (was accepted before: 8 visible, 1 requested)
     r = envfiles.check_gpu_idle(fake_smi(tmp_path, two, []), 1)
-    assert r["passed"] and r["positive_control_ok"] and r["gpu_count"] == 2
-    r = envfiles.check_gpu_idle(fake_smi(tmp_path, two, ["4242, 1304 MiB"]), 1)
-    assert not r["passed"] and r["outcome"] == "FAIL" and r["compute_apps"] == ["4242, 1304 MiB"]
+    assert not r["passed"] and r["outcome"] == "FAIL" and r["gpu_count"] == 2
+    r = envfiles.check_gpu_idle(fake_smi(tmp_path, one, ["00000000:1B:00.0, 4242, 1304"]), 1)
+    assert not r["passed"] and r["outcome"] == "FAIL" and len(r["compute_apps"]) == 1
     r = envfiles.check_gpu_idle(fake_smi(tmp_path, [], []), 1)
     assert not r["passed"] and r["outcome"] == "NOT_RUN" and not r["positive_control_ok"]
-    r = envfiles.check_gpu_idle(fake_smi(tmp_path, two, [], rc=9), 1)
+    r = envfiles.check_gpu_idle(fake_smi(tmp_path, one, [], rc=9), 1)
     assert not r["passed"] and r["outcome"] == "NOT_RUN"
     r = envfiles.check_gpu_idle(str(tmp_path / "no-such-smi"), 1)
     assert not r["passed"]
+    # K6: 0 requested -> 0 must be visible; no positive control is possible (recorded NOT_RUN)
+    r = envfiles.check_gpu_idle(fake_smi(tmp_path, [], [], rc=6, text="No devices were found\n"),
+                                0)
+    assert r["passed"] and r["gpu_count"] == 0 and not r["positive_control_ok"]
+    assert r["positive_control"]["status"] == "NOT_RUN"
+    r = envfiles.check_gpu_idle(fake_smi(tmp_path, one, []), 0)
+    assert not r["passed"] and r["outcome"] == "FAIL"
+    r = envfiles.check_gpu_idle(fake_smi(tmp_path, [], [], rc=9), 0)
+    assert not r["passed"] and r["outcome"] == "NOT_RUN"
+
+
+def test_gpu_idle_cli_requires_explicit_inputs(tmp_path):
+    out = str(tmp_path / "g.json")
+    assert envfiles.main(["gpu-idle", "--out", out, "--nvidia-smi", "x"] + ident_args()) == 6
+    assert envfiles.main(["gpu-idle", "--out", out, "--max-alloc-gpus", "1"] + ident_args()) == 6
+    assert not os.path.exists(out)
 
 
 def test_image_and_disk_and_imports(tmp_path):
     f = tmp_path / "check.tsv"
-    rows = {"path": "/x.sqsh", "expected_sha256": "a" * 64, "expected_size": "10",
-            "measured_sha256": "a" * 64, "measured_size": "10"}
+    rows = {"path": "/x.sqsh", "expected_sha256": "a" * 64, "sha256_source": "capjobs.submit",
+            "expected_size": "10", "expected_mtime_ns": "5", "measured_size": "10",
+            "measured_mtime_ns": "5"}
     f.write_text("".join("%s\t%s\n" % kv for kv in rows.items()))
-    assert envfiles.check_image(str(f))["passed"]
-    rows["measured_sha256"] = "b" * 64
+    r = envfiles.check_image(str(f))
+    assert r["passed"] and r["sha256"] == "a" * 64
+    rows["measured_mtime_ns"] = "6"
     f.write_text("".join("%s\t%s\n" % kv for kv in rows.items()))
-    assert not envfiles.check_image(str(f))["passed"]
-    rows["measured_sha256"] = ""
-    rows["expected_sha256"] = ""
+    r = envfiles.check_image(str(f))
+    assert not r["passed"] and r["sha256"] is None
+    rows["measured_mtime_ns"] = ""
+    rows["expected_mtime_ns"] = ""
     f.write_text("".join("%s\t%s\n" % kv for kv in rows.items()))
     assert not envfiles.check_image(str(f))["passed"]
     assert envfiles.check_local_disk([str(tmp_path)], 1)["passed"]
@@ -178,12 +221,44 @@ def test_copy_and_compare(tmp_path):
         f.write(b"{}{}")
     bad = copyback.compare(src, dst)
     assert not bad["passed"] and bad["differences"] == ["raw/launch.json"]
+    # K8: same size, different bytes is a difference too
+    with open(os.path.join(dst, "raw", "launch.json"), "wb") as f:
+        f.write(b"[]")
+    bad = copyback.compare(src, dst)
+    assert not bad["passed"] and bad["differences"] == ["raw/launch.json"]
+    assert bad["content_check"] == "sha256"
     empty = str(tmp_path / "empty")
     os.makedirs(os.path.join(empty, "raw"))
     assert copyback.compare(empty, str(tmp_path / "nowhere"))["outcome"] == "NOT_RUN"
     assert copyback.lock_raw(dst)
     assert not os.access(os.path.join(dst, "raw"), os.W_OK)
     assert os.access(dst, os.W_OK)  # tree root stays writable (STATE, judge/)
+
+
+def test_copy_tree_with_launcher_state(tmp_path):
+    """The launcher writes STATE into the local tree; the copy gains lines after it. Only an
+    append is accepted (the copy's STATE must start with the source's bytes)."""
+    src = str(tmp_path / "T")
+    make_tree(src, {"raw/a": b"1", "STATE": b"t0\tVALID\tcaplaunch\tok\n"})
+    dst = str(tmp_path / "D" / "T")
+    rec = copyback.copy_tree(src, dst)
+    assert rec["passed"] and rec["files_expected"] == 2, rec["differences"]
+    with open(os.path.join(dst, "STATE"), "ab") as f:
+        f.write(b"t1\tVALID\tcapjobs.launches\tcopied\n")
+    assert copyback.compare(src, dst)["passed"]
+    with open(os.path.join(dst, "STATE"), "wb") as f:
+        f.write(b"t0\tVOID\tcaplaunch\tok\nmore\n")
+    assert copyback.compare(src, dst)["differences"] == ["STATE"]
+
+
+def test_sweep_skips_roots_not_owned(tmp_path):
+    local = str(tmp_path / "L")
+    make_tree(os.path.join(local, "runs", "J1-r0-L0_a"), {"raw/x": b"1"})
+    jd = str(tmp_path / "runs" / "J1-r0")
+    os.makedirs(jd)
+    r = copyback.sweep(None, None, str(tmp_path / "runs"), jd)
+    assert r["outcome"] == "EMPTY" and r["local_root"] is None
+    assert not os.path.exists(os.path.join(str(tmp_path / "runs"), "J1-r0-L0_a"))
 
 
 def test_sweep(tmp_path):
@@ -220,12 +295,13 @@ def test_sweep(tmp_path):
 # ---- launches ------------------------------------------------------------------------------------
 
 FAKE = r'''
-import argparse, json, os, sys, time
+import argparse, json, os, signal, subprocess, sys, time
 ap = argparse.ArgumentParser()
 ap.add_argument("--mode")
 for k in ("--experiment", "--arm", "--job-id", "--register-sha", "--role", "--run-dir",
-          "--snap"):
-    ap.add_argument(k)
+          "--snap", "--overlay-manifest", "--nvidia-smi", "--job-env-dir", "--scenario",
+          "--kill-after-s"):
+    ap.add_argument(k, required=k != "--mode")
 ap.add_argument("--launch-seq", type=int)
 ap.add_argument("--restart-count", type=int)
 a = ap.parse_args()
@@ -234,7 +310,30 @@ with open(os.path.join(a.run_dir, "raw", "launch.json"), "w") as f:
     json.dump({"arm": a.arm, "seq": a.launch_seq, "role": a.role, "snap": a.snap,
                "code_sha": os.environ.get("CAPKIT_CODE_SHA"),
                "tier": os.environ.get("CAPPROBE_TIER"),
-               "patch": os.environ.get("CAPPROBE_PATCH_SHA")}, f)
+               "patch": os.environ.get("CAPPROBE_PATCH_SHA"),
+               "overlay_manifest": a.overlay_manifest, "nvidia_smi": a.nvidia_smi,
+               "job_env_dir": a.job_env_dir}, f)
+def orphan(ignore_term):
+    # a role in its own session, as caplaunch starts them; it outlives this launcher
+    code = ("import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN) if %r else None; "
+            "time.sleep(60)" % ignore_term)
+    p = subprocess.Popen([sys.executable, "-c", code], start_new_session=True)
+    with open(os.path.join(a.run_dir, "raw", "orphan.pid"), "w") as f:
+        f.write(str(p.pid))
+if a.mode == "drain":  # caplaunch's own record: VALID, stopped early at a drain gate, exit 5
+    with open(os.path.join(a.run_dir, "STATE"), "a") as f:
+        f.write("2026-11-13T00:00:00.000Z\tVALID\tcaplaunch\tstopped: drain_gate_timeout\n")
+    sys.exit(5)
+if a.mode == "voidstate":  # caplaunch recorded VOID but exited 0
+    with open(os.path.join(a.run_dir, "STATE"), "a") as f:
+        f.write("2026-11-13T00:00:00.000Z\tVOID\tcaplaunch\tleftover processes\n")
+    sys.exit(0)
+if a.mode == "orphan":
+    orphan(False)
+    sys.exit(0)
+if a.mode == "hang_orphan":  # overruns its budget and leaves a role that ignores SIGTERM
+    orphan(True)
+    time.sleep(60)
 if a.mode == "notready":
     os.makedirs(os.path.join(a.run_dir, "control"), exist_ok=True)
     with open(os.path.join(a.run_dir, "control", "stop.json"), "w") as f:
@@ -251,17 +350,23 @@ def launch_env(tmp_path, modes, budgets=None, margin=1):
     fake.write_text(FAKE)
     reg = "b" * 64
     plan = {"schema": "capkit.launch_plan/1", "experiment": "E0", "register_sha": reg,
-            "job_arm": "job", "margin_s": margin,
+            "job_arm": "job", "margin_s": margin, "kill_grace_s": 1,
             "launches": [{"launch_seq": i, "arm": "arm%d" % i,
                           "budget_s": (budgets or {}).get(i, 60),
-                          "argv": ["{PY}", str(fake), "--mode", m, "--snap", "{SNAP}"]}
+                          "argv": ["{PY}", str(fake), "--mode", m, "--snap", "{SNAP}",
+                                   "--scenario", "{SNAP}/scen.json", "--kill-after-s", "0.1"]}
                          for i, m in enumerate(modes)]}
     a = types.SimpleNamespace(
         python=sys.executable, snap=str(tmp_path / "snap"),
         job_dir=str(tmp_path / "runs" / "J9-r0"),
         shm_root=str(tmp_path / "shm"), local_root=str(tmp_path / "local"),
-        run_root=str(tmp_path / "runs"), job_id="9", restart_count=0, deadline_epoch=1e12)
+        run_root=str(tmp_path / "runs"), job_id="9", restart_count=0, deadline_epoch=1e12,
+        overlay_manifest=str(tmp_path / "snap" / "overlay_manifest.json"),
+        nvidia_smi="/opt/x/nvidia-smi")
     os.makedirs(a.job_dir)
+    os.makedirs(a.snap)
+    with open(os.path.join(a.snap, "scen.json"), "w") as f:  # worst-case stop 0.4 s <= 1 s
+        json.dump({"stop_grace_s": 0.1, "stop_order": ["role"]}, f)
     manifest = {"tier": "P2", "groups": ["count", "lag"], "capkit_code_sha": "c" * 40,
                 "target_commit": "d" * 40}
     return a, plan, manifest
@@ -269,9 +374,6 @@ def launch_env(tmp_path, modes, budgets=None, margin=1):
 
 def test_launches_statuses(tmp_path):
     a, plan, manifest = launch_env(tmp_path, ["ok", "fail", "notready", "env", "ok"])
-    os.makedirs(os.path.join(a.shm_root, "snap", "r0-L0"))
-    with open(os.path.join(a.shm_root, "snap", "r0-L0", "77.ts.capbin"), "wb") as f:
-        f.write(b"ts")
     res = launches.run_all(a, plan, manifest)
     assert [r["status"] for r in res] == ["VALID", "VOID", "NOT_RUN", "ENV_INVALID", "NOT_RUN"]
     assert [r["ran"] for r in res] == [True, True, True, True, False]
@@ -281,13 +383,14 @@ def test_launches_statuses(tmp_path):
     assert len(states) == 1 and states[0][1] == "VALID" and "copy-back verified" in states[0][3]
     doc = json.load(open(os.path.join(t0, "raw", "launch.json")))
     assert doc == {"arm": "arm0", "seq": 0, "role": "launch", "snap": a.snap,
-                   "code_sha": "c" * 40, "tier": "P2", "patch": "d" * 40}
-    assert os.path.isfile(os.path.join(t0, "raw", "probe_ts", "77.ts.capbin"))
+                   "code_sha": "c" * 40, "tier": "P2", "patch": "d" * 40,
+                   "overlay_manifest": a.overlay_manifest, "nvidia_smi": "/opt/x/nvidia-smi",
+                   "job_env_dir": os.path.join(a.job_dir, "env")}
     assert not os.access(os.path.join(t0, "raw"), os.W_OK)
     assert read_state(os.path.join(a.run_root, "J9-r0-L2_arm2"))[0][1] == "NOT_RUN"
     assert not os.path.exists(os.path.join(a.run_root, "J9-r0-L4_arm4"))
     rec = json.load(open(os.path.join(a.job_dir, "copyback", "J9-r0-L0_arm0.verify.json")))
-    assert rec["passed"] and rec["files_expected"] == 2
+    assert rec["passed"] and rec["files_expected"] == 1
 
 
 def test_launches_deadline_and_timeout(tmp_path):
@@ -296,6 +399,81 @@ def test_launches_deadline_and_timeout(tmp_path):
     assert [r["status"] for r in res] == ["VOID", "NOT_RUN"]
     assert res[0]["timed_out"] is True and "budget" in res[0]["reason"]
     assert "left < budget" in res[1]["reason"]
+
+
+def _gone(pid, timeout_s=10):
+    end = time.monotonic() + timeout_s
+    while time.monotonic() < end:
+        try:
+            with open("/proc/%d/stat" % pid) as f:
+                if f.read().rsplit(")", 1)[1].split()[0] == "Z":
+                    return True
+        except OSError:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+@pytest.mark.parametrize("stop", ["not_ready_before_origin", "overlay_manifest_missing",
+                                  "job_env_dir_missing", "orchestrator_signalled"])
+def test_launcher_stop_reasons_are_not_run(stop):
+    """caplaunch's early stops are NOT_RUN: from its STATE line, and from stop.json with exit 5
+    when STATE is missing; any other exit code with such a stop stays VOID."""
+    rec = ("", "NOT_RUN", "caplaunch", "stopped: " + stop)
+    assert launches.classify(5, False, stop, rec)[0] == "NOT_RUN"
+    assert launches.classify(5, False, stop, None)[0] == "NOT_RUN"
+    assert launches.classify(1, False, stop, None)[0] == "VOID"
+    assert launches.classify(5, True, stop, rec)[0] == "VOID"  # killed for its budget
+
+
+def test_launcher_state_is_kept(tmp_path):
+    """K15 + copy-back of a tree that holds the launcher's STATE: the launcher's own VALID
+    (exit 5, drain gate timeout) stays VALID; its VOID is not upgraded by exit 0."""
+    a, plan, manifest = launch_env(tmp_path, ["drain", "voidstate"])
+    res = launches.run_all(a, plan, manifest)
+    assert [r["status"] for r in res] == ["VALID", "VOID"], [r["reason"] for r in res]
+    assert "drain_gate_timeout" in res[0]["reason"] and "copy-back verified" in res[0]["reason"]
+    states = read_state(os.path.join(a.run_root, "J9-r0-L0_arm0"))
+    assert [(s[1], s[2]) for s in states] == [("VALID", "caplaunch"),
+                                               ("VALID", "capjobs.launches")]
+    assert launches.classify(4, False, None, ("", "VALID", "caplaunch", "x"))[0] == "VOID"
+
+
+def run_main(a, plan, manifest, tmp_path):
+    """capjobs.launches as the inner script runs it: its own process (a child subreaper)."""
+    pp, mp = tmp_path / "plan.json", tmp_path / "manifest.json"
+    pp.write_text(json.dumps(plan))
+    mp.write_text(json.dumps(manifest))
+    out = os.path.join(a.job_dir, "launches.json")
+    env = dict(os.environ, PYTHONPATH=os.path.join(CODE_ROOT, "tools"))
+    r = subprocess.run([sys.executable, "-B", "-m", "capjobs.launches", "--plan", str(pp),
+                        "--overlay-manifest", str(mp), "--nvidia-smi", a.nvidia_smi, "--snap",
+                        a.snap, "--job-dir", a.job_dir, "--local-root", a.local_root,
+                        "--shm-root", a.shm_root, "--run-root", a.run_root, "--job-id", "9",
+                        "--python", sys.executable, "--out", out, "--restart-count", "0",
+                        "--deadline-epoch", "1e12"], capture_output=True, text=True, env=env,
+                       timeout=120)
+    doc = json.load(open(out))
+    return r, doc
+
+
+def test_leftover_processes_are_killed(tmp_path):
+    """K14: roles in their own sessions do not outlive the launch (normal exit and timeout)."""
+    a, plan, manifest = launch_env(tmp_path, ["orphan", "hang_orphan", "ok"],
+                                   budgets={1: 2})
+    r, doc = run_main(a, plan, manifest, tmp_path)
+    assert doc["child_subreaper"] is True, r.stderr
+    res = doc["launches"]
+    pids = [int(open(os.path.join(a.run_root, "J9-r0-L%d_arm%d" % (i, i), "raw",
+                                  "orphan.pid")).read()) for i in (0, 1)]
+    assert all(_gone(p) for p in pids), pids
+    assert res[0]["status"] == "VALID" and [x["pid"] for x in res[0]["leftovers"]] == [pids[0]]
+    assert res[0]["leftovers"][0]["signals"] == ["SIGTERM"]
+    assert res[1]["status"] == "VOID" and res[1]["timed_out"] is True
+    left1 = {x["pid"]: x for x in res[1]["leftovers"]}
+    assert left1[pids[1]]["signals"] == ["SIGTERM", "SIGKILL"]
+    assert not left1[pids[1]]["survived_sigkill"]
+    assert res[2]["status"] == "VALID" and res[2]["leftovers"] == []
 
 
 def test_launches_p0_env(tmp_path, monkeypatch):
@@ -307,13 +485,15 @@ def test_launches_p0_env(tmp_path, monkeypatch):
     assert res[0]["status"] == "VALID" and doc["tier"] == "P0" and doc["patch"] is None
 
 
-def test_launches_main_writes_record(tmp_path):
+def test_launches_main_writes_record(tmp_path, monkeypatch):
+    monkeypatch.setattr(launches, "become_subreaper", lambda: False)  # not on pytest itself
     a, plan, manifest = launch_env(tmp_path, ["ok"])
     pp, mp = tmp_path / "plan.json", tmp_path / "manifest.json"
     pp.write_text(json.dumps(plan))
     mp.write_text(json.dumps(manifest))
     out = os.path.join(a.job_dir, "launches.json")
-    rc = launches.main(["--plan", str(pp), "--overlay-manifest", str(mp), "--snap", a.snap,
+    rc = launches.main(["--plan", str(pp), "--overlay-manifest", str(mp), "--nvidia-smi",
+                        "/opt/x/nvidia-smi", "--snap", a.snap,
                         "--job-dir", a.job_dir, "--local-root", a.local_root, "--shm-root",
                         a.shm_root, "--run-root", a.run_root, "--job-id", "9", "--python",
                         sys.executable, "--out", out, "--restart-count", "0",
@@ -342,3 +522,33 @@ def test_overlay_detects_readback_mismatch(tmp_path, monkeypatch):
     results, passed, expected = overlay.apply(doc, str(src), str(dest))
     assert not passed and expected == 2
     assert results[1]["problem"] == "read-back bytes differ" and results[0]["ok"]
+
+
+def test_sigterm_stops_launch_and_skips_the_rest(tmp_path):
+    """RS4: Slurm's SIGTERM to the step reaches capjobs.launches; it stops the running launch
+    (its whole tree), skips the rest, and still writes its record."""
+    a, plan, manifest = launch_env(tmp_path, ["hang_orphan", "ok"], budgets={0: 60})
+    pp, mp = tmp_path / "plan.json", tmp_path / "manifest.json"
+    pp.write_text(json.dumps(plan))
+    mp.write_text(json.dumps(manifest))
+    out = os.path.join(a.job_dir, "launches.json")
+    env = dict(os.environ, PYTHONPATH=os.path.join(CODE_ROOT, "tools"))
+    p = subprocess.Popen([sys.executable, "-B", "-m", "capjobs.launches", "--plan", str(pp),
+                          "--overlay-manifest", str(mp), "--nvidia-smi", a.nvidia_smi, "--snap",
+                          a.snap, "--job-dir", a.job_dir, "--local-root", a.local_root,
+                          "--shm-root", a.shm_root, "--run-root", a.run_root, "--job-id", "9",
+                          "--python", sys.executable, "--out", out, "--restart-count", "0",
+                          "--deadline-epoch", "1e12"], env=env)
+    pid_file = os.path.join(a.local_root, "runs", "J9-r0-L0_arm0", "raw", "orphan.pid")
+    end = time.monotonic() + 30
+    while not os.path.exists(pid_file) and time.monotonic() < end:
+        time.sleep(0.1)
+    time.sleep(1.0)  # let launches record the orphan
+    p.send_signal(15)
+    assert p.wait(timeout=60) == 0
+    doc = json.load(open(out))
+    res = doc["launches"]
+    assert res[0]["status"] == "VOID" and res[0].get("terminated") is True, res[0]["reason"]
+    assert res[1]["status"] == "NOT_RUN" and "SIGTERM" in res[1]["reason"]
+    orphan = int(open(os.path.join(a.run_root, "J9-r0-L0_arm0", "raw", "orphan.pid")).read())
+    assert _gone(orphan)

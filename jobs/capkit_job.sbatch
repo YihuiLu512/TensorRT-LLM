@@ -7,7 +7,8 @@
 # All resources come from the sbatch command line; this file has no #SBATCH lines and no
 # hard-coded paths. Every value comes from <snap>/job.env (generated and quoted by capjobs.submit).
 #
-# Steps: job dir runs/J<job>-r<restart>/ -> image size + sha256 check (coreutils only) ->
+# Steps: job dir runs/J<job>-r<restart>/ -> image size + mtime check against the values recorded
+# when capjobs.submit hashed the image (coreutils only; the image is not re-hashed here) ->
 # main srun step into the container (capkit_inner.sh) -> fallback finalize step when the main
 # step did not leave finalize.done. Exit code = main step's exit code (6 = ENV_INVALID).
 set -uo pipefail
@@ -18,7 +19,7 @@ SNAP=${1:?usage: capkit_job.sbatch <snapshot dir>}
 source "$SNAP/job.env" || { echo "capkit_job: cannot source $SNAP/job.env" >&2; exit 3; }
 [[ $CAPJOBS_SNAP == "$SNAP" ]] || { echo "capkit_job: job.env belongs to $CAPJOBS_SNAP" >&2; exit 3; }
 for v in CAPJOBS_PLAN_ID CAPJOBS_RUN_ROOT CAPJOBS_IMAGE CAPJOBS_IMAGE_SHA256 CAPJOBS_IMAGE_SIZE \
-         CAPJOBS_MOUNTS CAPJOBS_SRUN_MPI CAPJOBS_TIME_LIMIT_S; do
+         CAPJOBS_IMAGE_MTIME_NS CAPJOBS_MOUNTS CAPJOBS_SRUN_MPI CAPJOBS_TIME_LIMIT_S; do
     [[ -n ${!v:-} ]] || { echo "capkit_job: $v is empty" >&2; exit 3; }
 done
 
@@ -53,20 +54,23 @@ state() {  # job-level STATE line (same format as a launch tree's STATE, INTERFA
 } > "$JOB_DIR/batch.tsv"
 log "start job=$JOB_ID restart=$RESTART node=$NODE plan=$CAPJOBS_PLAN_ID"
 
-# Image check (plan RESOURCES 6): size and sha256 against the values given at submission.
+# Image check (plan RESOURCES 6): capjobs.submit hashed the image and recorded its sha256, size
+# and mtime; here size and mtime (ns) must still be those values, so the sha256 still holds.
 log "image check: $CAPJOBS_IMAGE"
 MEAS_SIZE=$(stat -c %s -- "$CAPJOBS_IMAGE" 2>>"$LOG") || MEAS_SIZE=""
-MEAS_SHA=$(sha256sum -- "$CAPJOBS_IMAGE" 2>>"$LOG" | awk '{print $1}') || MEAS_SHA=""
+MEAS_MTIME_NS=$(date -r "$CAPJOBS_IMAGE" +%s%N 2>>"$LOG") || MEAS_MTIME_NS=""
 {
     printf 'path\t%s\n' "$CAPJOBS_IMAGE"
     printf 'expected_sha256\t%s\n' "$CAPJOBS_IMAGE_SHA256"
+    printf 'sha256_source\t%s\n' "capjobs.submit (hashed at submission)"
     printf 'expected_size\t%s\n' "$CAPJOBS_IMAGE_SIZE"
-    printf 'measured_sha256\t%s\n' "$MEAS_SHA"
+    printf 'expected_mtime_ns\t%s\n' "$CAPJOBS_IMAGE_MTIME_NS"
     printf 'measured_size\t%s\n' "$MEAS_SIZE"
+    printf 'measured_mtime_ns\t%s\n' "$MEAS_MTIME_NS"
 } > "$JOB_DIR/env/image_check.tsv"
-if [[ $MEAS_SHA != "$CAPJOBS_IMAGE_SHA256" || $MEAS_SIZE != "$CAPJOBS_IMAGE_SIZE" ]]; then
-    log "ENV_INVALID: image size/sha256 differ (size=$MEAS_SIZE sha=$MEAS_SHA)"
-    state ENV_INVALID "image size or sha256 differs from the submission"
+if [[ $MEAS_SIZE != "$CAPJOBS_IMAGE_SIZE" || $MEAS_MTIME_NS != "$CAPJOBS_IMAGE_MTIME_NS" ]]; then
+    log "ENV_INVALID: image size/mtime differ (size=$MEAS_SIZE mtime_ns=$MEAS_MTIME_NS)"
+    state ENV_INVALID "image size or mtime differs from the submission"
     exit 6
 fi
 

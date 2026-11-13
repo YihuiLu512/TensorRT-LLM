@@ -47,7 +47,7 @@ MANAGED_FLAGS = ("--experiment", "--arm", "--launch-seq", "--job-id", "--restart
 ROLE_KEYS_REQUIRED = ("role", "launcher", "kind", "start_after", "pin_role", "cpus_needed",
                       "numa", "workers", "expected_procs", "measure_class", "asyncio",
                       "uses_grpc", "loop", "probe_tier", "readiness", "backlog_slots",
-                      "snapshots", "args", "env")
+                      "snapshots", "args", "env", "proc_kinds")
 ROLE_KEYS_OPTIONAL = ("module", "command", "port", "keep_numa_affinity_env", "note")
 KINDS = ("server", "client", "aux")
 LAUNCHERS = ("capkit", "product")
@@ -64,7 +64,7 @@ TOP_KEYS = ("schema", "experiment", "name", "tier_table", "schedule", "prompts",
 DIMS_KEYS = ("tokenizer", "stub", "response_timing_switches", "interpretation", "log_sink")
 
 _PH_RE = re.compile(r"\{([a-z_]+)(?::([A-Za-z0-9_.-]+))?\}")
-PH_SIMPLE = ("run_dir", "raw")
+PH_SIMPLE = ("run_dir", "raw", "nvidia_smi")
 PH_ROLE = ("port_file", "addr")  # reference another role (must be in start_after)
 PH_OWN = ("own",)  # own:port_file | own:report_addr | own:role
 OWN_KEYS = ("port_file", "report_addr", "role", "ready_file")
@@ -190,6 +190,14 @@ def validate_role(r, role_names, params):
     if not isinstance(r["env"], dict) or any(not isinstance(k, str) or not isinstance(v, str)
                                              for k, v in r["env"].items()):
         _err(where, "env must map str -> str")
+    # proc_kinds: the capprobe process kinds (capprobe SITES proc_kind) this role runs; the judge
+    # decides from them which overlay sites C8 expects. Only product roles run probed code.
+    pk = r["proc_kinds"]
+    if not isinstance(pk, list) or any(not isinstance(k, str) or not k for k in pk) \
+            or len(set(pk)) != len(pk):
+        _err(where, "proc_kinds must be a list of distinct non-empty strings")
+    if pk and r["launcher"] != "product":
+        _err(where, "only product roles run probed code; proc_kinds must be []")
     tool = {}
     if r["launcher"] == "capkit":
         if r.get("module") not in TOOL_TABLE or "command" in r:
@@ -360,7 +368,7 @@ class ArgvContext:
 
     def __init__(self, identity, run_dir, raw_dir, params, stop_grace_s, shm_dir,
                  snapshot_interval_ms, tier_table_path, origin_ns, own_files, port_file_of,
-                 addr_of, sidecar=None, canary=None, inputs=None):
+                 addr_of, sidecar=None, canary=None, inputs=None, nvidia_smi=None):
         self.identity = identity  # capcommon Identity of the orchestrator (role "launch")
         self.run_dir = run_dir
         self.raw_dir = raw_dir
@@ -376,6 +384,7 @@ class ArgvContext:
         self.sidecar = sidecar  # {"roles_file", "out_dir", "logs_dir", "cpus_watch"}
         self.canary = canary  # {"out"}
         self.inputs = inputs or {}  # {"tier_table"|"schedule"|"prompts": absolute path}
+        self.nvidia_smi = nvidia_smi  # orchestrator --nvidia-smi
 
 
 def resolve(text, role, ctx, runtime=True):
@@ -386,6 +395,8 @@ def resolve(text, role, ctx, runtime=True):
             return ctx.run_dir
         if name == "raw":
             return ctx.raw_dir
+        if name == "nvidia_smi":
+            return ctx.nvidia_smi
         if name == "param":
             return ctx.params[arg]
         if name == "port_file":

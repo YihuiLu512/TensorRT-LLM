@@ -34,7 +34,30 @@ def parser(port, workers):
     p.add_argument("--child-of", type=int, default=None, help=argparse.SUPPRESS)
     p.add_argument("--target-port-file", default=None)
     p.add_argument("--peer", default=None)
+    p.add_argument("--rogue-snapshot-child", action="store_true",
+                   help="start a snapshot-writing child that is not reported in the ready file")
+    p.add_argument("--rogue", action="store_true", help=argparse.SUPPRESS)
+    p.add_argument("--mp-helper", action="store_true",
+                   help="start multiprocessing's resource tracker (a runtime helper process)")
+    p.add_argument("--plain-child", action="store_true",
+                   help="start an unreported long-lived child that is not a known helper")
     return p
+
+
+def rogue_child(a, c):
+    """Write snapshots under this process's own pid until SIGTERM (never reported)."""
+    import signal  # noqa: PLC0415
+    stop = []
+    signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
+    reg = SlotRegistry()
+    reg.counter("count.rogue")
+    w = SnapshotWriter(reg, c.shm_dir, c.snapshot_interval_ns,
+                       meta_extra={"identity": c.identity.to_dict(), "role_hint": "rogue",
+                                   "versions": version_record(include_grpc=False)}).start()
+    while not stop:
+        time.sleep(0.02)
+    w.stop()
+    return 0
 
 
 def gauge_value(tt, rel, a):
@@ -51,6 +74,8 @@ def gauge_value(tt, rel, a):
 def run(port, workers):
     a = parser(port, workers).parse_args()
     c = common_from_args(a)
+    if a.rogue:
+        return rogue_child(a, c)
     tt = c.load_tier_table()
     stop = StopController()
     ident = c.identity
@@ -65,6 +90,16 @@ def run(port, workers):
             argv = [sys.executable, "-m", sys.modules["__main__"].__spec__.name] + [
                 x for x in sys.argv[1:]] + ["--worker", str(k), "--child-of", str(os.getpid())]
             children.append((k, subprocess.Popen(argv)))
+    rogues = []
+    if a.mp_helper and a.child_of is None:
+        from multiprocessing import resource_tracker  # noqa: PLC0415
+        resource_tracker.ensure_running()
+    if a.plain_child and a.child_of is None:
+        rogues.append(subprocess.Popen(["sleep", "600"]))
+    if a.rogue_snapshot_child and a.child_of is None:
+        argv = [sys.executable, "-m", sys.modules["__main__"].__spec__.name] + [
+            x for x in sys.argv[1:] if x != "--rogue-snapshot-child"] + ["--rogue"]
+        rogues.append(subprocess.Popen(argv))
     sock = None
     if port and a.child_of is None:
         sock = socket.socket()
@@ -87,9 +122,9 @@ def run(port, workers):
         if a.exit_after_end and rel >= tt.end_ns:
             break
         time.sleep(0.01)
-    for _k, p in children:
+    for p in [p for _k, p in children] + rogues:
         p.terminate()
-    for _k, p in children:
+    for p in [p for _k, p in children] + rogues:
         p.wait()
     w.stop()
     return 0

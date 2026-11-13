@@ -51,6 +51,10 @@ def test_valid_default_scenario():
     (lambda d: d["roles"][0].update(expected_procs=1), "expected_procs"),
     (lambda d: d["roles"][0].pop("measure_class"), "missing"),
     (lambda d: d["reconcile"]["chains"][0]["hops"][0].update(role="nobody"), "unknown role"),
+    (lambda d: d["roles"][1].pop("proc_kinds"), "missing"),
+    (lambda d: d["roles"][1].update(proc_kinds="frontend"), "proc_kinds"),
+    (lambda d: d["roles"][1].update(proc_kinds=["frontend", "frontend"]), "proc_kinds"),
+    (lambda d: d["roles"][2].update(proc_kinds=["frontend"]), "proc_kinds must be []"),
 ])
 def test_invalid_scenarios_rejected(mutate, needle):
     d = _doc()
@@ -131,3 +135,26 @@ def test_shipped_e0_scenarios_validate():
     for n in names:
         with open(os.path.join(CONFIGS, n)) as f:
             sc.validate_scenario(json.load(f))
+
+
+def test_e0_proc_kinds_are_capprobe_process_kinds():
+    """Every proc_kinds value in configs/e0 is a capprobe SITES proc_kind (the judge's C8 picks
+    the expected sites by it), and every product role of a probed scenario declares its kinds."""
+    import importlib.util  # noqa: PLC0415
+    spec = importlib.util.spec_from_file_location(
+        "_capprobe_sites", os.path.join(cf.TOOLS, "capprobe", "sites.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)  # sites.py alone: importing capprobe would parse CAPPROBE_*
+    vocab = {v["proc_kind"] for v in mod.SITES.values()}
+    seen = 0
+    for n in sorted(os.listdir(CONFIGS)):
+        if not n.endswith(".scenario.json"):
+            continue
+        with open(os.path.join(CONFIGS, n)) as f:
+            doc = json.load(f)
+        for r in doc["roles"]:
+            assert set(r["proc_kinds"]) <= vocab, (n, r["role"], r["proc_kinds"])
+            if r["measure_class"] == "under_test" and r["launcher"] == "product":
+                assert r["proc_kinds"], (n, r["role"])
+                seen += 1
+    assert seen >= 2

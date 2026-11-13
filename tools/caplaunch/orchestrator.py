@@ -8,10 +8,13 @@ Between tiers, drain tiers carry the C11 drain gate; the next tier's start time 
 tier table, so the orchestrator never signals tools to switch tiers.
 """
 
+import hashlib
 import os
+import re
 import secrets
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -25,7 +28,8 @@ from capcommon.identity import Identity
 from capcommon.jsonio import atomic_write_bytes, dumps, read_json, write_json_stamped
 from capcommon.lifecycle import STOP_SCHEMA
 from capcommon.runtree import RunTree, append_state, launch_shm_subdir
-from capcommon.snapshot import SnapshotError, decode_snapshot, list_snapshot_files
+from capcommon.snapshot import (SnapshotError, decode_snapshot, ensure_own_dir,
+                               list_snapshot_files)
 from capcommon.tiers import TierTable
 
 from . import procfs
@@ -35,6 +39,32 @@ from .ready import (ReadyError, http_get_status, read_capkit_port, read_capkit_r
 
 MARK_ENV = "CAPKIT_LAUNCH_MARK"
 NONE = "none"  # explicit "not applicable" value for the provenance arguments
+# Roles whose own unregistered descendants (e.g. the sidecar's nvidia-smi queries) are not part of
+# the process set under test: they are left out of the window pid comparison and of
+# roles.json "unattributed", and listed in procs/monitor_children.json instead. Roles of every
+# other class (under_test, stub_*) keep both checks.
+MONITOR_CLASSES = ("load_source", "observer")
+assert set(MONITOR_CLASSES) < set(sc.MEASURE_CLASSES)
+# Helper processes a capkit tool's runtime starts on its own (category aux_helper): attributed to
+# the tool's role in roles.json "aux_helpers" and tier.json scans, never unattributed and never
+# part of the compared pid set. Matched on the exact command line; anything else a tool role
+# starts that is not registered stays unattributed.
+AUX_HELPER_RULES = (
+    ("mp_resource_tracker", re.compile(r"from multiprocessing\.resource_tracker import main;"
+                                       r"main\(\d+\)")),
+    ("mp_forkserver", re.compile(r"from multiprocessing\.forkserver import main; "
+                                 r"main\(.*\)")),
+)
+
+
+def aux_helper_rule(argv):
+    """Name of the AUX_HELPER_RULES entry matching `python -c <code>` argv, else None."""
+    if not argv or len(argv) != 3 or argv[1] != "-c":
+        return None
+    for name, rx in AUX_HELPER_RULES:
+        if rx.fullmatch(argv[2]):
+            return name
+    return None
 
 
 class LaunchAbort(Exception):
@@ -54,6 +84,18 @@ def _rel_inside(path, root, what):
     if os.path.commonpath([ap, ar]) != ar:
         raise ConfigError("%s %s is not inside --workdir %s" % (what, path, root))
     return os.path.relpath(ap, ar)
+
+
+def _private_dir(path, what):
+    """capcommon.snapshot.ensure_own_dir (create 0700; refuse a symlink, a non-directory or
+    another user's directory), and also refuse a directory group or others can write into: they
+    could plant <pid>.bin symlinks there that the orchestrator would read."""
+    ensure_own_dir(path)
+    mode = stat.S_IMODE(os.lstat(os.path.normpath(path)).st_mode)
+    if mode & 0o022:
+        raise ConfigError("%s %s must not be writable by group or others (mode %o)"
+                          % (what, path, mode))
+    return path
 
 
 class _GateTimeout(Exception):
@@ -103,12 +145,17 @@ class Launch:
         if args.kill_after_s <= 0:
             raise ConfigError("--kill-after-s must be > 0")
         self.snap_ns = args.snapshot_interval_ms * 1_000_000
+        # A late gate poll waits until this long after the previous poll, so every live writer
+        # has published a newer snapshot (seq advanced) by then; see _gate_next_abs.
+        self.gate_min_gap_ns = self.snap_ns + self.snap_ns // 2
         self.hk_ns = args.housekeeping_ms * 1_000_000
         self.W = os.path.realpath(args.workdir)
         if not os.path.isdir(self.W):
             raise ConfigError("--workdir %s is not a directory" % args.workdir)
         self._check_provenance()
+        self._check_nvidia_smi()
         self._load_inputs()
+        self._load_overlay()
         self.taskset = shutil.which("taskset")
         if self.taskset is None:
             raise ConfigError("taskset not found on PATH (needed to pin roles)")
@@ -123,6 +170,12 @@ class Launch:
         self.tiers_completed = None
         self.stop_doc = None
         self.early_exit = None
+        self.monitor_children = {}  # (pid, starttime) -> procs/monitor_children.json entry
+        self.aux_helpers = []  # roles.json "aux_helpers"
+        self.n_proc_scans = 0
+        self.cleaning = False  # set by the first stop signal or when the timeline is over
+        self.hurry = False  # a stop signal arrived during cleanup: SIGKILL without grace
+        self.signals = []
 
     def _check_provenance(self):
         a = self.a
@@ -136,6 +189,13 @@ class Launch:
                 raise ConfigError("--%s must be 64-hex or none" % k.replace("_", "-"))
         if a.capkit_sha == NONE:
             raise ConfigError("--capkit-sha is required (code provenance, DATA 4.3)")
+
+    def _check_nvidia_smi(self):
+        p = self.a.nvidia_smi
+        if not os.path.isabs(p) or not os.path.isfile(p) or not os.access(p, os.X_OK):
+            raise ConfigError("--nvidia-smi %s must be an absolute path to an executable file" % p)
+        self.nvsmi_real = os.path.realpath(p)
+        self.nvsmi_record = {"path": p, "realpath": self.nvsmi_real, "sha256": sha256_file(p)}
 
     # ---- inputs ------------------------------------------------------------------------------
     def _load_inputs(self):
@@ -216,23 +276,52 @@ class Launch:
         self.rt = {n: RoleRT(d, self.cpus_of[n]) for n, d in self.roles.items()}
         self.order = sc.start_order(self.roles)
 
+    def _load_overlay(self):
+        """--overlay-manifest: the job-level overlay manifest, copied verbatim into
+        raw/env/overlay_manifest.json. A missing file is recorded; it stops the launch as NOT_RUN
+        only when a role carries a probe tier (checked before any process starts)."""
+        path = self.a.overlay_manifest
+        self.overlay_needed_by = sorted(n for n, d in self.roles.items()
+                                        if d["probe_tier"] is not None)
+        self.overlay_bytes = None
+        if os.path.lexists(path):
+            if not os.path.isfile(path):
+                raise ConfigError("--overlay-manifest %s is not a regular file" % path)
+            with open(path, "rb") as f:
+                self.overlay_bytes = f.read()
+        if os.path.isdir(self.a.job_env_dir):
+            dup = os.path.join(self.a.job_env_dir, "overlay_manifest.json")
+            if os.path.isfile(dup):
+                with open(dup, "rb") as f:
+                    if f.read() != self.overlay_bytes:
+                        raise ConfigError("%s differs from --overlay-manifest %s" % (dup, path))
+        self.overlay_record = {
+            "source": path, "present": self.overlay_bytes is not None,
+            "sha256": None if self.overlay_bytes is None else
+            hashlib.sha256(self.overlay_bytes).hexdigest(),
+            "needed_by_roles": self.overlay_needed_by}
+
     # ---- tree, paths, launch.json -----------------------------------------------------------
     def _prepare_tree(self):
         T = self.tree
+        _private_dir(T.root, "--run-dir")
         if os.path.exists(T.launch_json):
             raise ConfigError("%s already has raw/launch.json (one launch per tree)" % T.root)
+        self.shm_dir = launch_shm_subdir(self.a.shm_dir, self.a.restart_count, self.a.launch_seq)
+        _private_dir(self.a.shm_dir, "--shm-dir")
+        _private_dir(self.shm_dir, "snapshot dir")
+        if os.listdir(self.shm_dir):
+            raise ConfigError("snapshot dir %s is not empty (stale launch?)" % self.shm_dir)
         T.make_skeleton()
         os.makedirs(T.procs("identity"), exist_ok=True)
-        self.shm_dir = launch_shm_subdir(self.a.shm_dir, self.a.restart_count, self.a.launch_seq)
-        if os.path.isdir(self.shm_dir) and os.listdir(self.shm_dir):
-            raise ConfigError("snapshot dir %s is not empty (stale launch?)" % self.shm_dir)
-        os.makedirs(self.shm_dir, exist_ok=True)
-        if self.a.job_env_dir is not None:  # job-level gate results -> this tree (INTERFACES 5.1)
+        if os.path.isdir(self.a.job_env_dir):  # job-level gate results -> this tree (INTERFACES 5.1)
             src = self.a.job_env_dir
             for n in sorted(os.listdir(src)):
                 p = os.path.join(src, n)
                 if os.path.isfile(p):
                     shutil.copyfile(p, T.env(n))
+        if self.overlay_bytes is not None:  # INTERFACES 6.6; read by the judge (C8, PROBE-TIER)
+            atomic_write_bytes(T.env("overlay_manifest.json"), self.overlay_bytes)
         if not os.path.exists(T.env("pin_table.json")):
             shutil.copyfile(self.a.pin_table, T.env("pin_table.json"))
         self.own = {}
@@ -254,7 +343,8 @@ class Launch:
                      "cpus_watch": self.cpus_watch},
             canary={"out": self.tree.canary("canary.jsonl")},
             inputs={k: os.path.realpath(self.inputs[k]["path"])
-                    for k in ("tier_table", "schedule", "prompts")})
+                    for k in ("tier_table", "schedule", "prompts")},
+            nvidia_smi=self.a.nvidia_smi)
 
     def _addr_str(self, role):
         rt = self.rt[role]
@@ -277,6 +367,7 @@ class Launch:
                 "measure_class": d["measure_class"], "asyncio": d["asyncio"],
                 "uses_grpc": d["uses_grpc"], "loop": d["loop"], "probe_tier": d["probe_tier"],
                 "readiness": d["readiness"], "backlog_slots": d["backlog_slots"],
+                "proc_kinds": d["proc_kinds"],
                 "snapshots": d["snapshots"], "env": d["env"], "start_after": d["start_after"]})
         sub = None
         sp = os.path.join(self.W, "submissions.tsv")
@@ -301,6 +392,7 @@ class Launch:
             "probe_tier": {"tier": self.scen["probe_tier"], "groups": self.scen["probe_groups"]},
             "roles": roles, "reconcile": self.scen["reconcile"],
             "hw_profile_sha": _opt(a.hw_profile_sha), "submission": sub,
+            "overlay_manifest": self.overlay_record, "nvidia_smi": self.nvsmi_record,
             "pin_table": {"path": a.pin_table, "sha256": self.pin_sha},
             "params": self.params, "launch_mark": self.mark,
             "argv_runtime_placeholders": "{addr:<role>} is resolved when the role starts; "
@@ -309,7 +401,9 @@ class Launch:
                              "snapshot_interval_ms": a.snapshot_interval_ms,
                              "housekeeping_ms": a.housekeeping_ms,
                              "kill_after_s": a.kill_after_s, "argv": list(sys.argv),
-                             "thread_rules_sha": procfs.RULES_SHA},
+                             "thread_rules_sha": procfs.RULES_SHA,
+                             "monitor_classes": list(MONITOR_CLASSES),
+                             "aux_helper_rules": [[n, rx.pattern] for n, rx in AUX_HELPER_RULES]},
         }
         write_json_stamped(self.tree.launch_json, "capkit.launch/1", self.ident, payload)
         for n, d in self.roles.items():
@@ -324,7 +418,7 @@ class Launch:
         self.generation += 1
         write_json_stamped(self.tree.roles_json, "capkit.roles/1", self.ident,
                            {"generation": self.generation, "procs": self.procs,
-                            "unattributed": self.unattributed})
+                            "unattributed": self.unattributed, "aux_helpers": self.aux_helpers})
 
     # ---- processes ---------------------------------------------------------------------------
     def _role_env(self, d):
@@ -360,6 +454,7 @@ class Launch:
         self.procs.append(entry)
         self.unattributed = [u for u in self.unattributed
                              if not (u["pid"] == pid and u["starttime_ticks"] == st)]
+        self.monitor_children.pop((pid, st), None)  # seen before its role reported it
         self._write_roles()
         return entry
 
@@ -455,9 +550,67 @@ class Launch:
                 return p
         return None
 
+    def _top_roles(self):
+        """{top-level pid: role} of every started role."""
+        return {rt.pid: n for n, rt in self.rt.items() if rt.pid is not None}
+
+    def _is_monitor(self, role):
+        return self.roles[role]["measure_class"] in MONITOR_CLASSES
+
+    def _proc_scan(self):
+        """One pass over /proc: (descendant records with their top-level role, now)."""
+        tops = self._top_roles()
+        recs = procfs.descendant_records(list(tops), self.proc_root)
+        for r in recs:
+            r["role"] = tops[r["root"]]
+        self.n_proc_scans += 1
+        return recs, now_ns()
+
+    def _aux_helper(self, rec, t_ns):
+        """The roles.json aux_helpers entry for rec (adding it on first sight), or None when rec is
+        not a whitelisted helper of a capkit tool role."""
+        k = (rec["pid"], rec["starttime_ticks"])
+        for e in self.aux_helpers:
+            if (e["pid"], e["starttime_ticks"]) == k:
+                return e
+        if self.roles[rec["role"]]["launcher"] != "capkit":
+            return None
+        argv = procfs.cmdline(rec["pid"], self.proc_root)
+        rule = aux_helper_rule(argv)
+        if rule is None:
+            return None
+        e = {"pid": rec["pid"], "ppid": rec["ppid"], "starttime_ticks": rec["starttime_ticks"],
+             "cmdline": argv, "role": rec["role"],
+             "measure_class": self.roles[rec["role"]]["measure_class"],
+             "category": "aux_helper", "rule": rule, "first_seen_mono_ns": t_ns}
+        self.aux_helpers.append(e)
+        self._write_roles()
+        return e
+
+    def _note_monitor_child(self, rec, t_ns, via):
+        """Audit entry for an unregistered descendant of a MONITOR_CLASSES role."""
+        k = (rec["pid"], rec["starttime_ticks"])
+        e = self.monitor_children.get(k)
+        if e is None:
+            exe = procfs.exe_path(rec["pid"], self.proc_root)
+            e = self.monitor_children[k] = {
+                "exe": exe, "is_nvidia_smi": None if exe is None else exe == self.nvsmi_real,
+                "pid": rec["pid"], "ppid": rec["ppid"], "comm": rec["comm"],
+                "starttime_ticks": rec["starttime_ticks"], "role": rec["role"],
+                "measure_class": self.roles[rec["role"]]["measure_class"],
+                "first_seen_mono_ns": t_ns, "last_seen_mono_ns": t_ns, "n_seen": 0,
+                "seen_via": []}
+        e["last_seen_mono_ns"] = t_ns
+        e["n_seen"] += 1
+        if via not in e["seen_via"]:
+            e["seen_via"].append(via)
+
     def _discover(self):
         """Register product children that self-report via probe snapshots; list unregistered
-        descendants (reported only, never given a role: INTERFACES 5.3)."""
+        descendants (reported only, never given a role: INTERFACES 5.3). A snapshot writer below
+        a non-product role is never registered and always listed as unattributed. Other
+        unregistered descendants of MONITOR_CLASSES roles go to the monitor-children audit list
+        instead of unattributed."""
         files = list_snapshot_files(self.shm_dir)
         changed = False
         for pid, path in sorted(files.items()):
@@ -482,20 +635,27 @@ class Launch:
                 worker = 1 + max(p["worker"] for p in self.procs if p["role"] == anc["role"])
                 self._register(pid, anc["role"], worker, snap.meta.get("ppid"),
                                "probe.snapshot", self.rt[anc["role"]].cpus)
-            elif anc is None and not any(u["pid"] == pid and u["starttime_ticks"] == st
-                                         for u in self.unattributed):
+            elif not any(u["pid"] == pid and u["starttime_ticks"] == st
+                         for u in self.unattributed):
                 self.unattributed.append({"pid": pid, "starttime_ticks": st,
                                           "seen_via": "probe.snapshot",
                                           "argv": snap.meta.get("argv"),
-                                          "role_hint": snap.meta.get("role_hint")})
+                                          "role_hint": snap.meta.get("role_hint"),
+                                          "registered_ancestor": None if anc is None else
+                                          {"pid": anc["pid"], "role": anc["role"]}})
                 changed = True
-        tops = [rt.pid for rt in self.rt.values() if rt.pid is not None]
+        recs, t = self._proc_scan()
         known = {(p["pid"], p["starttime_ticks"]) for p in self.procs}
-        for pid in procfs.descendants(tops, self.proc_root):
-            st = procfs.starttime_ticks(pid, self.proc_root)
-            if st is None or (pid, st) in known:
+        for rec in recs:
+            pid, st = rec["pid"], rec["starttime_ticks"]
+            if (pid, st) in known:
                 continue
             if any(u["pid"] == pid and u["starttime_ticks"] == st for u in self.unattributed):
+                continue
+            if self._aux_helper(rec, t) is not None:
+                continue
+            if self._is_monitor(rec["role"]):
+                self._note_monitor_child(rec, t, "housekeeping")
                 continue
             self.unattributed.append({"pid": pid, "starttime_ticks": st,
                                       "seen_via": "proc.children",
@@ -569,16 +729,26 @@ class Launch:
                 pass
         return decl
 
-    def _scan(self):
-        """pid set, threads of every registered live process, NIC counters."""
-        tops = [rt.pid for rt in self.rt.values() if rt.pid is not None]
+    def _scan(self, which):
+        """pid set, threads of every registered live process, NIC counters. `descendants` (the
+        set compared across the window) leaves out the subtrees of MONITOR_CLASSES roles; their
+        unregistered descendants are listed in `monitor_descendants` and the audit list."""
         live = []
         for p in self.procs:
             if procfs.alive(p["pid"], p["starttime_ticks"], self.proc_root):
                 live.append([p["pid"], p["starttime_ticks"]])
-        desc = []
-        for pid in procfs.descendants(tops, self.proc_root):
-            desc.append([pid, procfs.starttime_ticks(pid, self.proc_root)])
+        recs, t = self._proc_scan()
+        known = {(p["pid"], p["starttime_ticks"]) for p in self.procs}
+        desc, mon, aux = [], [], []
+        for rec in recs:
+            if (rec["pid"], rec["starttime_ticks"]) not in known and \
+                    self._aux_helper(rec, t) is not None:
+                aux.append([rec["pid"], rec["starttime_ticks"], rec["role"]])
+            elif not self._is_monitor(rec["role"]):
+                desc.append([rec["pid"], rec["starttime_ticks"]])
+            elif (rec["pid"], rec["starttime_ticks"]) not in known:
+                mon.append([rec["pid"], rec["starttime_ticks"], rec["role"]])
+                self._note_monitor_child(rec, t, which)
         threads = {}
         for p in self.procs:
             if [p["pid"], p["starttime_ticks"]] in live:
@@ -588,12 +758,13 @@ class Launch:
                                           for t in inv]
         return {"t_mono_ns": now_ns(), "registered_live": live,
                 "registered_total": len(self.procs), "descendants": sorted(desc),
+                "monitor_descendants": sorted(mon), "aux_helpers": sorted(aux),
                 "threads": threads, "nic_counters": procfs.nic_counters(self.sys_root)}
 
     def _boundary(self, seq, which, boundary_abs):
         """Start of a window boundary: scan now, queue snapshot copies (first >= boundary)."""
         st = self.tier_state.setdefault(seq, {"scans": {}, "copies": [], "pending": 0})
-        st["scans"][which] = self._scan()
+        st["scans"][which] = self._scan(which)
         t = self.tt.tiers[seq]
         d = os.path.join(self.tree.tier_dir(seq, t.label), "snapshots")
         os.makedirs(d, exist_ok=True)
@@ -654,7 +825,8 @@ class Launch:
                    "abs_window_start_ns": o + t.window_start_ns,
                    "abs_window_end_ns": o + t.window_end_ns, "abs_end_ns": o + t.end_ns,
                    "scans": {k: {kk: v[kk] for kk in ("t_mono_ns", "registered_live",
-                                                      "registered_total", "descendants")}
+                                                      "registered_total", "descendants",
+                                                      "monitor_descendants", "aux_helpers")}
                              for k, v in st["scans"].items()},
                    "pids_stable": stable,
                    "threads": {k: v["threads"] for k, v in st["scans"].items()},
@@ -674,11 +846,24 @@ class Launch:
         polls = gatemod.planned_polls(t.start_ns, deadline_rel, g["poll_ns"])
         self.gate_run = {"seq": seq, "gate": g, "source": src, "deadline_rel_ns": deadline_rel,
                          "planned": polls, "next": 0, "polls": [], "prev_seqs": None,
+                         "last_poll_abs_ns": None,
                          "tracker": gatemod.GateTracker(g),
                          "roles": sorted({term["role"] for r in g["readings"]
                                           for term in r["terms"]})}
         if not polls:
             self._gate_end()
+
+    def _gate_next_abs(self):
+        """When the next poll may run: its planned time, but when the loop is late (several planned
+        polls already due) not sooner than gate_min_gap_ns after the previous poll -- back-to-back
+        polls would see an unchanged seq and reset the settle count. Never later than the gate
+        deadline. Every planned poll is still made and recorded (the judge reconciles them)."""
+        gr = self.gate_run
+        t = self.origin_ns + gr["planned"][gr["next"]]
+        last = gr["last_poll_abs_ns"]
+        if last is not None:
+            t = max(t, min(last + self.gate_min_gap_ns, self.origin_ns + gr["deadline_rel_ns"]))
+        return t
 
     def _gate_poll(self):
         gr = self.gate_run
@@ -690,6 +875,7 @@ class Launch:
             self.shm_dir, procs, self.launch_key, g["max_snapshot_age_ns"],
             prev_seqs=gr["prev_seqs"])
         now = now_ns()
+        gr["last_poll_abs_ns"] = now
         sat, values, details = gatemod.evaluate_gate(g, by_role)
         missing_roles = [r for r in gr["roles"] if not any(p["role"] == r for p in procs)]
         if errors or missing_roles:
@@ -751,11 +937,16 @@ class Launch:
         self.tier_state, self.copy_jobs, self.gate_run = {}, [], None
         state, reason, code = "VALID", "completed all tiers", OK
         stop_reason, after = "completed", len(self.tt.tiers) - 1
-        old = {s: signal.signal(s, self._on_signal) for s in (signal.SIGTERM, signal.SIGINT)}
+        old = {}
         try:
             try:
-                self._startup()
-                self._timeline()
+                try:
+                    for sg in (signal.SIGTERM, signal.SIGINT):
+                        old[sg] = signal.signal(sg, self._on_signal)
+                    self._startup()
+                    self._timeline()
+                finally:
+                    self.cleaning = True  # from here on a stop signal never interrupts cleanup
             except _GateTimeout as e:
                 state, code = "VALID", STOPPED_EARLY
                 reason = "stopped: drain_gate_timeout in tier %d; later tiers not run" % e.seq
@@ -779,6 +970,15 @@ class Launch:
                 signal.signal(s, h)
 
     def _on_signal(self, signum, _frame):
+        """First stop signal: abort the launch (NOT_RUN) and go to cleanup. Any signal during
+        cleanup (stop, verify, finalize) is recorded and only drops the remaining grace periods,
+        so every started process is still stopped and the end files are still written."""
+        self.signals.append({"signum": signum, "t_mono_ns": now_ns(),
+                             "during_cleanup": self.cleaning})
+        if self.cleaning:
+            self.hurry = True
+            return
+        self.cleaning = True
         e = LaunchAbort("NOT_RUN", "orchestrator received signal %d" % signum, STOPPED_EARLY)
         e.stop_reason = "orchestrator_signalled"
         raise e
@@ -789,6 +989,14 @@ class Launch:
         return e
 
     def _startup(self):
+        if not os.path.isdir(self.a.job_env_dir):
+            raise self._abort("NOT_RUN", "--job-env-dir %s is not a directory (job-level env "
+                              "results missing)" % self.a.job_env_dir, STOPPED_EARLY,
+                              "job_env_dir_missing")
+        if self.overlay_bytes is None and self.overlay_needed_by:
+            raise self._abort("NOT_RUN", "overlay manifest %s is missing; roles with a probe tier: "
+                              "%s" % (self.a.overlay_manifest, ", ".join(self.overlay_needed_by)),
+                              STOPPED_EARLY, "overlay_manifest_missing")
         pending = list(self.order)
         while True:
             for n in list(pending):
@@ -806,6 +1014,8 @@ class Launch:
             try:
                 self._check_early_exit(None)
             except LaunchAbort as e:
+                if getattr(e, "stop_reason", None) == "orchestrator_signalled":
+                    raise
                 raise self._abort("NOT_RUN", "before origin: " + e.reason, STOPPED_EARLY,
                                   "not_ready_before_origin")
             if not pending and all(rt.ready for rt in self.rt.values()):
@@ -846,8 +1056,7 @@ class Launch:
                     self._log("tier_end", seq=seq)
                 elif kind == "thread_inventory":
                     self._thread_inventory()
-            gr = self.gate_run
-            if gr is not None and self.origin_ns + gr["planned"][gr["next"]] <= now_ns():
+            if self.gate_run is not None and self._gate_next_abs() <= now_ns():
                 self._gate_poll()
             self._service_copies()
             if now_ns() >= next_hk:
@@ -857,9 +1066,8 @@ class Launch:
             wake = [next_hk]
             if i < len(ev):
                 wake.append(ev[i][0])
-            gr = self.gate_run
-            if gr is not None:
-                wake.append(self.origin_ns + gr["planned"][gr["next"]])
+            if self.gate_run is not None:
+                wake.append(self._gate_next_abs())
             if self.copy_jobs:
                 wake.append(now_ns() + max(self.snap_ns // 8, 1_000_000))
             delay = min(wake) - now_ns()
@@ -897,10 +1105,12 @@ class Launch:
                 except ProcessLookupError:
                     pass
                 limit = time.monotonic() + grace
-                while rt.popen.poll() is None and time.monotonic() < limit:
+                while rt.popen.poll() is None and time.monotonic() < limit and not self.hurry:
                     time.sleep(0.02)
                 if rt.popen.poll() is None:
-                    rt.forced = "SIGKILL to process group after %.1fs" % grace
+                    rt.forced = ("SIGKILL to process group after a stop signal during cleanup"
+                                 if self.hurry else
+                                 "SIGKILL to process group after %.1fs" % grace)
                     try:
                         os.killpg(rt.pid, signal.SIGKILL)
                     except (ProcessLookupError, PermissionError):
@@ -924,6 +1134,8 @@ class Launch:
         before = self._live_ours()
         if before:
             for sig in (signal.SIGTERM, signal.SIGKILL):
+                if sig == signal.SIGTERM and self.hurry:
+                    continue
                 for pid in list(self._live_ours()):
                     try:
                         os.kill(pid, sig)
@@ -1045,13 +1257,20 @@ class Launch:
             "tiers_completed": self.tiers_completed, "gate_outcomes": self.gate_outcomes,
             "exit_codes": {n: rt.returncode for n, rt in self.rt.items()},
             "forced_kills": {n: rt.forced for n, rt in self.rt.items() if rt.forced},
-            "early_exit": self.early_exit, "leftovers": left,
+            "early_exit": self.early_exit, "leftovers": left, "signals": self.signals,
             "argv": {n: rt.argv for n, rt in self.rt.items()},
             "versions_missing": ["%s.w%d.%d" % k for k, v in versions.items() if v is None],
             "events": self.events_log, "ended_mono_ns": now_ns()}
         for seq in sorted(self.tier_state):
             self._maybe_write_tier(seq, force_reason="launch stopped before the boundary "
                                                      "work of this tier completed")
+        write_json_stamped(
+            self.tree.procs("monitor_children.json"), "capkit.monitor_children/1", self.ident,
+            {"monitor_classes": list(MONITOR_CLASSES), "n_proc_scans": self.n_proc_scans,
+             "coverage": "processes caught by a /proc scan (housekeeping or window boundary); "
+                         "a child that lived only between two scans is not listed",
+             "children": sorted(self.monitor_children.values(),
+                                key=lambda e: (e["first_seen_mono_ns"], e["pid"]))})
         write_json_stamped(self.tree.launch_end_json, "capkit.launch_end/1", self.ident, payload)
         write_json_stamped(self.tree.dims_json, "capkit.dims/1", self.ident,
                            self._dims(versions))

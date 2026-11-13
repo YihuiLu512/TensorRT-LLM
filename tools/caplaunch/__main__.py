@@ -38,8 +38,17 @@ def build_parser():
     g.add_argument("--hw-profile-sha", required=True)
     g.add_argument("--param", action="append", default=[], metavar="KEY=VALUE",
                    help="scenario parameter; the set of keys must equal params_required")
-    g.add_argument("--job-env-dir", default=None,
-                   help="optional: job-level env/ directory copied into raw/env/")
+    g.add_argument("--nvidia-smi", required=True,
+                   help="nvidia-smi executable (absolute path); fills the {nvidia_smi} "
+                        "placeholder of scenario arguments (the sidecar's GPU queries)")
+    g.add_argument("--overlay-manifest", required=True,
+                   help="job-level overlay manifest (<snap>/overlay_manifest.json), copied into "
+                        "raw/env/; when it does not exist and a role has a probe tier, the "
+                        "launch stops as NOT_RUN before starting any process")
+    g.add_argument("--job-env-dir", required=True,
+                   help="job-level env/ directory (gate results, gpu_idle.json, ...); its files "
+                        "are copied into raw/env/. Not a directory -> the launch stops as NOT_RUN "
+                        "before starting any process")
     return p
 
 

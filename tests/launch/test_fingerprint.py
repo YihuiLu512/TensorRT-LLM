@@ -6,6 +6,9 @@ The product module openengine_conventions.py is stdlib-only at import time, so i
 from the probe tree (baseline commit) into a throw-away `tensorrt_llm` package; only the
 tokenizer loader is faked. The S-FE argument parser below mirrors fake_openengine.py:1966-1984
 at 2f22a98d6e (same-source risk: the real parser is exercised only in the container smoke).
+
+Needs <C>/probe-tree (the capprobe TRT-LLM worktree, not part of this repository). Without it the
+tests fail rather than skip: a skipped fingerprint test would read as a pass.
 """
 
 import argparse
@@ -41,6 +44,7 @@ def _fake_pkg(tmp):
         os.makedirs(os.path.join(root, d))
         with open(os.path.join(root, d, "__init__.py"), "w") as f:
             f.write("__version__ = 'fake'\n" if d == "tensorrt_llm" else "")
+    assert os.path.isfile(SRC), "needs the probe-tree worktree: %s missing" % SRC
     shutil.copyfile(SRC, os.path.join(root, "tensorrt_llm", "grpc", "openengine_conventions.py"))
     with open(os.path.join(root, "tensorrt_llm", "llmapi", "llm_utils.py"), "w") as f:
         f.write(FAKE_LOADER)

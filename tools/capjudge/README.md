@@ -11,34 +11,38 @@
 | `PYTHONPATH=<C>/tools python3.11 -m capjudge --tree <T> --workdir <W>` | 判一棵启动树（INTERFACES §10.1，只接受这两个参数） |
 | `PYTHONPATH=<C>/tools python3.11 -m capjudge.pilot --inputs <列表> --workdir <W> --out <pilot.json>`，或 `python3.11 <C>/analysis/pilot_build.py …`（同一实现） | 从已判过的亚饱和档构建 E0 的 `pilot.json`（INTERFACES §9.4） |
 | `python3.11 <C>/samples/make_samples.py --out <目录>` | 生成自测样本（合成，`launch.json` 带 `"synthetic": true`） |
-| `python3.11 <C>/samples/run_selftest.py --tools <C>/tools --package capjudge --tmp <已存在的临时目录> --expect-samples 22` | 跑全部样本并逐条断言 |
+| `python3.11 <C>/samples/run_selftest.py --tools <C>/tools --package capjudge --tmp <已存在的临时目录> --expect-samples <样本数>` | 跑全部样本并逐条断言；`--expect-samples` 必填，由调用方给出（当前样本数见 `samples/README.md`） |
 
-退出码按 INTERFACES §10.3：0 / 2 / 10 / 11 / 12 / 13。空目录（没有 `raw/launch.json`）→ 11，不写任何文件。`pilot` 出错 → 3。
+退出码按 INTERFACES §10.3：0 / 1 / 2 / 10 / 11 / 12 / 13。空目录（没有 `raw/launch.json`）→ 11，不写任何文件。`pilot` 出错 → 3。
 
 ## 判定流程（一棵树）
 
-1. 参数核对（`* ? [` → 2）→ `JUDGED.tsv` 已有同一 `(job_id, restart_count, launch_seq, arm)` → 12 → `os.mkdir(<T>/judge)` 已存在 → 12。
-2. 输入核对（`inputs.py`，任一不过 → `judge/inputs.json` 写明哪一项，13）：`launch.json`；`submissions.tsv` 里该作业的 `submitted_at`；`register.json` 与它列出的每个文件、每个标定文件现算 sha、已登记、登记时刻严格早于提交；`launch.json` 的 tier_table/schedule/prompts/scenario 与 `register.json` 一致；`inline_thresholds` 只许 E0；pilot 的 `environment` 与本树一致；时间表头的档位表 sha；`reconcile` 过 `expect.validate_reconcile`；`raw/` 下全部带 `identity` 的文件（json、jsonl 头、capbin 头、快照元数据）前六个字段一致。
+1. 参数核对（`* ? [` → 2）→ `JUDGED.tsv` 已有同一 `(job_id, restart_count, launch_seq, arm)` → 12 → `<T>/judge` 已存在 → 12。这两步不写任何文件。之后新建一个本次尝试的目录 `<T>/judge.attempts/<UTC 时刻>-p<pid>/`，以下输出都先写在这里。
+2. 输入核对（`inputs.py`，任一不过 → 尝试目录里的 `inputs.json` 写明哪一项，13）：`launch.json`；`submissions.tsv` 里该作业的 `submitted_at`；`register.json` 与它列出的每个文件、每个标定文件现算 sha、已登记、登记时刻严格早于提交；`launch.json` 的 tier_table/schedule/prompts/scenario 与 `register.json` 一致；`inline_thresholds` 只许 E0；pilot 的 `environment` 与本树一致；时间表头的档位表 sha；`reconcile` 过 `expect.validate_reconcile`；`raw/` 下全部带 `identity` 的文件（json、jsonl 头、capbin 头、快照元数据）前六个字段一致。
 3. 判定器代码 sha：`CAPKIT_CODE_SHA`（40 位）优先；否则 `git rev-parse HEAD` 且 `git status --porcelain -- tools` 为空。取不到或工作树脏 ⇒ 整次判定 `NOT_RUN`。
 4. 启动级前提：C10、GPU-IDLE、C13（第一半，登记了 C13 时）、PROBE-TIER（有产品角色时）。任一 RED ⇒ 全部被判档 VOID；任一 NOT_RUN ⇒ 全部 NOT_RUN。另：缺 `launch_end.json` 的 `tiers_completed`、档位表没有基线档 ⇒ NOT_RUN。
 5. 逐档（只判 `up` / `down`；`warmup`、`drain` 档 `judged: false`、`verdict: null`）：前提 P = RECORDS、P-PIDS、P-SENT + 适用检查；P 有 RED ⇒ VOID；有 NOT_RUN ⇒ NOT_RUN；否则看 X：矛盾 ⇒ VOID；X 算不出 ⇒ NOT_RUN；X 成立 ⇒ UNSTABLE，否则 STABLE。
-6. 写 `judge/inputs.json`、`verdicts.json`、`checks.tsv`、`judge.log`，追加 `JUDGED.tsv` 一行、`STATE` 一行（`by = capjudge`）。
+6. 在尝试目录写 `inputs.json`、`verdicts.json`、`checks.tsv`、`judge.log`、`attempt.json`（`status = JUDGED`）；再查一次 `JUDGED.tsv`，然后把尝试目录原子改名为 `<T>/judge`（这一步就是「已判」标记；期间别的判定先建了 `judge/` 或台账行 ⇒ 12，本次尝试记 `ALREADY_JUDGED` 留在原处）；最后追加 `JUDGED.tsv` 一行、`STATE` 一行（`by = capjudge`）。
+
+**一棵树只判一次，失败可复查**：只有产出了判定结果的那次运行会建立 `judge/`。输入无效（13）或异常中断（1）时，尝试目录留在 `judge.attempts/` 下（`attempt.json` 记 `status`：`INPUT_INVALID` / `ERROR`（含 traceback），连同 `inputs.json`、`judge.log`），不建 `judge/`、不写台账；输入修好后可以再判，已判过的树再判 ⇒ 12。
 
 **适用检查** = 强制集 `{C3, C10, C11, GPU-IDLE}` ∪ `register.json` 的 `judge.checks`。登记表可以加检查，不能去掉强制集。登记了但属于第二批的（C2、C4、C12）→ 每档 `NOT_RUN`（`NOT_IMPLEMENTED_BATCH2`），所以第一批的登记表不要列它们。另有三项始终跑的前提：`RECORDS`（档目录可读、文件 identity 的档号与所在档一致、capbin `meta.overflow == 0`、每进程恰好两份窗口快照）、`P-PIDS`（`tier.json` 的 `pids_stable`）、`P-SENT`（负载器每 worker 的 `planned` = 时间表推出的条数，否则 RED；`sent ≠ planned` ⇒ NOT_RUN）。
 
 ## 各检查的应检条数与口径
 
+每项状态的优先级 RED > NOT_RUN > PASS：有任何红证据就是 RED（即使应检为 0）；否则应检或已检为 0、或有 NOT_RUN 理由 ⇒ NOT_RUN；都没有才 PASS。
+
 | 检查 | 应检条数来源 | 红 / NOT_RUN |
 |---|---|---|
 | C1 | `measure_class=load_source` 角色的 `workers` 之和（逐 worker 自报） | 四项各与带比：`T1:send_lag_p50_ns`、`T3:send_lag_p99_ns`、`T3:fionread_nonzero_frac`、`T3:loop_lag_p99_ns`；超上界 ⇒ RED；带或值缺 ⇒ NOT_RUN |
-| C3 | 时间表 `meta.per_tier`；已检 = `kind=client` 角色各 worker 的 `ok + failed` | 非过载型失败 > 0 ⇒ RED。第一批只认负载器 `class_hint == overload`（登记超时）为过载型，其余（含 `unclassified`）按非过载型 |
+| C3 | 时间表 `meta.per_tier`；已检 = `kind=client` 角色各 worker 的 `ok + failed` | 非过载型失败 > 0 ⇒ RED；已检 < 应检（有计划请求没有结果）⇒ NOT_RUN。第一批只认负载器 `class_hint == overload`（登记超时）为过载型，其余（含 `unclassified`）按非过载型 |
 | C5 / C6 / C7 | `reconcile` 里该类链的 `scope: tier` 跳数；C7 另加「抽样请求数」= 时间表里本档、`req_id % chunk_sample_mod == 0` 的请求 | 每跳值 ∉ [`expected_hop_count(n − 过载失败)`, `expected_hop_count(n)`] ⇒ RED；C7 抽样请求的块行数 ≠ 每请求帧数 ⇒ RED |
-| C8 | `env/overlay_manifest.json` 的 `sites` 个数 | 某位点的槽在全部窗口快照里都不存在，或窗口增量之和 ≤ 0 ⇒ RED |
+| C8 | 覆盖清单里 `proc_kind` 属于本次启动的位点个数（进程类 = `launch.json` 各角色 `proc_kinds` 的并集；产品角色声明自己运行的 capprobe 进程类） | 适用位点的槽在全部窗口快照里都不存在，或窗口增量之和 ≤ 0 ⇒ RED（直方图槽按各桶计数之和算增量）；其余位点在明细里列为「本拓扑不适用」，不算 PASS 也不算 RED；清单缺失或无位点、没有角色声明 `proc_kinds`（或格式不对）、没有一个适用位点 ⇒ NOT_RUN |
 | C9 | 窗口长 ÷ `sidecar/meta.json` 的 `interval_ns` × 线程清单里的线程数 | 任一行 `cpus_allowed` 越出本角色核或与他角色核相交、`last_cpu` 不在本角色核 ⇒ RED；已检行数 < 应检 ⇒ RED |
 | C10 | 各角色 `expected_procs` 之和 | `versions.check_versions` 不过 ⇒ 整次启动 NOT_RUN（D11） |
 | C11 | `planned_polls(清空档开始, t_pass 或期限, poll_ns)` | 逐次复核快照字段（`gate.check_snapshot`，门涉及角色的**全部**登记进程都必须有可用快照）、读数 = 各项之和、每项 `n_procs` = 该角色登记进程数、规则、`settle_polls`；复核的 passed / t_pass 与记录不符 ⇒ RED；`record_only` 未过 ⇒ RED；`enforce` 未过 ⇒ NOT_RUN；`baseline_band` 规则的复核 ⇒ NOT_RUN（第二批） |
-| C13 | 启动级：`under_test` 角色 `expected_procs` 之和；逐档：`under_test` 角色数 | 线程清单缺、任一线程 `identified_as` 为空、`roles.json` 有 `unattributed`、`tier.json` 窗口始末线程未认出 ⇒ RED；第二半「外来忙碌占比」超带 ⇒ RED；`pilot.json` 无 `d14_softirq` ⇒ 第二半 NOT_RUN |
-| GPU-IDLE | 被判档窗口秒数之和 × `gpu.jsonl` 头的 `gpu_count` | `util_pct > 0` 或 `compute_pids` 非空 ⇒ 整次启动 VOID；阳性对照不过、`gpu_count ≤ 0`、`query_rc ≠ 0`、行数不足 ⇒ NOT_RUN |
+| C13 | 启动级：`under_test` 角色 `expected_procs` 之和；逐档：`under_test` 角色数 | 线程清单缺、任一线程 `identified_as` 为空、`roles.json` 有 `unattributed`（`aux_helpers` 里的辅助进程归属其父角色，只在明细里列出，不算被测进程、不进任何角色的进程集合）、`tier.json` 窗口始末线程未认出 ⇒ RED；第二半「外来忙碌占比」超带 ⇒ RED；`pilot.json` 无 `d14_softirq` ⇒ 第二半 NOT_RUN |
+| GPU-IDLE | 被判档 Σ(窗口长 ÷ `sidecar/meta.json` 的 `gpu_every_ns`) × `gpu.jsonl` 头的 `gpu_count` | `util_pct > 0` 或 `compute_pids` 非空 ⇒ 整次启动 VOID；`gpu_idle.json` 或 `gpu.jsonl` 头的阳性对照不过、`gpu_count ≤ 0`、`gpu_every_ns` 缺失或 ≤ 0 ⇒ NOT_RUN；读不出的行（`query_rc ≠ 0`、`util_pct` 不是数（`[N/A]`）、`compute_pids` 不是列表）不计入已检并记 NOT_RUN；已检行数不足 ⇒ NOT_RUN |
 | PROBE-TIER | `probe_tier` 非空的角色数 | 覆盖清单 `tier`、`launch.json` 的 `probe_tier`、角色声明三者不一致 ⇒ RED |
 
 ## 外部症状 X（设计稿 §2.6）

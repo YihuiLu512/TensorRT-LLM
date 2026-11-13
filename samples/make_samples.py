@@ -23,8 +23,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "..", "tools"))
 
 from capcommon import expect, hist, ledger  # noqa: E402
+from capcommon.clock import wall_iso  # noqa: E402
 from capcommon.capbin import write_capbin  # noqa: E402
-from capcommon.hashing import sha256_file  # noqa: E402
+from capcommon.hashing import sha256_bytes, sha256_file  # noqa: E402
 from capcommon.identity import Identity  # noqa: E402
 from capcommon.jsonio import JsonlWriter, atomic_write_bytes, dumps, write_json_stamped  # noqa
 from capcommon.runtree import RunTree, tree_dir_name  # noqa: E402
@@ -46,6 +47,7 @@ CAPLOAD_PIDS = (1001, 1002)
 NULLSSE_PID = 2001
 SPIN_TID = 2003
 CLK = 100
+GPU_EVERY_NS = 2 * S  # sidecar --gpu-every-s 2: GPU-IDLE must read the period from meta.json
 STATUS = {"timeout_registered": 1, "conn_refused": 2}
 GATE = {"mode": "enforce", "rule": "abs_max",
         "readings": [
@@ -167,8 +169,15 @@ ROLES = [
      "loop": "asyncio", "probe_tier": None, "kind": "client"},
     {"role": "nullsse", "module": "capload.nullsse", "args": [], "cpus": [4], "workers": 1,
      "expected_procs": 1, "measure_class": "under_test", "asyncio": True, "uses_grpc": False,
-     "loop": "asyncio", "probe_tier": "P2", "kind": "server"},
+     "loop": "asyncio", "probe_tier": "P2", "kind": "server", "proc_kinds": ["frontend"]},
 ]
+# capload's multiprocessing.resource_tracker: caplaunch attributes it to capload as an aux helper
+# (roles.json aux_helpers, tier.json scans), never as a process of the role nor unattributed.
+AUX_HELPER = {"pid": 1003, "ppid": 1001, "starttime_ticks": 6003,
+              "cmdline": ["python", "-c", "from multiprocessing.resource_tracker import main;"
+                          "main(9)"], "role": "capload", "measure_class": "load_source",
+              "category": "aux_helper", "rule": "mp_resource_tracker",
+              "first_seen_mono_ns": ORIGIN - 3 * S}
 RECONCILE = {"schema": "capkit.reconcile/1", "chains": [
     {"name": "requests", "kind": "requests", "gate": None, "include_usage": None,
      "hops": [{"role": "capload", "source": "summary.counts.ok", "scope": "tier"},
@@ -215,7 +224,8 @@ class Builder:
             "schema": "capkit.prompts/1", "source": {"tokenizer": "none", "note": "synthetic"},
             "sets": {"tok8": {"kind": "token_ids", "items": [[1, 2, 3, 4, 5, 6, 7, 8]]}}})
         sn_rel = "register/scenario.json"
-        self.scenario = {"schema": "capkit.scenario/1", "synthetic": True, "roles": ROLES,
+        self.scenario = {"schema": "capkit.scenario/1", "synthetic": True,
+                         "roles": [{k: v for k, v in r.items() if k != "cpus"} for r in ROLES],
                          "tier_table": tt_rel, "schedule": sc_rel, "prompts": pr_rel,
                          "probe_tier": "P2", "stop_order": ["capload", "nullsse"],
                          "reconcile": RECONCILE}
@@ -322,7 +332,8 @@ class Builder:
                  for pid, (role, k) in sorted(self.pid_role().items())]
         self.procs = procs
         write_json_stamped(self.T.roles_json, "capkit.roles/1", L,
-                           {"generation": 1, "procs": procs, "unattributed": []})
+                           {"generation": 1, "procs": procs, "unattributed": [],
+                            "aux_helpers": [AUX_HELPER]})
         self.build_env(L)
         self.build_inventory()
         write_json_stamped(self.T.launch_end_json, "capkit.launch_end/1", L, {
@@ -337,15 +348,43 @@ class Builder:
             "siblings_left_idle": [], "roles": {"capload": {"cpus": [2, 3], "numa_node": 0},
                                                 "nullsse": {"cpus": [4], "numa_node": 0}},
             "unassigned": []})
+        # the key set capjobs.envfiles gpu-idle writes (capenv.gpu.check_visible + gpu_count,
+        # passed, outcome); the judge reads positive_control_ok
+        smi = "/usr/bin/nvidia-smi"
+        q1 = [smi, "--query-gpu=index,uuid,pci.bus_id,name,memory.total,memory.used,"
+              "utilization.gpu,driver_version", "--format=csv,noheader,nounits"]
+        q2 = [smi, "--query-compute-apps=gpu_bus_id,pid,used_memory",
+              "--format=csv,noheader,nounits"]
+        out1 = "0, GPU-synthetic, 00000000:1B:00.0, synthetic, 183359, 0, 0, 0\n"
         write_json_stamped(self.T.env("gpu_idle.json"), "capkit.gpu_idle/1",
-                           self.ident("gate"), {"positive_control_ok": True, "gpu_count": 1})
+                           self.ident("jobs"), {
+            "status": "PASS", "reasons": [], "expected_gpus": 1, "nvidia_smi": smi,
+            "visible_gpus": 1,
+            "gpus": [{"index": 0, "uuid": "GPU-synthetic", "bus_id": "0000:1B:00.0",
+                      "name": "synthetic", "mem_total_mib": 183359, "mem_used_mib": 0,
+                      "util_pct": 0, "driver": "0"}],
+            "compute_apps": [],
+            "queries": [{"cmd": q1, "rc": 0, "reason": None, "stderr": "", "stdout": out1,
+                         "stdout_sha256": sha256_bytes(out1.encode())},
+                        {"cmd": q2, "rc": 0, "reason": None, "stderr": "", "stdout": "",
+                         "stdout_sha256": sha256_bytes(b"")}],
+            "count_check": {"status": "PASS", "why": "visible 1, requested 1"},
+            "positive_control": {"status": "PASS", "why": "listed 1 GPU(s)"},
+            "apps_check": {"status": "PASS", "why": "0 compute process(es)"},
+            "positive_control_ok": True, "gpu_count": 1, "passed": True, "outcome": "PASS"})
         write_plain(self.T.env("overlay_manifest.json"), {
             "schema": "capkit.overlay/1", "tier": "P1" if self.opts.get("probe_mismatch")
             else "P2", "image_commit": "synthetic", "base_commit": "2f22a98d6e",
-            "target_commit": "synthetic", "groups": ["count"], "files": [],
-            "capkit_packages": [], "capkit_code_sha": CODE_SHA, "non_python_changed": [],
+            "target_commit": "synthetic", "image_is_ancestor_of_target": True,
+            "groups": ["count"], "files": [], "capkit_packages": [], "capkit_code_sha": CODE_SHA,
+            "non_python_changed": [], "unshipped_allowed": [],
             "sites": {"F2": {"group": "count", "proc_kind": "frontend", "file": "synthetic",
-                             "line": 1, "slots": ["count.F2.msgs"]}}})
+                             "lines": [1], "slots": ["count.F2.msgs"]},
+                      # no worker process in this topology: C8 lists it as not applicable
+                      "W1": {"group": "count", "proc_kind": "worker", "file": "synthetic",
+                             "lines": [1], "slots": ["count.W1.synthetic"]}},
+            "sites_selection": "all_sites_of_open_groups", "patchcheck": None,
+            "created_wall": "synthetic"})
         for pid, (role, k) in self.pid_role().items():
             rec = {"python": "3.12.3 synthetic", "implementation": "cpython",
                    "executable": "/usr/bin/python3", "pid": pid, "grpc": None,
@@ -357,7 +396,9 @@ class Builder:
                 rec.update(probe_tier="P2", probe_patch_sha="f" * 40, probe_groups=["count"])
                 if self.opts.get("c10"):
                     rec["capkit_code_sha"] = None
-            write_plain(self.T.env("versions", "%s.w%d.%d.json" % (role, k, pid)), rec)
+            write_json_stamped(self.T.env("versions", "%s.w%d.%d.json" % (role, k, pid)),
+                               "capkit.version_record/1", self.ident(role, k, pid),
+                               {"versions": rec, "source": "ready_file"})
 
     def build_inventory(self):
         for pid, ths in self.threads_of().items():
@@ -394,9 +435,20 @@ class Builder:
         return encode_snapshot(reg, seq, ORIGIN + t_rel, mb)
 
     def threads_at(self):
-        return {str(pid): [{"tid": tid, "comm": comm, "py_name": None, "identified_as": ia}
+        return {str(pid): [{"tid": tid, "comm": comm, "py_name": None, "class": "python",
+                            "identified_as": ia, "cpus_allowed": str(self.cpu_of(pid))}
                            for tid, comm, ia, _r in ths]
                 for pid, ths in self.threads_of().items()}
+
+    def scan(self, at):
+        """caplaunch's window-boundary scan (tier.json `scans`): registered live processes and
+        their descendants as [pid, starttime_ticks]: none under test; capload (a monitor-class
+        role) has one aux helper, listed apart."""
+        live = [[pid, 5000 + pid] for pid in sorted(self.pid_role())]
+        return {"t_mono_ns": ORIGIN + at, "registered_live": live,
+                "registered_total": len(live), "descendants": [], "monitor_descendants": [],
+                "aux_helpers": [[AUX_HELPER["pid"], AUX_HELPER["starttime_ticks"],
+                                 AUX_HELPER["role"]]]}
 
     def build_tiers(self):
         for t in self.tt.tiers:
@@ -416,20 +468,25 @@ class Builder:
                         p = os.path.join(d, "snapshots", "%s.%d.%s.bin" % (role, pid, edge))
                         os.makedirs(os.path.dirname(p), exist_ok=True)
                         atomic_write_bytes(p, b)
-                        copies.append({"pid": pid, "edge": edge, "t_mono_ns": ORIGIN + ts,
-                                       "offset_ns": 30 * MS})
+                        copies.append({"pid": pid, "role": role, "which": edge,
+                                       "seq": ts // (100 * MS) + 1, "t_mono_ns": ORIGIN + ts,
+                                       "offset_from_boundary_ns": 30 * MS,
+                                       "file": os.path.basename(p)})
             else:
                 write_json_stamped(os.path.join(d, "drain_gate.json"), "capkit.drain_gate/1",
                                    L, self.gate_record(t))
-            pids = sorted(self.pid_role())
+            nic = {"lo": {"rx_bytes": 0, "tx_bytes": 0}}
             write_json_stamped(os.path.join(d, "tier.json"), "capkit.tier/1", L, {
                 "tier": self.tt.doc["tiers"][t.seq], "abs_start_ns": ORIGIN + t.start_ns,
                 "abs_window_start_ns": ORIGIN + t.window_start_ns,
                 "abs_window_end_ns": ORIGIN + t.window_end_ns, "abs_end_ns": ORIGIN + t.end_ns,
-                "pids_window_start": pids, "pids_window_end": pids, "pids_stable": True,
+                "scans": {"wstart": self.scan(t.window_start_ns),
+                          "wend": self.scan(t.window_end_ns)},
+                "pids_stable": True,
                 "threads": {"wstart": self.threads_at(), "wend": self.threads_at()},
-                "nic_counters": {"unreadable": "synthetic sample"},
-                "snapshot_copies": copies})
+                "nic_counters": {"wstart": nic, "wend": nic},
+                "snapshot_copies": sorted(copies, key=lambda c: (c["which"], c["pid"])),
+                "thread_rules_sha": "0" * 64, "incomplete": None})
 
     def write_records(self, t):
         reqs = [r for r in self.sim.reqs if r["tier"] == t.seq]
@@ -525,7 +582,7 @@ class Builder:
             "tier_table_sha256": self.tt.sha256,
             "counts": {"requests": n, "frames_sent": frames, "bytes_sent": 100 * frames,
                        "accepts": len(served), "idle_closed": 0},
-            "failures": [], "inject": [], "overflow": {"streams": 0}, "stop": None})
+            "inject": [], "overflow": {"streams": 0}, "stop": None})
 
     def gate_record(self, t):
         g = GATE
@@ -567,11 +624,22 @@ class Builder:
 
     # ---- sidecar ---------------------------------------------------------------------------
     def build_sidecar(self):
-        write_plain(self.T.sidecar("meta.json"), {"schema": "capkit.sidecar.meta/1",
-                                                  "clk_tck": CLK, "interval_ns": 1000 * MS,
-                                                  "unreadable": {}})
         times = [k * S for k in range(-1, 22)]
+        gpu_times = [k * GPU_EVERY_NS for k in range(-1, 22 * S // GPU_EVERY_NS)]
         sc = self.T.sidecar
+        pc = {"ok": True, "gpu_count": 1, "rc": 0, "reason": None,
+              "cmd": ["nvidia-smi", "--query-gpu=index", "--format=csv,noheader"]}
+        rows = {"threads": len(times) * sum(len(v) for v in self.threads_of().values()),
+                "cpus": len(times) * 3, "procs": 0, "snapshots": len(times) * 3,
+                "gpu": len(gpu_times), "logs": 0, "tids": 0}
+        write_json_stamped(sc("meta.json"), "capkit.sidecar.meta/1", self.ident("sidecar"), {
+            "clk_tck": CLK, "page_kb": 4, "interval_ns": 1000 * MS, "origin_ns": ORIGIN,
+            "cpus_watch": [2, 3, 4], "gpu_every_ns": GPU_EVERY_NS, "numa_every_ns": 0,
+            "gpu_positive_control": pc, "logs_dir": "synthetic", "shm_dir": "synthetic",
+            "roles_file": "synthetic", "freq_source": "synthetic", "unreadable": {},
+            "stats": {}, "pids_gone": [], "unregistered_snapshot_pids": [],
+            "roles_generations": [], "roles_errors": [], "rows": rows, "own_cpu_ns": 0,
+            "started_wall": "synthetic", "final": True, "stop": None})
         th_cols = ["t_rel_ns", "pid", "tid", "comm", "utime_ticks", "stime_ticks",
                    "run_delay_ns", "voluntary_ctxt", "nonvoluntary_ctxt", "last_cpu",
                    "cpus_allowed"]
@@ -601,14 +669,18 @@ class Builder:
         with JsonlWriter(sc("gpu.jsonl"), "capkit.sidecar.gpu/1", self.ident("sidecar"),
                          ["t_rel_ns", "gpu_index", "util_pct", "mem_used_mib", "compute_pids",
                           "query_rc"]) as w:
-            w._f.seek(0)  # rewrite the header with gpu_count (INTERFACES 5.6)
+            # rewrite the header with capenv.sidecar's extra keys (INTERFACES 5.6)
+            w._f.seek(0)
             w._f.truncate()
             w._f.write(json.dumps({"_header": True, "schema": "capkit.sidecar.gpu/1",
                                    "identity": self.ident("sidecar").to_dict(),
                                    "columns": w.columns, "gpu_count": 1,
-                                   "written_wall": "synthetic"}, sort_keys=True) + "\n")
-            for t in times:
+                                   "positive_control_ok": True,
+                                   "written_wall": wall_iso()}, sort_keys=True) + "\n")
+            for t in gpu_times:
                 util = 5 if (self.opts.get("gpu_busy") and t == 6 * S) else 0
+                if self.opts.get("gpu_unreadable") and t == 14 * S:
+                    util = None  # nvidia-smi printed [N/A]
                 w.write_row([t, 0, util, 0, [], 0])
         with JsonlWriter(sc("snapshots.jsonl"), "capkit.sidecar.snapshots/1",
                          self.ident("sidecar"), ["t_rel_ns", "pid", "seq", "snap_t_rel_ns",
@@ -661,6 +733,9 @@ SAMPLES = {
     "gpu_busy": ({"gpu_busy": True}, {"exit_code": 10, "tier_verdicts": {"2": "VOID",
                                                                          "4": "VOID"},
                                       "red_checks": ["GPU-IDLE"]}),
+    "gpu_util_unreadable": ({"gpu_unreadable": True}, {
+        "exit_code": 11, "tier_verdicts": {"2": "NOT_RUN", "4": "NOT_RUN"}, "red_checks": [],
+        "not_run_checks": ["GPU-IDLE"]}),
     "p_sent_short": ({"p_sent": True}, {"exit_code": 11, "tier_verdicts": {"2": "STABLE",
                                                                            "4": "NOT_RUN"},
                                         "red_checks": [], "not_run_checks": ["P-SENT"]}),

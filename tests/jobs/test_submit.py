@@ -7,13 +7,15 @@ import os
 import subprocess
 
 import pytest
-from conftest import CODE_ROOT, DATA, SAVED_CDB
+from conftest import CODE_ROOT, DATA, SAVED_CDB, external_input
 
 from capcommon import ledger
 from capcommon.hashing import sha256_bytes, sha256_file
 from capjobs import snapshot, submit
 
 HEAD = "c" * 40
+REG_ENV = {"gpus": 1, "idle_window_s": 30, "idle_busy_max_frac": 0.02, "slurm_view_wait_s": 300,
+           "chassis_source": "slurm_view"}
 BASIS = "2026-11-13 18:00 user approved E0 smoke (DECISIONS 1, item 7) -> submit E0 job"
 PARTS = ("b200@cr+mp-1000W/umbriel-b200@ts4/8gpu-224cpu-2048gb,"
          "b200@500-1000W/umbriel-b200@ts4/8gpu-224cpu-2048gb")
@@ -26,12 +28,11 @@ class Env:
         os.makedirs(self.w)
         with open(os.path.join(self.w, "STATUS.md"), "w") as f:
             f.write("# STATUS\n\n- earlier line\n%s\n" % BASIS)
-        self.reg_sha = sha256_bytes(b"register")
-        ledger.registry_append(os.path.join(self.w, "REGISTRY.tsv"), "E0",
-                               "02_e0/E0/register/register.json", self.reg_sha, "kind=register;")
+        self.reg_sha = self.register("register.json", REG_ENV)
         self.image = os.path.join(self.root, "img.sqsh")
         with open(self.image, "wb") as f:
             f.write(b"x" * 1000)
+        self.image_sha = sha256_file(self.image)
         self.tok = os.path.join(self.root, "tok")
         os.makedirs(self.tok)
         with open(os.path.join(self.tok, "tokenizer.json"), "w") as f:
@@ -49,11 +50,31 @@ class Env:
         self.manifest_path = self.write_json("overlay_manifest.json", self.manifest)
         self.plan = {"schema": "capkit.launch_plan/1", "experiment": "E0",
                      "register_sha": self.reg_sha, "job_arm": "job", "margin_s": 60,
+                     "kill_grace_s": 60,
                      "launches": [{"launch_seq": i, "arm": arm, "budget_s": 600,
                                    "argv": ["{PY}", "-m", "caplaunch", "--scenario",
-                                            "{SNAP}/configs/e0.json"]}
+                                            "{SNAP}/configs/e0/e0a-nullsse.scenario.json",
+                                            "--kill-after-s", "2"]}
                                   for i, arm in enumerate(["nullsse-a", "sfe-a"])]}
         self.plan_path = self.write_json("plan.json", self.plan)
+
+    def register(self, name, environment, experiment="E0"):
+        """A real register.json under <W> with an "environment" section, entered in REGISTRY."""
+        rel = "02_e0/E0/register/" + name
+        doc = {"schema": "capkit.register/1", "experiment": experiment, "arms": ["nullsse-a"]}
+        if environment is not None:
+            doc["environment"] = environment
+        p = os.path.join(self.w, rel)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "w") as f:
+            json.dump(doc, f)
+        sha = sha256_file(p)
+        ledger.registry_append(os.path.join(self.w, "REGISTRY.tsv"), experiment, rel, sha,
+                               "kind=register;")
+        return sha
+
+    def plan_for(self, name, reg_sha):
+        return self.write_json(name, dict(self.plan, register_sha=reg_sha))
 
     def write_json(self, name, doc):
         p = os.path.join(self.root, name)
@@ -69,16 +90,16 @@ class Env:
              "--register-sha": self.reg_sha, "--arms": "nullsse-a,sfe-a", "--launches": "2",
              "--basis": BASIS, "--launch-plan": self.plan_path,
              "--overlay-manifest": self.manifest_path, "--image": self.image,
-             "--image-sha256": "d" * 64, "--image-size": "1000",
+             "--image-sha256": self.image_sha, "--image-size": "1000",
              "--mount": "%s:%s" % (self.root, self.root), "--tokenizer-dir": self.tok,
              "--snapshot-root": os.path.join(self.w, "snapshots"),
              "--run-root": os.path.join(self.w, "runs"),
              "--local-base": os.path.join(self.root, "local"),
              "--shm-base": os.path.join(self.root, "shm"), "--min-local-free-bytes": "1000",
              "--srun-mpi": "none", "--container-python": "python3",
-             "--nvidia-smi": "nvidia-smi", "--gate-module": "capenv.gate",
+             "--nvidia-smi": "/usr/bin/nvidia-smi", "--gate-module": "capenv.gate",
              "--registered-hw-sha": "e" * 64, "--no-comparable": None,
-             "--slurm-view-wait-s": "300"}
+             "--include": ["configs"]}
         a.update(over)
         argv = ["submit"]
         for k, v in a.items():
@@ -134,6 +155,7 @@ def test_submit_end_to_end(env, stub_runner, capsys):
     assert [x["event"] for x in rows] == ["PLANNED", "SUBMITTED"]
     planned = rows[0]
     assert planned["basis"] == BASIS and planned["gpus"] == "1" and planned["exclude"] == "none"
+    assert planned["reason"] == "purpose=measurement"
     assert json.loads(planned["assertions_json"])["basis_present"] is True
     assert planned["tokenizer_dir_sha256"] != "none"
     cur = ledger.submission_for_job(os.path.join(env.w, "submissions.tsv"), "5601234")
@@ -153,6 +175,17 @@ def test_submit_end_to_end(env, stub_runner, capsys):
                          '"$CAPJOBS_SNAP" "$CAPJOBS_MOUNTS" "$CAPJOBS_TIME_LIMIT_S"', "x", snap],
                         capture_output=True, text=True, check=True)
     assert sh.stdout == "%s|%s:%s|3600" % (snap, env.root, env.root)
+    # K1/K6/K23: the job's hard limits come from register.json "environment"; the image sha256
+    # is the one computed here, and the job re-checks size and mtime_ns only.
+    sh = subprocess.run(["bash", "-c", 'source "$1/job.env"; printf "%s|%s|%s|%s|%s|%s|%s" '
+                         '"$CAPJOBS_MAX_ALLOC_GPUS" "$CAPJOBS_IDLE_WINDOW_S" '
+                         '"$CAPJOBS_IDLE_BUSY_MAX_FRAC" "$CAPJOBS_SLURM_VIEW_WAIT_S" '
+                         '"$CAPJOBS_CHASSIS_SOURCE" "$CAPJOBS_IMAGE_SHA256" '
+                         '"$CAPJOBS_IMAGE_MTIME_NS"', "x", snap],
+                        capture_output=True, text=True, check=True)
+    assert sh.stdout.split("|") == ["1", "30", "0.02", "300", "slurm_view", env.image_sha,
+                                    str(os.stat(env.image).st_mtime_ns)]
+    assert out["time_budget"]["total_s"] == 2 * (600 + 60 + 60) + 30 + 300
 
 
 def test_submit_failure_records_ended(env, stub_runner):
@@ -163,10 +196,98 @@ def test_submit_failure_records_ended(env, stub_runner):
     assert rows[1]["status"] == "SUBMIT_FAILED" and "submission failed" in rows[1]["reason"]
 
 
-def test_submit_unparsable_output(env, stub_runner):
-    r = stub_runner({"sbatch": (0, "Submitted batch job 12\n", "")})
+@pytest.mark.parametrize("answer", [(0, "Submitted batch job 12\n", ""),
+                                    (None, "", "TimeoutExpired: ssh timed out"),
+                                    (255, "", "ssh: connection reset")])
+def test_submit_outcome_unknown_is_not_ended(env, stub_runner, answer):
+    """K16: sbatch may have queued the job; the plan stays open as UNKNOWN_SUBMIT (no ENDED row,
+    no resubmission) until reconcile-submit closes it from evidence."""
+    r = stub_runner({"sbatch": answer})
     assert run(env.submit_args(), r) == 4
-    assert env.ledger_rows()[-1]["status"] == "SUBMIT_FAILED"
+    assert len(r.calls) == 1  # never retried
+    rows = env.ledger_rows()
+    assert [x["event"] for x in rows] == ["PLANNED", "NOTE"]
+    assert rows[1]["status"] == "UNKNOWN_SUBMIT" and rows[1]["submitted_at"]
+    assert rows[1]["reason"].startswith("purpose=measurement; ")
+
+
+def _unknown_plan(env, stub_runner):
+    assert run(env.submit_args(), stub_runner({"sbatch": (None, "", "timeout")})) == 4
+    rows = env.ledger_rows()
+    return rows[0]["plan_id"], rows[0]["snapshot_dir"]
+
+
+def test_reconcile_submit_by_scontrol_then_record_end(env, stub_runner, capsys):
+    plan_id, snap = _unknown_plan(env, stub_runner)
+    end = ["record-end", "--workdir", env.w, "--plan-id", plan_id, "--login-host", "fe",
+           "--ssh-timeout-s", "60", "--status", "VALID", "--reason", "judged"]
+    done = stub_runner({"squeue": (0, "", ""), "sacct": (0, "88|COMPLETED|0:0\n", "")})
+    assert run(end, done) == 3 and "reconcile-submit" in capsys.readouterr().err
+    rec = ["reconcile-submit", "--workdir", env.w, "--plan-id", plan_id, "--login-host", "fe",
+           "--ssh-timeout-s", "60", "--reason", "squeue showed job 88"]
+    other = stub_runner({"scontrol": (0, "JobId=88 Command=/elsewhere/capkit_job.sbatch\n", "")})
+    assert run(rec + ["--job-id", "88"], other) == 3  # evidence names another script
+    mine = stub_runner({"scontrol": (0, "JobId=88 JobName=x\n   Command=%s/jobs/capkit_job.sbatch"
+                                        "\n" % snap, "")})
+    assert run(rec + ["--job-id", "88"], mine) == 0
+    rows = env.ledger_rows()
+    assert rows[-1]["event"] == "SUBMITTED" and rows[-1]["job_id"] == "88"
+    assert rows[-1]["submitted_at"] == rows[1]["submitted_at"]  # the sbatch attempt time
+    assert run(rec + ["--job-id", "88"], mine) == 3  # no longer UNKNOWN_SUBMIT
+    cur = ledger.submissions_current(os.path.join(env.w, "submissions.tsv"))[plan_id]
+    assert cur["event"] == "SUBMITTED" and cur["status"] == ""
+    assert run(end, done) == 0
+    assert env.ledger_rows()[-1]["status"] == "VALID"
+
+
+def test_reconcile_submit_by_batch_tsv_and_not_submitted(env, stub_runner):
+    plan_id, _snap = _unknown_plan(env, stub_runner)
+    rec = ["reconcile-submit", "--workdir", env.w, "--plan-id", plan_id, "--login-host", "fe",
+           "--ssh-timeout-s", "60", "--reason", "checked"]
+    jd = os.path.join(env.w, "runs", "J91-r0")
+    os.makedirs(jd)
+    with open(os.path.join(jd, "batch.tsv"), "w") as f:
+        f.write("plan_id\t%s\njob_id\t91\n" % plan_id)
+    gone = stub_runner({"scontrol": (1, "", "Invalid job id specified"), "squeue": (0, "", "")})
+    assert run(rec + ["--not-submitted"], gone) == 3  # a batch.tsv names the plan
+    assert run(rec + ["--job-id", "91"], gone) == 0
+    assert env.ledger_rows()[-1]["job_id"] == "91"
+
+
+def test_reconcile_not_submitted(env, stub_runner):
+    plan_id, snap = _unknown_plan(env, stub_runner)
+    rec = ["reconcile-submit", "--workdir", env.w, "--plan-id", plan_id, "--login-host", "fe",
+           "--ssh-timeout-s", "60", "--reason", "checked squeue and sacct", "--not-submitted"]
+    assert run(rec, stub_runner({"squeue": (0, "5 %s/jobs/capkit_job.sbatch\n" % snap, "")})) == 3
+    assert run(rec, stub_runner({"squeue": (None, "", "timeout")})) == 3
+    assert run(rec, stub_runner({"squeue": (0, "5 /other/capkit_job.sbatch\n", "")})) == 0
+    last = env.ledger_rows()[-1]
+    assert last["event"] == "ENDED" and last["status"] == "SUBMIT_FAILED"
+
+
+def test_unregistered_hw_profile_is_submittable(env, stub_runner):
+    r = stub_runner({"sbatch": (0, "31\n", "")})
+    assert run(env.submit_args(**{"--registered-hw-sha": "UNREGISTERED"}), r) == 0
+    rows = env.ledger_rows()
+    snap = rows[0]["snapshot_dir"]
+    assert "CAPJOBS_REGISTERED_HW_SHA=UNREGISTERED" in open(os.path.join(snap, "job.env")).read()
+    # a profile-capture job ends ENV_INVALID by design: its rows say so
+    assert rows[0]["reason"] == "purpose=hw_profile_capture"
+    done = stub_runner({"squeue": (0, "", ""), "sacct": (0, "31|FAILED|6:0\n", "")})
+    assert run(["record-end", "--workdir", env.w, "--plan-id", rows[0]["plan_id"],
+                "--login-host", "fe", "--ssh-timeout-s", "60", "--status", "ENV_INVALID",
+                "--reason", "gate: hardware profile unregistered"], done) == 0
+    cur = ledger.submissions_current(os.path.join(env.w, "submissions.tsv"))[rows[0]["plan_id"]]
+    assert cur["status"] == "ENV_INVALID" and cur["reason"].startswith(
+        "purpose=hw_profile_capture; ")
+
+
+def test_zero_gpus_warns(env, stub_runner, capsys):
+    reg0 = env.register("gpu0.json", dict(REG_ENV, gpus=0))
+    r = stub_runner({"sbatch": (0, "32\n", "")})
+    assert run(env.submit_args(**{"--gpus": "0", "--register-sha": reg0,
+                                  "--launch-plan": env.plan_for("p0.json", reg0)}), r) == 0
+    assert "GPU-IDLE check will be NOT_RUN" in capsys.readouterr().err
 
 
 def _forbidden_cases(env):
@@ -190,6 +311,12 @@ def _forbidden_cases(env):
         return {"--experiment": e, "--launch-plan": env.write_json(
             "plan-%s.json" % e, dict(env.plan, experiment=e))}
     unknown_reg = "f" * 64
+    no_env = env.register("no-env.json", None)
+    env_extra = env.register("env-extra.json", dict(REG_ENV, cpu=1))
+    env_frac = env.register("env-frac.json", dict(REG_ENV, idle_busy_max_frac=0))
+    env_chassis = env.register("env-chassis.json", dict(REG_ENV, chassis_source="guess"))
+    lib_link = os.path.join(env.root, "lib-link")
+    os.symlink("/home/scratch.trt_llm_data_ci/llm-models", lib_link)
     return {
         "experiment_E10": exp("E10"),
         "experiment_E10_proxy": exp("E10-proxy"),
@@ -226,6 +353,22 @@ def _forbidden_cases(env):
         "gate_module": {"--gate-module": "capenv.gate; rm"},
         "relative_path_chars": {"--run-root": env.root + "/runs dir"},
         "exclude_bad": {"--exclude": "a b"},
+        "mount_symlink_to_lib": {"--mount": [mount, "%s:/data:ro" % lib_link]},
+        "register_no_environment": {"--register-sha": no_env,
+                                    "--launch-plan": env.plan_for("pn.json", no_env)},
+        "register_env_extra_key": {"--register-sha": env_extra,
+                                   "--launch-plan": env.plan_for("pe.json", env_extra)},
+        "register_env_bad_frac": {"--register-sha": env_frac,
+                                  "--launch-plan": env.plan_for("pf.json", env_frac)},
+        "register_env_bad_chassis": {"--register-sha": env_chassis,
+                                     "--launch-plan": env.plan_for("pc.json", env_chassis)},
+        "gpus_vs_register": {"--gpus": "0"},
+        "image_sha_wrong": {"--image-sha256": "d" * 64},
+        "hw_sha_format": {"--registered-hw-sha": "abc"},
+        "nvidia_smi_from_path": {"--nvidia-smi": "nvidia-smi"},
+        "kill_grace_below_worst_stop": {"--launch-plan": env.write_json(
+            "pk.json", dict(env.plan, kill_grace_s=51))},
+        "scenario_not_in_snapshot": {"--include": False},
     }
 
 
@@ -238,6 +381,13 @@ EXPECTED_REASON = {
     "tokenizer_symlink": "symlink", "basis_missing_line": "whole line",
     "basis_partial_line": "whole line", "basis_empty": "non-empty line",
     "register_unknown": "REGISTRY.tsv", "overlay_sha_mismatch": "differs from the overlay",
+    "mount_symlink_to_lib": "model library", "register_no_environment": "'environment'",
+    "register_env_extra_key": "'environment'", "register_env_bad_frac": "idle_busy_max_frac",
+    "register_env_bad_chassis": "chassis_source", "gpus_vs_register": "environment.gpus",
+    "image_sha_wrong": "!= --image-sha256", "hw_sha_format": "UNREGISTERED",
+    "nvidia_smi_from_path": "--nvidia-smi must be an absolute path",
+    "kill_grace_below_worst_stop": "worst-case orchestrator stop 52.0",
+    "scenario_not_in_snapshot": "not in the job snapshot",
 }
 
 
@@ -278,7 +428,7 @@ def test_missing_required_args(env):
 
 def test_exclude_subcommand_and_file(env, stub_runner, capsys):
     out = os.path.join(env.root, "exclude.json")
-    assert run(["exclude", "--cdb-file", SAVED_CDB, "--main-profile-spec",
+    assert run(["exclude", "--cdb-file", external_input(SAVED_CDB), "--main-profile-spec",
                 os.path.join(DATA, "g0_main_profile.json"), "--partition", PARTS,
                 "--out", out]) == 0
     doc = json.load(open(out))
@@ -376,3 +526,23 @@ def test_prep_tokenizer_is_draft_only(env, stub_runner, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["draft"] is True and not any(x.startswith("--gres") for x in out["remote_argv"])
     assert run([x if x != "0" else "1" for x in base] + ["--dry-run"], r) == 3
+
+
+def test_exclude_live_raw_text(env, stub_runner, capsys):
+    """K26: cdb output without a final newline keeps the exit marker on its own line; an ssh
+    failure is recorded as such (not 'exit: None') and refused."""
+    with open(external_input(SAVED_CDB)) as f:
+        csv_text = "".join(ln for ln in f if not ln.startswith("#")).rstrip("\n")
+    base = ["exclude", "--live", "--cdb-query", "q", "--login-host", "fe", "--ssh-timeout-s",
+            "60", "--main-profile-spec", os.path.join(DATA, "g0_main_profile.json"),
+            "--partition", PARTS]
+    raw, out = os.path.join(env.root, "raw1.txt"), os.path.join(env.root, "ex1.json")
+    assert run(base + ["--raw-out", raw, "--out", out],
+               stub_runner({"cdb": (0, csv_text, "")})) == 0
+    lines = open(raw).read().splitlines()
+    assert lines[-1] == "# exit: 0" and not lines[-2].endswith("# exit: 0")
+    assert len(json.load(open(out))["exclude"]) == 12
+    raw2 = os.path.join(env.root, "raw2.txt")
+    assert run(base + ["--raw-out", raw2, "--out", os.path.join(env.root, "ex2.json")],
+               stub_runner({"cdb": (None, "", "timeout")})) == 3
+    assert open(raw2).read().splitlines()[-1].startswith("# exit: none (ssh")

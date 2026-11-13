@@ -3,7 +3,9 @@
 INTERFACES §10.4、设计稿 §2.7 末段的三类样本 + 两个可满足性样本。**全部是合成样本**（每个 `launch.json`、`register.json`、`pilot.json` 都带 `"synthetic": true`）；按计划 P8，第一个 E0 作业采到真实样本后，以真实良品替换 `good` 作参照并重跑自测。
 
 - 生成：`python3.11 make_samples.py --out <目录>`（目录下不得已有同名样本；`--only <名字>` 只建一个）。数据来自一次确定性模拟（固定随机种子）；`written_mono_ns`、`written_wall` 等时间戳每次不同，其余内容不变。
-- 运行：`python3.11 run_selftest.py --tools <C>/tools --package <capjudge|judge> --tmp <已存在的临时目录> --expect-samples 22`。每个样本先整份拷到临时目录再判（判定器只判一次，不放宽任何输入核对）；良品另做：再判一次 → 12、树拷到别处 → 12（JUDGED.tsv）、`--tree` 带通配符 → 2、不存在 → 2、按 `sabotage.json` 改一处（先断言目标文件确实变了）→ 期望 C5 红。
+- 运行：`python3.11 run_selftest.py --tools <C>/tools --package <capjudge|judge> --tmp <已存在的临时目录> --expect-samples 23`（`--expect-samples` 必填，等于下表行数）。每个样本先整份拷到临时目录再判（判定器只判一次，不放宽任何输入核对）；期望 13 的样本另断言没有 `judge/`、`judge.attempts/` 下恰有一条 `INPUT_INVALID` 记录，且再判仍是 13；良品另做：`judge/attempt.json` 为 `JUDGED`、再判一次 → 12 且不新增尝试记录、树拷到别处 → 12（JUDGED.tsv）、`--tree` 带通配符 → 2、不存在 → 2、按 `sabotage.json` 改一处（先断言目标文件确实变了）→ 期望 C5 红。
+- 文件形状按真实写方（caplaunch 的 `tier.json`、`raw/env/versions/*.json`，sidecar 的 `meta.json`、`gpu.jsonl` 头，capjobs.envfiles 的 `gpu_idle.json`，capprobe.overlay 的覆盖清单），并与集成时本地端到端产出的启动树逐文件比对过；sidecar 的 GPU 采样周期取 2 s（`meta.json` 的 `gpu_every_ns`），GPU-IDLE 的应检行数要按它算。
+- 所有样本共有：nullsse（被测、P2）声明 `proc_kinds: ["frontend"]`；覆盖清单除 F2（frontend）外还列一个 `W1`（`proc_kind: worker`），本拓扑没有 worker 进程，C8 把它列为「不适用」；capload 有一个 `multiprocessing.resource_tracker` 辅助进程，按 caplaunch 的写法记在 `roles.json` 的 `aux_helpers` 与 `tier.json` 的 `scans.*.aux_helpers`，判定器不把它当被测进程。
 - 每个样本 = 一个最小工作目录 W：`REGISTRY.tsv`、`submissions.tsv`（`local-sample-*` 作业，PLANNED + SUBMITTED 两行）、空的 `JUDGED.tsv`、`register/`（档位表、时间表、prompt 池、场景、pilot、登记表，全部已登记且登记早于提交）、`runs/<树>/`、`expect.json`。
 
 | 样本 | 改了什么 | 期望 |
@@ -20,7 +22,8 @@ INTERFACES §10.4、设计稿 §2.7 末段的三类样本 + 两个可满足性�
 | `c11_stale_gate` | 清空门通过的那次轮询用了陈旧快照 | 10；档 4 VOID（C11） |
 | `c13_unknown_thread` | 线程清单里有未认出的线程 | 10；全部 VOID（C13，连带 C9） |
 | `c13_foreign_busy` | 被测核上有 0.3 核不属于任何登记线程 | 10（C13 第二半） |
-| `gpu_busy` | 一秒 GPU 利用率 5% | 10；整次启动 VOID（GPU-IDLE） |
+| `gpu_busy` | 一次 GPU 采样利用率 5% | 10；整次启动 VOID（GPU-IDLE） |
+| `gpu_util_unreadable` | 档 4 窗口内一次 GPU 采样利用率读不出（`[N/A]` → null） | 11；GPU-IDLE NOT_RUN，档 2、4 NOT_RUN |
 | `p_sent_short` | worker 1 档 4 实发少 1 | 11；档 4 NOT_RUN |
 | `records_overflow` | 档 4 chunks 的 `meta.overflow = 3` | 10（RECORDS） |
 | `probe_tier_mismatch` | 覆盖清单写 P1、登记 P2 | 10（PROBE-TIER） |

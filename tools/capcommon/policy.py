@@ -41,7 +41,7 @@ def _norm(p):
     return os.path.normpath(p).rstrip("/") or "/"
 
 
-def _related(a, b):
+def paths_related(a, b):
     """True if a == b, a is under b, or a is an ancestor of b (a mount of '/home' exposes b)."""
     a, b = _norm(a), _norm(b)
     if a == b:
@@ -64,17 +64,22 @@ def mount_paths(mount):
 
 
 def check_mounts(mounts):
-    """Raise PolicyError if any mount equals, is under, or is an ancestor of a model library."""
+    """Raise PolicyError if any mount equals, is under, or is an ancestor of a model library.
+
+    Both the literal path and its realpath are compared, against both the literal and the
+    realpath of each library, so a symlink into (or out of) a model library cannot hide it."""
     if not isinstance(mounts, list):
         raise PolicyError("mounts must be a list")
     bad = []
+    libs = sorted({x for f in FORBIDDEN_MOUNT_PATHS for x in (f, os.path.realpath(f))})
     for m in mounts:
         for p in mount_paths(m):
             if not p.startswith("/"):
                 raise PolicyError("mount path must be absolute: %r" % p)
-            for f in FORBIDDEN_MOUNT_PATHS:
-                if _related(p, f):
-                    bad.append((p, f))
+            for q in sorted({p, os.path.realpath(p)}):
+                for f in libs:
+                    if paths_related(q, f):
+                        bad.append((p, q, f))
     if bad:
         raise PolicyError("mounts expose a model library: %s" % bad)
 

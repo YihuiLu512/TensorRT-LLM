@@ -4,6 +4,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -60,13 +61,14 @@ def tier_doc(gate_cfg, load_ms=600, drain_ms=800, rates=(20.0, 40.0, 20.0)):
 
 def role(name, launcher, kind, cpus_needed=1, workers=1, expected=1, mclass="stub_out_of_domain",
          asyncio=True, loop="asyncio", probe_tier=None, readiness=None, backlog=(),
-         snapshots="all", args=(), env=None, start_after=(), **extra):
+         snapshots="all", args=(), env=None, start_after=(), proc_kinds=(), **extra):
     r = {"role": name, "launcher": launcher, "kind": kind, "start_after": list(start_after),
          "pin_role": name, "cpus_needed": cpus_needed, "numa": None, "workers": workers,
          "expected_procs": expected, "measure_class": mclass, "asyncio": asyncio,
          "uses_grpc": False, "loop": loop if asyncio else None, "probe_tier": probe_tier,
          "readiness": readiness or [{"kind": "capkit_ready"}], "backlog_slots": list(backlog),
-         "snapshots": snapshots, "args": list(args), "env": env or {}}
+         "snapshots": snapshots, "args": list(args), "env": env or {},
+         "proc_kinds": list(proc_kinds)}
     r.update(extra)
     return r
 
@@ -93,7 +95,7 @@ def default_roles(server_args=(), client_args=(), product_args=(), with_observer
         rs.append(role("sidecar", "capkit", "aux", asyncio=False, mclass="observer",
                        module="capenv.sidecar", snapshots="none", start_after=["capload"],
                        args=["--interval-ms", "50", "--gpu-every-s", "1", "--numa-every-s",
-                             "1"]))
+                             "1", "--nvidia-smi", "{nvidia_smi}"]))
         rs.append(role("canary", "capkit", "aux", asyncio=False, mclass="observer",
                        module="capenv.canary", snapshots="none",
                        args=["--interval-ms", "50"]))
@@ -152,31 +154,56 @@ def make_workdir(tmp, tdoc, roles, stop_order=None, params_required=(), reconcil
            "siblings_left_idle": [], "roles": pick_cpus(roles), "unassigned": []}
     with open(os.path.join(W, "pin_table.json"), "w") as f:
         json.dump(pin, f)
-    return {"W": W, "register": os.path.join(W, "reg", "register.json"),
+    nvsmi = os.path.join(W, "fake-nvidia-smi")  # a copy of sleep(1): a short-lived query child
+    shutil.copy2(shutil.which("sleep"), nvsmi)
+    overlay = os.path.join(W, "overlay_manifest.json")  # job-level file (<snap>/ in a job)
+    with open(overlay, "w") as f:
+        json.dump({"schema": "capkit.overlay/1", "tier": "P0", "groups": [], "files": [],
+                   "capkit_packages": [], "capkit_code_sha": ZERO_SHA, "sites": {}}, f)
+    jobenv = os.path.join(W, "jobenv")  # job-level env/ (gate results) of a real job
+    os.makedirs(jobenv)
+    with open(os.path.join(jobenv, "gpu_idle.json"), "w") as f:
+        json.dump({"schema": "test.gpu_idle/0"}, f)
+    return {"W": W, "register": os.path.join(W, "reg", "register.json"), "overlay": overlay,
+            "job_env_dir": jobenv,
+            "nvidia_smi": nvsmi,
             "register_sha": sha256_file(os.path.join(W, "reg", "register.json")),
             "scenario": os.path.join(W, "reg", "scenario.json"),
             "pin": os.path.join(W, "pin_table.json")}
 
 
-def launch_argv(wd, run_dir, shm_root, lead_ms=4000, params=(), launch_seq=0):
+def launch_argv(wd, run_dir, shm_root, lead_ms=4000, params=(), launch_seq=0, snap_ms=40,
+                overlay=None, job_env_dir=None):
     a = [sys.executable, "-m", "caplaunch",
          "--experiment", "E0", "--arm", "arm-a", "--launch-seq", str(launch_seq),
          "--job-id", "local-t", "--restart-count", "0", "--register-sha", wd["register_sha"],
          "--role", "launch", "--run-dir", run_dir, "--workdir", wd["W"],
          "--register", wd["register"], "--scenario", wd["scenario"], "--pin-table", wd["pin"],
-         "--shm-dir", shm_root, "--snapshot-interval-ms", "40", "--origin-lead-ms",
+         "--shm-dir", shm_root, "--snapshot-interval-ms", str(snap_ms), "--origin-lead-ms",
          str(lead_ms), "--housekeeping-ms", "40", "--kill-after-s", "2",
          "--capkit-sha", ZERO_SHA, "--probe-tree-sha", "none", "--baseline-sha", ZERO_SHA,
          "--snapshot-dir", "none", "--image-path", "none", "--image-sha256", "none",
-         "--hw-profile-sha", "none"]
+         "--hw-profile-sha", "none", "--overlay-manifest", overlay or wd["overlay"],
+         "--nvidia-smi", wd["nvidia_smi"], "--job-env-dir", job_env_dir or wd["job_env_dir"]]
     for p in params:
         a += ["--param", p]
     return a
 
 
-def run_launch(argv, timeout=120):
+def _env():
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(PATHS)
     env.pop("CAPPROBE_TIER", None)
     env.pop("CAPPROBE_GROUPS", None)
-    return subprocess.run(argv, env=env, capture_output=True, text=True, timeout=timeout)
+    return env
+
+
+def run_launch(argv, timeout=120):
+    return subprocess.run(argv, env=_env(), capture_output=True, text=True, timeout=timeout)
+
+
+def start_launch(argv, out_dir):
+    """Popen of a launch (for tests that signal or stop the orchestrator); output to files."""
+    return subprocess.Popen(argv, env=_env(), stdout=open(os.path.join(out_dir, "launch.out"),
+                                                          "w"),
+                            stderr=open(os.path.join(out_dir, "launch.err"), "w"))

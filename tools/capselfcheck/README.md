@@ -4,7 +4,7 @@
 
 ## 行为
 
-服务任意方法路径（原始字节），对每个下游调用用同一方法、同一请求字节调上游（`--upstream HOST:PORT` 或 `--upstream-port-file`，一条 channel，原点之前连通，否则退出码 4）。每条上游消息在**读上游的任务里**（事件循环上）依次：计 `backlog.read` → 经过位点 `relay.msg`（已知的额外工作）→ 放进本流的队列；处理器从队列取出交给下游（`backlog.yielded`）。所以中继是瓶颈时积压出现在中继的上游（上游 `yielded` − 中继 `read`），中继内部队列 `backlog.queue_msgs` 只在下游读得慢时增长。上游非 OK 状态原样转给下游（计 `streams_failed`）。
+服务任意方法路径（原始字节），对每个下游调用用同一方法、同一请求字节调上游（`--upstream HOST:PORT` 或 `--upstream-port-file`，一条 channel，原点之前连通，否则退出码 4）。每条上游消息在**读上游的任务里**（事件循环上）依次：计 `backlog.read` → 经过位点 `relay.msg`（已知的额外工作）→ 放进本流的队列；处理器从队列取出交给下游（`backlog.yielded`）。所以中继是瓶颈时积压出现在中继的上游（上游 `yielded` − 中继 `read`），中继内部队列 `backlog.queue_msgs` 只在下游读得慢时增长。上游非 OK 状态原样转给下游（计 `streams_failed`）。中继自己出错（建上游调用或读上游时抛出非 gRPC 异常）同样只计一次 `streams_failed`，下游收到 `UNKNOWN`。
 
 ## 四种已知答案模式（都用注入表达，§11）
 
@@ -21,4 +21,4 @@
 
 ## 输出（每档）
 
-`summary.json`：`counts`（`streams_*`、`msgs_received`、`msgs_forwarded`、`bytes_forwarded`、`requests_without_capkit_header`，按请求头里的计划档；没有 capkit 头的请求按事件档）、`event_time`（`read`、`yielded`、`service_ns`、`hold_ns`）、`upstream_failures`、`inject`、`loop_lag_ns`、`cpu`（`process_ns` 与 `loop_thread_ns`：场景 3 时两者之差就是辅助线程的忙等）、`overflow`；`lag`（可选）。只在收到信号时退出，退出码 0。
+`summary.json`：`counts`（`streams_*`、`msgs_received`、`msgs_forwarded`、`bytes_forwarded`、`requests_without_capkit_header`，按请求头里的计划档；没有 capkit 头的请求按事件档）、`event_time`（`read`、`yielded`、`service_ns`、`hold_ns`）、`upstream_failures`（按计划档，各档只含本档的数）、`inject`、`loop_lag_ns`、`cpu`（`process_ns` 与 `loop_thread_ns`：场景 3 时两者之差就是辅助线程的忙等）、`overflow`；`lag`（可选）。只在收到信号时退出，退出码 0。

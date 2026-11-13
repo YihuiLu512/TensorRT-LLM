@@ -222,17 +222,20 @@ def tree_checks(cfg, tree):
     with open(hp) as f:
         doc = json.load(f)
     rs = doc.get("results", [])
+    want = cfg.get("httpprobe_requests")
+    if not isinstance(want, int) or isinstance(want, bool) or want < 1:
+        out.append(item("tree.empty_delta", "NOT_RUN",
+                        reason="config httpprobe_requests (expected request count) not given"))
+        return out
     bad = [r.get("name") for r in rs if r.get("error") or r.get("status") != 200
            or not r.get("done_seen")
            or r["ssecounter"]["frames"] != r["n_frames_excl_done"]]  # both exclude [DONE]
     summary = [{k: r.get(k) for k in ("name", "endpoint", "status", "n_frames_excl_done",
                                       "n_empty_text_frames", "crlf_seen", "done_seen")}
                for r in rs]
-    st = "NOT_RUN" if not rs else ("FAIL" if bad else "PASS")
-    out.append(item("tree.empty_delta", st, expected_requests=cfg.get("httpprobe_requests"),
-                    seen_requests=len(rs), bad=bad, results=summary))
-    if rs and cfg.get("httpprobe_requests") not in (None, len(rs)):
-        out[-1]["status"] = "FAIL"
+    st = "FAIL" if bad or len(rs) != want else "PASS"
+    out.append(item("tree.empty_delta", st, expected_requests=want, seen_requests=len(rs),
+                    bad=bad, results=summary))
     return out
 
 

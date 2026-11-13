@@ -5,6 +5,7 @@ meta.json once and records each roles.json generation it sees, until SIGTERM."""
 import argparse
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -26,14 +27,21 @@ def main():
     p.add_argument("--gpu-every-s", type=float, required=True)
     p.add_argument("--numa-every-s", type=float, required=True)
     p.add_argument("--ready-file", required=True)
+    p.add_argument("--nvidia-smi", required=True)
+    p.add_argument("--churn-every-ms", type=int, default=0,
+                   help="test only: run --nvidia-smi this often (the real sidecar's GPU query)")
     a = p.parse_args()
     stop = StopController()
     with open(os.path.join(a.out_dir, "meta.json"), "w") as f:
         json.dump({"fake": True, "cpus_watch": a.cpus_watch}, f)
     write_ready_file(a.ready_file, common_from_args(a).identity,
                      version_record(include_grpc=False))
-    seen = []
+    seen, kids, next_kid = [], [], time.monotonic()
     while not stop.requested:
+        if a.churn_every_ms and time.monotonic() >= next_kid:
+            kids = [k for k in kids if k.poll() is None]
+            kids.append(subprocess.Popen([a.nvidia_smi, "0.2"]))
+            next_kid = time.monotonic() + a.churn_every_ms / 1000
         try:
             with open(a.roles_file) as f:
                 g = json.load(f)["generation"]
@@ -41,7 +49,9 @@ def main():
                 seen.append(g)
         except (OSError, ValueError, KeyError):
             pass
-        time.sleep(a.interval_ms / 1000)
+        time.sleep(min(a.interval_ms, a.churn_every_ms or a.interval_ms) / 1000)
+    for k in kids:
+        k.wait()
     with open(os.path.join(a.out_dir, "generations.json"), "w") as f:
         json.dump(seen, f)
     return 0

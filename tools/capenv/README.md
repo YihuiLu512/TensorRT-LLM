@@ -13,35 +13,39 @@
 
 身份参数（`--experiment --arm --launch-seq --job-id --restart-count --register-sha --role`，见 INTERFACES §2.1）每个入口都必需，写进输出文件的 `identity`。退出码沿用 INTERFACES §2.4：0 通过、2 用法、3 配置、6 `ENV_INVALID`（检查结果是 RED 或 NOT_RUN）。
 
-### `python -m capenv.gate`（INTERFACES §11 的参数全部支持）
+### `python -m capenv.gate`（INTERFACES §11 的参数全部支持，另加下列必填参数）
 
 ```
 python -m capenv.gate <身份> --run-dir <作业目录> --phase {pre,post}
-    --registered-hw-sha SHA (--comparable-file PATH | --no-comparable)
+    --registered-hw-sha {SHA|UNREGISTERED} (--comparable-file PATH | --no-comparable)
     --slurm-view-file PATH --slurm-view-wait-s S
-    [--max-alloc-gpus N] [--idle-window-s S --idle-busy-max-frac F]
+    --max-alloc-gpus N --nvidia-smi PATH
+    --idle-window-s S --idle-busy-max-frac F        # --phase pre 必填，post 不用
     [--hw-profile PATH] [--roles-file PATH] [--timeout-s S]
 ```
+
+- 必填参数缺了：argparse 退出码 2；`--phase pre` 缺第 6 项的两个参数、`--max-alloc-gpus < 0`、`--idle-window-s <= 0`、`--idle-busy-max-frac` 不在 [0, 1]、`--registered-hw-sha` 既不是 64 位小写十六进制也不是 `UNREGISTERED`：退出码 3。这些值由调用方从登记处显式传入，门禁不设缺省。
+- `--registered-hw-sha UNREGISTERED`：该型号还没有登记画像时的第一个作业。门禁照常跑第 1～6 项、读画像，`hw_gate.json` 记 `status: NOT_RUN`、`node_hw_sha`（供登记），判定恒为 `ENV_INVALID`、退出码恒为 6（给了 `--comparable-file` 也一样），作业在门禁后停止。
 
 - 标准输出打印**一行** JSON 判定：`{"verdict":"PASS"|"ENV_INVALID","reasons":[…],"items":{"1":"PASS",…},"files":{…sha256…},"phase":…}`；同一份写进 `env/gate.<phase>.json`（`capkit.env_gate/1`）。
 - `pre`：RESOURCES §3 第 1～6 项 → `env/exclusivity.json`；`hw_gate.json`；`memguard.json`（本进程 + `--roles-file` 里的 pid）。`post`：第 1～5 项 → `env/exclusivity.post.json`。
 - **任何一项不是 PASS（RED 或 NOT_RUN）门禁就是 `ENV_INVALID`**：查不了的项不算通过。
 - 第 1～3 项先在容器里跑 `scontrol` / `squeue`；命令不存在或返回非 0 时等 `--slurm-view-file` 出现（最多 `--slurm-view-wait-s` 秒），用它的原文判同样的条件，`source` 写 `slurm_view`。
-- 各项判据：1 `JobId` 等于本作业、`OverSubscribe=NO`、TRES 里的 GPU 数 ≤ `--max-alloc-gpus`（不给这个参数时只记录 GPU 数，详情里写「not requested」）；2 `NodeName` 对、`CPUAlloc == CPUTot`；3 退出码 0、列出本作业（阳性对照，列不出 ⇒ NOT_RUN）、没有别的作业；4 `/proc/self/status` 的 `Cpus_allowed_list` 覆盖全部在线核（掩码里多出的离线 possible 核不算问题，本 VM 上就是 `0-95` 对在线 `0-23`）；5 `nvidia-smi` 先列出 ≥1 张卡（否则 NOT_RUN），再查无计算进程；6 空转 `--idle-window-s` 秒、每个在线核的忙碌比例（user+nice+system+irq+softirq+steal ÷ 全部 tick）≤ `--idle-busy-max-frac`。**不给第 6 项的两个参数时第 6 项 NOT_RUN ⇒ 门禁 ENV_INVALID**（窗口与阈值「待 E0 试点」，由登记表给出）。
+- 各项判据：1 `JobId` 等于本作业、`OverSubscribe=NO`、TRES 里的 GPU 数 ≤ `--max-alloc-gpus`（输出里没有 `TRES`/`AllocTRES` 记红：分配读不到不等于 0 张）；2 `NodeName` 对、`CPUAlloc == CPUTot`；3 退出码 0、列出本作业（阳性对照，列不出 ⇒ NOT_RUN）、没有别的作业；4 `/proc/self/status` 的 `Cpus_allowed_list` 覆盖全部在线核（掩码里多出的离线 possible 核不算问题，本 VM 上就是 `0-95` 对在线 `0-23`）；5 用 `--nvidia-smi` 指定的可执行文件、经 `capenv.gpu.check_visible` 判「可见数 == `--max-alloc-gpus`」且无计算进程：请求 ≥1 张时先要列出 ≥1 张（阳性对照，否则 NOT_RUN），张数不等记红；请求 0 张时要求 nvidia-smi 报告没有卡（查询成功且为空，或输出 `No devices were found`），看见卡记红、查不了记 NOT_RUN，阳性对照与计算进程检查需要一张卡，记 NOT_RUN 并写明原因；6 空转 `--idle-window-s` 秒、每个在线核的忙碌比例（user+nice+system+irq+softirq+steal ÷ 全部 tick）≤ `--idle-busy-max-frac`。**不给第 6 项的两个参数时第 6 项 NOT_RUN ⇒ 门禁 ENV_INVALID**（窗口与阈值「待 E0 试点」，由登记表给出）。
 - `hw_gate.json`：本节点画像 sha 等于 `--registered-hw-sha` 即过；不等时只有 `--comparable-file` 里登记了全部差异字段才过。可比登记文件格式（本组件定义，INTERFACES 未定义）：`{"schema":"capkit.hw_comparable/1","registered_profile":{…主型号画像，恰好 §5.5.3 的键…},"comparable_fields":["kernel",…],"evidence":{…}}`；门禁先核对 `profile_sha256(registered_profile) == --registered-hw-sha`。
 
 ### `python -m capenv.hwprofile`
 
 ```
 python -m capenv.hwprofile <身份> --out env/hw_profile.json --raw-out env/hw_raw.json
-    --local-dir <节点本地运行目录> --chassis-source {slurm_view,dmi}
+    --local-dir <节点本地运行目录> --chassis-source {slurm_view,dmi} --nvidia-smi PATH
     [--slurm-view-file PATH] [--image-sha256 HEX64] [--code-baseline SHA40]
     [--container-runtime TEXT] [--timeout-s S]
 ```
 
 - `hw_profile.json`（`capkit.hw_profile/1`）的载荷：`profile`（**恰好** `capcommon.hwprofile` 的 IDENTITY_FIELDS + OBSERVED_FIELDS）、`profile_sha256`、`sha_fields`、`raw_file_sha256`、`unreadable_identity_fields`。读：`capenv.hwprofile.load_profile(path)`（会重算 sha 核对）。
 - **进 sha 的字段**（identity）：`chassis_model cpu_arch cpu_model sockets cores_per_socket threads_per_core microcode numa_layout cpu_governor mem_total_gib mem_per_numa_gib gpu_model gpu_count gpu_mem_mib gpu_driver nics local_disk_type kernel container_runtime image_sha256 code_baseline`。**不进 sha**（observed）：`node_name partition collected_at collected_mono_ns cpu_freq_khz mem_available_kib local_disk_free_bytes nic_link sources`。读不到写 `{"unreadable": 原因}`，identity 键的这个标记也进 sha（原因文字也在内）。
-- 取法：lscpu（`LC_ALL=C`）、`/proc/cpuinfo` 的 microcode、`/sys/devices/system/node`、cpufreq、`/proc/meminfo`、`nvidia-smi --query-gpu`、`/sys/class/net/*`（只有带 `device` 链接的才算物理网卡；型号写 PCI `vendor:device`，速率读不到写 unreadable）、mountinfo + `/sys/dev/block` 定本地盘类型。`chassis_model` 的来源由 `--chassis-source` 显式指定：`slurm_view`（`scontrol show node` 原文里的 `SystemProductName`，与 capcommon 文档一致）或 `dmi`（`/sys/class/dmi/id/product_name`）。同一研究里必须始终用同一个来源，否则 sha 会因来源不同而不同。
+- 取法：lscpu（`LC_ALL=C`）、`/proc/cpuinfo` 的 microcode、`/sys/devices/system/node`、cpufreq、`/proc/meminfo`、`--nvidia-smi` 指定的 `nvidia-smi --query-gpu`（`memory.total` 读不到时 `gpu_mem_mib` 记 unreadable）、`/sys/class/net/*`（只有带 `device` 链接的才算物理网卡；型号写 PCI `vendor:device`，速率读不到写 unreadable）、mountinfo + `/sys/dev/block` 定本地盘类型。`chassis_model` 的来源由 `--chassis-source` 显式指定：`slurm_view`（`scontrol show node` 原文里的 `SystemProductName`，与 capcommon 文档一致）或 `dmi`（`/sys/class/dmi/id/product_name`）。同一研究里必须始终用同一个来源，否则 sha 会因来源不同而不同。
 - `hw_raw.json`（`capkit.hw_raw/1`）放没有画像键的原始证据：`lscpu`、`lscpu -e`、`lscpu -p`、`numactl -H`、`free -b`、`lsblk`、`df` 原文与退出码，`iommu_groups_count`、DMI 产品名、超线程兄弟表（topology.summary）、uname。
 
 ### `python -m capenv.pins`
@@ -65,7 +69,13 @@ python -m capenv.pins verify <身份> --pin-table PATH --roles-file PATH --out e
 
 ### `python -m capenv.gpu check`
 
-`<身份> --out env/gpu_idle.json --samples N --every-s S --timeout-s S` → `capkit.gpu_idle/1`：`positive_control_ok`（`nvidia-smi --query-gpu` 返回 0 且列出 ≥1 张卡）、`gpu_count`、逐次采样（每卡 `util_pct mem_used_mib compute_pids`）、`verdict`：阳性对照不过或任一次采样失败 ⇒ NOT_RUN；任一读数利用率 > 0 或有计算进程 ⇒ RED。INTERFACES §5.5 把 `gpu_idle.json` 记在 B6 名下；本模块是给 B6 的作业脚本调用的实现。sidecar 的 `gpu.jsonl` 用同一组函数。
+`<身份> --out PATH --samples N --every-s S --timeout-s S --expect-gpus N --nvidia-smi PATH` → `capkit.gpu_idle_check/1`（作业流程不调用它；作业的 `env/gpu_idle.json` 由 `capjobs.envfiles gpu-idle` 写，schema `capkit.gpu_idle/1`，形状不同）：`visible`（`check_visible` 的结果）、`positive_control_ok`、`gpu_count`、逐次采样（每卡 `util_pct mem_used_mib compute_pids`）、`verdict`：可见数与请求数不等、任一读数利用率 > 0 或有计算进程 ⇒ RED；阳性对照不过、任一次采样失败、任一利用率读不到（`[N/A]` → null）⇒ NOT_RUN；请求 0 张且看不见卡 ⇒ PASS、不采样。pid 读不到的计算进程照样算计算进程（`compute_pids` 里记 null）。
+
+**`capenv.gpu` 是 capkit 里 nvidia-smi 查询的唯一实现**：门禁、画像、sidecar 与 `capjobs.envfiles` 都调它。函数签名（`nvsmi` 缺省 `"nvidia-smi"` 只给单元测试用，生产调用方一律显式传；传 `None`/空串 ⇒ 不执行，记录 `reason: "nvidia-smi path not given"`）：
+
+- `query_gpus(timeout_s, runner=runcmd.run, nvsmi=…) -> (record, [gpu])`、`query_apps(timeout_s, runner, nvsmi=…) -> (record, [app])`、`positive_control(timeout_s, runner, nvsmi=…) -> (ok, count, record)`、`sample(timeout_s, runner, nvsmi=…) -> (rc, rows)`；
+- `check_visible(expect_gpus, timeout_s, runner=runcmd.run, nvsmi=…) -> dict`：`status`（PASS/RED/NOT_RUN）、`reasons`、`expected_gpus`、`visible_gpus`（读不到为 null）、`gpus`、`compute_apps`（没查为 null）、`positive_control_ok`、`count_check`/`positive_control`/`apps_check`（各 `{status, why}`）、`queries`（每次查询的 `cmd rc stdout stdout_sha256 stderr reason`）；`expect_gpus` 不是 ≥0 的 int 抛 `ConfigError`；
+- `idle_check(samples, every_s, timeout_s, expect_gpus, runner, sleep, nvsmi=…) -> dict`（上面 CLI 的载荷）。
 
 ### `python -m capenv.loopback`（D14）
 
@@ -94,8 +104,10 @@ python -m capenv.sidecar <身份> --run-dir <T> --cpus <sidecar 的核> --stop-g
     --shm-dir <本次启动的快照目录> --origin-ns N --roles-file <T>/raw/procs/roles.json
     --interval-ms 1000 --out-dir <T>/raw/sidecar --cpus-watch {all,LIST}
     --gpu-every-s S --numa-every-s S --logs-dir <T>/raw/logs
-    [--ready-file PATH] [--pin-table PATH] [--gpu-timeout-s S]
+    [--ready-file PATH] [--pin-table PATH] [--gpu-timeout-s S] [--nvidia-smi PATH]
 ```
+
+- `--nvidia-smi`：GPU 查询用的可执行文件（INTERFACES §11 之外的可选参数）。`--gpu-every-s > 0` 而不给它时不执行任何 nvidia-smi：`gpu.jsonl` 头 `positive_control_ok: false`、每行 `query_rc ≠ 0`，GPU-IDLE 因而 NOT_RUN（不会退回 PATH 里的同名命令）。利用率 `[N/A]` 的行记 null，计数写进 `meta.stats.gpu_util_unreadable_rows` 与 `meta.unreadable.gpu_util`。
 
 - `--gpu-every-s 0` / `--numa-every-s 0` 关掉对应文件（关掉 GPU 后 GPU-IDLE 只能 NOT_RUN）。
 - `--pin-table`：给了就核对 `--cpus-watch` ⊇ 表里全部角色的核，不覆盖以退出码 3 退出（INTERFACES §5.6 写的是编排器核对，这里多一道）。

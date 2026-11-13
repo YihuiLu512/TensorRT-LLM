@@ -41,7 +41,7 @@
   "job_id": "local-sample-c10-versions",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "384933b4ea618f07c423b1f98e220d311421c3100e4e5e5473414c1abcf6703e",
+  "register_sha": "be46e6c7b803ee059787205a2ee58007b70efd5dff877f1ea4974c726a6a16e9",
   "restart_count": 0,
   "role": "launch",
   "tier_label": "drain-03",
@@ -88,7 +88,7 @@
       0,
       "local-sample-c10-versions",
       0,
-      "384933b4ea618f07c423b1f98e220d311421c3100e4e5e5473414c1abcf6703e"
+      "be46e6c7b803ee059787205a2ee58007b70efd5dff877f1ea4974c726a6a16e9"
      ],
      "pid": 1001,
      "seq": 180,
@@ -102,7 +102,7 @@
       0,
       "local-sample-c10-versions",
       0,
-      "384933b4ea618f07c423b1f98e220d311421c3100e4e5e5473414c1abcf6703e"
+      "be46e6c7b803ee059787205a2ee58007b70efd5dff877f1ea4974c726a6a16e9"
      ],
      "pid": 1002,
      "seq": 180,
@@ -116,7 +116,7 @@
       0,
       "local-sample-c10-versions",
       0,
-      "384933b4ea618f07c423b1f98e220d311421c3100e4e5e5473414c1abcf6703e"
+      "be46e6c7b803ee059787205a2ee58007b70efd5dff877f1ea4974c726a6a16e9"
      ],
      "pid": 2001,
      "seq": 180,
@@ -166,7 +166,7 @@
       0,
       "local-sample-c10-versions",
       0,
-      "384933b4ea618f07c423b1f98e220d311421c3100e4e5e5473414c1abcf6703e"
+      "be46e6c7b803ee059787205a2ee58007b70efd5dff877f1ea4974c726a6a16e9"
      ],
      "pid": 1001,
      "seq": 182,
@@ -180,7 +180,7 @@
       0,
       "local-sample-c10-versions",
       0,
-      "384933b4ea618f07c423b1f98e220d311421c3100e4e5e5473414c1abcf6703e"
+      "be46e6c7b803ee059787205a2ee58007b70efd5dff877f1ea4974c726a6a16e9"
      ],
      "pid": 1002,
      "seq": 182,
@@ -194,7 +194,7 @@
       0,
       "local-sample-c10-versions",
       0,
-      "384933b4ea618f07c423b1f98e220d311421c3100e4e5e5473414c1abcf6703e"
+      "be46e6c7b803ee059787205a2ee58007b70efd5dff877f1ea4974c726a6a16e9"
      ],
      "pid": 2001,
      "seq": 182,
@@ -244,7 +244,7 @@
       0,
       "local-sample-c10-versions",
       0,
-      "384933b4ea618f07c423b1f98e220d311421c3100e4e5e5473414c1abcf6703e"
+      "be46e6c7b803ee059787205a2ee58007b70efd5dff877f1ea4974c726a6a16e9"
      ],
      "pid": 1001,
      "seq": 184,
@@ -258,7 +258,7 @@
       0,
       "local-sample-c10-versions",
       0,
-      "384933b4ea618f07c423b1f98e220d311421c3100e4e5e5473414c1abcf6703e"
+      "be46e6c7b803ee059787205a2ee58007b70efd5dff877f1ea4974c726a6a16e9"
      ],
      "pid": 1002,
      "seq": 184,
@@ -272,7 +272,7 @@
       0,
       "local-sample-c10-versions",
       0,
-      "384933b4ea618f07c423b1f98e220d311421c3100e4e5e5473414c1abcf6703e"
+      "be46e6c7b803ee059787205a2ee58007b70efd5dff877f1ea4974c726a6a16e9"
      ],
      "pid": 2001,
      "seq": 184,
@@ -289,6 +289,6 @@
  "schema": "capkit.drain_gate/1",
  "source": "default",
  "t_pass_rel_ns": 18400000000,
- "written_mono_ns": 9746269694142535,
- "written_wall": "2026-11-13T11:37:25.774Z"
+ "written_mono_ns": 9752457348392587,
+ "written_wall": "2026-11-13T13:20:33.428Z"
 }

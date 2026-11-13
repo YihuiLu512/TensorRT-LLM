@@ -44,6 +44,8 @@ def main():
     p.add_argument("--probe-child", action="store_true")
     p.add_argument("--orphan", action="store_true", help="setsid grandchild ignoring SIGTERM")
     p.add_argument("--ignore-term", action="store_true")
+    p.add_argument("--churn-every-ms", type=int, default=0,
+                   help="start a short-lived child this often")
     p.add_argument("--role-child", action="store_true", help=argparse.SUPPRESS)
     a = p.parse_args()
     if a.role_child:
@@ -86,8 +88,13 @@ def main():
         with open(a.report_addr + ".tmp", "w") as f:
             f.write("%s:%d\n" % (a.host, port))
         os.replace(a.report_addr + ".tmp", a.report_addr)
-    while not stop.wait(0.05):
-        pass
+    churn, next_kid = [], time.monotonic()
+    while not stop.wait(min(0.05, (a.churn_every_ms or 50) / 1000)):
+        if a.churn_every_ms and time.monotonic() >= next_kid:
+            churn = [k for k in churn if k.poll() is None]
+            churn.append(subprocess.Popen(["sleep", "0.2"]))
+            next_kid = time.monotonic() + a.churn_every_ms / 1000
+    kids += churn
     for k in kids:
         k.terminate()
     for k in kids:

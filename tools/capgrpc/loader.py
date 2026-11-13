@@ -6,7 +6,8 @@
   times (one dispatcher per worker; late sends are sent, never skipped; latency columns start from
   the planned time and the actual send time is recorded beside it).
 - Raw bytes: response_deserializer=None; every received message's type is checked against bytes
-  and counted per type (summary.recv_types), so "we really get raw bytes" is data, not assumption.
+  (a non-bytes message ends the request as protocol_error), and summary.recv_types counts the
+  type of each stream's first message, so "we really get raw bytes" is data, not assumption.
 - Channels: --channels-per-worker N grpc.aio channels per worker, each with
   grpc.use_local_subchannel_pool=1 (own TCP connection) unless --shared-subchannel-pool (control).
 - --stamped: every message starts with the beat stamp (step, planned_rel_ns); the drain records
@@ -277,6 +278,7 @@ class LoadWorker:
         self.stop_at_ns = None
         self._wake = None
         self.n_dispatched = 0
+        self.client_error_logged = False
 
     # -- stop ------------------------------------------------------------------------------------
     def on_stop(self, hard):
@@ -410,8 +412,9 @@ class LoadWorker:
                 if inj_drop.should_drop():
                     continue
                 if type(msg) is not bytes:
-                    tn = type(msg).__name__
-                    self.recv_types[seq][tn] = self.recv_types[seq].get(tn, 0) + 1
+                    if nmsg == 0:
+                        tn = type(msg).__name__
+                        self.recv_types[seq][tn] = self.recv_types[seq].get(tn, 0) + 1
                     reason = "protocol_error"
                     call.cancel()
                     break
@@ -446,6 +449,14 @@ class LoadWorker:
             reason = "grpc_CANCELLED"
             if call is not None:
                 call.cancel()
+        except Exception as e:  # noqa: BLE001 - a client-side fault still ends the request once
+            reason = "client_error"
+            if call is not None:
+                call.cancel()
+            if not self.client_error_logged:
+                self.client_error_logged = True
+                print("%s: request %d: client-side %s: %s (first occurrence; counted as "
+                      "client_error)" % (TOOL, rid, type(e).__name__, e), file=sys.stderr)
         finally:
             if active:
                 v[self.i_active] -= 1

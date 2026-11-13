@@ -15,9 +15,22 @@ for sub in ("tools",):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-FORBIDDEN = ("ssh", "sbatch", "srun", "squeue", "sacct", "scontrol", "scancel", "salloc", "cdb")
+# Inputs that live outside this repository (jobs/README.md「测试」lists them). A missing one is
+# a failure with this message, not a skip: a skipped check would read as passed.
 SAVED_CDB = os.path.join(os.path.dirname(CODE_ROOT), "00_plan", "cluster-probe", "20261113",
                          "02d_cdb_b200.csv")
+WT21_SBATCH = ("/home/scratch.yihlu_coreai/dev/feat-dev-J17728/tmp/data/stage-00/test-00/"
+               "00_plan/scripts/wt21_round_v4.sbatch")
+
+
+def external_input(path):
+    if not os.path.exists(path):
+        pytest.fail("test input outside the repository is missing: %s (see jobs/README.md, "
+                    "section 测试)" % path)
+    return path
+
+
+FORBIDDEN = ("ssh", "sbatch", "srun", "squeue", "sacct", "scontrol", "scancel", "salloc", "cdb")
 DATA = os.path.join(os.path.dirname(__file__), "data")
 
 

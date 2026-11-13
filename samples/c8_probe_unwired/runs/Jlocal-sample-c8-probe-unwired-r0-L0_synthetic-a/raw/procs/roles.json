@@ -1,4 +1,21 @@
 {
+ "aux_helpers": [
+  {
+   "category": "aux_helper",
+   "cmdline": [
+    "python",
+    "-c",
+    "from multiprocessing.resource_tracker import main;main(9)"
+   ],
+   "first_seen_mono_ns": 997000000000,
+   "measure_class": "load_source",
+   "pid": 1003,
+   "ppid": 1001,
+   "role": "capload",
+   "rule": "mp_resource_tracker",
+   "starttime_ticks": 6003
+  }
+ ],
  "generation": 1,
  "identity": {
   "arm": "synthetic-a",
@@ -6,7 +23,7 @@
   "job_id": "local-sample-c8-probe-unwired",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "384933b4ea618f07c423b1f98e220d311421c3100e4e5e5473414c1abcf6703e",
+  "register_sha": "be46e6c7b803ee059787205a2ee58007b70efd5dff877f1ea4974c726a6a16e9",
   "restart_count": 0,
   "role": "launch",
   "tier_label": null,
@@ -68,6 +85,6 @@
  ],
  "schema": "capkit.roles/1",
  "unattributed": [],
- "written_mono_ns": 9746269158144558,
- "written_wall": "2026-11-13T11:37:25.238Z"
+ "written_mono_ns": 9752456812612782,
+ "written_wall": "2026-11-13T13:20:32.893Z"
 }

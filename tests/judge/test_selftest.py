@@ -13,7 +13,7 @@ import sys
 import pytest
 from conftest import PKG, SAMPLES, TOOLS
 
-N_SAMPLES = 22  # entries of make_samples.SAMPLES + empty_tree; derived from the table below
+N_SAMPLES = 23  # entries of make_samples.SAMPLES + empty_tree (test_sample_table_size)
 RUNNER = os.path.join(SAMPLES, "run_selftest.py")
 
 
@@ -50,6 +50,24 @@ def test_generated_samples_pass(tmp_path):
     samples = _gen(tmp_path)
     p = _runner(samples, TOOLS, tmp_path, N_SAMPLES)
     assert p.returncode == 0, p.stdout[-3000:] + p.stderr[-2000:]
+
+
+def test_runner_requires_expect_samples(tmp_path):
+    tmp = tmp_path / "rt"
+    tmp.mkdir()
+    base = [sys.executable, RUNNER, "--samples", str(tmp_path / "none"), "--tools", TOOLS,
+            "--package", PKG, "--tmp", str(tmp)]
+    for extra in ([], ["--expect-samples", "0"]):
+        p = subprocess.run(base + extra, capture_output=True, text=True, timeout=60,
+                           check=False)
+        assert p.returncode == 2, (extra, p.stdout, p.stderr)
+        assert "expect-samples" in p.stderr
+
+
+def test_runner_red_on_wrong_sample_count(tmp_path):
+    samples = _gen(tmp_path)
+    p = _runner(samples, TOOLS, tmp_path, N_SAMPLES + 1)
+    assert p.returncode == 1 and "expected %d" % (N_SAMPLES + 1) in p.stdout
 
 
 @pytest.mark.skipif(not os.path.isdir(os.path.join(SAMPLES, "good")),

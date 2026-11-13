@@ -62,10 +62,6 @@
   {
    "args": [],
    "asyncio": true,
-   "cpus": [
-    2,
-    3
-   ],
    "expected_procs": 2,
    "kind": "client",
    "loop": "asyncio",
@@ -79,15 +75,15 @@
   {
    "args": [],
    "asyncio": true,
-   "cpus": [
-    4
-   ],
    "expected_procs": 1,
    "kind": "server",
    "loop": "asyncio",
    "measure_class": "under_test",
    "module": "capload.nullsse",
    "probe_tier": "P2",
+   "proc_kinds": [
+    "frontend"
+   ],
    "role": "nullsse",
    "uses_grpc": false,
    "workers": 1

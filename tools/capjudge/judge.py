@@ -4,16 +4,23 @@
 
     python3 -m capjudge --tree <launch tree> --workdir <W>
 
-Exactly one tree, no globs; a tree is judged once (JUDGED.tsv + os.mkdir(<tree>/judge)).
-Outputs only under <tree>/judge/, plus one JUDGED.tsv row and one STATE line.
+Exactly one tree, no globs; a tree is judged once. Every run that gets past the two
+already-judged checks (JUDGED.tsv row, <tree>/judge exists) writes into a fresh attempt
+directory <tree>/judge.attempts/<attempt>/ with attempt.json. Only a run that produced verdicts
+renames its attempt directory to <tree>/judge (atomic; that rename is the judged-once mark),
+then appends one JUDGED.tsv row and one STATE line. INPUT_INVALID and exceptions leave their
+attempt directory (inputs.json / judge.log / attempt.json) for review and no judge/, so the
+tree can be judged once its inputs are fixed.
 """
 
 import argparse
 import os
 import subprocess
 import sys
+import traceback
 
 from capcommon import exitcodes, ledger
+from capcommon.clock import wall_iso
 from capcommon.hashing import is_git_sha, sha256_file
 from capcommon.jsonio import atomic_write_bytes, dumps, read_json, write_json_stamped
 from capcommon.runtree import append_state
@@ -26,6 +33,8 @@ from .treedata import LaunchData, TierData
 
 INPUTS_SCHEMA = "capkit.judge.inputs/1"
 VERDICTS_SCHEMA = "capkit.judge.verdicts/1"
+ATTEMPT_SCHEMA = "capkit.judge.attempt/1"
+ATTEMPTS_DIR = "judge.attempts"
 CHECK_COLUMNS = ("tier_seq", "check_id", "expected_count", "checked_count", "red_count",
                  "status", "source_of_expected", "detail")
 GLOB_CHARS = "*?["
@@ -101,16 +110,86 @@ def main(argv=None):
                              % (key, hit["judged_at"], hit["tree_relpath"]))
             return exitcodes.JUDGE_ALREADY_JUDGED
     jdir = os.path.join(tree, "judge")
-    try:
-        os.mkdir(jdir)
-    except FileExistsError:
+    if os.path.lexists(jdir):
         sys.stderr.write("capjudge: ALREADY_JUDGED: %s exists\n" % jdir)
         return exitcodes.JUDGE_ALREADY_JUDGED
-    log = Log(os.path.join(jdir, "judge.log"))
+    adir = _new_attempt_dir(tree)
+    att = {"schema": ATTEMPT_SCHEMA, "tree": tree, "workdir": W, "pid": os.getpid(),
+           "started_wall": wall_iso()}
+    cur = adir  # where the attempt's files are now (adir, or jdir once committed)
+    log = Log(os.path.join(adir, "judge.log"))
     try:
-        return _judge(tree, W, jdir, log)
+        code, commit = _judge(tree, W, adir, log)
+        if commit is None:
+            _write_attempt(cur, att, "INPUT_INVALID", code)
+            sys.stderr.write("capjudge: record of this attempt: %s\n" % adir)
+            return code
+        if key is not None and ledger.judged_lookup(judged_tsv, *key) is not None:
+            return _lost_race(adir, att, log, "JUDGED.tsv got a row for %s meanwhile" % (key,))
+        _write_attempt(cur, att, "JUDGED", code)
+        try:
+            os.rename(adir, jdir)  # the judged-once mark: atomic, and only with full outputs
+        except OSError:
+            if os.path.lexists(jdir):
+                return _lost_race(adir, att, log, "%s was created meanwhile" % jdir)
+            raise
+        cur = jdir
+        _commit(tree, W, commit)
+        log("done: launch_verdict=%s exit=%d" % (commit["launch_verdict"], code))
+        return code
+    except BaseException as e:
+        att["error"] = "".join(traceback.format_exception(type(e), e, e.__traceback__))[-8000:]
+        log("ERROR: %r" % (e,))
+        _write_attempt(cur, att, "ERROR",
+                       exitcodes.INTERNAL if isinstance(e, Exception) else None)
+        sys.stderr.write("capjudge: interrupted by %r; record of this attempt: %s\n" % (e, cur))
+        raise
     finally:
         log.close()
+
+
+def _new_attempt_dir(tree):
+    """A new, empty <tree>/judge.attempts/<UTC stamp>-p<pid>[-k] (os.mkdir: never reused)."""
+    parent = os.path.join(tree, ATTEMPTS_DIR)
+    try:
+        os.mkdir(parent)
+    except FileExistsError:
+        pass
+    if os.path.islink(parent) or not os.path.isdir(parent):
+        raise exitcodes.ConfigError("%s is not a plain directory" % parent)
+    stamp = wall_iso().replace("-", "").replace(":", "")
+    for k in range(100):
+        path = os.path.join(parent, "%s-p%d%s" % (stamp, os.getpid(), "-%d" % k if k else ""))
+        try:
+            os.mkdir(path)
+            return path
+        except FileExistsError:
+            continue
+    raise exitcodes.ConfigError("cannot create a fresh attempt directory under %s" % parent)
+
+
+def _write_attempt(adir, att, status, code):
+    doc = dict(att, status=status, exit_code=code, ended_wall=wall_iso())
+    atomic_write_bytes(os.path.join(adir, "attempt.json"), (dumps(doc) + "\n").encode())
+
+
+def _lost_race(adir, att, log, why):
+    log("ALREADY_JUDGED while this attempt ran: %s" % why)
+    att["detail"] = why
+    _write_attempt(adir, att, "ALREADY_JUDGED", exitcodes.JUDGE_ALREADY_JUDGED)
+    sys.stderr.write("capjudge: ALREADY_JUDGED: %s; record of this attempt: %s\n" % (why, adir))
+    return exitcodes.JUDGE_ALREADY_JUDGED
+
+
+def _commit(tree, W, c):
+    ledger.judged_append(os.path.join(W, "JUDGED.tsv"), {
+        "job_id": c["ident"].job_id, "restart_count": c["ident"].restart_count,
+        "launch_seq": c["ident"].launch_seq, "arm": c["ident"].arm,
+        "experiment": c["ident"].experiment, "tree_relpath": os.path.relpath(tree, W),
+        "verdicts_sha256": c["vsha"]})
+    lv = c["launch_verdict"]
+    append_state(tree, STATE_OF[lv], "launch_verdict=%s verdicts_sha=%s" % (lv, c["vsha"][:12]),
+                 "capjudge")
 
 
 def _judged_key(launch_path):
@@ -121,41 +200,36 @@ def _judged_key(launch_path):
         return None
 
 
-def _judge(tree, W, jdir, log):
-    log("judge start: tree=%s workdir=%s" % (tree, W))
+def _judge(tree, W, adir, log):
+    """Write inputs.json (+ verdicts.json, checks.tsv) into the attempt dir `adir`.
+    Returns (exit code, commit) with commit None for INPUT_INVALID."""
+    log("judge start: tree=%s workdir=%s attempt=%s" % (tree, W, adir))
     try:
         ctx = I.verify(W, tree)
     except I.InputInvalid as e:
         log("INPUT_INVALID: %s" % e)
         doc = {"schema": INPUTS_SCHEMA, "identity": None, "status": "INPUT_INVALID",
                "item": e.item, "detail": e.detail}
-        atomic_write_bytes(os.path.join(jdir, "inputs.json"), (dumps(doc) + "\n").encode())
+        atomic_write_bytes(os.path.join(adir, "inputs.json"), (dumps(doc) + "\n").encode())
         sys.stderr.write("capjudge: INPUT_INVALID: %s\n" % e)
-        return exitcodes.JUDGE_INPUT_INVALID
+        return exitcodes.JUDGE_INPUT_INVALID, None
     sha, how = code_sha()
     log("code sha: %s (%s)" % (sha, how))
     result = judge_tree(ctx, log, code_ok=sha is not None, code_note=how)
     ident = ctx.ident.with_role("judge")
-    write_json_stamped(os.path.join(jdir, "inputs.json"), INPUTS_SCHEMA, ident, {
+    write_json_stamped(os.path.join(adir, "inputs.json"), INPUTS_SCHEMA, ident, {
         "status": "OK", "code_sha": sha, "code_sha_source": how,
         "files_read": ctx.files_read, "calibration": ctx.bands.sources,
         "band_lookups": ctx.bands.lookups, "checks_applied": ctx.checks_applied,
         "identity_scan": ctx.identity_scan, "submission_submitted_at":
             ctx.submission["submitted_at"]})
-    vpath = os.path.join(jdir, "verdicts.json")
+    vpath = os.path.join(adir, "verdicts.json")
     write_json_stamped(vpath, VERDICTS_SCHEMA, ident, result["verdicts"])
-    _write_checks_tsv(os.path.join(jdir, "checks.tsv"), result["rows"])
-    vsha = sha256_file(vpath)
-    rel = os.path.relpath(tree, W)
-    ledger.judged_append(os.path.join(W, "JUDGED.tsv"), {
-        "job_id": ctx.ident.job_id, "restart_count": ctx.ident.restart_count,
-        "launch_seq": ctx.ident.launch_seq, "arm": ctx.ident.arm,
-        "experiment": ctx.ident.experiment, "tree_relpath": rel, "verdicts_sha256": vsha})
+    _write_checks_tsv(os.path.join(adir, "checks.tsv"), result["rows"])
     lv = result["verdicts"]["launch_verdict"]
-    append_state(tree, STATE_OF[lv], "launch_verdict=%s verdicts_sha=%s" % (lv, vsha[:12]),
-                 "capjudge")
-    log("done: launch_verdict=%s exit=%d" % (lv, result["verdicts"]["exit_code"]))
-    return result["verdicts"]["exit_code"]
+    log("verdicts written: launch_verdict=%s exit=%d" % (lv, result["verdicts"]["exit_code"]))
+    return result["verdicts"]["exit_code"], {"ident": ctx.ident, "vsha": sha256_file(vpath),
+                                             "launch_verdict": lv}
 
 
 def _write_checks_tsv(path, rows):

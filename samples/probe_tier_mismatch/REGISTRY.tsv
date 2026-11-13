@@ -2,6 +2,6 @@ registered_at	experiment	relpath	sha256	note
 2026-11-13T00:00:00.000Z	E0	register/tiers.json	9ec2e9504387d851b23a6054f90df5b2f04de7e8eb81493c87e89591cb70e2a9	kind=tier_table;synthetic sample
 2026-11-13T00:00:00.001Z	E0	register/schedule.capbin	4275dc232d95f33bcf6c5eca28ea37bc306bb49ad15e15037f98c84a920346b4	kind=schedule;synthetic sample
 2026-11-13T00:00:00.002Z	E0	register/prompts.json	2e03b59f7251c4c4646ea0f542daedf57fecb6aa27fd8d52f6379ff9a40e6672	kind=prompts;synthetic sample
-2026-11-13T00:00:00.003Z	E0	register/scenario.json	2dd3f0d6c9a74baa1ed2bc17e0956860b061672aab13d0cffdc29d5b84f9c060	kind=scenario;synthetic sample
+2026-11-13T00:00:00.003Z	E0	register/scenario.json	83429c8e9981dafdd094a471297f5f5797936ad083deb22dac37603f072c9119	kind=scenario;synthetic sample
 2026-11-13T00:00:00.004Z	E0	register/pilot.json	09a538f4ed87d8fc78aa7450b948caa4e5dbcdbb28db8dca92d26d61ebb6c238	kind=pilot;synthetic sample
-2026-11-13T00:00:00.005Z	E0	register/register.json	384933b4ea618f07c423b1f98e220d311421c3100e4e5e5473414c1abcf6703e	kind=register;synthetic sample
+2026-11-13T00:00:00.005Z	E0	register/register.json	be46e6c7b803ee059787205a2ee58007b70efd5dff877f1ea4974c726a6a16e9	kind=register;synthetic sample

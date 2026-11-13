@@ -36,3 +36,5 @@
 - E0(b) 对账链里 capgrpc 工具的 summary 键名(`msgs_sent` / `msgs_read` / `streams_accepted`)未与 B2 的实现核对;
   B2 实际模块名是 `capload_grpc`,与 INTERFACES 的 `capgrpc.load` 不一致，场景里按 INTERFACES 写。
 - E0(a) 前端那条对账链在 P0 下只有 capload 一跳(产品进程不发布计数)。
+- 前端角色的 `proc_kinds` 写 `["frontend"]`(`--num_serve_frontends 1` 时只跑单前端进程，对应 capprobe SITES 的 `frontend` 位点),未用真实 `trtllm-serve` 核实;S-FE 等不跑探针代码的角色写 `[]`。
+- sidecar 的 `--nvidia-smi` 用 `{nvidia_smi}` 占位，由编排器 `--nvidia-smi` 展开，配置里不写路径。

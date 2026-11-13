@@ -80,6 +80,7 @@
     }
    ],
    "env": {},
+   "proc_kinds": [],
    "command": [
     "{param:python}",
     "{param:sfe_script}"
@@ -136,6 +137,9 @@
     "0"
    ],
    "env": {},
+   "proc_kinds": [
+    "frontend"
+   ],
    "command": [
     "{param:trtllm_serve}"
    ],
@@ -202,6 +206,7 @@
     "{param:capload_max_records_per_worker}"
    ],
    "env": {},
+   "proc_kinds": [],
    "module": "capload",
    "note": "--model = the frontend's served model name (default: the model dir it was given)"
   },
@@ -235,9 +240,12 @@
     "--gpu-every-s",
     "{param:sidecar_gpu_every_s}",
     "--numa-every-s",
-    "{param:sidecar_numa_every_s}"
+    "{param:sidecar_numa_every_s}",
+    "--nvidia-smi",
+    "{nvidia_smi}"
    ],
    "env": {},
+   "proc_kinds": [],
    "module": "capenv.sidecar"
   },
   {
@@ -267,6 +275,7 @@
     "{param:canary_interval_ms}"
    ],
    "env": {},
+   "proc_kinds": [],
    "module": "capenv.canary"
   }
  ],

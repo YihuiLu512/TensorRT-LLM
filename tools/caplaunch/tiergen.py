@@ -140,11 +140,11 @@ def main(argv=None):
         doc = expand(template, vals["values"])
         if os.path.exists(a.out):
             raise ConfigError("%s exists; registered files are never overwritten" % a.out)
+        if a.schedule_out and (a.max_rows is None or os.path.exists(a.schedule_out)):
+            raise ConfigError("--schedule-out needs --max-rows and a new path")
         atomic_write_bytes(a.out, (json.dumps(doc, sort_keys=True, indent=1) + "\n").encode())
         if a.schedule_out:
             from capcommon.schedule import write_schedule  # noqa: PLC0415
-            if a.max_rows is None or os.path.exists(a.schedule_out):
-                raise ConfigError("--schedule-out needs --max-rows and a new path")
             write_schedule(a.schedule_out, TierTable.load(a.out), a.max_rows)
     except ConfigError as e:
         print("tiergen: %s" % e, file=sys.stderr)

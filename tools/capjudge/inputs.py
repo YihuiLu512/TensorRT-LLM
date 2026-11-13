@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Input verification of one launch tree (INTERFACES 10.1; DATA-AND-ANALYSIS 4.5, 4.6).
 
-Any failure raises InputInvalid naming the item; the judge then writes judge/inputs.json and
-exits 13. Nothing here relaxes a rule for synthetic or local runs.
+Any failure raises InputInvalid naming the item; the judge then writes inputs.json into its
+attempt directory and exits 13. Nothing here relaxes a rule for synthetic or local runs.
 """
 
 import json

@@ -13,7 +13,7 @@ text, iommu group count, DMI product name, sibling table, scontrol node text) go
 separate hw_raw.json (capkit.hw_raw/1) whose sha256 is recorded in hw_profile.json.
 
     python -m capenv.hwprofile <identity> --out env/hw_profile.json --raw-out env/hw_raw.json
-        --local-dir DIR --chassis-source {slurm_view,dmi}
+        --local-dir DIR --chassis-source {slurm_view,dmi} --nvidia-smi PATH
         [--slurm-view-file PATH] [--image-sha256 HEX] [--code-baseline SHA40]
         [--container-runtime TEXT] [--timeout-s S]
 """
@@ -79,7 +79,8 @@ def _slurm_items(path):
 class Collector:
     def __init__(self, local_dir, chassis_source, slurm_view_file=None, image_sha256=None,
                  code_baseline=None, container_runtime=None, timeout_s=30.0,
-                 proc_root=procfs.PROC, sys_root=procfs.SYS, runner=runcmd.run):
+                 proc_root=procfs.PROC, sys_root=procfs.SYS, runner=runcmd.run,
+                 nvidia_smi=None):
         self.local_dir = local_dir
         self.chassis_source = chassis_source
         self.slurm = _slurm_items(slurm_view_file)
@@ -89,6 +90,7 @@ class Collector:
         self.timeout_s = timeout_s
         self.proc_root, self.sys_root = proc_root, sys_root
         self.runner = runner
+        self.nvidia_smi = nvidia_smi  # None -> GPU keys unreadable ("nvidia-smi path not given")
         self.prof = {}
         self.src = {}
         self.raw = {}
@@ -209,14 +211,17 @@ class Collector:
         self._raw_cmd("free_b", ["free", "-b"])
 
     def gpus(self):
-        rec, gpus = gpu_mod.query_gpus(self.timeout_s, runner=lambda a, t: self.run(a))
+        rec, gpus = gpu_mod.query_gpus(self.timeout_s, runner=lambda a, t: self.run(a),
+                                       nvsmi=self.nvidia_smi)
         self.raw["nvidia_smi_query_gpu"] = {k: rec.get(k) for k in ("cmd", "rc", "stdout",
                                                                      "reason")}
         if runcmd.ok(rec) and rec.get("reason") is None and gpus:
             names = sorted({g["name"] for g in gpus})
             self.put("gpu_model", names[0] if len(names) == 1 else names, "container:nvidia-smi")
             self.put("gpu_count", len(gpus), "container:nvidia-smi")
-            self.put("gpu_mem_mib", sorted(g["mem_total_mib"] for g in gpus),
+            mems = [g["mem_total_mib"] for g in gpus]
+            self.put("gpu_mem_mib", sorted(mems) if all(isinstance(m, (int, float)) for m in mems)
+                     else unreadable("nvidia-smi memory.total unreadable: %r" % (mems,)),
                      "container:nvidia-smi")
             drivers = sorted({g["driver"] for g in gpus})
             self.put("gpu_driver", drivers[0] if len(drivers) == 1 else drivers,
@@ -373,6 +378,7 @@ def main(argv=None):
     ap.add_argument("--raw-out", required=True, help="env/hw_raw.json")
     ap.add_argument("--local-dir", required=True, help="the node-local run dir (disk type/free)")
     ap.add_argument("--chassis-source", required=True, choices=("slurm_view", "dmi"))
+    ap.add_argument("--nvidia-smi", required=True, help="nvidia-smi executable (GPU keys)")
     ap.add_argument("--slurm-view-file")
     ap.add_argument("--image-sha256")
     ap.add_argument("--code-baseline")
@@ -390,7 +396,7 @@ def main(argv=None):
                          pid=os.getpid())
         col = Collector(args.local_dir, args.chassis_source, args.slurm_view_file,
                         args.image_sha256, args.code_baseline, args.container_runtime,
-                        args.timeout_s)
+                        args.timeout_s, nvidia_smi=args.nvidia_smi)
         prof = col.collect()
         write_json_stamped(args.raw_out, RAW_SCHEMA, ident, {"raw": col.raw})
         sha = profile_sha256(prof)

@@ -1,19 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """capprobe.patchcheck: passes on a good patch, goes red on each kind of sabotage, NOT_RUN when
-nothing is expected; plus the real probe tree's working tree."""
+nothing is expected; a site may sit at several code locations; plus the real probe tree's
+working tree."""
 
-import os
+import json
 import subprocess
 import sys
 
 import pytest
-from probe_testutil import TOOLS, clean_env
-from gitfix import BASE_A, PATCHED_A, TEST_SITES, commit_all, git, init, write
+from probe_testutil import clean_env, require_probe_tree
+from gitfix import BASE_A, PATCHED_A, SITE_LINE, TEST_SITES, commit_all, git, init, write
 
 from capprobe import patchcheck
+from capprobe import sites as capsites
 
-PROBE_TREE = os.path.abspath(os.path.join(TOOLS, "..", "probe-tree"))
 BASE_COMMIT = "2f22a98d6e8b32ed185bcdfe051ef0e4405ae4e8"
 
 
@@ -99,17 +100,57 @@ def test_undeclared_site_is_red(repo):
 
 def test_missing_site_is_red(repo):
     r, base = repo
-    expected = dict(TEST_SITES, H1=dict(TEST_SITES["F2"], line=99, slots=["count.H1.arrivals"]))
+    expected = dict(TEST_SITES, H1=dict(TEST_SITES["F2"], lines=[99],
+                                        slots=["count.H1.arrivals"]))
     rep = check(r, base, PATCHED_A, expected=expected)
     assert rep["status"] == "FAIL" and any("H1" in v and "not found" in v
                                            for v in rep["violations"])
 
 
-@pytest.mark.skipif(not os.path.isdir(PROBE_TREE), reason="probe tree not present")
+# A site whose event is handled on two code paths: the same guarded call at both.
+TWO_PATHS_A = PATCHED_A + ("\n\ndef feed(x):\n    if _capprobe.ON_F2:\n        _capprobe.F2()\n"
+                           "    return x\n")
+BASE_TWO = BASE_A + "\n\ndef feed(x):\n    return x\n"
+SECOND_LINE = TWO_PATHS_A.splitlines().index("    if _capprobe.ON_F2:", SITE_LINE) + 1
+
+
+def _two_path_repo(tmp_path):
+    r = tmp_path / "repo2"
+    init(r)
+    write(r, "tensorrt_llm/a.py", BASE_TWO)
+    return r, commit_all(r, "base")
+
+
+def test_site_at_two_locations(tmp_path):
+    r, base = _two_path_repo(tmp_path)
+    both = {"F2": dict(TEST_SITES["F2"], lines=[SITE_LINE, SECOND_LINE])}
+    rep = check(r, base, TWO_PATHS_A, expected=both)
+    assert rep["status"] == "PASS", rep["violations"]
+    assert rep["found_site_count"] == rep["expected_site_count"] == 1
+    assert rep["found_location_count"] == rep["expected_location_count"] == 2
+    assert rep["changed_files"]["tensorrt_llm/a.py"]["sites"] == {"F2": [SITE_LINE, SECOND_LINE]}
+
+
+@pytest.mark.parametrize("lines, why", [
+    ([SITE_LINE], "second location not declared"),
+    ([SITE_LINE, SECOND_LINE, SECOND_LINE + 5], "declared location missing"),
+    ([SECOND_LINE, SITE_LINE], "not ascending"),
+    ([], "empty"),
+])
+def test_site_locations_must_match_exactly(tmp_path, lines, why):
+    r, base = _two_path_repo(tmp_path)
+    rep = check(r, base, TWO_PATHS_A, expected={"F2": dict(TEST_SITES["F2"], lines=lines)})
+    assert rep["status"] == "FAIL" and rep["violations"], (why, rep)
+
+
 def test_real_probe_tree_cli():
     # The real patch against the real SITES table (working tree, i.e. what would be deployed).
-    r = subprocess.run([sys.executable, "-m", "capprobe.patchcheck", "--probe-tree", PROBE_TREE,
+    tree = require_probe_tree()
+    r = subprocess.run([sys.executable, "-m", "capprobe.patchcheck", "--probe-tree", tree,
                         "--base-commit", BASE_COMMIT], env=clean_env(), capture_output=True,
                        text=True, timeout=120)
     assert r.returncode == 0, r.stdout[-3000:] + r.stderr
-    assert '"status": "PASS"' in r.stdout and '"found_site_count": 7' in r.stdout
+    rep = json.loads(r.stdout)
+    assert rep["status"] == "PASS" and rep["rev"] == "WORKTREE"
+    assert rep["found_site_count"] == len(capsites.SITES)
+    assert rep["found_location_count"] == sum(len(d["lines"]) for d in capsites.SITES.values())

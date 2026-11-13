@@ -25,7 +25,10 @@ SUBMISSION_COLUMNS = ("event_at", "plan_id", "event", "job_id", "status", "reaso
                       "tokenizer_dir_sha256", "assertions_json")
 SUBMISSION_EVENTS = ("PLANNED", "SUBMITTED", "ENDED", "NOTE")
 SUBMISSION_STATUSES = ("", "VALID", "VOID", "NOT_RUN", "ENV_INVALID", "CANCELLED",
-                       "SUBMIT_FAILED")
+                       "SUBMIT_FAILED", "UNKNOWN_SUBMIT")
+# sbatch outcome unknown (the job may be queued): only on a NOTE row with submitted_at; a later
+# SUBMITTED or ENDED row (written from evidence, never by resubmitting) supersedes it.
+UNKNOWN_SUBMIT = "UNKNOWN_SUBMIT"
 JUDGED_COLUMNS = ("judged_at", "job_id", "restart_count", "launch_seq", "arm", "experiment",
                   "tree_relpath", "verdicts_sha256")
 
@@ -140,6 +143,9 @@ def submissions_append(path, row):
         raise LedgerError("event must be one of %s" % (SUBMISSION_EVENTS,))
     if row.get("status", "") not in SUBMISSION_STATUSES:
         raise LedgerError("status must be one of %s" % (SUBMISSION_STATUSES,))
+    if row.get("status") == UNKNOWN_SUBMIT and (row["event"] != "NOTE"
+                                                  or not row.get("submitted_at")):
+        raise LedgerError("%s is only a NOTE status and needs submitted_at" % UNKNOWN_SUBMIT)
     if row["event"] == "PLANNED" and not row.get("basis"):
         raise LedgerError("PLANNED rows need the approval basis text")
     gpus = row.get("gpus", "")
@@ -191,7 +197,9 @@ def _check_planned_assertions(row):
 
 
 def submissions_current(path):
-    """{plan_id: merged row} where later events override non-empty fields of earlier ones."""
+    """{plan_id: merged row} where later events override non-empty fields of earlier ones; the
+    status of a SUBMITTED or ENDED row replaces the earlier status even when empty (a SUBMITTED
+    row closes an UNKNOWN_SUBMIT)."""
     cur = {}
     for r in read_tsv(path, SUBMISSION_COLUMNS):
         pid = r["plan_id"]
@@ -199,9 +207,14 @@ def submissions_current(path):
             cur[pid] = dict(r)
         else:
             for k, v in r.items():
-                if v != "":
+                if v != "" or (k == "status" and r["event"] in ("SUBMITTED", "ENDED")):
                     cur[pid][k] = v
     return cur
+
+
+def submission_unknown(cur):
+    """True when a merged row (submissions_current) is waiting for reconciliation."""
+    return cur.get("status") == UNKNOWN_SUBMIT
 
 
 def submission_for_job(path, job_id):

@@ -97,6 +97,7 @@
     "{param:lag_period_us}"
    ],
    "env": {},
+   "proc_kinds": [],
    "module": "capload.nullsse",
    "note": "expected_procs = parent + 2 SO_REUSEPORT workers (B1 forks workers as children); set to what capload.nullsse --workers 2 actually runs once B1 is final"
   },
@@ -157,6 +158,7 @@
     "{param:capload_max_records_per_worker}"
    ],
    "env": {},
+   "proc_kinds": [],
    "module": "capload",
    "note": "expected_procs = parent + 2 workers (same caveat as nullsse)"
   },
@@ -190,9 +192,12 @@
     "--gpu-every-s",
     "{param:sidecar_gpu_every_s}",
     "--numa-every-s",
-    "{param:sidecar_numa_every_s}"
+    "{param:sidecar_numa_every_s}",
+    "--nvidia-smi",
+    "{nvidia_smi}"
    ],
    "env": {},
+   "proc_kinds": [],
    "module": "capenv.sidecar"
   },
   {
@@ -222,6 +227,7 @@
     "{param:canary_interval_ms}"
    ],
    "env": {},
+   "proc_kinds": [],
    "module": "capenv.canary"
   }
  ],

@@ -14,8 +14,9 @@ would copy):
      `_capprobe.LAG`, alone or as the first operand of `and`), or the single statement in such
      an `if` body calling the matching site (`_capprobe.<site>()` /
      `_capprobe.install_loop_lag("<site>")`) with no `else`;
-  4. the guarded sites found equal capprobe.SITES (each exactly once, at SITES[site]["file"]:
-     ["line"]); the expected count comes from SITES, and 0 expected sites is NOT_RUN;
+  4. the guarded sites found equal capprobe.SITES: each site in SITES[site]["file"] only, at
+     exactly the lines SITES[site]["lines"] (one guarded call per listed line, none elsewhere);
+     the expected counts come from SITES, and 0 expected sites is NOT_RUN;
   5. every added line belongs to an import or a guarded site (nothing else was slipped in).
 
 Prints a JSON report; exit 0 = PASS, 3 = FAIL or NOT_RUN.
@@ -96,7 +97,7 @@ def _site_of_call(stmt):
 
 
 def check_file(rel, source):
-    """Return (found_sites {site: line}, accounted_lines set, violations list) for one file."""
+    """Return (found_sites {site: [lines]}, accounted_lines set, violations list) for one file."""
     violations = []
     found = {}
     accounted = set()
@@ -144,10 +145,7 @@ def check_file(rel, source):
         if guard != want_guard:
             violations.append("%s:%d: call for site %s is guarded by %s, expected %s"
                               % (rel, node.lineno, site, guard, want_guard))
-        if site in found:
-            violations.append("%s:%d: site %s appears twice in this file"
-                              % (rel, node.lineno, site))
-        found[site] = node.lineno
+        found.setdefault(site, []).append(node.lineno)
         call = node.body[0].value
         ok_nodes.add(id(call.func.value))
         accounted.update(range(node.lineno, node.body[0].end_lineno + 1))
@@ -155,7 +153,7 @@ def check_file(rel, source):
         if isinstance(node, ast.Name) and node.id == ALIAS and id(node) not in ok_nodes:
             violations.append("%s:%d: unguarded or unexpected use of %s"
                               % (rel, node.lineno, ALIAS))
-    return found, accounted, violations
+    return {k: sorted(v) for k, v in found.items()}, accounted, violations
 
 
 def run_check(tree, base, rev=None, expected_sites=None):
@@ -196,27 +194,35 @@ def run_check(tree, base, rev=None, expected_sites=None):
             violations.append("%s: added line(s) %s are not part of a probe import or guarded "
                               "site" % (rel, stray))
         files[rel] = {"sites": f_sites, "added_lines": len(added)}
-        for site, line in f_sites.items():
+        for site, lines in f_sites.items():
             if site in found:
                 violations.append("site %s found in %s and %s" % (site, found[site][0], rel))
-            found[site] = (rel, line)
+                continue
+            found[site] = (rel, lines)
     for site, d in expected.items():
+        want = (d["file"], list(d["lines"]))
         got = found.get(site)
+        if not want[1] or want[1] != sorted(set(want[1])):
+            violations.append("site %s: SITES lines %s must be non-empty and strictly ascending"
+                              % (site, want[1]))
         if got is None:
-            violations.append("site %s (%s:%d) not found in the patch"
-                              % (site, d["file"], d["line"]))
-        elif got != (d["file"], d["line"]):
-            violations.append("site %s found at %s:%d but SITES says %s:%d"
-                              % (site, got[0], got[1], d["file"], d["line"]))
+            violations.append("site %s (%s:%s) not found in the patch"
+                              % (site, d["file"], d["lines"]))
+        elif got != want:
+            violations.append("site %s found at %s:%s but SITES says %s:%s"
+                              % (site, got[0], got[1], want[0], want[1]))
     for site in sorted(set(found) - set(expected)):
-        violations.append("site %s at %s:%d is not declared in SITES" % (site, *found[site]))
+        violations.append("site %s at %s:%s is not declared in SITES" % (site, *found[site]))
     if not expected:
         status = "NOT_RUN"
     else:
         status = "FAIL" if violations else "PASS"
     return {"schema": "capkit.patchcheck/1", "probe_tree": tree, "base_commit": base,
             "rev": rev or "WORKTREE", "expected_site_count": len(expected),
-            "found_site_count": len(found), "changed_files": files,
+            "found_site_count": len(found),
+            "expected_location_count": sum(len(d["lines"]) for d in expected.values()),
+            "found_location_count": sum(len(v[1]) for v in found.values()),
+            "changed_files": files,
             "violations": violations, "status": status}
 
 

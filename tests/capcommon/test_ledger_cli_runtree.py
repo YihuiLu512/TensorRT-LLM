@@ -85,6 +85,34 @@ def test_submissions(tmp_path):
         ledger.append_tsv(p, ledger.SUBMISSION_COLUMNS, {"x": 1})
 
 
+def test_unknown_submit_status(tmp_path):
+    """UNKNOWN_SUBMIT is a formal status: only on a NOTE row with submitted_at, and a later
+    SUBMITTED (reconciled) or ENDED row supersedes it."""
+    p = str(tmp_path / "submissions.tsv")
+    planned = _sub(plan_id="p1", event="PLANNED", experiment="E0", gpus="1", basis="x",
+                   **_EVIDENCE)
+    ledger.submissions_append(p, planned)
+    for bad in [_sub(plan_id="p1", event="NOTE", status="UNKNOWN_SUBMIT"),
+                _sub(plan_id="p1", event="ENDED", status="UNKNOWN_SUBMIT",
+                     submitted_at="2026-11-13T01:00:00.000Z"),
+                _sub(plan_id="p1", event="SUBMITTED", status="UNKNOWN_SUBMIT", job_id="7",
+                     submitted_at="2026-11-13T01:00:00.000Z")]:
+        with pytest.raises(ledger.LedgerError):
+            ledger.submissions_append(p, bad)
+    ledger.submissions_append(p, _sub(plan_id="p1", event="NOTE", status="UNKNOWN_SUBMIT",
+                                      submitted_at="2026-11-13T01:00:00.000Z"))
+    assert ledger.submission_unknown(ledger.submissions_current(p)["p1"])
+    ledger.submissions_append(p, _sub(plan_id="p1", event="SUBMITTED", job_id="7",
+                                      submitted_at="2026-11-13T01:00:00.000Z"))
+    cur = ledger.submissions_current(p)["p1"]
+    assert cur["status"] == "" and not ledger.submission_unknown(cur)
+    ledger.submissions_append(p, planned | {"plan_id": "p2"})
+    ledger.submissions_append(p, _sub(plan_id="p2", event="NOTE", status="UNKNOWN_SUBMIT",
+                                      submitted_at="2026-11-13T01:00:00.000Z"))
+    ledger.submissions_append(p, _sub(plan_id="p2", event="ENDED", status="SUBMIT_FAILED"))
+    assert ledger.submissions_current(p)["p2"]["status"] == "SUBMIT_FAILED"
+
+
 def test_judged(tmp_path):
     p = str(tmp_path / "JUDGED.tsv")
     row = {"job_id": "1", "restart_count": 0, "launch_seq": 2, "arm": "a", "experiment": "E0",

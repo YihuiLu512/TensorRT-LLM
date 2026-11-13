@@ -5,13 +5,14 @@ plan CONSTRAINTS section 2, RESOURCES sections 3-4).
 
     PYTHONPATH=<C>/tools:<C>/jobs python3.11 -m capjobs.submit <sub-command> ...
 
-Sub-commands: probe (the only path that runs `sbatch --test-only`), submit, local-record,
-slurm-view, jobstate, record-end, exclude, prep-tokenizer (draft: dry-run only). See
+Sub-commands: probe (the only path that runs `sbatch --test-only`), submit, reconcile-submit,
+local-record, slurm-view, jobstate, record-end, exclude, prep-tokenizer (draft: dry-run only). See
 jobs/README.md. Nothing has a default resource value; every cluster command goes through
 capjobs.remote (ssh, allow-listed commands).
 """
 
 import argparse
+import glob
 import json
 import os
 import re
@@ -34,6 +35,23 @@ EXE_RE = re.compile(r"^[A-Za-z0-9._/+-]+$")
 JOBSTATE_EXIT = {jobstate.ENDED: 0, jobstate.NOT_ENDED: 20, jobstate.UNKNOWN: 21}
 SBATCH_TEMPLATE = "jobs/capkit_job.sbatch"
 PREP_TOKENIZER_TEMPLATE = "jobs/prep_tokenizer.sbatch.draft"
+REGISTER_SCHEMA = "capkit.register/1"
+# register.json "environment" section: the job-level hard limits the job passes to its checks
+# (exactly these keys, all required; see jobs/README.md).
+REGISTER_ENV_KEYS = ("gpus", "idle_window_s", "idle_busy_max_frac", "slurm_view_wait_s",
+                     "chassis_source")
+CHASSIS_SOURCES = ("slurm_view", "dmi")
+HW_UNREGISTERED = "UNREGISTERED"
+# Purpose marker on every PLANNED row (reason column) and repeated on its NOTE / ENDED rows: a
+# hw_profile_capture job (--registered-hw-sha UNREGISTERED) always ends ENV_INVALID by design and
+# must not be read as an environment failure (e.g. CONSTRAINTS 7 "two ENV_INVALID in a row").
+PURPOSE_MEASUREMENT = "purpose=measurement"
+PURPOSE_HW_CAPTURE = "purpose=hw_profile_capture"
+# A submission whose sbatch outcome is unknown (ssh failed or timed out, or sbatch printed no job
+# id) is a NOTE row with status UNKNOWN_SUBMIT; only reconcile-submit moves it on (never a
+# resubmit).
+UNKNOWN_SUBMIT = ledger.UNKNOWN_SUBMIT
+SSH_FAILED_RC = 255
 
 
 class SubmitError(ConfigError):
@@ -254,6 +272,51 @@ def _check_registry(workdir, register_sha):
     return row
 
 
+def _num(v, lo, hi, lo_open=True):
+    if not isinstance(v, (int, float)) or isinstance(v, bool) or v != v:
+        return False
+    return (v > lo if lo_open else v >= lo) and v <= hi
+
+
+def register_environment(workdir, row, register_sha, experiment):
+    """The register.json the REGISTRY row names (sha recomputed) and its "environment" section:
+    exactly REGISTER_ENV_KEYS. These values reach the job only through job.env."""
+    rel = row["relpath"]
+    if os.path.isabs(rel) or rel.startswith("../") or "/../" in rel:
+        raise SubmitError("REGISTRY relpath %r must be relative to --workdir" % rel)
+    path = os.path.join(workdir, rel)
+    try:
+        sha = sha256_file(path)
+        with open(path, "r", encoding="utf-8") as f:
+            doc = json.load(f)
+    except (OSError, ValueError) as e:
+        raise SubmitError("cannot read register %s: %s" % (path, e))
+    if sha != register_sha:
+        raise SubmitError("register %s sha256 %s != --register-sha" % (path, sha))
+    if not isinstance(doc, dict) or doc.get("schema") != REGISTER_SCHEMA:
+        raise SubmitError("register %s is not %s" % (path, REGISTER_SCHEMA))
+    if doc.get("experiment") != experiment:
+        raise SubmitError("register experiment %r != --experiment %r"
+                          % (doc.get("experiment"), experiment))
+    env = doc.get("environment")
+    if not isinstance(env, dict) or set(env) != set(REGISTER_ENV_KEYS):
+        raise SubmitError("register %s: 'environment' must have exactly %s" %
+                          (path, REGISTER_ENV_KEYS))
+    g = env["gpus"]
+    if not isinstance(g, int) or isinstance(g, bool) or not 0 <= g <= policy.MAX_GPUS:
+        raise SubmitError("register environment.gpus must be an int in [0, %d]" % policy.MAX_GPUS)
+    if not _num(env["idle_window_s"], 0, 3600):
+        raise SubmitError("register environment.idle_window_s must be in (0, 3600]")
+    if not _num(env["idle_busy_max_frac"], 0, 1):
+        raise SubmitError("register environment.idle_busy_max_frac must be in (0, 1]")
+    if not _num(env["slurm_view_wait_s"], 0, 3600):
+        raise SubmitError("register environment.slurm_view_wait_s must be in (0, 3600]")
+    if env["chassis_source"] not in CHASSIS_SOURCES:
+        raise SubmitError("register environment.chassis_source must be one of %s"
+                          % (CHASSIS_SOURCES,))
+    return {"path": path, "sha256": sha, "environment": dict(env)}
+
+
 def _plan_identity(a, plan):
     """Explicit --experiment/--register-sha/--arms/--launches must equal the plan's."""
     if a.experiment != plan["experiment"]:
@@ -281,36 +344,44 @@ def prepare_submit(a, code_state_fn):
     assertions, tok_sha = policy.check_no_model_submission(
         a.experiment, a.gpus, [m["text"] for m in mounts], tok, a.basis)
     res = resources_from_args(a)
-    need = sum(ln["budget_s"] + plan["margin_s"] for ln in plan["launches"])
-    if need > res["time_s"]:
-        raise SubmitError("launch budgets + margins = %d s exceed --time %s" % (need, a.time))
     paths = {k: check_path(os.path.abspath(getattr(a, k)), "--" + k.replace("_", "-"))
              for k in ("snapshot_root", "run_root", "local_base", "shm_base", "image")}
     coverage = check_coverage(
         mounts, [paths["run_root"], paths["local_base"], paths["shm_base"]],
         [paths["snapshot_root"]] + ([tok] if tok else []))
-    _check_registry(workdir, a.register_sha)
-    if not is_sha256_hex(a.image_sha256) or a.image_size <= 0:
-        raise SubmitError("--image-sha256 must be 64 hex and --image-size > 0")
-    if not os.path.isfile(paths["image"]) or os.path.getsize(paths["image"]) != a.image_size:
-        raise SubmitError("image %s missing or its size != --image-size" % paths["image"])
+    reg = register_environment(workdir, _check_registry(workdir, a.register_sha),
+                               a.register_sha, a.experiment)
+    renv = reg["environment"]
+    if res["gpus"] != renv["gpus"]:
+        raise SubmitError("--gpus %d != register environment.gpus %d" % (res["gpus"],
+                                                                        renv["gpus"]))
+    if res["gpus"] == 0:
+        print("capjobs.submit: WARNING: 0 GPUs requested: no GPU positive control, so the "
+              "judge's GPU-IDLE check will be NOT_RUN for every launch", file=sys.stderr)
+    budget = time_budget(plan, renv)
+    if budget["total_s"] > res["time_s"]:
+        raise SubmitError("time budget %s = %d s exceeds --time %s"
+                          % (budget["parts"], budget["total_s"], a.time))
+    image = check_image(paths["image"], a.image_sha256, a.image_size)
     if not MODULE_RE.match(a.gate_module):
         raise SubmitError("bad --gate-module %r" % a.gate_module)
-    if not is_sha256_hex(a.registered_hw_sha):
-        raise SubmitError("--registered-hw-sha must be 64 hex")
+    if not (is_sha256_hex(a.registered_hw_sha) or a.registered_hw_sha == HW_UNREGISTERED):
+        raise SubmitError("--registered-hw-sha must be 64 hex or %s" % HW_UNREGISTERED)
     comparable = "" if a.no_comparable else check_path(os.path.abspath(a.comparable_file),
                                                        "--comparable-file")
-    for exe, what in ((a.container_python, "--container-python"), (a.nvidia_smi, "--nvidia-smi")):
-        if not EXE_RE.match(exe):
-            raise SubmitError("bad %s %r" % (what, exe))
-    if a.slurm_view_wait_s <= 0 or a.min_local_free_bytes <= 0:
-        raise SubmitError("--slurm-view-wait-s and --min-local-free-bytes must be > 0")
+    if not EXE_RE.match(a.container_python):
+        raise SubmitError("bad --container-python %r" % a.container_python)
+    # an absolute path: the job's GPU checks never fall back to whatever PATH finds
+    check_path(a.nvidia_smi, "--nvidia-smi")
+    if a.min_local_free_bytes <= 0:
+        raise SubmitError("--min-local-free-bytes must be > 0")
     includes = list(a.include or [])
     head, dirty = code_state_fn(code_root, ["jobs", "tools"] + includes)
     if not is_git_sha(head):
         raise SubmitError("code HEAD %r is not a 40-hex sha" % head)
     overlay = _load_overlay_manifest(a.overlay_manifest, head)
     file_plan = snapshot.plan_files(code_root, includes, overlay)
+    launchplan.check_kill_grace(plan, code_root, set(file_plan))
     for rel, sha, size in snapshot.overlay_entries(overlay):
         src = os.path.join(code_root, rel)
         if os.path.getsize(src) != size or sha256_file(src) != sha:
@@ -319,26 +390,63 @@ def prepare_submit(a, code_state_fn):
             "mounts": mounts, "tokenizer_dir": tok, "tok_sha": tok_sha,
             "assertions": assertions, "res": res, "paths": paths, "coverage": coverage,
             "comparable": comparable, "head": head, "dirty": dirty, "overlay": overlay,
-            "includes": includes, "file_plan": sorted(file_plan)}
+            "includes": includes, "file_plan": sorted(file_plan), "register": reg,
+            "budget": budget, "image": image}
+
+
+def time_budget(plan, renv):
+    """Every in-allocation wait that has a registered or planned bound: per launch budget_s +
+    kill_grace_s + margin_s, plus the gate's idle window and the longest slurm_view wait."""
+    parts = {"launches": sum(ln["budget_s"] + plan["kill_grace_s"] + plan["margin_s"]
+                             for ln in plan["launches"]),
+             "gate_idle_window_s": renv["idle_window_s"],
+             "slurm_view_wait_s": renv["slurm_view_wait_s"]}
+    return {"parts": parts, "total_s": sum(parts.values())}
+
+
+def check_image(path, want_sha, want_size):
+    """The image is hashed here, once per submission, outside the allocation; the job only
+    re-checks size and mtime_ns against the values recorded now (job.env)."""
+    if not is_sha256_hex(want_sha) or want_size <= 0:
+        raise SubmitError("--image-sha256 must be 64 hex and --image-size > 0")
+    try:
+        st = os.stat(path)
+    except OSError as e:
+        raise SubmitError("image %s: %s" % (path, e))
+    if not os.path.isfile(path) or st.st_size != want_size:
+        raise SubmitError("image %s missing or its size != --image-size" % path)
+    got = sha256_file(path)
+    st2 = os.stat(path)
+    if (st2.st_size, st2.st_mtime_ns) != (st.st_size, st.st_mtime_ns):
+        raise SubmitError("image %s changed while it was being hashed" % path)
+    if got != want_sha:
+        raise SubmitError("image %s sha256 %s != --image-sha256" % (path, got))
+    return {"sha256": got, "size": st.st_size, "mtime_ns": st.st_mtime_ns}
 
 
 def _job_env(a, prep, plan_id, snap_dir):
     p = prep["paths"]
+    renv = prep["register"]["environment"]
     return {
         "CAPJOBS_PLAN_ID": plan_id, "CAPJOBS_SNAP": snap_dir,
         "CAPJOBS_EXPERIMENT": a.experiment, "CAPJOBS_REGISTER_SHA": a.register_sha,
         "CAPJOBS_JOB_ARM": prep["plan"]["job_arm"], "CAPJOBS_RUN_ROOT": p["run_root"],
         "CAPJOBS_LOCAL_BASE": p["local_base"], "CAPJOBS_SHM_BASE": p["shm_base"],
         "CAPJOBS_MIN_LOCAL_FREE_BYTES": a.min_local_free_bytes,
-        "CAPJOBS_IMAGE": p["image"], "CAPJOBS_IMAGE_SHA256": a.image_sha256,
-        "CAPJOBS_IMAGE_SIZE": a.image_size,
+        "CAPJOBS_IMAGE": p["image"], "CAPJOBS_IMAGE_SHA256": prep["image"]["sha256"],
+        "CAPJOBS_IMAGE_SIZE": prep["image"]["size"],
+        "CAPJOBS_IMAGE_MTIME_NS": prep["image"]["mtime_ns"],
         "CAPJOBS_MOUNTS": ",".join(m["text"] for m in prep["mounts"]),
         "CAPJOBS_SRUN_MPI": a.srun_mpi, "CAPJOBS_PYTHON": a.container_python,
         "CAPJOBS_GATE_MODULE": a.gate_module, "CAPJOBS_REGISTERED_HW_SHA": a.registered_hw_sha,
         "CAPJOBS_COMPARABLE_FILE": prep["comparable"],
-        "CAPJOBS_SLURM_VIEW_WAIT_S": a.slurm_view_wait_s, "CAPJOBS_NVIDIA_SMI": a.nvidia_smi,
-        "CAPJOBS_TIME_LIMIT_S": prep["res"]["time_s"], "CAPJOBS_EXPECT_GPUS": a.gpus,
+        "CAPJOBS_NVIDIA_SMI": a.nvidia_smi, "CAPJOBS_TIME_LIMIT_S": prep["res"]["time_s"],
         "CAPJOBS_CODE_SHA": prep["head"],
+        # register.json "environment" (RS8: hard limits come from the register, never defaults)
+        "CAPJOBS_MAX_ALLOC_GPUS": renv["gpus"], "CAPJOBS_IDLE_WINDOW_S": renv["idle_window_s"],
+        "CAPJOBS_IDLE_BUSY_MAX_FRAC": renv["idle_busy_max_frac"],
+        "CAPJOBS_SLURM_VIEW_WAIT_S": renv["slurm_view_wait_s"],
+        "CAPJOBS_CHASSIS_SOURCE": renv["chassis_source"],
     }
 
 
@@ -356,7 +464,9 @@ def cmd_submit(a, runner, code_state_fn):
                "argv": argv, "assertions": prep["assertions"],
                "tokenizer_dir_sha256": prep["tok_sha"], "coverage": prep["coverage"],
                "code_head": prep["head"], "dirty": prep["dirty"],
-               "snapshot_files": len(prep["file_plan"]), "exclude": res["exclude"]}
+               "snapshot_files": len(prep["file_plan"]), "exclude": res["exclude"],
+               "register_environment": prep["register"]["environment"],
+               "time_budget": prep["budget"], "image": prep["image"]}
     if a.dry_run:
         summary["dry_run"] = True
         summary["would_refuse_dirty"] = bool(prep["dirty"])
@@ -375,8 +485,10 @@ def cmd_submit(a, runner, code_state_fn):
     os.makedirs(os.path.join(p["run_root"], "logs"), exist_ok=True)
     ledger_path = os.path.join(prep["workdir"], "submissions.tsv")
     common = {"plan_id": plan_id, "experiment": a.experiment}
+    purpose = submission_purpose(a.registered_hw_sha)
     ledger.submissions_append(ledger_path, ledger_row(
-        event="PLANNED", arms=",".join(prep["arms"]), launches=a.launches, basis=a.basis,
+        event="PLANNED", reason=purpose, arms=",".join(prep["arms"]), launches=a.launches,
+        basis=a.basis,
         account=res["account"], partition=res["partition"], qos=res["qos"],
         exclude=",".join(res["exclude"]) or resources.EXCLUDE_NONE, time_limit=res["time"],
         mem=res["mem"], cpus_per_task=res["cpus_per_task"], gpus=res["gpus"], exclusive="true",
@@ -384,13 +496,25 @@ def cmd_submit(a, runner, code_state_fn):
         mounts_json=json.dumps([m["text"] for m in prep["mounts"]]),
         tokenizer_dir_sha256=prep["tok_sha"], assertions_json=json.dumps(prep["assertions"]),
         **common))
+    attempted_at = wall_iso()
     rc, out, err = get_runner(a, runner).run(argv)
     job_id = parse_parsable(out) if rc == 0 else None
     if job_id is None:
-        reason = "sbatch rc=%r stdout=%r stderr=%r" % (rc, (out or "")[-300:], (err or "")[-300:])
+        reason = _one_line("sbatch rc=%r stdout=%r stderr=%r"
+                           % (rc, (out or "")[-300:], (err or "")[-300:]))
+        if submit_outcome_unknown(rc):
+            # The job may be queued: never resubmit, never close the plan automatically.
+            ledger.submissions_append(ledger_path, ledger_row(
+                event="NOTE", status=UNKNOWN_SUBMIT, submitted_at=attempted_at,
+                reason="%s; %s; reconcile with `reconcile-submit` after checking squeue/sacct"
+                % (purpose, reason), **common))
+            summary.update({"submitted": None, "unknown_submit": True, "rc": rc,
+                            "stdout": out, "stderr": err})
+            emit(summary)
+            return RUNTIME
         ledger.submissions_append(ledger_path, ledger_row(
-            event="ENDED", status="SUBMIT_FAILED", reason=reason.replace("\t", " ")
-            .replace("\n", " ").replace("\r", " "), **common))
+            event="ENDED", status="SUBMIT_FAILED", reason="%s; %s" % (purpose, reason),
+            **common))
         summary.update({"submitted": False, "rc": rc, "stdout": out, "stderr": err})
         emit(summary)
         return RUNTIME
@@ -398,6 +522,107 @@ def cmd_submit(a, runner, code_state_fn):
         event="SUBMITTED", job_id=job_id, submitted_at=wall_iso(), **common))
     summary.update({"submitted": True, "job_id": job_id, "snapshot_sha256": snap_sha})
     emit(summary)
+    return OK
+
+
+def submission_purpose(registered_hw_sha):
+    return PURPOSE_HW_CAPTURE if registered_hw_sha == HW_UNREGISTERED else PURPOSE_MEASUREMENT
+
+
+def plan_purpose(ledger_path, plan_id):
+    """The purpose marker of the plan's PLANNED row ('' for rows written before the marker)."""
+    for row in ledger.read_tsv(ledger_path, ledger.SUBMISSION_COLUMNS):
+        if row["plan_id"] == plan_id and row["event"] == "PLANNED":
+            return row["reason"] if row["reason"].startswith("purpose=") else ""
+    return ""
+
+
+def _one_line(text):
+    return text.replace("\t", " ").replace("\n", " ").replace("\r", " ")
+
+
+def submit_outcome_unknown(rc):
+    """True unless sbatch itself reported a failure: ssh could not run or timed out (None), ssh
+    failed (255, the remote command may or may not have run), or sbatch exited 0 without a
+    parsable job id."""
+    return rc is None or rc == 0 or rc == SSH_FAILED_RC
+
+
+def _is_unknown_submit(cur):
+    return ledger.submission_unknown(cur)
+
+
+def _snap_run_root(snap_dir):
+    """CAPJOBS_RUN_ROOT from the plan's own job.env (the job writes its batch.tsv there)."""
+    with open(os.path.join(snap_dir, "job.env"), "r", encoding="utf-8") as f:
+        for line in f:
+            if line.startswith("export CAPJOBS_RUN_ROOT="):
+                return shlex.split(line.split("=", 1)[1])[0]
+    raise SubmitError("no CAPJOBS_RUN_ROOT in %s/job.env" % snap_dir)
+
+
+def _batch_tsv_plans(run_root, job_id="*"):
+    """{batch.tsv path: plan_id} for runs/J<job>-r<n>/batch.tsv under run_root."""
+    out = {}
+    for p in sorted(glob.glob(os.path.join(run_root, "J%s-r*" % job_id, "batch.tsv"))):
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                kv = dict(ln.rstrip("\n").split("\t", 1) for ln in f if "\t" in ln)
+        except OSError:
+            continue
+        out[p] = kv.get("plan_id")
+    return out
+
+
+def cmd_reconcile_submit(a, runner):
+    """Close an UNKNOWN_SUBMIT plan from evidence, never by resubmitting:
+    --job-id J  needs `scontrol show job J` naming this plan's batch script, or a
+                <run root>/J<J>-r*/batch.tsv written by the job with this plan id -> SUBMITTED;
+    --not-submitted needs `squeue` (rc 0) to list no job running this plan's script and no
+                batch.tsv with this plan id -> ENDED SUBMIT_FAILED."""
+    workdir = check_path(os.path.abspath(a.workdir), "--workdir")
+    ledger_path = os.path.join(workdir, "submissions.tsv")
+    cur = ledger.submissions_current(ledger_path).get(a.plan_id)
+    if cur is None or not _is_unknown_submit(cur):
+        raise SubmitError("plan %s is not in state %s" % (a.plan_id, UNKNOWN_SUBMIT))
+    if not a.reason.strip() or "\t" in a.reason or "\n" in a.reason:
+        raise SubmitError("--reason must be one non-empty line")
+    snap = cur["snapshot_dir"]
+    script = os.path.join(snap, SBATCH_TEMPLATE)
+    run_root = _snap_run_root(snap)
+    mine = [p for p, pid in _batch_tsv_plans(run_root).items() if pid == a.plan_id]
+    common = {"plan_id": a.plan_id, "experiment": cur["experiment"]}
+    run = get_runner(a, runner)
+    if a.job_id is not None:
+        if not a.job_id.isdigit():
+            raise SubmitError("--job-id must be a numeric cluster job id")
+        sc = remote.run_remote(run, a.login_host, ["scontrol", "show", "job", a.job_id])
+        by_scontrol = sc["rc"] == 0 and ("Command=" + script) in (sc["stdout"] or "").split()
+        by_tsv = [p for p, pid in _batch_tsv_plans(run_root, a.job_id).items()
+                  if pid == a.plan_id]
+        if not (by_scontrol or by_tsv):
+            raise SubmitError("no evidence that job %s runs plan %s (scontrol rc=%r; no "
+                              "batch.tsv with this plan id)" % (a.job_id, a.plan_id, sc["rc"]))
+        if ledger.submission_for_job(ledger_path, a.job_id) is not None:
+            raise SubmitError("job id %s is already in the ledger" % a.job_id)
+        evidence = "scontrol Command" if by_scontrol else "batch.tsv %s" % by_tsv[0]
+        ledger.submissions_append(ledger_path, ledger_row(
+            event="SUBMITTED", job_id=a.job_id, submitted_at=cur["submitted_at"],
+            reason=_one_line("%s; reconciled (%s): %s" % (
+                plan_purpose(ledger_path, a.plan_id), evidence, a.reason)), **common))
+        emit({"plan_id": a.plan_id, "job_id": a.job_id, "evidence": evidence})
+        return OK
+    sq = remote.run_remote(run, a.login_host, ["squeue", "-h", "--me", "-o", "%i %o"])
+    if sq["rc"] != 0:
+        raise SubmitError("squeue rc=%r: cannot show that no job runs this plan" % (sq["rc"],))
+    listed = [ln for ln in (sq["stdout"] or "").splitlines() if snap in ln]
+    if listed or mine:
+        raise SubmitError("plan %s has a job: squeue %s, batch.tsv %s" % (a.plan_id, listed, mine))
+    ledger.submissions_append(ledger_path, ledger_row(
+        event="ENDED", status="SUBMIT_FAILED", reason=_one_line(
+            "%s; reconciled: squeue lists no job for %s and no batch.tsv names the plan: %s"
+            % (plan_purpose(ledger_path, a.plan_id), script, a.reason)), **common))
+    emit({"plan_id": a.plan_id, "status": "SUBMIT_FAILED"})
     return OK
 
 
@@ -420,7 +645,8 @@ def cmd_local_record(a):
     plan_id = make_plan_id(a.experiment)
     common = {"plan_id": plan_id, "experiment": a.experiment}
     ledger.submissions_append(ledger_path, ledger_row(
-        event="PLANNED", arms=",".join(arms), launches=a.launches, basis=a.basis, gpus=0,
+        event="PLANNED", reason=PURPOSE_MEASUREMENT, arms=",".join(arms), launches=a.launches,
+        basis=a.basis, gpus=0,
         exclusive="false", mounts_json=json.dumps(mounts), tokenizer_dir_sha256=tok_sha,
         assertions_json=json.dumps(assertions), **common))
     ledger.submissions_append(ledger_path, ledger_row(
@@ -453,6 +679,8 @@ def cmd_record_end(a, runner):
         raise SubmitError("plan id %s is not in the ledger" % a.plan_id)
     if cur["event"] == "ENDED":
         raise SubmitError("plan %s already has an ENDED row" % a.plan_id)
+    if _is_unknown_submit(cur):
+        raise SubmitError("plan %s is %s: run reconcile-submit first" % (a.plan_id, UNKNOWN_SUBMIT))
     if a.status not in ("VALID", "VOID", "NOT_RUN", "ENV_INVALID", "CANCELLED"):
         raise SubmitError("bad --status %r" % a.status)
     if not a.reason.strip() or "\t" in a.reason or "\n" in a.reason:
@@ -467,10 +695,13 @@ def cmd_record_end(a, runner):
             raise SubmitError("job %s is %s (%s); not recording an end" %
                               (job_id, q["state"], q["reason"]))
         evidence = q["reason"]
+    purpose = plan_purpose(ledger_path, a.plan_id)
     ledger.submissions_append(ledger_path, ledger_row(
         event="ENDED", plan_id=a.plan_id, job_id=job_id, status=a.status,
-        reason="%s [end criterion: %s]" % (a.reason, evidence), experiment=cur["experiment"]))
-    emit({"plan_id": a.plan_id, "job_id": job_id, "status": a.status, "evidence": evidence})
+        reason="%s%s [end criterion: %s]" % (purpose + "; " if purpose else "", a.reason,
+                                             evidence), experiment=cur["experiment"]))
+    emit({"plan_id": a.plan_id, "job_id": job_id, "status": a.status, "evidence": evidence,
+          "purpose": purpose})
     return OK
 
 
@@ -489,7 +720,11 @@ def cmd_exclude(a, runner):
         fields = [cdbexclude.HOST_COL] + sorted(spec["fields"]) + [cdbexclude.PART_COL]
         remote_argv = ["cdb", "find", a.cdb_query, "--fields", ",".join(fields), "-o", "csv"]
         rc, out, err = get_runner(a, runner).run(remote.ssh_argv(a.login_host, remote_argv))
-        text = "# cmd: %s\n%s# exit: %s\n" % (shlex.join(remote_argv), out or "", rc)
+        body = out or ""
+        if body and not body.endswith("\n"):
+            body += "\n"
+        marker = rc if rc is not None else "none (ssh not run or timed out)"
+        text = "# cmd: %s\n%s# exit: %s\n" % (shlex.join(remote_argv), body, marker)
         with open(a.raw_out, "x", encoding="utf-8") as f:
             f.write(text)
         if rc != 0:
@@ -576,8 +811,16 @@ def build_parser():
     cp = p.add_mutually_exclusive_group(required=True)
     cp.add_argument("--comparable-file")
     cp.add_argument("--no-comparable", action="store_true")
-    p.add_argument("--slurm-view-wait-s", required=True, type=float)
     p.add_argument("--dry-run", action="store_true")
+
+    p = sub.add_parser("reconcile-submit", help="close an UNKNOWN_SUBMIT plan from evidence")
+    add_remote_args(p)
+    p.add_argument("--workdir", required=True)
+    p.add_argument("--plan-id", required=True)
+    rs = p.add_mutually_exclusive_group(required=True)
+    rs.add_argument("--job-id")
+    rs.add_argument("--not-submitted", action="store_true")
+    p.add_argument("--reason", required=True)
 
     p = sub.add_parser("local-record", help="ledger rows for a local run (job id local-*)")
     p.add_argument("--workdir", required=True)
@@ -638,6 +881,8 @@ def main(argv=None, runner=None, code_state_fn=None):
             return cmd_probe(a, runner)
         if a.cmd == "submit":
             return cmd_submit(a, runner, code_state_fn or code_state)
+        if a.cmd == "reconcile-submit":
+            return cmd_reconcile_submit(a, runner)
         if a.cmd == "local-record":
             return cmd_local_record(a)
         if a.cmd == "slurm-view":

@@ -494,11 +494,15 @@ class Worker:
         r.conn = conn
         conn.n_requests += 1
         data = self.builder.render(r.rid, r.tier)
-        r.sent = time.monotonic_ns()
+        now = time.monotonic_ns()
         conn.tr.write(data)
-        self.vals[self.i_written] += 1
-        self.written += 1
-        self.h_lag.add(r.sent - r.planned)
+        if r.sent < 0:
+            # A keep-alive reconnect writes the same request again; the request is written,
+            # and its send lag sampled, once (at the first write).
+            r.sent = now
+            self.vals[self.i_written] += 1
+            self.written += 1
+            self.h_lag.add(now - r.planned)
 
     # ---- receiving -----------------------------------------------------------------------
     def on_made(self, conn):
@@ -688,7 +692,7 @@ class Worker:
         if r is not None and r.rid in self.inflight:
             if r.http and r.close_delim:
                 self._complete(conn, r, now)  # a close-delimited body ends at EOF
-            elif (not r.http and r.nbytes == 0 and r.reused and not r.retried
+            elif (not r.http and not r.rbuf and r.nbytes == 0 and r.reused and not r.retried
                   and not self.stopping and reason == CL_PEER_BUSY):
                 # the peer closed an idle keep-alive connection just as we reused it: one
                 # reconnect, counted apart from request failures (design 2.2 item 4)

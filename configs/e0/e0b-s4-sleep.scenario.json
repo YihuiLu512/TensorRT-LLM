@@ -115,6 +115,7 @@
     "{param:lag_period_us}"
    ],
    "env": {},
+   "proc_kinds": [],
    "module": "capgrpc.nullgrpc",
    "note": "--pacing beat requires --workers 1 (INTERFACES 11); --in-process keeps it one process (expected_procs 1) instead of supervisor + 1 worker"
   },
@@ -156,6 +157,7 @@
     "{param:lag_period_us}"
    ],
    "env": {},
+   "proc_kinds": [],
    "module": "capselfcheck.relay",
    "note": "the known answer; injected delta comes from the tier table (role relay1)"
   },
@@ -210,6 +212,7 @@
     "{param:drain_max_records_per_worker}"
    ],
    "env": {},
+   "proc_kinds": [],
    "module": "capgrpc.load",
    "note": "the drain end of design E0 (b); it also places the requests; --in-process = one process (expected_procs 1)"
   },
@@ -243,9 +246,12 @@
     "--gpu-every-s",
     "{param:sidecar_gpu_every_s}",
     "--numa-every-s",
-    "{param:sidecar_numa_every_s}"
+    "{param:sidecar_numa_every_s}",
+    "--nvidia-smi",
+    "{nvidia_smi}"
    ],
    "env": {},
+   "proc_kinds": [],
    "module": "capenv.sidecar"
   },
   {
@@ -275,6 +281,7 @@
     "{param:canary_interval_ms}"
    ],
    "env": {},
+   "proc_kinds": [],
    "module": "capenv.canary"
   }
  ],

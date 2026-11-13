@@ -9,10 +9,20 @@ import subprocess
 import sys
 
 TOOLS = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "tools"))
+# The TRT-LLM probe tree (a git worktree of TRT-LLM, branch capprobe-J17871) next to tools/.
+PROBE_TREE = os.path.abspath(os.path.join(TOOLS, "..", "probe-tree"))
 SHA = "b" * 64
 IDENTITY = {"experiment": "E0", "arm": "probe-unit", "launch_seq": 3, "job_id": "local-b3",
             "restart_count": 0, "register_sha": SHA, "role": None, "worker": 0, "pid": None,
             "tier_seq": None, "tier_label": None}
+
+
+def require_probe_tree():
+    """Tests of the real patch fail (never skip) when the probe tree is missing."""
+    assert os.path.isdir(os.path.join(PROBE_TREE, "tensorrt_llm")), (
+        "these tests read the real probe patch: %s must be the TRT-LLM probe worktree "
+        "(branch capprobe-J17871)" % PROBE_TREE)
+    return PROBE_TREE
 
 
 def clean_env(**extra):

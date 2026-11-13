@@ -4,7 +4,7 @@ import json
 import os
 
 import pytest
-from conftest import DATA, SAVED_CDB
+from conftest import DATA, SAVED_CDB, external_input
 
 from capcommon import policy
 from capcommon.exitcodes import ConfigError
@@ -89,7 +89,7 @@ def spec():
 
 
 def saved():
-    with open(SAVED_CDB) as f:
+    with open(external_input(SAVED_CDB)) as f:
         return f.read()
 
 
@@ -171,10 +171,31 @@ def test_jobstate_decide(sq_rc, sq_out, sa_rc, sa_out, want):
     assert jobstate.decide("123", sq_rc, sq_out, sa_rc, sa_out)[0] == want
 
 
+PURGED = "slurm_load_jobs error: Invalid job id specified\n"
+
+
+@pytest.mark.parametrize("sq_err,sa_rc,sa_out,want", [
+    # K17: a job purged from slurmctld (after MinJobAge) is decided by sacct alone
+    (PURGED, 0, "123|COMPLETED|0:0\n", jobstate.ENDED),
+    (PURGED, 0, "123|RUNNING|0:0\n", jobstate.NOT_ENDED),
+    (PURGED, 1, "", jobstate.UNKNOWN),
+    (PURGED, 0, "", jobstate.UNKNOWN),
+    ("slurm_load_jobs error: Unable to contact slurm controller\n", 0, "123|COMPLETED|0:0\n",
+     jobstate.UNKNOWN),
+])
+def test_jobstate_purged_job_falls_back_to_sacct(sq_err, sa_rc, sa_out, want):
+    st, reason, _ = jobstate.decide("123", 1, "", sa_rc, sa_out, sq_err)
+    assert st == want, reason
+    if want == jobstate.ENDED:
+        assert "purged" in reason
+
+
 def test_jobstate_query(stub_runner):
     r = stub_runner({"squeue": (0, "", ""), "sacct": (0, "77|COMPLETED|0:0\n", "")})
     q = jobstate.query(r, "fe", "77")
     assert q["state"] == jobstate.ENDED and len(r.calls) == 2
+    r = stub_runner({"squeue": (1, "", PURGED), "sacct": (0, "77|COMPLETED|0:0\n", "")})
+    assert jobstate.query(r, "fe", "77")["state"] == jobstate.ENDED
     with pytest.raises(ConfigError):
         jobstate.query(r, "fe", "local-1")
 
@@ -205,7 +226,7 @@ def test_slurm_view(tmp_path, stub_runner):
 
 def plan_doc(**kw):
     d = {"schema": launchplan.SCHEMA, "experiment": "E0", "register_sha": "a" * 64,
-         "job_arm": "job", "margin_s": 10,
+         "job_arm": "job", "margin_s": 10, "kill_grace_s": 30,
          "launches": [{"launch_seq": 0, "arm": "nullsse-a", "budget_s": 100,
                        "argv": ["{PY}", "-m", "caplaunch", "--x", "{SNAP}/c.json"]},
                       {"launch_seq": 1, "arm": "sfe-a", "budget_s": 100,
@@ -222,10 +243,57 @@ def test_plan_ok_and_arms():
         launchplan.substitute("{JOB_DIR}", {"SNAP": "/s"})
 
 
+def _grace_plan(tmp_path, kill_grace_s, argv_tail=("--scenario", "{SNAP}/c/s.json",
+                                                   "--kill-after-s", "2"), scen=None):
+    snap = tmp_path / "snap"
+    (snap / "c").mkdir(parents=True)
+    (snap / "c" / "s.json").write_text(json.dumps(
+        scen if scen is not None else {"stop_grace_s": 10, "stop_order": ["a", "b", "c", "d"]}))
+    d = plan_doc(kill_grace_s=kill_grace_s)
+    for ln in d["launches"]:
+        ln["argv"] = ["{PY}", "-m", "caplaunch"] + list(argv_tail)
+    return launchplan.validate(d), str(snap)
+
+
+def test_kill_grace_covers_the_orchestrator_worst_stop(tmp_path):
+    """4 roles x (10 + 2) + 2 x 2 = 52 s: kill_grace_s 52 passes, 51 is refused."""
+    plan, snap = _grace_plan(tmp_path, 52)
+    assert launchplan.check_kill_grace(plan, snap) == {0: 52.0, 1: 52.0}
+    assert launchplan.check_kill_grace(plan, snap, {"c/s.json"}) == {0: 52.0, 1: 52.0}
+    with pytest.raises(ConfigError, match="not in the job snapshot"):
+        launchplan.check_kill_grace(plan, snap, {"other.json"})
+    plan51, snap51 = _grace_plan(tmp_path / "x", 51)
+    with pytest.raises(ConfigError, match="worst-case orchestrator stop 52.0"):
+        launchplan.check_kill_grace(plan51, snap51)
+
+
+@pytest.mark.parametrize("tail,scen", [
+    (("--scenario", "{SNAP}/c/s.json"), None),  # no --kill-after-s
+    (("--kill-after-s", "2"), None),  # no --scenario
+    (("--scenario", "/abs/s.json", "--kill-after-s", "2"), None),
+    (("--scenario", "{SNAP}/../s.json", "--kill-after-s", "2"), None),
+    (("--scenario={SNAP}/c/s.json", "--kill-after-s", "0"), None),
+    (("--scenario", "{SNAP}/c/s.json", "--kill-after-s", "2", "--kill-after-s", "1"), None),
+    (("--scenario", "{SNAP}/c/missing.json", "--kill-after-s", "2"), None),
+    (("--scenario", "{SNAP}/c/s.json", "--kill-after-s", "2"), {"stop_grace_s": 1}),
+    (("--scenario", "{SNAP}/c/s.json", "--kill-after-s", "2"),
+     {"stop_grace_s": -1, "stop_order": ["a"]}),
+])
+def test_kill_grace_needs_a_computable_bound(tmp_path, tail, scen):
+    plan, snap = _grace_plan(tmp_path, 3600, tail, scen)
+    with pytest.raises(ConfigError):
+        launchplan.check_kill_grace(plan, snap)
+
+
 @pytest.mark.parametrize("mut", [
     lambda d: d.update(schema="x"),
     lambda d: d.update(register_sha="A" * 64),
     lambda d: d.update(margin_s=-1),
+    lambda d: d.pop("kill_grace_s"),
+    lambda d: d.update(kill_grace_s=0),
+    lambda d: d["launches"][0]["argv"].extend(["--overlay-manifest", "/x"]),
+    lambda d: d["launches"][0]["argv"].extend(["--nvidia-smi", "/x"]),
+    lambda d: d["launches"][0]["argv"].append("--job-env-dir=/x"),
     lambda d: d.update(launches=[]),
     lambda d: d.update(extra=1),
     lambda d: d["launches"][1].update(launch_seq=0),
@@ -240,3 +308,19 @@ def test_plan_rejects(mut):
     mut(d)
     with pytest.raises(ConfigError):
         launchplan.validate(d)
+
+
+# ---- policy: mounts are compared by literal path and by realpath (K9) -------------------------
+
+def test_check_mounts_resolves_symlinks(tmp_path):
+    link = tmp_path / "models"
+    os.symlink("/home/scratch.trt_llm_data_ci/llm-models", str(link))
+    with pytest.raises(policy.PolicyError) as e:
+        policy.check_mounts(["%s:/data:ro" % link])
+    assert "model library" in str(e.value)
+    up = tmp_path / "up"
+    os.symlink("/home", str(up))  # an ancestor of both libraries, reached through a link
+    with pytest.raises(policy.PolicyError):
+        policy.check_mounts([{"src": str(up), "dst": "/h"}])
+    # positive control: the same call accepts a plain directory
+    policy.check_mounts(["%s:/data:ro" % tmp_path])

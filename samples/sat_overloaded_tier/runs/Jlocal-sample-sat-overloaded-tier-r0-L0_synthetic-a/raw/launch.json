@@ -12,7 +12,7 @@
   "job_id": "local-sample-sat-overloaded-tier",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "384933b4ea618f07c423b1f98e220d311421c3100e4e5e5473414c1abcf6703e",
+  "register_sha": "be46e6c7b803ee059787205a2ee58007b70efd5dff877f1ea4974c726a6a16e9",
   "restart_count": 0,
   "role": "launch",
   "tier_label": null,
@@ -94,7 +94,7 @@
  },
  "register": {
   "relpath": "register/register.json",
-  "sha256": "384933b4ea618f07c423b1f98e220d311421c3100e4e5e5473414c1abcf6703e"
+  "sha256": "be46e6c7b803ee059787205a2ee58007b70efd5dff877f1ea4974c726a6a16e9"
  },
  "roles": [
   {
@@ -130,6 +130,9 @@
    "measure_class": "under_test",
    "module": "capload.nullsse",
    "probe_tier": "P2",
+   "proc_kinds": [
+    "frontend"
+   ],
    "role": "nullsse",
    "uses_grpc": false,
    "workers": 1
@@ -200,10 +203,6 @@
     {
      "args": [],
      "asyncio": true,
-     "cpus": [
-      2,
-      3
-     ],
      "expected_procs": 2,
      "kind": "client",
      "loop": "asyncio",
@@ -217,15 +216,15 @@
     {
      "args": [],
      "asyncio": true,
-     "cpus": [
-      4
-     ],
      "expected_procs": 1,
      "kind": "server",
      "loop": "asyncio",
      "measure_class": "under_test",
      "module": "capload.nullsse",
      "probe_tier": "P2",
+     "proc_kinds": [
+      "frontend"
+     ],
      "role": "nullsse",
      "uses_grpc": false,
      "workers": 1
@@ -241,7 +240,7 @@
    "tier_table": "register/tiers.json"
   },
   "relpath": "register/scenario.json",
-  "sha256": "2dd3f0d6c9a74baa1ed2bc17e0956860b061672aab13d0cffdc29d5b84f9c060"
+  "sha256": "83429c8e9981dafdd094a471297f5f5797936ad083deb22dac37603f072c9119"
  },
  "schedule": {
   "relpath": "register/schedule.capbin",
@@ -259,6 +258,6 @@
   "relpath": "register/tiers.json",
   "sha256": "9ec2e9504387d851b23a6054f90df5b2f04de7e8eb81493c87e89591cb70e2a9"
  },
- "written_mono_ns": 9746271400077505,
- "written_wall": "2026-11-13T11:37:27.480Z"
+ "written_mono_ns": 9752459275183711,
+ "written_wall": "2026-11-13T13:20:35.355Z"
 }

@@ -115,8 +115,8 @@ class NullServer:
         self.c_truncated, self.c_rejected, self.c_bumped = z(), z(), z()
         self.c_msgs, self.c_bytes = z(), z()
         self.max_pending = z()
-        self.request_types = {}
-        self.rejects = {}
+        self.request_types = [dict() for _ in range(len(self.tt))]  # by event tier
+        self.rejects = [dict() for _ in range(len(self.tt))]  # by event tier
         self._shapes = {}
         cap = args.max_stream_records
         if cap is None:
@@ -165,7 +165,10 @@ class NullServer:
     def behavior_for(self, method):
         async def behavior(request, context):
             tn = type(request).__name__
-            self.request_types[tn] = self.request_types.get(tn, 0) + 1
+            ev_seq = self.rt.cur_seq  # event time: the planned tier is not parsed yet
+            ev_seq = len(self.tt) - 1 if ev_seq == POST_SEQ else max(ev_seq, 0)
+            types = self.request_types[ev_seq]
+            types[tn] = types.get(tn, 0) + 1
             if not self.first_type_printed:
                 self.first_type_printed = True
                 print("nullgrpc: first request object type = %s (method %s)" % (tn, method),
@@ -179,9 +182,8 @@ class NullServer:
                 m, offs, cum = self.shape(n, k, s)
             except (WireError, expect.ExpectError) as e:
                 why = str(e)
-                self.rejects[why] = self.rejects.get(why, 0) + 1
-                ev_seq = self.rt.cur_seq  # rejected requests have no planned tier: event time
-                ev_seq = len(self.tt) - 1 if ev_seq == POST_SEQ else max(ev_seq, 0)
+                rej = self.rejects[ev_seq]  # rejected requests have no planned tier: event time
+                rej[why] = rej.get(why, 0) + 1
                 self.c_rejected[ev_seq] += 1
                 await context.abort(grpc.StatusCode.INVALID_ARGUMENT, why)
                 return
@@ -405,8 +407,8 @@ class NullServer:
                     "wake_lag_ns": rt.hist_summary("lag.beat_wake", a["vals"], b["vals"]),
                     "attribution": "event time (step planned time)"},
                 "yielded_event_time": rt.slot_delta("backlog.yielded", a["vals"], b["vals"]),
-                "request_types": dict(self.request_types),
-                "rejects": dict(self.rejects),
+                "request_types": dict(self.request_types[seq]),
+                "rejects": dict(self.rejects[seq]),
                 "overflow": {"streams": self.stream_rec.overflow,
                              "steps": self.step_rec.overflow if self.step_rec else 0,
                              "lag": rt.lag_records.overflow if rt.lag_records else 0}})

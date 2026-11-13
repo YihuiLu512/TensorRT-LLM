@@ -90,3 +90,18 @@ def test_main_writes_once_and_refuses_overwrite(tmp_path):
     assert os.path.getsize(sched) > 0
     TierTable.load(out)
     assert tiergen.main(argv) == 3  # out exists
+
+
+def test_main_bad_schedule_out_writes_nothing(tmp_path):
+    """A refused --schedule-out must not leave a half registration (the tier table alone)."""
+    tpl = os.path.join(CONFIGS, "e0a-nullsse.tiers.template.json")
+    vals = tmp_path / "v.json"
+    vals.write_text(json.dumps({"schema": tiergen.VALUES_SCHEMA,
+                                "values": _sample(tiergen.tbd_names(_load(os.path.basename(
+                                    tpl))))}))
+    out, sched = str(tmp_path / "t.json"), str(tmp_path / "s.capbin")
+    open(sched, "wb").close()  # schedule path already taken
+    argv = ["--template", tpl, "--values", str(vals), "--out", out, "--schedule-out", sched,
+            "--max-rows", "100000"]
+    assert tiergen.main(argv) == 3
+    assert not os.path.exists(out)

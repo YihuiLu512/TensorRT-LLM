@@ -13,15 +13,17 @@ import importlib.util
 import json
 import os
 import shutil
-import subprocess
 import sys
 
 from capcommon.exitcodes import ENV_INVALID, OK, CapkitError
 from capcommon.hashing import sha256_bytes
 from capcommon.jsonio import write_json_stamped
-from capcommon.policy import FORBIDDEN_MOUNT_PATHS
+from capcommon.policy import FORBIDDEN_MOUNT_PATHS, paths_related
+from capenv import gpu as capgpu
 
 from . import jobident, snapshot
+
+GPU_QUERY_TIMEOUT_S = 60
 
 
 def _outcome(expected, passed):
@@ -31,7 +33,8 @@ def _outcome(expected, passed):
 
 
 def check_image(check_file):
-    """image_check.tsv (written by the batch step with coreutils): key<TAB>value lines."""
+    """image_check.tsv (written by the batch step with coreutils): key<TAB>value lines. The sha256
+    was computed by capjobs.submit; the job checks that size and mtime (ns) are unchanged."""
     kv = {}
     with open(check_file, "r", encoding="utf-8") as f:
         for line in f:
@@ -39,20 +42,24 @@ def check_image(check_file):
             if line:
                 k, _, v = line.partition("\t")
                 kv[k] = v
-    need = ("path", "expected_sha256", "expected_size", "measured_sha256", "measured_size")
+    need = ("path", "expected_sha256", "sha256_source", "expected_size", "expected_mtime_ns",
+            "measured_size", "measured_mtime_ns")
     missing = [k for k in need if not kv.get(k)]
-    ok = not missing and kv["expected_sha256"] == kv["measured_sha256"] \
-        and kv["expected_size"] == kv["measured_size"]
+    ok = not missing and kv["expected_size"] == kv["measured_size"] \
+        and kv["expected_mtime_ns"] == kv["measured_mtime_ns"]
     outcome, passed = _outcome(len(need), ok)
-    return {"path": kv.get("path"), "sha256": kv.get("measured_sha256"),
-            "size": kv.get("measured_size"), "expected_sha256": kv.get("expected_sha256"),
-            "expected_size": kv.get("expected_size"), "missing": missing,
+    return {"path": kv.get("path"), "sha256": kv.get("expected_sha256") if ok else None,
+            "sha256_source": kv.get("sha256_source"), "size": kv.get("measured_size"),
+            "mtime_ns": kv.get("measured_mtime_ns"), "expected_sha256": kv.get("expected_sha256"),
+            "expected_size": kv.get("expected_size"),
+            "expected_mtime_ns": kv.get("expected_mtime_ns"), "missing": missing,
             "passed": passed, "outcome": outcome}
 
 
 def check_mounts(mounts, must_read, forbidden=FORBIDDEN_MOUNT_PATHS):
     """Model libraries absent or empty; every mount dst and must-read path is readable and
-    non-empty (a missing mount looks like an empty directory)."""
+    non-empty (a missing mount looks like an empty directory), and neither it nor its realpath
+    equals, lies under or contains a model library path."""
     items = []
     for p in forbidden:
         if not os.path.lexists(p):
@@ -68,12 +75,17 @@ def check_mounts(mounts, must_read, forbidden=FORBIDDEN_MOUNT_PATHS):
                       "ok": empty})
     for kind, paths in (("mount", [m.split(":")[1] for m in mounts]), ("must_read", must_read)):
         for p in paths:
+            real = os.path.realpath(p)
+            libs = [f for f in forbidden for q in (p, real) if paths_related(q, f)]
             try:
                 ok = os.access(p, os.R_OK) and (not os.path.isdir(p) or bool(os.listdir(p)))
                 state = "readable, non-empty" if ok else "missing, unreadable or empty"
             except OSError as e:
                 ok, state = False, "error: %s" % e
-            items.append({"path": p, "kind": kind, "state": state, "ok": ok})
+            if libs:
+                ok, state = False, "path or realpath %s touches model library %s" % (
+                    real, sorted(set(libs)))
+            items.append({"path": p, "realpath": real, "kind": kind, "state": state, "ok": ok})
     outcome, passed = _outcome(len(items), all(i["ok"] for i in items))
     return {"mounts": list(mounts), "items": items, "expected_items": len(items),
             "passed": passed, "outcome": outcome}
@@ -92,32 +104,17 @@ def check_local_disk(paths, min_free):
     return {"min_free_bytes": min_free, "items": items, "passed": passed, "outcome": outcome}
 
 
-def _run(argv):
-    try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=60, check=False)
-        return r.returncode, r.stdout, r.stderr
-    except (OSError, subprocess.TimeoutExpired) as e:
-        return None, "", str(e)
+OUTCOME = {"PASS": "PASS", "RED": "FAIL", "NOT_RUN": "NOT_RUN"}
 
 
-def check_gpu_idle(nvidia_smi, expect_gpus):
-    """Positive control: the GPU query lists at least one GPU. Pass: no compute processes."""
-    q1 = [nvidia_smi, "--query-gpu=index,name,utilization.gpu,memory.used",
-          "--format=csv,noheader,nounits"]
-    q2 = [nvidia_smi, "--query-compute-apps=pid,used_memory", "--format=csv,noheader"]
-    rc1, out1, err1 = _run(q1)
-    rc2, out2, err2 = _run(q2)
-    gpus = [[c.strip() for c in ln.split(",")] for ln in out1.splitlines() if ln.strip()] \
-        if rc1 == 0 else []
-    apps = [ln.strip() for ln in out2.splitlines() if ln.strip()] if rc2 == 0 else None
-    positive = rc1 == 0 and len(gpus) >= 1
-    passed = positive and rc2 == 0 and apps == []
-    return {"queries": [{"cmd": q1, "rc": rc1, "stdout": out1, "stderr": err1},
-                        {"cmd": q2, "rc": rc2, "stdout": out2, "stderr": err2}],
-            "gpu_count": len(gpus), "gpus": gpus, "compute_apps": apps,
-            "expected_gpus_requested": expect_gpus, "positive_control_ok": positive,
-            "passed": passed, "outcome": "PASS" if passed else
-            ("NOT_RUN" if not positive else "FAIL")}
+def check_gpu_idle(nvidia_smi, max_alloc_gpus, timeout_s=GPU_QUERY_TIMEOUT_S):
+    """capenv.gpu.check_visible (the one implementation of the nvidia-smi queries): visible GPUs
+    == requested GPUs, positive control when >= 1 is requested, no compute process."""
+    doc = capgpu.check_visible(max_alloc_gpus, timeout_s, nvsmi=nvidia_smi)
+    doc["gpu_count"] = doc["visible_gpus"] or 0
+    doc["passed"] = doc["status"] == "PASS"
+    doc["outcome"] = OUTCOME[doc["status"]]
+    return doc
 
 
 def manifest_packages(manifest_doc):
@@ -165,7 +162,7 @@ def main(argv=None):
     ap.add_argument("--path", action="append", default=[])
     ap.add_argument("--min-free-bytes", type=int)
     ap.add_argument("--nvidia-smi")
-    ap.add_argument("--expect-gpus", type=int)
+    ap.add_argument("--max-alloc-gpus", type=int, help="gpu-idle: GPUs requested (job.env)")
     ap.add_argument("--dest")
     ap.add_argument("--manifest", help="imports: overlay manifest naming the packages")
     ap.add_argument("--snap")
@@ -183,7 +180,9 @@ def main(argv=None):
         elif a.what == "local-disk":
             doc = check_local_disk(a.path, a.min_free_bytes)
         elif a.what == "gpu-idle":
-            doc = check_gpu_idle(a.nvidia_smi, a.expect_gpus)
+            if not a.nvidia_smi or a.max_alloc_gpus is None:
+                raise ValueError("gpu-idle needs --nvidia-smi and --max-alloc-gpus")
+            doc = check_gpu_idle(a.nvidia_smi, a.max_alloc_gpus)
         elif a.what == "imports":
             with open(a.manifest, "r", encoding="utf-8") as f:
                 doc = check_imports(a.dest, manifest_packages(json.load(f)))

@@ -23,7 +23,7 @@
 | `--max-msg-records-per-worker N` | `msgs` 记录容量；`capkit` 格式下不给就按时间表与 `expect.msgs_per_request` 精确算出 |
 | `--lag-records-capacity N` | 事件循环延迟的逐样本记录（缺省 0 = 只有直方图） |
 
-`--request-format`：`capkit`（`wire.GRPC_REQ` 头 + prompt 字节，每请求现拼头部）、`openengine`（请求字节文件里的 `GenerateRequest` 模板前面拼上 `request_id` 字段：protobuf 解析把串接的序列化合并，所以发送路径上不建 protobuf 对象）、`raw`（新增取值：每请求同一段字节，没有请求号）。请求超时只读档位表的 `request_timeout_ns`，**从计划时刻起算**（发送时剩余时间 < 1 ms 时按 1 ms 发）；超时记 `timeout_registered`。
+`--request-format`：`capkit`（`wire.GRPC_REQ` 头 + prompt 字节，每请求现拼头部）、`openengine`（请求字节文件里的 `GenerateRequest` 模板前面拼上 `request_id` 字段：protobuf 解析把串接的序列化合并，所以发送路径上不建 protobuf 对象）、`raw`（新增取值：每请求同一段字节，没有请求号）。请求超时只读档位表的 `request_timeout_ns`，**从计划时刻起算**（发送时剩余时间 < 1 ms 时按 1 ms 发）；超时记 `timeout_registered`。请求处理中抛出的非 gRPC 异常（客户端自身故障）记 `client_error`（`class_hint = unclassified`），首次出现打印到标准错误。
 
 ## 进程结构
 

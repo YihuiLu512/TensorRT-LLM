@@ -8,11 +8,14 @@ Run inside the same job step and container as the processes under test. Writes i
 Exit 0 on PASS, 6 on ENV_INVALID, 3 on bad configuration.
 
 Items (RESOURCES.md 3, "in-job exclusivity"), each with the command, rc, stdout sha and source:
-  1 scontrol show job $JOB    rc 0; OverSubscribe=NO; GPUs in TRES <= --max-alloc-gpus (if given)
+  1 scontrol show job $JOB    rc 0; OverSubscribe=NO; GPUs in TRES <= --max-alloc-gpus
   2 scontrol show node $NODE  rc 0; CPUAlloc == CPUTot
   3 squeue -h -w $NODE -o '%i %u %T'   rc 0; own job listed (positive control); only that line
   4 /proc/self/status Cpus_allowed_list covers every online cpu
-  5 nvidia-smi: lists >= 1 GPU (positive control, else NOT_RUN) and no compute process
+  5 nvidia-smi (--nvidia-smi): visible GPUs == --max-alloc-gpus (the number requested) and no
+    compute process, by capenv.gpu.check_visible: requesting >= 1 needs a listed GPU first
+    (positive control, else NOT_RUN); requesting 0 needs nvidia-smi to report no GPU (the
+    positive control and the compute-process check are then NOT_RUN, "needs a listed GPU")
   6 idle window: per-core /proc/stat busy fraction <= --idle-busy-max-frac on every online
     core over --idle-window-s (pre phase only; the sidecar keeps watching during the run)
 Items 1-3 fall back to <job>/env/slurm_view.json (written from the login node by capjobs)
@@ -22,7 +25,11 @@ ENV_INVALID: an item that could not be checked never counts as passed.
 
 Pre phase also writes hw_gate.json (node profile sha vs the registered main-model sha; a
 mismatch passes only if every differing identity field is registered comparable in
---comparable-file) and memguard.json (memory limit read-back for this process and for every
+--comparable-file). --registered-hw-sha UNREGISTERED is the first job on a model that has no
+registered profile yet: the gate still reads the profile (hw_gate.json gets node_hw_sha, status
+NOT_RUN "profile not registered") and runs every item, and the verdict is always ENV_INVALID
+(exit 6), so the job stops after the gate and the profile can be registered. The pre phase also
+writes memguard.json (memory limit read-back for this process and for every
 pid in --roles-file when given). Post phase repeats items 1-5 into exclusivity.post.json.
 """
 
@@ -45,6 +52,7 @@ from .hwprofile import load_profile, parse_kv_tokens
 
 EXCL_SCHEMA = "capkit.exclusivity/1"
 HWGATE_SCHEMA = "capkit.hw_gate/1"
+UNREGISTERED = "UNREGISTERED"  # --registered-hw-sha value: collect the profile, never pass
 GATE_SCHEMA = "capkit.env_gate/1"
 COMPARABLE_SCHEMA = "capkit.hw_comparable/1"
 SLURM_VIEW_SCHEMA = "capkit.slurm_view/1"
@@ -124,16 +132,17 @@ def item1(src, job_id, max_gpus):
     kv = parse_kv_tokens(out)
     rec = {k: kv.get(k) for k in ("JobId", "OverSubscribe", "NumCPUs", "NumNodes", "NodeList",
                                   "TRES", "Partition")}
-    gpus = _gpus_in_tres(kv.get("TRES") or kv.get("AllocTRES"))
-    rec["alloc_gpus"] = gpus
+    tres = kv.get("TRES") or kv.get("AllocTRES")
+    gpus = _gpus_in_tres(tres)
+    rec["alloc_gpus"] = gpus if tres else None
     bad = []
+    if not tres:  # no TRES at all is an unreadable allocation, not "0 GPUs"
+        bad.append("no TRES / AllocTRES in the scontrol output: GPU allocation unreadable")
     if kv.get("JobId") != str(job_id):
         bad.append("JobId %r != %r (wrong job queried)" % (kv.get("JobId"), job_id))
     if kv.get("OverSubscribe") != "NO":
         bad.append("OverSubscribe=%r, need NO (exclusive)" % kv.get("OverSubscribe"))
-    if max_gpus is None:
-        rec["gpu_assertion"] = "not requested (--max-alloc-gpus not given)"
-    elif gpus > max_gpus:
+    if tres and gpus > max_gpus:
         bad.append("allocated GPUs %d > --max-alloc-gpus %d" % (gpus, max_gpus))
     rec["problems"] = bad
     return _item(1, cmd, rc, out, source, not bad, rec), kv
@@ -195,20 +204,20 @@ def item4(proc_root=procfs.PROC, sys_root=procfs.SYS):
                           "the mask are ignored)"})
 
 
-def item5(runner, timeout_s):
-    ok, count, pc = gpu_mod.positive_control(timeout_s, runner)
-    if not ok:
-        it = _item(5, pc.get("cmd"), pc.get("rc"), pc.get("stdout"), "container", False,
-                   {"why": "positive control failed: %s" % runcmd.why(pc)}, status="NOT_RUN")
-        it["positive_control_ok"] = False
-        return it
-    arec, apps = gpu_mod.query_apps(timeout_s, runner)
-    good = runcmd.ok(arec) and arec.get("reason") is None
-    it = _item(5, arec.get("cmd"), arec.get("rc"), arec.get("stdout"), "container",
-               good and not apps, {"gpu_count": count, "compute_apps": apps,
-                                   "why": None if good else runcmd.why(arec)},
-               status=None if good else "NOT_RUN")
-    it["positive_control_ok"] = True
+def item5(runner, timeout_s, expect_gpus, nvsmi):
+    v = gpu_mod.check_visible(expect_gpus, timeout_s, runner, nvsmi=nvsmi)
+    qs = v["queries"]
+    out = "".join(q.get("stdout") or "" for q in qs) if any(
+        q.get("stdout") is not None for q in qs) else None
+    rcs = [q.get("rc") for q in qs]
+    detail = {k: v[k] for k in ("expected_gpus", "visible_gpus", "nvidia_smi", "compute_apps",
+                                "count_check", "positive_control", "apps_check", "reasons")}
+    detail["gpu_count"] = v["visible_gpus"]
+    detail["queries"] = [{k: q.get(k) for k in ("cmd", "rc", "stdout_sha256", "reason")}
+                         for q in qs]
+    it = _item(5, [q.get("cmd") for q in qs], rcs[-1] if len(set(rcs)) == 1 else rcs, out,
+               "container", v["status"] == "PASS", detail, status=v["status"])
+    it["positive_control_ok"] = v["positive_control_ok"]
     return it
 
 
@@ -245,19 +254,33 @@ def item6(window_s, max_frac, proc_root=procfs.PROC, sys_root=procfs.SYS, sleep=
 
 
 def hw_gate(profile_path, registered_sha, comparable_file):
-    """(payload, passed). comparable_file None == --no-comparable."""
+    """(payload, passed). comparable_file None == --no-comparable. registered_sha UNREGISTERED:
+    status NOT_RUN and never passed, whatever the profile says."""
     out = {"registered_hw_sha": registered_sha, "node_hw_sha": None, "diff_fields": None,
            "comparable_fields": None, "comparable_file_sha256": None, "passed": False,
-           "why": None}
+           "status": "RED", "why": None, "profile_file": profile_path}
+    unregistered = registered_sha == UNREGISTERED
     try:
         prof, sha = load_profile(profile_path)
     except (ConfigError, OSError, ValueError, KeyError) as e:
         out["why"] = "hw_profile unreadable: %s" % e
+        out["status"] = "NOT_RUN"
+        if unregistered:
+            out["why"] = "profile not registered (--registered-hw-sha UNREGISTERED); " + out["why"]
         return out, False
     out["node_hw_sha"] = sha
     out["node_name"] = prof.get("node_name")
+    out["unreadable_identity_fields"] = sorted(
+        k for k, v in prof.items() if isinstance(v, dict) and "unreadable" in v)
+    if unregistered:
+        out["status"] = "NOT_RUN"
+        out["why"] = ("profile not registered (--registered-hw-sha UNREGISTERED): node_hw_sha "
+                      "recorded for registration; the gate never passes in this mode")
+        if comparable_file is not None:
+            out["why"] += "; --comparable-file ignored"
+        return out, False
     if sha == registered_sha:
-        out["passed"], out["why"] = True, "identical"
+        out["passed"], out["status"], out["why"] = True, "PASS", "identical"
         return out, True
     if comparable_file is None:
         out["why"] = "profile sha differs and --no-comparable"
@@ -281,6 +304,7 @@ def hw_gate(profile_path, registered_sha, comparable_file):
     out["diff_fields"], out["comparable_fields"] = diff, sorted(fields)
     not_cov = sorted(set(diff) - set(fields))
     out["passed"] = not not_cov
+    out["status"] = "PASS" if out["passed"] else "RED"
     out["why"] = "all differing fields registered comparable" if not not_cov else \
         "fields differ without comparability registration: %s" % not_cov
     return out, out["passed"]
@@ -293,6 +317,10 @@ def run_gate(args, ident, runner=runcmd.run, sleep=time.sleep):
     reasons, files = [], {}
     src = SlurmSource(args.slurm_view_file, args.slurm_view_wait_s, runner, args.timeout_s,
                       sleep=sleep)
+    if args.max_alloc_gpus is None:
+        raise ConfigError("--max-alloc-gpus is required (the GPU count requested from Slurm)")
+    if not args.nvidia_smi:
+        raise ConfigError("--nvidia-smi is required (the nvidia-smi executable to run)")
     it1, jobkv = item1(src, args.job_id, args.max_alloc_gpus)
     node = os.environ.get("SLURMD_NODENAME") or jobkv.get("NodeList")
     if not node:
@@ -304,7 +332,8 @@ def run_gate(args, ident, runner=runcmd.run, sleep=time.sleep):
     else:
         it2 = item2(src, node)
         it3 = item3(src, args.job_id, node)
-    items = [it1, it2, it3, item4(), item5(runner, args.timeout_s)]
+    items = [it1, it2, it3, item4(),
+             item5(runner, args.timeout_s, args.max_alloc_gpus, args.nvidia_smi)]
     if args.phase == "pre":
         items.append(item6(args.idle_window_s, args.idle_busy_max_frac, sleep=sleep))
     for it in items:
@@ -325,7 +354,7 @@ def run_gate(args, ident, runner=runcmd.run, sleep=time.sleep):
         write_json_stamped(p, HWGATE_SCHEMA, ident, hg)
         files["hw_gate.json"] = sha256_file(p)
         if not ok:
-            reasons.append("hw_gate: %s" % hg["why"])
+            reasons.append("hw_gate %s: %s" % (hg["status"], hg["why"]))
         pids = [os.getpid()]
         source = "gate process itself (same job step / container as the tested processes)"
         if args.roles_file:
@@ -339,9 +368,14 @@ def run_gate(args, ident, runner=runcmd.run, sleep=time.sleep):
         if mg["verdict"] != "PASS":
             reasons.append("memguard %s: no finite memory limit for pids %s"
                            % (mg["verdict"], mg["red_pids"]))
+    if args.registered_hw_sha == UNREGISTERED:
+        reasons.append("registered hw sha is UNREGISTERED: profile collection only, never PASS")
     verdict = "PASS" if not reasons else "ENV_INVALID"
     out = {"verdict": verdict, "phase": args.phase, "reasons": reasons, "files": files,
-           "items": {str(it["id"]): it["status"] for it in items}}
+           "items": {str(it["id"]): it["status"] for it in items},
+           "registered_hw_sha": args.registered_hw_sha}
+    if args.phase == "pre":
+        out["hw_gate"] = {"status": hg["status"], "node_hw_sha": hg["node_hw_sha"]}
     p = os.path.join(env_dir, "gate.%s.json" % args.phase)
     write_json_stamped(p, GATE_SCHEMA, ident, out)
     return out
@@ -352,17 +386,21 @@ def build_parser():
     add_identity_args(ap)
     ap.add_argument("--run-dir", required=True, help="the job directory (writes its env/)")
     ap.add_argument("--phase", required=True, choices=("pre", "post"))
-    ap.add_argument("--registered-hw-sha", required=True)
+    ap.add_argument("--registered-hw-sha", required=True,
+                    help="64 lowercase hex, or UNREGISTERED (collect the profile; exit 6)")
     cg = ap.add_mutually_exclusive_group(required=True)
     cg.add_argument("--comparable-file")
     cg.add_argument("--no-comparable", action="store_true")
     ap.add_argument("--slurm-view-file", required=True)
     ap.add_argument("--slurm-view-wait-s", type=float, required=True)
-    o = ap.add_argument_group("optional (not in INTERFACES.md 11; see tools/envgate/README.md)")
-    o.add_argument("--max-alloc-gpus", type=int, default=None)
-    o.add_argument("--idle-window-s", type=float, default=None,
-                   help="item 6 idle window; absent -> item 6 NOT_RUN -> ENV_INVALID")
-    o.add_argument("--idle-busy-max-frac", type=float, default=None)
+    ap.add_argument("--max-alloc-gpus", type=int, required=True,
+                    help="GPUs requested from Slurm: item 1 bound, item 5 visible count")
+    ap.add_argument("--nvidia-smi", required=True, help="nvidia-smi executable (item 5)")
+    ap.add_argument("--idle-window-s", type=float, default=None,
+                    help="item 6 idle window; required with --phase pre")
+    ap.add_argument("--idle-busy-max-frac", type=float, default=None,
+                    help="item 6 per-core busy bound in [0, 1]; required with --phase pre")
+    o = ap.add_argument_group("optional")
     o.add_argument("--hw-profile", help="default <run-dir>/env/hw_profile.json")
     o.add_argument("--roles-file", help="also read back memory limits of these pids")
     o.add_argument("--timeout-s", type=float, default=60.0, help="per external command")
@@ -372,8 +410,16 @@ def build_parser():
 def main(argv=None, runner=runcmd.run):
     args = build_parser().parse_args(argv)
     try:
-        if not is_sha256_hex(args.registered_hw_sha):
-            raise ConfigError("--registered-hw-sha must be 64 lowercase hex")
+        if args.registered_hw_sha != UNREGISTERED and not is_sha256_hex(args.registered_hw_sha):
+            raise ConfigError("--registered-hw-sha must be 64 lowercase hex or %s" % UNREGISTERED)
+        if args.max_alloc_gpus < 0:
+            raise ConfigError("--max-alloc-gpus must be >= 0")
+        if args.phase == "pre":
+            if args.idle_window_s is None or args.idle_busy_max_frac is None:
+                raise ConfigError("--phase pre needs --idle-window-s and --idle-busy-max-frac")
+            if not args.idle_window_s > 0 or not 0 <= args.idle_busy_max_frac <= 1:
+                raise ConfigError("--idle-window-s must be > 0 and --idle-busy-max-frac in "
+                                  "[0, 1]")
         if args.no_comparable:
             args.comparable_file = None
         ident = Identity(experiment=args.experiment, arm=args.arm, launch_seq=args.launch_seq,
@@ -385,6 +431,8 @@ def main(argv=None, runner=runcmd.run):
         print("capenv.gate: %s" % e, file=sys.stderr)
         return exitcodes.CONFIG
     print(json.dumps(out, sort_keys=True))
+    if args.registered_hw_sha == UNREGISTERED:
+        return exitcodes.ENV_INVALID  # profile collection only: never a pass, whatever happened
     return exitcodes.OK if out["verdict"] == "PASS" else exitcodes.ENV_INVALID
 
 

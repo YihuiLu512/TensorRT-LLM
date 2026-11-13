@@ -222,7 +222,8 @@ def build_manifest(tier, probe_tree, image_commit, base_commit, capkit_root, cap
             "unshipped_allowed": allowed, "sites": chosen, "sites_selection": selection,
             "patchcheck": None if patch_report is None else {
                 k: patch_report[k] for k in ("status", "expected_site_count",
-                                             "found_site_count", "rev")},
+                                             "found_site_count", "expected_location_count",
+                                             "found_location_count", "rev")},
             "created_wall": clock.wall_iso()}
 
 

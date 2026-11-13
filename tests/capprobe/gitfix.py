@@ -14,7 +14,7 @@ PATCHED_A = ("import asyncio\nimport capprobe as _capprobe\n\n\ndef read(x):\n  
              "    if _capprobe.ON_F2:\n        _capprobe.F2()\n    return y\n")
 SITE_LINE = 7
 TEST_SITES = {"F2": {"group": "count", "proc_kind": "frontend", "file": "tensorrt_llm/a.py",
-                     "line": SITE_LINE, "slots": ["count.F2.msgs"]}}
+                     "lines": [SITE_LINE], "slots": ["count.F2.msgs"]}}
 
 
 def git(repo, *args):

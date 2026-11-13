@@ -229,3 +229,53 @@ def test_canary_rate_drops_when_core_shared(tmp_path):
     rb = [r[1] for r in read_jsonl(b)[1][1:]]
     assert sum(rb) / len(rb) < 0.8 * (sum(ra) / len(ra)), (ra, rb)
     json.dumps([ra, rb])
+
+
+def test_sidecar_gpu_uses_explicit_path_and_keeps_unreadable(tmp_path):
+    """--nvidia-smi is the only nvidia-smi the sidecar runs (a different one first on PATH is
+    ignored); [N/A] utilization stays null and is counted in meta.unreadable, an app whose pid
+    reads [N/A] stays a compute process."""
+    side_cpu = sorted(os.sched_getaffinity(0))[-1]
+    tree = RunTree(str(tmp_path / "T")).make_skeleton()
+    _write_roles(tree, 1, [])
+    good = tmp_path / "drv" / "nvidia-smi"
+    decoy = tmp_path / "pathbin" / "nvidia-smi"
+    for p, gpu_line, app_line in (
+            (good, "0, GPU-a, 00000000:1B:00.0, NVIDIA B200, 183359, 0, [N/A], 570.1",
+             "00000000:1B:00.0, [N/A], 512"),
+            (decoy, "0, GPU-z, 00000000:1B:00.0, DECOY, 1, 0, 0, 1\n"
+                    "1, GPU-y, 00000000:2B:00.0, DECOY, 1, 0, 0, 1", "")):
+        p.parent.mkdir()
+        p.write_text("#!/bin/sh\ncase \"$1\" in --query-compute-apps*) printf '%s\\n'; exit 0;; "
+                     "esac\nprintf '%s\\n'\n" % (app_line, gpu_line) if app_line else
+                     "#!/bin/sh\ncase \"$1\" in --query-compute-apps*) exit 0;; esac\n"
+                     "printf '%s\\n'\n" % gpu_line)
+        p.chmod(0o755)
+    env = capenv_env(path="%s:/usr/bin:/bin" % decoy.parent)
+    side = subprocess.Popen(
+        [PY, "-m", "capenv.sidecar"] + id_args("sidecar") + [
+            "--run-dir", tree.root, "--cpus", str(side_cpu), "--stop-grace-s", "1",
+            "--shm-dir", str(tmp_path), "--origin-ns", str(time.monotonic_ns()),
+            "--roles-file", tree.roles_json, "--interval-ms", "200", "--out-dir", tree.sidecar(),
+            "--cpus-watch", str(side_cpu), "--gpu-every-s", "0.2", "--numa-every-s", "0",
+            "--logs-dir", str(tmp_path), "--ready-file", tree.ready_file("sidecar"),
+            "--gpu-timeout-s", "5", "--nvidia-smi", str(good)], env=env)
+    try:
+        assert wait_for(lambda: os.path.exists(tree.ready_file("sidecar")), 20)
+        # every thread besides the main one is declared in info.threads (the orchestrator
+        # cannot identify an undeclared Python thread, and C13 counts it red)
+        declared = read_json(tree.ready_file("sidecar"))["info"]["threads"]
+        live = {int(t) for t in os.listdir("/proc/%d/task" % side.pid)} - {side.pid}
+        assert live and {int(t) for t in declared} == live, (declared, live)
+        assert set(declared.values()) == {"capenv-sidecar-slow"}
+        time.sleep(1.2)
+        side.send_signal(signal.SIGTERM)
+        assert side.wait(timeout=30) == 0
+    finally:
+        kill_all([side])
+    gh, gr = read_jsonl(tree.sidecar("gpu.jsonl"), "capkit.sidecar.gpu/1")
+    assert gh["positive_control_ok"] is True and gh["gpu_count"] == 1  # not the 2-GPU decoy
+    assert gr and all(r[5] == 0 and r[2] is None and r[4] == [None] for r in gr)
+    meta = read_json(tree.sidecar("meta.json"))
+    assert meta["stats"]["gpu_util_unreadable_rows"] == len(gr)
+    assert "gpu_util" in meta["unreadable"]

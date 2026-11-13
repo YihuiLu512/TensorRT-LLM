@@ -137,7 +137,17 @@ def test_slot_and_site_tables_consistent():
     assert set(sites.SITES) == set(sites.COUNT_SITES) | set(sites.LAG_SITES)
     assert set(sites.SITE_NOTES) == set(sites.SITES)
     for site, d in sites.SITES.items():
-        assert set(d) == {"group", "proc_kind", "file", "line", "slots"}
+        assert set(d) == {"group", "proc_kind", "file", "lines", "slots"}
+        assert d["lines"] and d["lines"] == sorted(set(d["lines"])), site
+        assert set(sites.SITE_NOTES[site]) == {"what"}  # no line numbers outside SITES
         for slot in d["slots"]:
             assert sites.SLOTS[slot]["site"] == site and sites.SLOTS[slot]["group"] == d["group"]
     assert set(sites.IMPLEMENTED_GROUPS) | set(sites.RESERVED_GROUPS) == set(sites.ALL_GROUPS)
+
+
+def test_sites_for_groups_returns_copies():
+    got = sites.sites_for_groups(("count",))
+    assert set(got) == set(sites.COUNT_SITES)
+    got["F4"]["lines"].append(1)
+    got["F4"]["slots"].append("x")
+    assert 1 not in sites.SITES["F4"]["lines"] and "x" not in sites.SITES["F4"]["slots"]

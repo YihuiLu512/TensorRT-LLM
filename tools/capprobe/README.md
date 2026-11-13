@@ -20,23 +20,27 @@
 - 任何组或注入打开时，`CAPPROBE_SHM_DIR`（绝对路径）、`CAPPROBE_INTERVAL_MS`、`CAPPROBE_IDENTITY_FILE` 必需；`lag` 打开时 `CAPPROBE_LAG_PERIOD_US` 必需。
 - 注入只支持位点 `H1`、`H3`、`F2`、`F4`，模式只支持 `busy`、`sleep`、`miscount`；`miscount` 要求 `count` 组打开（否则误计不可见）。注入打开时，四个位点都会经过注入器，没有规格的位点也计 `inject.<site>.hits`。
 
-## 位点（`capprobe.SITES`；行号是打过补丁的探针树里守卫 `if` 所在行）
+## 位点（`capprobe.SITES`）
 
-| 位点 | 文件:行 | 槽 | 一次经过的含义 |
+文件与行号只以 `capprobe.SITES` 为准（`lines` 是打过补丁的探针树里每处守卫 `if` 所在行；同一事件有几条代码路径，就在每条路径上放同一个守卫调用、列几个行号，共用一个槽）。本表不复述行号。
+
+| 位点 | 文件 | 槽 | 一次经过的含义 |
 |---|---|---|---|
-| H1 | `tensorrt_llm/serve/responses_utils.py:3539` | `count.H1.arrivals` | 每个 `http` 类型的 ASGI 请求（含健康检查） |
-| H3 | `tensorrt_llm/serve/openai_server.py:3064` | `count.H3.chunks` | `completion_generator` 每个 `pp_res`（只有 `/v1/completions` 流；chat 流未打点） |
-| F2 | `tensorrt_llm/grpc/openengine_client/stream.py:267` | `count.F2.msgs` | `_read` 读到的每条消息（不含 EOF 与本地取消；含终止事件之后排空读到的） |
-| F4 | `tensorrt_llm/serve/openengine_poc/facade.py:1628` | `count.F4.dequeued` | 非 postproc 池路径每个出队的事件项（结束标记与错误项不计） |
-| Lfe | `tensorrt_llm/serve/openengine_poc/launch.py:135` | `lag.Lfe`（hist）及 `.n/.sum/.max/.neg`、`lag.Lfe.installs` | 单前端事件循环 |
-| Lmfl | `tensorrt_llm/serve/openengine_poc/multi_frontend.py:485` | `lag.Lmfl` … | 多前端的 launcher 循环 |
-| Lmfa | `tensorrt_llm/serve/openengine_poc/multi_frontend.py:649` | `lag.Lmfa` … | 多前端的附属前端循环 |
+| H1 | `tensorrt_llm/serve/responses_utils.py` | `count.H1.arrivals` | 路径以 `/v1/` 开头的每个 `http` 类型 ASGI 请求（健康检查、`/metrics` 等不计） |
+| H3 | `tensorrt_llm/serve/openai_server.py` | `count.H3.chunks` | `completion_generator` 每个 `pp_res`（只有 `/v1/completions` 流；chat 流未打点） |
+| F2 | `tensorrt_llm/grpc/openengine_client/stream.py` | `count.F2.msgs` | `_read` 读到的每条消息（不含 EOF 与本地取消；含终止事件之后排空读到的） |
+| F4 | `tensorrt_llm/serve/openengine_poc/facade.py` | `count.F4.dequeued` | 每请求队列里出队的每个事件项，两条出队路径都计：无 postproc 池时的 `__anext__`、有池时的 `_feed`（结束标记与错误项不计） |
+| Lfe | `tensorrt_llm/serve/openengine_poc/launch.py` | `lag.Lfe`（hist）及 `.n/.sum/.max/.neg`、`lag.Lfe.installs` | 单前端事件循环；`facade.start()` 返回之后、HTTP 服务启动之前安装 |
+| Lmfl | `tensorrt_llm/serve/openengine_poc/multi_frontend.py` | `lag.Lmfl` … | 多前端的 launcher 循环；全部附属前端连上之后、开始服务之前安装 |
+| Lmfa | `tensorrt_llm/serve/openengine_poc/multi_frontend.py` | `lag.Lmfa` … | 多前端的附属前端循环；launcher 开始监听之后、开始服务之前安装 |
 
-注入心跳槽：`inject.<H1|H3|F2|F4>.{hits,applied,applied_ns}`。机器可读清单：`capprobe.SLOTS`（组打开时在导入时一次性登记，没经过的位点表现为「槽在、值为 0」）。`SITE_NOTES` 记着设计稿在基线提交上的行号，仅供对照。
+三个安装点都在各自 `try`（其 `finally` 负责关闭 facade 等清理）之内，所以安装出错时清理照常执行；启动期的事件循环阻塞不进 `lag.*`。
+
+注入心跳槽：`inject.<H1|H3|F2|F4>.{hits,applied,applied_ns}`。机器可读清单：`capprobe.SLOTS`（组打开时在导入时一次性登记，没经过的位点表现为「槽在、值为 0」）。`SITE_NOTES` 只写每个位点「一次经过」的含义。
 
 ## 运行时
 
-- 位点写法：`if _capprobe.ON_F2: _capprobe.F2()`；关闭时只剩一次模块属性读取与一次分支。
+- 位点写法：`if _capprobe.ON_F2: _capprobe.F2()`（守卫可以是 `ON_<site> and <条件>`，条件只在位点打开时求值）；关闭时只剩一次模块属性读取与一次分支。
 - 快照：后台线程每 `CAPPROBE_INTERVAL_MS` 写 `<CAPPROBE_SHM_DIR>/<pid>.bin`（`capcommon.snapshot`），进程正常退出时再写一份终值。元数据里 `identity` 取自 `CAPPROBE_IDENTITY_FILE`（`pid` 换成本进程的），另有 `probe`（档位、组、注入规格、`sites_on`）。
 - 版本自报（D11）：导入时写一份（`loop_impl` 为 null）；`install_loop_lag` 之后带上循环类与 `probe_loops`；产品在 `capprobe` 之后才 import `grpc` 的，写快照线程发现后自动刷新 `grpc`、`protobuf`、`protobuf_impl`。
 - `fork`：子进程里计数清零、换成子进程自己的 pid 与写快照线程、辅助线程重建；事件循环探针不继承。
@@ -52,4 +56,6 @@
 
 ## patchcheck 检查什么
 
-相对基线（缺省比工作树，即覆盖时实际会拷贝的内容）：只改 `tensorrt_llm/**.py`、只增不删；每个改动文件能编译；`_capprobe` 只出现在模块级 `import capprobe as _capprobe`、`if` 守卫、守卫体内唯一的那条位点调用里；找到的位点与 `SITES` 逐个对上（应检数取自 `SITES`，为 0 记 NOT_RUN）；每一行新增都属于导入或某个位点。
+相对基线（缺省比工作树，即覆盖时实际会拷贝的内容）：只改 `tensorrt_llm/**.py`、只增不删；每个改动文件能编译；`_capprobe` 只出现在模块级 `import capprobe as _capprobe`、`if` 守卫、守卫体内唯一的那条位点调用里；找到的位点与 `SITES` 逐个对上：每个位点只在它的 `file` 里、恰好出现在 `lines` 所列的每一行（应检的位点数与位置数取自 `SITES`，位点数为 0 记 NOT_RUN）；每一行新增都属于导入或某个位点。
+
+`tests/capprobe` 里读真实补丁的用例（`test_patchcheck.py::test_real_probe_tree_cli`、`test_overlay.py::test_real_image_to_baseline_range`、`test_probe_tree_sites.py`）依赖仓库旁的探针树 `probe-tree/`（TRT-LLM worktree，分支 capprobe-J17871）；探针树缺失时这些用例报错，不跳过。

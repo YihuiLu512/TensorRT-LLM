@@ -7,20 +7,20 @@
 
 | 文件 | 在哪里跑 | 作用 |
 |---|---|---|
-| `capjobs/submit.py` | agent VM（`python3.11`，只用标准库） | 唯一提交入口：`probe`、`submit`、`local-record`、`slurm-view`、`jobstate`、`record-end`、`exclude`、`prep-tokenizer`（只 dry-run） |
-| `capjobs/remote.py` | VM | ssh 命令构造与唯一执行点；远端命令白名单 `sbatch squeue sacct scontrol show cdb find`（没有 `scancel`） |
-| `capjobs/resources.py` | VM | 资源参数校验与 sbatch 参数拼装（新写，不继承 WT-21 的资源段） |
-| `capjobs/snapshot.py` | VM / 容器 | 不可变快照目录与 `MANIFEST.json`；`verify()` 在作业开头重算 |
-| `capjobs/cdbexclude.py` | VM | 从 `cdb find … -o csv` 输出算 `--exclude` |
-| `capjobs/jobstate.py` | VM | 作业结束判据（RESOURCES §4） |
-| `capjobs/slurmview.py` | VM | `<作业目录>/env/slurm_view.json`（INTERFACES §5.5.2） |
-| `capjobs/launchplan.py` | VM / 容器 | 启动计划 `capkit.launch_plan/1` 的校验与占位符替换 |
-| `capjobs/overlay.py` | 容器 | 覆盖清单拷进 site-packages，逐字节读回核对 → `env/overlay_verify.json` |
-| `capjobs/envfiles.py` | 容器 | `env/image.json`、`mounts.json`、`local_disk.json`、`gpu_idle.json`、`import_origin.json`、`job.json` |
-| `capjobs/launches.py` | 容器 | 逐个启动编排器、拷回、核对、`raw/` 只读、写第一行 `STATE` |
-| `capjobs/copyback.py` | 容器 | 拷回与核对；收尾 `sweep` |
-| `capkit_job.sbatch` | 计算节点宿主（批处理层，不用 Python） | 作业目录、镜像大小与 sha256、`srun` 进容器、兜底收尾步骤 |
-| `capkit_inner.sh` | 容器内（与被测进程同一 srun 步骤） | 本地盘目录、覆盖、环境文件、门禁、启动、收尾删除 |
+| `tools/capjobs/submit.py` | agent VM（`python3.11`，只用标准库） | 唯一提交入口：`probe`、`submit`、`reconcile-submit`、`local-record`、`slurm-view`、`jobstate`、`record-end`、`exclude`、`prep-tokenizer`（只 dry-run） |
+| `tools/capjobs/remote.py` | VM | ssh 命令构造与唯一执行点；远端命令白名单 `sbatch squeue sacct scontrol show cdb find`（没有 `scancel`） |
+| `tools/capjobs/resources.py` | VM | 资源参数校验与 sbatch 参数拼装（新写，不继承 WT-21 的资源段） |
+| `tools/capjobs/snapshot.py` | VM / 容器 | 不可变快照目录与 `MANIFEST.json`；`verify()` 在作业开头重算 |
+| `tools/capjobs/cdbexclude.py` | VM | 从 `cdb find … -o csv` 输出算 `--exclude` |
+| `tools/capjobs/jobstate.py` | VM | 作业结束判据（RESOURCES §4） |
+| `tools/capjobs/slurmview.py` | VM | `<作业目录>/env/slurm_view.json`（INTERFACES §5.5.2） |
+| `tools/capjobs/launchplan.py` | VM / 容器 | 启动计划 `capkit.launch_plan/1` 的校验与占位符替换 |
+| `tools/capjobs/overlay.py` | 容器 | 覆盖清单拷进 site-packages，逐字节读回核对 → `env/overlay_verify.json` |
+| `tools/capjobs/envfiles.py` | 容器 | `env/image.json`、`mounts.json`、`local_disk.json`、`gpu_idle.json`、`import_origin.json`、`job.json` |
+| `tools/capjobs/launches.py` | 容器 | 逐个启动编排器、拷回、核对、`raw/` 只读、写第一行 `STATE` |
+| `tools/capjobs/copyback.py` | 容器 | 拷回与核对；收尾 `sweep` |
+| `capkit_job.sbatch` | 计算节点宿主（批处理层，不用 Python） | 作业目录、镜像大小与 mtime（sha256 由提交端算）、`srun` 进容器、兜底收尾步骤 |
+| `capkit_inner.sh` | 容器内（与被测进程同一 srun 步骤） | 本地盘目录、覆盖、环境文件、硬件画像、门禁、启动、收尾删除 |
 | `prep_tokenizer.sbatch.draft` | 计算节点宿主（草稿，**需用户批准**） | 只拷白名单里的非权重文件，写 `SHA256SUMS.txt` 与 `PROVENANCE.txt` |
 
 ## 调用方式
@@ -35,59 +35,72 @@
 - `submit`：顺序固定，任一不过即退出码 3，不写台账、不建快照、不调 ssh：
   1. 启动计划校验；`--experiment`、`--register-sha`、`--arms`、`--launches` 必须与计划逐字一致；
   2. `--basis` 必须是 `<W>/STATUS.md` 里完整的一行；
-  3. `policy.check_no_model_submission`（白名单、GPU ≤ 1、挂载不碰模型库、tokenizer 副本无权重无软链、依据非空）；
-  4. 资源参数校验；计划里各启动的 `budget_s + margin_s` 之和不超过 `--time`；
+  3. `policy.check_no_model_submission`（白名单、GPU ≤ 1、挂载的字面路径与 realpath 都不碰模型库、tokenizer 副本无权重无软链、依据非空）；
+  4. 资源参数校验；
   5. 挂载覆盖：运行根、本地盘根、shm 根（要 rw）、快照根与 tokenizer 目录（ro 即可）及其 realpath 都在某个「源 = 目的」的挂载之下；
-  6. 登记表 sha 在 `<W>/REGISTRY.tsv` 里且 `kind=register`；
-  7. 镜像文件存在且大小等于 `--image-size`（sha256 在作业里算）；
-  8. 覆盖清单 `non_python_changed == []`、`capkit_code_sha` 等于代码仓 HEAD、每个源文件 sha 与清单一致；
-  9. 快照路径下（`jobs/`、`tools/`、`--include`）没有未提交的改动（`--dry-run` 只报告 `would_refuse_dirty`）。
-  之后：建快照（只读）→ 写 `PLANNED` 行 → ssh `sbatch --parsable` → 写 `SUBMITTED` 行（作业号、`submitted_at`）；失败写 `ENDED`/`SUBMIT_FAILED`，退出码 4。
+  6. 登记表 sha 在 `<W>/REGISTRY.tsv` 里且 `kind=register`；按该行的 `relpath` 读 `register.json`，现算 sha 必须等于 `--register-sha`，取它的 `environment` 段（见下）；`--gpus` 必须等于 `environment.gpus`（为 0 时打印一行警告：判定器的 GPU-IDLE 会 NOT_RUN）；
+  7. 时间预算：各启动 `budget_s + kill_grace_s + margin_s` 之和，加门禁空转窗口 `idle_window_s`、`slurm_view.json` 最长等待 `slurm_view_wait_s`，不超过 `--time`；
+  8. 镜像：大小等于 `--image-size`，在提交端算一次 sha256 并等于 `--image-sha256`；大小、`mtime_ns` 与 sha 写进 `job.env`，作业里只核大小与 `mtime_ns`（不在分配里重算整份镜像）；
+  9. `--registered-hw-sha` 是 64 位十六进制或 `UNREGISTERED`（只采画像的作业，见下）；
+  10. 覆盖清单 `non_python_changed == []`、`capkit_code_sha` 等于代码仓 HEAD、每个源文件 sha 与清单一致；
+  11. 快照路径下（`jobs/`、`tools/`、`--include`）没有未提交的改动（`--dry-run` 只报告 `would_refuse_dirty`）。
+  之后：建快照（只读）→ 写 `PLANNED` 行（`reason` 列是用途标记 `purpose=measurement` 或 `purpose=hw_profile_capture`）→ ssh `sbatch --parsable` → 写 `SUBMITTED` 行（作业号、`submitted_at`）。sbatch 明确报错（退出码不是 0、255，也不是 ssh 起不来或超时）写 `ENDED`/`SUBMIT_FAILED`；**结果不明**（ssh 超时或失败、sbatch 退出 0 却没有作业号）写 `NOTE` 行，`status` 为 `UNKNOWN_SUBMIT`（台账正式状态，只能出现在带 `submitted_at` 的 `NOTE` 行上；之后的 `SUBMITTED` / `ENDED` 行取代它）、`reason` 以用途标记开头、`submitted_at` 是这次 sbatch 的时刻：作业可能已经排队，计划保持打开，`record-end` 拒绝它，脚本不重投。两种情况退出码都是 4。
+- `reconcile-submit`：只处理 `UNKNOWN_SUBMIT` 的计划，由人在查过 squeue / sacct 之后调用，凭证据落状态：`--job-id J` 要求 `scontrol show job J` 的 `Command=` 恰为本计划快照里的 `jobs/capkit_job.sbatch`，或运行根下 `J<J>-r*/batch.tsv` 写着本计划号 → `SUBMITTED`（`submitted_at` 沿用 sbatch 的时刻）；`--not-submitted` 要求 `squeue -h --me -o '%i %o'` 退出 0 且没有一行含本计划快照目录、运行根下也没有写着本计划号的 `batch.tsv` → `ENDED`/`SUBMIT_FAILED`。证据不够就退出码 3，不写台账。
 - `local-record`：本机运行（作业号 `local-*`）的 `PLANNED` + `SUBMITTED` 两行，同样过五项断言、依据行与登记表检查。
 - `exclude`：`--cdb-file`（离线，如 `00_plan/cluster-probe/20261113/02d_cdb_b200.csv`）或 `--live`（经 ssh `cdb find`，原文先落 `--raw-out`）；`--main-profile-spec`（`capkit.cdb_main_profile/1`，显式列出画像字段与取值）；输出 `capkit.cdb_exclude/1`，`submit --exclude-file` 读它（分区必须与 `--partition` 相同）。给定分区里一台节点都没有 → 报错（NOT_RUN），没有一台符合主画像 → 报错（无阳性对照）。
-- `jobstate`：退出码 0 = ENDED（`squeue -h -j J` 退出码 0 且输出为空，**并且** `sacct` 给出终态）、20 = 未结束、21 = 不知道（任一命令出错）。
-- `record-end`：写 `ENDED` 行；集群作业必须先过 `jobstate` 的 ENDED 判据，`--status` 只能是 VALID / VOID / NOT_RUN / ENV_INVALID / CANCELLED。
+- `jobstate`：退出码 0 = ENDED（squeue 不再列出该作业，**并且** `sacct` 给出终态）、20 = 未结束、21 = 不知道（任一命令出错）。「不再列出」= `squeue -h -j J` 退出 0 且输出为空，或退出非 0 且 stderr 是 `Invalid job id specified`（作业已被 slurmctld 清出内存，此时只看 sacct）；其他 squeue 错误一律 21。
+- `record-end`：写 `ENDED` 行（`reason` 前面带上计划的用途标记）；集群作业必须先过 `jobstate` 的 ENDED 判据，`--status` 只能是 VALID / VOID / NOT_RUN / ENV_INVALID / CANCELLED；`UNKNOWN_SUBMIT` 的计划先走 `reconcile-submit`。
 - `slurm-view`：`scontrol show job`、`scontrol show node <NodeList>`、`squeue -h -w <node> -o '%i %u %T'` 原文与 sha 写进 `<作业目录>/env/slurm_view.json`；作业目录必须已存在（由作业建）。
 - `prep-tokenizer`：草稿，只接受 `--dry-run` 并打印命令；不带 `--dry-run` 退出码 3。
+
+## 登记表的 `environment` 段（`register.json` 顶层，必填）
+
+```json
+"environment":{"gpus":1,"idle_window_s":30,"idle_busy_max_frac":0.02,"slurm_view_wait_s":300,"chassis_source":"slurm_view"}
+```
+
+恰好这五个键：`gpus`（向 Slurm 申请的 GPU 数，0 或 1；不加载模型的作业取 1，使 GPU-IDLE 有阳性对照）、`idle_window_s`（门禁第 6 项的空转窗口，(0, 3600]）、`idle_busy_max_frac`（第 6 项每核忙碌比例上限，(0, 1]）、`slurm_view_wait_s`（等 `slurm_view.json` 的最长秒数，(0, 3600]）、`chassis_source`（`slurm_view` 或 `dmi`，传给 `capenv.hwprofile`）。`submit` 把它们写进 `job.env`（`CAPJOBS_MAX_ALLOC_GPUS`、`CAPJOBS_IDLE_WINDOW_S`、`CAPJOBS_IDLE_BUSY_MAX_FRAC`、`CAPJOBS_SLURM_VIEW_WAIT_S`、`CAPJOBS_CHASSIS_SOURCE`），内层脚本显式传给各检查；没有缺省值，缺段或多键即拒绝提交。
 
 ## 启动计划 `capkit.launch_plan/1`
 
 ```json
 {"schema":"capkit.launch_plan/1","experiment":"E0","register_sha":"<64hex>","job_arm":"job","margin_s":120,
+ "kill_grace_s":120,
  "launches":[{"launch_seq":0,"arm":"nullsse-a","budget_s":900,
               "argv":["{PY}","-m","caplaunch","--scenario","{SNAP}/configs/e0/x.json","…"]}]}
 ```
 
-占位符只有 `{PY} {SNAP} {JOB_DIR} {SHM_ROOT} {LOCAL_ROOT} {JOB_ID} {RESTART_COUNT}`。身份参数（`--experiment --arm --launch-seq --job-id --restart-count --register-sha --role launch --run-dir`）由 `capjobs.launches` 追加，计划里出现即拒绝——身份只有一个来源。
+`kill_grace_s`：超出 `budget_s` 的启动收到 SIGTERM 后，等多久再对整棵进程树 SIGKILL。`submit` 与作业内的 `capjobs.launches` 都核对它不小于每个启动的编排器最坏收尾时长 = 场景 `stop_order` 角色数 × (`stop_grace_s` + `--kill-after-s`) + 2 × `--kill-after-s`（`launchplan.check_kill_grace`），所以每个启动的 argv 必须带 `--scenario {SNAP}/…`（该文件要在快照里，即在 `jobs`、`tools` 或某个 `--include` 下）与 `--kill-after-s`，否则拒绝。占位符只有 `{PY} {SNAP} {JOB_DIR} {SHM_ROOT} {LOCAL_ROOT} {JOB_ID} {RESTART_COUNT}`。身份参数（`--experiment --arm --launch-seq --job-id --restart-count --register-sha --role launch --run-dir`）与 `--overlay-manifest`、`--nvidia-smi`、`--job-env-dir <作业目录>/env` 由 `capjobs.launches` 追加，计划里出现即拒绝——每个只有一个来源。
 
 ## 作业内的顺序
 
-批处理层（`capkit_job.sbatch`）：建 `runs/J<作业号>-r${SLURM_RESTART_COUNT:-0}/`（已存在即退出）→ `stat` + `sha256sum` 核对镜像（不符：作业级 `STATE` 写 `ENV_INVALID`，退出码 6，不起容器）→ `srun --cpus-per-task=$SLURM_CPUS_PER_TASK --cpu-bind=none --mpi=<参数> --container-image … --container-mounts=<参数> --no-container-mount-home --container-remap-root --container-writable` 跑 `capkit_inner.sh … run` → 没有 `finalize.done` 时再起一个 `finalize-only` 步骤兜底。
+批处理层（`capkit_job.sbatch`）：建 `runs/J<作业号>-r${SLURM_RESTART_COUNT:-0}/`（已存在即退出）→ `stat` 与 `date -r` 核对镜像大小与 `mtime_ns` 仍是提交时记下的值（不符：作业级 `STATE` 写 `ENV_INVALID`，退出码 6，不起容器）→ `srun --cpus-per-task=$SLURM_CPUS_PER_TASK --cpu-bind=none --mpi=<参数> --container-image … --container-mounts=<参数> --no-container-mount-home --container-remap-root --container-writable` 跑 `capkit_inner.sh … run` → 没有 `finalize.done` 时再起一个 `finalize-only` 步骤兜底。
 
-容器内（`capkit_inner.sh run`）：建 `<本地盘>/<用户>-<作业号>` 与 `<shm>/<用户>-<作业号>`（已存在即 ENV_INVALID）→ 覆盖并逐字节核对 → `unset PYTHONPATH`，核对 capkit 包都从 site-packages 导入 → `job.json`（快照重算核对）、`image.json`、`mounts.json`（模型库不存在或为空、各挂载非空可读）、`local_disk.json`、`gpu_idle.json`（阳性对照：查询列出至少一张 GPU）→ `--mpi=none` 时清掉 `PMIX_*`、`PMI_*`、`SLURM_*` → 门禁 `python -m <--gate-module> --run-dir <作业目录> --phase pre …`（身份参数 `--role gate`）→ `capjobs.launches`。任一步不过：作业级 `STATE` 写 `ENV_INVALID`，退出码 6。
+容器内（`capkit_inner.sh run`）：建 `<本地盘>/<用户>-<作业号>-r<重启次数>` 与 `<shm>/<用户>-<作业号>-r<重启次数>`（已存在即 ENV_INVALID；重排队到同一节点不会撞上上一轮留下的目录）→ 覆盖并逐字节核对 → `unset PYTHONPATH`，核对 capkit 包都从 site-packages 导入 → `job.json`（快照重算核对）、`image.json`、`mounts.json`（模型库不存在或为空；各挂载非空可读，且路径与 realpath 都不碰模型库）、`local_disk.json`、`gpu_idle.json`（`capenv.gpu.check_visible`：可见 GPU 数等于登记的 `gpus`，申请 ≥1 张时先要列出 ≥1 张，无计算进程）→ `--mpi=none` 时清掉 `PMIX_*`、`PMI_*`、`SLURM_*` → `chassis_source` 为 `slurm_view` 时等 `env/slurm_view.json` 出现（最多 `slurm_view_wait_s` 秒）→ `capenv.hwprofile` 写 `env/hw_profile.json`、`env/hw_raw.json` → 门禁 `python -m <--gate-module> --run-dir <作业目录> --phase pre --hw-profile … --max-alloc-gpus … --idle-window-s … --idle-busy-max-frac … --nvidia-smi …`（身份参数 `--role gate`）→ `capjobs.launches`。任一步不过：作业级 `STATE` 写 `ENV_INVALID`，退出码 6。`--registered-hw-sha UNREGISTERED` 的作业照常写画像，门禁按约定以 ENV_INVALID 结束，`STATE` 原因写明「profile-only job」；它的台账行带 `purpose=hw_profile_capture`，不算作环境失败。
 
-收尾（`EXIT` trap，两种模式都走）：`capjobs.copyback sweep` 把本地盘与 shm 下的全部内容拷回并核对（文件数、总字节、逐项大小）→ 只有核对通过（或本地根下一个普通文件都没有，记 `EMPTY`）时，对每个根先断言路径逐字等于 `<base>/<用户>-<作业号>`，再过 `python -m capcommon.scratchpath`，最后 `rm -rf -- "${p:?}"` → 写 `finalize.done`。
+收尾（`EXIT` trap，两种模式都走）：只处理本轮拥有的节点本地目录——`run` 模式是本轮 `mkdir` 成功的那几个，`finalize-only` 模式是存在、不是软链、属主是本用户的那几个；不属于本轮的目录不拷、不删。`capjobs.copyback sweep` 把它们下面的全部内容拷回并核对（文件数、总字节、逐个文件的大小与 sha256；启动树顶层的 `STATE` 只许追加，副本必须以原件的字节开头）→ 只有核对通过（或一个普通文件都没有，记 `EMPTY`）时，对每个根先断言路径逐字等于 `<base>/<用户>-<作业号>-r<重启次数>`，再过 `python -m capcommon.scratchpath`（`--job-id` 传 `<作业号>-r<重启次数>`），最后 `rm -rf -- "${p:?}"` → 写 `finalize.done`。
 
-每个启动树的第一行 `STATE`（`capjobs.launches`，拷回核对之后）：拷回未核对 → VOID；`control/stop.json` 的 `reason` 为 `not_ready_before_origin` → NOT_RUN；编排器退出码 0 → VALID；6 → ENV_INVALID（其后的启动全部跳过、记 NOT_RUN）；超时或其他退出码 → VOID。剩余时间不足 `budget_s + margin_s` 的启动不跑、记 NOT_RUN。
+每个启动在 `capjobs.launches` 里：剩余时间不足 `budget_s + kill_grace_s + margin_s` 就不跑、记 NOT_RUN；运行时每 0.5 s 记下编排器的全部后代（`launches` 自己是 child subreaper，编排器的角色即使在自己的会话里、父进程退出，也会挂到它下面）；编排器退出（或超时被杀）后，仍活着的后代先 SIGTERM，`kill_grace_s` 后 SIGKILL，逐个记进 `launches.json` 的 `leftovers`，然后才拷回。启动树里 `capjobs.launches` 写的那行 `STATE`（拷回核对之后）：拷回未核对 → VOID；超时被杀 → VOID；否则以编排器自己在树里写的最后一行 `STATE` 为准（例如清空门超时是 VALID、退出码 5），只有它写 VALID 而退出码不是 0 或 5 时改判 VOID；编排器没写 `STATE` 时才按退出码：`control/stop.json` 的 `reason` 为编排器的提前停止原因之一（`not_ready_before_origin`、`overlay_manifest_missing`、`job_env_dir_missing`、`orchestrator_signalled`）且退出码为 5 → NOT_RUN，0 → VALID，6 → ENV_INVALID，其他 → VOID。ENV_INVALID 或有进程扛过 SIGKILL（记 VOID）之后，其余启动全部跳过、记 NOT_RUN。
 
 ## 测试
 
 `tests/jobs/`（只做功能正确性，本机不取性能数）：
 
 ```bash
-cd <C> && systemd-run --user --scope -q -p MemoryMax=6G timeout 600 \
-  /home/scratch.yihlu_coreai/tmp/20261106-wt03-venv/venv/bin/python -m pytest -q -p no:cacheprovider tests/jobs
+cd <C> && bash -c 'ulimit -v 8388608; exec systemd-run --user --scope -q -p MemoryMax=6G timeout 600 \
+  /home/scratch.yihlu_coreai/tmp/20261106-wt03-venv/venv/bin/python -B -m pytest -q -p no:cacheprovider tests/jobs'
 ```
 
-`conftest.py` 让 `subprocess` 拒绝执行 `ssh sbatch srun squeue sacct scontrol scancel salloc cdb`；批处理脚本的测试在 `PATH` 前面放一个假的 `srun` 记录参数。
+`conftest.py` 让 `subprocess` 拒绝执行 `ssh sbatch srun squeue sacct scontrol scancel salloc cdb`；批处理脚本的测试在 `PATH` 前面放一个假的 `srun` 记录参数；内层脚本 `run` 模式的测试用一个假的容器 Python 记录各步命令行，再用真实的 `capenv.gate` 解析器与 `capenv.hwprofile` 核对这些命令行。
+
+依赖本仓库之外的两份输入，缺了就**失败**（`conftest.external_input`，提示缺哪个文件），不 skip——跳过的检查读起来像通过：`<C>/../00_plan/cluster-probe/20261113/02d_cdb_b200.csv`（`exclude` 的离线样本）与 WT-21 的 `wt21_round_v4.sbatch`（「写死资源」静态检查的阳性对照，路径见 `conftest.WT21_SBATCH`）。
 
 ## 偏差与未决（报告里同样列出）
 
-1. 包的位置：第一批写在 `jobs/capjobs/`；集成时按 INTERFACES §1.1 移到 `tools/capjobs/`（代码只依赖 `capcommon` 与包内相对导入，没有改代码）。测试仍在 `tests/jobs/`。`snapshot.plan_files` 把整个 `tools/` 与 `jobs/` 放进快照；`capkit_inner.sh` 的 `BOOT_PP` 是 `$SNAP/tools`。
+1. 快照：`snapshot.plan_files` 把整个 `tools/` 与 `jobs/` 放进快照；`capkit_inner.sh` 的 `BOOT_PP` 是 `$SNAP/tools`。
 2. 白名单：任务文本列了 `E10-proxy`、`E13-main`；INTERFACES §9.5 与 `capcommon.policy.NO_MODEL_EXPERIMENTS` 不含它们（§12 第 11 条），本组件按 INTERFACES，测试断言二者被拒。
-3. 作业级文件的身份：`env/*.json`、`job.json`、`launches.json` 不属于任何一次启动，`identity` 用启动计划的 `job_arm` 与 `launch_seq 0`。编排器把作业级 `env/` 拷进启动树后，判定器「树内全部文件身份前六个字段一致」会因 `arm` 不同而判 INPUT_INVALID。门禁（B4）有同样的问题。需要 spec 负责人定规则（例如作业级文件豁免，或编排器拷贝时只核内容不核身份）。
-4. `ts` 探针文件在启动树里的位置 INTERFACES §6.5 没有给出；本组件放 `raw/probe_ts/<pid>.ts.capbin`。
-5. 作业级 `STATE`（`<作业目录>/STATE`）与 `import_origin.json`、`launches.json`、`batch.tsv`、`copyback/`、`local_leftovers/`、`shm_leftovers/` 是 INTERFACES 之外新增的作业目录内容。
-6. `srun` 显式带 `--cpus-per-task=$SLURM_CPUS_PER_TASK`：较新的 Slurm 里 srun 不再继承 sbatch 的 `--cpus-per-task`【推断，未在本集群核对】，缺了它步骤可能只拿到 1 个核。
-7. `--export=ALL`（与 WT-21 一致）：前端的环境变量会带进作业；容器内 `unset PYTHONPATH`，其余未清理。
-8. `prep-tokenizer` 走的资源参数与 `submit` 相同，因此也带 `--exclusive`（整机独占，只为拷几个小文件）；批准时再定。
+3. 作业级文件的身份：`env/*.json`、`job.json`、`launches.json` 用启动计划的 `job_arm` 与 `launch_seq 0`；判定器对 `raw/env/` 直属文件只核作业键，见 INTERFACES 勘误「§2.1 / §10.1 身份核对的作业级例外」。
+4. 作业级 `STATE`（`<作业目录>/STATE`）与 `import_origin.json`、`launches.json`、`batch.tsv`、`copyback/`、`local_leftovers/`、`shm_leftovers/` 是 INTERFACES 之外新增的作业目录内容。
+5. `srun` 显式带 `--cpus-per-task=$SLURM_CPUS_PER_TASK`：较新的 Slurm 里 srun 不再继承 sbatch 的 `--cpus-per-task`【推断，未在本集群核对】，缺了它步骤可能只拿到 1 个核。
+6. `--export=ALL`（与 WT-21 一致）：前端的环境变量会带进作业；容器内 `unset PYTHONPATH`，其余未清理。
+7. `prep-tokenizer` 走的资源参数与 `submit` 相同，因此也带 `--exclusive`（整机独占，只为拷几个小文件）；批准时再定。

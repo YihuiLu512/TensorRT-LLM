@@ -88,37 +88,40 @@ def all_pids(proc_root="/proc"):
     return sorted(int(n) for n in names if n.isdigit())
 
 
-def descendants(root_pids, proc_root="/proc"):
-    """All live pids whose ancestor chain reaches one of root_pids (roots excluded)."""
-    parent = {}
+def exe_path(pid, proc_root="/proc"):
+    """Target of /proc/<pid>/exe, or None (gone, or not readable)."""
+    try:
+        return os.readlink(os.path.join(proc_root, str(pid), "exe"))
+    except OSError:
+        return None
+
+
+def descendant_records(root_pids, proc_root="/proc"):
+    """[{pid, ppid, comm, starttime_ticks, root}] for every live descendant of root_pids (roots
+    excluded), where root is the first of root_pids on its ancestor chain. One /proc pass."""
+    stat = {}
     for p in all_pids(proc_root):
-        pp = ppid_of(p, proc_root)
-        if pp is not None:
-            parent[p] = pp
+        sf = stat_fields(p, proc_root)
+        if sf is not None:
+            stat[p] = sf
     roots = set(root_pids)
-    out = set()
-    for p in parent:
+    out = []
+    for p, (comm, f) in sorted(stat.items()):
+        if p in roots:
+            continue
         seen = set()
-        q = parent.get(p)
-        while q is not None and q not in seen and q > 0:
+        q = int(f[1])
+        while q > 0 and q not in seen:
             if q in roots:
-                out.add(p)
+                out.append({"pid": p, "ppid": int(f[1]), "comm": comm,
+                            "starttime_ticks": int(f[19]), "root": q})
                 break
             seen.add(q)
-            q = parent.get(q)
-    return sorted(out - roots)
-
-
-def is_descendant_of(pid, ancestors, proc_root="/proc"):
-    seen = set()
-    q = ppid_of(pid, proc_root)
-    anc = set(ancestors)
-    while q is not None and q > 0 and q not in seen:
-        if q in anc:
-            return True
-        seen.add(q)
-        q = ppid_of(q, proc_root)
-    return False
+            nxt = stat.get(q)
+            if nxt is None:
+                break
+            q = int(nxt[1][1])
+    return out
 
 
 def environ_has(pid, needle, proc_root="/proc"):

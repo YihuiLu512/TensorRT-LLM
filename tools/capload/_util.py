@@ -42,22 +42,6 @@ def tier_specs_for(tier_table, role, seq):
     return [s for s in tier_table.tiers[seq].inject if s.role == role]
 
 
-def pass_site(inj):
-    """One pass through an injection site whose spec mode is busy/sleep/drop/miscount (or none).
-
-    Returns (drop, count): drop -> the caller discards this item; count -> what to add to the
-    site's own counter (1 unless a miscount spec selected this pass).
-    """
-    if inj.active:
-        mode = inj.spec.mode
-        if mode == "drop":
-            return inj.should_drop(), 1
-        if mode == "miscount":
-            return False, inj.count_delta()
-    inj.hit()
-    return False, 1
-
-
 def hist_summary(values):
     """{"hist": {"bins": "loghist/1", "counts": [...]}, "n", "max", "min"} of an iterable of ints."""
     counts = _hist.new_counts()

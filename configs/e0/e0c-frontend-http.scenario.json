@@ -79,6 +79,7 @@
     }
    ],
    "env": {},
+   "proc_kinds": [],
    "command": [
     "{param:python}",
     "{param:sfe_script}"
@@ -135,6 +136,9 @@
     "0"
    ],
    "env": {},
+   "proc_kinds": [
+    "frontend"
+   ],
    "command": [
     "{param:trtllm_serve}"
    ],
@@ -181,6 +185,7 @@
     "--hold"
    ],
    "env": {},
+   "proc_kinds": [],
    "module": "caplaunch.httpprobe",
    "note": "sends each request once (completions + chat, streaming) and records per-frame text deltas; caplaunch.smoke --tree reads raw/httpprobe.json"
   },
@@ -241,6 +246,7 @@
     "{param:capload_max_records_per_worker}"
    ],
    "env": {},
+   "proc_kinds": [],
    "module": "capload",
    "note": "--model = the frontend's served model name (default: the model dir it was given)"
   }

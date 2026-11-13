@@ -5,7 +5,7 @@
   "job_id": "local-sample-x-contradiction",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "384933b4ea618f07c423b1f98e220d311421c3100e4e5e5473414c1abcf6703e",
+  "register_sha": "be46e6c7b803ee059787205a2ee58007b70efd5dff877f1ea4974c726a6a16e9",
   "restart_count": 0,
   "role": "launch",
   "tier_label": null,
@@ -34,6 +34,6 @@
    "tid": 2002
   }
  ],
- "written_mono_ns": 9746271228092960,
- "written_wall": "2026-11-13T11:37:27.308Z"
+ "written_mono_ns": 9752459085038600,
+ "written_wall": "2026-11-13T13:20:35.165Z"
 }

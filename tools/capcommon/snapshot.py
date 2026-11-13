@@ -10,6 +10,7 @@ import array
 import json
 import os
 import re
+import stat
 import struct
 import sys
 import threading
@@ -245,6 +246,28 @@ def snapshot_path(shm_dir, pid=None):
     return os.path.join(shm_dir, "%d.bin" % (os.getpid() if pid is None else pid))
 
 
+def ensure_own_dir(path):
+    """Create the snapshot directory `path` (mode 0700, parents as needed) unless it exists, then
+    require it to be a real directory owned by this user: a symlink, a non-directory or another
+    user's directory is refused, so snapshot files are never written where someone else decides.
+    """
+    try:
+        os.makedirs(path, mode=0o700, exist_ok=True)
+    except FileExistsError:
+        pass  # a non-directory (or dangling symlink) is there: refused just below
+    st = os.lstat(os.path.normpath(path))
+    if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+        raise SnapshotError("snapshot dir %s is not a directory (symlinks are refused)" % path)
+    if st.st_uid != os.geteuid():
+        raise SnapshotError("snapshot dir %s is owned by uid %d, not by this user (uid %d)"
+                            % (path, st.st_uid, os.geteuid()))
+    return path
+
+
+_TMP_FLAGS = (os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+              | getattr(os, "O_CLOEXEC", 0))
+
+
 class SnapshotWriter:
     """Background thread writing the registry to <shm_dir>/<pid>.bin every interval_ns.
 
@@ -261,7 +284,7 @@ class SnapshotWriter:
             raise SnapshotError("interval_ns must be an int > 0")
         if not shm_dir:
             raise SnapshotError("shm_dir is required")
-        os.makedirs(shm_dir, exist_ok=True)
+        ensure_own_dir(shm_dir)
         self.registry = registry
         self.pid = os.getpid() if pid is None else pid
         self.path = snapshot_path(shm_dir, self.pid)
@@ -304,7 +327,8 @@ class SnapshotWriter:
                 meta = self._meta_locked()
                 self.seq += 1
                 data = encode_snapshot(reg, self.seq, time.monotonic_ns(), meta)
-            with open(self._tmp, "wb") as f:
+            # O_NOFOLLOW: a symlink planted at the temporary name is refused, never followed.
+            with os.fdopen(os.open(self._tmp, _TMP_FLAGS, 0o644), "wb") as f:
                 f.write(data)
             os.replace(self._tmp, self.path)
 

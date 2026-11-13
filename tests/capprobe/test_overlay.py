@@ -10,13 +10,12 @@ import subprocess
 import sys
 
 import pytest
-from probe_testutil import TOOLS, clean_env
+from probe_testutil import clean_env, require_probe_tree
 from gitfix import BASE_A, PATCHED_A, TEST_SITES, commit_all, git, init, write
 
 from capprobe import overlay
 from capprobe import sites as capsites
 
-PROBE_TREE = os.path.abspath(os.path.join(TOOLS, "..", "probe-tree"))
 IMAGE_COMMIT = "9fd3822a0019d23a2a6b372a219e0e3d51a1a95d"
 BASE_COMMIT = "2f22a98d6e8b32ed185bcdfe051ef0e4405ae4e8"
 
@@ -89,6 +88,8 @@ def test_p1_p2_use_probe_head(world):
     assert a["sha256"] == hashlib.sha256(PATCHED_A.encode()).hexdigest()
     assert m1["sites"] == {} and m2["sites"] == TEST_SITES
     assert m2["groups"] == ["count", "lag"] and m2["patchcheck"]["status"] == "PASS"
+    assert m2["patchcheck"]["expected_location_count"] == 1 == \
+        m2["patchcheck"]["found_location_count"]
     m3 = build(world, "P2", groups=["count"], sites=["F2"])
     assert m3["sites_selection"] == "cli" and list(m3["sites"]) == ["F2"]
 
@@ -216,12 +217,12 @@ def test_classify_changes():
     assert dele == ["tensorrt_llm/old.py"]
 
 
-@pytest.mark.skipif(not os.path.isdir(PROBE_TREE), reason="probe tree not present")
 def test_real_image_to_baseline_range():
     # RESOURCES.md section 5: cpp/** unchanged and 37 tensorrt_llm/**.py between image and base.
-    ns = overlay._git(PROBE_TREE, "diff", "--name-status", "--no-renames", IMAGE_COMMIT,
+    tree = require_probe_tree()
+    ns = overlay._git(tree, "diff", "--name-status", "--no-renames", IMAGE_COMMIT,
                       BASE_COMMIT)
     py, nonpy, dele = overlay.classify_changes(ns)
     assert len(py) == 37 and dele == []
     assert nonpy == ["tensorrt_llm/grpc/openengine/README.md"]  # needs --allow-unshipped
-    assert not overlay.is_ancestor(PROBE_TREE, IMAGE_COMMIT, BASE_COMMIT)
+    assert not overlay.is_ancestor(tree, IMAGE_COMMIT, BASE_COMMIT)

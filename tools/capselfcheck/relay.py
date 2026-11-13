@@ -73,7 +73,7 @@ class Relay:
         z = lambda: [0] * nt  # noqa: E731
         self.c_acc, self.c_done, self.c_fail, self.c_canc = z(), z(), z(), z()
         self.c_recv, self.c_fwd, self.c_bytes, self.c_unparsed = z(), z(), z(), z()
-        self.upstream_failures = {}
+        self.upstream_failures = [dict() for _ in range(nt)]  # by planned tier
         v = rt.registry.values
         self.v = v
         pos = {d["name"]: d["offset"] for d in rt.registry.slots}
@@ -124,10 +124,15 @@ class Relay:
             q = collections.deque()
             ev = asyncio.Event()
             state = {"done": False, "code": None, "details": None}
-            call = call_fn(request)
-            reader = self.loop.create_task(self._pump(call, q, ev, state, seq))
+            call = reader = None
             outcome = "cancelled"
             try:
+                try:
+                    call = call_fn(request)
+                except Exception:  # noqa: BLE001 - account for the stream once, then re-raise
+                    outcome = "failed"
+                    raise
+                reader = self.loop.create_task(self._pump(call, q, ev, state, seq))
                 while True:
                     if q:
                         msg, t_recv = q.popleft()
@@ -147,12 +152,13 @@ class Relay:
                 if code != grpc.StatusCode.OK:
                     outcome = "failed"
                     r = status_reason(code)
-                    self.upstream_failures[r] = self.upstream_failures.get(r, 0) + 1
+                    uf = self.upstream_failures[seq]
+                    uf[r] = uf.get(r, 0) + 1
                     await context.abort(code, "upstream: %s" % (state["details"] or ""))
                     return
                 outcome = "completed"
             finally:
-                if not reader.done():
+                if reader is not None and not reader.done():
                     reader.cancel()
                     call.cancel()
                 v[self.i_queue] -= len(q)
@@ -192,6 +198,10 @@ class Relay:
         except asyncio.CancelledError:
             state["code"] = grpc.StatusCode.CANCELLED
             raise
+        except Exception as e:  # noqa: BLE001 - a relay-side fault fails the stream once
+            call.cancel()
+            state["code"] = grpc.StatusCode.UNKNOWN
+            state["details"] = "relay: %s: %s" % (type(e).__name__, e)
         finally:
             state["done"] = True
             ev.set()
@@ -248,7 +258,7 @@ class Relay:
                            "requests_without_capkit_header": self.c_unparsed[seq],
                            "attribution": "planned tier from the capkit request header "
                                           "(event tier when the header is missing)"},
-                "upstream_failures": dict(self.upstream_failures),
+                "upstream_failures": dict(self.upstream_failures[seq]),
                 "event_time": {
                     "read": rt.slot_delta("backlog.read", a["vals"], b["vals"]),
                     "yielded": rt.slot_delta("backlog.yielded", a["vals"], b["vals"]),

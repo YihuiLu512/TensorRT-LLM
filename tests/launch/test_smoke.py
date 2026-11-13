@@ -145,3 +145,19 @@ def test_smoke_empty_delta_fails_on_request_count_mismatch(tmp_path):
     out = str(tmp_path / "o")
     smoke.main(SID + ["--config", _cfg(tmp_path), "--out", out, "--tree", str(tmp_path / "tree")])
     assert _items(out)["tree.empty_delta"]["status"] == "FAIL"  # config expects 2 requests
+
+
+def test_smoke_empty_delta_without_expected_count_is_not_run(tmp_path):
+    """RS3: the expected request count comes from the config, never from the probe's own output."""
+    tree = tmp_path / "tree" / "raw"
+    tree.mkdir(parents=True)
+    (tree / "httpprobe.json").write_text(json.dumps({"results": [
+        {"name": "c", "status": 200, "done_seen": True, "n_frames_excl_done": 1,
+         "ssecounter": {"frames": 1}}]}))
+    cfg = json.loads(open(_cfg(tmp_path)).read())
+    del cfg["httpprobe_requests"]
+    p = tmp_path / "nocount.json"
+    p.write_text(json.dumps(cfg))
+    out = str(tmp_path / "o")
+    smoke.main(SID + ["--config", str(p), "--out", out, "--tree", str(tmp_path / "tree")])
+    assert _items(out)["tree.empty_delta"]["status"] == "NOT_RUN"

@@ -4,7 +4,7 @@
 
 Imported by the probe patch in the TRT-LLM probe tree. It does not depend on tensorrt_llm.
 Switches are read ONCE at import from CAPPROBE_* environment variables (capprobe.config) into
-module-level constants. A patched site is one guarded call:
+module-level constants. Every code location of a patched site is one guarded call:
 
     if _capprobe.ON_F2:
         _capprobe.F2()

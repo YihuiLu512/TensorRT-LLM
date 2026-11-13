@@ -11,7 +11,7 @@
   "job_id": "local-sample-c10-versions",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "384933b4ea618f07c423b1f98e220d311421c3100e4e5e5473414c1abcf6703e",
+  "register_sha": "be46e6c7b803ee059787205a2ee58007b70efd5dff877f1ea4974c726a6a16e9",
   "restart_count": 0,
   "role": "launch",
   "tier_label": null,
@@ -25,6 +25,6 @@
  "schema": "capkit.launch_end/1",
  "stop": null,
  "tiers_completed": 5,
- "written_mono_ns": 9746269584250901,
- "written_wall": "2026-11-13T11:37:25.664Z"
+ "written_mono_ns": 9752457240600451,
+ "written_wall": "2026-11-13T13:20:33.321Z"
 }
