@@ -14,7 +14,8 @@ function from the request to a sequence of steps:
 - ``Delay(seconds)`` sleeps.
 
 Without a script, every output gets :data:`DEFAULT_TOKENS` and finishes with
-reason ``length``.
+reason ``length``. :func:`prefill_ready_script` ends a prefill call with
+``PrefillReady`` instead, as an engine serving disaggregated does.
 
 Use it in tests that exercise one serving module. Cross-process tests use the
 gRPC fake engine instead.
@@ -36,9 +37,14 @@ from tensorrt_llm.grpc.openengine_conventions import (
     CONVENTIONS_VERSION,
     CONVENTIONS_VERSION_KEY,
     COUNTER_GENERATE_ACCEPTED,
+    COUNTER_GENERATE_ACCEPTED_BUCKETS,
     COUNTER_GENERATE_RECEIVED,
+    COUNTER_PREFILL_READY_SENT,
+    REQUEST_BUCKETS,
+    REQUEST_TYPE_CONTEXT_ONLY,
     SEED_SCOPE_BATCH_DEPENDENT,
     ExtraCapabilities,
+    request_bucket,
 )
 from tensorrt_llm.serve.openengine_poc.engine_client import (
     EngineEvent,
@@ -47,10 +53,13 @@ from tensorrt_llm.serve.openengine_poc.engine_client import (
     EngineLoad,
     EngineRequest,
     HealthState,
+    KvConnectorInfo,
     KvEventSource,
+    KvSessionSpec,
     LoraAdapter,
     ModelCapabilities,
     OutputFinished,
+    PrefillReady,
     TokenDelta,
     Usage,
 )
@@ -100,6 +109,44 @@ def default_script(request: EngineRequest) -> list[Step]:
         )
         steps.append(OutputFinished(output_index=index, reason="length", usage=usage))
     return steps
+
+
+# The attributes of the handoff :func:`prefill_ready_script` returns, shaped as
+# the TRT-LLM OpenEngine server packs them.
+FAKE_CTX_INFO_ENDPOINT = "tcp://127.0.0.1:17001"
+
+
+def prefill_ready_script(request: EngineRequest) -> list[Step]:
+    """A prefill call gets its first token, then ``PrefillReady``; any other call the default script.
+
+    The handoff's ``session_id`` is ``"7"`` and its ``disagg_request_id`` is
+    the call's ``extra["disagg_request_id"]`` when it has one.
+    """
+    if request.request_type != REQUEST_TYPE_CONTEXT_ONLY:
+        return default_script(request)
+    first = DEFAULT_TOKENS[0]
+    attributes: dict[str, Any] = {
+        "ctx_info_endpoint": FAKE_CTX_INFO_ENDPOINT,
+        "first_gen_tokens": [first],
+        "ctx_dp_rank": 0,
+    }
+    if "disagg_request_id" in request.extra:
+        attributes["disagg_request_id"] = request.extra["disagg_request_id"]
+    session = KvSessionSpec(session_id="7", transfer_backend="DEFAULT", attributes=attributes)
+    usage = Usage(
+        prompt_tokens=len(request.prompt_token_ids), completion_tokens=1, cached_prompt_tokens=0
+    )
+    return [
+        TokenDelta(output_index=0, token_ids=(first,)),
+        PrefillReady(output_index=0, kv_session=session, usage=usage),
+    ]
+
+
+def kv_connector_like(transfer_backend: str = "DEFAULT") -> KvConnectorInfo:
+    """``ServerInfo.kv_connector`` of an engine that serves disaggregated requests."""
+    return KvConnectorInfo(
+        enabled=True, transfer_backend=transfer_backend, supports_remote_prefill=True
+    )
 
 
 def trtllm_like() -> tuple[EngineInfo, ModelCapabilities]:
@@ -183,6 +230,10 @@ class FakeEngineClient:
     loras: dict[str, LoraAdapter] = field(default_factory=dict)
     generate_received: int = 0
     generate_accepted: int = 0
+    accepted_by_bucket: dict[str, int] = field(
+        default_factory=lambda: dict.fromkeys(REQUEST_BUCKETS, 0)
+    )
+    prefill_ready_sent: int = 0
     _abort_events: dict[str, asyncio.Event] = field(default_factory=dict, repr=False)
 
     @classmethod
@@ -215,6 +266,10 @@ class FakeEngineClient:
             self._abort_events.pop(request_id, None)
             raise ValueError("Reject is only allowed as the first step of a script")
         self.generate_accepted += 1
+        bucket = request_bucket(
+            has_kv_session=request.kv_session is not None, request_type=request.request_type
+        )
+        self.accepted_by_bucket[bucket] += 1
         self.active.add(request_id)
         unfinished = set(range(request.num_sequences))
         generated = 0
@@ -241,8 +296,10 @@ class FakeEngineClient:
                 elif isinstance(step, Fail):
                     raise step.error
                 else:
-                    if isinstance(step, OutputFinished):
+                    if isinstance(step, (OutputFinished, PrefillReady)):
                         unfinished.discard(step.output_index)
+                    if isinstance(step, PrefillReady):
+                        self.prefill_ready_sent += 1
                     elif isinstance(step, TokenDelta):
                         generated += len(step.token_ids)
                     yield step
@@ -272,6 +329,11 @@ class FakeEngineClient:
             attributes={
                 COUNTER_GENERATE_RECEIVED: self.generate_received,
                 COUNTER_GENERATE_ACCEPTED: self.generate_accepted,
+                **{
+                    COUNTER_GENERATE_ACCEPTED_BUCKETS[bucket]: count
+                    for bucket, count in self.accepted_by_bucket.items()
+                },
+                COUNTER_PREFILL_READY_SENT: self.prefill_ready_sent,
             },
         )
 

@@ -353,6 +353,10 @@ class DisaggregatedParams(OpenAIBaseModel):
     resolved_thinking: Optional[bool] = None
     # Orchestrator -> generation worker: seconds since arrival at the orchestrator.
     orig_elapsed_s: Optional[float] = None
+    # Context worker -> generation worker, both serving through an OpenEngine
+    # engine: the handoff attributes without a field here, as a JSON object.
+    # HTTP only; left out of the serialized params when None.
+    openengine_handoff_attributes: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_multimodal_spans(self) -> "DisaggregatedParams":
@@ -367,6 +371,14 @@ class DisaggregatedParams(OpenAIBaseModel):
                 "multimodal_positions and multimodal_lengths must have the same length"
             )
         return self
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_openengine_handoff_attributes(self, handler: Any) -> Any:
+        data = handler(self)
+        if isinstance(data, dict) and data.get("openengine_handoff_attributes",
+                                               ...) is None:
+            data.pop("openengine_handoff_attributes", None)
+        return data
 
 
 class ConversationParams(OpenAIBaseModel):

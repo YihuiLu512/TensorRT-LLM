@@ -31,6 +31,9 @@ INTERNAL_DISAGG_AUTH_HEADER = "x-trtllm-disagg-auth"
 SUBAGENT_AFFINITY_AUTH_HEADER = "x-trtllm-subagent-affinity-auth"
 _SIGNATURE_PREFIX = "sha256="
 _INTERNAL_DISAGG_AUTH_FIELDS = ("encoded_opaque_state", "ctx_info_endpoint")
+# Signed only when set, so requests without it sign as before.
+_OPTIONAL_INTERNAL_DISAGG_AUTH_FIELDS = ("openengine_handoff_attributes",)
+_INTERNAL_DISAGG_AUTH_FIELDS += _OPTIONAL_INTERNAL_DISAGG_AUTH_FIELDS
 _MISSING_AUTH_KEY_WARNING = (
     "Internal disaggregated authentication key is required for protected "
     "disaggregated request fields. In a future release the requirement to "
@@ -70,6 +73,9 @@ def _auth_payload(request: UCompletionRequest) -> bytes:
         for field_name in get_internal_disagg_auth_fields()
         for value in [getattr(disaggregated_params, field_name)]
     }
+    for field_name in _OPTIONAL_INTERNAL_DISAGG_AUTH_FIELDS:
+        if payload[field_name] is None:
+            del payload[field_name]
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 

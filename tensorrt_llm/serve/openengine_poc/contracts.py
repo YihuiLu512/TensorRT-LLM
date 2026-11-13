@@ -65,6 +65,7 @@ from tensorrt_llm.grpc.openengine_conventions import (
     SERVE_COUNTER_ADDRESS,
     SERVE_COUNTER_DIR_ENV,
     SERVE_COUNTER_GENERATE_SENT,
+    SERVE_COUNTERS,
 )
 from tensorrt_llm.logger import logger
 
@@ -73,6 +74,7 @@ from .engine_client import (
     EngineEvent,
     EngineLoad,
     EngineRequest,
+    KvSessionSpec,
     MediaSpec,
     ModelCapabilities,
     OutputFinished,
@@ -86,7 +88,7 @@ if TYPE_CHECKING:
 
 # Bump on any change to a signature, type or message in this module or in
 # engine_client.py, in a commit of its own.
-POC2_CONTRACT_VERSION = 9
+POC2_CONTRACT_VERSION = 10
 
 _PACKAGE = "tensorrt_llm.serve.openengine_poc"
 
@@ -182,6 +184,12 @@ class GenerateOptions:
             request's thinking-budget processor from in-process; the mapping
             derives the reasoning start and end tokens of a thinking budget from it.
         tokenizer: The tokenizer it would use for that, or None where it has none.
+        disaggregated_params: The request's LLM-level ``DisaggregatedParams``
+            (``tensorrt_llm.disaggregated_params``), or None for a request
+            that is not served disaggregated.
+        handoff_attributes: The request's HTTP ``openengine_handoff_attributes``,
+            the handoff attributes that have no ``DisaggregatedParams`` field,
+            as :func:`dump_handoff_attributes` wrote them; None when it has none.
     """
 
     streaming: bool = False
@@ -198,6 +206,7 @@ class GenerateOptions:
     logit_bias: Mapping[str, float] | None = None
     reasoning_parser: str | None = None
     tokenizer: Any = None
+    handoff_attributes: str | None = None
 
 
 def takes_request_data(generator: Any) -> bool:
@@ -416,6 +425,82 @@ def default_map_request(
             extra={REQ_DETOKENIZE: False},
         )
     ]
+
+
+# --- Disaggregated handoff ---------------------------------------------------
+#
+# A context worker turns the ``PrefillReady`` of its prefill call into the
+# ``disaggregated_params`` of its HTTP response; the orchestrator relays them to
+# a generation worker, which turns them back into the ``kv_session`` of its
+# decode call. The attributes that have a ``DisaggregatedParams`` field travel
+# in those fields; every other attribute travels in the HTTP-only field
+# ``openengine_handoff_attributes``, which never reaches the LLM-level params.
+# The two functions below are implemented in HANDOFF_MODULE.
+
+HANDOFF_MODULE = f"{_PACKAGE}.handoff"
+
+
+class DecodeKvSession(Protocol):
+    """``decode_kv_session``: a context worker's handoff, from ``PrefillReady`` to HTTP."""
+
+    def __call__(self, session: KvSessionSpec) -> tuple[Any, str | None]:
+        """Return the LLM-level ``DisaggregatedParams`` and the ``openengine_handoff_attributes``.
+
+        The second item is None when the session has no attribute outside
+        ``HANDOFF_MAPPED_ATTRIBUTES``. Values are carried unchanged.
+        """
+        ...
+
+
+class EncodeKvSession(Protocol):
+    """``encode_kv_session``: a generation worker's handoff, from HTTP to ``kv_session``."""
+
+    def __call__(
+        self, params: Any, handoff_attributes: str | None, transfer_backend: str
+    ) -> KvSessionSpec:
+        """Return the decode call's ``kv_session``.
+
+        Args:
+            params: The request's LLM-level ``DisaggregatedParams``.
+            handoff_attributes: Its ``openengine_handoff_attributes``, or None.
+            transfer_backend: The ``kv_connector.transfer_backend`` of this worker's engine.
+
+        Raises:
+            ValueError: ``handoff_attributes`` is malformed or names a mapped
+                attribute; reported as HTTP 400.
+        """
+        ...
+
+
+def dump_handoff_attributes(attributes: Mapping[str, Any]) -> str | None:
+    """The ``openengine_handoff_attributes`` value for some handoff attributes; None for none.
+
+    A JSON object with sorted keys and no spaces, so the value a context worker
+    signs is the same however the attributes were ordered.
+
+    Raises:
+        ValueError: A value is not JSON data, or is a NaN or an infinity.
+    """
+    if not attributes:
+        return None
+    try:
+        return json.dumps(dict(attributes), sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except TypeError as error:
+        raise ValueError(f"handoff attributes are not JSON data: {error}") from error
+
+
+def load_handoff_attributes(text: str | None) -> dict[str, Any]:
+    """The handoff attributes held by an ``openengine_handoff_attributes`` value; empty for None.
+
+    Raises:
+        ValueError: ``text`` is not a JSON object.
+    """
+    if text is None:
+        return {}
+    attributes = json.loads(text)
+    if not isinstance(attributes, dict):
+        raise ValueError("openengine_handoff_attributes is not a JSON object")
+    return attributes
 
 
 # --- Response assembly --------------------------------------------------------
@@ -1198,6 +1283,12 @@ class FrontendLaunchConfig:
             than the client's, as long as its ``minimum_client_revision`` allows the client.
         control_timeout: Seconds allowed for each Control RPC; None for the
             frontend's own default.
+        server_role: The worker role (a ``ServerRole``) when the frontend serves
+            as a disaggregated context or generation worker; None otherwise.
+        disagg_cluster_config: The ``DisaggClusterConfig`` the frontend
+            registers with, as the in-process server does; None for none.
+        internal_disagg_auth_key: The key of the orchestrator's internal
+            request signatures; None for none. Left out of ``repr``.
     """
 
     host: str
@@ -1216,6 +1307,9 @@ class FrontendLaunchConfig:
     report_addr: str | None = None
     allow_newer_schema: bool = False
     control_timeout: float | None = None
+    server_role: Any = None
+    disagg_cluster_config: Any = None
+    internal_disagg_auth_key: str | None = dataclasses.field(default=None, repr=False)
 
 
 def launch_frontends(config: FrontendLaunchConfig) -> None:
@@ -1320,6 +1414,10 @@ class MetricsRecorder(Protocol):
 
     def kv_cache_events(self, client: EngineClient, timeout: float | None) -> Awaitable[Any]:
         """The KV-cache events received so far, in ``/kv_cache_events`` format.
+
+        For an engine that publishes no KV-cache events, a recorder either
+        raises :class:`OpenEngineUnsupportedError` (the endpoint answers 501) or
+        returns an empty list, which a disaggregated router reads as no events.
 
         Raises:
             OpenEngineUnsupportedError: The engine publishes no KV-cache events.
@@ -1472,6 +1570,10 @@ class GenerateCounter:
     uses a directory of its own: :func:`read_generate_sent` adds up the counts
     of every frontend in it.
 
+    The other serving-side counters of the conventions (``SERVE_COUNTERS``)
+    are counted with :meth:`add` and published the same way, next to
+    ``generate_sent``, once counted; :func:`read_serve_counters` adds them up.
+
     Args:
         counter_dir: Where to publish the count; defaults to ``$TRTLLM_OPENENGINE_COUNTER_DIR``.
     """
@@ -1481,6 +1583,7 @@ class GenerateCounter:
             counter_dir = os.environ.get(SERVE_COUNTER_DIR_ENV) or None
         self._dir = Path(counter_dir) if counter_dir is not None else None
         self._value = 0
+        self._counts: dict[str, int] = {}
         self._lock = threading.Lock()
         self._listener: socket.socket | None = None
         self._server: threading.Thread | None = None
@@ -1507,6 +1610,35 @@ class GenerateCounter:
             if self._closed and self._started:
                 self._write(None)
             return self._value
+
+    @property
+    def counts(self) -> dict[str, int]:
+        """Every counter counted so far, ``generate_sent`` included, by its key."""
+        with self._lock:
+            return self._record()
+
+    def add(self, key: str, count: int = 1) -> int:
+        """Add ``count`` to the serving-side counter ``key`` and return its new value.
+
+        Raises:
+            ValueError: ``key`` is not one of ``SERVE_COUNTERS``, or is
+                ``generate_sent`` (see :meth:`increment`), or ``count`` is negative.
+            OSError: As :meth:`increment`.
+        """
+        if key not in SERVE_COUNTERS or key == SERVE_COUNTER_GENERATE_SENT:
+            raise ValueError(f"not a serving-side counter other than generate_sent: {key!r}")
+        if count < 0:
+            raise ValueError(f"the count only grows, got {count}")
+        with self._lock:
+            value = self._counts.get(key, 0) + count
+            self._counts[key] = value
+            if self._closed and self._started:
+                self._write(None)
+            return value
+
+    def _record(self) -> dict[str, int]:
+        """The counts to publish; the caller holds the lock."""
+        return {SERVE_COUNTER_GENERATE_SENT: self._value, **self._counts}
 
     def start(self) -> None:
         """Publish the count in ``counter_dir``; nothing to do without one, or once started or closed.
@@ -1582,7 +1714,8 @@ class GenerateCounter:
                 continue
             failing = False
             with connection:
-                answer = {"pid": os.getpid(), SERVE_COUNTER_GENERATE_SENT: self._value}
+                with self._lock:
+                    answer = {"pid": os.getpid(), **self._record()}
                 try:
                     connection.settimeout(COUNTER_READ_TIMEOUT_S)
                     connection.sendall(json.dumps(answer).encode())
@@ -1594,7 +1727,7 @@ class GenerateCounter:
         """Write the file; the caller holds the lock."""
         assert self._dir is not None
         pid = os.getpid()
-        data: dict[str, Any] = {"pid": pid, SERVE_COUNTER_GENERATE_SENT: self._value}
+        data: dict[str, Any] = {"pid": pid, **self._record()}
         if address is not None:
             data[SERVE_COUNTER_ADDRESS] = address
         # A fresh temporary file (created exclusively), then an atomic rename.
@@ -1631,13 +1764,10 @@ def read_generate_sent_by_pid(counter_dir: str | os.PathLike[str]) -> dict[int, 
         ValueError: A file, or a frontend's answer, does not hold a count, or
             two of them give the same pid.
     """
-    counts: dict[int, int] = {}
-    for path in sorted(Path(counter_dir).glob("*.json")):
-        pid, count = _read_counter_file(path)
-        if pid in counts:
-            raise ValueError(f"more than one Generate count for pid {pid} in {counter_dir}")
-        counts[pid] = count
-    return counts
+    return {
+        pid: record[SERVE_COUNTER_GENERATE_SENT]
+        for pid, record in read_serve_counters_by_pid(counter_dir).items()
+    }
 
 
 def read_generate_sent(counter_dir: str | os.PathLike[str]) -> int:
@@ -1649,7 +1779,38 @@ def read_generate_sent(counter_dir: str | os.PathLike[str]) -> int:
     return sum(read_generate_sent_by_pid(counter_dir).values())
 
 
-def _read_counter_file(path: Path) -> tuple[int, int]:
+def read_serve_counters_by_pid(counter_dir: str | os.PathLike[str]) -> dict[int, dict[str, int]]:
+    """Each frontend's serving-side counters in ``counter_dir``, by pid.
+
+    Every key of ``SERVE_COUNTERS`` is present; a counter a frontend has not
+    counted reads 0.
+
+    Raises:
+        OSError, ValueError: As :func:`read_generate_sent_by_pid`.
+    """
+    counts: dict[int, dict[str, int]] = {}
+    for path in sorted(Path(counter_dir).glob("*.json")):
+        pid, record = _read_counter_file(path)
+        if pid in counts:
+            raise ValueError(f"more than one Generate count for pid {pid} in {counter_dir}")
+        counts[pid] = {key: record.get(key, 0) for key in SERVE_COUNTERS}
+    return counts
+
+
+def read_serve_counters(counter_dir: str | os.PathLike[str]) -> dict[str, int]:
+    """Every serving-side counter, added up over the frontends in ``counter_dir``.
+
+    Raises:
+        OSError, ValueError: As :func:`read_generate_sent_by_pid`.
+    """
+    totals = dict.fromkeys(SERVE_COUNTERS, 0)
+    for record in read_serve_counters_by_pid(counter_dir).values():
+        for key, value in record.items():
+            totals[key] += value
+    return totals
+
+
+def _read_counter_file(path: Path) -> tuple[int, dict[str, Any]]:
     data = _counter_record(path.read_text())
     if SERVE_COUNTER_ADDRESS in data:
         try:
@@ -1662,10 +1823,10 @@ def _read_counter_file(path: Path) -> tuple[int, int]:
                     f"the frontend with pid {data['pid']} did not answer for its Generate count "
                     f"({path}): {error!r}"
                 ) from error
-    return data["pid"], data[SERVE_COUNTER_GENERATE_SENT]
+    return data["pid"], data
 
 
-def _ask_counter(address: str) -> tuple[int, int]:
+def _ask_counter(address: str) -> tuple[int, dict[str, Any]]:
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
         connection.settimeout(COUNTER_READ_TIMEOUT_S)
         connection.connect("\0" + address)
@@ -1676,7 +1837,7 @@ def _ask_counter(address: str) -> tuple[int, int]:
         # The frontend exited, or closed its counter, before it answered.
         raise ConnectionResetError(f"no answer from {address}")
     answer = _counter_record(b"".join(chunks).decode())
-    return answer["pid"], answer[SERVE_COUNTER_GENERATE_SENT]
+    return answer["pid"], answer
 
 
 def _counter_record(text: str) -> dict[str, Any]:
@@ -1686,6 +1847,7 @@ def _counter_record(text: str) -> dict[str, Any]:
         and type(data.get("pid")) is int
         and type(data.get(SERVE_COUNTER_GENERATE_SENT)) is int
         and isinstance(data.get(SERVE_COUNTER_ADDRESS, ""), str)
+        and all(type(data[key]) is int for key in SERVE_COUNTERS if key in data)
     ):
         raise ValueError(f"not a Generate count: {text!r}")
     return data

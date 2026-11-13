@@ -36,7 +36,10 @@ if TYPE_CHECKING:
 
 # --- Version (ServerInfo.extra) ----------------------------------------------
 
-CONVENTIONS_VERSION = 3
+# Version 4 adds the disaggregated-serving keys (request keys, capability keys,
+# counters and the handoff attribute names below) and the
+# ``trtllm.stopping.min_tokens`` capability key; it changes no version 3 key.
+CONVENTIONS_VERSION = 4
 CONVENTIONS_VERSION_KEY = "trtllm.conventions_version"
 
 # --- Request keys (GenerateRequest.extra) -------------------------------------
@@ -92,7 +95,8 @@ REQUEST_CAPABILITY_KEYS = (
     CAP_REQ_SCHEDULING,
     CAP_REQ_BEST_OF,
 )
-# Every boolean capability key; a conforming engine reports all of them.
+# The boolean capability keys of version 3; a conforming engine reports all of
+# them, and VERSION_4_CAPABILITY_KEYS too when it reports version 4.
 BOOL_CAPABILITY_KEYS = SAMPLING_CAPABILITY_KEYS + (CAP_STOP_TEXT,) + REQUEST_CAPABILITY_KEYS
 
 # The capability a request key needs. ``detokenize`` needs none.
@@ -111,6 +115,129 @@ SAMPLING_FIELD_CAPABILITY = {
     "presence_penalty": CAP_PRESENCE_PENALTY,
     "repetition_penalty": CAP_REPETITION_PENALTY,
 }
+
+# --- Disaggregated serving (version 4) ------------------------------------------
+#
+# A user request served disaggregated is two Generate calls: a prefill call on
+# the context engine, which ends with ``PrefillReady`` carrying the handoff,
+# and a decode call on the generation engine, which carries that handoff in
+# ``kv.session``. The request keys keep the names of the matching
+# ``DisaggregatedParams`` fields, without the ``trtllm.`` prefix.
+
+# Request keys (GenerateRequest.extra).
+REQ_REQUEST_TYPE = "request_type"
+REQ_DISAGG_REQUEST_ID = "disagg_request_id"
+REQ_SCHEDULE_STYLE = "schedule_style"
+REQ_ORIG_ELAPSED_S = "orig_elapsed_s"
+DISAGG_REQUEST_KEYS = (
+    REQ_REQUEST_TYPE,
+    REQ_DISAGG_REQUEST_ID,
+    REQ_SCHEDULE_STYLE,
+    REQ_ORIG_ELAPSED_S,
+)
+
+# Values of ``request_type``. Only context_only and context_and_generation are
+# sent in ``extra``; a decode call is marked by its ``kv.session`` instead.
+REQUEST_TYPE_CONTEXT_ONLY = "context_only"
+REQUEST_TYPE_GENERATION_ONLY = "generation_only"
+REQUEST_TYPE_CONTEXT_AND_GENERATION = "context_and_generation"
+
+# ``disagg_request_id`` is a decimal string of ASCII digits in
+# [DISAGG_REQUEST_ID_MIN, DISAGG_REQUEST_ID_LIMIT): too large for a Struct number.
+DISAGG_REQUEST_ID_MIN = 1 << 40
+DISAGG_REQUEST_ID_LIMIT = 1 << 63
+
+# ``schedule_style`` values, as ``DisaggScheduleStyle``; only generation-first is sent.
+SCHEDULE_STYLE_CONTEXT_FIRST = 0
+SCHEDULE_STYLE_GENERATION_FIRST = 1
+
+# Capability keys (ModelInfo.extra). An engine that reports version 4 reports
+# these as well as BOOL_CAPABILITY_KEYS; a missing key counts as false.
+CAP_REQ_DISAGG_REQUEST_ID = "trtllm.request.disagg_request_id"
+CAP_DISAGG_GENERATION_FIRST = "trtllm.disagg.generation_first"
+CAP_DISAGG_ORIG_ELAPSED_S = "trtllm.disagg.orig_elapsed_s"
+# ``stopping.min_tokens >= 1`` takes effect, holding back both EOS and stop
+# tokens until the minimum is reached.
+CAP_STOPPING_MIN_TOKENS = "trtllm.stopping.min_tokens"
+VERSION_4_CAPABILITY_KEYS = (
+    CAP_REQ_DISAGG_REQUEST_ID,
+    CAP_DISAGG_GENERATION_FIRST,
+    CAP_DISAGG_ORIG_ELAPSED_S,
+    CAP_STOPPING_MIN_TOKENS,
+)
+
+# The capability a disaggregated request key needs. ``request_type`` needs none:
+# a prefill call needs ``ServerInfo.kv_connector`` to be enabled with
+# ``supports_remote_prefill``.
+DISAGG_REQUEST_KEY_CAPABILITY = {
+    REQ_DISAGG_REQUEST_ID: CAP_REQ_DISAGG_REQUEST_ID,
+    REQ_SCHEDULE_STYLE: CAP_DISAGG_GENERATION_FIRST,
+    REQ_ORIG_ELAPSED_S: CAP_DISAGG_ORIG_ELAPSED_S,
+}
+
+# The parts of a GenerateRequest in which the prefill and the decode call of
+# one user request may differ, and on which call each appears ("both": on both,
+# with different values). Every other part of the two calls is the same.
+LEG_SPECIFIC_FIELDS: Mapping[str, str] = MappingProxyType(
+    {
+        "request_id": "both",
+        f"extra.{REQ_REQUEST_TYPE}": "prefill",
+        f"extra.{REQ_DISAGG_REQUEST_ID}": "prefill",
+        f"extra.{REQ_SCHEDULE_STYLE}": "prefill",
+        "kv.session": "decode",
+        f"extra.{REQ_ORIG_ELAPSED_S}": "decode",
+    }
+)
+
+# KvSessionRef.attributes_struct keys. The mapped keys are named as the
+# ``DisaggregatedParams`` fields they carry; every other key passes through the
+# serving side untouched. A key an engine adds must be registered here first.
+HANDOFF_MAPPED_ATTRIBUTES = (
+    "ctx_info_endpoint",
+    "opaque_state",
+    "first_gen_tokens",
+    "draft_tokens",
+    "disagg_request_id",
+    "ctx_dp_rank",
+    "schedule_style",
+    "ctx_usage",
+    "first_gen_log_probs",
+)
+HANDOFF_DECODE_PREPARATION = "trtllm_decode_preparation"
+HANDOFF_REGISTERED_PASSTHROUGH_ATTRIBUTES = (HANDOFF_DECODE_PREPARATION,)
+
+# Buckets of the per-request-type counters: a call with ``kv.session`` is
+# generation_only; one without it whose ``request_type`` is context_only is
+# context_only; every other call is aggregated.
+BUCKET_CONTEXT_ONLY = REQUEST_TYPE_CONTEXT_ONLY
+BUCKET_GENERATION_ONLY = REQUEST_TYPE_GENERATION_ONLY
+BUCKET_AGGREGATED = "aggregated"
+REQUEST_BUCKETS = (BUCKET_CONTEXT_ONLY, BUCKET_GENERATION_ONLY, BUCKET_AGGREGATED)
+
+
+def request_bucket(*, has_kv_session: bool, request_type: Any) -> str:
+    """The counter bucket of one Generate call, the same for the engine and the serving side."""
+    if has_kv_session:
+        return BUCKET_GENERATION_ONLY
+    if request_type == REQUEST_TYPE_CONTEXT_ONLY:
+        return BUCKET_CONTEXT_ONLY
+    return BUCKET_AGGREGATED
+
+
+_DISAGG_REQUEST_ID = re.compile(r"[0-9]+")
+
+
+def parse_disagg_request_id(value: Any) -> int | None:
+    """Read a ``disagg_request_id`` request key; None unless it is a valid decimal string.
+
+    Valid means ASCII digits only, without sign or spaces, in
+    [DISAGG_REQUEST_ID_MIN, DISAGG_REQUEST_ID_LIMIT).
+    """
+    if not isinstance(value, str) or not _DISAGG_REQUEST_ID.fullmatch(value):
+        return None
+    number = int(value)
+    return number if DISAGG_REQUEST_ID_MIN <= number < DISAGG_REQUEST_ID_LIMIT else None
+
 
 # --- Accepted values (ModelInfo.extra, version 3) -------------------------------
 
@@ -169,6 +296,52 @@ COUNTER_GENERATE_ACCEPTED = "trtllm.counters.generate_accepted"
 SERVE_COUNTER_GENERATE_SENT = "generate_sent"
 SERVE_COUNTER_DIR_ENV = "TRTLLM_OPENENGINE_COUNTER_DIR"
 SERVE_COUNTER_ADDRESS = "address"
+
+# Version 4 engine counters (LoadInfo.attributes): generate_accepted by request
+# bucket, whose sum is generate_accepted, and the PrefillReady events sent.
+# generate_received has no buckets: it counts before the request is read.
+COUNTER_GENERATE_ACCEPTED_BUCKETS = {
+    bucket: f"{COUNTER_GENERATE_ACCEPTED}.{bucket}" for bucket in REQUEST_BUCKETS
+}
+COUNTER_PREFILL_READY_SENT = "trtllm.counters.prefill_ready_sent"
+VERSION_4_ENGINE_COUNTERS = (
+    *COUNTER_GENERATE_ACCEPTED_BUCKETS.values(),
+    COUNTER_PREFILL_READY_SENT,
+)
+
+# Version 4 serving-side counters, published next to generate_sent:
+# - generate_sent.<bucket>: generate_sent by the bucket of the call sent; they sum to generate_sent.
+# - prefill_ready_received: prefill_ready events received.
+# - http_received.<bucket>: generation HTTP requests received, counted before
+#   any refusal; a request without disaggregated_params, or whose request_type
+#   is context_and_generation, is aggregated.
+# - http_rejected: generation HTTP requests refused before a Generate call was sent.
+# - handoff_unregistered_attributes: handoff attributes passed through that are
+#   neither mapped nor registered (HANDOFF_MAPPED_ATTRIBUTES,
+#   HANDOFF_REGISTERED_PASSTHROUGH_ATTRIBUTES), one per key per handoff.
+SERVE_COUNTER_GENERATE_SENT_BUCKETS = {
+    bucket: f"{SERVE_COUNTER_GENERATE_SENT}.{bucket}" for bucket in REQUEST_BUCKETS
+}
+SERVE_COUNTER_PREFILL_READY_RECEIVED = "prefill_ready_received"
+SERVE_COUNTER_HTTP_RECEIVED_BUCKETS = {
+    bucket: f"http_received.{bucket}" for bucket in REQUEST_BUCKETS
+}
+SERVE_COUNTER_HTTP_REJECTED = "http_rejected"
+SERVE_COUNTER_HANDOFF_UNREGISTERED_ATTRIBUTES = "handoff_unregistered_attributes"
+# Every serving-side counter, generate_sent first.
+SERVE_COUNTERS = (
+    SERVE_COUNTER_GENERATE_SENT,
+    *SERVE_COUNTER_GENERATE_SENT_BUCKETS.values(),
+    SERVE_COUNTER_PREFILL_READY_RECEIVED,
+    *SERVE_COUNTER_HTTP_RECEIVED_BUCKETS.values(),
+    SERVE_COUNTER_HTTP_REJECTED,
+    SERVE_COUNTER_HANDOFF_UNREGISTERED_ATTRIBUTES,
+)
+
+# Set on a serving frontend, the directory it writes each GenerateRequest it
+# sends to, one JSON file per request id, prompt token ids reduced to their
+# count and a digest; unset, nothing is written.
+SERVE_REQUEST_DUMP_DIR_ENV = "TRTLLM_OPENENGINE_REQUEST_DUMP_DIR"
 
 # --- Request metadata ---------------------------------------------------------
 
@@ -450,7 +623,11 @@ def parse_extra_capabilities(model_extra: Mapping[str, Any]) -> ExtraCapabilitie
     Raises:
         CapabilityFormatError: ``trtllm.params`` is malformed.
     """
-    declared = frozenset(key for key in BOOL_CAPABILITY_KEYS if model_extra.get(key) is True)
+    declared = frozenset(
+        key
+        for key in BOOL_CAPABILITY_KEYS + VERSION_4_CAPABILITY_KEYS
+        if model_extra.get(key) is True
+    )
     seed_scope = model_extra.get(CAP_SEED_SCOPE)
     if seed_scope not in SEED_SCOPES:
         seed_scope = SEED_SCOPE_NONE

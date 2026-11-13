@@ -12,4 +12,30 @@
 #     lines:                                         # exact text, indentation included
 #       - "    openengine_handoff_attributes: Optional[str] = None"
 version: 1
-additions: []
+additions:
+  - change: CS-20
+    file: tensorrt_llm/serve/openai_protocol.py
+    region: DisaggregatedParams
+    lines:
+      - "    # Context worker -> generation worker, both serving through an OpenEngine"
+      - "    # engine: the handoff attributes without a field here, as a JSON object."
+      - "    # HTTP only; left out of the serialized params when None."
+      - "    openengine_handoff_attributes: Optional[str] = None"
+      - ""
+      - "    @model_serializer(mode=\"wrap\")"
+      - "    def _omit_absent_openengine_handoff_attributes(self, handler: Any) -> Any:"
+      - "        data = handler(self)"
+      - "        if isinstance(data, dict) and data.get(\"openengine_handoff_attributes\","
+      - "                                               ...) is None:"
+      - "            data.pop(\"openengine_handoff_attributes\", None)"
+      - "        return data"
+  - change: CS-20
+    file: tensorrt_llm/serve/disagg_auth.py
+    region: file
+    lines:
+      - "# Signed only when set, so requests without it sign as before."
+      - "_OPTIONAL_INTERNAL_DISAGG_AUTH_FIELDS = (\"openengine_handoff_attributes\",)"
+      - "_INTERNAL_DISAGG_AUTH_FIELDS += _OPTIONAL_INTERNAL_DISAGG_AUTH_FIELDS"
+      - "    for field_name in _OPTIONAL_INTERNAL_DISAGG_AUTH_FIELDS:"
+      - "        if payload[field_name] is None:"
+      - "            del payload[field_name]"

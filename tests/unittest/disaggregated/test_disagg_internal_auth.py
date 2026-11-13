@@ -77,6 +77,7 @@ def test_protected_fields_come_from_protocol_metadata():
     assert set(get_internal_disagg_auth_fields()) == {
         "ctx_info_endpoint",
         "encoded_opaque_state",
+        "openengine_handoff_attributes",
     }
 
 

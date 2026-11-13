@@ -1077,7 +1077,7 @@ async def test_server_info_reports_the_conventions_version():
     info = await _servicer().GetServerInfo(server_pb2.GetServerInfoRequest(), FakeServicerContext())
 
     version = info.extra["trtllm.conventions_version"]
-    assert isinstance(version, float) and version == 3
+    assert isinstance(version, float) and version == 4
 
 
 @pytest.mark.asyncio

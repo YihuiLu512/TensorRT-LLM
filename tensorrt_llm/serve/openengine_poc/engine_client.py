@@ -10,6 +10,13 @@ state, it covers the LoRA and KV-event methods the OpenEngine path needs.
 A request is accepted or rejected before ``generate`` yields its first event:
 an error before acceptance is raised by the first ``__anext__``, an error after
 acceptance is raised while iterating. Closing the iterator cancels the request.
+
+Served disaggregated, a request is two Generate calls on two engines: a
+prefill call (``request_type="context_only"``), which ends with a
+:class:`PrefillReady` event carrying the handoff, and a decode call, which
+carries that handoff in ``kv_session``. A prefill call is not cancelled once
+its :class:`PrefillReady` has arrived: the engine would free the KV cache it
+just handed over.
 """
 
 from __future__ import annotations
@@ -21,22 +28,28 @@ from typing import Any, Literal, Protocol, runtime_checkable
 from tensorrt_llm.grpc.openengine_conventions import ModelCapabilities
 
 __all__ = [
+    "DisaggRequestType",
     "EngineClient",
     "EngineEvent",
     "EngineHealth",
     "EngineInfo",
     "EngineLoad",
     "EngineRequest",
+    "EngineRole",
     "FinishReason",
     "GuidedMode",
     "GuidedSpec",
     "HealthState",
+    "KvConnectorInfo",
+    "KvEndpoint",
     "KvEventSource",
+    "KvSessionSpec",
     "LoraAdapter",
     "MediaSpec",
     "Modality",
     "ModelCapabilities",
     "OutputFinished",
+    "PrefillReady",
     "PromptInfo",
     "TokenDelta",
     "TokenLogprob",
@@ -47,6 +60,10 @@ GuidedMode = Literal["json_schema", "regex", "ebnf_grammar", "structural_tag", "
 Modality = Literal["image", "video", "audio"]
 FinishReason = Literal["stop", "length", "cancelled"]
 HealthState = Literal["starting", "ready", "degraded", "not_ready", "unspecified"]
+# ``ServerInfo.engine_role``; logged only, never used to decide a worker's role.
+EngineRole = Literal["unspecified", "aggregated", "prefill", "decode"]
+# The ``request_type`` a call sends in ``extra``; a decode call sends none.
+DisaggRequestType = Literal["context_only", "context_and_generation"]
 
 
 @dataclass(frozen=True)
@@ -83,6 +100,37 @@ class MediaSpec:
             raise ValueError("a MediaSpec needs exactly one of url, data_uri and raw_bytes")
 
 
+@dataclass(frozen=True)
+class KvEndpoint:
+    """An OpenEngine ``KvEndpoint``."""
+
+    host: str
+    port: int
+    protocol: str = ""
+
+
+@dataclass(frozen=True)
+class KvSessionSpec:
+    """An OpenEngine ``KvSessionRef``: the handoff from the context engine to the generation engine.
+
+    Attributes:
+        session_id: The context request id as a decimal string; empty if the engine gave none.
+        transfer_backend: An informational label; the transfer does not depend on it.
+        dp_rank: The context engine's attention-DP rank.
+        endpoints: The context engine's endpoint split into parts; informational,
+            since ``attributes["ctx_info_endpoint"]`` holds it as the engine wrote it.
+        attributes: ``attributes_struct`` as plain data: the keys named in
+            ``HANDOFF_MAPPED_ATTRIBUTES`` of the conventions, and any other key
+            passed through unread. Integers above 2**53 are decimal strings.
+    """
+
+    session_id: str
+    transfer_backend: str = ""
+    dp_rank: int = 0
+    endpoints: tuple[KvEndpoint, ...] = ()
+    attributes: Mapping[str, Any] = field(default_factory=dict)
+
+
 @dataclass
 class EngineRequest:
     """One Generate call.
@@ -101,6 +149,11 @@ class EngineRequest:
         extra: ``GenerateRequest.extra`` entries; only keys the conventions define.
         metadata: gRPC metadata such as ``traceparent``, ``openengine-priority``
             and ``openengine-target-dp-rank``.
+        request_type: The ``request_type`` sent in ``extra``: ``"context_only"``
+            for the prefill call of a disaggregated request,
+            ``"context_and_generation"`` when the request asked for it, None otherwise.
+        kv_session: The handoff a decode call carries in ``kv.session``; set
+            only on a decode call, whose ``request_type`` is None.
     """
 
     request_id: str
@@ -122,6 +175,8 @@ class EngineRequest:
     model: str = ""
     extra: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, str] = field(default_factory=dict)
+    request_type: DisaggRequestType | None = None
+    kv_session: KvSessionSpec | None = None
 
 
 @dataclass(frozen=True)
@@ -180,7 +235,27 @@ class OutputFinished:
     usage: Usage | None = None
 
 
-EngineEvent = PromptInfo | TokenDelta | OutputFinished
+@dataclass(frozen=True)
+class PrefillReady:
+    """The prefill call of a disaggregated request handed over its KV cache; ends the call.
+
+    Only a prefill call (``request_type="context_only"``) may end this way;
+    it ends either with this event or with :class:`OutputFinished`, when the
+    whole request finished on the context engine. The call's tokens before it
+    are the context engine's first token, which the decode call delivers again.
+
+    Attributes:
+        output_index: Always 0: a disaggregated request has one output.
+        kv_session: The handoff, for the decode call's ``kv_session``.
+        usage: The context engine's token counts for the call.
+    """
+
+    output_index: int
+    kv_session: KvSessionSpec
+    usage: Usage | None = None
+
+
+EngineEvent = PromptInfo | TokenDelta | OutputFinished | PrefillReady
 
 
 @dataclass(frozen=True)
@@ -217,12 +292,37 @@ class EngineLoad:
 
 
 @dataclass(frozen=True)
+class KvConnectorInfo:
+    """An engine's ``ServerInfo.kv_connector``; a field the engine leaves unset reads as False or empty.
+
+    Attributes:
+        enabled: KV transfer is enabled; required to serve disaggregated requests.
+        supports_remote_prefill: The engine takes prefill calls ending with
+            ``PrefillReady`` and decode calls with ``kv.session``; required too.
+        local_endpoints: Where a generation-first decode call finds this
+            context engine; empty when the engine gives none.
+        schema_version: None when the engine does not report one.
+    """
+
+    enabled: bool = False
+    transfer_backend: str = ""
+    local_endpoints: tuple[KvEndpoint, ...] = ()
+    supported_protocols: tuple[str, ...] = ()
+    supports_remote_prefill: bool = False
+    supports_decode_pull: bool = False
+    supports_abort_cleanup: bool = False
+    schema_version: int | None = None
+
+
+@dataclass(frozen=True)
 class EngineInfo:
     """Who the engine is.
 
     Attributes:
         instance_id: Changes when the engine process restarts.
         extra: ``ServerInfo.extra``.
+        engine_role: ``ServerInfo.engine_role``, for logs only.
+        kv_connector: ``ServerInfo.kv_connector``; None when the engine reports none.
     """
 
     engine_name: str
@@ -234,6 +334,8 @@ class EngineInfo:
     max_running_requests: int | None = None
     max_loras: int | None = None
     extra: Mapping[str, Any] = field(default_factory=dict)
+    engine_role: EngineRole = "unspecified"
+    kv_connector: KvConnectorInfo | None = None
 
 
 @dataclass(frozen=True)
