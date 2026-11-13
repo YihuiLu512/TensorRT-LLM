@@ -39,6 +39,7 @@ from http import HTTPStatus
 from pathlib import Path
 from typing import Any
 
+import capprobe as _capprobe
 import grpc
 
 from tensorrt_llm.grpc.openengine.bindings import error_pb2
@@ -1624,6 +1625,8 @@ class OpenEngineRequestOutput:
                 return self
             if isinstance(item, BaseException):
                 raise self._fail(self._call_failure(item)) from item
+            if _capprobe.ON_F4:
+                _capprobe.F4()
             cancelled = self._engine_cancelled(item)
             if cancelled is not None:
                 # The engine gave up on the request on its own: not a result to return.

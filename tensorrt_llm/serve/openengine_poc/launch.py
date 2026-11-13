@@ -11,6 +11,7 @@ import socket
 from collections.abc import Sequence
 from typing import Any
 
+import capprobe as _capprobe
 import uvloop
 
 from tensorrt_llm.logger import logger
@@ -131,6 +132,8 @@ def launch_openengine_server(
         # As launch_server does.
         if os.getenv("TRTLLM_SERVER_DISABLE_GC", "0") == "1":
             gc.disable()
+        if _capprobe.LAG:
+            _capprobe.install_loop_lag("Lfe")
         try:
             await facade.start()
             logger.info(f"Serving the OpenEngine engine at {endpoint} on {host}:{port}")

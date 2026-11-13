@@ -10,6 +10,7 @@ from collections.abc import Callable, Sequence
 from types import TracebackType
 from typing import Any
 
+import capprobe as _capprobe
 import grpc
 
 from tensorrt_llm.grpc.openengine.bindings import generation_pb2, openengine_pb2_grpc
@@ -263,6 +264,8 @@ class GenerateStream:
             raise asyncio.TimeoutError
         if read.cancelled():
             return _CALL_CANCELLED
+        if _capprobe.ON_F2 and read.result() is not grpc.aio.EOF:
+            _capprobe.F2()
         return read.result()
 
     def _validate(self, response: generation_pb2.GenerateResponse) -> bool:

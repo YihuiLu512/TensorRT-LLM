@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import (TYPE_CHECKING, Annotated, Any, AsyncGenerator,
                     AsyncIterator, Dict, List, Optional, Tuple, Union)
 
+import capprobe as _capprobe
 import msgspec
 import uvicorn
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
@@ -3060,6 +3061,8 @@ class OpenAIServer(_VideoRoutesMixin):
                 async for output in promise:
                     pp_result = dispatch.result(output, params)
                     for pp_res in pp_result:
+                        if _capprobe.ON_H3:
+                            _capprobe.H3()
                         yield pp_res
                 await self._extract_metrics(output, raw_request)
             except Exception as e:

@@ -40,6 +40,7 @@ import threading
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
+import capprobe as _capprobe
 import click
 import uvloop
 
@@ -481,6 +482,8 @@ async def _run_launcher(
 ) -> None:
     sigterm.cancel_on_signal(asyncio.current_task())
     _maybe_disable_gc()
+    if _capprobe.LAG:
+        _capprobe.install_loop_lag("Lmfl")
     cancelled = threading.Event()
     spawn: asyncio.Future | None = None
     children: list = []
@@ -643,6 +646,8 @@ async def _run_attached(
 ) -> None:
     sigterm.cancel_on_signal(asyncio.current_task())
     _maybe_disable_gc()
+    if _capprobe.LAG:
+        _capprobe.install_loop_lag("Lmfa")
     try:
         await facade.start()
         # Only a frontend connected to the engine counts as started.

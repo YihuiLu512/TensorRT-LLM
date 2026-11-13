@@ -17,6 +17,7 @@ from typing import (Any, Callable, List, Literal, Optional, OrderedDict, Tuple,
                     Union)
 
 import anyio
+import capprobe as _capprobe
 from fastapi.responses import StreamingResponse
 from jinja2.exceptions import TemplateError
 from openai.types.responses import (ResponseCompletedEvent,
@@ -3535,6 +3536,8 @@ class ServerArrivalTimeMiddleware:
             # Add arrival time to scope
             scope["state"] = {}
             scope["state"]["server_arrival_time"] = self._adjusted_clock.now()
+            if _capprobe.ON_H1:
+                _capprobe.H1()
 
         # Pass through the original receive/send - no wrapping!
         await self.app(scope, receive, send)
