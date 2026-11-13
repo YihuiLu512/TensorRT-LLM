@@ -6,20 +6,23 @@
 PoC-S3 puts OpenEngine worker front ends behind the existing disaggregated
 orchestrator without changing the orchestrator. Three checks hold that line:
 
-1. **Whole files unchanged**: the orchestrator's seven main files are byte for
-   byte the same as at the base (what ``git diff --stat <base> -- <files>``
-   printing nothing means).
+1. **Whole files unchanged**: ``git diff --quiet <base> [<head>] -- <file>``
+   finds no difference in any of the orchestrator's seven main files (contents,
+   line endings and file mode).
 2. **Definitions unchanged**: the two conversion functions of
    ``openai_protocol.py`` and the ``disaggregated`` / ``disaggregated_mpi_worker``
    subcommands of ``commands/serve.py`` have the same source text as at the
    base. Each definition is located with ``ast`` and compared from its first
-   decorator to its last line, so moving it inside the file is fine but any
-   change to its decorators, signature or body is not.
+   decorator to its last line, comment lines indented into its body included,
+   so moving it inside the file is fine but any change to its decorators,
+   signature or body is not. The name must not be bound a second time at the
+   top level of the file. Helpers the definitions call are not covered.
 3. **Registered additions only**: the HTTP ``DisaggregatedParams`` class of
    ``openai_protocol.py`` and the whole of ``disagg_auth.py`` may only gain the
    lines listed in ``invariant_additions.yaml``: the base text must be a
    subsequence of the current text, and the extra lines must all be registered.
-   Every registry entry must belong to change item CS-20.
+   Every registry entry must belong to change item CS-20. Where a registered
+   line is inserted is not checked; a reviewer reads it.
 
 Usage::
 
@@ -27,7 +30,8 @@ Usage::
     python3 scripts/poc3/check_invariants.py --head <rev>
     python3 scripts/poc3/check_invariants.py --working-tree       # files on disk
 
-Exit status: 0 when all three checks pass, 1 otherwise.
+Exit status: 0 when all three checks pass, 1 otherwise. The scripts need
+Python 3.9 or newer.
 """
 
 from __future__ import annotations
@@ -42,7 +46,7 @@ from pathlib import Path
 
 import yaml
 
-# fork/feat/engine_integration when PoC-S3 started; recorded in the stage STATUS by WT-30.
+# The commit PoC-S3 starts from: the PoC-S2 branch fork/feat/engine_integration at that point.
 FROZEN_BASE = "2f22a98d6e8b32ed185bcdfe051ef0e4405ae4e8"
 REGISTRY = Path(__file__).resolve().parent / "invariant_additions.yaml"
 REGISTRY_PATH = "scripts/poc3/invariant_additions.yaml"
@@ -70,14 +74,23 @@ FROZEN_DEFINITIONS = (
 ADDITION_REGIONS = ((PROTOCOL, "DisaggregatedParams"), (AUTH, "file"))
 
 Reader = Callable[[str, str], "str | None"]
+Differ = Callable[[str, str, str], bool]
 
 
 def git_reader(repo: str | Path) -> Reader:
     """Read ``path`` at revision ``rev`` (None when it does not exist there); rev "" is the disk."""
+    top = Path(
+        subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
 
     def read(rev: str, path: str) -> str | None:
         if not rev:
-            file = Path(repo) / path
+            file = top / path
             return file.read_text() if file.is_file() else None
         result = subprocess.run(
             ["git", "-C", str(repo), "show", f"{rev}:{path}"], capture_output=True, text=True
@@ -87,18 +100,75 @@ def git_reader(repo: str | Path) -> Reader:
     return read
 
 
+def git_differ(repo: str | Path) -> Differ:
+    """Whether ``path`` differs between ``base`` and ``head`` (head "" is the disk), by git diff."""
+
+    def differs(base: str, head: str, path: str) -> bool:
+        revs = [base, head] if head else [base]
+        result = subprocess.run(
+            ["git", "-C", str(repo), "diff", "--quiet", *revs, "--", f":(top){path}"],
+            capture_output=True,
+        )
+        if result.returncode not in (0, 1):
+            raise RuntimeError(result.stderr.decode(errors="replace").strip())
+        return result.returncode == 1
+
+    return differs
+
+
+def _top_level_bindings(tree: ast.Module, name: str) -> int:
+    """How many top-level statements bind ``name``."""
+    count = 0
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            count += node.name == name
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            count += any((a.asname or a.name.split(".")[0]) == name for a in node.names)
+        else:
+            targets = [
+                t
+                for stmt in ast.walk(node)
+                if isinstance(stmt, (ast.Assign, ast.AnnAssign, ast.AugAssign, ast.NamedExpr))
+                for t in (stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target])
+            ]
+            count += any(
+                isinstance(sub, ast.Name) and sub.id == name
+                for target in targets
+                for sub in ast.walk(target)
+            )
+    return count
+
+
 def definition_text(source: str, name: str, kind: type = ast.FunctionDef) -> str:
-    """The source lines of the single top-level ``kind`` named ``name``, decorators included.
+    """The source lines of the single top-level ``kind`` named ``name``.
+
+    The text runs from the first decorator to the last line of the body,
+    including comment lines that follow it indented deeper than the ``def``.
 
     Raises:
-        LookupError: There is no such definition, or more than one.
+        LookupError: There is no such definition, or ``name`` is bound more than
+            once at the top level.
     """
-    nodes = [n for n in ast.parse(source).body if isinstance(n, kind) and n.name == name]
+    tree = ast.parse(source)
+    nodes = [n for n in tree.body if isinstance(n, kind) and n.name == name]
     if len(nodes) != 1:
         raise LookupError(f"expected one top-level {kind.__name__} {name!r}, found {len(nodes)}")
+    bindings = _top_level_bindings(tree, name)
+    if bindings != 1:
+        raise LookupError(f"{name!r} is bound {bindings} times at the top level")
     node = nodes[0]
+    lines = source.splitlines(keepends=True)
     first = min([node.lineno] + [d.lineno for d in node.decorator_list])
-    return "".join(source.splitlines(keepends=True)[first - 1 : node.end_lineno])
+    last = node.end_lineno
+    probe = last
+    while probe < len(lines):
+        line = lines[probe]
+        if line.strip() and len(line) - len(line.lstrip()) <= node.col_offset:
+            break
+        probe += 1
+        if line.strip():
+            last = probe
+    return "".join(lines[first - 1 : last])
 
 
 def extra_lines(base: list[str], head: list[str]) -> list[str] | None:
@@ -123,6 +193,8 @@ def load_registry(text: str | None) -> tuple[dict[tuple[str, str], Counter[str]]
     if text is None:
         return registered, [f"registry {REGISTRY_PATH} is missing"]
     data = yaml.safe_load(text) or {}
+    if not isinstance(data, dict) or not isinstance(data.get("additions") or [], list):
+        return registered, ["the registry is not a mapping with a list of additions"]
     problems = []
     for index, entry in enumerate(data.get("additions") or []):
         where = f"registry entry {index}"
@@ -148,18 +220,18 @@ def load_registry(text: str | None) -> tuple[dict[tuple[str, str], Counter[str]]
 
 
 def run(
-    read: Reader, base: str, head: str, registry_text: str | None = None
+    repo: str | Path, base: str, head: str, registry_text: str | None = None
 ) -> list[tuple[str, bool, str]]:
-    """Every check as ``(name, passed, detail)``.
+    """Every check as ``(name, passed, detail)``; ``head`` "" checks the files on disk.
 
     The registry is ``registry_text`` when given, else the one in ``head``, else
     (for a head without ``scripts/poc3``, such as the frozen base) the one next
     to this script.
     """
+    read, differs = git_reader(repo), git_differ(repo)
     results = []
     for path in ORCHESTRATOR_FILES:
-        old, new = read(base, path), read(head, path)
-        same = old is not None and old == new
+        same = read(base, path) is not None and not differs(base, head, path)
         results.append(
             (f"file {path}", same, "" if same else "differs from the base (or is missing)")
         )
@@ -222,7 +294,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     head = "" if args.working_tree else args.head
     registry_text = args.registry.read_text() if args.registry else None
-    results = run(git_reader(args.repo), args.base, head, registry_text)
+    results = run(args.repo, args.base, head, registry_text)
     for name, passed, detail in results:
         print(f"{'PASS' if passed else 'FAIL'}  {name}" + (f"  -- {detail}" if detail else ""))
     failed = [name for name, passed, _ in results if not passed]

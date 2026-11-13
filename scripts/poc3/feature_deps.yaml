@@ -12,7 +12,8 @@
 #                 F-01+rest the cases that wait for a later work item.
 #   features      Feature ids.
 #   cases         The cases whose passing verifies the row.
-#   authors       The work items that write, move or re-expect those cases.
+#   author        The work items that write, move or re-expect those cases (a
+#                 list: one row's cases can come from several items).
 #   deps          Work items (or groups) that must have landed.
 #   chain         case-04 (the TRT-LLM engine) or case-03 (ds-engine).
 #   assignee      A fixed verifier (an integration round or a performance item).
@@ -23,6 +24,7 @@
 #                 Supplementary evidence run only by integration rounds; they
 #                 never make a work item owe the row.
 #   not_runnable  Cases the PoC machines cannot run.
+#   notes         Clauses of the tables this file does not model, verbatim.
 #
 # The verifier of a case-04 row is the dependency that lands last, unless the
 # row has an assignee. A case-03 row is verified by R13 (WT-62), or by its
@@ -31,478 +33,478 @@
 version: 1
 groups:
   link: [WT-35, WT-37, WT-38, WT-40, WT-50, WT-51]
-  r11-prereqs: [WT-37, WT-38, WT-40, WT-50, WT-51, WT-52, WT-57]
   ds-link: [WT-33, WT-37, WT-38, WT-42, WT-43, WT-50, WT-51, WT-52, WT-56, WT-62]
+  r11-prereqs: [WT-37, WT-38, WT-40, WT-50, WT-51, WT-52, WT-57]
   ds-repo: [WT-41, WT-42, WT-43]
 rows:
 - id: F-01
   features: [F-01]
   cases: [XD-014, XD-022]
-  authors: [existing]
+  author: [existing]
   deps: [link]
   chain: case-04
 - id: F-01+rest
   features: [F-01]
   cases: [T2]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-01@03
   features: [F-01]
   cases: [NT-101, NT-109]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-02
   features: [F-02]
   cases: [XD-002]
-  authors: [existing]
+  author: [existing]
   deps: [link]
   chain: case-04
 - id: F-02+rest
   features: [F-02]
   cases: [T1, NT-050, NT-051]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-02@03
   features: [F-02]
   cases: [NT-101, NT-102, NT-217, NT-109]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-03
   features: [F-03]
   cases: [T29, NT-051]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-03@03
   features: [F-03]
   cases: [NT-103]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-04
   features: [F-04]
   cases: [T30, NT-051]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-04@03
   features: [F-04]
   cases: [NT-103]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-05a
   features: [F-05a]
   cases: [NT-001]
-  authors: [WT-50]
+  author: [WT-50]
   deps: [link]
   chain: case-04
 - id: F-05a+rest
   features: [F-05a]
   cases: [T6]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-05a@03
   features: [F-05a]
   cases: [NT-105]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-05b
   features: [F-05b]
   cases: [NT-001]
-  authors: [WT-50]
+  author: [WT-50]
   deps: [link]
   chain: case-04
 - id: F-05b+rest
   features: [F-05b]
   cases: [NT-052]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-05b@03
   features: [F-05b]
   cases: [NT-106]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-05c
   features: [F-05c]
   cases: [NT-001]
-  authors: [WT-50]
+  author: [WT-50]
   deps: [link]
   chain: case-04
 - id: F-05c+rest
   features: [F-05c]
   cases: [NT-053]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-05c@03
   features: [F-05c]
   cases: [NT-106]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-05d
   features: [F-05d]
   cases: [NT-054]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-05d@03
   features: [F-05d]
   cases: [NT-107]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-06
   features: [F-06]
   cases: [NT-055]
-  authors: [WT-53]
+  author: [WT-53]
   deps: [link, WT-53]
   chain: case-04
 - id: F-06@03
   features: [F-06]
   cases: [NT-106]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link, WT-53]
   chain: case-03
 - id: F-07
   features: [F-07]
   cases: [NT-056, NT-214, T2]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-07@03
   features: [F-07]
   cases: [NT-100, NT-124, NT-176]
-  authors: [WT-56, WT-62]
+  author: [WT-56, WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-08
   features: [F-08]
   cases: [T1, T8]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-08@03
   features: [F-08]
   cases: [NT-117]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-09
   features: [F-09]
   cases: [XD-060, XD-061, NT-057]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-09@03
   features: [F-09]
   cases: [NT-217, NT-117]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-10
   features: [F-10]
   cases: [NT-058]
-  authors: [WT-52]
+  author: [WT-52]
   deps: [link, WT-52]
   chain: case-04
 - id: F-10@03
   features: [F-10]
   cases: [NT-119]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-11
   features: [F-11]
   cases: [NT-059]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-11@03
   features: [F-11]
   cases: [NT-110]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-12
   features: [F-12]
   cases: [NT-060]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-12@03
   features: [F-12]
   cases: [NT-111]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-13
   features: [F-13]
   cases: [NT-061]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-13@03
   features: [F-13]
   cases: [NT-119]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-14
   features: [F-14]
   cases: [XD-014, XD-001]
-  authors: [existing]
+  author: [existing]
   deps: [link]
   chain: case-04
 - id: F-14+rest
   features: [F-14]
   cases: [T1]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-14@03
   features: [F-14]
   cases: [NT-112]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-15
   features: [F-15]
   cases: [NT-062]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-15@03
   features: [F-15]
   cases: [NT-119]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-16
   features: [F-16]
   cases: [XD-014]
-  authors: [existing]
+  author: [existing]
   deps: [link]
   chain: case-04
 - id: F-16+rest
   features: [F-16]
   cases: [T5]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-16@03
   features: [F-16]
   cases: [NT-113]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-17
   features: [F-17]
   cases: [XD-701, NT-063]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-17@03
   features: [F-17]
   cases: [NT-114]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-18
   features: [F-18]
   cases: [XD-701]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-18@03
   features: [F-18]
   cases: [NT-113]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-19
   features: [F-19]
   cases: [NT-064]
-  authors: [WT-52]
+  author: [WT-52]
   deps: [link, WT-52]
   chain: case-04
 - id: F-19@03
   features: [F-19]
   cases: [NT-120]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-20
   features: [F-20]
   cases: [XD-062, T5, T1]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-20@03
   features: [F-20]
   cases: [NT-119]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-21
   features: [F-21]
   cases: []
-  authors: ['-']
+  author: ['-']
   deps: []
   chain: case-04
   deferred: true
 - id: F-22
   features: [F-22]
   cases: [T3, T4]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-22@03
   features: [F-22]
   cases: [NT-119]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-23
   features: [F-23]
   cases: [XD-206, XD-073, XD-074, T23]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-23@03
   features: [F-23]
   cases: [NT-119]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-24
   features: [F-24]
   cases: [XD-701, T1]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-24@03
   features: [F-24]
   cases: [NT-116]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-25
   features: [F-25]
   cases: [XD-219, NT-065, T2]
-  authors: [WT-52]
+  author: [WT-52]
   deps: [link, WT-52]
   chain: case-04
 - id: F-25@03
   features: [F-25]
   cases: [NT-121]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-26
   features: [F-26]
   cases: [NT-066]
-  authors: [WT-52]
+  author: [WT-52]
   deps: [link, WT-52]
   chain: case-04
 - id: F-26@03
   features: [F-26]
   cases: [NT-119]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-27
   features: [F-27]
   cases: [T7, T29]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-27@03
   features: [F-27]
   cases: [NT-125]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-28
   features: [F-28]
   cases: [XD-022, T8, T30]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-28@03
   features: [F-28]
   cases: [NT-125]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-29
   features: [F-29]
   cases: [NT-067]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-29@03
   features: [F-29]
   cases: [NT-119]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-30
   features: [F-30]
   cases: [XD-014, T2, T1]
-  authors: [WT-52]
+  author: [WT-52]
   deps: [link, WT-52]
   chain: case-04
 - id: F-30+rest
   features: [F-30]
   cases: [XD-060, XD-061]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-52, WT-57]
   chain: case-04
 - id: F-30@03
   features: [F-30]
   cases: [NT-126]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-31
   features: [F-31]
   cases: [XD-205, XD-203, XD-221]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
   hopper_cases: [XD-036, XD-052, XD-037, XD-047, XD-048]
 - id: F-31@03
   features: [F-31]
   cases: [NT-130, NT-217]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-32
   features: [F-32]
   cases: [XD-225, XD-203, XD-011, XD-029, XD-030, XD-031, XD-032, XD-033, XD-034, T31, T32]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-32@03
   features: [F-32]
   cases: [NT-217, NT-218]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-33
   features: [F-33]
   cases: [XD-213, XD-225, XD-059]
-  authors: [existing]
+  author: [existing]
   deps: [r11-prereqs]
   chain: case-04
   assignee: WT-60
@@ -510,44 +512,44 @@ rows:
 - id: F-33@03
   features: [F-33]
   cases: [NT-217]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-34
   features: [F-34]
   cases: [XD-014, XD-059, XD-208]
-  authors: [existing]
+  author: [existing]
   deps: [link, WT-52]
   chain: case-04
   hopper_cases: [XD-038, XD-039]
 - id: F-34+rest
   features: [F-34]
   cases: [T2]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-52, WT-57]
   chain: case-04
 - id: F-34@03
   features: [F-34]
   cases: [NT-126]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-35
   features: [F-35]
   cases: [XD-702]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-35@03
   features: [F-35]
   cases: [NT-119]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-36
   features: [F-36]
   cases: [XD-220, XD-225, XD-230]
-  authors: [existing]
+  author: [existing]
   deps: [r11-prereqs]
   chain: case-04
   assignee: WT-60
@@ -556,339 +558,339 @@ rows:
 - id: F-36@03
   features: [F-36]
   cases: [NT-217, NT-108]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-37
   features: [F-37]
   cases: [XD-056]
-  authors: [existing]
+  author: [existing]
   deps: [r11-prereqs]
   chain: case-04
   assignee: WT-60
 - id: F-37@03
   features: [F-37]
   cases: [NT-131]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-38
   features: [F-38]
   cases: [NT-068, T2]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-38@03
   features: [F-38]
   cases: [NT-127]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-39
   features: [F-39]
   cases: [NT-069]
-  authors: [WT-53]
+  author: [WT-53]
   deps: [link, WT-53]
   chain: case-04
 - id: F-39@03
   features: [F-39]
   cases: [NT-128]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link, WT-53]
   chain: case-03
 - id: F-40
   features: [F-40]
   cases: [T9, NT-070]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-40@03
   features: [F-40]
   cases: [NT-127]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-42a
   features: [F-42a]
   cases: [NT-071]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-42a@03
   features: [F-42a]
   cases: [NT-106]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-42b
   features: [F-42b]
   cases: [NT-072]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-42b@03
   features: [F-42b]
   cases: [NT-106]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-43
   features: [F-43]
   cases: [XD-120, NT-073]
-  authors: [WT-53]
+  author: [WT-53]
   deps: [link, WT-53]
   chain: case-04
 - id: F-44a
   features: [F-44a]
   cases: [NT-074]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-44a@03
   features: [F-44a]
   cases: [NT-119]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-44b
   features: [F-44b]
   cases: [NT-075]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-44b@03
   features: [F-44b]
   cases: [NT-119]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-44c
   features: [F-44c]
   cases: [NT-076]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
   hopper_cases: [XD-124]
 - id: F-44c@03
   features: [F-44c]
   cases: [NT-129]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-45
   features: [F-45]
   cases: [NT-077]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-45@03
   features: [F-45]
   cases: [NT-121]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-46
   features: [F-46]
   cases: [T21, T22]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-46@03
   features: [F-46]
   cases: [NT-119]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-47a
   features: [F-47a]
   cases: [NT-078]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-47a@03
   features: [F-47a]
   cases: [NT-121]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-47b
   features: [F-47b]
   cases: [NT-078]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-47b@03
   features: [F-47b]
   cases: [NT-121]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: F-47c
   features: [F-47c]
   cases: [NT-079]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: F-47c@03
   features: [F-47c]
   cases: [NT-122]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DG-05
   features: [DG-05]
   cases: [T30]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: DG-05@03
   features: [DG-05]
   cases: [NT-104]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DG-07
   features: [DG-07]
   cases: [T6]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: DG-08
   features: [DG-08]
   cases: [XD-105, XD-102, XD-058]
-  authors: [existing]
+  author: [existing]
   deps: [r11-prereqs]
   chain: case-04
   assignee: WT-60
 - id: DG-09
   features: [DG-09]
   cases: [T6]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: DG-10
   features: [DG-10]
   cases: [XD-313]
-  authors: [existing]
+  author: [existing]
   deps: [r11-prereqs]
   chain: case-04
   assignee: WT-60
 - id: DG-11
   features: [DG-11]
   cases: [XD-105, NT-002]
-  authors: [WT-50]
+  author: [WT-50]
   deps: [link, WT-57]
   chain: case-04
 - id: DG-12
   features: [DG-12]
   cases: [XD-002]
-  authors: [existing]
+  author: [existing]
   deps: [link]
   chain: case-04
   hopper_cases: [XD-035]
 - id: DG-12@03
   features: [DG-12]
   cases: [NT-101, NT-217]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DG-13
   features: [DG-13]
   cases: [XD-002]
-  authors: [existing]
+  author: [existing]
   deps: [link]
   chain: case-04
 - id: DG-13+rest
   features: [DG-13]
   cases: [T2]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: DG-13@03
   features: [DG-13]
   cases: [NT-101, NT-217]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DG-15
   features: [DG-15]
   cases: [T29]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: DG-16
   features: [DG-16]
   cases: [NT-003, NT-080]
-  authors: [WT-51]
+  author: [WT-51]
   deps: [link]
   chain: case-04
 - id: DG-16@03
   features: [DG-16]
   cases: [NT-115]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DG-17
   features: [DG-17]
   cases: [XD-013, XD-011]
-  authors: [existing]
+  author: [existing]
   deps: [link]
   chain: case-04
 - id: DG-18
   features: [DG-18]
   cases: [XD-024, XD-006]
-  authors: [existing]
+  author: [existing]
   deps: [r11-prereqs]
   chain: case-04
   assignee: WT-60
 - id: DG-19
   features: [DG-19]
   cases: [XD-025, XD-007, XD-107, XD-058, XD-121, XD-123, XD-059, NT-081]
-  authors: [WT-53]
+  author: [WT-53]
   deps: [link, WT-53]
   chain: case-04
   hopper_cases: [XD-049, XD-122]
 - id: DG-20
   features: [DG-20]
   cases: [XD-008, NT-082]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
   hopper_cases: [XD-124]
 - id: DG-21
   features: [DG-21]
   cases: [NT-082]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: DG-22
   features: [DG-22]
   cases: [NT-004, NT-083, NT-084]
-  authors: [WT-53]
+  author: [WT-53]
   deps: [link, WT-53]
   chain: case-04
 - id: DG-22@03
   features: [DG-22]
   cases: [NT-143]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link, WT-53]
   chain: case-03
 - id: DG-23
   features: [DG-23]
   cases: [NT-085]
-  authors: [WT-53]
+  author: [WT-53]
   deps: [link, WT-53]
   chain: case-04
 - id: DG-23@03
   features: [DG-23]
   cases: [NT-128]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link, WT-53]
   chain: case-03
 - id: DG-24
   features: [DG-24]
   cases: [XD-026, XD-119, NT-086]
-  authors: [WT-53]
+  author: [WT-53]
   deps: [link, WT-53]
   chain: case-04
   hopper_cases: [XD-050, XD-051]
@@ -896,512 +898,516 @@ rows:
 - id: DG-25
   features: [DG-25]
   cases: [NT-087]
-  authors: [WT-53]
+  author: [WT-53]
   deps: [link, WT-53]
   chain: case-04
 - id: DG-27
   features: [DG-27]
   cases: [NT-005]
-  authors: [WT-50]
+  author: [WT-50]
   deps: [link]
   chain: case-04
   two_node_cases: [XD-301, XD-305]
 - id: DG-27+PU-02
   features: [DG-27]
   cases: [PU-02]
-  authors: [WT-70]
+  author: [WT-70]
   deps: [link, WT-70]
   chain: case-04
   assignee: WT-70
+  notes: ["GPU \u4E0A\u7684\u9759\u6001 URL \u8D77\u6CD5\u968F PB-1a \u7684 PU-02 \u53D6\u8BC1\uFF08WT-70\uFF09\
+      \uFF1APU-02 \u8DD1\u901A\u4E14 CH-6 \u7684\u6210\u5458\u53D6\u81EA\u7F16\u6392\u8005 YAML \u7684\
+      \ `urls`"]
 - id: DG-28
   features: [DG-28]
   cases: [XD-105, XD-117, NT-002]
-  authors: [WT-50]
+  author: [WT-50]
   deps: [link]
   chain: case-04
 - id: DG-28@03
   features: [DG-28]
   cases: [NT-142]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DG-29
   features: [DG-29]
   cases: [XD-102, XD-116, NT-006]
-  authors: [WT-50]
+  author: [WT-50]
   deps: [link]
   chain: case-04
 - id: DG-29@03
   features: [DG-29]
   cases: [NT-142]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DG-30
   features: [DG-30]
   cases: []
-  authors: ['-']
+  author: ['-']
   deps: []
   chain: case-04
   deferred: true
+  notes: ["XD-101 \u662F\u6B7B\u7528\u4F8B\uFF0C\u4E0D\u63A5\u94FE"]
 - id: DG-31
   features: [DG-31]
   cases: [XD-108, XD-109, NT-002]
-  authors: [WT-50]
+  author: [WT-50]
   deps: [link]
   chain: case-04
 - id: DG-32
   features: [DG-32]
   cases: [XD-105, NT-007]
-  authors: [WT-50]
+  author: [WT-50]
   deps: [link]
   chain: case-04
 - id: DG-32@03
   features: [DG-32]
   cases: [NT-142]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DG-33
   features: [DG-33]
   cases: [XD-004]
-  authors: [existing]
+  author: [existing]
   deps: [r11-prereqs]
   chain: case-04
   assignee: WT-60
 - id: DG-34
   features: [DG-34]
   cases: [XD-105, NT-008]
-  authors: [WT-50]
+  author: [WT-50]
   deps: [link]
   chain: case-04
 - id: DG-34+rest
   features: [DG-34]
   cases: [XD-312, NT-088]
-  authors: [WT-54, WT-57]
+  author: [WT-54, WT-57]
   deps: [link, WT-54, WT-57]
   chain: case-04
 - id: DG-34@03
   features: [DG-34]
   cases: [NT-137]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DG-35
   features: [DG-35]
   cases: [NT-004, NT-083, NT-084]
-  authors: [WT-53]
+  author: [WT-53]
   deps: [link, WT-53]
   chain: case-04
 - id: DG-35@03
   features: [DG-35]
   cases: [NT-143]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link, WT-53]
   chain: case-03
 - id: DG-36
   features: [DG-36]
   cases: [XD-002]
-  authors: [existing]
+  author: [existing]
   deps: [r11-prereqs]
   chain: case-04
   assignee: WT-60
 - id: DG-37
   features: [DG-37]
   cases: [NT-008]
-  authors: [WT-50]
+  author: [WT-50]
   deps: [link]
   chain: case-04
 - id: DG-37+rest
   features: [DG-37]
   cases: [NT-088]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: DG-37@03
   features: [DG-37]
   cases: [NT-137]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DG-38
   features: [DG-38]
   cases: [XD-055, NT-089, NT-009, XD-073, XD-125]
-  authors: [WT-52]
+  author: [WT-52]
   deps: [link, WT-52]
   chain: case-04
 - id: DG-38@03
   features: [DG-38]
   cases: [NT-132]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DG-39
   features: [DG-39]
   cases: [NT-090]
-  authors: [WT-52]
+  author: [WT-52]
   deps: [link, WT-52]
   chain: case-04
 - id: DG-39b
   features: [DG-39b]
   cases: [NT-091]
-  authors: [WT-55]
+  author: [WT-55]
   deps: [link, WT-52, WT-55]
   chain: case-04
 - id: DG-39c
   features: [DG-39c]
   cases: [XD-055, NT-092, NT-009]
-  authors: [WT-52]
+  author: [WT-52]
   deps: [link, WT-52]
   chain: case-04
 - id: DG-39c@03
   features: [DG-39c]
   cases: [NT-132]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DG-41
   features: [DG-41]
   cases: [NT-093, NT-010]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-52, WT-57]
   chain: case-04
 - id: DG-41@03
   features: [DG-41]
   cases: [NT-119, NT-140, NT-141]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DG-42
   features: [DG-42]
   cases: [T30, NT-094]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: DG-43
   features: [DG-43]
   cases: [XD-002]
-  authors: [existing]
+  author: [existing]
   deps: [link]
   chain: case-04
 - id: DG-43+rest
   features: [DG-43]
   cases: [NT-011]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: DG-44
   features: [DG-44]
   cases: [XD-108, XD-109]
-  authors: [existing]
+  author: [existing]
   deps: [r11-prereqs]
   chain: case-04
   assignee: WT-60
 - id: DG-45
   features: [DG-45]
   cases: [NT-012, NT-095]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: DG-45@03
   features: [DG-45]
   cases: [NT-177, NT-215]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DG-46
   features: [DG-46]
   cases: [XD-002]
-  authors: [existing]
+  author: [existing]
   deps: [link]
   chain: case-04
 - id: DG-46+rest
   features: [DG-46]
   cases: [NT-013]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: DG-47
   features: [DG-47]
   cases: [XD-002]
-  authors: [existing]
+  author: [existing]
   deps: [link]
   chain: case-04
 - id: DG-47+rest
   features: [DG-47]
   cases: [NT-013]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: DG-48
   features: [DG-48]
   cases: []
-  authors: ['-']
+  author: ['-']
   deps: []
   chain: case-04
   deferred: true
 - id: DG-49
   features: [DG-49]
   cases: [XD-002]
-  authors: [existing]
+  author: [existing]
   deps: [link]
   chain: case-04
 - id: DG-49+rest
   features: [DG-49]
   cases: [NT-014]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: DG-50
   features: [DG-50]
   cases: [XD-002]
-  authors: [existing]
+  author: [existing]
   deps: [link]
   chain: case-04
 - id: DG-50+rest
   features: [DG-50]
   cases: [NT-015]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: DG-51
   features: [DG-51]
   cases: [XD-002]
-  authors: [existing]
+  author: [existing]
   deps: [link]
   chain: case-04
 - id: DG-52
   features: [DG-52]
   cases: [XD-004]
-  authors: [existing]
+  author: [existing]
   deps: [r11-prereqs]
   chain: case-04
   assignee: WT-60
 - id: DG-40
   features: [DG-40]
   cases: [XD-021, XD-312]
-  authors: [WT-54]
+  author: [WT-54]
   deps: [link, WT-54]
   chain: case-04
   hopper_cases: [XD-051]
 - id: DG-40@03
   features: [DG-40]
   cases: [NT-144]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link, WT-54]
   chain: case-03
 - id: DG-54
   features: [DG-54]
   cases: [XD-021, NT-096, NT-007]
-  authors: [WT-50, WT-54]
+  author: [WT-50, WT-54]
   deps: [link, WT-54]
   chain: case-04
 - id: DG-54@03
   features: [DG-54]
   cases: [NT-142]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DG-57
   features: [DG-57]
   cases: [XD-313]
-  authors: [existing]
+  author: [existing]
   deps: [link, WT-54]
   chain: case-04
 - id: DG-63
   features: [DG-63]
   cases: [NT-097]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: DG-63@03
   features: [DG-63]
   cases: [NT-123]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DG-65
   features: [DG-65]
   cases: [T7, NT-016]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: DG-65@03
   features: [DG-65]
   cases: [NT-125]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DG-67
   features: [DG-67]
   cases: [XD-057, XD-058, XD-208, NT-098]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: DG-76
   features: [DG-76]
   cases: []
-  authors: ['-']
+  author: ['-']
   deps: []
   chain: case-04
   deferred: true
 - id: DG-77
   features: [DG-77]
   cases: []
-  authors: ['-']
+  author: ['-']
   deps: []
   chain: case-04
   deferred: true
 - id: DG-78
   features: [DG-78]
   cases: [XD-004]
-  authors: [existing]
+  author: [existing]
   deps: [r11-prereqs]
   chain: case-04
   assignee: WT-60
 - id: DG-80
   features: [DG-80]
   cases: [NT-099, T6]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: DG-80@03
   features: [DG-80]
   cases: [NT-105]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DG-81
   features: [DG-81]
   cases: [XD-215, XD-207, XD-015, XD-016, XD-227]
-  authors: [WT-55]
+  author: [WT-55]
   deps: [link, WT-53, WT-55]
   chain: case-04
 - id: DG-82
   features: [DG-82]
   cases: [NT-017, NT-030, NT-179]
-  authors: [WT-40, WT-51]
+  author: [WT-40, WT-51]
   deps: [link]
   chain: case-04
 - id: DG-82+rest
   features: [DG-82]
   cases: [XD-312]
-  authors: [WT-54]
+  author: [WT-54]
   deps: [link, WT-54]
   chain: case-04
 - id: DG-82@03
   features: [DG-82]
   cases: [NT-144]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link, WT-54]
   chain: case-03
 - id: DG-83
   features: [DG-83]
   cases: [NT-018, NT-019, XD-002]
-  authors: [WT-51]
+  author: [WT-51]
   deps: [link]
   chain: case-04
 - id: DG-83@03
   features: [DG-83]
   cases: [NT-101, NT-137, NT-153]
-  authors: [WT-42, WT-62]
+  author: [WT-42, WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DG-84
   features: [DG-84]
   cases: [NT-020, NT-180, NT-031, NT-040]
-  authors: [WT-40, WT-52]
+  author: [WT-40, WT-52]
   deps: [link, WT-52]
   chain: case-04
 - id: DG-84@03
   features: [DG-84]
   cases: [NT-139, NT-156]
-  authors: [WT-42, WT-62]
+  author: [WT-42, WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DG-85
   features: [DG-85]
   cases: [NT-021, NT-181]
-  authors: [WT-52]
+  author: [WT-52]
   deps: [link, WT-52]
   chain: case-04
 - id: DG-85@03
   features: [DG-85]
   cases: [NT-145]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DG-86
   features: [DG-86]
   cases: [NT-022, NT-182]
-  authors: [WT-52]
+  author: [WT-52]
   deps: [link, WT-52]
   chain: case-04
 - id: DG-86@03
   features: [DG-86]
   cases: [NT-101, NT-126]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DG-87
   features: [DG-87]
   cases: [NT-183, NT-184, XD-110, XD-111, XD-114]
-  authors: [WT-52]
+  author: [WT-52]
   deps: [link, WT-52]
   chain: case-04
 - id: DG-87@03
   features: [DG-87]
   cases: [NT-134]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DG-88
   features: [DG-88]
   cases: [NT-023, NT-032, NT-185]
-  authors: [WT-40, WT-52]
+  author: [WT-40, WT-52]
   deps: [link, WT-52]
   chain: case-04
 - id: DG-88@03
   features: [DG-88]
   cases: [NT-119, NT-120, NT-178]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DG-89
   features: [DG-89]
   cases: [NT-186]
-  authors: [WT-53]
+  author: [WT-53]
   deps: [link, WT-53]
   chain: case-04
 - id: DG-89@03
   features: [DG-89]
   cases: [NT-106]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link, WT-53]
   chain: case-03
 - id: DG-90
   features: [DG-90]
   cases: [NT-024, NT-033, NT-187]
-  authors: [WT-38, WT-40, WT-52]
+  author: [WT-38, WT-40, WT-52]
   deps: [link, WT-52]
   chain: case-04
 - id: DG-90@03
   features: [DG-90]
   cases: [NT-133]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DG-91
   features: [DG-91]
   cases: []
-  authors: ['-']
+  author: ['-']
   deps: []
   chain: case-04
   deferred: true
 - id: EG-01a
   features: [EG-01a]
   cases: [XD-225, XD-205, NT-189]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
   hopper_cases: [XD-036, XD-052, XD-037, XD-047, XD-048]
@@ -1409,44 +1415,44 @@ rows:
 - id: EG-01b
   features: [EG-01b]
   cases: [XD-210, XD-059, XD-231]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: EG-01c
   features: [EG-01c]
   cases: [XD-027]
-  authors: [existing]
+  author: [existing]
   deps: [link]
   chain: case-04
 - id: EG-01d
   features: [EG-01d]
   cases: [XD-028]
-  authors: [existing]
+  author: [existing]
   deps: [link]
   chain: case-04
 - id: EG-01e
   features: [EG-01e]
   cases: [NT-188]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: EG-01f
   features: [EG-01f]
   cases: [XD-228, XD-060, XD-061]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: EG-01g
   features: [EG-01g]
   cases: [NT-209]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
   assignee: WT-61
 - id: EG-02
   features: [EG-02]
   cases: [XD-213]
-  authors: [existing]
+  author: [existing]
   deps: [r11-prereqs]
   chain: case-04
   assignee: WT-60
@@ -1454,777 +1460,791 @@ rows:
 - id: EG-03
   features: [EG-03]
   cases: [XD-212, XD-217, XD-215, XD-221, XD-224]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
   hopper_cases: [XD-038, XD-039]
 - id: EG-04
   features: [EG-04]
   cases: [XD-702]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: EG-05a
   features: [EG-05a]
   cases: [NT-190]
-  authors: [WT-52]
+  author: [WT-52]
   deps: [link, WT-52]
   chain: case-04
 - id: EG-05b
   features: [EG-05b]
   cases: [NT-190, NT-025]
-  authors: [WT-52]
+  author: [WT-52]
   deps: [link, WT-52]
   chain: case-04
 - id: EG-06
   features: [EG-06]
   cases: [XD-219, NT-026]
-  authors: [WT-52]
+  author: [WT-52]
   deps: [link, WT-52]
   chain: case-04
 - id: EG-07
   features: [EG-07]
   cases: [NT-028, NT-034, NT-191]
-  authors: [WT-40, WT-52]
+  author: [WT-40, WT-52]
   deps: [link, WT-52]
   chain: case-04
 - id: EG-08
   features: [EG-08]
   cases: [T21]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: EG-09
   features: [EG-09]
   cases: [XD-206]
-  authors: [existing]
+  author: [existing]
   deps: [r11-prereqs]
   chain: case-04
   assignee: WT-60
 - id: EG-10a
   features: [EG-10a]
   cases: [XD-062]
-  authors: [existing]
+  author: [existing]
   deps: [link, WT-52, WT-57]
   chain: case-04
 - id: EG-10b
   features: [EG-10b]
   cases: [NT-192]
-  authors: [WT-52]
+  author: [WT-52]
   deps: [link, WT-52]
   chain: case-04
 - id: EG-10c
   features: [EG-10c]
   cases: []
-  authors: ['-']
+  author: ['-']
   deps: []
   chain: case-04
   deferred: true
 - id: EG-11
   features: [EG-11]
   cases: [NT-193, NT-194, XD-701]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: EG-12
   features: [EG-12]
   cases: [NT-195]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: EG-13
   features: [EG-13]
   cases: [XD-043, XD-053, XD-222, XD-220, XD-224, XD-226, XD-229, XD-060, XD-061, XD-010]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
-  hopper_cases: [XD-041, XD-046, XD-044, XD-047, XD-048]
+  hopper_cases: [XD-041, XD-046, XD-044, XD-047, XD-048, XD-042]
 - id: EG-14a
   features: [EG-14a]
   cases: [XD-011, XD-030, XD-031, XD-032, XD-034]
-  authors: [existing]
+  author: [existing]
   deps: [r11-prereqs]
   chain: case-04
   assignee: WT-60
 - id: EG-14b
   features: [EG-14b]
   cases: [XD-029, XD-030, XD-031, XD-032, XD-033, XD-034]
-  authors: [existing]
+  author: [existing]
   deps: [r11-prereqs]
   chain: case-04
   assignee: WT-60
 - id: EG-14c
   features: [EG-14c]
   cases: [XD-204, XD-214, XD-072]
-  authors: [existing]
+  author: [existing]
   deps: [r11-prereqs]
   chain: case-04
   assignee: WT-60
 - id: EG-14d
   features: [EG-14d]
   cases: [XD-204, XD-214, XD-054]
-  authors: [existing]
+  author: [existing]
   deps: [r11-prereqs]
   chain: case-04
   assignee: WT-60
 - id: EG-14e
   features: [EG-14e]
   cases: [XD-001, XD-030, XD-031, XD-034, XD-218, XD-222, XD-216]
-  authors: [existing]
+  author: [existing]
   deps: [link]
   chain: case-04
 - id: EG-14e+rest
   features: [EG-14e]
   cases: [XD-231]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: EG-15
   features: [EG-15]
   cases: [NT-196]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: EG-16a
   features: [EG-16a]
   cases: [XD-055, NT-197]
-  authors: [WT-52]
+  author: [WT-52]
   deps: [link, WT-52]
   chain: case-04
 - id: EG-16b
   features: [EG-16b]
   cases: [NT-198]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: EG-16c
   features: [EG-16c]
   cases: [NT-199]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: EG-16d
   features: [EG-16d]
   cases: [XD-623, XD-627]
-  authors: ['-']
+  author: ['-']
   deps: []
   chain: case-04
   deferred: true
+  notes: ["XD-623\u3001XD-627 \u7559\u5728 CPU \u95E8\u69DB\u91CC\u9489\u4F4F `UNIMPLEMENTED`"]
 - id: EG-17
   features: [EG-17]
   cases: []
-  authors: ['-']
+  author: ['-']
   deps: []
   chain: case-04
   deferred: true
+  notes: ["CPU \u5C42\u53E6\u6709 NT-170 \u9489\u4F4F\u5916\u89C2\u5BF9 `logits_processor` \u7684\u62D2\
+      \u7EDD\uFF0C\u4E0D\u4F5C\u672C\u884C\u7684\u5224\u5B9A"]
 - id: EG-18
   features: [EG-18]
   cases: [XD-012, XD-014, XD-043, XD-204, XD-212]
-  authors: [existing]
+  author: [existing]
   deps: [link]
   chain: case-04
   hopper_cases: [XD-041, XD-046, XD-044, XD-045]
 - id: EG-18+rest
   features: [EG-18]
   cases: [XD-205]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: EG-19
   features: [EG-19]
   cases: [NT-027, NT-216]
-  authors: [WT-52]
+  author: [WT-52]
   deps: [link, WT-52]
   chain: case-04
 - id: EG-20
   features: [EG-20]
   cases: [NT-200]
-  authors: [WT-55]
+  author: [WT-55]
   deps: [link, WT-55]
   chain: case-04
 - id: EG-21
   features: [EG-21]
   cases: [NT-035, NT-171, NT-201]
-  authors: [WT-40, WT-53]
+  author: [WT-40, WT-53]
   deps: [link, WT-53]
   chain: case-04
 - id: EG-22a
   features: [EG-22a]
   cases: [NT-041, XD-017, XD-040, XD-211, XD-223, XD-226, XD-209, XD-230]
-  authors: [WT-40, WT-57]
+  author: [WT-40, WT-57]
   deps: [link, WT-57]
   chain: case-04
   hopper_cases: [XD-201]
 - id: EG-22b
   features: [EG-22b]
   cases: [NT-202]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
   assignee: WT-61
 - id: EG-22c
   features: [EG-22c]
   cases: [NT-202]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
   assignee: WT-61
 - id: EG-22d
   features: [EG-22d]
   cases: [NT-202]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
   assignee: WT-61
 - id: EG-23
   features: [EG-23]
   cases: [XD-023, XD-021, NT-203]
-  authors: [WT-54]
+  author: [WT-54]
   deps: [link, WT-54]
   chain: case-04
 - id: EG-24
   features: [EG-24]
   cases: [XD-018]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: EG-25
   features: [EG-25]
   cases: []
-  authors: ['-']
+  author: ['-']
   deps: []
   chain: case-04
   deferred: true
+  notes: ["XD-019 \u53EA\u5728 GB200 / GB300 \u4E0A\u8DD1", "PB-3 \u8D70 GB \u8DEF\u7EBF\u65F6\u7531 WT-72\
+      \ \u987A\u5E26\u53D6\u8BC1\uFF08DQ-23\uFF0C\u5F85\u7528\u6237\u5B9A\uFF09"]
 - id: EG-26
   features: [EG-26]
   cases: [XD-231]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
   not_runnable: [XD-020]
+  notes: ["\u8865\u5145\u7528\u4F8B XD-020 \u968F PB-3\uFF08WT-72\uFF1BDQ-23\uFF0C\u5F85\u7528\u6237\u5B9A\
+      \uFF09"]
 - id: EG-27
   features: [EG-27]
   cases: [XD-221, XD-072, XD-003]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: EG-28
   features: [EG-28]
   cases: [XD-009, XD-005, XD-010, NT-036]
-  authors: [WT-40]
+  author: [WT-40]
   deps: [link]
   chain: case-04
   assignee: WT-61
   hopper_cases: [XD-042]
+  notes: ["XD-009 \u5728 CO-12 \u5408\u5165\u540E\u7531 WT-40 \u5148\u8865\u8DD1"]
 - id: EG-29
   features: [EG-29]
   cases: [NT-204]
-  authors: [WT-52]
+  author: [WT-52]
   deps: [link, WT-52]
   chain: case-04
 - id: EG-30
   features: [EG-30]
   cases: [NT-206]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: EG-31
   features: [EG-31]
   cases: [NT-207]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: EG-32
   features: [EG-32]
   cases: []
-  authors: ['-']
+  author: ['-']
   deps: []
   chain: case-04
   deferred: true
 - id: EG-33
   features: [EG-33]
   cases: [NT-208]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
   assignee: WT-61
 - id: EG-34
   features: [EG-34]
   cases: [NT-210]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
   assignee: WT-61
 - id: EG-35
   features: [EG-35]
   cases: []
-  authors: ['-']
+  author: ['-']
   deps: []
   chain: case-04
   deferred: true
 - id: EG-36
   features: [EG-36]
   cases: [NT-211]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
   assignee: WT-61
 - id: EG-37
   features: [EG-37]
   cases: [NT-212]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
   assignee: WT-61
 - id: EG-38
   features: [EG-38]
   cases: [NT-213]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
   assignee: WT-61
 - id: EG-39
   features: [EG-39]
   cases: [XD-301, XD-309]
-  authors: [existing]
+  author: [existing]
   deps: [link, WT-38]
   chain: case-04
   assignee: WT-61
+  notes: ["\u53E6\u8981 2 \u8282\u70B9\u8D44\u6E90\u4E0E G1b"]
 - id: EP-01
   features: [EP-01]
   cases: [NT-172, NT-173]
-  authors: [WT-37, WT-52]
+  author: [WT-37, WT-52]
   deps: [link, WT-52]
   chain: case-04
 - id: EP-02
   features: [EP-02]
   cases: [NT-173, XD-002]
-  authors: [WT-37]
+  author: [WT-37]
   deps: [link]
   chain: case-04
 - id: EP-03
   features: [EP-03]
   cases: [NT-173, XD-002]
-  authors: [WT-37]
+  author: [WT-37]
   deps: [link]
   chain: case-04
 - id: EP-04
   features: [EP-04]
   cases: [NT-173]
-  authors: [WT-37]
+  author: [WT-37]
   deps: [link]
   chain: case-04
 - id: EP-04+rest
   features: [EP-04]
   cases: [NT-202]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: EP-05
   features: [EP-05]
   cases: [NT-173, XD-002]
-  authors: [WT-37]
+  author: [WT-37]
   deps: [link]
   chain: case-04
 - id: EP-06
   features: [EP-06]
   cases: [XD-002]
-  authors: [existing]
+  author: [existing]
   deps: [link]
   chain: case-04
 - id: EP-07
   features: [EP-07]
   cases: [NT-174, NT-041]
-  authors: [WT-40, WT-51]
+  author: [WT-40, WT-51]
   deps: [link]
   chain: case-04
 - id: EP-08
   features: [EP-08]
   cases: [XD-002]
-  authors: [existing]
+  author: [existing]
   deps: [link]
   chain: case-04
 - id: EP-09
   features: [EP-09]
   cases: [NT-173]
-  authors: [WT-37]
+  author: [WT-37]
   deps: [link]
   chain: case-04
 - id: EP-09+rest
   features: [EP-09]
   cases: [XD-221]
-  authors: [WT-57]
+  author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
 - id: EP-10
   features: [EP-10]
   cases: [NT-175]
-  authors: [WT-37]
+  author: [WT-37]
   deps: [link]
   chain: case-04
 - id: EP-11
   features: [EP-11]
   cases: [NT-173]
-  authors: [WT-37]
+  author: [WT-37]
   deps: [link]
   chain: case-04
 - id: DS-S01
   features: [DS-S01]
   cases: [NT-101, NT-042, NT-153]
-  authors: [WT-42, WT-62]
+  author: [WT-42, WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-S02
   features: [DS-S02]
   cases: [NT-101, NT-042, NT-153]
-  authors: [WT-42, WT-62]
+  author: [WT-42, WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-S03
   features: [DS-S03]
   cases: [NT-107]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-S04
   features: [DS-S04]
   cases: [NT-112]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-S05
   features: [DS-S05]
   cases: [NT-110]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-S06
   features: [DS-S06]
   cases: [NT-111]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-S07
   features: [DS-S07]
   cases: [NT-113]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-S08
   features: [DS-S08]
   cases: [NT-113]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-S09
   features: [DS-S09]
   cases: [NT-119, NT-154]
-  authors: [WT-42, WT-62]
+  author: [WT-42, WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-S10
   features: [DS-S10]
   cases: [NT-115, NT-042, NT-153]
-  authors: [WT-42, WT-62]
+  author: [WT-42, WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-S11
   features: [DS-S11]
   cases: [NT-112, NT-113, NT-132, NT-135]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-S12
   features: [DS-S12]
   cases: [NT-132, NT-043]
-  authors: [WT-42, WT-62]
+  author: [WT-42, WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-S13
   features: [DS-S13]
   cases: [NT-135, NT-133, NT-134, NT-042]
-  authors: [WT-42, WT-62]
+  author: [WT-42, WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-S14
   features: [DS-S14]
   cases: [NT-126]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-S15
   features: [DS-S15]
   cases: [NT-126]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-S16
   features: [DS-S16]
   cases: [NT-130, NT-217]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-S17
   features: [DS-S17]
   cases: [NT-118]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-S18a
   features: [DS-S18a]
   cases: []
-  authors: ['-']
+  author: ['-']
   deps: []
   chain: case-03
   deferred: true
 - id: DS-S18b
   features: [DS-S18b]
   cases: [NT-129]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-S19a
   features: [DS-S19a]
   cases: [NT-147]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link, WT-71]
   chain: case-03
   fallback: WT-73
+  notes: ["\u53E6\u8981\u7528\u6237\u6279 2 \u8282\u70B9\u8D44\u6E90\uFF0C\u4E0D\u6279\u65F6\u8BB0\u300C\
+      \u672A\u9A8C\u8BC1\uFF08\u786C\u4EF6\uFF09\u300D"]
 - id: DS-S19b
   features: [DS-S19b]
   cases: [NT-147]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link, WT-71]
   chain: case-03
   assignee: WT-73
 - id: DS-S19c
   features: [DS-S19c]
   cases: [NT-217, NT-218]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-S20a
   features: [DS-S20a]
   cases: [NT-133, NT-155]
-  authors: [WT-42, WT-62]
+  author: [WT-42, WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-S20b
   features: [DS-S20b]
   cases: []
-  authors: ['-']
+  author: ['-']
   deps: []
   chain: case-03
   deferred: true
 - id: DS-R01
   features: [DS-R01]
   cases: [NT-138, NT-150]
-  authors: [WT-42, WT-62]
+  author: [WT-42, WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-R02
   features: [DS-R02]
   cases: [NT-135, NT-150]
-  authors: [WT-42, WT-62]
+  author: [WT-42, WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-R03
   features: [DS-R03]
   cases: [NT-138, NT-150]
-  authors: [WT-42, WT-62]
+  author: [WT-42, WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-R04
   features: [DS-R04]
   cases: [NT-140, NT-150]
-  authors: [WT-42, WT-62]
+  author: [WT-42, WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-R05
   features: [DS-R05]
   cases: []
-  authors: ['-']
+  author: ['-']
   deps: []
   chain: case-03
   deferred: true
 - id: DS-U01
   features: [DS-U01]
   cases: [NT-120, NT-151]
-  authors: [WT-42, WT-62]
+  author: [WT-42, WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-U02
   features: [DS-U02]
   cases: [NT-135]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-U03
   features: [DS-U03]
   cases: [NT-135]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-U04
   features: [DS-U04]
   cases: [NT-141]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-U05
   features: [DS-U05]
   cases: []
-  authors: ['-']
+  author: ['-']
   deps: []
   chain: case-03
   deferred: true
 - id: DS-U06
   features: [DS-U06]
   cases: []
-  authors: ['-']
+  author: ['-']
   deps: []
   chain: case-03
   deferred: true
 - id: DS-I01
   features: [DS-I01]
   cases: [NT-119, NT-154]
-  authors: [WT-42, WT-62]
+  author: [WT-42, WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-I02
   features: [DS-I02]
   cases: [NT-120]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-I03
   features: [DS-I03]
   cases: [NT-119]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-I04
   features: [DS-I04]
   cases: [NT-119, NT-154]
-  authors: [WT-42, WT-62]
+  author: [WT-42, WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-I05
   features: [DS-I05]
   cases: [NT-133, NT-043, NT-155]
-  authors: [WT-42, WT-62]
+  author: [WT-42, WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-I06
   features: [DS-I06]
   cases: [NT-112]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-I07
   features: [DS-I07]
   cases: [NT-136]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-I08
   features: [DS-I08]
   cases: [NT-136]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-I09
   features: [DS-I09]
   cases: [NT-136]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-I10
   features: [DS-I10]
   cases: [NT-042, NT-126]
-  authors: [WT-42, WT-62]
+  author: [WT-42, WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-I11
   features: [DS-I11]
   cases: []
-  authors: ['-']
+  author: ['-']
   deps: []
   chain: case-03
   deferred: true
+  notes: ["CPU \u5C42\u53E6\u6709 NT-152 \u9489\u4F4F ds OE server \u53EA\u4E0B\u53D1 engine \u8BA4\u8BC6\
+      \u7684\u952E\uFF0C\u4E0D\u4F5C\u672C\u884C\u7684\u5224\u5B9A"]
 - id: DS-O01
   features: [DS-O01]
   cases: [NT-146]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-O02
   features: [DS-O02]
   cases: [NT-146]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-O03
   features: [DS-O03]
   cases: []
-  authors: ['-']
+  author: ['-']
   deps: []
   chain: case-03
   deferred: true
 - id: DS-O04
   features: [DS-O04]
   cases: [NT-128]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link, WT-53]
   chain: case-03
 - id: DS-O05
   features: [DS-O05]
   cases: []
-  authors: ['-']
+  author: ['-']
   deps: []
   chain: case-03
   deferred: true
 - id: DS-O06
   features: [DS-O06]
   cases: [NT-143]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link, WT-53]
   chain: case-03
 - id: DS-O07
   features: [DS-O07]
   cases: [NT-143]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link, WT-53]
   chain: case-03
 - id: DS-O08
   features: [DS-O08]
   cases: [NT-146]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-O09
   features: [DS-O09]
   cases: [NT-128]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link, WT-53]
   chain: case-03
 - id: DS-O10
   features: [DS-O10]
   cases: [NT-129]
-  authors: [WT-62]
+  author: [WT-62]
   deps: [ds-link]
   chain: case-03
 - id: DS-O11
   features: [DS-O11]
   cases: []
-  authors: ['-']
+  author: ['-']
   deps: []
   chain: case-03
   deferred: true
 - id: DS-O12
   features: [DS-O12]
   cases: []
-  authors: ['-']
+  author: ['-']
   deps: []
   chain: case-03
   deferred: true
+  notes: ["\u529F\u80FD\u5224\u5B9A\u5728 DS-S18a"]

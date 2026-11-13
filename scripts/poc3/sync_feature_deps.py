@@ -5,8 +5,10 @@
 
 The plan's ``tasks.md`` lists every feature row in §3.4 to §3.7 with four
 columns: the feature, its cases, who writes them, and the work items that must
-have landed (its dependency set). This script reads those tables and writes the
-rows ``pending_e2e.py`` works from, so the two cannot drift apart:
+have landed (its dependency set); §3.2 names the dependency groups, and the
+section headings give the number of main rows. This script reads those tables
+and writes the rows ``pending_e2e.py`` works from; ``--check`` tells when the
+file no longer matches the tables:
 
 - A table A / B row splits into a case-04 row (id ``F-01``) and a case-03 row
   (id ``F-01@03``) when its cells have ``04：`` / ``03：`` segments; table D
@@ -17,11 +19,16 @@ rows ``pending_e2e.py`` works from, so the two cannot drift apart:
 - "R11 前提" and "R12 验收" fix the verifier (``assignee``) to R11 (WT-60) and
   R12 (WT-61); "由 WT-xx 做" fixes it to WT-xx; "由 WT-xx 补" names the item
   that verifies a case-03 row WT-62 could not (``fallback``; R14 by default).
+- "<PU-nn> 取证（WT-xx）" (performance case PU-nn, run by WT-xx, is the
+  evidence) moves that case to its own row ``<id>+<PU-nn>`` verified by WT-xx.
 - "不设 E2E" (no E2E) makes the row ``deferred``.
-- Cases in parentheses are not the row's evidence: Hopper-shard and two-node
-  cases are kept as supplementary lists, unrunnable ones as ``not_runnable``.
-- DG-27's GPU static-URL start-up is proven by PU-02 of performance batch
-  PB-1a, so it gets its own row ``DG-27+PU-02`` verified by WT-70.
+- Cases in parentheses are not the row's evidence: Hopper-shard cases (with
+  their "第一批" / "第二批" batch notes) and two-node cases are kept as
+  supplementary lists, unrunnable ones as ``not_runnable``.
+- Any other clause of the dependency cell, and any other parenthesised note
+  that names a case, is kept verbatim in the row's ``notes``.
+
+The scripts need Python 3.9 or newer.
 
 Usage::
 
@@ -45,26 +52,10 @@ from typing import Any
 import yaml
 
 FEATURE_DEPS = Path(__file__).resolve().parent / "feature_deps.yaml"
-EXPECTED_MAIN_ROWS = 248
 
-GROUPS = {
-    "link": ["WT-35", "WT-37", "WT-38", "WT-40", "WT-50", "WT-51"],
-    "r11-prereqs": ["WT-37", "WT-38", "WT-40", "WT-50", "WT-51", "WT-52", "WT-57"],
-    "ds-link": [
-        "WT-33",
-        "WT-37",
-        "WT-38",
-        "WT-42",
-        "WT-43",
-        "WT-50",
-        "WT-51",
-        "WT-52",
-        "WT-56",
-        "WT-62",
-    ],
-    # Items that land on the ds-engine repository; pending_e2e.py looks for their trailers there.
-    "ds-repo": ["WT-41", "WT-42", "WT-43"],
-}
+# Items that land on the ds-engine repository (tasks.md §0.2); pending_e2e.py looks for their
+# trailers there.
+DS_REPO_GROUP = ["WT-41", "WT-42", "WT-43"]
 _GROUP_WORDS = {"链路": "link", "ds 链路": "ds-link", "R11 前提": "r11-prereqs"}
 R11, R12 = "WT-60", "WT-61"
 
@@ -83,7 +74,8 @@ HEADER = """\
 #                 F-01+rest the cases that wait for a later work item.
 #   features      Feature ids.
 #   cases         The cases whose passing verifies the row.
-#   authors       The work items that write, move or re-expect those cases.
+#   author        The work items that write, move or re-expect those cases (a
+#                 list: one row's cases can come from several items).
 #   deps          Work items (or groups) that must have landed.
 #   chain         case-04 (the TRT-LLM engine) or case-03 (ds-engine).
 #   assignee      A fixed verifier (an integration round or a performance item).
@@ -94,6 +86,7 @@ HEADER = """\
 #                 Supplementary evidence run only by integration rounds; they
 #                 never make a work item owe the row.
 #   not_runnable  Cases the PoC machines cannot run.
+#   notes         Clauses of the tables this file does not model, verbatim.
 #
 # The verifier of a case-04 row is the dependency that lands last, unless the
 # row has an assignee. A case-03 row is verified by R13 (WT-62), or by its
@@ -102,7 +95,9 @@ HEADER = """\
 
 _CASE_RE = re.compile(r"\b(XD-\d{3}|NT-\d{3}|T\d+|PU-\d+)\b")
 _TASK_RE = re.compile(r"WT-\d\d")
-_SECTION_RE = re.compile(r"^### 3\.([4-7]) ")
+_SECTION_RE = re.compile(r"^### 3\.([2-7]) ")
+_MAIN_ROWS_RE = re.compile(r"（(\d+) 个主行）")
+_PU_RULE_RE = re.compile(r"(PU-\d+) 取证（(WT-\d\d)）")
 _OPEN, _CLOSE = "（(", "）)"
 
 
@@ -159,23 +154,34 @@ def _cases(text: str) -> list[str]:
 
 
 def parse_cases(parts: list[str]) -> dict[str, list[str]]:
-    """Main cases, and the supplementary and unrunnable ones named in parentheses."""
+    """Main cases, the supplementary and unrunnable ones in parentheses, and other notes."""
     out: dict[str, list[str]] = {
         "cases": [],
         "hopper_cases": [],
         "two_node_cases": [],
         "not_runnable": [],
+        "notes": [],
+    }
+    kinds = {
+        "Hopper 分片": "hopper_cases",
+        "2 节点组": "two_node_cases",
+        "PoC 机型不可跑": "not_runnable",
     }
     for part in parts:
         outer, groups = outside_parens(part)
         out["cases"] += _cases(outer)
-        for note in (item for group in groups for item in split_top(group, "；")):
-            if "Hopper 分片" in note:
-                out["hopper_cases"] += _cases(note)
-            elif "2 节点组" in note:
-                out["two_node_cases"] += _cases(note)
-            elif "PoC 机型不可跑" in note:
-                out["not_runnable"] += _cases(note)
+        for group in groups:
+            current = None
+            for note in split_top(group, "；"):
+                found = [kind for word, kind in kinds.items() if word in note]
+                if found:
+                    current = found[0]
+                elif not (current == "hopper_cases" and note.startswith(("第一批", "第二批"))):
+                    current = None
+                if current:
+                    out[current] += _cases(note)
+                elif _cases(note):
+                    out["notes"].append(note)
     return {key: list(dict.fromkeys(value)) for key, value in out.items()}
 
 
@@ -208,9 +214,12 @@ def parse_deps(parts: list[str]) -> dict[str, Any]:
         "assignee": None,
         "fallback": None,
         "deferred": False,
+        "performance": [],
+        "notes": [],
     }
     if first.startswith("不设 E2E"):
         out["deferred"] = True
+        out["notes"] = parts[1:]
         return out
     for token in split_top(first, "、"):
         word = outside_parens(token)[0].strip()
@@ -220,7 +229,7 @@ def parse_deps(parts: list[str]) -> dict[str, Any]:
             out["deps"].append(word)
         else:
             raise ValueError(f"unknown dependency {token!r} in {first!r}")
-    if first == "R11 前提":
+    if "r11-prereqs" in out["deps"]:
         out["assignee"] = R11
     for part in parts[1:]:
         if part.startswith("其余用例另等"):
@@ -231,6 +240,10 @@ def parse_deps(parts: list[str]) -> dict[str, Any]:
             out["assignee"] = match.group(1)
         elif match := re.search(r"由 (WT-\d\d) 补$", part):
             out["fallback"] = match.group(1)
+        elif match := _PU_RULE_RE.search(part):
+            out["performance"].append((match.group(1), match.group(2), part))
+        else:
+            out["notes"].append(part)
     return out
 
 
@@ -243,16 +256,18 @@ def _row(
     deps: list[str],
     **extra: Any,
 ) -> dict[str, Any]:
+    if not cases["cases"]:
+        raise ValueError(f"{row_id}: no case verifies the row")
     row: dict[str, Any] = {
         "id": row_id,
         "features": [feature],
         "cases": cases["cases"],
-        "authors": sorted({a for a in authors.values() if a != "existing"}) or ["existing"],
+        "author": sorted({a for a in authors.values() if a != "existing"}) or ["existing"],
         "deps": deps,
         "chain": chain,
     }
     row.update({key: value for key, value in extra.items() if value})
-    for key in ("hopper_cases", "two_node_cases", "not_runnable"):
+    for key in ("hopper_cases", "two_node_cases", "not_runnable", "notes"):
         if cases.get(key):
             row[key] = cases[key]
     return row
@@ -270,50 +285,41 @@ def rows_for(
     cases = parse_cases(case_parts)
     authors = parse_authors(author_parts, cases["cases"])
     deps = parse_deps(dep_parts)
+    notes = cases["notes"] + deps["notes"]
     if deps["deferred"]:
-        return [
-            {
-                "id": row_id,
-                "features": [feature],
-                "cases": cases["cases"],
-                "authors": ["-"],
-                "deps": [],
-                "chain": chain,
-                "deferred": True,
-            }
-        ]
+        row = {
+            "id": row_id,
+            "features": [feature],
+            "cases": cases["cases"],
+            "author": ["-"],
+            "deps": [],
+            "chain": chain,
+            "deferred": True,
+        }
+        return [row | ({"notes": notes} if notes else {})]
     extra = {"assignee": deps["assignee"], "fallback": deps["fallback"]}
-    if feature == "DG-27":
-        # The GPU start-up from a static URL list is proven by PU-02 of PB-1a (tasks.md §3.2).
-        main = {**cases, "cases": [c for c in cases["cases"] if not c.startswith("PU-")]}
-        pu = {"cases": [c for c in cases["cases"] if c.startswith("PU-")]}
-        return [
+    main = {**cases, "notes": notes}
+    out = []
+    for pu, task, clause in deps["performance"]:
+        if pu not in main["cases"]:
+            raise ValueError(f"{row_id}: {pu} is not among the row's cases")
+        main = {**main, "cases": [c for c in main["cases"] if c != pu]}
+        out.append(
             _row(
-                row_id,
+                f"{row_id}+{pu}",
                 feature,
                 chain,
-                main,
-                {c: authors[c] for c in main["cases"]},
-                deps["deps"],
-                **extra,
-            ),
-            _row(
-                f"{row_id}+PU-02",
-                feature,
-                chain,
-                pu,
-                {"PU-02": "WT-70"},
-                deps["deps"] + ["WT-70"],
-                assignee="WT-70",
-            ),
-        ]
-    if not deps["rest"]:
-        return [_row(row_id, feature, chain, cases, authors, deps["deps"], **extra)]
-    later = [c for c in cases["cases"] if authors[c] in deps["rest"]]
-    if not later:
+                {"cases": [pu], "notes": [clause]},
+                {pu: task},
+                deps["deps"] + [task],
+                assignee=task,
+            )
+        )
+    later = [c for c in main["cases"] if authors[c] in deps["rest"]]
+    if deps["rest"] and not later:
         raise ValueError(f"{row_id}: no case is written by {deps['rest']}")
-    now = {**cases, "cases": [c for c in cases["cases"] if c not in later]}
-    return [
+    now = {**main, "cases": [c for c in main["cases"] if c not in later]}
+    rows = [
         _row(
             row_id,
             feature,
@@ -322,17 +328,21 @@ def rows_for(
             {c: authors[c] for c in now["cases"]},
             deps["deps"],
             **extra,
-        ),
-        _row(
-            f"{row_id}+rest",
-            feature,
-            chain,
-            {"cases": later},
-            {c: authors[c] for c in later},
-            deps["deps"] + deps["rest"],
-            **extra,
-        ),
+        )
     ]
+    if later:
+        rows.append(
+            _row(
+                f"{row_id}+rest",
+                feature,
+                chain,
+                {"cases": later},
+                {c: authors[c] for c in later},
+                deps["deps"] + deps["rest"],
+                **extra,
+            )
+        )
+    return rows + out
 
 
 def table_rows(tasks_md: str) -> list[tuple[str, list[str]]]:
@@ -341,7 +351,7 @@ def table_rows(tasks_md: str) -> list[tuple[str, list[str]]]:
     for line in tasks_md.splitlines():
         if line.startswith("### "):
             match = _SECTION_RE.match(line)
-            section = match.group(1) if match else None
+            section = match.group(1) if match and match.group(1) >= "4" else None
             continue
         if section is None or not line.startswith("| ") or line.startswith("| 功能 "):
             continue
@@ -350,6 +360,38 @@ def table_rows(tasks_md: str) -> list[tuple[str, list[str]]]:
             raise ValueError(f"expected 4 cells in §3.{section}: {line!r}")
         found.append((section, cells))
     return found
+
+
+def main_row_count(tasks_md: str) -> int:
+    """The number of main rows the headings of §3.4 to §3.7 announce."""
+    counts = [
+        int(count)
+        for line in tasks_md.splitlines()
+        if (match := _SECTION_RE.match(line)) and match.group(1) >= "4"
+        for count in _MAIN_ROWS_RE.findall(line)
+    ]
+    if not counts:
+        raise ValueError("no heading of §3.4 to §3.7 gives its number of main rows")
+    return sum(counts)
+
+
+def derive_groups(tasks_md: str) -> dict[str, list[str]]:
+    """The dependency groups of §3.2, plus the ds-engine repository's items."""
+    groups: dict[str, list[str]] = {}
+    in_section = False
+    for line in tasks_md.splitlines():
+        if line.startswith("### "):
+            match = _SECTION_RE.match(line)
+            in_section = bool(match) and match.group(1) == "2"
+            continue
+        if in_section and line.startswith("| "):
+            cells = [cell.strip() for cell in line.strip().strip("|").split(" | ")]
+            if cells[0] in _GROUP_WORDS:
+                groups[_GROUP_WORDS[cells[0]]] = _TASK_RE.findall(cells[1])
+    missing = set(_GROUP_WORDS.values()) - set(groups)
+    if missing:
+        raise ValueError(f"§3.2 does not define {sorted(missing)}")
+    return {name: groups[name] for name in _GROUP_WORDS.values()} | {"ds-repo": DS_REPO_GROUP}
 
 
 def derive(tasks_md: str) -> list[dict[str, Any]]:
@@ -373,19 +415,18 @@ def derive(tasks_md: str) -> list[dict[str, Any]]:
             rows += rows_for(
                 feature, chain, feature, cases.get("", []), authors.get("", []), deps[""]
             )
-    if len(set(features)) != len(features) or len(features) != EXPECTED_MAIN_ROWS:
-        raise ValueError(
-            f"expected {EXPECTED_MAIN_ROWS} distinct feature rows, got {len(features)}"
-        )
+    expected = main_row_count(tasks_md)
+    if len(set(features)) != len(features) or len(features) != expected:
+        raise ValueError(f"expected {expected} distinct feature rows, got {len(features)}")
     ids = [row["id"] for row in rows]
     if len(set(ids)) != len(ids):
         raise ValueError("duplicate row ids")
     return rows
 
 
-def render(rows: list[dict[str, Any]]) -> str:
+def render(groups: dict[str, list[str]], rows: list[dict[str, Any]]) -> str:
     body = yaml.safe_dump(
-        {"version": 1, "groups": GROUPS, "rows": rows},
+        {"version": 1, "groups": groups, "rows": rows},
         allow_unicode=False,
         sort_keys=False,
         default_flow_style=None,
@@ -407,7 +448,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not args.tasks_md:
         parser.error("--tasks-md (or $POC3_TASKS_MD) is required")
-    expected = render(derive(Path(args.tasks_md).read_text()))
+    tasks_md = Path(args.tasks_md).read_text()
+    expected = render(derive_groups(tasks_md), derive(tasks_md))
     if args.write:
         FEATURE_DEPS.write_text(expected)
         print(f"wrote {FEATURE_DEPS}")

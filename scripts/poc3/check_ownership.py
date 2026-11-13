@@ -6,9 +6,12 @@
 Every path changed in ``<base>...<head>`` must match one of the work item's
 rules in :data:`OWNERSHIP`, and every commit in ``<base>..<head>`` must carry
 the trailer ``PoC3-Task: <work item>``. A fix (``WT-xx-fixN``) owns what WT-xx
-owns, plus the per-item files named after the fix.
+owns, plus the per-item files named after the fix itself; WT-xx and its other
+fixes do not own those. The gate files under ``scripts/poc3/`` (all but the
+invariant registry) can only be changed by WT-30 and its fixes, whatever the
+table says.
 
-A rule is ``own`` (this item owns the path; another item may change it only
+A rule is ``own`` (no other item owns the path; another item may change it only
 under a ``shared`` or ``exception`` rule of its own), ``shared`` (this item may
 change only the part the note names; the rest of the file belongs to its owner,
 which may be another item or code outside PoC-S3) or ``exception`` (a one-off
@@ -26,7 +29,8 @@ Usage::
     cd ../deepseek-v4.1-flash
     python3 <trtllm>/scripts/poc3/check_ownership.py --task WT-41 origin/feat/engine_integration-stage03..HEAD
 
-Exit status: 0 when every path and commit is in bounds, 1 otherwise.
+Both ends of the range are required. Exit status: 0 when every path and commit
+is in bounds, 1 otherwise. The scripts need Python 3.9 or newer.
 """
 
 from __future__ import annotations
@@ -73,32 +77,27 @@ OE_SERVER = "tensorrt_llm/grpc/openengine"
 OE_SERVER_TESTS = "tests/unittest/grpc/openengine"
 PERF = "tests/integration/defs/perf"
 DS_OE = "python/dsv4_serve/openengine"
-# The registry of lines check_invariants.py lets CS-20 add (WT-30 creates it empty; WT-35 fills it).
+# The registry of lines check_invariants.py lets CS-20 add.
 INVARIANT_ADDITIONS = "scripts/poc3/invariant_additions.yaml"
 
 
-def _per_item(name: str) -> list[Rule]:
-    """The files every work item owns under its own name, its fixes' names included."""
-    rules = []
-    for item in (name, f"{name}-fix*"):
-        rules += _own(
-            f"{CHAIN}/expectations/{item}.py",
-            f"{CHAIN}/verified/{item}.yaml",
-            f"{CHAIN}/smoke/{item}.txt",
-            f"{CHAIN}/new_cases/{item}.txt",
-            f"{CHAIN}/migrated/{item}.txt",
-            # Machine-readable records of probes and integration rounds (case lists, summaries).
-            f"{CHAIN}/records/{item}/**",
-        )
-    number = name.removeprefix("WT-")
-    rules += _own(f"{POC_TESTS}/wt{number}/**")
-    return rules
+def _per_item(item: str) -> list[Rule]:
+    """The files a work item (or a fix) owns under its exact name."""
+    return _own(
+        f"{CHAIN}/expectations/{item}.py",
+        f"{CHAIN}/verified/{item}.yaml",
+        f"{CHAIN}/smoke/{item}.txt",
+        f"{CHAIN}/new_cases/{item}.txt",
+        f"{CHAIN}/migrated/{item}.txt",
+        # Machine-readable records of probes and integration rounds (case lists, summaries).
+        f"{CHAIN}/records/{item}/**",
+    )
 
 
 # Built from each card's change-scope row (改动范围) and the shared-file table of tasks.md §0.3.
 # Where a card leaves a file name to its work item, this table fixes one (direct_replay*.py,
-# cpu_disagg_chain*.py, check_case_lists.py, handoff*.py, wt54_*, records/<item>/); a work item
-# that needs another name asks the user, as for any change to this table.
+# cpu_disagg_chain*.py, check_case_lists.py, handoff*.py, wt54_*, records/<item>/, and the ds
+# scripts dev/openengine_disagg* and dev/openengine_stress*).
 OWNERSHIP: dict[str, list[Rule]] = {
     "WT-30": _own("scripts/poc3/**", f"!{INVARIANT_ADDITIONS}", "!scripts/poc3/wt54_*")
     + [_exception(INVARIANT_ADDITIONS, "only creating it with an empty list of additions")],
@@ -115,7 +114,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
         INVARIANT_ADDITIONS,
     )
     + [
-        _shared(f"{POC}/__init__.py", "lazy exports only"),
+        _shared(f"{POC}/__init__.py", "lazy exports of the new contract types only"),
         _shared(
             "tensorrt_llm/serve/openai_protocol.py",
             "CS-20: only the registered additions to the HTTP DisaggregatedParams class body"
@@ -179,13 +178,13 @@ OWNERSHIP: dict[str, list[Rule]] = {
         f"{OE_SERVER}/capabilities.py",
         f"{OE_SERVER_TESTS}/test_disagg_servicer.py",
         f"{OE_SERVER_TESTS}/test_disagg_control.py",
+    ),
+    "WT-41": _own(
+        f"{DS_OE}/**",
+        "tests/openengine/**",
+        "!tests/openengine/test_disagg_roles.py",
+        repo=DS,
     )
-    + [
-        _shared(
-            f"{OE_SERVER_TESTS}/_test_direct_handoff.py", "NT-041, written up from WT-32's probe"
-        )
-    ],
-    "WT-41": _own(f"{DS_OE}/**", "tests/openengine/**", repo=DS)
     + [
         _shared("python/dsv4_serve/cli.py", "the OpenEngine entry branch", DS),
         _shared("python/dsv4_serve/engine_client.py", "request_abort", DS),
@@ -194,7 +193,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
         _shared("python/requirements-server.txt", "the openengine extra", DS),
         _shared("README.md", "the OpenEngine section", DS),
     ],
-    "WT-42": _own("tests/openengine/test_disagg_roles.py", repo=DS)
+    "WT-42": _own("tests/openengine/test_disagg_roles.py", "dev/openengine_disagg*", repo=DS)
     + [
         _shared(
             f"{DS_OE}/**",
@@ -203,16 +202,14 @@ OWNERSHIP: dict[str, list[Rule]] = {
             DS,
         ),
         _shared("python/dsv4_serve/engine_api.py", "MockEngine's disagg behaviour", DS),
-        _shared("dev/**", "the new GPU validation script; existing scripts unchanged", DS),
     ],
-    "WT-43": [
+    "WT-43": _own("dev/openengine_stress*", repo=DS)
+    + [
         _shared("csrc/engine.h", "recording and exposing the failure reason", DS),
         _shared("csrc/engine.cpp", "recording and exposing the failure reason", DS),
         _shared("csrc/bindings.cpp", "get_responses raising on an empty poll", DS),
         _shared(f"{DS_OE}/server.py", "the concurrency design", DS),
         _shared(f"{DS_OE}/servicer.py", "the concurrency design", DS),
-        _shared("tests/**", "the new MockEngine stress script", DS),
-        _shared("dev/**", "the new MockEngine stress script", DS),
     ],
     "WT-50": _own(
         "tensorrt_llm/commands/serve.py",
@@ -341,36 +338,25 @@ OWNERSHIP: dict[str, list[Rule]] = {
         _shared(f"{CHAIN}/conventions.py", "CT-08: the ds chain value and its command prefix"),
         _shared(f"{CHAIN}/launch.py", "CT-08: _engine_prefix"),
     ],
-    # The domains of §6.3 of 02_functional-tests.md; the files other items own are excluded.
-    "WT-57": _own(
-        f"{APPS}/_test_openengine_disagg_*.py",
-        *(
-            f"!{APPS}/_test_openengine_disagg_{domain}.py"
-            for domain in (
-                "cpu_control",
-                "handoff",
-                "cancel",
-                "first_token",
-                "leg_consistency",
-                "engine_loss",
-                "rejects",
-                "startup",
-                "orphans",
-                "arbitrary_kv",
-                "kv_aware",
-                "subagent_affinity",
-                "multi_frontend",
-                "server_info",
-                "admission",
-                "perf_metrics",
-                "gen_first",
-            )
-        ),
-    ),
+    # The domains of §6.3 of 02_functional-tests.md; the files other items own are excluded below.
+    "WT-57": _own(f"{APPS}/_test_openengine_disagg_*.py"),
     "WT-60": [],
     "WT-61": [],
-    # The basic and frontend skeletons pass from WT-56 to WT-62 once WT-56 has landed (§3.3).
-    "WT-62": _own(f"{APPS}/_test_openengine_ds_disagg_*.py"),
+    "WT-62": _own(
+        f"{APPS}/_test_openengine_ds_disagg_*.py",
+        f"!{APPS}/_test_openengine_ds_disagg_basic.py",
+        f"!{APPS}/_test_openengine_ds_disagg_frontend.py",
+    )
+    + [
+        _shared(
+            f"{APPS}/_test_openengine_ds_disagg_basic.py",
+            "the skeleton WT-56 wrote, taken over once WT-56 has landed (§3.3)",
+        ),
+        _shared(
+            f"{APPS}/_test_openengine_ds_disagg_frontend.py",
+            "the skeleton WT-56 wrote, taken over once WT-56 has landed (§3.3)",
+        ),
+    ],
     "WT-70": [
         _shared(
             f"{PERF}/test_perf_sanity.py",
@@ -393,8 +379,18 @@ OWNERSHIP: dict[str, list[Rule]] = {
     "WT-73": [],
     "WT-79": [],
 }
+OWNERSHIP["WT-57"] += [
+    Rule(f"!{rule.pattern}", repo=rule.repo)
+    for name, rules in OWNERSHIP.items()
+    if name != "WT-57"
+    for rule in rules
+    if rule.kind == "own" and rule.pattern.startswith(f"{APPS}/_test_openengine_disagg_")
+]
 for _name in OWNERSHIP:
     OWNERSHIP[_name] = OWNERSHIP[_name] + _per_item(_name)
+    OWNERSHIP[_name] += _own(f"{POC_TESTS}/wt{_name.removeprefix('WT-')}/**")
+# Gate files only WT-30 and its fixes may change (see the module docstring).
+GATE_FILES = ("scripts/poc3/**", f"!{INVARIANT_ADDITIONS}", "!scripts/poc3/wt54_*")
 
 
 @lru_cache(maxsize=None)
@@ -421,11 +417,24 @@ def _regex(pattern: str) -> re.Pattern[str]:
     return re.compile("".join(out) + r"\Z")
 
 
+def _matches(patterns: tuple[str, ...], path: str) -> bool:
+    matched = False
+    for pattern in patterns:
+        if pattern.startswith("!"):
+            matched = matched and not _regex(pattern[1:]).match(path)
+        elif _regex(pattern).match(path):
+            matched = True
+    return matched
+
+
 def match_rule(task: str, path: str, repo: str = TRTLLM) -> Rule | None:
     """The rule of ``task`` that allows changing ``path``, or None."""
-    base, _ = parse_task(task)
+    base, fix = parse_task(task)
+    if base != "WT-30" and repo == TRTLLM and _matches(GATE_FILES, path):
+        return None
+    rules = OWNERSHIP[base] + (_per_item(task) if fix is not None else [])
     matched: Rule | None = None
-    for rule in OWNERSHIP[base]:
+    for rule in rules:
         if rule.repo != repo:
             continue
         if rule.pattern.startswith("!"):
@@ -462,7 +471,8 @@ def check(task: str, revision_range: str, repo_dir: str = ".", repo: str | None 
     if ".." not in revision_range or "..." in revision_range:
         raise ValueError(f"expected <base>..<head>, got {revision_range!r}")
     base_ref, head_ref = revision_range.split("..", 1)
-    head_ref = head_ref or "HEAD"
+    if not base_ref or not head_ref:
+        raise ValueError(f"both ends of the range are required, got {revision_range!r}")
     repo = repo or detect_repo(repo_dir)
     base, _ = parse_task(task)
     if base not in OWNERSHIP:

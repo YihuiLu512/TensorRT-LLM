@@ -11,16 +11,25 @@ completes the row's dependencies, provided nobody has recorded it as verified:
 - a case-03 row is owed by R13 (WT-62); when another item completes it after
   R13 landed, it is left to the row's ``fallback`` (R14, WT-79, unless the row
   names another item), which owes every completed case-03 row nobody verified;
-- a fix (``WT-xx-fixN``) owes nothing new;
+- a fix (``WT-xx-fixN``) owes nothing new, and its landing does not count as
+  WT-xx landing;
 - deferred rows are owed by nobody.
+
+When the row's fixed verifier (its ``assignee``, or the ``fallback`` of a
+case-03 row) runs before the row is complete, or the row completes after that
+verifier landed, nobody owes the row any more; both cases are listed so the
+coordinator can hand the row to someone.
 
 Supplementary cases (``hopper_cases``, ``two_node_cases``) never create an
 obligation; integration rounds run them.
 
-A row counts as verified when a verification record on the integration branch
-(``tests/integration/defs/openengine_chain/verified/*.yaml``) has an entry whose
-``row`` is the row id (feature ids alone are ambiguous: a feature can have a
-case-04 row, a case-03 row and a ``+rest`` row). Entries without ``row`` are
+A row counts as verified when a PoC-S3 verification record on the integration
+branch (``tests/integration/defs/openengine_chain/verified/<item>.yaml``, where
+``<item>`` is a PoC-S3 work item such as ``WT-51`` or ``WT-51-fix1``) has an
+entry whose ``row`` is the row id (feature ids alone are ambiguous: a feature
+can have a case-04 row, a case-03 row and a ``+rest`` row). PoC-S2's records in
+the same directory reuse row ids such as ``F-06`` for other rows and are not
+read. Entries without ``row``, or naming no row of ``feature_deps.yaml``, are
 reported and ignored::
 
     entries:
@@ -42,12 +51,15 @@ Usage::
 
     python3 scripts/poc3/pending_e2e.py --task WT-51 --ds-repo ../deepseek-v4.1-flash
     python3 scripts/poc3/pending_e2e.py --landed            # just list what landed
+
+The scripts need Python 3.9 or newer.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
@@ -74,6 +86,7 @@ class Row:
     assignee: str | None = None
     fallback: str | None = None
     deferred: bool = False
+    notes: tuple[str, ...] = ()
 
 
 @dataclass
@@ -87,6 +100,12 @@ class Obligations:
             verification record, that this item does not owe.
         unknown: Rows whose only missing dependencies are items whose landing
             was not checked; the result for them is not known.
+        too_early: Rows this item is the fixed verifier of, whose dependencies
+            have not all landed yet; nobody owes them once this item lands.
+        orphaned: Rows this item completes whose fixed verifier has already
+            landed; nobody owes them.
+        noted: Rows whose notes name this item (instructions the tables give
+            outside the dependency set, such as an early re-run).
     """
 
     task: str
@@ -95,6 +114,9 @@ class Obligations:
     left_to_fallback: list[Row] = field(default_factory=list)
     unverified: list[Row] = field(default_factory=list)
     unknown: list[Row] = field(default_factory=list)
+    too_early: list[Row] = field(default_factory=list)
+    orphaned: list[Row] = field(default_factory=list)
+    noted: list[Row] = field(default_factory=list)
 
 
 def load_rows(path: Path = FEATURE_DEPS) -> tuple[dict[str, list[str]], list[Row]]:
@@ -129,6 +151,7 @@ def load_rows(path: Path = FEATURE_DEPS) -> tuple[dict[str, list[str]], list[Row
                 assignee=raw.get("assignee"),
                 fallback=raw.get("fallback"),
                 deferred=bool(raw.get("deferred", False)),
+                notes=tuple(raw.get("notes", ())),
             )
         )
     return groups, rows
@@ -167,20 +190,24 @@ def verified_rows(
     return done
 
 
-def read_verified(repo: str | Path, ref: str) -> set[str]:
-    """The row ids verified by the records on ``ref``.
+def read_verified(repo: str | Path, ref: str, known: Iterable[str] | None = None) -> set[str]:
+    """The row ids verified by the PoC-S3 records on ``ref``."""
+    listing = git(repo, "ls-tree", "--full-tree", "--name-only", ref, f"{VERIFIED_DIR}/")
+    records = []
+    for path in listing.split("\n"):
+        name = Path(path).name
+        if not name.endswith(".yaml"):
+            continue
+        try:
+            parse_task(name[: -len(".yaml")])
+        except ValueError:
+            continue
+        records.append(yaml.safe_load(git(repo, "show", f"{ref}:{VERIFIED_DIR}/{name}")))
+    return verified_rows(records, known)
 
-    PoC-S2's records (``WT-01.yaml`` .. ``WT-22.yaml``) name PoC-S2 rows; they
-    are read too, and their row ids simply match no PoC-S3 row.
-    """
-    listing = git(repo, "ls-tree", "--name-only", ref, f"{VERIFIED_DIR}/")
-    names = [Path(path).name for path in listing.split()]
-    records = [
-        yaml.safe_load(git(repo, "show", f"{ref}:{VERIFIED_DIR}/{name}"))
-        for name in names
-        if name.endswith(".yaml")
-    ]
-    return verified_rows(records)
+
+def _names(task: str, notes: Iterable[str]) -> bool:
+    return any(re.search(rf"(?<![\w-]){re.escape(task)}(?![\w-])", note) for note in notes)
 
 
 def obligations(
@@ -193,27 +220,33 @@ def obligations(
     """Work out what ``task`` owes, given what has landed and what has been verified.
 
     Args:
+        landed: Work items with a commit on the integration branch, fixes under
+            their own names; a fix does not make its work item count as landed.
         unknown: Work items whose landing was not checked.
     """
     base, fix = parse_task(task)
-    landed_bases = {parse_task(name)[0] for name in landed}
+    new = fix is None
+    landed_bases = {name for name in landed if parse_task(name)[1] is None}
     done = set(verified)
     unchecked = set(unknown) - landed_bases - {base}
     result = Obligations(task=task, landed=sorted(landed))
-    after = landed_bases | {base}
+    after = landed_bases | {base} if new else landed_bases
     for row in rows:
         if row.deferred or row.id in done:
             continue
+        if _names(base, row.notes):
+            result.noted.append(row)
         missing = row.deps - after
         if missing and missing <= unchecked:
             result.unknown.append(row)
             continue
-        complete = row.deps <= after
-        new = fix is None
+        complete = not missing
         completed_by_task = complete and base in row.deps and new
         if row.assignee is not None:
-            if row.assignee == base and complete and new:
-                result.owed.append(row)
+            if row.assignee == base and new:
+                (result.owed if complete else result.too_early).append(row)
+            elif completed_by_task and row.assignee in landed_bases:
+                result.orphaned.append(row)
             elif row.deps <= landed_bases:
                 result.unverified.append(row)
             continue
@@ -221,11 +254,14 @@ def obligations(
             fallback = row.fallback or R14
             if base == R13 and complete and new:
                 result.owed.append(row)
-            elif base == fallback and complete and new and R13 in landed_bases:
-                result.owed.append(row)
+            elif base == fallback and new and R13 in landed_bases:
+                (result.owed if complete else result.too_early).append(row)
             elif completed_by_task:
                 # R13 is a dependency of every case-03 row, so it has landed already.
-                result.left_to_fallback.append(row)
+                if fallback in landed_bases:
+                    result.orphaned.append(row)
+                else:
+                    result.left_to_fallback.append(row)
             elif row.deps <= landed_bases:
                 result.unverified.append(row)
             continue
@@ -247,9 +283,19 @@ def _format(result: Obligations) -> str:
             lines.append("  (none)")
 
     section("Owed end-to-end checks", result.owed)
+    for row in result.owed:
+        for note in row.notes:
+            lines.append(f"    note on {row.id}: {note}")
     section("Completed here, left to the row's fallback (case-03)", result.left_to_fallback)
     section("Dependencies landed but not verified, owed by others", result.unverified)
     section("Waiting only on items whose landing was not checked", result.unknown)
+    section("Fixed verifier is this item, dependencies not all landed: report it", result.too_early)
+    section("Completed here after its fixed verifier landed: report it", result.orphaned)
+    lines.append(f"\nRows whose notes name {result.task} ({len(result.noted)}):")
+    for row in result.noted:
+        lines.append(f"  {row.id:<16} " + " / ".join(row.notes))
+    if not result.noted:
+        lines.append("  (none)")
     return "\n".join(lines)
 
 
@@ -295,9 +341,8 @@ def main(argv: list[str] | None = None) -> int:
             f"warning: {args.task} has already landed; its obligations were fixed when it landed",
             file=sys.stderr,
         )
-    result = obligations(
-        args.task, landed, rows, read_verified(args.repo, args.ref), unknown=unknown
-    )
+    verified = read_verified(args.repo, args.ref, known=(row.id for row in rows))
+    result = obligations(args.task, landed, rows, verified, unknown=unknown)
     if args.json:
         print(
             json.dumps(
@@ -308,6 +353,9 @@ def main(argv: list[str] | None = None) -> int:
                     "left_to_fallback": [row.id for row in result.left_to_fallback],
                     "unverified": [row.id for row in result.unverified],
                     "unknown": [row.id for row in result.unknown],
+                    "too_early": [row.id for row in result.too_early],
+                    "orphaned": [row.id for row in result.orphaned],
+                    "noted": [row.id for row in result.noted],
                 },
                 indent=2,
             )

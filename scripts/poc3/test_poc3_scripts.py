@@ -215,6 +215,65 @@ def test_a_fix_owns_what_its_item_owns_and_its_own_records(tmp_path):
     assert check_ownership.check("WT-51-fix1", f"{base}..HEAD", str(repo)) == 0
 
 
+@pytest.mark.parametrize(
+    "task, path, allowed",
+    [
+        ("WT-51-fix1", f"{check_ownership.CHAIN}/verified/WT-51.yaml", True),
+        ("WT-51-fix1", f"{check_ownership.CHAIN}/verified/WT-51-fix2.yaml", False),
+        ("WT-51", f"{check_ownership.CHAIN}/verified/WT-51-fix1.yaml", False),
+        ("WT-51-fix1", f"{check_ownership.POC_TESTS}/wt51/test_x.py", True),
+    ],
+)
+def test_per_item_files_belong_to_the_exact_name(task, path, allowed):
+    assert (check_ownership.match_rule(task, path) is not None) == allowed
+
+
+@pytest.mark.parametrize(
+    "task, path, allowed",
+    [
+        ("WT-30-fix1", "scripts/poc3/check_ownership.py", True),
+        ("WT-54", "scripts/poc3/check_ownership.py", False),
+        ("WT-54", "scripts/poc3/poc3_common.py", False),
+        ("WT-54", "scripts/poc3/wt54_report.py", True),
+        ("WT-35", check_ownership.INVARIANT_ADDITIONS, True),
+    ],
+)
+def test_only_wt30_changes_the_gate_files(task, path, allowed):
+    assert (check_ownership.match_rule(task, path) is not None) == allowed
+
+
+def test_no_literal_path_has_two_owners():
+    literal = {
+        (rule.pattern, rule.repo)
+        for rules in check_ownership.OWNERSHIP.values()
+        for rule in rules
+        if rule.kind == "own" and not set("*?!") & set(rule.pattern)
+    }
+    for path, repo in literal:
+        owning = [n for n, r in check_ownership.owners(path, repo) if r.kind == "own"]
+        assert len(owning) == 1, (path, owning)
+
+
+def test_wt57_leaves_the_domains_of_other_items_alone():
+    taken = [
+        rule.pattern
+        for name, rules in check_ownership.OWNERSHIP.items()
+        if name != "WT-57"
+        for rule in rules
+        if rule.kind == "own" and "/_test_openengine_disagg_" in rule.pattern
+    ]
+    assert len(taken) == 17
+    for path in taken:
+        assert check_ownership.match_rule("WT-57", path) is None, path
+
+
+@pytest.mark.parametrize("revision_range", ["..HEAD", "HEAD..", "HEAD...HEAD", "HEAD"])
+def test_check_needs_both_ends_of_a_two_dot_range(tmp_path, revision_range):
+    repo, _ = _two_commit_repo(tmp_path, {"scripts/poc3/x.py": "x\n"}, "add\n\nPoC3-Task: WT-30")
+    with pytest.raises(ValueError):
+        check_ownership.check("WT-30", revision_range, str(repo))
+
+
 def test_shared_and_exception_paths_are_listed_for_review(tmp_path, capsys):
     files = {"scripts/poc3/invariant_additions.yaml": "additions: []\n"}
     repo, base = _two_commit_repo(tmp_path, files, "add\n\nPoC3-Task: WT-30")
@@ -351,6 +410,56 @@ def test_ds_items_unknown_without_the_ds_repo(rows):
     assert "F-01@03" in unknown and "F-01@03" not in owed
 
 
+def _extra(task, landed, rows):
+    result = pending_e2e.obligations(task, landed, rows)
+    return (
+        [row.id for row in result.too_early],
+        [row.id for row in result.orphaned],
+        [row.id for row in result.noted],
+    )
+
+
+def test_a_fix_landing_does_not_land_its_item(rows):
+    # A WT-37-fix for a PoC-S2 path can land before WT-37 (§0.6); the link is still incomplete.
+    landed = (LINK - {"WT-51", "WT-37"}) | {"WT-37-fix1"}
+    assert "F-01" not in _owed("WT-51", landed, rows)[0]
+    assert "F-01" in _owed("WT-51", landed | {"WT-37"}, rows)[0]
+
+
+def test_rows_left_without_a_verifier_are_reported(rows):
+    # WT-60 running before the R11 prerequisites landed: F-33 is listed, not silently dropped.
+    assert "F-33" in _extra("WT-60", LINK, rows)[0]
+    # F-33 completed by WT-57 after WT-60 landed: nobody owes it any more.
+    landed = (LINK | R11_PREREQS | {"WT-60"}) - {"WT-57"}
+    assert "F-33" in _extra("WT-57", landed, rows)[1]
+    assert "F-33" not in _owed("WT-57", landed, rows)[0]
+
+
+def test_notes_naming_an_item_reach_it(rows):
+    # §3.6 EG-28: XD-009 在 CO-12 合入后由 WT-40 先补跑.
+    assert "EG-28" in _extra("WT-40", set(), rows)[2]
+    assert "EG-28" not in _extra("WT-41", set(), rows)[2]
+
+
+def test_only_poc3_records_are_read_from_any_directory(tmp_path, capsys):
+    repo = _repo(tmp_path)
+    records = {
+        f"{pending_e2e.VERIFIED_DIR}/WT-10.yaml": yaml.safe_dump({"entries": [{"row": "F-06"}]}),
+        f"{pending_e2e.VERIFIED_DIR}/WT-20-R2.yaml": yaml.safe_dump({"entries": [{"row": "F-07"}]}),
+        f"{pending_e2e.VERIFIED_DIR}/WT-51.yaml": yaml.safe_dump(
+            {"entries": [{"row": "F-01"}, {"row": "F-0x"}]}
+        ),
+        f"{pending_e2e.VERIFIED_DIR}/WT-51-fix1.yaml": yaml.safe_dump(
+            {"entries": [{"row": "F-02"}]}
+        ),
+    }
+    _commit(repo, records, "records")
+    known = {"F-01", "F-02", "F-06", "F-07"}
+    sub = repo / "tests"
+    assert pending_e2e.read_verified(sub, "main", known) == {"F-01", "F-02"}
+    assert "unknown row 'F-0x'" in capsys.readouterr().err
+
+
 def test_verified_records_need_a_row_id(capsys):
     records = [{"entries": [{"row": "F-01"}, {"features": ["F-02"]}]}, None, ["not a mapping"]]
     assert pending_e2e.verified_rows(records) == {"F-01"}
@@ -400,7 +509,9 @@ def test_feature_deps_matches_the_plan_tables():
 
 def test_feature_deps_has_every_main_row_once(rows):
     features = {feature for row in rows for feature in row.features}
-    assert len(features) == sync_feature_deps.EXPECTED_MAIN_ROWS
+    tasks_md = _plan_tasks_md()
+    if tasks_md is not None:
+        assert len(features) == sync_feature_deps.main_row_count(tasks_md.read_text())
     assert len({row.id for row in rows}) == len(rows)
 
 
@@ -410,17 +521,30 @@ F90_ROW = (
     "04：现成（FB-2，随 WT-51）；WT-57（T2、NT-050）；03：WT-62 | "
     "04：链路；其余用例另等 WT-57；03：ds 链路、WT-53 |"
 )
+EG91_ROW = (
+    "| EG-91 w（✅） | NT-209、XD-009（Hopper 分片：XD-041；第二批：XD-042；XD-101 是死用例） | "
+    "WT-57 | 链路、WT-38（CT-15）；R12 验收；XD-009 由 WT-40 先补跑 |"
+)
+GROUPS_TABLE = """\
+### 3.2 依赖集合的缩写
+| 缩写 | 成员 | 用在哪里 |
+|---|---|---|
+| 链路 | WT-35、WT-37 | x |
+| R11 前提 | WT-37、WT-57 | x |
+| ds 链路 | WT-33（探针通过）、WT-62 | x |
+"""
 SECTION = """\
-### 3.4 表 A
+### 3.4 表 A（2 个主行）
 | 功能 | 用例 | 用例作者 | 依赖集合 |
 |---|---|---|---|
 {F90_ROW}
-| F-91 y（04：—；03：—） | — | — | 不设 E2E：两个 case 都是 —（不适用） |
-### 3.6 表 D
+| F-91 y（04：—；03：—） | — | — | 不设 E2E：两个 case 都是 —（不适用）；XD-623 留在 CPU 门槛里 |
+### 3.6 表 D（3 个主行）
 | 功能 | 用例 | 用例作者 | 依赖集合 |
 |---|---|---|---|
 | EG-90 z（✅） | XD-213 | 现成（R11 执行） | R11 前提 |
-| EG-91 w（✅） | NT-209 | WT-57 | 链路、WT-38（CT-15）；R12 验收 |
+{EG91_ROW}
+| EG-92 u（✅） | XD-005、PU-02 | 现成 | 链路；GPU 起法随 PB-1a 的 PU-02 取证（WT-70）：PU-02 跑通 |
 ### 3.7 表 C
 | 功能 | 用例 | 用例作者 | 依赖集合 |
 |---|---|---|---|
@@ -428,31 +552,62 @@ SECTION = """\
 ### 3.8 其他
 | 功能 | 用例 | 用例作者 | 依赖集合 |
 | F-99 ignored | — | — | — |
-""".replace("{F90_ROW}", F90_ROW)
+""".replace("{F90_ROW}", F90_ROW).replace("{EG91_ROW}", EG91_ROW)
 
 
-def test_the_table_parser(monkeypatch):
-    monkeypatch.setattr(sync_feature_deps, "EXPECTED_MAIN_ROWS", 5)
-    rows = {row["id"]: row for row in sync_feature_deps.derive(SECTION)}
-    assert list(rows) == ["F-90", "F-90+rest", "F-90@03", "F-91", "EG-90", "EG-91", "DS-90"]
+def test_the_table_parser():
+    rows = {row["id"]: row for row in sync_feature_deps.derive(SECTION.replace("（3 个", "（4 个"))}
+    assert list(rows) == [
+        "F-90",
+        "F-90+rest",
+        "F-90@03",
+        "F-91",
+        "EG-90",
+        "EG-91",
+        "EG-92",
+        "EG-92+PU-02",
+        "DS-90",
+    ]
     assert rows["F-90"]["cases"] == ["XD-001"] and rows["F-90"]["deps"] == ["link"]
     assert rows["F-90"]["hopper_cases"] == ["XD-036"] and rows["F-90"]["not_runnable"] == ["XD-202"]
+    assert rows["F-90"]["author"] == ["existing"]
     assert rows["F-90+rest"]["cases"] == ["T2", "NT-050"]
-    assert rows["F-90+rest"]["deps"] == ["link", "WT-57"] and rows["F-90+rest"]["authors"] == [
+    assert rows["F-90+rest"]["deps"] == ["link", "WT-57"] and rows["F-90+rest"]["author"] == [
         "WT-57"
     ]
     assert rows["F-90@03"]["chain"] == "case-03" and rows["F-90@03"]["deps"] == ["ds-link", "WT-53"]
-    assert rows["F-91"]["deferred"] is True
+    assert rows["F-91"]["deferred"] is True and rows["F-91"]["notes"] == ["XD-623 留在 CPU 门槛里"]
     assert rows["EG-90"]["assignee"] == "WT-60" and rows["EG-90"]["deps"] == ["r11-prereqs"]
     assert rows["EG-91"]["assignee"] == "WT-61" and rows["EG-91"]["deps"] == ["link", "WT-38"]
+    assert rows["EG-91"]["hopper_cases"] == ["XD-041", "XD-042"]
+    assert rows["EG-91"]["notes"] == ["XD-101 是死用例", "XD-009 由 WT-40 先补跑"]
+    assert rows["EG-92"]["cases"] == ["XD-005"] and "assignee" not in rows["EG-92"]
+    assert rows["EG-92+PU-02"]["cases"] == ["PU-02"] and rows["EG-92+PU-02"]["assignee"] == "WT-70"
+    assert rows["EG-92+PU-02"]["deps"] == ["link", "WT-70"]
     assert rows["DS-90"]["fallback"] == "WT-73" and rows["DS-90"]["deps"] == ["ds-link", "WT-71"]
 
 
-def test_the_table_parser_rejects_unknown_dependencies(monkeypatch):
-    monkeypatch.setattr(sync_feature_deps, "EXPECTED_MAIN_ROWS", 1)
-    bad = SECTION.split("| F-91")[0].replace("04：链路；", "04：链路、某事；")
+def test_the_groups_come_from_section_3_2():
+    assert sync_feature_deps.derive_groups(GROUPS_TABLE) == {
+        "link": ["WT-35", "WT-37"],
+        "ds-link": ["WT-33", "WT-62"],
+        "r11-prereqs": ["WT-37", "WT-57"],
+        "ds-repo": ["WT-41", "WT-42", "WT-43"],
+    }
+    with pytest.raises(ValueError, match="does not define"):
+        sync_feature_deps.derive_groups(GROUPS_TABLE.replace("| R11 前提 |", "| R12 |"))
+
+
+def test_the_table_parser_rejects_unknown_dependencies():
+    bad = SECTION.replace("04：链路；", "04：链路、某事；")
     with pytest.raises(ValueError, match="unknown dependency"):
         sync_feature_deps.derive(bad)
+
+
+def test_the_table_parser_rejects_a_row_without_cases():
+    bad = SECTION.replace("| EG-90 z（✅） | XD-213 |", "| EG-90 z（✅） | — |")
+    with pytest.raises(ValueError, match="no case verifies"):
+        sync_feature_deps.derive(bad.replace("（3 个", "（4 个"))
 
 
 def test_the_table_parser_counts_main_rows():
@@ -539,7 +694,7 @@ def invariant_repo(tmp_path):
 
 def _invariants(repo, base, files, registry=None):
     _commit(repo, files, "change")
-    results = check_invariants.run(check_invariants.git_reader(repo), base, "HEAD", registry)
+    results = check_invariants.run(repo, base, "HEAD", registry)
     return {name for name, passed, _ in results if not passed}
 
 
@@ -556,6 +711,24 @@ def test_invariants_hold_on_the_base(invariant_repo):
             check_invariants.PROTOCOL,
             "    return params\n\n\ndef to_llm",
             "    return dict(params)\n\n\ndef to_llm",
+            f"def {check_invariants.PROTOCOL}:to_disaggregated_params",
+        ),
+        (
+            check_invariants.PROTOCOL,
+            "    return params\n",
+            "    return params\n    # a trailing comment in the body\n",
+            f"def {check_invariants.PROTOCOL}:to_disaggregated_params",
+        ),
+        (
+            check_invariants.PROTOCOL,
+            "def to_llm_disaggregated_params(params):\n    return params\n",
+            "def to_llm_disaggregated_params(params):\n    return dict(params)\n",
+            f"def {check_invariants.PROTOCOL}:to_llm_disaggregated_params",
+        ),
+        (
+            check_invariants.PROTOCOL,
+            "\n\ndef to_llm",
+            "\n\nto_disaggregated_params = dict\n\n\ndef to_llm",
             f"def {check_invariants.PROTOCOL}:to_disaggregated_params",
         ),
         (
@@ -598,6 +771,9 @@ def test_invariants_hold_on_the_base(invariant_repo):
     ids=[
         "orchestrator-file",
         "conversion-function",
+        "trailing-comment",
+        "other-conversion-function",
+        "rebinding",
         "subcommand-decorator",
         "subcommand-body",
         "class-existing-line",
@@ -627,12 +803,34 @@ def test_registered_additions_pass(invariant_repo):
         check_invariants.AUTH: AUTH_SRC.replace('state")\n', 'state")\n' + NEW_AUTH),
     }
     assert _invariants(repo, base, files, TEST_REGISTRY) == set()
-    # The same lines registered twice may be added twice; a third copy is unregistered.
-    tripled = PROTOCOL_SRC.replace(
+    # A line registered once may be added once; a second copy is unregistered.
+    doubled = PROTOCOL_SRC.replace(
         "    request_type: str\n", "    request_type: str\n" + NEW_FIELD * 2
     )
-    assert _invariants(repo, base, {check_invariants.PROTOCOL: tripled}, TEST_REGISTRY) == {
+    assert _invariants(repo, base, {check_invariants.PROTOCOL: doubled}, TEST_REGISTRY) == {
         f"additions {check_invariants.PROTOCOL}:DisaggregatedParams"
+    }
+
+
+@pytest.mark.parametrize("change", ["crlf", "mode"])
+def test_whole_files_compare_bytes_and_mode(invariant_repo, change):
+    repo, base = invariant_repo
+    path = "tensorrt_llm/serve/router.py"
+    if change == "crlf":
+        (repo / path).write_bytes(f"# {path}\r\n".encode())
+    else:
+        (repo / path).chmod(0o755)
+    _git(repo, "add", path)
+    assert _invariants(repo, base, {}) == {f"file {path}"}
+
+
+def test_the_working_tree_is_checked_from_a_subdirectory(invariant_repo):
+    repo, base = invariant_repo
+    (repo / "tensorrt_llm/serve/router.py").write_text("# changed on disk\n")
+    sub = repo / "tensorrt_llm"
+    results = check_invariants.run(sub, base, "")
+    assert {name for name, passed, _ in results if not passed} == {
+        "file tensorrt_llm/serve/router.py"
     }
 
 
@@ -675,12 +873,17 @@ def test_a_missing_definition_fails(invariant_repo):
     }
 
 
-def test_the_shipped_registry_is_empty():
-    data = yaml.safe_load(check_invariants.REGISTRY.read_text())
-    assert data == {"version": 1, "additions": []}
+def test_the_shipped_registry_is_valid():
+    assert check_invariants.load_registry(check_invariants.REGISTRY.read_text())[1] == []
 
 
-def test_invariants_hold_on_the_frozen_base_of_this_checkout():
+def test_a_registry_that_is_not_a_mapping_is_a_problem():
+    assert check_invariants.load_registry("- a\n- b\n")[1] == [
+        "the registry is not a mapping with a list of additions"
+    ]
+
+
+def test_invariants_hold_on_the_head_of_this_checkout():
     repo = Path(__file__).resolve().parents[2]
     if (
         subprocess.run(
@@ -690,4 +893,4 @@ def test_invariants_hold_on_the_frozen_base_of_this_checkout():
         != 0
     ):
         pytest.skip("the frozen base is not in this checkout")
-    assert check_invariants.main(["--repo", str(repo), "--head", check_invariants.FROZEN_BASE]) == 0
+    assert check_invariants.main(["--repo", str(repo), "--head", "HEAD"]) == 0
