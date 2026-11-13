@@ -45,8 +45,7 @@ UCX_ENV = {"UCX_TLS": "^ib,gdr_copy", "UCX_NET_DEVICES": "lo"}
 def _model_dir() -> str:
     root = llm_models_root()
     path = None if root is None else os.path.join(str(root), MODEL_SUBDIR)
-    if path is None or not os.path.isdir(path):
-        pytest.skip(f"{MODEL_SUBDIR} is not under LLM_MODELS_ROOT")
+    assert path is not None and os.path.isdir(path), f"{MODEL_SUBDIR} is not under LLM_MODELS_ROOT"
     return path
 
 
@@ -68,6 +67,7 @@ def engines(tmp_path_factory):
             engine.wait_serving(ENGINE_READY_TIMEOUT_S)
         yield started[0], started[1], kv_dirs
     finally:
+        # Engine.stop() never raises, so every engine is stopped.
         for engine in started:
             engine.stop()
 
@@ -106,8 +106,10 @@ def test_two_engines_complete_a_handoff(engines):
     gen_tokens = handoff.gen.token_ids()
     assert gen_tokens[:1] == first, result
 
+    # The reference runs on the context engine: the generation engine's prefix cache
+    # now holds the received KV, so a reference there would repeat a bad transfer.
     reference = dr.generate(
-        gen_engine.endpoint,
+        ctx_engine.endpoint,
         dr.build_request(MODEL_NAME, PROMPT, max_tokens=MAX_TOKENS),
         timeout=REQUEST_TIMEOUT_S,
     )
@@ -121,7 +123,10 @@ def test_two_engines_complete_a_handoff(engines):
     assert gen_usage["prompt_tokens"] == reference_usage["prompt_tokens"], result
     assert gen_usage["completion_tokens"] == len(gen_tokens), result
 
+    # The context side writes the sent bytes per task; the generation side writes a
+    # receive row without sizes and a summary with the received KV size.
     sent = _wait_kv_rows(kv_dirs["ctx"], "send")
-    received = _wait_kv_rows(kv_dirs["gen"], "recv")
-    assert any(int(row["transfer_size_bytes"]) > 0 for row in sent), sent
-    assert any(int(row["transfer_size_bytes"]) > 0 for row in received), received
+    assert any(int(row["transfer_size_bytes"] or 0) > 0 for row in sent), sent
+    assert _wait_kv_rows(kv_dirs["gen"], "recv"), kv_dirs["gen"]
+    summaries = _wait_kv_rows(kv_dirs["gen"], "summary")
+    assert any(int(row["kv_cache_size"] or 0) > 0 for row in summaries), summaries
