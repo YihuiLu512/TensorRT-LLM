@@ -15,10 +15,15 @@ orchestrator without changing the orchestrator. Three checks hold that line:
    base. Each definition is located with ``ast`` and compared from its first
    decorator to its last line, comment lines indented into its body included,
    so moving it inside the file is fine but any change to its decorators,
-   signature or body is not. No other statement may bind the name at module
-   scope (as far as the syntax shows: ``globals()[...]`` is not seen). Helpers
-   the definitions call, and the command table that maps CLI names to the
-   subcommands, are not covered.
+   signature or body is not. Nothing else in the file may bind or delete the
+   name at module scope: assignments and ``del``, imports (``import *``
+   included), definitions, ``for`` / ``with`` / ``except`` targets, ``match``
+   captures, walrus targets evaluated at module scope (in decorators, default
+   values and base classes too), and a ``global`` declaration of the name
+   anywhere in the file all fail the check. Bindings made without that syntax,
+   such as through ``globals()`` or ``setattr`` on the module, are not seen.
+   Helpers the definitions call, and the command table that maps CLI names to
+   the subcommands, are not covered.
 3. **Registered additions only**: the HTTP ``DisaggregatedParams`` class of
    ``openai_protocol.py`` and the whole of ``disagg_auth.py`` may only gain the
    lines listed in ``invariant_additions.yaml``: the base text must be a
@@ -32,8 +37,9 @@ Usage::
     python3 scripts/poc3/check_invariants.py --head <rev>
     python3 scripts/poc3/check_invariants.py --working-tree       # files on disk
 
-Exit status: 0 when all three checks pass, 1 otherwise. The scripts need
-Python 3.9 or newer.
+Exit status: 0 when all three checks pass, 1 otherwise; a file or registry
+that cannot be read or parsed fails its check. The scripts need Python 3.9 or
+newer.
 """
 
 from __future__ import annotations
@@ -103,6 +109,13 @@ def git_reader(repo: str | Path) -> Reader:
     return read
 
 
+def _exists(read: Reader, rev: str, path: str) -> bool:
+    try:
+        return read(rev, path) is not None
+    except ValueError:  # there, but not UTF-8
+        return True
+
+
 def git_differ(repo: str | Path) -> Differ:
     """Whether ``path`` differs between ``base`` and ``head`` (head "" is the disk), by git diff."""
 
@@ -130,52 +143,99 @@ def git_differ(repo: str | Path) -> Differ:
     return differs
 
 
-def _bound_names(target: ast.AST) -> list[str]:
-    return [n.id for n in ast.walk(target) if isinstance(n, ast.Name)]
+# Statement fields holding nested statements; everything else is evaluated where the statement runs.
+_BLOCKS = ("body", "orelse", "finalbody", "handlers", "cases")
+
+
+def _same_scope(nodes: list[ast.AST]) -> list[ast.AST]:
+    """The nodes under ``nodes`` evaluated in the scope they appear in.
+
+    A lambda's body and a comprehension's ``for`` targets have scopes of their
+    own and are skipped; a lambda's default values and a comprehension's
+    iterables and conditions are not (walrus targets in a comprehension bind
+    in the enclosing scope).
+    """
+    found: list[ast.AST] = []
+    stack = list(nodes)
+    while stack:
+        node = stack.pop()
+        found.append(node)
+        if isinstance(node, ast.Lambda):
+            stack += [d for d in (*node.args.defaults, *node.args.kw_defaults) if d is not None]
+        elif isinstance(node, ast.comprehension):
+            stack += [node.iter, *node.ifs]
+        else:
+            stack += ast.iter_child_nodes(node)
+    return found
+
+
+def _expression_bindings(values: list[object], name: str) -> int:
+    """How many times expressions and targets in ``values`` bind or delete ``name``."""
+    roots = [
+        item
+        for value in values
+        for item in (value if isinstance(value, list) else [value])
+        if isinstance(item, ast.AST)
+    ]
+    return sum(
+        isinstance(node, ast.Name)
+        and node.id == name
+        and isinstance(node.ctx, (ast.Store, ast.Del))
+        for node in _same_scope(roots)
+    )
+
+
+def _pattern_bindings(pattern: ast.AST, name: str) -> int:
+    """How many capture names of a ``match`` pattern are ``name``."""
+    return sum(
+        getattr(node, "name", None) == name or getattr(node, "rest", None) == name
+        for node in ast.walk(pattern)
+        if type(node).__name__ in ("MatchAs", "MatchStar", "MatchMapping")
+    )
 
 
 def _module_bindings(body: list[ast.stmt], name: str) -> int:
-    """How many statements of a module body bind ``name`` at module scope.
+    """How many times statements of a module body bind or delete ``name`` at module scope.
 
-    Blocks that run at module scope (``if``, ``try``, ``with``, ``for``,
-    ``while``, ``match``) are searched; function and class bodies are not.
-    Only bindings visible in the syntax count (not ``globals()[...]``).
+    Statements nested in blocks that run at module scope (``if``, ``try``,
+    ``with``, ``for``, ``while``, ``match``) count; function and class bodies
+    do not, but decorators, default values, annotations and base classes are
+    evaluated at module scope and do. ``global`` declarations are counted by
+    :func:`module_bindings`.
     """
     count = 0
     for node in body:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             count += node.name == name
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            count += sum(
+                a.name == "*" or (a.asname or a.name.split(".")[0]) == name for a in node.names
+            )
             continue
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            count += sum((a.asname or a.name.split(".")[0]) == name for a in node.names)
-            continue
-        targets: list[ast.AST] = []
-        if isinstance(node, ast.Assign):
-            targets = list(node.targets)
-        elif isinstance(node, (ast.AnnAssign, ast.AugAssign, ast.For, ast.AsyncFor)):
-            targets = [node.target]
-        elif isinstance(node, (ast.With, ast.AsyncWith)):
-            targets = [item.optional_vars for item in node.items if item.optional_vars]
-        elif isinstance(node, ast.Try) or type(node).__name__ == "TryStar":
-            targets = [ast.Name(id=h.name) for h in node.handlers if h.name]
-        count += sum(_bound_names(t).count(name) for t in targets)
-        # Walrus targets in the statement's own expressions bind at module scope.
-        count += sum(
-            n.target.id == name
-            for field, value in ast.iter_fields(node)
-            if field not in ("body", "orelse", "finalbody", "handlers", "cases")
-            for item in (value if isinstance(value, list) else [value])
-            if isinstance(item, ast.AST)
-            for n in ast.walk(item)
-            if isinstance(n, ast.NamedExpr)
+        count += _expression_bindings(
+            [value for field, value in ast.iter_fields(node) if field not in _BLOCKS], name
         )
-        for field in ("body", "orelse", "finalbody"):
-            count += _module_bindings(getattr(node, field, []) or [], name)
-        for handler in getattr(node, "handlers", []) or []:
+        for handler in getattr(node, "handlers", None) or []:
+            count += handler.name == name
+            count += _expression_bindings([handler.type], name)
             count += _module_bindings(handler.body, name)
-        for case in getattr(node, "cases", []) or []:
+        for case in getattr(node, "cases", None) or []:
+            count += _pattern_bindings(case.pattern, name)
+            count += _expression_bindings([case.guard], name)
             count += _module_bindings(case.body, name)
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            for field in ("body", "orelse", "finalbody"):
+                count += _module_bindings(getattr(node, field, None) or [], name)
     return count
+
+
+def module_bindings(tree: ast.Module, name: str) -> int:
+    """How many times the module binds or deletes ``name`` at module scope, as far as the syntax shows.
+
+    A ``global`` declaration of ``name`` anywhere in the module counts once.
+    """
+    declared = sum(name in node.names for node in ast.walk(tree) if isinstance(node, ast.Global))
+    return _module_bindings(tree.body, name) + declared
 
 
 def definition_text(source: str, name: str, kind: type = ast.FunctionDef) -> str:
@@ -192,7 +252,7 @@ def definition_text(source: str, name: str, kind: type = ast.FunctionDef) -> str
     nodes = [n for n in tree.body if isinstance(n, kind) and n.name == name]
     if len(nodes) != 1:
         raise LookupError(f"expected one top-level {kind.__name__} {name!r}, found {len(nodes)}")
-    bindings = _module_bindings(tree.body, name)
+    bindings = module_bindings(tree, name)
     if bindings != 1:
         raise LookupError(f"{name!r} is bound {bindings} times at module scope")
     node = nodes[0]
@@ -231,7 +291,10 @@ def load_registry(text: str | None) -> tuple[dict[tuple[str, str], Counter[str]]
     }
     if text is None:
         return registered, [f"registry {REGISTRY_PATH} is missing"]
-    data = yaml.safe_load(text) or {}
+    try:
+        data = yaml.safe_load(text) or {}
+    except yaml.YAMLError as error:
+        return registered, [f"the registry is not valid YAML: {error}"]
     if not isinstance(data, dict) or not isinstance(data.get("additions") or [], list):
         return registered, ["the registry is not a mapping with a list of additions"]
     problems = []
@@ -272,7 +335,7 @@ def run(
     read, differs = git_reader(repo), git_differ(repo)
     results = []
     for path in ORCHESTRATOR_FILES:
-        same = read(base, path) is not None and not differs(base, head, path)
+        same = _exists(read, base, path) and not differs(base, head, path)
         results.append(
             (f"file {path}", same, "" if same else "differs from the base (or is missing)")
         )
@@ -281,20 +344,27 @@ def run(
         try:
             old_text = definition_text(read(base, path) or "", name)
             new_text = definition_text(read(head, path) or "", name)
-        except (LookupError, SyntaxError) as error:
-            results.append((f"def {path}:{name}", False, str(error)))
+        except (LookupError, SyntaxError, ValueError) as error:
+            # ValueError: not UTF-8, or (before Python 3.12) a NUL byte ast cannot parse.
+            results.append((f"def {path}:{name}", False, f"{type(error).__name__}: {error}"))
             continue
         same = old_text == new_text
         results.append((f"def {path}:{name}", same, "" if same else "source text changed"))
 
     source = "given"
-    if registry_text is None:
-        registry_text, source = read(head, REGISTRY_PATH), "head" if head else "the working tree"
-    head_has_gate = read(head, f"{Path(REGISTRY_PATH).parent}/check_invariants.py") is not None
-    if registry_text is None and not head_has_gate and REGISTRY.is_file():
-        # The head predates scripts/poc3 (the frozen base, for example).
-        registry_text, source = REGISTRY.read_text(), str(REGISTRY)
-    registered, problems = load_registry(registry_text)
+    try:
+        if registry_text is None:
+            registry_text = read(head, REGISTRY_PATH)
+            source = "head" if head else "the working tree"
+        head_has_gate = _exists(read, head, f"{Path(REGISTRY_PATH).parent}/check_invariants.py")
+        if registry_text is None and not head_has_gate and REGISTRY.is_file():
+            # The head predates scripts/poc3 (the frozen base, for example).
+            registry_text, source = REGISTRY.read_bytes().decode(), str(REGISTRY)
+    except ValueError as error:
+        registered, problems = load_registry(None)
+        problems = [f"the registry cannot be read: {type(error).__name__}: {error}"]
+    else:
+        registered, problems = load_registry(registry_text)
     results.append(("registry", not problems, "; ".join(problems) or f"from {source}"))
     for path, region in ADDITION_REGIONS:
         label = f"additions {path}:{region}"
@@ -307,8 +377,8 @@ def run(
             else:
                 old_text = definition_text(old_src, region, ast.ClassDef)
                 new_text = definition_text(new_src, region, ast.ClassDef)
-        except (LookupError, SyntaxError) as error:
-            results.append((label, False, str(error)))
+        except (LookupError, SyntaxError, ValueError) as error:
+            results.append((label, False, f"{type(error).__name__}: {error}"))
             continue
         extra = extra_lines(old_text.splitlines(keepends=True), new_text.splitlines(keepends=True))
         if extra is None:
@@ -336,8 +406,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--registry", type=Path, help="use this registry instead of the head's")
     args = parser.parse_args(argv)
     head = "" if args.working_tree else args.head
-    registry_text = args.registry.read_text() if args.registry else None
-    results = run(args.repo, args.base, head, registry_text)
+    try:
+        registry_text = args.registry.read_bytes().decode() if args.registry else None
+        results = run(args.repo, args.base, head, registry_text)
+    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+        print(f"FAIL: {type(error).__name__}: {error}")
+        return 1
     for name, passed, detail in results:
         print(f"{'PASS' if passed else 'FAIL'}  {name}" + (f"  -- {detail}" if detail else ""))
     failed = [name for name, passed, _ in results if not passed]

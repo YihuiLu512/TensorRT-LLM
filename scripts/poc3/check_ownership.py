@@ -15,16 +15,27 @@ A rule is ``own`` (no other item owns the path; another item may change it only
 under a ``shared`` or ``exception`` rule of its own), ``shared`` (this item may
 change only the part the note names; the rest of the file belongs to its owner,
 which may be another item or code outside PoC-S3) or ``exception`` (a one-off
-allowance the note describes). Paths changed under ``shared`` and ``exception``
-rules are listed for a reviewer to check by hand. Test files that already exist
+allowance the note describes). An ``exception`` may also list the only lines
+it allows, as regular expressions: then every line the range adds to or removes
+from that file must match one of them, with as many lines removed as added, and
+nothing else about the file may change (its mode, for example); otherwise the
+path is out of bounds. Paths changed under ``shared`` and ``exception`` rules
+are listed for a reviewer to check by hand. Test files that already exist
 at the base are ``shared`` even for the item they belong to: tasks.md §0.3 lets
 existing assertions change only for the flips it names, so changes there are
 listed too.
 A pattern starting with ``!`` excludes paths from the rules before it.
 
-Paths that belong to no work item (the orchestrator's main files, the two
-conversion functions and the two ``commands/serve.py`` subcommands) are guarded
-by ``check_invariants.py``, which runs separately.
+The orchestrator's main files belong to no work item. Some code inside files
+that work items own or share belongs to no work item either: the two
+conversion functions of ``openai_protocol.py`` and the two ``commands/serve.py``
+subcommands keep their source text, and the existing lines of the HTTP
+``DisaggregatedParams`` class and of ``disagg_auth.py`` stay as they are (only
+registered lines may be added). ``check_invariants.py`` guards all of these and
+runs separately.
+
+The trailer is read as ``poc3_common`` describes: git must parse it and the
+message must hold the exact line ``PoC3-Task: <work item>``.
 
 Usage::
 
@@ -33,13 +44,15 @@ Usage::
     python3 <trtllm>/scripts/poc3/check_ownership.py --task WT-41 origin/feat/engine_integration-stage03..HEAD
 
 Both ends of the range are required. Exit status: 0 when every path and commit
-is in bounds, 1 otherwise. The scripts need Python 3.9 or newer.
+is in bounds, 1 otherwise (a bad ``--task`` or range, or a git error, included).
+The scripts need Python 3.9 or newer.
 """
 
 from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 from dataclasses import dataclass
 from functools import lru_cache
@@ -57,6 +70,8 @@ class Rule:
     kind: str = "own"
     note: str = ""
     repo: str = TRTLLM
+    # For an exception: regular expressions, one of which every changed line must match in full.
+    lines: tuple[str, ...] = ()
 
 
 def _own(*patterns: str, repo: str = TRTLLM) -> list[Rule]:
@@ -67,8 +82,8 @@ def _shared(pattern: str, note: str, repo: str = TRTLLM) -> Rule:
     return Rule(pattern, "shared", note, repo)
 
 
-def _exception(pattern: str, note: str, repo: str = TRTLLM) -> Rule:
-    return Rule(pattern, "exception", note, repo)
+def _exception(pattern: str, note: str, repo: str = TRTLLM, lines: tuple[str, ...] = ()) -> Rule:
+    return Rule(pattern, "exception", note, repo, lines)
 
 
 POC = "tensorrt_llm/serve/openengine_poc"
@@ -130,6 +145,23 @@ OWNERSHIP: dict[str, list[Rule]] = {
         _exception(
             "tests/unittest/disaggregated/test_disagg_internal_auth.py",
             "CS-20's flip only: the new field name in test_protected_fields_come_from_protocol_metadata",
+        ),
+        # Contract v10 and conventions version 4 break the assertions pinning the old versions.
+        _exception(
+            f"{POC_TESTS}/wt01/test_poc2_wt01_contracts.py",
+            "only the expected contract version in test_contract_version",
+            lines=(r"    assert contracts\.POC2_CONTRACT_VERSION == \d+",),
+        ),
+        _exception(
+            f"{POC_TESTS}/wt01/test_poc2_wt01_conventions.py",
+            "only the expected conventions version in test_version_and_keys",
+            lines=(r"    assert conv\.CONVENTIONS_VERSION == \d+",),
+        ),
+        _exception(
+            f"{OE_SERVER_TESTS}/test_control.py",
+            "only the expected conventions version in"
+            " test_server_info_reports_the_conventions_version",
+            lines=(r"    assert isinstance\(version, float\) and version == \d+",),
         ),
     ],
     "WT-36": _own(
@@ -485,6 +517,59 @@ def detect_repo(repo_dir: str) -> str:
     raise ValueError(f"{top} is neither a TensorRT-LLM nor a ds-engine checkout")
 
 
+# A diff header line that may precede the hunks of a line-limited exception's file.
+_PLAIN_HEADER = ("diff --git ", "index ", "--- ", "+++ ")
+
+
+def disallowed_lines(
+    rule: Rule, repo_dir: str, base_ref: str, head_ref: str, path: str
+) -> list[str]:
+    """What ``base_ref...head_ref`` changes in ``path`` beyond the lines ``rule`` allows.
+
+    Empty when every added and removed line matches one of ``rule.lines``, as
+    many lines are removed as added, and the diff changes nothing but lines.
+    """
+    # Bytes, not text mode: universal newlines would hide a CRLF line ending.
+    diff = subprocess.run(
+        [
+            "git",
+            "-C",
+            repo_dir,
+            "diff",
+            "-U0",
+            "--no-color",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-renames",
+            "--no-relative",
+            f"{base_ref}...{head_ref}",
+            "--",
+            f":(top,literal){path}",
+        ],
+        check=True,
+        capture_output=True,
+    ).stdout.decode("utf-8", errors="replace")
+    patterns = [re.compile(line) for line in rule.lines]
+    bad, added, removed = [], 0, 0
+    in_hunk = False
+    for line in diff.split("\n")[:-1]:
+        if line.startswith("@@"):
+            in_hunk = True
+        elif not in_hunk:
+            if not line.startswith(_PLAIN_HEADER):
+                bad.append(line)
+        elif line[:1] in ("+", "-"):
+            added += line[0] == "+"
+            removed += line[0] == "-"
+            if not any(p.fullmatch(line[1:]) for p in patterns):
+                bad.append(line)
+        else:
+            bad.append(line)  # "\ No newline at end of file", or anything unexpected
+    if added != removed:
+        bad.append(f"{removed} line(s) removed but {added} added")
+    return bad
+
+
 def check(task: str, revision_range: str, repo_dir: str = ".", repo: str | None = None) -> int:
     """Print the check of ``revision_range`` for ``task``; return the exit status."""
     if ".." not in revision_range or "..." in revision_range:
@@ -515,6 +600,11 @@ def check(task: str, revision_range: str, repo_dir: str = ".", repo: str | None 
             others = ", ".join(name for name, _ in owners(path, repo)) or "nobody"
             print(f"OUT OF BOUNDS  {path}  (owned by {others})")
             status = 1
+        elif rule.lines and (bad := disallowed_lines(rule, repo_dir, base_ref, head_ref, path)):
+            print(
+                f"OUT OF BOUNDS  {path}  (the exception allows {rule.note}; also changed: {bad[0]!r})"
+            )
+            status = 1
         elif rule.kind != "own":
             review.append(f"{rule.kind.upper():<9}  {path}  -- {rule.note}")
     for line in review:
@@ -524,8 +614,14 @@ def check(task: str, revision_range: str, repo_dir: str = ".", repo: str | None 
     if not commits:
         print(f"NO COMMITS     in {revision_range}")
         status = 1
-    for sha, values in commits:
-        if values != [task]:
+    for sha, values, malformed in commits:
+        if malformed:
+            print(
+                f"BAD TRAILER    {sha[:12]}  {TRAILER} {malformed} is not written as the exact line"
+                f" '{TRAILER}: <work item>'"
+            )
+            status = 1
+        elif values != [task]:
             print(
                 f"BAD TRAILER    {sha[:12]}  has {values or 'no trailer'}, expected {TRAILER}: {task}"
             )
@@ -543,7 +639,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo-dir", default=".", help="the checkout to check")
     parser.add_argument("--repo", choices=(TRTLLM, DS), help="default: detected from the checkout")
     args = parser.parse_args(argv)
-    return check(args.task, args.range, args.repo_dir, args.repo)
+    try:
+        return check(args.task, args.range, args.repo_dir, args.repo)
+    except ValueError as error:
+        print(f"FAIL: {error}")
+    except subprocess.CalledProcessError as error:
+        stderr = (
+            error.stderr.decode(errors="replace")
+            if isinstance(error.stderr, bytes)
+            else error.stderr
+        )
+        print(f"FAIL: {' '.join(map(str, error.cmd))}: {(stderr or '').strip()}")
+    return 1
 
 
 if __name__ == "__main__":

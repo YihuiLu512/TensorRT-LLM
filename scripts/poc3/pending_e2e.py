@@ -8,9 +8,11 @@ completes the row's dependencies, provided nobody has recorded it as verified:
 
 - a row with an ``assignee`` is owed only by that item (an integration round or
   a performance item);
-- a case-03 row is owed by R13 (WT-62); when another item completes it after
-  R13 landed, it is left to the row's ``fallback`` (R14, WT-79, unless the row
-  names another item), which owes every completed case-03 row nobody verified;
+- a case-03 row without an ``assignee`` is owed by R13 (WT-62) when R13's
+  landing completes it. A row another item completes after R13 landed is left
+  to the row's ``fallback`` (R14, WT-79, unless the row names another item); a
+  fallback landing after R13 owes only the completed rows that name it as
+  their fallback (R14: those that name no other item);
 - a fix (``WT-xx-fixN``) owes nothing new, and its landing does not count as
   WT-xx landing;
 - deferred rows are owed by nobody.
@@ -321,6 +323,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--json", action="store_true", help="print JSON")
     args = parser.parse_args(argv)
+    if args.task:
+        try:
+            parse_task(args.task)
+        except ValueError as error:
+            parser.error(str(error))
 
     groups, rows = load_rows()
     ds_tasks = set(groups.get("ds-repo", ()))

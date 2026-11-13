@@ -13,6 +13,7 @@ Run from the repository root::
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -106,7 +107,7 @@ def test_trailers_read_only_the_poc3_key_in_the_trailer_block(tmp_path):
     )
     _commit(repo, {}, "Subject\n\nPoC2-Task: WT-10")
     _commit(repo, {}, "Subject\n\nPoC3-Task: WT-51\nis quoted in the body\n\nPoC3-Task: WT-35")
-    values = [v for _, v in trailer_log(repo, "main")]
+    values = [record.values for record in trailer_log(repo, "main")]
     assert values == [["WT-35"], [], ["WT-30"]]
     assert landed_tasks(repo, "main") == {"WT-30", "WT-35"}
 
@@ -119,6 +120,50 @@ def test_landed_tasks_ignore_poc2_trailers(tmp_path):
     _commit(repo, {}, "s3 fix\n\nPoC3-Task: WT-51-fix1")
     _commit(repo, {}, "bad\n\nPoC3-Task: WT-12")
     assert landed_tasks(repo, "main") == {"WT-30", "WT-51-fix1"}
+
+
+@pytest.mark.parametrize(
+    "trailer",
+    [
+        "poc3-task: WT-30",
+        "PoC3-Task:WT-30",
+        "PoC3-Task : WT-30",
+        "PoC3-Task:  WT-30",
+        "PoC3-Task: WT-30 ",
+        "PoC3-Task: WT-30\npoc3-task: WT-30",
+    ],
+    ids=["lower-case", "no-space", "space-before-colon", "two-spaces", "trailing-space", "twice"],
+)
+def test_a_trailer_not_written_exactly_neither_passes_nor_lands(tmp_path, capsys, trailer):
+    # tasks.md §0.2 finds a landed item with --grep='^PoC3-Task: WT-xx$'; the scripts agree with it.
+    repo = _repo(tmp_path)
+    _git(repo, "config", "commit.cleanup", "verbatim")  # keep the trailing space
+    (repo / "tensorrt_llm").mkdir()
+    base = _commit(repo, {"tensorrt_llm/__init__.py": ""}, "base")
+    _commit(repo, {"scripts/poc3/x.py": "x\n"}, f"add\n\n{trailer}\n")
+    [record] = trailer_log(repo, f"{base}..HEAD")
+    assert record.malformed == ["WT-30"]
+    assert check_ownership.check("WT-30", f"{base}..HEAD", str(repo)) == 1
+    assert "is not written as the exact line" in capsys.readouterr().out
+    assert landed_tasks(repo, "main") == ({"WT-30"} if trailer.count("WT-30") == 2 else set())
+
+
+def test_landed_tasks_do_not_depend_on_the_grep_configuration(tmp_path):
+    repo = _repo(tmp_path)
+    _commit(repo, {}, "s3\n\nPoC3-Task: WT-30")
+    for pattern_type in ("fixed", "extended", "perl"):
+        _git(repo, "config", "grep.patternType", pattern_type)
+        assert landed_tasks(repo, "main") == {"WT-30"}
+
+
+def test_a_commit_with_two_task_trailers_fails_the_gate(tmp_path, capsys):
+    repo, base = _two_commit_repo(
+        tmp_path, {"scripts/poc3/x.py": "x\n"}, "add\n\nPoC3-Task: WT-30\nPoC3-Task: WT-35"
+    )
+    assert [record.values for record in trailer_log(repo, f"{base}..HEAD")] == [["WT-30", "WT-35"]]
+    assert landed_tasks(repo, "main") == {"WT-30", "WT-35"}
+    assert check_ownership.check("WT-30", f"{base}..HEAD", str(repo)) == 1
+    assert "BAD TRAILER" in capsys.readouterr().out
 
 
 # --- ownership ----------------------------------------------------------------------------------
@@ -311,6 +356,13 @@ def test_a_relative_diff_config_does_not_hide_changes(tmp_path, capsys):
     assert check_ownership.check("WT-30", f"{base}..HEAD", str(repo / "tensorrt_llm")) == 1
 
 
+def test_a_relative_diff_config_does_not_hide_changes_outside_the_directory(tmp_path, capsys):
+    repo, base = _two_commit_repo(tmp_path, {"tests/x.py": "x\n"}, "add\n\nPoC3-Task: WT-30")
+    _git(repo, "config", "diff.relative", "true")
+    assert check_ownership.check("WT-30", f"{base}..HEAD", str(repo / "tensorrt_llm")) == 1
+    assert "OUT OF BOUNDS  tests/x.py" in capsys.readouterr().out
+
+
 @pytest.mark.parametrize(
     "path, task",
     [
@@ -367,6 +419,118 @@ def test_the_ds_repository_is_detected(tmp_path):
     assert check_ownership.detect_repo(str(repo)) == check_ownership.DS
 
 
+# The three assertions that pin the contract and conventions versions WT-35 raises (STATUS B1).
+VERSION_PINS = {
+    "tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_contracts.py": (
+        "    assert contracts.POC2_CONTRACT_VERSION == 9\n",
+        "    assert contracts.POC2_CONTRACT_VERSION == 10\n",
+    ),
+    "tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_conventions.py": (
+        "    assert conv.CONVENTIONS_VERSION == 3\n",
+        "    assert conv.CONVENTIONS_VERSION == 4\n",
+    ),
+    "tests/unittest/grpc/openengine/test_control.py": (
+        "    assert isinstance(version, float) and version == 3\n",
+        "    assert isinstance(version, float) and version == 4\n",
+    ),
+}
+
+
+def _pin_repo(tmp_path, path, change):
+    old = VERSION_PINS[path][0]
+    text = f"def test_version():\n{old}\n\ndef test_other():\n    assert True\n"
+    repo = _repo(tmp_path)
+    base = _commit(repo, {"tensorrt_llm/__init__.py": "", path: text}, "base")
+    _commit(repo, {path: change(text)}, "bump\n\nPoC3-Task: WT-35")
+    return repo, base
+
+
+@pytest.mark.parametrize("path", VERSION_PINS)
+def test_wt35_may_raise_the_pinned_version(tmp_path, capsys, path):
+    old, new = VERSION_PINS[path]
+    repo, base = _pin_repo(tmp_path, path, lambda text: text.replace(old, new))
+    assert check_ownership.check("WT-35", f"{base}..HEAD", str(repo)) == 0
+    assert f"CHECK BY HAND  EXCEPTION  {path}  -- only the expected" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("path", VERSION_PINS)
+@pytest.mark.parametrize(
+    "change",
+    [
+        lambda text, old, new: text.replace(old, new).replace("assert True", "assert 1"),
+        lambda text, old, new: text.replace(old, ""),
+        lambda text, old, new: text.replace(old, new + new),
+        lambda text, old, new: text.replace(old, new.replace("\n", "\r\n")),
+        lambda text, old, new: text.replace(old, new.replace("    ", "  ")),
+    ],
+    ids=["another-line", "assertion-removed", "line-added", "crlf", "reindented"],
+)
+def test_wt35_may_not_change_anything_else_in_those_files(tmp_path, capsys, path, change):
+    old, new = VERSION_PINS[path]
+    repo, base = _pin_repo(tmp_path, path, lambda text: change(text, old, new))
+    assert check_ownership.check("WT-35", f"{base}..HEAD", str(repo)) == 1
+    assert f"OUT OF BOUNDS  {path}  (the exception allows only the expected" in (
+        capsys.readouterr().out
+    )
+
+
+def test_a_version_pin_exception_rejects_dropping_the_final_newline(tmp_path, capsys):
+    path = next(iter(VERSION_PINS))
+    old, new = VERSION_PINS[path]
+    repo = _repo(tmp_path)
+    base = _commit(
+        repo, {"tensorrt_llm/__init__.py": "", path: f"def test_version():\n{old}"}, "base"
+    )
+    _commit(repo, {path: f"def test_version():\n{new.rstrip()}"}, "bump\n\nPoC3-Task: WT-35")
+    assert check_ownership.check("WT-35", f"{base}..HEAD", str(repo)) == 1
+    assert "No newline at end of file" in capsys.readouterr().out
+
+
+def test_a_version_pin_exception_rejects_a_mode_change(tmp_path, capsys):
+    path = next(iter(VERSION_PINS))
+    old, new = VERSION_PINS[path]
+    repo, base = _pin_repo(tmp_path, path, lambda text: text.replace(old, new))
+    (repo / path).chmod(0o755)
+    _git(repo, "add", path)
+    _commit(repo, {}, "mode\n\nPoC3-Task: WT-35")
+    assert check_ownership.check("WT-35", f"{base}..HEAD", str(repo)) == 1
+    assert f"OUT OF BOUNDS  {path}" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("path", VERSION_PINS)
+def test_the_version_pin_exceptions_are_wt35s(path):
+    assert check_ownership.match_rule("WT-36", path) is None
+    assert check_ownership.match_rule("WT-35-fix1", path).lines
+
+
+@pytest.mark.parametrize("path", VERSION_PINS)
+def test_the_version_pin_patterns_match_the_files_at_the_frozen_base(path):
+    repo = Path(__file__).resolve().parents[2]
+    found = subprocess.run(
+        ["git", "-C", str(repo), "show", f"{check_invariants.FROZEN_BASE}:{path}"],
+        capture_output=True,
+        text=True,
+    )
+    if found.returncode != 0:
+        pytest.skip("the frozen base is not in this checkout")
+    rule = check_ownership.match_rule("WT-35", path)
+    lines = found.stdout.split("\n")
+    assert VERSION_PINS[path][0].rstrip("\n") in lines
+    matching = [line for line in lines if any(re.fullmatch(p, line) for p in rule.lines)]
+    assert matching == [VERSION_PINS[path][0].rstrip("\n")]
+
+
+@pytest.mark.parametrize(
+    "args",
+    [["--task", "WT-5", "HEAD~1..HEAD"], ["--task", "WT-30", "HEAD"], ["--task", "WT-30", "x..y"]],
+    ids=["bad-task", "bad-range", "unknown-revisions"],
+)
+def test_bad_arguments_fail_with_a_message(tmp_path, capsys, args):
+    repo, _ = _two_commit_repo(tmp_path, {"scripts/poc3/x.py": "x\n"}, "add\n\nPoC3-Task: WT-30")
+    assert check_ownership.main([*args, "--repo-dir", str(repo)]) == 1
+    assert capsys.readouterr().out.startswith("FAIL: ")
+
+
 # --- end-to-end obligations ---------------------------------------------------------------------
 
 
@@ -383,6 +547,13 @@ def _owed(task, landed, rows, verified=(), unknown=()):
         [row.id for row in result.unverified],
         [row.id for row in result.unknown],
     )
+
+
+def test_a_bad_task_name_is_a_usage_error(tmp_path, capsys):
+    with pytest.raises(SystemExit) as raised:
+        pending_e2e.main(["--task", "WT-5", "--repo", str(tmp_path)])
+    assert raised.value.code == 2
+    assert "not a PoC-S3 work item" in capsys.readouterr().err
 
 
 def test_groups_match_tasks_md_section_3_2():
@@ -457,6 +628,22 @@ def test_case03_rows_go_to_r13_or_its_fallback(rows):
     assert "DS-S19a" in _owed("WT-71", ds_landed | {"WT-62"}, rows)[1]
     assert "DS-S19a" in _owed("WT-73", ds_landed | {"WT-62", "WT-71"}, rows)[0]
     assert "DS-S19a" not in _owed("WT-79", ds_landed | {"WT-62", "WT-71"}, rows)[0]
+
+
+def test_a_fallback_landing_before_r13_owes_and_reports_no_case03_row(rows):
+    ds_landed = (DS_LINK | {"WT-35", "WT-36", "WT-41"}) - {"WT-62"}
+    result = pending_e2e.obligations("WT-79", ds_landed, rows)
+    case03 = [row.id for row in result.owed + result.too_early if row.chain == "case-03"]
+    assert case03 == []
+
+
+def test_rows_missing_a_checked_item_are_incomplete_not_unknown(rows):
+    landed = (DS_LINK | {"WT-35", "WT-36", "WT-41"}) - {"WT-62", "WT-42", "WT-52"}
+    owed, _, _, unknown = _owed("WT-62", landed, rows, unknown={"WT-41", "WT-42", "WT-43"})
+    assert "F-01@03" not in unknown and "F-01@03" not in owed
+    # With WT-52 landed, the row waits only on the unchecked WT-42.
+    owed, _, _, unknown = _owed("WT-62", landed | {"WT-52"}, rows, unknown={"WT-42"})
+    assert "F-01@03" in unknown
 
 
 def test_fixed_performance_verifiers(rows):
@@ -724,6 +911,11 @@ def test_qualifiers_and_reasons_are_kept_as_notes():
     assert plain["notes"] == []
 
 
+def test_r11_prerequisites_make_r11_the_verifier_with_other_dependencies_too():
+    deps = sync_feature_deps.parse_deps(["R11 前提、WT-53"])
+    assert deps["deps"] == ["r11-prereqs", "WT-53"] and deps["assignee"] == "WT-60"
+
+
 def test_case_ids_next_to_chinese_text_are_found():
     assert sync_feature_deps._cases("用XD-001与NT-002、T3跑") == ["XD-001", "NT-002", "T3"]
     assert sync_feature_deps._cases("CT-15、XD-0011") == []
@@ -957,13 +1149,89 @@ def test_whole_files_compare_bytes_and_mode(invariant_repo, change):
         "for disaggregated in ():\n    pass\n",
         "with open(__file__) as disaggregated:\n    pass\n",
         "if (disaggregated := None):\n    pass\n",
+        "try:\n    pass\nexcept Exception as disaggregated:\n    pass\n",
+        "match 1:\n    case disaggregated:\n        pass\n",
+        "match 1:\n    case int() as disaggregated:\n        pass\n",
+        "match []:\n    case [*disaggregated]:\n        pass\n",
+        "match {}:\n    case {**disaggregated}:\n        pass\n",
+        "match 1:\n    case 1 if (disaggregated := 1):\n        pass\n",
+        "match 1:\n    case 1:\n        disaggregated = 2\n",
+        "def _swap():\n    global disaggregated\n    disaggregated = print\n",
+        "def g(a=(disaggregated := print)):\n    return a\n",
+        "@(disaggregated := print)\ndef g():\n    pass\n",
+        "class K((disaggregated := object)):\n    pass\n",
+        "f = lambda a=(disaggregated := 1): a\n",
+        "[(disaggregated := x) for x in ()]\n",
+        "del disaggregated\n",
+        "disaggregated += 1\n",
+        "(a, [disaggregated]) = (1, [2])\n",
     ],
-    ids=["def-in-if", "import-in-try", "for-target", "with-target", "walrus"],
+    ids=[
+        "def-in-if",
+        "import-in-try",
+        "for-target",
+        "with-target",
+        "walrus",
+        "except-as",
+        "match-capture",
+        "match-as",
+        "match-star",
+        "match-rest",
+        "match-guard-walrus",
+        "match-case-body",
+        "global",
+        "default-walrus",
+        "decorator-walrus",
+        "base-walrus",
+        "lambda-default-walrus",
+        "comprehension-walrus",
+        "del",
+        "augmented",
+        "nested-target",
+    ],
 )
 def test_a_second_module_scope_binding_fails(invariant_repo, addition):
     repo, base = invariant_repo
     files = {check_invariants.SERVE: SERVE_SRC + "\n\n" + addition}
     assert _invariants(repo, base, files) == {f"def {check_invariants.SERVE}:disaggregated"}
+
+
+def test_a_star_import_may_bind_any_name(invariant_repo):
+    repo, base = invariant_repo
+    files = {check_invariants.SERVE: SERVE_SRC + "\n\nfrom os.path import *\n"}
+    assert _invariants(repo, base, files) == {
+        f"def {check_invariants.SERVE}:disaggregated",
+        f"def {check_invariants.SERVE}:disaggregated_mpi_worker",
+    }
+
+
+@pytest.mark.parametrize(
+    "addition",
+    [
+        "disaggregated.help = 'x'\n",
+        "registry = {}\nregistry[disaggregated] = 1\n",
+        "registry = {}\nregistry[disaggregated.name] = disaggregated\n",
+        "f = lambda: (disaggregated := 1)\n",
+        "names = [disaggregated for disaggregated in ()]\n",
+        "class K:\n    disaggregated = 1\n",
+        "def g(disaggregated=1):\n    return disaggregated\n",
+        "x = disaggregated\n",
+    ],
+    ids=[
+        "attribute-target",
+        "subscript-key",
+        "subscript-value",
+        "lambda-body-walrus",
+        "comprehension-target",
+        "class-body",
+        "parameter",
+        "use",
+    ],
+)
+def test_uses_of_the_name_are_not_bindings(invariant_repo, addition):
+    repo, base = invariant_repo
+    files = {check_invariants.SERVE: SERVE_SRC + "\n\n" + addition}
+    assert _invariants(repo, base, files) == set()
 
 
 def test_local_names_in_nested_bodies_are_not_bindings(invariant_repo):
@@ -981,6 +1249,49 @@ def test_crlf_inside_a_frozen_definition_fails(invariant_repo):
     assert _invariants(repo, base, {check_invariants.SERVE: text}) == {
         f"def {check_invariants.SERVE}:disaggregated_mpi_worker"
     }
+
+
+def test_crlf_on_disk_inside_a_frozen_definition_fails(invariant_repo):
+    repo, base = invariant_repo
+    text = SERVE_SRC.replace("    return None\n", "    return None\r\n")
+    (repo / check_invariants.SERVE).write_bytes(text.encode())
+    results = check_invariants.run(repo, base, "")
+    assert {name for name, passed, _ in results if not passed} == {
+        f"def {check_invariants.SERVE}:disaggregated_mpi_worker"
+    }
+
+
+@pytest.mark.parametrize(
+    "path, data, failing",
+    [
+        (check_invariants.SERVE, b"\xff\xfe not utf-8\n", "disaggregated"),
+        (check_invariants.SERVE, SERVE_SRC.encode() + b"x = 1\x00\n", "disaggregated"),
+        (check_invariants.AUTH, b"\xff\n", "file"),
+        (check_invariants.REGISTRY_PATH, b"additions: [\n", "registry"),
+        (check_invariants.REGISTRY_PATH, b"\xff\n", "registry"),
+    ],
+    ids=["non-utf8-definition", "nul-byte", "non-utf8-region", "registry-yaml", "registry-bytes"],
+)
+def test_unreadable_input_fails_its_check_without_a_traceback(invariant_repo, path, data, failing):
+    repo, base = invariant_repo
+    (repo / path).write_bytes(data)
+    _git(repo, "add", path)
+    _commit(repo, {}, "bad input")
+    failed = {name for name, passed, _ in check_invariants.run(repo, base, "HEAD") if not passed}
+    assert failed and all(failing in name or name == "registry" for name in failed), failed
+    assert any(failing in name for name in failed)
+
+
+def test_bad_arguments_fail_the_invariants_with_a_message(invariant_repo, tmp_path, capsys):
+    repo, _ = invariant_repo
+    (tmp_path / "bad.yaml").write_bytes(b"\xff\n")
+    assert (
+        check_invariants.main(["--repo", str(repo), "--registry", str(tmp_path / "bad.yaml")]) == 1
+    )
+    assert check_invariants.main(["--repo", str(repo), "--base", "no-such-rev"]) == 1
+    assert check_invariants.main(["--repo", str(repo), "--registry", str(tmp_path / "none")]) == 1
+    out = capsys.readouterr().out
+    assert out.count("FAIL: ") == 3
 
 
 @pytest.mark.parametrize(
@@ -1040,6 +1351,14 @@ def test_a_relative_diff_config_does_not_hide_a_changed_file(invariant_repo):
     _commit(repo, {"tensorrt_llm/serve/router.py": "# changed\n"}, "change")
     results = check_invariants.run(repo / "tensorrt_llm/serve", base, "HEAD")
     assert {n for n, ok, _ in results if not ok} == {"file tensorrt_llm/serve/router.py"}
+
+
+def test_a_relative_diff_config_does_not_hide_a_file_outside_the_directory(invariant_repo):
+    repo, base = invariant_repo
+    _git(repo, "config", "diff.relative", "true")
+    _commit(repo, {"tensorrt_llm/llmapi/disagg_utils.py": "# changed\n"}, "change")
+    results = check_invariants.run(repo / "tensorrt_llm/serve", base, "HEAD")
+    assert {n for n, ok, _ in results if not ok} == {"file tensorrt_llm/llmapi/disagg_utils.py"}
 
 
 def test_the_working_tree_is_checked_from_a_subdirectory(invariant_repo):
