@@ -12,6 +12,7 @@ Run from the repository root::
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import subprocess
@@ -21,6 +22,7 @@ from pathlib import Path
 import check_invariants  # noqa: I001
 import check_ownership
 import pending_e2e
+import poc3_common
 import pytest
 import sync_feature_deps
 import yaml
@@ -219,8 +221,12 @@ def test_an_exact_line_in_the_body_does_not_excuse_a_malformed_trailer(tmp_path,
 
 @pytest.mark.parametrize(
     "message",
-    ["PoC3-Task: WT-30", "add\n\nPoC3-Task: WT-30\n  folded onto the next line"],
-    ids=["subject-only", "folded"],
+    [
+        "PoC3-Task: WT-30",
+        "add\n\nPoC3-Task: WT-30\n  folded onto the next line",
+        "add\n\nPoC3-Task: WT-30\n\tfolded with a tab",
+    ],
+    ids=["subject-only", "folded", "folded-with-a-tab"],
 )
 def test_lines_git_would_not_read_as_the_trailer_name_nothing(tmp_path, message):
     repo = _repo(tmp_path)
@@ -560,6 +566,7 @@ def test_wt35_may_raise_the_pinned_version(tmp_path, capsys, path):
         lambda text, old, new: text.replace(old, new.replace("    ", "  ")),
         lambda text, old, new: text.replace(old, "") + new,
         lambda text, old, new: text.replace(old, "").replace("    assert True\n", new),
+        lambda text, old, new: text.replace(old, new.replace(" == ", " != ")),
     ],
     ids=[
         "another-line",
@@ -569,6 +576,7 @@ def test_wt35_may_raise_the_pinned_version(tmp_path, capsys, path):
         "reindented",
         "moved-to-the-end",
         "moved-into-another-test",
+        "not-equal",
     ],
 )
 def test_wt35_may_not_change_anything_else_in_those_files(tmp_path, capsys, path, change):
@@ -642,6 +650,37 @@ def test_a_version_pin_exception_ignores_the_color_and_context_settings(tmp_path
     _git(repo, "config", "color.diff", "always")
     monkeypatch.setenv("GIT_DIFF_OPTS", "--unified=3")
     assert check_ownership.disallowed_lines(rule, str(repo), base, "HEAD", path) == []
+
+
+PATHSPEC_VARIABLES = (
+    "GIT_LITERAL_PATHSPECS",
+    "GIT_GLOB_PATHSPECS",
+    "GIT_NOGLOB_PATHSPECS",
+    "GIT_ICASE_PATHSPECS",
+)
+
+
+@pytest.mark.parametrize("variable", PATHSPEC_VARIABLES)
+def test_a_version_pin_exception_sees_every_change_whatever_the_pathspec_variables(
+    tmp_path, capsys, monkeypatch, variable
+):
+    path = next(iter(VERSION_PINS))
+    old, new = VERSION_PINS[path]
+    repo, base = _pin_repo(
+        tmp_path, path, lambda text: text.replace(old, new).replace("assert True", "assert 1")
+    )
+    monkeypatch.setenv(variable, "1")
+    assert check_ownership.check("WT-35", f"{base}..HEAD", str(repo)) == 1
+    assert f"OUT OF BOUNDS  {path}" in capsys.readouterr().out
+
+
+def test_git_runs_without_the_variables_that_change_its_reading(monkeypatch):
+    for variable in ("GIT_DIFF_OPTS", *PATHSPEC_VARIABLES):
+        monkeypatch.setenv(variable, "1")
+    monkeypatch.setenv("GIT_DIR", "/kept")
+    env = poc3_common.git_env()
+    assert not {"GIT_DIFF_OPTS", *PATHSPEC_VARIABLES} & set(env)
+    assert env["GIT_DIR"] == "/kept"
 
 
 def test_a_submodule_pointer_is_seen_whatever_the_configuration(tmp_path, capsys):
@@ -785,6 +824,25 @@ def test_a_verification_record_yaml_cannot_convert_is_reported_and_ignored(tmp_p
     _commit(repo, {}, "bad record")
     assert pending_e2e.read_verified(repo, "main") == set()
     assert "WT-51.yaml is not valid YAML" in capsys.readouterr().err
+
+
+def test_verification_entries_that_are_not_a_list_are_reported_and_ignored(tmp_path, capsys):
+    repo = _repo(tmp_path)
+    _commit(repo, {f"{pending_e2e.VERIFIED_DIR}/WT-51.yaml": "entries: 5\n"}, "bad record")
+    assert pending_e2e.read_verified(repo, "main") == set()
+    assert "entries are not a list" in capsys.readouterr().err
+
+
+def test_a_record_name_that_is_not_utf8_is_skipped(tmp_path):
+    repo = _repo(tmp_path)
+    directory = repo / pending_e2e.VERIFIED_DIR
+    directory.mkdir(parents=True)
+    (directory / "WT-51.yaml").write_text("entries:\n  - row: F-01\n")
+    (directory / os.fsdecode(b"WT-5\xff.yaml")).write_text("x: 1\n")
+    _git(repo, "add", ".")
+    _commit(repo, {}, "records")
+    _git(repo, "config", "core.quotePath", "false")
+    assert pending_e2e.read_verified(repo, "main") == {"F-01"}
 
 
 def test_a_missing_git_is_a_usage_error(tmp_path, capsys, monkeypatch):
@@ -1523,6 +1581,125 @@ def test_working_tree_settings_do_not_hide_a_changed_file(invariant_repo, settin
         file.write_text("# changed\n")
     results = check_invariants.run(repo, base, "")
     assert {name for name, passed, _ in results if not passed} == {f"file {path}"}
+
+
+@pytest.mark.parametrize("variable", PATHSPEC_VARIABLES)
+@pytest.mark.parametrize("head", ["HEAD", ""], ids=["head", "working-tree"])
+def test_whole_files_are_compared_whatever_the_pathspec_variables(
+    invariant_repo, monkeypatch, variable, head
+):
+    repo, base = invariant_repo
+    path = "tensorrt_llm/serve/router.py"
+    (repo / path).write_text("# changed\n")
+    if head:
+        _git(repo, "commit", "-q", "-a", "-m", "change")
+    monkeypatch.setenv(variable, "1")
+    results = check_invariants.run(repo, base, head)
+    assert {name for name, passed, _ in results if not passed} == {f"file {path}"}
+
+
+def test_a_definition_file_under_a_symlinked_directory_fails(invariant_repo, tmp_path):
+    repo, base = invariant_repo
+    copy = tmp_path / "commands"
+    copy.mkdir()
+    (copy / "serve.py").write_bytes((repo / check_invariants.SERVE).read_bytes())
+    (repo / check_invariants.SERVE).unlink()
+    (repo / check_invariants.SERVE).parent.rmdir()
+    (repo / check_invariants.SERVE).parent.symlink_to(copy)
+    results = check_invariants.run(repo, base, "")
+    assert {name for name, passed, _ in results if not passed} == {
+        f"def {check_invariants.SERVE}:disaggregated",
+        f"def {check_invariants.SERVE}:disaggregated_mpi_worker",
+    }
+
+
+def test_a_whole_file_under_a_symlinked_directory_fails(invariant_repo, tmp_path):
+    repo, base = invariant_repo
+    llmapi = repo / "tensorrt_llm/llmapi"
+    copy = tmp_path / "llmapi"
+    copy.mkdir()
+    for file in llmapi.iterdir():
+        (copy / file.name).write_bytes(file.read_bytes())
+        file.unlink()
+    llmapi.rmdir()
+    llmapi.symlink_to(copy)
+    results = check_invariants.run(repo, base, "")
+    assert {name for name, passed, _ in results if not passed} == {
+        "file tensorrt_llm/llmapi/disagg_utils.py"
+    }
+
+
+def test_an_owner_only_executable_bit_is_a_mode_change(invariant_repo):
+    repo, base = invariant_repo
+    path = "tensorrt_llm/serve/router.py"
+    (repo / path).chmod(0o744)
+    results = check_invariants.run(repo, base, "")
+    assert {name for name, passed, _ in results if not passed} == {f"file {path}"}
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+def test_an_unreadable_whole_file_fails_its_own_check(invariant_repo):
+    repo, base = invariant_repo
+    path = "tensorrt_llm/serve/router.py"
+    (repo / path).chmod(0)
+    try:
+        results = check_invariants.run(repo, base, "")
+    finally:
+        (repo / path).chmod(0o644)
+    assert {name for name, passed, _ in results if not passed} == {f"file {path}"}
+
+
+def test_a_failing_diff_fails_only_the_file_checks(invariant_repo, monkeypatch):
+    repo, base = invariant_repo
+
+    def differ(_repo):
+        def differs(base, head, path):
+            raise RuntimeError("bad object")
+
+        return differs
+
+    monkeypatch.setattr(check_invariants, "git_differ", differ)
+    failed = {name for name, passed, _ in check_invariants.run(repo, base, "HEAD") if not passed}
+    assert failed == {f"file {path}" for path in check_invariants.ORCHESTRATOR_FILES}
+
+
+def test_source_too_deep_to_parse_fails_only_its_own_check(invariant_repo, monkeypatch):
+    repo, base = invariant_repo
+    real = check_invariants.definition_text
+
+    def definition_text(source, name, kind=ast.FunctionDef):
+        if name == "disaggregated":
+            raise RecursionError("maximum recursion depth exceeded")
+        return real(source, name, kind)
+
+    monkeypatch.setattr(check_invariants, "definition_text", definition_text)
+    failed = {name for name, passed, _ in check_invariants.run(repo, base, "HEAD") if not passed}
+    assert failed == {f"def {check_invariants.SERVE}:disaggregated"}
+
+
+def test_a_class_too_deep_to_parse_fails_only_its_own_check(invariant_repo, monkeypatch):
+    repo, base = invariant_repo
+    real = check_invariants.definition_text
+
+    def definition_text(source, name, kind=ast.FunctionDef):
+        if name == "DisaggregatedParams":
+            raise RecursionError("maximum recursion depth exceeded")
+        return real(source, name, kind)
+
+    monkeypatch.setattr(check_invariants, "definition_text", definition_text)
+    failed = {name for name, passed, _ in check_invariants.run(repo, base, "HEAD") if not passed}
+    assert failed == {f"additions {check_invariants.PROTOCOL}:DisaggregatedParams"}
+
+
+def test_a_registry_too_deep_to_parse_fails_only_its_own_check(invariant_repo, monkeypatch):
+    repo, base = invariant_repo
+
+    def safe_load(text):
+        raise RecursionError("maximum recursion depth exceeded")
+
+    monkeypatch.setattr(check_invariants.yaml, "safe_load", safe_load)
+    failed = {name for name, passed, _ in check_invariants.run(repo, base, "HEAD") if not passed}
+    assert failed == {"registry"}
 
 
 def test_a_symlink_on_disk_is_a_change_even_to_the_same_bytes(invariant_repo, tmp_path):

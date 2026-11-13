@@ -169,8 +169,9 @@ def verified_rows(
 ) -> set[str]:
     """The row ids named by verification records.
 
-    Warns about entries without a ``row`` and, given the ``known`` row ids,
-    about rows that are not among them.
+    Warns about records that are not mappings or whose ``entries`` are not a
+    list, entries without a ``row`` and, given the ``known`` row ids, rows that
+    are not among them; all of these are ignored.
     """
     known_ids = None if known is None else set(known)
     done = set()
@@ -183,7 +184,14 @@ def verified_rows(
                 file=sys.stderr,
             )
             continue
-        for entry in record.get("entries") or []:
+        entries = record.get("entries") or []
+        if not isinstance(entries, list):
+            print(
+                f"warning: verification record entries are not a list, ignored: {entries!r}",
+                file=sys.stderr,
+            )
+            continue
+        for entry in entries:
             row = entry.get("row") if isinstance(entry, Mapping) else None
             if not isinstance(row, str):
                 print(
@@ -199,7 +207,17 @@ def verified_rows(
 
 def read_verified(repo: str | Path, ref: str, known: Iterable[str] | None = None) -> set[str]:
     """The row ids verified by the PoC-S3 records on ``ref``."""
-    listing = git(repo, "ls-tree", "--full-tree", "--name-only", ref, f"{VERIFIED_DIR}/")
+    # Quoted names stay ASCII whatever core.quotePath says; they are not work item names anyway.
+    listing = git(
+        repo,
+        "-c",
+        "core.quotePath=true",
+        "ls-tree",
+        "--full-tree",
+        "--name-only",
+        ref,
+        f"{VERIFIED_DIR}/",
+    )
     records = []
     for path in listing.split("\n"):
         name = Path(path).name

@@ -8,8 +8,10 @@ orchestrator without changing the orchestrator. Three checks hold that line:
 
 1. **Whole files unchanged**: none of the orchestrator's seven main files
    differs from the base in contents, line endings or file mode
-   (``git diff --quiet <base> <head>``; files on disk are compared byte for
-   byte with the base).
+   (``git diff --quiet <base> <head>``). With ``--working-tree`` the files on
+   disk are compared byte for byte with the base and symbolic links count as
+   changes, so a checkout whose line endings git converts (``core.autocrlf``,
+   ``eol`` attributes) fails; check a commit with ``--head`` there.
 2. **Definitions unchanged**: the two conversion functions of
    ``openai_protocol.py`` and the ``disaggregated`` / ``disaggregated_mpi_worker``
    subcommands of ``commands/serve.py`` have the same source text as at the
@@ -59,7 +61,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import yaml
-from poc3_common import git, git_error
+from poc3_common import git, git_env, git_error
 
 # The commit PoC-S3 starts from: the PoC-S2 branch fork/feat/engine_integration at that point.
 FROZEN_BASE = "2f22a98d6e8b32ed185bcdfe051ef0e4405ae4e8"
@@ -94,26 +96,27 @@ Differ = Callable[[str, str, str], bool]
 
 def git_reader(repo: str | Path) -> Reader:
     """Read ``path`` at revision ``rev`` (None when it does not exist there); rev "" is the disk."""
-    top = Path(
-        subprocess.run(
-            ["git", "-C", str(repo), "rev-parse", "--show-toplevel"],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-    )
+    top = Path(git(repo, "rev-parse", "--show-toplevel").strip())
 
     def read(rev: str, path: str) -> str | None:
         # Line endings are kept as they are, so a CRLF change is a change.
         if not rev:
+            if _through_symlink(top, path):
+                raise OSError(f"{path} is a symbolic link or lies under one")
             file = top / path
             return file.read_bytes().decode() if file.is_file() else None
         result = subprocess.run(
-            ["git", "-C", str(repo), "show", f"{rev}:{path}"], capture_output=True
+            ["git", "-C", str(repo), "show", f"{rev}:{path}"], capture_output=True, env=git_env()
         )
         return result.stdout.decode() if result.returncode == 0 else None
 
     return read
+
+
+def _through_symlink(top: Path, path: str) -> bool:
+    """Whether ``path`` under ``top``, or a directory on the way to it, is a symbolic link."""
+    parts = Path(path).parts
+    return any((top.joinpath(*parts[: i + 1])).is_symlink() for i in range(len(parts)))
 
 
 def _exists(read: Reader, rev: str, path: str) -> bool:
@@ -129,7 +132,8 @@ def git_differ(repo: str | Path) -> Differ:
     Two revisions are compared by git diff. The disk (head "") is compared
     byte for byte with the file at ``base``, so the index and git's settings
     for the working tree (``core.fileMode``, ``core.autocrlf``, attributes,
-    index flags such as ``--assume-unchanged``) cannot hide a change.
+    index flags such as ``--assume-unchanged``) cannot hide a change; a file
+    that is, or lies under, a symbolic link counts as changed.
     """
     top = Path(git(repo, "rev-parse", "--show-toplevel").strip())
 
@@ -139,10 +143,13 @@ def git_differ(repo: str | Path) -> Differ:
         if not entry:
             return file.exists() or file.is_symlink()
         mode, _, oid = entry.split("\t", 1)[0].split()
-        if mode not in ("100644", "100755") or file.is_symlink() or not file.is_file():
+        if mode not in ("100644", "100755") or _through_symlink(top, path) or not file.is_file():
             return True  # only regular files are compared; anything else counts as a change
         blob = subprocess.run(
-            ["git", "-C", str(repo), "cat-file", "blob", oid], check=True, capture_output=True
+            ["git", "-C", str(repo), "cat-file", "blob", oid],
+            check=True,
+            capture_output=True,
+            env=git_env(),
         ).stdout
         executable = bool(file.stat().st_mode & stat.S_IXUSR)
         return executable != (mode == "100755") or file.read_bytes() != blob
@@ -166,6 +173,7 @@ def git_differ(repo: str | Path) -> Differ:
                 f":(top){path}",
             ],
             capture_output=True,
+            env=git_env(),
         )
         if result.returncode not in (0, 1):
             raise RuntimeError(result.stderr.decode(errors="replace").strip())
@@ -331,8 +339,9 @@ def load_registry(text: str | None) -> tuple[dict[tuple[str, str], Counter[str]]
         return registered, [f"registry {REGISTRY_PATH} is missing"]
     try:
         data = yaml.safe_load(text) or {}
-    except (yaml.YAMLError, ValueError) as error:
-        # ValueError: a value YAML cannot convert, such as the date 2026-02-30.
+    except (yaml.YAMLError, ValueError, RuntimeError) as error:
+        # ValueError: a value YAML cannot convert, such as the date 2026-02-30;
+        # RuntimeError: RecursionError, for YAML nested too deep.
         return registered, [f"the registry is not valid YAML: {type(error).__name__}: {error}"]
     if not isinstance(data, dict) or not isinstance(data.get("additions") or [], list):
         return registered, ["the registry is not a mapping with a list of additions"]
@@ -382,6 +391,7 @@ def run(
             and subprocess.run(
                 ["git", "-C", str(repo), "rev-parse", "--verify", "--quiet", f"{rev}^{{commit}}"],
                 capture_output=True,
+                env=git_env(),
             ).returncode
         ):
             raise RuntimeError(f"unknown revision {rev!r}")
@@ -389,7 +399,7 @@ def run(
     for path in ORCHESTRATOR_FILES:
         try:
             same = _exists(read, base, path) and not differs(base, head, path)
-        except OSError as error:
+        except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
             results.append((f"file {path}", False, f"{type(error).__name__}: {error}"))
             continue
         results.append(
@@ -400,8 +410,9 @@ def run(
         try:
             old_text = definition_text(read(base, path) or "", name)
             new_text = definition_text(read(head, path) or "", name)
-        except (LookupError, SyntaxError, ValueError, OSError) as error:
+        except (LookupError, SyntaxError, ValueError, OSError, RuntimeError) as error:
             # ValueError: not UTF-8, or (on older Pythons) a NUL byte ast cannot parse.
+            # RuntimeError: RecursionError, for source nested too deep to parse.
             results.append((f"def {path}:{name}", False, f"{type(error).__name__}: {error}"))
             continue
         same = old_text == new_text
@@ -433,7 +444,7 @@ def run(
             else:
                 old_text = definition_text(old_src, region, ast.ClassDef)
                 new_text = definition_text(new_src, region, ast.ClassDef)
-        except (LookupError, SyntaxError, ValueError, OSError) as error:
+        except (LookupError, SyntaxError, ValueError, OSError, RuntimeError) as error:
             results.append((label, False, f"{type(error).__name__}: {error}"))
             continue
         extra = extra_lines(old_text.splitlines(keepends=True), new_text.splitlines(keepends=True))

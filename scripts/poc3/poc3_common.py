@@ -8,7 +8,7 @@ when the integration branch has a commit with its trailer.
 
 The scripts read the trailer from the raw commit message, not through git's
 trailer parsing: a ``PoC3-Task`` line is any line of the message whose key, the
-text before the first colon with surrounding spaces ignored, is ``PoC3-Task`` in
+text before the first colon with surrounding whitespace ignored, is ``PoC3-Task`` in
 any letter case. It names ``<item>`` only when it is in the message's last
 paragraph (a message that is only a subject has no trailers), reads exactly
 ``PoC3-Task: <item>`` and is not folded onto the next line; that
@@ -51,9 +51,19 @@ def parse_task(name: str) -> tuple[str, int | None]:
     return match.group("base"), int(fix) if fix else None
 
 
+# Environment variables that change how git reads pathspecs or how many context lines a diff has.
+_GIT_ENV_DROPPED = (
+    "GIT_DIFF_OPTS",
+    "GIT_LITERAL_PATHSPECS",
+    "GIT_GLOB_PATHSPECS",
+    "GIT_NOGLOB_PATHSPECS",
+    "GIT_ICASE_PATHSPECS",
+)
+
+
 def git_env() -> dict[str, str]:
-    """The environment for git, without the variable that sets a diff's context lines."""
-    return {key: value for key, value in os.environ.items() if key != "GIT_DIFF_OPTS"}
+    """The environment for every git command the scripts run, without ``_GIT_ENV_DROPPED``."""
+    return {key: value for key, value in os.environ.items() if key not in _GIT_ENV_DROPPED}
 
 
 def git(repo: str | Path, *args: str) -> str:
@@ -79,7 +89,7 @@ class TrailerRecord(NamedTuple):
     """The ``PoC3-Task`` lines of one commit, in message order."""
 
     sha: str
-    values: list[str]  # the items named by lines reading exactly ``PoC3-Task: <item>``
+    values: list[str]  # the items named by well-formed lines (see the module docstring)
     malformed: list[str]  # the other ``PoC3-Task`` lines (their stripped value, or the line)
 
 
@@ -111,6 +121,7 @@ def _messages(repo: str | Path, shas: list[str]) -> dict[str, str]:
         input="".join(f"{sha}\n" for sha in shas).encode(),
         check=True,
         capture_output=True,
+        env=git_env(),
     ).stdout
     messages, pos = {}, 0
     for sha in shas:
@@ -145,7 +156,7 @@ def landed_tasks(repo: str | Path, ref: str) -> set[str]:
         for value in record.malformed:
             print(
                 f"warning: {record.sha[:12]} has a malformed {TRAILER} line ({value!r});"
-                " it is not counted as landed",
+                " the line is not counted",
                 file=sys.stderr,
             )
         for value in record.values:
@@ -154,7 +165,7 @@ def landed_tasks(repo: str | Path, ref: str) -> set[str]:
             except ValueError:
                 print(
                     f"warning: {record.sha[:12]} names {value!r}, which is not a PoC-S3 work item;"
-                    " it is not counted as landed",
+                    " the line is not counted",
                     file=sys.stderr,
                 )
                 continue
