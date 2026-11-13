@@ -122,9 +122,10 @@ class KvSessionSpec:
             since ``attributes["ctx_info_endpoint"]`` holds it as the engine wrote it.
         attributes: ``attributes_struct`` as plain data: the keys named in
             ``HANDOFF_MAPPED_ATTRIBUTES`` of the conventions, and any other key
-            passed through unread. Values are as the engine packed them:
-            ``disagg_request_id`` is a decimal string and ``opaque_state``
-            base64 text.
+            passed through unread. Values are as ``attributes_struct`` holds
+            them: every number is a float (a protobuf ``Struct`` has no
+            integers), ``disagg_request_id`` is a decimal string and
+            ``opaque_state`` base64 text.
     """
 
     session_id: str
@@ -301,11 +302,16 @@ class KvConnectorInfo:
 
     Attributes:
         enabled: KV transfer is enabled; required to serve disaggregated requests.
-        supports_remote_prefill: The engine takes prefill calls ending with
-            ``PrefillReady`` and decode calls with ``kv.session``; required too.
+        transfer_backend: The KV transfer backend, such as ``"NIXL"``; informational.
         local_endpoints: Where a generation-first decode call finds this
             context engine; empty when the engine gives none.
-        schema_version: None when the engine does not report one.
+        supported_protocols: As the engine reports it; the serving side does not read it.
+        supports_remote_prefill: The engine takes prefill calls ending with
+            ``PrefillReady`` and decode calls with ``kv.session``; required too.
+        supports_decode_pull: As the engine reports it; the serving side does not read it.
+        supports_abort_cleanup: ``Abort`` with a ``kv_session`` frees the
+            handoff's KV cache; when False, it is not called.
+        schema_version: As the engine reports it, or None; the serving side does not read it.
     """
 
     enabled: bool = False

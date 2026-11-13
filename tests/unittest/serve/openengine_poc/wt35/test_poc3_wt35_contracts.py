@@ -85,7 +85,7 @@ def test_frontend_launch_config_worker_fields():
 
 def test_the_handoff_codec_signatures():
     assert contracts.HANDOFF_MODULE == "tensorrt_llm.serve.openengine_poc.handoff"
-    # The codec is not a slot: the slot table stays as PoC-S2 left it.
+    # The codec is not a slot.
     assert "decode_kv_session" not in contracts.slots()
     decode = inspect.signature(contracts.DecodeKvSession.__call__)
     encode = inspect.signature(contracts.EncodeKvSession.__call__)
@@ -95,8 +95,16 @@ def test_the_handoff_codec_signatures():
 
 @pytest.mark.parametrize("empty", [{}, None])
 def test_no_handoff_attributes_dump_to_none(empty):
-    assert contracts.dump_handoff_attributes(empty or {}) is None
+    assert contracts.dump_handoff_attributes(empty) is None
     assert contracts.load_handoff_attributes(None) == {}
+
+
+def test_deeply_nested_handoff_attributes_are_refused():
+    nested: dict = {}
+    for _ in range(100_000):
+        nested = {"x": nested}
+    with pytest.raises(ValueError):
+        contracts.dump_handoff_attributes(nested)
 
 
 def test_handoff_attributes_round_trip_in_a_canonical_form():
@@ -108,7 +116,16 @@ def test_handoff_attributes_round_trip_in_a_canonical_form():
 
 
 @pytest.mark.parametrize(
-    "bad", [{"x": float("nan")}, {"x": float("inf")}, {"x": object()}, {1: "x"}, {None: "x"}]
+    "bad",
+    [
+        {"x": float("nan")},
+        {"x": float("inf")},
+        {"x": object()},
+        {1: "x"},
+        {None: "x"},
+        {"x": {1: "y"}},
+        {"x": [{True: "y"}]},
+    ],
 )
 def test_handoff_attributes_must_be_json_data(bad):
     with pytest.raises(ValueError):
@@ -117,7 +134,18 @@ def test_handoff_attributes_must_be_json_data(bad):
 
 @pytest.mark.parametrize(
     "text",
-    ["[1]", '"x"', "1", "null", "not json", '{"x":NaN}', '{"x":-Infinity}', "[" * 100_000],
+    [
+        "[1]",
+        '"x"',
+        "1",
+        "null",
+        "not json",
+        '{"x":NaN}',
+        '{"x":-Infinity}',
+        '{"x":1e999}',
+        '{"x":[-1e999]}',
+        "[" * 100_000,
+    ],
 )
 def test_handoff_attributes_must_load_as_an_object(text):
     with pytest.raises(ValueError):
@@ -180,7 +208,7 @@ def test_read_serve_counters_adds_up_open_and_closed_frontends(tmp_path):
         assert totals["generate_sent.context_only"] == 2
         assert totals["http_rejected"] == 1
         assert totals["prefill_ready_received"] == 0
-        # The PoC-S2 reader still reads generate_sent alone.
+        # read_generate_sent reads generate_sent alone.
         assert contracts.read_generate_sent(tmp_path) == 7
         by_pid = contracts.read_serve_counters_by_pid(tmp_path)
         assert by_pid[other]["generate_sent"] == 5

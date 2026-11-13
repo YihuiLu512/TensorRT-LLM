@@ -107,7 +107,7 @@ def test_request_bucket(has_kv_session, request_type, bucket):
         (" 1099511627776", None),
         ("1099511627776\n", None),
         ("１" * 13, None),  # fullwidth digits are digits to int() but not ASCII
-        ("0001099511627776", 1 << 40),
+        ("0001099511627776", None),  # one id has one text
         ("0" * 20, None),
         ("1" * 4301, None),  # longer than int() converts by default
         ("", None),

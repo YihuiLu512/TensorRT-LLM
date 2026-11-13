@@ -444,10 +444,10 @@ class DecodeKvSession(Protocol):
         """Return the LLM-level ``DisaggregatedParams`` and the ``openengine_handoff_attributes``.
 
         The second item is None when the session has no attribute outside
-        ``HANDOFF_MAPPED_ATTRIBUTES``. A mapped attribute changes type only
-        where the field's type requires it (``opaque_state`` from base64 text
-        to bytes, ``disagg_request_id`` from a decimal string to an int); no
-        value is changed.
+        ``HANDOFF_MAPPED_ATTRIBUTES``. Each mapped attribute is converted to
+        the type of its ``DisaggregatedParams`` field and no value is changed:
+        numbers, which arrive as floats, back to ints; ``opaque_state`` from
+        base64 text to bytes; ``disagg_request_id`` from a decimal string to an int.
         """
         ...
 
@@ -479,33 +479,57 @@ def dump_handoff_attributes(attributes: Mapping[str, Any]) -> str | None:
     give the same text.
 
     Raises:
-        ValueError: A key is not a string, or a value is not JSON data or is a
-            NaN or an infinity.
+        ValueError: A key, at any depth, is not a string; a value is not JSON
+            data or is a NaN or an infinity; or the attributes nest too deeply.
     """
     if not attributes:
         return None
-    if not all(isinstance(key, str) for key in attributes):
-        raise ValueError("handoff attribute names must be strings")
     try:
+        _check_string_keys(attributes)
         return json.dumps(dict(attributes), sort_keys=True, separators=(",", ":"), allow_nan=False)
     except TypeError as error:
         raise ValueError(f"handoff attributes are not JSON data: {error}") from error
+    except RecursionError as error:
+        raise ValueError("handoff attributes nest too deeply") from error
+
+
+def _check_string_keys(value: Any) -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise ValueError(f"handoff attribute keys must be strings, got {key!r}")
+            _check_string_keys(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _check_string_keys(item)
 
 
 def _refuse_json_constant(name: str) -> Any:
     raise ValueError(f"openengine_handoff_attributes holds {name}, which is not JSON data")
 
 
+def _finite_float(text: str) -> float:
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError(
+            f"openengine_handoff_attributes holds {text}, which is not a finite number"
+        )
+    return value
+
+
 def load_handoff_attributes(text: str | None) -> dict[str, Any]:
     """The handoff attributes held by an ``openengine_handoff_attributes`` value; empty for None.
 
     Raises:
-        ValueError: ``text`` is not a JSON object, or holds a NaN or an infinity.
+        ValueError: ``text`` is not a JSON object, holds a NaN or an infinity
+            (``1e999`` included), or nests too deeply.
     """
     if text is None:
         return {}
     try:
-        attributes = json.loads(text, parse_constant=_refuse_json_constant)
+        attributes = json.loads(
+            text, parse_constant=_refuse_json_constant, parse_float=_finite_float
+        )
     except RecursionError as error:
         raise ValueError("openengine_handoff_attributes is nested too deeply") from error
     if not isinstance(attributes, dict):

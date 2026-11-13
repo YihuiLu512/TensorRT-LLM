@@ -218,7 +218,11 @@ REQUEST_BUCKETS = (BUCKET_CONTEXT_ONLY, BUCKET_GENERATION_ONLY, BUCKET_AGGREGATE
 
 
 def request_bucket(*, has_kv_session: bool, request_type: Any) -> str:
-    """The counter bucket of one Generate call, the same for the engine and the serving side."""
+    """The counter bucket of one Generate call, for ``generate_accepted.*`` and ``generate_sent.*``.
+
+    The engine and the serving side bucket a call alike. ``http_received.*``
+    is not bucketed by this: it goes by the HTTP request's ``request_type``.
+    """
     if has_kv_session:
         return BUCKET_GENERATION_ONLY
     if request_type == REQUEST_TYPE_CONTEXT_ONLY:
@@ -226,14 +230,15 @@ def request_bucket(*, has_kv_session: bool, request_type: Any) -> str:
     return BUCKET_AGGREGATED
 
 
-# DISAGG_REQUEST_ID_LIMIT - 1 has 19 digits; the bound keeps int() off long strings.
-_DISAGG_REQUEST_ID = re.compile(r"[0-9]{1,19}")
+# The canonical decimal form, without leading zeros. DISAGG_REQUEST_ID_LIMIT - 1
+# has 19 digits; the bound keeps int() off long strings.
+_DISAGG_REQUEST_ID = re.compile(r"[1-9][0-9]{0,18}")
 
 
 def parse_disagg_request_id(value: Any) -> int | None:
     """Read a ``disagg_request_id`` request key; None unless it is a valid decimal string.
 
-    Valid means ASCII digits only, without sign or spaces, in
+    Valid means ASCII digits only, without sign, spaces or leading zeros, in
     [DISAGG_REQUEST_ID_MIN, DISAGG_REQUEST_ID_LIMIT).
     """
     if not isinstance(value, str) or not _DISAGG_REQUEST_ID.fullmatch(value):

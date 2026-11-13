@@ -112,7 +112,8 @@ def default_script(request: EngineRequest) -> list[Step]:
 
 
 # The attributes of the handoff :func:`prefill_ready_script` returns, shaped as
-# the TRT-LLM OpenEngine server packs them.
+# a client reads the TRT-LLM OpenEngine server's ``attributes_struct``: numbers
+# are floats.
 FAKE_CTX_INFO_ENDPOINT = "tcp://127.0.0.1:17001"
 
 
@@ -130,8 +131,8 @@ def prefill_ready_script(request: EngineRequest) -> list[Step]:
     first = DEFAULT_TOKENS[0]
     attributes: dict[str, Any] = {
         "ctx_info_endpoint": FAKE_CTX_INFO_ENDPOINT,
-        "first_gen_tokens": [first],
-        "ctx_dp_rank": 0,
+        "first_gen_tokens": [float(first)],
+        "ctx_dp_rank": 0.0,
     }
     if "disagg_request_id" in request.extra:
         attributes["disagg_request_id"] = request.extra["disagg_request_id"]
