@@ -7,16 +7,25 @@ Load it with ``-p openengine_chain.pytest_plugin`` (the runner sets
 
 Per test it records ``openengine_chain``, ``engine_calls``, ``engine_name`` and
 ``chain_proof`` and fails a passing test whose proof fails, or whose servers
-leave processes running when they stop. When
-``TRTLLM_OPENENGINE_RESULTS_DIR`` is set and the pytest run writes no junit
-file, it writes one there, so that the pytest a wrapper test starts still
+leave processes running when they stop. A test whose chain servers are workers
+of a disaggregated server is proven leg by leg (``proof.judge_disagg``) and
+gets the per-role markers too; while it runs, a thread follows the
+disaggregated servers and the GPU use of the processes the test started. With
+``TRTLLM_TEST_OPENENGINE_NEGATIVE_CONTROL=<ctx|gen>`` (CH-9), the first worker
+of that role starts outside the chain and the test passes only if CH-6 fails.
+When ``TRTLLM_OPENENGINE_RESULTS_DIR`` is set and the pytest run writes no
+junit file, it writes one there, so that the pytest a wrapper test starts still
 leaves per-test results.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
+import subprocess
+import sys
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -24,7 +33,7 @@ import pytest
 
 from . import conventions as cv
 from . import expectations as ex
-from . import proof
+from . import launch, proof
 from .launch import (
     ChainError,
     ChainStartupError,
@@ -52,6 +61,15 @@ _STARTUP_DECIDED = pytest.StashKey[bool]()
 _SETTLE_TRIES = 4
 _SETTLE_INTERVAL_S = 0.5
 _LOG_TAIL_BYTES = 8192
+_WATCH = pytest.StashKey["_Watch"]()
+# How often the watch reads the disaggregated servers and the GPU use during a test.
+_WATCH_INTERVAL_S = 1.0
+_GPU_CHECK_INTERVAL_S = 5.0
+# Names the role whose first worker starts outside the chain, for the CH-9 negative control.
+ENV_NEGATIVE_CONTROL = "TRTLLM_TEST_OPENENGINE_NEGATIVE_CONTROL"
+_NEGATIVE_CONTROL_PATCHES = pytest.StashKey[list]()
+# The default leg expectation, written in leg_expectation when a test registers none.
+TWO_LEGS = "两腿"
 
 
 @dataclass
@@ -63,6 +81,10 @@ class ProofResult:
     handles: list = field(default_factory=list)
     # Processes left running by servers that stopped during the test.
     teardown_errors: list[str] = field(default_factory=list)
+    # junit properties of a disaggregated test's proof, after the common ones.
+    props: list[tuple[str, str]] = field(default_factory=list)
+    # The proof of a disaggregated test.
+    disagg: proof.DisaggProof | None = None
 
 
 def _worst(statuses) -> str:
@@ -80,6 +102,11 @@ def pytest_configure(config: pytest.Config) -> None:
     config.stash[_CHAIN] = chain
     config.stash[_EXPECTATIONS] = ex.load() if chain != cv.CHAIN_NONE else []
     config.stash[_STARTUP_VERDICTS] = {}
+    config.stash[_NEGATIVE_CONTROL_PATCHES] = (
+        _start_one_worker_outside_the_chain(negative_control_role())
+        if chain != cv.CHAIN_NONE and negative_control_role()
+        else []
+    )
     # The test of an outer pytest that started this one; read before this run overwrites it.
     # "<node id> (<phase>)"; node ids can hold spaces (``-k "..."`` in a parameter).
     config.stash[_OUTER] = re.sub(
@@ -97,8 +124,83 @@ def pytest_configure(config: pytest.Config) -> None:
         )
 
 
+def pytest_unconfigure(config: pytest.Config) -> None:
+    for module, name, original in reversed(config.stash.get(_NEGATIVE_CONTROL_PATCHES, [])):
+        setattr(module, name, original)
+
+
 def pytest_report_header(config: pytest.Config) -> str:
     return f"openengine_chain: {config.stash[_CHAIN]}"
+
+
+def negative_control_role() -> str | None:
+    """The role named by ``TRTLLM_TEST_OPENENGINE_NEGATIVE_CONTROL``; raises for another value."""
+    role = os.environ.get(ENV_NEGATIVE_CONTROL, "")
+    if role and role not in proof.ROLES:
+        raise pytest.UsageError(
+            f"{ENV_NEGATIVE_CONTROL} must be one of {proof.ROLES}, not {role!r}"
+        )
+    return role or None
+
+
+def _role_of(cmd) -> str | None:
+    """The worker role a ``trtllm-serve`` command line names with ``--server_role``."""
+    value = proof._option([str(a) for a in cmd], "--server_role")
+    return launch.ServeHandle._ROLES.get((value or "").lower())
+
+
+def _start_outside_the_chain(cmd, env=None, sink=None) -> launch.ServeHandle:
+    """Start ``cmd`` as it is, an in-process worker, behind a handle outside the chain."""
+    cmd = [str(a) for a in cmd]
+    proc = subprocess.Popen(
+        cmd,
+        env=None if env is None else dict(env),
+        stdout=sink,
+        stderr=None if sink is None else subprocess.STDOUT,
+    )
+    host = proof._option(cmd, "--host") or "localhost"
+    port = proof._option(cmd, "--port")
+    return launch.ServeHandle(
+        chain=cv.CHAIN_NONE,
+        model=cmd[1] if len(cmd) > 1 else "",
+        host=host,
+        port=int(port) if port and port.isdigit() else None,
+        frontend=proc,
+        engine=None,
+        engine_endpoint=None,
+        workdir=None,
+        counter_dir=None,
+        role=_role_of(cmd),
+    )
+
+
+def _start_one_worker_outside_the_chain(role: str) -> list:
+    """Make the harness start the first ``role`` worker as an in-process worker (CH-9).
+
+    Replaces ``launch_serve_command`` in ``launch`` and in every module of this
+    package already holding it; returns ``(module, name, original)`` to undo.
+    """
+    original = launch.launch_serve_command
+    used = []
+
+    def launch_serve_command(cmd, *args, **kwargs):
+        if not used and _role_of(cmd) == role:
+            used.append(cmd)
+            return _start_outside_the_chain(cmd, kwargs.get("env"), kwargs.get("sink"))
+        return original(cmd, *args, **kwargs)
+
+    package = launch.__name__.rpartition(".")[0]
+    holders = [launch] + [
+        module
+        for name, module in list(sys.modules.items())
+        if module is not None
+        and module is not launch
+        and name.startswith(package + ".")
+        and vars(module).get("launch_serve_command") is original
+    ]
+    for module in holders:
+        module.launch_serve_command = launch_serve_command
+    return [(module, "launch_serve_command", original) for module in holders]
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
@@ -141,6 +243,99 @@ def _started_since(seq: int) -> list:
     return [h for h in _chain_handles(seq) if h.started_seq > seq]
 
 
+class _Watch:
+    """Follows the disaggregated servers and the GPU use below this pytest during a test's call.
+
+    It reads once when started and once when stopped, and every
+    ``_WATCH_INTERVAL_S`` in between from a thread, so that a disaggregated
+    server or an in-process worker the test starts and stops is still seen.
+    """
+
+    def __init__(self, seq: int, root: int | None = None, disagg: bool = False) -> None:
+        self._seq = seq
+        # The test is known to run a disaggregated server even if its workers have no role.
+        self._disagg = disagg
+        self._root = os.getpid() if root is None else root
+        # Readings by server address: the first one, whether it was taken when the test
+        # started, and the last one.
+        self._first: dict[str, tuple[proof.OrchestratorReading, bool]] = {}
+        self._last: dict[str, proof.OrchestratorReading] = {}
+        self._alive_at_end: set[str] = set()
+        self._inprocess: set[str] | None = None
+        self._last_gpu_check = 0.0
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._poll(at_start=True)
+        self._thread = threading.Thread(
+            target=self._run, name="openengine-chain-watch", daemon=True
+        )
+        self._thread.start()
+
+    def _run(self) -> None:
+        while not self._stop.wait(_WATCH_INTERVAL_S):
+            self._poll()
+
+    def _poll(self, at_start: bool = False, at_end: bool = False) -> None:
+        try:
+            orchestrators = proof.find_orchestrators(self._root)
+        except Exception:  # noqa: BLE001 - a failed read only leaves the proof incomplete
+            orchestrators = []
+        for orchestrator in orchestrators:
+            try:
+                reading = proof.read_orchestrator(orchestrator)
+            except Exception:  # noqa: BLE001 - not serving yet, or stopping
+                continue
+            with self._lock:
+                self._first.setdefault(orchestrator.url, (reading, at_start))
+                self._last[orchestrator.url] = reading
+                if at_end:
+                    self._alive_at_end.add(orchestrator.url)
+        now = time.monotonic()
+        disagg = self._disagg or any(getattr(h, "role", None) for h in _chain_handles(self._seq))
+        if disagg and (at_end or now - self._last_gpu_check >= _GPU_CHECK_INTERVAL_S):
+            self._last_gpu_check = now
+            try:
+                found = proof.inprocess_workers(self._root)
+            except Exception:  # noqa: BLE001
+                found = None
+            if found is not None:
+                with self._lock:
+                    self._inprocess = (self._inprocess or set()) | set(found)
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join()
+        self._poll(at_end=True)
+
+    def orchestrator(self) -> proof.OrchestratorReading | None:
+        """The increase of every disaggregated server's counters during the test; ``None`` if none ran."""
+        with self._lock:
+            if not self._first:
+                return None
+            readings = []
+            for url, (first, at_start) in self._first.items():
+                last = self._last[url]
+                start = first.counts if at_start else dict.fromkeys(last.counts, 0)
+                members = None
+                if last.members is not None:
+                    members = {
+                        r: tuple(proof.normalize_address(a) for a in last.members[r])
+                        for r in proof.ROLES
+                    }
+                readings.append(
+                    proof.OrchestratorReading(
+                        {k: last.counts[k] - start.get(k, 0) for k in last.counts},
+                        members,
+                        stale=url not in self._alive_at_end,
+                    )
+                )
+            return proof.add_orchestrator_readings(readings)
+
+    def inprocess(self) -> list[str] | None:
+        with self._lock:
+            return None if self._inprocess is None else sorted(self._inprocess)
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_call(item: pytest.Item):
     if item.config.stash[_CHAIN] == cv.CHAIN_NONE or item.stash.get(_STARTUP_DECIDED, False):
@@ -149,8 +344,12 @@ def pytest_runtest_call(item: pytest.Item):
     seq = next_seq()
     details: list[str] = []
     before = {id(h): _safe_counters(h, details) for h in _chain_handles(seq)}
-    yield
-    item.stash[_RESULT] = _prove(item, seq, before, details)
+    watch = _Watch(seq, disagg=ex.leg_expectation(item.stash.get(_FOUND, [])) is not None)
+    try:
+        yield
+    finally:
+        watch.stop()
+    item.stash[_RESULT] = _prove(item, seq, before, details, watch)
 
 
 def _topology(handle) -> proof.Check:
@@ -168,7 +367,9 @@ def _topology(handle) -> proof.Check:
     return topology
 
 
-def _prove(item: pytest.Item, seq: int, before: dict, details: list[str]) -> ProofResult:
+def _prove(
+    item: pytest.Item, seq: int, before: dict, details: list[str], watch: _Watch | None = None
+) -> ProofResult:
     handles = _chain_handles(seq)
     # Tests expected to be rejected by the server send nothing to the engine either.
     found = item.stash.get(_FOUND, [])
@@ -190,6 +391,10 @@ def _prove(item: pytest.Item, seq: int, before: dict, details: list[str]) -> Pro
         return ProofResult(
             "no_server", details=["no chain server ran in this process during the test"]
         )
+    rule = _leg_rule(found, whitelisted, cancels_calls)
+    roles = _roles(handles, rule)
+    if any(roles.values()):
+        return _prove_disagg(handles, roles, before, details, watch, rule)
     # Counters start at 0 when a process starts; a server started during the test starts there.
     # A test that cancels calls is held to equal counts until the last read, so an engine
     # count that arrives during the re-reads is still this test's.
@@ -233,6 +438,165 @@ def _prove(item: pytest.Item, seq: int, before: dict, details: list[str]) -> Pro
         handles=handles,
         teardown_errors=teardown_errors,
     )
+
+
+def _leg_rule(found, whitelisted: bool, cancels_calls: bool) -> proof.LegRule:
+    entry = ex.leg_expectation(found)
+    if entry is None:
+        return proof.LegRule(no_engine_traffic=whitelisted, cancels_calls=cancels_calls)
+    return proof.LegRule(
+        leg=entry.leg,
+        killed=entry.killed,
+        orphans=entry.orphans,
+        direct_requests=entry.direct_requests,
+        no_engine_traffic=whitelisted,
+        cancels_calls=cancels_calls,
+    )
+
+
+def _roles(handles, rule: proof.LegRule) -> dict[int, str | None]:
+    """Each handle's worker role.
+
+    A cross_node test's worker without one takes its node's: the context worker
+    runs on node 0 and the generation worker on node 1.
+    """
+    node_role = None
+    if rule.leg == ex.CROSS_NODE:
+        node_role = {"0": proof.CTX, "1": proof.GEN}.get(os.environ.get("SLURM_NODEID", ""))
+    return {id(h): getattr(h, "role", None) or node_role for h in handles}
+
+
+def _engine_info(handle, details: list[str]) -> proof.EngineInfo | None:
+    try:
+        return proof.engine_info(handle)
+    except Exception as error:  # noqa: BLE001 - an unreadable engine only makes the proof incomplete
+        details.append(f"reading the engine's server info failed: {error!r}")
+        return None
+
+
+def _address(handle) -> str | None:
+    return None if handle.port is None else proof.normalize_address(f"{handle.host}:{handle.port}")
+
+
+def _settles(result: proof.DisaggProof) -> bool:
+    """Whether no count of a side is behind the other's: the counts CH-2 and CH-4 compare per worker."""
+    return not any(
+        name in ("CH-2", "CH-4") and role is not None and c.status == proof.FAIL
+        for name, role, c in result.checks
+    )
+
+
+def _prove_disagg(
+    handles, roles: dict, before: dict, details: list[str], watch, rule
+) -> ProofResult:
+    """The proof of a test whose chain servers are workers of a disaggregated server."""
+    orchestrator = watch.orchestrator() if watch is not None else None
+    inprocess = watch.inprocess() if watch is not None else None
+    names = set()
+    teardown_errors: list[str] = []
+    for h in handles:
+        if h.alive:
+            try:
+                names.add(proof.read_engine_name(h))
+            except Exception as error:  # noqa: BLE001
+                details.append(f"reading engine name failed: {error!r}")
+        else:
+            names.add(h._engine_name)
+            teardown_errors.extend(h.teardown_errors)
+            details.extend(f"teardown: {n}" for n in h.teardown_notes)
+    topologies = {id(h): _topology(h) for h in handles}
+    infos = {id(h): _engine_info(h, details) for h in handles}
+    for attempt in range(_SETTLE_TRIES):
+        legs = []
+        for h in handles:
+            end = _safe_counters(h, details)
+            start = before.get(id(h))
+            start = proof.zero_like(end) if start is None else proof.counting_start(start, end)
+            role = roles[id(h)] or "agg"
+            legs.append(proof.Leg(role, _address(h), start, end, infos[id(h)], topologies[id(h)]))
+        unknown = sorted({leg.role for leg in legs} - set(proof.ROLES))
+        if unknown:
+            # An aggregated server next to the workers is not part of a two-leg proof.
+            result = proof.DisaggProof(
+                proof.FAIL,
+                {r: proof.FAIL for r in proof.ROLES},
+                [
+                    (
+                        "CH-1",
+                        None,
+                        proof.Check(
+                            proof.FAIL,
+                            "a chain server without a worker role "
+                            "runs next to the workers of a disaggregated server",
+                        ),
+                    )
+                ],
+                {"roles": proof.role_sums(legs), "orchestrator": None},
+            )
+            break
+        result = proof.judge_disagg(legs, orchestrator, inprocess, rule)
+        if _settles(result) or attempt == _SETTLE_TRIES - 1:
+            break
+        time.sleep(_SETTLE_INTERVAL_S)
+    names.discard(None)
+    sums = result.counts["roles"]
+    counts = {r: sums[r]["counts"] for r in proof.ROLES}
+    handed = counts[proof.CTX][proof.ENGINE_PREFILL_READY_SENT]
+    taken = counts[proof.GEN][proof.ENGINE_ACCEPTED_BUCKETS[proof.BUCKET_GENERATION_ONLY]]
+    orch = result.counts["orchestrator"]
+    leg = rule.leg or TWO_LEGS
+    met = {proof.OK: "met", proof.FAIL: "not met"}.get(result.status, result.status)
+    if result.deferred and result.status == proof.OK:
+        met = "met on this node"
+    received = [counts[r]["received"] for r in proof.ROLES]
+    result.counts["node_names"] = proof.node_names()
+
+    def text(value) -> str:
+        return "incomplete" if value is None else str(value)
+
+    props = [
+        ("chain_topology", "disagg"),
+        ("chain_roles", ",".join(f"{r}:{sums[r]['legs']}" for r in proof.ROLES)),
+        ("engine_calls_ctx", text(counts[proof.CTX]["received"])),
+        ("engine_calls_gen", text(counts[proof.GEN]["received"])),
+        ("handoffs", text(handed)),
+        ("orphan_handoffs", text(None if handed is None or taken is None else handed - taken)),
+        ("orch_requests_ctx", text(orch and orch["counts"].get("ctx.total_requests"))),
+        ("orch_requests_gen", text(orch and orch["counts"].get("gen.total_requests"))),
+        ("chain_proof_ctx", result.roles[proof.CTX]),
+        ("chain_proof_gen", result.roles[proof.GEN]),
+        ("leg_expectation", f"{leg}:{met}"),
+        ("chain_leg_counts", json.dumps(result.counts, sort_keys=True)),
+    ]
+    return ProofResult(
+        result.status,
+        engine_calls=None if None in received else sum(received),
+        engine_name=",".join(sorted(names)) or None,
+        details=list(dict.fromkeys(details + result.details())),
+        handles=handles,
+        teardown_errors=teardown_errors,
+        props=props,
+        disagg=result,
+    )
+
+
+def _judge_negative_control(report: pytest.TestReport, props: list, result: ProofResult) -> None:
+    """CH-9: with a worker outside the chain, the test passes only if CH-6 fails."""
+    failed = result.disagg is not None and any(
+        name == "CH-6" and check.status == proof.FAIL for name, _, check in result.disagg.checks
+    )
+    props.append(
+        ("negative_control", f"{negative_control_role()}:{'met' if failed else 'not met'}")
+    )
+    if failed:
+        _pass(report)
+    else:
+        _fail(
+            report,
+            f"negative control ({ENV_NEGATIVE_CONTROL}): a worker ran outside the chain, but CH-6 "
+            f"did not fail (chain_proof {result.status}):\n" + "\n".join(result.details),
+        )
+        _attach_logs(report, result.handles)
 
 
 def _append_text(report: pytest.TestReport, title: str, text: str) -> None:
@@ -376,6 +740,14 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
             props.append(("chain_proof_detail", "; ".join(result.details)))
         if result.teardown_errors:
             props.append(("chain_teardown_problems", "; ".join(result.teardown_errors)))
+        if result.props:
+            props.extend(result.props)
+        elif result.handles:
+            props.append(("chain_topology", "agg"))
+
+    if result is not None and negative_control_role():
+        _judge_negative_control(report, props, result)
+        return
 
     if decide is not None and decide.kind == ex.HTTP_STATUS:
         status = ex.http_status_of(error) if error is not None else None

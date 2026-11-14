@@ -10,6 +10,10 @@ tests themselves are not edited.
 ``match`` is ``<test file name>::<test name>``, where ``*`` matches any text
 and every other character, including ``[`` and ``]``, matches itself. For
 example ``_test_openai_chat.py::test_beam_search*``.
+
+A ``leg_expect`` entry says how the chain proof of a test run against a
+disaggregated server is judged (see ``proof.judge_disagg``); without one, both
+legs must carry traffic.
 """
 
 from __future__ import annotations
@@ -37,10 +41,48 @@ NO_ENGINE_TRAFFIC = "no_engine_traffic"
 CANCELS_CALLS = "cancels_calls"
 # The test does not apply to the chain.
 SKIP = "skip"
+# How the chain proof of a disaggregated test is judged: ``leg`` is one of LEG_VALUES.
+LEG_EXPECT = "leg_expect"
 
-KINDS = (HTTP_STATUS, STARTUP_REJECTED, NO_ENGINE_TRAFFIC, CANCELS_CALLS, SKIP)
+KINDS = (HTTP_STATUS, STARTUP_REJECTED, NO_ENGINE_TRAFFIC, CANCELS_CALLS, SKIP, LEG_EXPECT)
 # Kinds that decide a test's outcome; at most one may apply to a test.
 OUTCOME_KINDS = (HTTP_STATUS, STARTUP_REJECTED, SKIP)
+
+# The values of a leg_expect entry:
+# - gen_zero_ok: the context leg may end the request, so the generation role may get no call.
+# - ctx_zero_ok: the disaggregated server may prefill locally, so the context role may get
+#   no call and the generation workers may get aggregated calls.
+# - single_side: only one side runs: the context side alone, or the generation side alone
+#   in the generation-only benchmark mode.
+# - direct_worker: the test sends to one worker front end itself, not through the
+#   disaggregated server; ``direct_requests`` is the number of generation requests it sends,
+#   if the test knows it.
+# - direct_two_leg: the test sends both legs to the two worker front ends itself.
+# - direct_ctx_leg: the test sends context legs to a context worker front end itself and no
+#   generation leg; ``orphans`` is the number of hand-offs left unused (default: one per
+#   context request the worker front ends received).
+# - killed: the test kills the workers of the roles in ``killed``.
+# - cross_node: the context and generation workers run on two nodes, each in a pytest of its
+#   own; the runner judges what needs both nodes' readings.
+GEN_ZERO_OK = "gen_zero_ok"
+CTX_ZERO_OK = "ctx_zero_ok"
+SINGLE_SIDE = "single_side"
+DIRECT_WORKER = "direct_worker"
+DIRECT_TWO_LEG = "direct_two_leg"
+DIRECT_CTX_LEG = "direct_ctx_leg"
+KILLED = "killed"
+CROSS_NODE = "cross_node"
+LEG_VALUES = (
+    GEN_ZERO_OK,
+    CTX_ZERO_OK,
+    SINGLE_SIDE,
+    DIRECT_WORKER,
+    DIRECT_TWO_LEG,
+    DIRECT_CTX_LEG,
+    KILLED,
+    CROSS_NODE,
+)
+ROLES = ("ctx", "gen")
 
 _WT_FILE = re.compile(r"^(?:WT-\d{2}(?:-fix\d+)?|WT-20-R[23])\.py$")
 
@@ -54,6 +96,10 @@ class Expectation:
     status: int | None = None
     log_contains: str | None = None
     chains: tuple[str, ...] = cv.CHAINS
+    leg: str | None = None
+    killed: tuple[str, ...] = ()
+    orphans: int | None = None
+    direct_requests: int | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
@@ -74,6 +120,28 @@ class Expectation:
         unknown = set(self.chains) - set(cv.CHAINS)
         if unknown or not self.chains:
             raise ValueError(f"{self.wt}: {self.match!r}: bad chains {self.chains!r}")
+        self._check_leg()
+
+    def _check_leg(self) -> None:
+        where = f"{self.wt}: {self.match!r}"
+        if (self.kind == LEG_EXPECT) != (self.leg is not None):
+            raise ValueError(f"{where}: leg is required for, and only for, {LEG_EXPECT}")
+        if self.leg is not None and self.leg not in LEG_VALUES:
+            raise ValueError(f"{where}: unknown leg {self.leg!r}; one of {LEG_VALUES}")
+        if (self.leg == KILLED) != bool(self.killed):
+            raise ValueError(f"{where}: killed is required for, and only for, leg {KILLED}")
+        if not set(self.killed) <= set(ROLES) or len(set(self.killed)) != len(self.killed):
+            raise ValueError(f"{where}: killed {self.killed!r} must name distinct roles {ROLES}")
+        for name, value, leg in (
+            ("orphans", self.orphans, DIRECT_CTX_LEG),
+            ("direct_requests", self.direct_requests, DIRECT_WORKER),
+        ):
+            if value is None:
+                continue
+            if self.leg != leg:
+                raise ValueError(f"{where}: {name} is only for leg {leg}")
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{where}: {name} must be a non-negative int, not {value!r}")
 
     def matches(self, short_test_id: str, chain: str) -> bool:
         return chain in self.chains and _pattern(self.match).fullmatch(short_test_id) is not None
@@ -128,16 +196,23 @@ def applicable(expectations: Iterable[Expectation], nodeid: str, chain: str) -> 
     """The expectations for one test; more than one outcome-deciding entry is an error."""
     tid = short_id(nodeid)
     found = [e for e in expectations if e.matches(tid, chain)]
-    deciding = [e for e in found if e.kind in OUTCOME_KINDS]
-    if len(deciding) > 1:
-        raise ValueError(
-            f"{tid}: conflicting expectations " + ", ".join(f"{e.wt}:{e.kind}" for e in deciding)
-        )
+    for kinds in (OUTCOME_KINDS, (LEG_EXPECT,)):
+        clashing = [e for e in found if e.kind in kinds]
+        if len(clashing) > 1:
+            raise ValueError(
+                f"{tid}: conflicting expectations "
+                + ", ".join(f"{e.wt}:{e.kind}" for e in clashing)
+            )
     return found
 
 
 def outcome_expectation(found: Sequence[Expectation]) -> Expectation | None:
     return next((e for e in found if e.kind in OUTCOME_KINDS), None)
+
+
+def leg_expectation(found: Sequence[Expectation]) -> Expectation | None:
+    """The test's ``leg_expect`` entry; :func:`applicable` allows at most one."""
+    return next((e for e in found if e.kind == LEG_EXPECT), None)
 
 
 def http_status_of(error: BaseException) -> int | None:

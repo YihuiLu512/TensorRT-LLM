@@ -33,6 +33,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, _DEFS)
 
 from openengine_chain import conventions as cv  # noqa: E402
+from openengine_chain import proof  # noqa: E402
 
 _HERE = os.path.join(_DEFS, "openengine_chain")
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(_DEFS)))
@@ -44,7 +45,20 @@ _PROPS = (
     "engine_name",
     "expectation",
     "outer_test",
+    "chain_topology",
+    "chain_roles",
+    "engine_calls_ctx",
+    "engine_calls_gen",
+    "handoffs",
+    "orphan_handoffs",
+    "orch_requests_ctx",
+    "orch_requests_gen",
+    "chain_proof_ctx",
+    "chain_proof_gen",
+    "leg_expectation",
 )
+# Results of a run on several nodes go to one directory per node.
+_NODE_DIR = "node-{}"
 
 
 def read_entries(paths: list[str]) -> list[str]:
@@ -175,6 +189,7 @@ def _cases(path: str):
             "message": message,
         }
         row.update({key: props.get(key, "") for key in _PROPS})
+        row["chain_leg_counts"] = props.get("chain_leg_counts", "")
         yield row
 
 
@@ -197,9 +212,83 @@ def merge_reruns(rows: list[dict]) -> list[dict]:
     return list(merged.values())
 
 
+def node_dir(out: str, env: dict[str, str] | None = None) -> str:
+    """``out``, or its directory for this node when Slurm runs the job on more than one node."""
+    env = os.environ if env is None else env
+    node = env.get("SLURM_NODEID", "")
+    if node.isdigit() and env.get("SLURM_NNODES", "1").isdigit() and int(env["SLURM_NNODES"]) > 1:
+        return os.path.join(out, _NODE_DIR.format(node))
+    return out
+
+
+def node_dirs(out: str) -> list[str]:
+    """The per-node result directories under ``out``, in node order."""
+    found = glob.glob(os.path.join(out, _NODE_DIR.format("*")))
+    return sorted(
+        (d for d in found if os.path.basename(d)[len(_NODE_DIR.format("")) :].isdigit()),
+        key=lambda d: int(os.path.basename(d)[len(_NODE_DIR.format("")) :]),
+    )
+
+
+def merge_nodes(per_node: list[list[dict]]) -> list[dict]:
+    """One row per ``cross_node`` test, judged over the rows of every node (TH-DSG-4).
+
+    The test passes only if it passed on every node and the checks that need
+    both nodes' readings hold; a node without the test's row leaves it
+    ``incomplete``.
+    """
+    names: list[str] = []
+    for rows in per_node:
+        for row in rows:
+            if (
+                row.get("leg_expectation", "").startswith("cross_node:")
+                and row["name"] not in names
+            ):
+                names.append(row["name"])
+    merged = []
+    for name in names:
+        rows = [next((r for r in reversed(node) if r["name"] == name), None) for node in per_node]
+        counts = []
+        for row in rows:
+            try:
+                counts.append(json.loads(row["chain_leg_counts"]) if row else None)
+            except ValueError:
+                counts.append(None)
+        status, details = proof.judge_cross_node(counts)
+        outcomes = [row["outcome"] if row else "missing" for row in rows]
+        if any(o in ("failed", "error") for o in outcomes) or status == proof.FAIL:
+            outcome = "failed"
+        elif all(o == "passed" for o in outcomes) and status == proof.OK:
+            outcome = "passed"
+        else:
+            outcome = "incomplete"
+        row = {key: "" for key in _PROPS}
+        row.update(
+            file="cross-node",
+            name=name,
+            outcome=outcome,
+            time="",
+            chain_proof=status,
+            leg_expectation=f"cross_node:{'met' if status == proof.OK else status}",
+            message="; ".join([f"node outcomes {outcomes}"] + details)[:2000],
+        )
+        merged.append(row)
+    return merged
+
+
 def summarize(out: str) -> list[dict]:
-    files = junit_files(out)
-    rows = merge_reruns([row for path in files for row in _cases(path)])
+    nodes = node_dirs(out)
+    if nodes:
+        # Each node's reruns are merged on their own: a node's row must not replace another's.
+        per_node = []
+        for directory in nodes:
+            rows = merge_reruns([row for path in junit_files(directory) for row in _cases(path)])
+            for row in rows:
+                row["file"] = f"{os.path.basename(directory)}/{row['file']}"
+            per_node.append(rows)
+        rows = [row for node in per_node for row in node] + merge_nodes(per_node)
+    else:
+        rows = merge_reruns([row for path in junit_files(out) for row in _cases(path)])
     with open(os.path.join(out, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(rows, f, indent=1)
     counts: dict[str, int] = {}
@@ -243,9 +332,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("extra", nargs=argparse.REMAINDER, help="-- extra pytest arguments")
     args = parser.parse_args(argv)
-    out = os.path.abspath(args.out)
+    # On several nodes each node runs into its own directory; --summarize-only on --out merges them.
+    out = node_dir(os.path.abspath(args.out))
     if args.summarize_only:
-        summarize(out)
+        summarize(os.path.abspath(args.out))
         return 0
     lists = args.list + (smoke_lists() if args.smoke else [])
     entries = read_entries(lists)
