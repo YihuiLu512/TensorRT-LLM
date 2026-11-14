@@ -151,3 +151,27 @@ def test_ds_chain_refuses_a_metrics_port_the_command_gives(harness, fake, monkey
     args = ["--port", str(_port()), launch.ENGINE_METRICS_PORT_OPTION, "18001"]
     with pytest.raises(launch.ChainError, match="not pass it to the ds chain's engine"):
         _start(harness, fake, args)
+    assert launch._HANDLES == []
+    assert not list(fake.records.iterdir())
+    assert not list(Path(os.environ[cv.ENV_RESULTS_DIR]).glob("chain-*"))
+
+
+def test_nt100_sends_no_generate_on_the_ds_chain(harness):
+    """NT-100 only reads what the engine and the front end declare, so it runs no Generate call."""
+    from openengine_chain import expectations as ex
+
+    tables = ex.load()
+    nodeid = (
+        "llmapi/apps/_test_openengine_ds_disagg_basic.py::test_startup_tokenizer_and_fingerprint"
+    )
+    for chain in ("ds", "glm", "trtllm"):
+        found = ex.applicable(tables, nodeid, chain)
+        kinds = [(e.wt, e.kind) for e in found]
+        assert kinds == ([("WT-56", ex.NO_ENGINE_TRAFFIC)] if chain == "ds" else []), chain
+    # The module's other tests generate.
+    for test in (
+        "_test_openengine_ds_disagg_frontend.py::test_chat_template_and_kwargs",
+        "_test_openengine_ds_disagg_frontend.py::test_reasoning_and_tools[non_stream]",
+        "_test_openengine_ds_disagg_frontend.py::test_reasoning_and_tools[stream]",
+    ):
+        assert not ex.applicable(tables, f"llmapi/apps/{test}", "ds"), test
