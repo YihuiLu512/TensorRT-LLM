@@ -1431,6 +1431,443 @@ def test_wt52_may_not_make_its_changes_in_another_statement(
     assert "not one of the allowed changes" in capsys.readouterr().out
 
 
+# The stage03 commit WT-53-fix1 works on; the files below are as it found them.
+WT53_FIX1_BASE = "122c8b21fc30d38ee72af9b19d5973f545926a79"
+WT53_ENGINE_CLIENT = "tensorrt_llm/serve/openengine_poc/engine_client.py"
+WT53_ENGINE_CLIENT_IMPL = "tensorrt_llm/serve/openengine_poc/engine_client_impl.py"
+WT53_SERVE = "tests/unittest/grpc/openengine_client/test_openengine_poc_serve.py"
+WT53_WT01 = "tests/unittest/serve/openengine_poc/wt01/test_poc2_wt01_contracts.py"
+WT53_WT35 = "tests/unittest/serve/openengine_poc/wt35/test_poc3_wt35_contracts.py"
+WT53_WT15 = "tests/unittest/serve/openengine_poc/wt15/test_poc2_wt15_metrics.py"
+UNSUPPORTED_HANDLER_TEST = "test_an_unsupported_error_from_a_handler_answers_501"
+NO_EVENTS_HTTP_TEST_WAS = "test_kv_cache_events_the_frontend_cannot_read_answer_501"
+NO_EVENTS_HTTP_TEST = "test_kv_cache_events_the_frontend_cannot_read_answer_no_events"
+NO_EVENTS_SUBSCRIPTION_TEST_WAS = "test_kv_cache_events_unsupported_raise_a_new_error_each_call"
+NO_EVENTS_SUBSCRIPTION_TEST = "test_kv_cache_events_unsupported_answer_no_events_each_call"
+WT53_RENAMES = {
+    WT53_WT15: {
+        NO_EVENTS_HTTP_TEST_WAS: NO_EVENTS_HTTP_TEST,
+        NO_EVENTS_SUBSCRIPTION_TEST_WAS: NO_EVENTS_SUBSCRIPTION_TEST,
+    },
+}
+VERSION_10 = ["    assert contracts.POC2_CONTRACT_VERSION == 10"]
+VERSION_11 = ["    assert contracts.POC2_CONTRACT_VERSION == 11"]
+CLIENT_SERVER_INFO = ['        return SimpleNamespace(engine_name="e", extra={})']
+# The changes WT-53-fix1 makes to files WT-53 does not own (contract v11, rulings U24 and N46),
+# in the form of WT40_CHANGES, except that a change adding lines only names the lines it follows,
+# in order.
+WT53_CHANGES = {
+    WT53_ENGINE_CLIENT: [
+        (
+            "EngineInfo",
+            [],
+            [
+                "        kv_block_size: ``ServerInfo.capacity.kv_block_size``, the tokens in one",
+                "            KV-cache block; None when the engine reports none.",
+                "        total_kv_blocks: ``ServerInfo.capacity.total_kv_blocks``, the KV-cache",
+                "            blocks the engine can allocate; None when the engine reports none.",
+            ],
+            (
+                "        kv_connector: ``ServerInfo.kv_connector``; None when the engine reports none.",
+            ),
+        ),
+        (
+            "EngineInfo",
+            [],
+            ["    kv_block_size: int | None = None", "    total_kv_blocks: int | None = None"],
+            ("    kv_connector: KvConnectorInfo | None = None",),
+        ),
+    ],
+    WT53_ENGINE_CLIENT_IMPL: [
+        (
+            "_engine_info",
+            [],
+            [
+                "        kv_block_size=capacity.kv_block_size or None,",
+                "        total_kv_blocks=capacity.total_kv_blocks or None,",
+            ],
+            ("        kv_connector=_kv_connector(info),",),
+        ),
+    ],
+    WT53_SERVE: [
+        (
+            UNSUPPORTED_HANDLER_TEST,
+            [],
+            [
+                "    async def unsupported(client, timeout):",
+                '        raise contracts.OpenEngineUnsupportedError("no KV-cache events")',
+                "",
+            ],
+            ("    engine = _engine()", ""),
+        ),
+        (
+            UNSUPPORTED_HANDLER_TEST,
+            [],
+            ["        facade._metrics.kv_cache_events = unsupported"],
+            ("    async def body(engine, facade, http):",),
+        ),
+    ],
+    WT53_WT01: [
+        ("test_contract_version", VERSION_10, VERSION_11, None),
+        (
+            "test_default_metrics_record_nothing",
+            [
+                "    with pytest.raises(contracts.OpenEngineUnsupportedError):",
+                "        asyncio.run(recorder.kv_cache_events(FakeEngineClient(), None))",
+            ],
+            [
+                "    asyncio.run(recorder.subscribe_kv_cache_events(FakeEngineClient()))",
+                "    assert asyncio.run(recorder.kv_cache_events(FakeEngineClient(), None)) == []",
+            ],
+            None,
+        ),
+    ],
+    WT53_WT35: [("test_contract_version", VERSION_10, VERSION_11, None)],
+    WT53_WT15: [
+        (
+            "test_kv_cache_events_arrive_through_get_kv_event_sources",
+            ["        # The first call subscribes; nothing was received before it."],
+            [
+                "        # The frontend subscribed at its start; nothing was published since, and",
+                "        # the engine's load reports no total_kv_blocks for a created event.",
+            ],
+            None,
+        ),
+        (
+            NO_EVENTS_HTTP_TEST,
+            [f"def {NO_EVENTS_HTTP_TEST_WAS}(tmp_path, sources):"],
+            [f"def {NO_EVENTS_HTTP_TEST}(tmp_path, sources):"],
+            None,
+        ),
+        (
+            NO_EVENTS_HTTP_TEST,
+            ["    assert [r.status_code for r in responses] == [501, 501], responses[0].text"],
+            [
+                "    assert [r.status_code for r in responses] == [200, 200], responses[0].text",
+                "    assert [r.json() for r in responses] == [[], []]",
+            ],
+            None,
+        ),
+        (
+            "_Client",
+            CLIENT_SERVER_INFO,
+            [
+                '        return SimpleNamespace(engine_name="e", extra={}, total_kv_blocks=None)',
+                "",
+                "    async def load(self):",
+                "        return None",
+            ],
+            None,
+        ),
+        (
+            NO_EVENTS_SUBSCRIPTION_TEST,
+            [f"def {NO_EVENTS_SUBSCRIPTION_TEST_WAS}():"],
+            [f"def {NO_EVENTS_SUBSCRIPTION_TEST}():"],
+            None,
+        ),
+        (
+            NO_EVENTS_SUBSCRIPTION_TEST,
+            [
+                "    async def raised():",
+                "        try:",
+                "            await subscription.events(client, 0)",
+                "        except contracts.OpenEngineUnsupportedError as error:",
+                "            return error",
+                '        raise AssertionError("not raised")',
+                "",
+            ],
+            [],
+            None,
+        ),
+        (
+            NO_EVENTS_SUBSCRIPTION_TEST,
+            ["        return [await raised() for _ in range(2)]"],
+            ["        return [await subscription.events(client, 0) for _ in range(2)]"],
+            None,
+        ),
+        (
+            NO_EVENTS_SUBSCRIPTION_TEST,
+            [
+                "    first, second = asyncio.run(twice())",
+                "    # Raising the same error again would lengthen its traceback at every call.",
+                "    assert first is not second",
+                "    assert str(first) == str(second)",
+            ],
+            [
+                "    assert asyncio.run(twice()) == [[], []]",
+                "    # The engine's answer is kept: asked once.",
+            ],
+            None,
+        ),
+    ],
+}
+WT53_CHANGE_IDS = [
+    (path, index) for path in WT53_CHANGES for index in range(len(WT53_CHANGES[path]))
+]
+
+
+def _apply_wt53(path, lines, regions, within, removed, added, after):
+    """``lines`` with one change made in the statement ``within`` (its name at the head).
+
+    A change adding lines only goes right after the lines ``after`` names, in order.
+    """
+    renamed = WT53_RENAMES.get(path, {})
+    regions = [renamed.get(name, name) for name in regions]
+    for i in range(len(lines)):
+        if regions[i] != within:
+            continue
+        if removed and lines[i : i + len(removed)] == removed:
+            return lines[:i] + added + lines[i + len(removed) :]
+        start = i + 1 - len(after or ())
+        if not removed and start >= 0 and lines[start : i + 1] == list(after or ()):
+            return lines[: i + 1] + added + lines[i + 1 :]
+    raise AssertionError(f"no place for the change in {within}")
+
+
+def _wt53_edit(path, replaced=None, by=None):
+    """An edit making WT-53-fix1's changes to ``path``; change ``replaced`` made as ``by`` instead.
+
+    The replaced change is made last, so that the others still find their statements.
+    """
+    changes = list(enumerate(WT53_CHANGES[path]))
+    if replaced is not None:
+        changes = [c for c in changes if c[0] != replaced] + [(replaced, by)]
+
+    def edit(lines, regions):
+        for count, (_, change) in enumerate(changes, 1):
+            lines = _apply_wt53(path, lines, regions, *change)
+            if count < len(changes):  # the replaced change may leave lines Python does not parse
+                regions = check_ownership._regions("\n".join(lines))
+        return lines
+
+    return edit
+
+
+def _wt53_repo(tmp_path, path, edit, base_edit=None):
+    """A repo holding ``path`` as at WT-53-fix1's base, then ``edit`` of its lines as WT-53-fix1."""
+    return _edited_repo(tmp_path, WT53_FIX1_BASE, path, edit, "WT-53-fix1", base_edit)
+
+
+# Every item that may change each file: WT-53 by its exception, the others as before it.
+WT53_OWNERS = {
+    WT53_ENGINE_CLIENT: [("WT-35", "own"), ("WT-51", "shared"), ("WT-53", "exception")],
+    WT53_ENGINE_CLIENT_IMPL: [("WT-51", "own"), ("WT-52", "shared"), ("WT-53", "exception")],
+    WT53_SERVE: [("WT-50", "exception"), ("WT-53", "exception")],
+    WT53_WT01: [("WT-35", "exception"), ("WT-51", "exception"), ("WT-53", "exception")],
+    WT53_WT35: [("WT-35", "own"), ("WT-53", "exception")],
+    WT53_WT15: [("WT-53", "exception")],
+}
+
+
+@pytest.mark.parametrize("path", WT53_CHANGES)
+def test_the_wt53_fix1_exceptions_list_exactly_its_changes(path):
+    rule = check_ownership.match_rule("WT-53-fix1", path)
+    assert rule.kind == "exception" and not rule.lines
+    assert list(rule.changes) == [
+        check_ownership.Change(tuple(map(re.escape, old)), tuple(map(re.escape, new)), within)
+        for within, old, new, _ in WT53_CHANGES[path]
+    ]
+    assert dict(rule.renames) == WT53_RENAMES.get(path, {})
+    assert check_ownership.match_rule("WT-53", path) is rule
+    assert [(n, r.kind) for n, r in check_ownership.owners(path)] == WT53_OWNERS[path]
+
+
+@pytest.mark.parametrize("path", WT53_CHANGES)
+def test_wt53_fix1_may_make_its_changes_to_the_files_at_its_base(tmp_path, capsys, path):
+    repo, base = _wt53_repo(tmp_path, path, _wt53_edit(path))
+    assert check_ownership.check("WT-53-fix1", f"{base}..HEAD", str(repo)) == 0
+    assert f"CHECK BY HAND  EXCEPTION  {path}" in capsys.readouterr().out
+
+
+# As WT52_TAMPER_CASES, but without the tamper that leaves no change at all: "line-dropped" for
+# a change adding one line only.
+WT53_TAMPER_CASES = [
+    (path, index, tamper)
+    for path, index in WT53_CHANGE_IDS
+    for tamper in WT52_TAMPERS
+    if (WT53_CHANGES[path][index][2] or tamper in ("line-dropped", "other-line"))
+    and any(WT52_TAMPERS[tamper](*WT53_CHANGES[path][index][1:3]))
+]
+
+
+@pytest.mark.parametrize("path, index, tamper", WT53_TAMPER_CASES)
+def test_wt53_fix1_may_not_change_anything_else(tmp_path, capsys, path, index, tamper):
+    within, removed, added, after = WT53_CHANGES[path][index]
+    tampered = (within, *WT52_TAMPERS[tamper](removed, added), after)
+    make = _wt53_edit(path, index, tampered)
+
+    def edit(lines, regions):
+        new = make(lines, regions)
+        try:
+            names = set(check_ownership._regions("\n".join(new)))
+            renamed = set(WT53_RENAMES.get(path, {}).values()) <= names
+            reason.append("not one of the allowed changes" if renamed else "does not rename")
+        except SyntaxError:  # a tampered line that opens a bracket, for one
+            reason.append("is not Python")
+        return new
+
+    reason = []
+    repo, base = _wt53_repo(tmp_path, path, edit)
+    assert check_ownership.check("WT-53-fix1", f"{base}..HEAD", str(repo)) == 1
+    out = capsys.readouterr().out
+    assert f"OUT OF BOUNDS  {path}  (the exception allows" in out
+    assert reason[0] in out
+
+
+@pytest.mark.parametrize(
+    "path, index",
+    [(path, index) for path, index in WT53_CHANGE_IDS if WT53_CHANGES[path][index][1]],
+)
+def test_wt53_fix1_may_not_replace_other_lines_than_the_listed_ones(tmp_path, capsys, path, index):
+    """A change's added lines in place of lines that differ from its removed ones in the last line."""
+    within, removed, added, after = WT53_CHANGES[path][index]
+    other = [*removed[:-1], f"{removed[-1]}  # x" if removed[-1] else "# x"]
+
+    def base_edit(lines, regions):
+        return _apply_wt53(path, lines, regions, within, removed, other, None)
+
+    make = _wt53_edit(path, index, (within, other, added, after))
+
+    def edit(lines, regions):
+        new = make(lines, regions)
+        ast.parse("\n".join(new))
+        return new
+
+    repo, base = _wt53_repo(tmp_path, path, edit, base_edit)
+    assert check_ownership.check("WT-53-fix1", f"{base}..HEAD", str(repo)) == 1
+    assert "not one of the allowed changes" in capsys.readouterr().out
+
+
+def _appended_to(test, appended):
+    """A base edit: the lines ``appended`` appended to ``test`` as well."""
+
+    def edit(lines, regions):
+        end = max(i for i, name in enumerate(regions) if name == test)
+        return lines[: end + 1] + appended + lines[end + 1 :]
+
+    return edit
+
+
+@pytest.mark.parametrize(
+    "path, change, base_edit",
+    [
+        # The field, in another of the contract's dataclasses ending with an optional field.
+        (
+            WT53_ENGINE_CLIENT,
+            (
+                "KvConnectorInfo",
+                [],
+                WT53_CHANGES[WT53_ENGINE_CLIENT][1][2],
+                ("    schema_version: int | None = None",),
+            ),
+            None,
+        ),
+        # The filled fields, in the call that builds the KV connector instead.
+        (
+            WT53_ENGINE_CLIENT_IMPL,
+            (
+                "_kv_connector",
+                [],
+                WT53_CHANGES[WT53_ENGINE_CLIENT_IMPL][0][2],
+                (
+                    '        schema_version=connector.schema_version if connector.HasField("schema_version")'
+                    " else None,",
+                ),
+            ),
+            None,
+        ),
+        # The line installing the raising handler, put into the test before it serving through a facade.
+        (
+            WT53_SERVE,
+            (
+                "test_server_info_has_the_engine_block",
+                [],
+                WT53_CHANGES[WT53_SERVE][1][2],
+                ("    async def body(engine, facade, http):",),
+            ),
+            None,
+        ),
+        # The version pin, raised in another test, given the same pin at the base.
+        (
+            WT53_WT01,
+            ("test_slot_table", VERSION_10, VERSION_11, None),
+            _appended_to("test_slot_table", VERSION_10),
+        ),
+        # The test client's server_info() and load(), in a test given its server_info() at the base.
+        (
+            WT53_WT15,
+            (
+                "test_kv_cache_events_are_empty_while_the_sources_cannot_be_read",
+                CLIENT_SERVER_INFO,
+                WT53_CHANGES[WT53_WT15][3][2],
+                None,
+            ),
+            _appended_to(
+                "test_kv_cache_events_are_empty_while_the_sources_cannot_be_read",
+                ["    def server_info():", *CLIENT_SERVER_INFO],
+            ),
+        ),
+    ],
+    ids=[
+        "field-in-another-class",
+        "fill-in-another-call",
+        "handler-in-another-test",
+        "version-in-another-test",
+        "client-in-another-test",
+    ],
+)
+def test_wt53_fix1_may_not_make_its_changes_in_another_statement(
+    tmp_path, capsys, path, change, base_edit
+):
+    """Each change here is one the exception lists, line for line, in a statement it does not name."""
+    within, removed, added, after = change
+    (index,) = [i for i, c in enumerate(WT53_CHANGES[path]) if c[1:3] == (removed, added)]
+    make = _wt53_edit(path, index, change)
+
+    def edit(lines, regions):
+        new = make(lines, regions)
+        ast.parse("\n".join(new))
+        return new
+
+    repo, base = _wt53_repo(tmp_path, path, edit, base_edit)
+    assert check_ownership.check("WT-53-fix1", f"{base}..HEAD", str(repo)) == 1
+    assert "not one of the allowed changes" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "path, hunks",
+    # The renaming hunks, and the changes in the renamed tests.
+    [(WT53_WT15, 2 + 4)],
+    ids=["wt15"],
+)
+def test_wt53_fix1_needs_the_renames_to_change_the_renamed_tests(tmp_path, path, hunks):
+    rule = check_ownership.match_rule("WT-53-fix1", path)
+    repo, base = _wt53_repo(tmp_path, path, _wt53_edit(path))
+    assert check_ownership.disallowed_lines(rule, str(repo), base, "HEAD", path) == []
+    without = check_ownership._exception(path, rule.note, changes=rule.changes)
+    found = check_ownership.disallowed_lines(without, str(repo), base, "HEAD", path)
+    assert len(found) == hunks and all("not one of the allowed changes" in line for line in found)
+
+
+@pytest.mark.parametrize(
+    "path, index",
+    [(WT53_WT15, 1), (WT53_WT15, 4)],
+    ids=["http-test", "subscription-test"],
+)
+@pytest.mark.parametrize("name", ["kept", "another"])
+def test_wt53_fix1_may_not_give_a_renamed_test_another_name(tmp_path, capsys, path, index, name):
+    within, removed, added, after = WT53_CHANGES[path][index]
+    if name == "kept":  # the changes in the test made, but its old name kept
+        new = [removed[0], *added[1:]]
+    else:
+        new = [added[0].replace("def test_", "def test_x_"), *added[1:]]
+    make = _wt53_edit(path, index, (within, removed, new, after))
+    repo, base = _wt53_repo(tmp_path, path, make)
+    assert check_ownership.check("WT-53-fix1", f"{base}..HEAD", str(repo)) == 1
+    (old,) = [old for old, new in WT53_RENAMES[path].items() if new == within]
+    assert f"does not rename {old} to {within} at the head" in capsys.readouterr().out
+
+
 FUNCTIONS = (
     "import os\n\n\ndef f():\n    a = 1\n    return a\n\n\ndef g():\n    a = 1\n    return a\n"
 )
@@ -1472,6 +1909,112 @@ def test_each_listed_change_is_made_once_where_it_names(tmp_path, new, bad):
         assert found == []
     else:
         assert found and any(bad in line for line in found)
+
+
+RENAME_F = check_ownership._change("h", ("def f():",), ("def h():",))
+RETURN_2_IN_H = check_ownership._change("h", ("    return a",), ("    return 2",))
+RENAMED = (("f", "h"),)
+F_RENAMED_RETURNING_2 = FUNCTIONS.replace(
+    "def f():\n    a = 1\n    return a", "def h():\n    a = 1\n    return 2"
+)
+
+
+@pytest.mark.parametrize(
+    "changes, renames, new, allowed",
+    [
+        ((RENAME_F,), RENAMED, FUNCTIONS.replace("def f", "def h"), True),
+        ((RENAME_F, RETURN_2_IN_H), RENAMED, F_RENAMED_RETURNING_2, True),
+        ((RENAME_F,), (), FUNCTIONS.replace("def f", "def h"), False),
+        ((RETURN_2_IN_H,), RENAMED, FUNCTIONS.replace("return a", "return 2", 1), False),
+        ((RENAME_F,), RENAMED, FUNCTIONS.replace("def f", "def k"), False),
+        ((RENAME_F,), (("g", "h"),), FUNCTIONS.replace("def g", "def h"), False),
+    ],
+    ids=[
+        "renamed",
+        "renamed-and-changed",
+        "rename-not-listed",
+        "changed-under-its-old-name",
+        "another-name",
+        "another-statement-renamed",
+    ],
+)
+def test_a_listed_rename_lets_a_change_name_a_statement_by_its_new_name(
+    tmp_path, changes, renames, new, allowed
+):
+    found = _limited_diff(tmp_path, new, changes=changes, renames=renames)
+    assert (found == []) == allowed, found
+
+
+def test_an_exception_renames_only_with_its_changes():
+    with pytest.raises(ValueError, match="only with its changes"):
+        check_ownership._exception("x.py", "test", renames=RENAMED)
+    with pytest.raises(ValueError, match="only with its changes"):
+        check_ownership._exception("x.py", "test", lines=("x",), renames=RENAMED)
+
+
+@pytest.mark.parametrize(
+    "renames",
+    [(("f", "h"), ("g", "h")), (("f", "h"), ("f", "k"))],
+    ids=["two-statements-to-one-name", "one-statement-to-two-names"],
+)
+def test_an_exception_renames_each_statement_once_to_its_own_name(renames):
+    changes = (RENAME_F, check_ownership._change("k", ("def g():",), ("def k():",)))
+    with pytest.raises(ValueError, match="each statement once"):
+        check_ownership._exception("x.py", "test", changes=changes, renames=renames)
+
+
+@pytest.mark.parametrize(
+    "renames",
+    [(("f", "k"),), (("f", "h"),)],
+    ids=["no-change-in-the-new-name", "a-change-in-the-old-name"],
+)
+def test_an_exception_lists_a_rename_with_changes_by_its_new_name(renames):
+    changes = (RENAME_F,) if renames[0][1] == "k" else (RENAME_F, A_TO_2)
+    with pytest.raises(ValueError, match="needs a change in"):
+        check_ownership._exception("x.py", "test", changes=changes, renames=renames)
+
+
+A_REMOVED_IN_H = check_ownership._change("h", ("    a = 1",))
+
+
+@pytest.mark.parametrize(
+    "changes, renames, new, bad",
+    [
+        (
+            (check_ownership._change("g", ("def f():",), ("def g():",)),),
+            (("f", "g"),),
+            FUNCTIONS.replace("a = 1", "a = 2", 1),
+            "x.py has no f to rename, or has g already, at the merge base",
+        ),
+        (
+            (RENAME_F,),
+            (("k", "h"),),
+            FUNCTIONS.replace("def f", "def h"),
+            "x.py has no k to rename, or has h already, at the merge base",
+        ),
+        (
+            (A_REMOVED_IN_H,),
+            RENAMED,
+            FUNCTIONS.replace("    a = 1\n", "", 1),
+            "x.py does not rename f to h at the head",
+        ),
+        (
+            (RENAME_F,),
+            RENAMED,
+            FUNCTIONS.replace("def f", "def h") + "\n\ndef f():\n    pass\n",
+            "x.py does not rename f to h at the head",
+        ),
+    ],
+    ids=[
+        "new-name-at-the-merge-base",
+        "no-old-name-at-the-merge-base",
+        "not-renamed",
+        "old-name-kept",
+    ],
+)
+def test_a_listed_rename_happens(tmp_path, changes, renames, new, bad):
+    """Otherwise a change listed for the new name would land in another statement or the old one."""
+    assert _limited_diff(tmp_path, new, changes=changes, renames=renames) == [bad]
 
 
 INSERTION = check_ownership._change("f", (), ("    b = 3",))
@@ -1521,6 +2064,40 @@ def test_a_change_needs_python_the_interpreter_parses(tmp_path, base, head):
     _commit(repo, {"x.py": head}, "change")
     found = check_ownership.disallowed_lines(rule, str(repo), first, "HEAD", "x.py")
     assert found == ["x.py is not Python this interpreter parses, at the merge base or the head"]
+
+
+IMPORT_SYS = check_ownership._change("import", (), ("import sys",))
+F_RENAMED_AS_F = check_ownership._change("f", ("def f():",), ("def h():",))
+
+
+@pytest.mark.parametrize(
+    "change, new, allowed",
+    [
+        (INSERTION, FUNCTIONS.replace("    a = 1\n", "    a = 1\n    b = 3\n", 1), True),
+        (
+            INSERTION,
+            FUNCTIONS.replace("    a = 1\n", "    a = 1\n    b = 3\n", 1).replace(
+                "    return a\n", "    return a\n    b = 3\n", 1
+            ),
+            False,
+        ),
+        (IMPORT_SYS, "import os\nimport sys\n" + FUNCTIONS.removeprefix("import os\n"), True),
+        (IMPORT_SYS, FUNCTIONS + "import sys\n", False),
+        (F_RENAMED_AS_F, FUNCTIONS.replace("def f", "def h"), False),
+    ],
+    ids=[
+        "used-once",
+        "used-twice-in-its-statement",
+        "import-after-the-imports",
+        "import-at-the-end-of-the-file",
+        "added-lines-in-another-statement",
+    ],
+)
+def test_a_change_is_used_once_and_lies_in_one_statement_on_both_sides(
+    tmp_path, change, new, allowed
+):
+    found = _limited_diff(tmp_path, new, changes=(change,))
+    assert (found == []) == allowed, found
 
 
 @pytest.mark.parametrize(

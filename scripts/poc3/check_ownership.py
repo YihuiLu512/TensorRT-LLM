@@ -27,19 +27,21 @@ in one of two forms (patterns are regular expressions in which ``\d`` and
   statement the change names, with the same number of removed and of added
   lines, each matching its counterpart in the change in full, in order.
 
-A top-level statement is a ``def`` or ``class`` (from its first decorator), an
-assignment to a name, or any import (named ``import``), up to the line before
-the next top-level statement. A hunk lies in a statement when its removed lines
-lie in it in the file at the merge base, and its added lines lie in it in the
-file at the head; a hunk that only adds lines must also follow or precede a
-line of that statement at the merge base, and the file must be Python the
-interpreter running the check parses at both. With either form nothing else
-about the file may change (its mode or final newline, for example); otherwise
-the path is out of bounds. Paths changed under
-``shared`` and ``exception`` rules are listed for a reviewer to check by hand.
-Existing test files an item's rules name one by one are ``shared`` even for the
-item they belong to: existing assertions change only where tasks.md §0.3 or a
-ruling allows it, so changes there are listed too.
+A top-level statement runs from its first line (its first decorator) up to the
+line before the next top-level statement of any kind. A ``def`` or ``class`` is
+named by its name, an assignment (plain or annotated) whose first target is a
+name by that name, and any import by ``import``; other statements have no name.
+A hunk lies in a named statement when its removed lines lie in it in the file at
+the merge base, and its added lines lie in it in the file at the head; a hunk
+that only adds lines must also follow or precede a line of that statement at the
+merge base, and the file must be Python the interpreter running the check parses
+at both. A ``changes`` exception may also list the statements it renames, each
+from one name to another: the file must have a statement by the first name and
+none by the second at the merge base, and the other way round at the head, and
+at the merge base the statement goes by the second. With either form nothing
+else about the file may change (its mode or final newline, for example);
+otherwise the path is out of bounds. Paths changed under ``shared`` and
+``exception`` rules are listed for a reviewer to check by hand.
 A pattern starting with ``!`` excludes paths from the rules before it.
 
 The orchestrator's main files belong to no work item. Some code inside files
@@ -85,7 +87,9 @@ class Change(NamedTuple):
 
     removed: tuple[str, ...]  # patterns of its removed lines, in order
     added: tuple[str, ...]  # patterns of its added lines, in order
-    within: str  # the top-level statement it lies in (see _hunk_regions)
+    # The top-level statement it lies in (see _hunk_regions); one the exception renames goes by
+    # its name at the head.
+    within: str
 
 
 @dataclass(frozen=True)
@@ -99,6 +103,9 @@ class Rule:
     lines: tuple[str, ...] = ()
     # ... or the only hunks allowed, each used at most once.
     changes: tuple[Change, ...] = ()
+    # With changes: the top-level statements the hunks rename, as (name at the merge base, name at
+    # the head). A change names a renamed statement by its name at the head.
+    renames: tuple[tuple[str, str], ...] = ()
 
 
 def _own(*patterns: str, repo: str = TRTLLM) -> list[Rule]:
@@ -115,10 +122,24 @@ def _exception(
     repo: str = TRTLLM,
     lines: tuple[str, ...] = (),
     changes: tuple[Change, ...] = (),
+    renames: tuple[tuple[str, str], ...] = (),
 ) -> Rule:
     if lines and changes:
         raise ValueError(f"{pattern}: an exception lists lines or changes, not both")
-    return Rule(pattern, "exception", note, repo, lines, changes)
+    if renames and not changes:
+        raise ValueError(f"{pattern}: an exception renames statements only with its changes")
+    olds, news = {old for old, _ in renames}, {new for _, new in renames}
+    if len(olds) < len(renames) or len(news) < len(renames):
+        raise ValueError(
+            f"{pattern}: an exception renames each statement once, each to its own name"
+        )
+    named = {change.within for change in changes}
+    for old, new in renames:
+        if new not in named or old in named:
+            raise ValueError(
+                f"{pattern}: renaming {old} to {new} needs a change in {new}, none in {old}"
+            )
+    return Rule(pattern, "exception", note, repo, lines, changes, renames)
 
 
 def _change(within: str, removed: tuple[str, ...] = (), added: tuple[str, ...] = ()) -> Change:
@@ -144,6 +165,11 @@ _SPECULATION_TEST = (
 )
 _TAMPERED_HANDOFF_TEST = "test_gen_worker_frontend_rejects_a_tampered_handoff_signature"
 _SIGNED_HANDOFF_TEST = "test_a_signed_handoff_is_not_refused_for_a_missing_transceiver"
+_UNSUPPORTED_HANDLER_TEST = "test_an_unsupported_error_from_a_handler_answers_501"
+_NO_EVENTS_HTTP_TEST_WAS = "test_kv_cache_events_the_frontend_cannot_read_answer_501"
+_NO_EVENTS_HTTP_TEST = "test_kv_cache_events_the_frontend_cannot_read_answer_no_events"
+_NO_EVENTS_SUBSCRIPTION_TEST_WAS = "test_kv_cache_events_unsupported_raise_a_new_error_each_call"
+_NO_EVENTS_SUBSCRIPTION_TEST = "test_kv_cache_events_unsupported_answer_no_events_each_call"
 # The registry of lines check_invariants.py lets CS-20 add.
 INVARIANT_ADDITIONS = "scripts/poc3/invariant_additions.yaml"
 # Gate files only WT-30 and its fixes may change (see the module docstring).
@@ -701,6 +727,191 @@ OWNERSHIP: dict[str, list[Rule]] = {
         _shared("tensorrt_llm/serve/openai_server.py", "CS-10: get_server_info, minimal"),
         _shared(f"{POC}/multi_frontend.py", "CS-17"),
         _shared(f"{POC}/launch.py", "CS-17"),
+        # Contract v11 (rulings U24 and N46), which WT-53-fix1 makes: EngineInfo carries the
+        # engine's KV-cache block size and block count, and a frontend subscribes to KV-cache
+        # events at its start, so the default /kv_cache_events answers no events.
+        _exception(
+            f"{POC}/engine_client.py",
+            "contract v11 (U24, N46) only: the EngineInfo.kv_block_size and total_kv_blocks"
+            " fields and their docstring",
+            changes=(
+                _change(
+                    "EngineInfo",
+                    added=(
+                        "        kv_block_size: ``ServerInfo.capacity.kv_block_size``, the tokens in"
+                        " one",
+                        "            KV-cache block; None when the engine reports none.",
+                        "        total_kv_blocks: ``ServerInfo.capacity.total_kv_blocks``, the"
+                        " KV-cache",
+                        "            blocks the engine can allocate; None when the engine reports"
+                        " none.",
+                    ),
+                ),
+                _change(
+                    "EngineInfo",
+                    added=(
+                        "    kv_block_size: int | None = None",
+                        "    total_kv_blocks: int | None = None",
+                    ),
+                ),
+            ),
+        ),
+        _exception(
+            f"{POC}/engine_client_impl.py",
+            "contract v11 (U24, N46) only: _engine_info filling kv_block_size and"
+            " total_kv_blocks from the capacity",
+            changes=(
+                _change(
+                    "_engine_info",
+                    added=(
+                        "        kv_block_size=capacity.kv_block_size or None,",
+                        "        total_kv_blocks=capacity.total_kv_blocks or None,",
+                    ),
+                ),
+            ),
+        ),
+        _exception(
+            f"{CLIENT_TESTS}/test_openengine_poc_serve.py",
+            "contract v11 (U24) only: the 501 handler case raising OpenEngineUnsupportedError"
+            " itself, since the default /kv_cache_events answers no events",
+            changes=(
+                _change(
+                    _UNSUPPORTED_HANDLER_TEST,
+                    added=(
+                        "    async def unsupported(client, timeout):",
+                        '        raise contracts.OpenEngineUnsupportedError("no KV-cache events")',
+                        "",
+                    ),
+                ),
+                _change(
+                    _UNSUPPORTED_HANDLER_TEST,
+                    added=("        facade._metrics.kv_cache_events = unsupported",),
+                ),
+            ),
+        ),
+        _exception(
+            f"{POC_TESTS}/wt01/test_poc2_wt01_contracts.py",
+            "U24 flips only: contract version 11 in test_contract_version, and the default"
+            " metrics answering no KV-cache events instead of raising OpenEngineUnsupportedError",
+            changes=(
+                _change(
+                    "test_contract_version",
+                    ("    assert contracts.POC2_CONTRACT_VERSION == 10",),
+                    ("    assert contracts.POC2_CONTRACT_VERSION == 11",),
+                ),
+                _change(
+                    "test_default_metrics_record_nothing",
+                    (
+                        "    with pytest.raises(contracts.OpenEngineUnsupportedError):",
+                        "        asyncio.run(recorder.kv_cache_events(FakeEngineClient(), None))",
+                    ),
+                    (
+                        "    asyncio.run(recorder.subscribe_kv_cache_events(FakeEngineClient()))",
+                        "    assert asyncio.run(recorder.kv_cache_events(FakeEngineClient(), None))"
+                        " == []",
+                    ),
+                ),
+            ),
+        ),
+        _exception(
+            f"{POC_TESTS}/wt35/test_poc3_wt35_contracts.py",
+            "U24 flip only: contract version 11 in test_contract_version",
+            changes=(
+                _change(
+                    "test_contract_version",
+                    ("    assert contracts.POC2_CONTRACT_VERSION == 10",),
+                    ("    assert contracts.POC2_CONTRACT_VERSION == 11",),
+                ),
+            ),
+        ),
+        _exception(
+            f"{POC_TESTS}/wt15/test_poc2_wt15_metrics.py",
+            "U24 flips only, two tests renamed to say so: /kv_cache_events answering no events"
+            " instead of 501 for no sources or ones the frontend cannot read, and the subscription"
+            " answering no events instead of raising OpenEngineUnsupportedError for an engine"
+            " without sources; N46: the test client's server_info() and load(); a comment on the"
+            " first call",
+            changes=(
+                _change(
+                    "test_kv_cache_events_arrive_through_get_kv_event_sources",
+                    ("        # The first call subscribes; nothing was received before it.",),
+                    (
+                        "        # The frontend subscribed at its start; nothing was published"
+                        " since, and",
+                        "        # the engine's load reports no total_kv_blocks for a created"
+                        " event.",
+                    ),
+                ),
+                _change(
+                    _NO_EVENTS_HTTP_TEST,
+                    (f"def {_NO_EVENTS_HTTP_TEST_WAS}(tmp_path, sources):",),
+                    (f"def {_NO_EVENTS_HTTP_TEST}(tmp_path, sources):",),
+                ),
+                _change(
+                    _NO_EVENTS_HTTP_TEST,
+                    (
+                        "    assert [r.status_code for r in responses] == [501, 501],"
+                        " responses[0].text",
+                    ),
+                    (
+                        "    assert [r.status_code for r in responses] == [200, 200],"
+                        " responses[0].text",
+                        "    assert [r.json() for r in responses] == [[], []]",
+                    ),
+                ),
+                _change(
+                    "_Client",
+                    ('        return SimpleNamespace(engine_name="e", extra={})',),
+                    (
+                        '        return SimpleNamespace(engine_name="e", extra={},'
+                        " total_kv_blocks=None)",
+                        "",
+                        "    async def load(self):",
+                        "        return None",
+                    ),
+                ),
+                _change(
+                    _NO_EVENTS_SUBSCRIPTION_TEST,
+                    (f"def {_NO_EVENTS_SUBSCRIPTION_TEST_WAS}():",),
+                    (f"def {_NO_EVENTS_SUBSCRIPTION_TEST}():",),
+                ),
+                _change(
+                    _NO_EVENTS_SUBSCRIPTION_TEST,
+                    (
+                        "    async def raised():",
+                        "        try:",
+                        "            await subscription.events(client, 0)",
+                        "        except contracts.OpenEngineUnsupportedError as error:",
+                        "            return error",
+                        '        raise AssertionError("not raised")',
+                        "",
+                    ),
+                ),
+                _change(
+                    _NO_EVENTS_SUBSCRIPTION_TEST,
+                    ("        return [await raised() for _ in range(2)]",),
+                    ("        return [await subscription.events(client, 0) for _ in range(2)]",),
+                ),
+                _change(
+                    _NO_EVENTS_SUBSCRIPTION_TEST,
+                    (
+                        "    first, second = asyncio.run(twice())",
+                        "    # Raising the same error again would lengthen its traceback at every"
+                        " call.",
+                        "    assert first is not second",
+                        "    assert str(first) == str(second)",
+                    ),
+                    (
+                        "    assert asyncio.run(twice()) == [[], []]",
+                        "    # The engine's answer is kept: asked once.",
+                    ),
+                ),
+            ),
+            renames=(
+                (_NO_EVENTS_HTTP_TEST_WAS, _NO_EVENTS_HTTP_TEST),
+                (_NO_EVENTS_SUBSCRIPTION_TEST_WAS, _NO_EVENTS_SUBSCRIPTION_TEST),
+            ),
+        ),
     ],
     "WT-54": _own("scripts/poc3/wt54_*", f"{APPS}/_test_openengine_disagg_perf_metrics.py")
     + [
@@ -975,6 +1186,13 @@ def disallowed_lines(
         head_regions = _regions_at(repo_dir, head_ref, path)
         if base_regions is None or head_regions is None:
             return [f"{path} is not Python this interpreter parses, at the merge base or the head"]
+        for old, new in rule.renames:
+            if old not in base_regions or new in base_regions:
+                return [f"{path} has no {old} to rename, or has {new} already, at the merge base"]
+            if new not in head_regions or old in head_regions:
+                return [f"{path} does not rename {old} to {new} at the head"]
+        renamed = dict(rule.renames)
+        base_regions = [renamed.get(name, name) for name in base_regions]
     bad = []
     # The hunk being read: its header, the statements it lies in, its removed and added lines.
     hunk: tuple[str, set[str], list[str], list[str]] | None = None
