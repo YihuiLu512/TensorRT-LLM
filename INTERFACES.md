@@ -1230,7 +1230,7 @@ E0 第一轮的 pilot（`02_e0/E0/analysis/pilot.json`）定不出 `window_ns` /
 2. **I1（CPU）**，按核组算。作用对象：`measure_class` 不是 `observer` 的全部角色的登记进程；只用本档窗口内的数据。
    - **核组**：同一角色里 `roles.json` 的 `procs[].cpus` 相交（直接或经同角色的另一进程）的登记进程合成一组。caplaunch 把一个角色的父进程与全部 worker 都绑在该角色的整组核上（E1-0：空汇父进程与 4 个 worker 同在核 0–3，负载器父子同在核 4），所以一个角色通常就是一个核组。
    - **前提**：核组的核不与**其他角色**的任何登记进程相交（同角色的进程不算），否则 NOT_RUN；没有 `cpus` 的进程 NOT_RUN。单核规则另需 `pilot.json` 的 D14 结论（软中断算不算本进程的工作），没有 ⇒ NOT_RUN。
-   - **读数**：判据读什么由核组的核数决定（单核 / 多核分支）。单核核组读该核的 `/proc/stat`（`cpus.jsonl` 的 `core_busy_frac*`；D14 只用在这里）。多核核组读每个进程的 GIL 域：线程 utime+stime（`threads.jsonl`），`class = python` 的线程合计为该进程的 GIL 域（每个进程一个 GIL）；组内每核读数与 `unattributed_cores`（核上的忙碌减去组内全部线程）照样算出、并列输出，但不进判据：一个核组里有几个进程（几个 GIL）时，每核忙碌分不出是哪个 GIL 域在忙（与设计稿 §2.6 的偏差，见第 10 条⑩）。线程的 `class`、`identified_as` 先取线程清单，再用 `tier.json` 的窗口始末线程表覆盖。GIL 域读数不完整时，该进程的 GIL 域一路 NOT_RUN，偏移也不记进 `stats`：本档或基线档窗口里有 CPU 的线程查不到类别（`unknown`；这类线程也不当非 GIL 候选），或 `python` / `unknown` 线程在窗口里只有一行（它的 CPU 不知道）。组内任一进程在窗口里没有两行线程读数 ⇒ 该组 NOT_RUN。
+   - **读数**：判据读什么由核组的核数决定（单核 / 多核分支）。单核核组读该核的 `/proc/stat`（`cpus.jsonl` 的 `core_busy_frac*`；D14 只用在这里）。多核核组读每个进程的 GIL 域：线程 utime+stime（`threads.jsonl`），`class = python` 的线程合计为该进程的 GIL 域（每个进程一个 GIL）；组内每核读数与 `unattributed_cores`（核上的忙碌减去组内全部线程）照样算出、并列输出，但不进判据：一个核组里有几个进程（几个 GIL）时，每核忙碌分不出是哪个 GIL 域在忙（与设计稿 §2.6 的偏差，见第 10 条⑩）。线程的 `class`、`identified_as` 先取线程清单，再用 `tier.json` 的窗口始末线程表覆盖。GIL 域读数不完整时，该进程的 GIL 域一路 NOT_RUN，GIL 域的两个偏移（`T2:gil_domain_cores`、`T2:gil_run_delay_frac`）也不记进 `stats`：本档或基线档窗口里有 CPU 的线程查不到类别（`unknown`；这类线程也不当非 GIL 候选），或 `python` / `unknown` 线程在窗口里只有一行（它的 CPU 不知道）。组内任一进程在窗口里没有两行线程读数 ⇒ 该组 NOT_RUN。
    - **单元**：单核的核组是一个单元（读的就是那一个核）；多核的核组每个进程一个单元。每个单元都列出组内全部 `pids`。
    - **单核核组**：核的忙碌占比 ≥ `near_one_core_min`，并且它相对本次启动基线档的偏移在带上界之外，I1 才成立。这是设计稿「整进程只给 1 核时，看这个核的空闲时间是否接近零」的写法。D14 为真时用含软中断的 `T2:core_busy_frac_softirq:<角色>`，为假时用不含软中断的 `T2:core_busy_frac:<角色>`。
    - **多核核组的每个进程**，两条路，满足一条即成立：
@@ -1276,7 +1276,7 @@ E0 第一轮的 pilot（`02_e0/E0/analysis/pilot.json`）定不出 `window_ns` /
      - 本档摘要在、但没报该位点 ⇒ FAIL；两档里报了的规格与声明的不同 ⇒ FAIL；
      - 两档摘要的 `hits_delta`、`applied_delta`、`applied_ns_delta`、`expected_applied_delta`（清空档另有 `aux_pending_at_end`）任一缺键或为 null ⇒ NOT_RUN（不按 0 算）；`activation_unchanged` 不为真 ⇒ NOT_RUN；
      - 没有其后的清空档（或它没有清空门记录）、清空门没过、清空档里有 worker 没有报该位点的摘要 ⇒ 计数比较 NOT_RUN；
-     - 窗口内 `applied == expected_applied`，`applied_ns ≥ applied × delta_ns`，清空档末 `aux_pending_at_end == 0`（负载档末的在途不算）；本档摘要齐全时另要窗口内 `applied > 0`；
+     - 窗口内 `applied == expected_applied`，`applied_ns ≥ applied × delta_ns`，清空档末 `aux_pending_at_end == 0`（负载档末的在途不算）；本档摘要齐全时另要 `applied > 0`（清空档可用时按窗口计，不可用时按本档计）；
      - 窗口内经过次数之和落在对账链给出的该角色那一跳的 [应有数 − 过载失败, 应有数] 内（应有数与 C5～C7 用同一个函数 `checks.hop_range`）。每请求位点查 `requests` 链，每消息位点查 `messages` / `chunks` 链（`intervene.SITE_UNIT`）。没有对应的跳（如 `beat.step`、产品探针位点）⇒ NOT_RUN。
      - 摘要里出现了没有声明的注入 ⇒ FAIL。
    - **跨启动**：`python3 -m capjudge.intervene --inputs <列表> --workdir <W> --out <新文件>`。列表与已判核对同 `capjudge.boundary`（§14）：每行一个已判（`JUDGED.tsv` 的 sha 与 `verdicts.json` 一致）、模式为 `P+X+I+V` 的树。入口过滤与 `capjudge.boundary` 相同（`boundary.upstream_now`，§14 共同规则「筛选」）：判定前的启动级结论现在不是 VALID 的树（判定后追加的 STATE 行也算）列进 `V.excluded`，不当对照、不当剂量级、不进最终等级；全部被剔除 ⇒ 3（「no launch left after the exclusions」）。其余树的实验与负载轴必须相同。不覆盖已有输出（输出或 `.cmd.txt` 已存在 ⇒ 3），产物后写 `.cmd.txt`；出错 ⇒ 退出码 3。输出 `capkit.intervention/1`。每次启动的边界用 §14.1 的 `interval`（在第一个工具到顶档截断），判定器的 T4 并列为 `boundary_t4`。

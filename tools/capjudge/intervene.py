@@ -161,8 +161,8 @@ def _one_site(ctx, td, next_drain, role, site, decl, obs, tail):
     delta_ns, and nothing pending on an aux thread at the end of the window. No data (a
     worker's summary missing in either tier, a counter key missing, no following drain tier or
     its gate not passed, the drain tier not reporting the site) is NOT_RUN; a load-tier
-    summary that is there but does not report a declared site, a wrong spec or a wrong count
-    is FAIL."""
+    summary that is there but does not report a declared site, a wrong spec in either tier,
+    or a wrong count over the window is FAIL."""
     it = {"role": role, "site": site, "declared": decl, "status": PASS, "why": []}
 
     def bad(st, why):
