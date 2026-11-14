@@ -1,6 +1,7 @@
 {
  "exit_code": 0,
  "grade": {
+  "I_status": "LOCALIZED",
   "grade": "LOWER_BOUND",
   "role": "capload"
  },

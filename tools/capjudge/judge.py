@@ -418,7 +418,7 @@ def judge_tree(ctx, log, code_ok=True, code_note=""):
                 res.append(C.check_c13_tier(ctx, ld, td, record))
         base_td = tds.get(base) if base is not None else None
         x = evaluate_x(ctx, ld, td, base_td, record, hooks=_hooks(ctx, ld, td, base_td, record,
-                                                                 i_cache))
+                                                                 i_cache, next_drain))
         p = _fold(res)
         reasons = list(launch_notes)
         if t.seq > completed:
@@ -499,9 +499,10 @@ def _launch_verdict(ctx, tier_out, launch_res, launch_p, gpu_void):
     return out
 
 
-def _hooks(ctx, ld, td, base_td, record, cache):
-    """symptoms.evaluate_x hooks for I and the per-tier V heartbeat (mode P+X+I+V only)."""
+def _hooks(ctx, ld, td, base_td, record, cache, next_drain):
+    """symptoms.evaluate_x hooks for I and the per-tier V heartbeat (mode P+X+I+V only; the
+    heartbeat counts passes over the tier and `next_drain`, as C5-C7)."""
     if ctx.mode != "P+X+I+V":
         return None
     return {"I": lambda x: localize.localize_tier(ctx, ld, td, base_td, x, record, cache),
-            "V": lambda: intervene.tier_heartbeat(ctx, td)}
+            "V": lambda: intervene.tier_heartbeat(ctx, td, next_drain)}

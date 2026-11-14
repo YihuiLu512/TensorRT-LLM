@@ -18,6 +18,7 @@ from conftest import SAMPLES, TOOLS, judge_mod
 from capcommon.inject import InjectSpec  # noqa: E402
 
 V = judge_mod("intervene")
+CH = judge_mod("checks")
 G = judge_mod("grade")
 I = judge_mod("inputs")
 K = judge_mod("calib")
@@ -48,11 +49,23 @@ def _entry(**kw):
     return e
 
 
-def _hb(entries, **kw):
+def _quiet(**kw):
+    """A drain-tier entry: the dose still active, no pass left over by default."""
+    return _entry(**dict({"hits_delta": 0, "applied_delta": 0, "expected_applied_delta": 0,
+                          "applied_ns_delta": 0}, **kw))
+
+
+def _drain(entries, passed=True):
+    return NS(tier=NS(seq=5), drain_gate={"passed": passed, "t_pass_rel_ns": 1},
+              summaries={"relay1": {w: {"inject": [e]} for w, e in enumerate(entries)}})
+
+
+def _hb(entries, drain=None, **kw):
     ctx, tier = _hb_ctx(**kw)
     td = NS(tier=tier, summaries={"relay1": {w: {"inject": [e]} for w, e in
                                              enumerate(entries)}})
-    return V.tier_heartbeat(ctx, td)
+    nd = _drain([_quiet() for _e in entries] or [_quiet()]) if drain is None else drain
+    return V.tier_heartbeat(ctx, td, nd if drain is not False else None)
 
 
 def test_heartbeat_pass_when_every_count_matches():
@@ -61,12 +74,64 @@ def test_heartbeat_pass_when_every_count_matches():
     assert r["injections"][0]["hits_expected"] == [30, 30]  # 10 requests x 3 messages
 
 
+def test_heartbeat_counts_the_passes_of_the_tier_and_its_drain_tier():
+    # the tier's last messages pass the site after the tier ended, in the drain tier (E0(b) s1
+    # tier 6: 24741 + 14259 = 39000); the window of the reconcile check C5-C7
+    r = _hb([_entry(hits_delta=24, applied_delta=24, expected_applied_delta=24,
+                    applied_ns_delta=24 * 20000, aux_pending_at_end=3)],
+            drain=_drain([_quiet(hits_delta=6, applied_delta=6, expected_applied_delta=6,
+                                 applied_ns_delta=6 * 20000)]))
+    it = r["injections"][0]
+    assert r["status"] == "PASS", it["why"]
+    assert (it["hits_tier"], it["hits_drain"], it["hits"]) == (24, 6, 30)
+    # aux_pending is read at the end of the window: the load tier's 3 are not a failure
+    r = _hb([_entry()], drain=_drain([_quiet(aux_pending_at_end=2)]))
+    assert r["status"] == "FAIL" and "w0 aux_pending_at_end 2 at the end of drain tier 5" in \
+        r["injections"][0]["why"][0]
+
+
+def test_heartbeat_reads_applied_over_the_tier_and_its_drain_tier():
+    # an aux thread applies passes after the tier that counted them (E0(b) s3 tier 6: applied
+    # 25616 of 38860 with 13244 pending, the drain tier applies 13384 for its own 140)
+    r = _hb([_entry(applied_delta=25, applied_ns_delta=25 * 20000, aux_pending_at_end=5)],
+            drain=_drain([_quiet(applied_delta=5, applied_ns_delta=5 * 20000)]))
+    assert r["status"] == "PASS", r["injections"][0]["why"]
+
+
+@pytest.mark.parametrize("drain,why", [
+    (False, "no following drain tier"),
+    (_drain([_quiet()], passed=False), "drain gate did not pass"),
+    (_drain([]), "have no summary reporting the site in drain tier 5"),
+    (_drain([dict(_quiet(), hits_delta=None)]), "reports no ['hits_delta']"),
+])
+def test_heartbeat_pass_count_needs_the_drain_tier(drain, why):
+    r = _hb([_entry()], drain=drain)
+    it = r["injections"][0]
+    assert r["status"] == "NOT_RUN" and it["hits_expected"] is None, it
+    assert any(why in w for w in it["why"]), it["why"]
+
+
+def test_judge_hands_the_heartbeat_the_following_drain_tier(monkeypatch):
+    J = judge_mod("judge")
+    seen = []
+    monkeypatch.setattr(J.intervene, "tier_heartbeat", lambda *a: seen.append(a))
+    hooks = J._hooks(NS(mode="P+X+I+V"), None, "td", None, {}, {}, "drain-td")
+    hooks["V"]()
+    assert seen == [(NS(mode="P+X+I+V"), "td", "drain-td")]
+
+
+def test_heartbeat_expectation_is_the_reconcile_checks():
+    ctx, tier = _hb_ctx()
+    td = NS(tier=tier, summaries={})
+    chain = ctx.launch["reconcile"]["chains"][0]
+    assert V._hop_range(ctx, td, "relay1", "messages") == CH.hop_range(ctx, td, chain, "relay1")
+
+
 @pytest.mark.parametrize("kw,why", [
     ({"applied_delta": 29}, "applied 29 != expected 30"),
     ({"hits_delta": 20, "applied_delta": 20, "expected_applied_delta": 20,
-      "applied_ns_delta": 20 * 20000}, "passes 20 outside"),
+      "applied_ns_delta": 20 * 20000}, "passes 20 (tier 20 + drain 0) outside"),
     ({"applied_ns_delta": 1000}, "injected 1000 ns"),
-    ({"aux_pending_at_end": 2}, "aux_pending_at_end 2"),
     ({"spec": dict(SPEC, delta_ns=40000)}, "!= declared"),
     ({"hits_delta": 0, "applied_delta": 0, "expected_applied_delta": 0, "applied_ns_delta": 0},
      "no pass was injected"),
@@ -74,6 +139,17 @@ def test_heartbeat_pass_when_every_count_matches():
 def test_heartbeat_fail(kw, why):
     r = _hb([_entry(**kw)])
     assert r["status"] == "FAIL" and any(why in w for w in r["injections"][0]["why"])
+
+
+@pytest.mark.parametrize("kw,why", [
+    ({"applied_delta": 1}, "w0 applied 31 != expected 30 (tier + drain tier 5)"),
+    ({"hits_delta": 2, "applied_delta": 2, "expected_applied_delta": 2,
+      "applied_ns_delta": 10}, "w0 injected 600015 ns < applied 32"),
+    ({"spec": dict(SPEC, delta_ns=40000)}, "drain tier 5 w0 spec"),
+])
+def test_heartbeat_fail_on_the_drain_tiers_entry(kw, why):
+    r = _hb([_entry()], drain=_drain([_quiet(**kw)]))
+    assert r["status"] == "FAIL" and any(why in w for w in r["injections"][0]["why"]), r
 
 
 def test_heartbeat_undeclared_or_unchecked():
@@ -87,7 +163,7 @@ def test_heartbeat_undeclared_or_unchecked():
     ctx, tier = _hb_ctx()
     ctx.launch["reconcile"]["chains"] = []
     td = NS(tier=tier, summaries={"relay1": {0: {"inject": [_entry()]}}})
-    r = V.tier_heartbeat(ctx, td)
+    r = V.tier_heartbeat(ctx, td, _drain([_quiet()]))
     assert r["status"] == "NOT_RUN" and "no reconcile hop" in r["injections"][0]["why"][0]
     ctx.tt = NS(inject_for=lambda role, seq: [])
     assert V.tier_heartbeat(ctx, NS(tier=tier, summaries={}))["status"] == "NONE"
@@ -105,12 +181,17 @@ def test_heartbeat_without_data_is_not_run():
     r = V.tier_heartbeat(ctx, NS(tier=tier, summaries={"relay1": {0: {"inject": [_entry(
         hits_delta=0, applied_delta=0, expected_applied_delta=0, applied_ns_delta=0)]}}}))
     assert r["status"] == "NOT_RUN" and r["injections"][0]["hits_expected"] is None
-    # a counter key missing is NOT_RUN, never read as 0
-    for k in ("hits_delta", "applied_delta", "applied_ns_delta", "aux_pending_at_end"):
+    # a counter key missing is NOT_RUN, never read as 0 (aux_pending_at_end is read at the end
+    # of the window, in the drain tier)
+    for k in ("hits_delta", "applied_delta", "applied_ns_delta"):
         e = _entry()
         del e[k]
         r = _hb([e])
         assert r["status"] == "NOT_RUN" and k in r["injections"][0]["why"][0], k
+    e = _quiet()
+    del e["aux_pending_at_end"]
+    r = _hb([_entry()], drain=_drain([e]))
+    assert r["status"] == "NOT_RUN" and "aux_pending_at_end" in r["injections"][0]["why"][0]
 
 
 def test_launch_doses_constant_or_mixed():
@@ -131,13 +212,17 @@ AXIS = {"name": "R", "load_key": "rate_rps", "unit": "req/s", "order": "asc"}
 MC = {"relay1": "under_test", "drain": "stub_out_of_domain", "beat": "stub_out_of_domain"}
 
 
+ROLES = {r: {"kind": "server" if r != "beat" else "client", "measure_class": c, "workers": 1}
+         for r, c in MC.items()}
+
+
 def _launch(lo, hi, doses=None, role_dose="relay1", delta=20000, hb="PASS", grade=None,
-            void=(), axis=AXIS, n=[0]):
+            void=(), axis=AXIS, roles=ROLES, n=[0]):
     n[0] += 1
     d = {} if doses == "none" else (doses or {role_dose: [dict(SPEC, delta_ns=delta)]})
     return {"tree": "t%d" % n[0], "identity": {"experiment": "E0"}, "axis": axis,
             "boundary": {"lower": lo, "upper": hi}, "doses": d, "heartbeat": hb,
-            "measure_class": MC, "void_tiers": list(void),
+            "measure_class": MC, "void_tiers": list(void), "roles": roles,
             "grade": grade or {"grade": "LOCALIZED", "role": "relay1",
                                "finding": "domain_saturated"}}
 
@@ -198,6 +283,49 @@ def test_reverse_dose_needs_a_healthy_closed_interval():
         v = V.dose_response([ctl] + fwd + [rev])
         assert v["reverse"] == [] and "open end" in v["excluded"][-1]["why"], v
         assert v["status"] != "PASS"
+
+
+def test_reverse_dose_must_resolve_a_shift_of_the_forward_size():
+    fwd = [_launch(800, 900), _launch(500, 600, delta=40000)]  # 20000: 200 below the control
+    # a wide reverse interval overlaps the control whatever happened: it could not have seen
+    # a move of 200 (union width 700), so it is no evidence that the boundary stayed
+    wide = _launch(700, 1400, role_dose="drain")
+    v = V.dose_response([_ctl()] + fwd + [wide])
+    assert v["reverse"] == [] and v["status"] == "NOT_RUN", v
+    ex = v["excluded"][-1]
+    assert "cannot resolve a shift of the forward size" in ex["why"]
+    assert (ex["min_resolvable_diff"], ex["forward_shift"]) == (700, 200)
+    # a narrow one can (union width 100 < 200)
+    v = V.dose_response([_ctl()] + fwd + [_launch(1000, 1100, role_dose="drain")])
+    assert v["status"] == "PASS" and v["reverse"][0]["forward_shift"] == 200
+    # no forward level of the reverse delta, or one T5 does not tell from the control
+    v = V.dose_response([_ctl()] + fwd + [_launch(1000, 1100, role_dose="drain",
+                                                  delta=30000)])
+    assert v["reverse"] == [] and "no forward shift of this delta" in v["excluded"][-1]["why"]
+    v = V.dose_response([_ctl(), _launch(1050, 1150), _launch(500, 600, delta=40000),
+                         _launch(1000, 1100, role_dose="drain")])
+    assert v["reverse"] == [] and "T5 indistinguishable against the control" in \
+        v["excluded"][-1]["why"]
+
+
+OTHER = dict(ROLES, relay1=dict(ROLES["relay1"], workers=2))
+
+
+def test_dose_response_pools_one_topology():
+    # dosed launches of another arm (relay1 with 2 workers: another boundary) must not make
+    # the forward steps: they are excluded and the forward needs its own levels
+    ls = [_ctl(), _launch(500, 600, roles=OTHER), _launch(300, 400, delta=40000, roles=OTHER),
+          _launch(1000, 1100, role_dose="drain")]
+    v = V.dose_response(ls)
+    assert v["forward"] == [] and v["status"] == "NOT_RUN", v
+    assert sum("topology differs" in e["why"] for e in v["excluded"]) == 2
+    assert ls[1]["tree"] not in v["used"] and ls[2]["tree"] not in v["used"]
+    # control launches of two topologies: V cannot be run
+    v = V.dose_response([_ctl(), dict(_ctl(), roles=OTHER), _launch(800, 900),
+                         _launch(500, 600, delta=40000), _launch(1000, 1100, role_dose="drain")])
+    assert v["status"] == "NOT_RUN" and "2 topologies" in v["reasons"][0]
+    g = G.final_grade([_ctl()["grade"]] * 2, v)  # nor do their grades combine
+    assert g["grade"] == "NOT_RUN" and "2 topologies" in g["reasons"][0]
 
 
 def test_hop_counts_first_and_unusable_launches_are_listed():
@@ -271,6 +399,12 @@ def test_launch_grade_undetermined_not_localized_not_run():
                        {"non_monotone": True})
     assert g["grade"] == "NOT_LOCALIZED" and "non" not in g["grade"]
     assert any("T4" in r for r in g["reasons"])
+    # the two origins of NOT_LOCALIZED stay apart: I not computed vs no signal held
+    assert g["I_status"] == "NOT_RUN"
+    g2 = G.launch_grade([_t(2, "STABLE"), _t(4, "UNSTABLE", {"status": "NOT_LOCALIZED"})], {})
+    assert (g2["grade"], g2["I_status"]) == ("NOT_LOCALIZED", "NOT_LOCALIZED")
+    f = G.final_grade([g, g2, g2], {"status": "NOT_RUN"})
+    assert f["grade"] == "NOT_LOCALIZED" and f["I_status"] == {"NOT_LOCALIZED": 2, "NOT_RUN": 1}
     assert G.launch_grade([_t(2, "VOID", red=("C5",))], {})["grade"] == "NOT_RUN"
 
 
@@ -433,6 +567,33 @@ def test_load_launch_uses_the_interval_cut_at_the_tool_limit(tmp_path):
     rec = open(o[:-len(".json")] + ".cmd.txt").read()
     assert "module\tcapjudge.intervene" in rec
     assert "input\t%s\t" % os.path.join(tree, "judge", "verdicts.json") in rec
+
+
+def _void_after_judging(tree):
+    with open(os.path.join(tree, "STATE"), "a") as f:
+        f.write("2026-11-14T00:00:00.000Z\tVOID\tcapjobs.launches\tcopy-back mismatch\n")
+
+
+def test_intervene_excludes_launches_marked_void_after_judging(tmp_path):
+    # the same entry filter as capjudge.boundary: a STATE line appended after the judgement
+    W, tree, p = _judge_sample(tmp_path, "i_server_slow")
+    assert p.returncode == 0, p.stderr
+    twin = tree + "-copy"  # the same judged launch (same JUDGED.tsv row) at a second path
+    shutil.copytree(tree, twin)
+    _void_after_judging(twin)
+    x = V.load_launch(twin, W)
+    assert "launch-level conclusion VOID" in x["excluded_why"] and "grade" not in x
+    p, o = _intervene(tmp_path, W, [tree, twin])
+    assert p.returncode == 0, p.stderr
+    doc = json.load(open(o))
+    assert doc["V"]["control"] == [tree] and doc["grade"]["n_launches"] == 1
+    assert doc["V"]["excluded"][0]["tree"] == twin
+    assert "copy-back mismatch" in doc["V"]["excluded"][0]["why"]
+    # nothing left: exit 3, as capjudge.boundary
+    _void_after_judging(tree)
+    p, o = _intervene(tmp_path, W, [tree, twin], out="w.json")
+    assert p.returncode == 3 and "no launch left after the exclusions" in p.stderr
+    assert not os.path.exists(o)
 
 
 def test_intervene_cli_rejects_p_x_trees_and_globs(tmp_path):

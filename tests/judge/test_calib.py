@@ -265,7 +265,7 @@ def _tier(seq=4, rate=40.0, k=1, c=None, beat=20_000_000, max_tokens=3):
 
 def _items(shape, st, tier=None, kind="loadgen_band", split="even", workers=2):
     r = CH.Result("Cx", 4, "t")
-    ctx = NS(roles={"ld": {"workers": workers}})
+    ctx = NS(roles={"ld": {"workers": workers, "kind": "client"}})
     ok = CH._shape_items(r, ctx, kind, shape, tier or _tier(), "ld", 0, st, {}, split)
     return ok, r.finish() if ok else r
 
@@ -309,8 +309,9 @@ def test_c1_uses_each_workers_schedule_share(monkeypatch):
              schedule_meta=meta, calib_bind={"loadgen_band": {"ld": "s"}},
              calib_docs={"loadgen_band": _loadgen(shapes={"s": _shape(
                  K.LOADGEN_STATS, "per_worker_max", value=26.0)})})
-    assert K.worker_share(ctx, _tier(), "ld", 1, "schedule") == 2 / 3
-    assert K.worker_share(ctx, _tier(), "ld", 1, "even") == 1 / 2
+    assert K.worker_share(ctx, _tier(), "ld", 1, "schedule") == (2 / 3, None)
+    ctx.roles["ld"]["kind"] = "client"
+    assert K.worker_share(ctx, _tier(), "ld", 1, "even") == (1 / 2, None)
     monkeypatch.setattr(K, "loadgen_worker_stats", lambda td, role, k: dict(GOOD_ST))
     r = CH.check_c1(ctx, NS(tier=_tier()), {})
     assert (r.status, r.red) == ("RED", 1) and "ld.w1 planned 26.6667" in r.detail[0]
@@ -332,7 +333,11 @@ def test_thread_cpu_cores_from_sidecar_rows():
     rows = [{"t_rel_ns": t, "pid": 7, "tid": tid, "utime_ticks": u, "stime_ticks": 0}
             for t, tid, u in ((0, 7, 0), (10 ** 9, 7, 40), (0, 8, 0), (10 ** 9, 8, 10),
                               (0, 9, 0), (5 * 10 ** 9, 9, 99))]  # tid 9's 2nd row is late
+    # tid 9 has one row in the window: its CPU there is unknown, so no reading (never the sum
+    # of the other threads)
     v, why = K.pid_thread_cpu_cores(rows, 7, 0, 4 * 10 ** 9, 100)
+    assert v is None and "thread(s) [9] have one sidecar row" in why
+    v, why = K.pid_thread_cpu_cores([r for r in rows if r["tid"] != 9], 7, 0, 4 * 10 ** 9, 100)
     assert why is None and abs(v - 0.5) < 1e-9
     assert K.pid_thread_cpu_cores(rows, 6, 0, 4 * 10 ** 9, 100)[0] is None
 
@@ -348,8 +353,12 @@ def _c2_ctx_td(lag_ns, ticks, bind=True):
     sh = _shape(K.STUB_STATS, "per_process_max", value=100.0)
     sh["bands"] = {"T3:loop_lag_p99_ns": {"min": 0, "max": 2_000_000, "n": 3},
                    "T3:thread_cpu_cores": {"min": 0, "max": 0.5, "n": 3}}
-    ctx = NS(roles={"sink": {"role": "sink", "workers": 1, "measure_class": "stub_out_of_domain"},
-                    "x": {"role": "x", "workers": 1, "measure_class": "stub_in_domain"}},
+    ctx = NS(roles={"sink": {"role": "sink", "workers": 1, "measure_class": "stub_out_of_domain",
+                             "kind": "server"},
+                    "x": {"role": "x", "workers": 1, "measure_class": "stub_in_domain",
+                          "kind": "server"},
+                    "ld": {"role": "ld", "workers": 1, "measure_class": "load_source",
+                           "kind": "client"}},
              calib_bind={"stub_calib": {"sink": "s"}} if bind else {},
              calib_docs={"stub_calib": _stub(out_of_domain={"s": sh})})
     td = NS(tier=_tier(), summaries={"sink": {0: doc}})
@@ -439,7 +448,37 @@ def test_c4_server_counts_are_not_merged_across_roles():
     ctx.roles["ld2"] = {"role": "ld2", "kind": "client"}
     ctx.schedule_meta = {"per_tier": {"4": 3}}
     r = CH.check_c4(ctx, NS(tier=_tier(), capbins=caps))
-    assert r.status == "NOT_RUN" and "2 client role(s)" in r.not_run[0]
+    assert r.status == "NOT_RUN" and "has 2 client roles" in r.not_run[0]
+
+
+def test_c4_never_merges_two_client_roles_streams_on_one_server():
+    # only gRPC's ga needs the server's count, but hb's stream with the same req_id reached
+    # the same sink: the server rows hold both (hb's 8 and ga's short 3), so the fallback
+    # cannot tell them apart (merged, ga would read [3, 8])
+    def cb(rows, cols):
+        return {c: [r[i] for r in rows] for i, c in enumerate(cols)}
+    caps = {"server.streams": [({"role": "sink"}, {}, cb([(0, 8, 4), (0, 3, 4)],
+                                                         ("req_id", "tokens", "tier_seq")))],
+            "loadgen.requests": [({"role": "ga"}, {}, cb([(0, 0, -1, 4)], (
+                "req_id", "status", "tokens", "tier_seq"))), ({"role": "hb"}, {}, cb(
+                    [(0, 0, 8, 4)], ("req_id", "status", "tokens", "tier_seq")))]}
+    ctx = NS(roles={"ga": {"role": "ga", "kind": "client"}, "hb": {"role": "hb", "kind": "client"},
+                    "sink": {"role": "sink", "kind": "server"}},
+             schedule_meta={"per_tier": {"4": 1}})
+    r = CH.check_c4(ctx, NS(tier=_tier(max_tokens=8), capbins=caps))
+    assert r.red == 0 and r.status == "NOT_RUN", (r.status, r.detail)
+    assert any("1 OK request(s) not compared" in w for w in r.not_run), r.not_run
+
+
+def test_c2_stub_load_is_not_planned_with_several_client_roles():
+    ctx, ld, td = _c2_ctx_td(50_000, 20)
+    ctx.roles["ld2"] = dict(ctx.roles["ld"], role="ld2")
+    assert K.worker_share(ctx, _tier(), "sink", 0, "even")[0] is None
+    r = CH.check_c2(ctx, ld, td, {})
+    assert r.status == "NOT_RUN"
+    assert "sink.w0: stub load with 2 client roles is not planned per stub" in r.not_run
+    del ctx.roles["ld"]["kind"]  # cannot tell the client roles
+    assert "unknown" in K.worker_share(ctx, _tier(), "sink", 0, "even")[1]
 
 
 def test_c4_missing_records_not_run():
@@ -624,6 +663,37 @@ def test_stub_calib_builder(tmp_path):
     assert sh["per_process_max"]["value"] == 40.0  # one worker carries all of tier 4
     cpu = sh["bands"]["T3:thread_cpu_cores"]
     assert cpu["n"] == 2 and 0.15 < cpu["min"] <= cpu["max"] < 0.3
+
+
+def test_shape_list_takes_each_tree_once_per_role(tmp_path):
+    lst = tmp_path / "l.tsv"
+    lst.write_text("/t\t2\tld\ts\n/t\t2\tsink\tz\n")
+    assert [r for _t, _s, r, _sh in K.read_shape_list(str(lst))] == ["ld", "sink"]
+    lst.write_text("/t\t2\tld\ts\n/t/\t4\tld\tz\n")
+    with pytest.raises(K.CalibError, match="listed twice"):
+        K.read_shape_list(str(lst))
+
+
+def test_shape_builder_never_leaves_a_launch_out_of_the_maximum(tmp_path, monkeypatch):
+    # every listed launch contributes its maximum; one that cannot is an error naming the
+    # tree, not a silently higher minimum over the others
+    W, tree = _judged(tmp_path, "good")
+    lst = tmp_path / "l.tsv"
+    lst.write_text("%s\t2,4\tcapload\tld-r\n" % tree)
+    real = K._select
+
+    def no_lower(*a):
+        sel = real(*a)
+        sel["verdicts"]["boundary_T4"] = dict(sel["verdicts"]["boundary_T4"], lower_seq=None)
+        return sel
+    monkeypatch.setattr(K, "_select", no_lower)
+    with pytest.raises(K.CalibError, match="T4 has no lower end") as e:
+        K.build_shapes("loadgen_band", str(lst), str(W))
+    assert str(tree) in str(e.value)
+    monkeypatch.setattr(K, "_select", real)
+    monkeypatch.setattr(K, "worker_load", lambda *a: (None, "why-x"))
+    with pytest.raises(K.CalibError, match="not computable \\(why-x\\)"):
+        K.build_shapes("loadgen_band", str(lst), str(W))
 
 
 @pytest.mark.parametrize("line", ["{t}\t2\tnope\ts\n", "{t}\t2\tcapload\n",

@@ -145,7 +145,8 @@ def _pairs(w_scaled, z_scaled):
 def test_loadgen_limited_when_w_grows_and_z_is_flat():
     pw, pz = _pairs((2000, 2400), (1000, 1200))
     assert pw["claim"] == "grows" and pw["limit_side"] == "client"
-    assert pw["ratio"] == {"min": 2000 / 1200, "max": 2400 / 1000}
+    assert pw["ratio"] == {"min": 2000 / 1200, "max": 2400 / 1000, "min_unknown_blocks": [],
+                           "max_unknown_blocks": []}
     assert pw["per_block"][0]["efficiency_min"] == pytest.approx(2000 / 1200 / 2)
     assert pz["claim"] == "flat" and pz["limit_side"] == "client"
     assert S.attribute([pw, pz])["result"] == "client"
@@ -180,12 +181,32 @@ def test_scaling_reads_the_judges_t4_not_the_cut_interval():
 def test_open_ends_decide_what_can_be_claimed():
     pw, _pz = _pairs((2000, None), (1000, 1200))  # scaled arm never became unstable
     assert pw["claim"] == "grows" and pw["ratio"]["max"] is None
+    assert pw["ratio"]["max_unknown_blocks"] == ["1", "2"]
     doc = _bdoc({"a": ((1, 4), {"1": (1000, None)}), "b": ((1, 8), {"1": (1000, 1100)})})
     r = S.pair(doc, "a", "b", 1.6, 1.25)
     assert r["claim"] == "NOT_RUN" and r["ratio"] is None
     doc["axis"]["order"] = "desc"
     with pytest.raises(S.ScalingError):
         S.pair(doc, "a", "b", 1.6, 1.25)
+
+
+def test_a_block_with_an_unknown_end_is_never_skipped():
+    # block 2's base never became unstable (upper open): its lower ratio is unknown, its upper
+    # ratio 3.2 says the doubling may have tripled the boundary there; block 1 alone looks flat
+    doc = _bdoc({"base": ((1, 4), {"1": (100, 110), "2": (100, None)}),
+                 "x2": ((1, 8), {"1": (100, 110), "2": (300, 320)})})
+    r = S.pair(doc, "base", "x2", 1.5, 1.2)
+    assert r["claim"] == "unresolved" and r["limit_side"] is None, r
+    assert (r["ratio"]["min"], r["ratio"]["min_unknown_blocks"]) == (None, ["2"])
+    assert r["ratio"]["max"] == 3.2
+    # the scaled arm's upper end open in one block: no "flat" from the others
+    doc = _bdoc({"base": ((1, 4), {"1": (100, 110), "2": (100, 110)}),
+                 "x2": ((1, 8), {"1": (100, 110), "2": (100, None)})})
+    r = S.pair(doc, "base", "x2", 1.5, 1.2)
+    assert r["claim"] == "unresolved" and r["ratio"]["max_unknown_blocks"] == ["2"]
+    # both ends known everywhere: flat
+    doc["arms"]["x2"]["by_block_t4"]["2"] = _env(100, 110)
+    assert S.pair(doc, "base", "x2", 1.5, 1.2)["claim"] == "flat"
 
 
 # ---- CLIs on judged samples ---------------------------------------------------------------------
@@ -354,6 +375,24 @@ def test_slope_not_run_and_exclusions(two_passes):
     assert E.slope(doc, "/W")["status"] == "INCONCLUSIVE"
 
 
+def test_slope_pools_the_dosed_launches_topology_only(two_passes):
+    # a control launch of another arm (2 load-generator workers: about twice the boundary)
+    # is no delta = 0 point of this arm's dose line
+    doc = _slope_doc(_known(100e-6, [None, 100000, 200000, 400000]))
+    other = _slope_launch("w2", "8", None, None)
+    other.update(roles=_roles(2, 4), interval=dict(
+        (k, 2 * v) for k, v in doc["launches"][0]["interval"].items()))
+    doc["launches"].append(other)
+    s = E.slope(doc, "/W")
+    assert s["status"] == "PASS", s
+    assert s["levels"][0]["trees"] == [doc["launches"][0]["tree"]]
+    assert "another topology" in s["excluded"][0]["why"]
+    # dosed launches of two topologies: no single dose line
+    doc["launches"][1]["roles"] = _roles(2, 4)
+    s = E.slope(doc, "/W")
+    assert s["status"] == "NOT_RUN" and "2 topologies" in s["reasons"][0]
+
+
 def test_slope_interval_holding_zero_is_inconclusive(two_passes):
     # boundaries so noisy that slope intervals span 0 and 1: a dose that did not move the
     # boundary would give such an interval too, so it is not a PASS
@@ -473,9 +512,14 @@ def test_e1_report_cli_sink_health_against_registered_bands(tmp_path):
     p = _e1_cli(tmp_path, W, bf, str(tmp_path / "r0.json"))
     assert p.returncode == 0, p.stderr
     assert json.load(open(str(tmp_path / "r0.json")))["sink_health"]["status"] == "NOT_RUN"
-    for name, hi in (("wide", 1e12), ("tight", 0.0)):
+    launch = json.load(open(os.path.join(tree, "raw", "launch.json")))
+    env = {"hw_profile_sha": launch.get("hw_profile_sha"),
+           "image_sha": (launch.get("image") or {}).get("sha256")}
+    for name, hi, e in (("wide", 1e12, env), ("tight", 0.0, env),
+                        ("elsewhere", 1e12, dict(env, hw_profile_sha="f" * 64))):
         bands = {"schema": "capkit.near_boundary_noise/1", "regime": "subsat", "noise_bands": {
-            "T3:loop_lag_p99_ns:%s" % sink: {"min": 0, "max": hi, "n": 3, "regime": "subsat"}}}
+            "T3:loop_lag_p99_ns:%s" % sink: {"min": 0, "max": hi, "n": 3, "regime": "subsat"}},
+            "environment": e}
         path = os.path.join(W, "%s.json" % name)
         json.dump(bands, open(path, "w"))
         out = str(tmp_path / ("r-%s.json" % name))
@@ -486,6 +530,10 @@ def test_e1_report_cli_sink_health_against_registered_bands(tmp_path):
         p = _e1_cli(tmp_path, W, bf, out, "--sink-bands", path)
         assert p.returncode == 0, p.stderr
         (h,) = json.load(open(out))["sink_health"]
+        if name == "elsewhere":  # bands of another hardware profile: never compared
+            assert h["status"] == "NOT_RUN" and "calibration environment" in h["why"], h
+            assert "tiers" not in h
+            continue
         lag = [r["items"]["T3:loop_lag_p99_ns"]["status"] for r in h["tiers"]]
         assert lag and set(lag) == ({"INSIDE"} if name == "wide" else {"OUTSIDE"}), h
         assert all(r["items"]["T3:thread_cpu_cores"]["status"] == "NOT_RUN"

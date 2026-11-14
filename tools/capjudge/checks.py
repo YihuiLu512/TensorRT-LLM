@@ -102,10 +102,9 @@ def _shape_items(r, ctx, kind, shape, tier, role, worker, st, why, split):
         r.not_run.append("%s: the shape has no healthy maximum" % w)
         ok = False
     else:
-        load = calib.worker_load(ctx, tier, role, worker, split, mx["load_key"])
+        load, lwhy = calib.worker_load(ctx, tier, role, worker, split, mx["load_key"])
         if load is None:
-            r.not_run.append("%s: planned load in %s not computable for this tier"
-                             % (w, mx["load_key"]))
+            r.not_run.append("%s: %s" % (w, lwhy))
             ok = False
         elif load > mx["value"] and mx["censored"]:
             r.not_run.append("%s planned %.6g %s beyond the calibrated range: the healthy "
@@ -163,7 +162,8 @@ def check_c1(ctx, td, record):
 def check_c2(ctx, ld, td, record):
     """Out-of-domain stub health (design 2.6 / 2.7 C2; INTERFACES 9.7): per worker of every
     stub_out_of_domain role, against the stub_calib out_of_domain shape its role is bound to:
-    planned load (an even split over the workers) vs the healthy maximum, event-loop lag p99
+    planned load (an even split over the workers; NOT_RUN unless the launch has exactly one
+    client role, calib.worker_share) vs the healthy maximum, event-loop lag p99
     and thread CPU (cores) vs the shape's bands, as C1 (_shape_items). stub_in_domain roles
     are not a precondition (design 2.6) and are only listed."""
     r = Result("C2", td.tier.seq, "launch.json roles[measure_class=stub_out_of_domain].workers")
@@ -376,15 +376,27 @@ def _hop_value(ctx, ld, td, hop, next_drain):
     return (None if parts is None else sum(parts.values())), why, is_red
 
 
-def check_chains(ctx, ld, td, next_drain, kind):
-    """One Result per chain kind (C5 requests, C6 messages, C7 chunks); every tier-scope hop of
-    every chain of that kind is one checked item. Expected per hop = expect.expected_hop_count
-    over the schedule's planned requests; overload-type failures widen the range down to the
-    count without them (they may or may not have reached that hop)."""
-    cid = CHAIN_CHECK[kind]
-    r = Result(cid, td.tier.seq, "launch.json reconcile + schedule meta.per_tier")
+def hop_range(ctx, td, chain, role, ovl=None):
+    """(lo, hi) expected count of `role`'s hop on `chain` in this tier: expect.expected_hop_count
+    over the schedule's planned requests (hi) and over those without the tier's overload-type
+    failures (lo: they may or may not have reached that hop). `ovl`: that failure count when
+    the caller has it. Raises ConfigError (capcommon.expect)."""
     t = td.tier
     n = int(ctx.schedule_meta["per_tier"].get(str(t.seq), 0))
+    if ovl is None:
+        ovl = failures_by_class(td, ctx.roles)["overload"]
+    hi = expect.expected_hop_count(chain, n, t.max_tokens, t.tokens_per_msg, t.stream_interval,
+                                   role)
+    lo = expect.expected_hop_count(chain, n - ovl, t.max_tokens, t.tokens_per_msg,
+                                   t.stream_interval, role)
+    return lo, hi
+
+
+def check_chains(ctx, ld, td, next_drain, kind):
+    """One Result per chain kind (C5 requests, C6 messages, C7 chunks); every tier-scope hop of
+    every chain of that kind is one checked item, expected in hop_range."""
+    cid = CHAIN_CHECK[kind]
+    r = Result(cid, td.tier.seq, "launch.json reconcile + schedule meta.per_tier")
     ovl = failures_by_class(td, ctx.roles)["overload"]
     for chain in ctx.launch["reconcile"]["chains"]:
         if chain["kind"] != kind:
@@ -394,10 +406,7 @@ def check_chains(ctx, ld, td, next_drain, kind):
                 continue
             r.expected += 1
             try:
-                hi = expect.expected_hop_count(chain, n, t.max_tokens, t.tokens_per_msg,
-                                               t.stream_interval, hop["role"])
-                lo = expect.expected_hop_count(chain, n - ovl, t.max_tokens, t.tokens_per_msg,
-                                               t.stream_interval, hop["role"])
+                lo, hi = hop_range(ctx, td, chain, hop["role"], ovl)
             except ConfigError as e:
                 r.not_run.append("%s/%s: %s" % (chain["name"], hop["role"], e))
                 continue
@@ -489,9 +498,10 @@ def check_c4(ctx, td):
     `tokens` column (>= 0, whatever the request's status: capload counts a short stream too);
     where the generator does not count (-1: capgrpc.load) and the request is OK (status 0),
     the `tokens` of the server.streams row with the same req_id in this tier. The server side
-    is read per server role and only when the req_id names one stream: with more than one
-    server role writing stream records, or more than one client role needing it, that part is
-    NOT_RUN (each client role runs the whole schedule, so req_ids repeat). A failed request is
+    is read only when the req_id names one stream: with more than one client role in the
+    launch (each runs the whole schedule, so req_ids repeat and their streams may reach the
+    same server) or more than one server role writing stream records, that part is NOT_RUN.
+    A failed request is
     never compared with the server's record (a cancelled or timed-out stream records the
     tokens sent before it ended): without a generator count it is checked only (C3 / X
     account for it). Expected = schedule meta.per_tier x client roles. A count other than
@@ -520,10 +530,10 @@ def check_c4(ctx, td):
                  if ts == seq]
     need = sorted({role for role, _rid, st, tok in rows if tok < 0 and st == 0})
     ambiguous = None
-    if need and (len(server) > 1 or len(need) > 1):
-        ambiguous = ("server-side counts are per req_id but %d client role(s) %s need them "
-                     "and %d server role(s) %s write stream records"
-                     % (len(need), need, len(server), sorted(server)))
+    if need and (len(server) > 1 or len(clients) > 1):
+        ambiguous = ("server-side counts are per req_id but client role(s) %s need them, the "
+                     "launch has %d client roles and %d server role(s) %s write stream records"
+                     % (need, len(clients), len(server), sorted(server)))
     table = next(iter(server.values())) if len(server) == 1 else {}
     bad, uncounted, unmatched = [], 0, 0
     for role, rid, st, tok in rows:

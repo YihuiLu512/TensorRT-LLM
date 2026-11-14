@@ -11,15 +11,19 @@ Grades:
                                   first (C1 / C2 RED at the first non-stable tier, or I points
                                   at it), or X never held within the tool's range: the limit is
                                   >= the highest stable tier
-  NOT_LOCALIZED  (已到顶，未定位)  P + X at the boundary, I did not localise (no signal held, or
-                                  none could be evaluated). Not a design grade: the design lists
-                                  no grade for P + X without I; it is reported, never upgraded
+  NOT_LOCALIZED  (已到顶，未定位)  P + X at the boundary, I did not localise: no signal held
+                                  (`I_status` NOT_LOCALIZED), or some signal could not be
+                                  evaluated (`I_status` NOT_RUN: not computed, which a reader
+                                  must not take for "nothing reached its limit"). Not a design
+                                  grade: the design lists no grade for P + X without I; it is
+                                  reported, never upgraded
   UNDETERMINED   (原因未定)        I signals point to different roles at the boundary, or V FAIL
   NOT_RUN        (未运行)        no judged load tier passed P
 
 One launch (the judge): the first tier in load order that is not STABLE decides, skipping
 VOID / NOT_RUN tiers whose RED checks are not only C1 / C2 (they widen the interval, they are
-listed). V is a cross-launch result, so the judge's grade never reaches CONFIRMED;
+listed); `I_status` is I's status on that tier when it is UNSTABLE or UNDETERMINED, else
+null. V is a cross-launch result, so the judge's grade never reaches CONFIRMED;
 capjudge.intervene combines the control launches' grades with V (final_grade). Granularity is
 the process (GIL domain), or the core group when the localised processes share one core (the
 core is the reading; I's `granularity`); thread shares are reported, never a thread's limit.
@@ -38,7 +42,7 @@ def launch_grade(tiers, boundary):
     """Grade of one judged launch from verdicts.json `tiers` (load tiers carry verdict, checks,
     order_key, X with X.I) and its T4 boundary (a non-monotone boundary is noted)."""
     out = {"grade": "NOT_RUN", "reasons": [], "skipped_tiers": [], "V": "NOT_RUN: across "
-           "launches, capjudge.intervene", "granularity": "process"}
+           "launches, capjudge.intervene", "granularity": "process", "I_status": None}
     if (boundary or {}).get("non_monotone"):
         out["reasons"].append("T4: a stable tier lies above the lowest unstable tier")
     judged = [e for e in tiers if e.get("judged") and e.get("order_key") is not None]
@@ -60,11 +64,11 @@ def launch_grade(tiers, boundary):
             out["skipped_tiers"].append({"tier_seq": e["tier_seq"], "verdict": v, "red": red})
             continue
         if v == "UNDETERMINED":
-            out.update(grade="UNDETERMINED", tier_seq=e["tier_seq"])
+            out.update(grade="UNDETERMINED", tier_seq=e["tier_seq"], I_status="UNDETERMINED")
             out["reasons"].append("tier %d: I signals disagree" % e["tier_seq"])
             return out
         i = (e.get("X") or {}).get("I") or {}
-        out["tier_seq"] = e["tier_seq"]
+        out.update(tier_seq=e["tier_seq"], I_status=i.get("status"))
         if i.get("status") == "LOCALIZED":
             cls = i.get("measure_class")
             out.update(role=i.get("role"), finding=i.get("finding"), via=i.get("via"),
@@ -113,8 +117,16 @@ def _lower(out, last_stable, why):
 
 
 def final_grade(control_grades, v):
-    """Grade across launches: the control launches' (delta = 0) grades with V."""
+    """Grade across launches: the control launches' (delta = 0) grades with V; NOT_RUN when V
+    found the control launches in more than one topology. `I_status`
+    counts the control launches' I_status ("null": no UNSTABLE / UNDETERMINED tier set that
+    launch's grade), so a NOT_LOCALIZED from I not run is visible."""
     out = {"grade": "NOT_RUN", "reasons": [], "V": v.get("status"), "granularity": "process"}
+    ist = [g.get("I_status") or "null" for g in control_grades]
+    out["I_status"] = {k: ist.count(k) for k in sorted(set(ist))}
+    if v.get("control_topologies", 1) != 1:  # grades of different topologies do not combine
+        out["reasons"].append("control launches of %s topologies" % v["control_topologies"])
+        return out
     gs = [g for g in control_grades if g.get("grade") != "NOT_RUN"]
     out["n_launches"] = len(gs)
     if not gs:

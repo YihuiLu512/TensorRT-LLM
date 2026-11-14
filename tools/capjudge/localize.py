@@ -8,9 +8,13 @@ are independent of X's sources (load generator and stub counts).
 I1 CPU, per core group of every non-observer role, over the tier's steady window:
   * a core group is the role's registered processes whose roles.json procs[].cpus intersect (a
     parent and the workers pinned to the role's core set are one group); its cores must not be
-    shared with a registered process of another role (else NOT_RUN). Per-core /proc/stat
-    (sidecar cpus.jsonl) is the authority and is read per group; thread utime + stime (sidecar
-    threads.jsonl) is the breakdown, and the GIL domain is per process (one GIL each);
+    shared with a registered process of another role (else NOT_RUN). What the criterion
+    reads depends on the group's core count: a one-core group, its core's /proc/stat (sidecar
+    cpus.jsonl; the D14 softirq verdict applies only here); a several-core group, each
+    process's GIL domain from its threads' utime + stime (sidecar threads.jsonl; one GIL per
+    process), with the per-core readings and `unattributed_cores` recorded alongside but not
+    judged (per-core busy time cannot tell which process's GIL is busy when the group holds
+    several processes);
   * one core ("single_core", one unit per group): holds iff the core's busy fraction >=
     near_one_core_min AND its offset from the same launch's baseline tier is above its band.
     Softirq ticks count as busy only when the pilot's D14 result says they are the
@@ -22,7 +26,11 @@ I1 CPU, per core group of every non-observer role, over the tier's steady window
     above `T2:gil_domain_cores:<role>` and the run-queue wait of those threads did not rise
     (`T2:gil_run_delay_frac:<role>` not above); or one thread outside the GIL (grpc_core /
     zmq_io / other, each alone) holds iff its cores >= near_one_core_min and its offset is
-    above `T2:nongil_thread_cores:<role>`.
+    above `T2:nongil_thread_cores:<role>`. A thread of class unknown (classified by neither
+    the thread inventory nor tier.json) that used CPU in this or the baseline window, or a
+    thread of class python or unknown with a single sidecar row there (its CPU unknown),
+    leaves the GIL domain incomplete: that branch is NOT_RUN (its offsets are not recorded)
+    and an unknown thread is no non-GIL candidate.
   near_one_core_min comes from pilot.json `i1_calibration`; missing -> I1 NOT_RUN.
 I2 event-loop lag: side evidence only (its criterion needs E0's calibration curve).
 I3 backlog side: register.json judge.localize.readings, each a sum of backlog slot terms with
@@ -51,6 +59,7 @@ LOCALIZED, UNDETERMINED, NOT_LOCALIZED = "LOCALIZED", "UNDETERMINED", "NOT_LOCAL
 NOT_APPLICABLE = "NOT_APPLICABLE"  # X does not hold: nothing to localise
 CANDIDATE_CLASSES = ("under_test", "stub_in_domain", "load_source", "stub_out_of_domain")
 GIL_CLASS = "python"
+UNKNOWN_CLASS = "unknown"  # a thread neither the inventory nor tier.json classifies
 IDLE_COLS = ("idle", "iowait")
 ALL_COLS = ("user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal")
 
@@ -105,22 +114,24 @@ def core_groups(ld, role):
 
 
 def _thread_readings(th_rows, classes, pid, clk, ws, we):
-    """Per-thread CPU of one process over [ws, we): (threads, gil_cores, gil_run_delay_frac);
-    gil_run_delay_frac is None when a GIL thread lacks run_delay_ns."""
+    """Per-thread CPU of one process over [ws, we): (threads, gil_cores, gil_run_delay_frac,
+    partial); gil_run_delay_frac is None when a GIL thread lacks run_delay_ns; partial lists
+    the (tid, class) of threads with a single row in the window (CPU there unknown)."""
     tf, tl = first_last_in_window(th_rows, lambda x: x["tid"] if x.get("pid") == pid
                                   else None, ws, we)
-    threads, gil, gil_rd, rd_ok = [], 0.0, 0.0, True
+    threads, gil, gil_rd, rd_ok, partial = [], 0.0, 0.0, True, []
     for tid in sorted(tf):
         a, b = tf[tid], tl[tid]
         tspan = b["t_rel_ns"] - a["t_rel_ns"]
         if tspan <= 0:
+            partial.append((tid, classes.get(tid, (UNKNOWN_CLASS, None))[0]))
             continue
         cores_t = ((b["utime_ticks"] + b["stime_ticks"]) - (a["utime_ticks"]
                                                           + a["stime_ticks"])) / clk / (tspan / NS)
         rd = None
         if isinstance(b.get("run_delay_ns"), int) and isinstance(a.get("run_delay_ns"), int):
             rd = (b["run_delay_ns"] - a["run_delay_ns"]) / tspan
-        cls, ident = classes.get(tid, ("unknown", None))
+        cls, ident = classes.get(tid, (UNKNOWN_CLASS, None))
         threads.append({"tid": tid, "pid": pid, "comm": b.get("comm"), "class": cls,
                         "identified_as": ident, "cores": cores_t, "run_delay_frac": rd})
         if cls == GIL_CLASS:
@@ -129,7 +140,7 @@ def _thread_readings(th_rows, classes, pid, clk, ws, we):
                 rd_ok = False
             else:
                 gil_rd += rd
-    return threads, gil, (gil_rd if rd_ok else None)
+    return threads, gil, (gil_rd if rd_ok else None), partial
 
 
 def group_readings(ld, td, group):
@@ -139,7 +150,8 @@ def group_readings(ld, td, group):
     n_cores, core_busy_frac / core_busy_cores (non-idle ticks without softirq),
     core_busy_frac_softirq (with it), unattributed_cores (core busy without softirq - every
     thread of the group). Per process (one GIL each): procs {pid: {threads [{tid, pid, class,
-    identified_as, cores, run_delay_frac}], gil_cores, gil_run_delay_frac}}."""
+    identified_as, cores, run_delay_frac}], gil_cores, gil_run_delay_frac, partial_threads
+    [(tid, class) with a single row in the window]}}."""
     clk = (ld.sidecar_meta or {}).get("clk_tck")
     cpu_rows, th_rows = ld.sidecar("cpus"), ld.sidecar("threads")
     if cpu_rows is None or th_rows is None or not isinstance(clk, int) or clk <= 0:
@@ -161,11 +173,12 @@ def group_readings(ld, td, group):
     busy = total - idle - softirq
     procs, missing = {}, []
     for pid in group["pids"]:
-        th, gil, gil_rd = _thread_readings(th_rows[1], thread_classes(ld, td, pid), pid, clk,
-                                           ws, we)
+        th, gil, gil_rd, partial = _thread_readings(th_rows[1], thread_classes(ld, td, pid),
+                                                    pid, clk, ws, we)
         if not th:
             missing.append(pid)
-        procs[pid] = {"threads": th, "gil_cores": gil, "gil_run_delay_frac": gil_rd}
+        procs[pid] = {"threads": th, "gil_cores": gil, "gil_run_delay_frac": gil_rd,
+                      "partial_threads": partial}
     if missing:
         return None, "pid(s) %s: fewer than two sidecar thread rows in the window" % missing
     core_busy_cores = busy / clk / (span / NS)
@@ -194,7 +207,8 @@ def unit_view(g, pid=None):
     v["threads"] = [t for p in ps for t in p["threads"]]
     if pid is not None:
         v.update(pid=pid, gil_cores=ps[0]["gil_cores"],
-                 gil_run_delay_frac=ps[0]["gil_run_delay_frac"])
+                 gil_run_delay_frac=ps[0]["gil_run_delay_frac"],
+                 partial_threads=ps[0].get("partial_threads") or [])
     return v
 
 
@@ -219,15 +233,23 @@ def i1_process(cur, base, bands, role, near, d14, record, is_baseline):
     qtys = (("core_busy_frac", "core_busy_frac"),
             ("core_busy_frac_softirq", "core_busy_frac_softirq")) if single else \
         (("gil_cores", "gil_domain_cores"), ("gil_run_delay_frac", "gil_run_delay_frac"))
+    # a thread of unknown class that used CPU in either window may belong to the GIL domain:
+    # the domain's reading is incomplete (never recorded or evaluated as if complete), and the
+    # thread is no non-GIL candidate either
+    unknown = [] if single else sorted(
+        {t["tid"] for v in (cur, base) for t in v["threads"]
+         if t["class"] == UNKNOWN_CLASS and t["cores"] > 0}
+        | {tid for v in (cur, base) for tid, cls in v.get("partial_threads") or []
+           if cls in (GIL_CLASS, UNKNOWN_CLASS)})
     for key, qty in qtys:
-        v = _offset(cur, base, key)
+        v = None if unknown else _offset(cur, base, key)
         k = band_key("T2", qty, role)
         if v is not None and not is_baseline:
             record.setdefault(k, []).append(v)
         offs[qty] = (v, k)
     base_t = {t["tid"]: t["cores"] for t in base["threads"]}
     nongil_offs = {t["tid"]: t["cores"] - base_t.get(t["tid"], 0.0) for t in cur["threads"]
-                   if t["class"] != GIL_CLASS}
+                   if t["class"] not in (GIL_CLASS, UNKNOWN_CLASS)}
     kn = band_key("T2", "nongil_thread_cores", role)
     if nongil_offs and not single and not is_baseline:
         record.setdefault(kn, []).append(max(nongil_offs.values()))
@@ -258,13 +280,18 @@ def i1_process(cur, base, bands, role, near, d14, record, is_baseline):
     rd, cmp_r, kr = cmp("gil_run_delay_frac")
     out.update(gil_cores=cur["gil_cores"], gil_offset=v, run_delay_offset=rd)
     gil = NOT_RUN
-    if cmp_g is None or cmp_r is None:
+    if unknown:
+        out["unknown_threads"] = unknown
+        out["reasons"].append("GIL domain: thread readings incomplete: tids %s (class unknown "
+                              "with CPU in the window, or a python / unknown thread with one "
+                              "sidecar row there)" % unknown)
+    elif cmp_g is None or cmp_r is None:
         out["reasons"].append("GIL domain: no band %s / %s or no value" % (kg, kr))
     else:
         gil = TRUE if (cur["gil_cores"] >= near and cmp_g == "above"
                        and cmp_r != "above") else FALSE
     bn = bands.get(kn)
-    hot = [t["tid"] for t in cur["threads"] if t["class"] != GIL_CLASS and bn is not None
+    hot = [t["tid"] for t in cur["threads"] if t["tid"] in nongil_offs and bn is not None
            and t["cores"] >= near
            and stats.compare_to_band(nongil_offs[t["tid"]], bn) == "above"]
     nongil = FALSE if not nongil_offs else (NOT_RUN if bn is None else

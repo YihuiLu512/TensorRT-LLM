@@ -188,6 +188,41 @@ def test_multi_core_non_gil_thread_alone():
     assert _i1(hot, base, no_band)["status"] == "NOT_RUN"
 
 
+def test_multi_core_thread_of_unknown_class_is_not_run():
+    # thread 8 is in neither the inventory nor tier.json: it may be a python thread, so the
+    # GIL domain read without it may be short; NOT_RUN, not FALSE
+    base, _ = readings({7: 30, 8: 30}, {7: "python"}, cores=(4, 5), run_delay={})
+    hot, _ = readings({7: 60, 8: 37}, {7: "python"}, cores=(4, 5), run_delay={})
+    rec = {}
+    r = L.i1_process(hot, base, MC, "r", 0.95, False, rec, False)
+    assert r["status"] == "NOT_RUN" and r["unknown_threads"] == [8]
+    assert "thread readings incomplete" in r["reasons"][0]
+    assert "T2:gil_domain_cores:r" not in rec and "T2:nongil_thread_cores:r" not in rec
+    # nor is it a non-GIL candidate when it is the one near a core
+    base, _ = readings({7: 20, 9: 30}, {7: "python"}, cores=(4, 5), run_delay={})
+    hot, _ = readings({7: 20, 9: 97}, {7: "python"}, cores=(4, 5), run_delay={})
+    r = _i1(hot, base, MC)
+    assert r["status"] == "NOT_RUN" and "threads_hot" not in r
+    # a python thread with a single sidecar row in the window: its CPU there is unknown
+    ld = _ld(_cpu_rows(4, 50) + _cpu_rows(5, 47),
+             _th_rows(7, {7: 60, 8: 37}) + [{"t_rel_ns": 2 * S, "pid": 7, "tid": 5, "comm": "t5",
+                                             "utime_ticks": 80, "stime_ticks": 0,
+                                             "run_delay_ns": 0}],
+             [{"pid": 7, "role": "r", "cpus": [4, 5]}])
+    (g,), _ = L.core_groups(ld, "r")
+    gr, _ = L.group_readings(ld, _td(7, {7: "python", 8: "python", 5: "python"}), g)
+    assert gr["procs"][7]["partial_threads"] == [(5, "python")]
+    base, _ = readings({7: 30, 8: 30}, {7: "python", 8: "python"}, cores=(4, 5), run_delay={})
+    r = _i1(L.unit_view(gr, 7), base, MC)
+    assert r["status"] == "NOT_RUN" and r["unknown_threads"] == [5]
+    # an unknown thread without CPU in either window changes nothing
+    base, _ = readings({7: 30, 8: 30, 6: 0}, {7: "python", 8: "python"}, cores=(4, 5),
+                       run_delay={})
+    hot, _ = readings({7: 60, 8: 37, 6: 0}, {7: "python", 8: "python"}, cores=(4, 5),
+                      run_delay={})
+    assert _i1(hot, base, MC)["status"] == "TRUE"
+
+
 # ---- I1 on the real topology: a parent registered with its workers on the role's core set ----
 
 # roles.json as caplaunch writes it (E1-0): sink parent 10 + workers 11, 12 on cores 0-1; ld

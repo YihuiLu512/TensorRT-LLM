@@ -17,9 +17,12 @@ arms have, with the per-block envelopes E_b (base) and E_s (scaled): the ratio o
 lies in
 [E_s.lower / E_b.upper, E_s.upper / E_b.lower] (None when an end is missing). T6 = the range
 of the per-block ratios (also of the lower ends and of the upper ends alone). The claims use
-the unfavourable end (design 2.6 T6): "grows" when the smallest ratio >= --grows-min, "flat"
-when the largest ratio <= --flat-max, else "unresolved"; no usable block -> NOT_RUN. The bounds
-are the experiment's registered values; they are passed explicitly and recorded.
+the unfavourable end over every common block (design 2.6 T6): "grows" when the smallest ratio
+>= --grows-min, "flat" when the largest ratio <= --flat-max, else "unresolved". A block whose
+lower (upper) ratio is unknown leaves the smallest (largest) ratio unknown (None, the blocks
+listed), so no "grows" ("flat") is claimed; no common block with its lower ratio known (base
+interval closed, scaled lower end present) -> NOT_RUN.
+The bounds are the experiment's registered values; they are passed explicitly and recorded.
 
 Attribution (E1): growth when side S is scaled says S was limiting; no growth says the limit is
 on the other side. Only when a client-side and a server-side pair agree is a side named
@@ -48,9 +51,7 @@ class ScalingError(ConfigError):
 
 
 def _arm_roles(bdoc, arm):
-    sets = {repr(sorted((r, d["kind"], d["measure_class"], d["workers"])
-                        for r, d in x["roles"].items()))
-            for x in bdoc["launches"] if x["identity"]["arm"] == arm}
+    sets = {B.topology(x["roles"]) for x in bdoc["launches"] if x["identity"]["arm"] == arm}
     if not sets:
         raise ScalingError("arm %r has no launch in the boundary file" % arm)
     if len(sets) != 1:
@@ -107,32 +108,32 @@ def pair(bdoc, base, scaled, grows_min, flat_max):
     common = sorted(set(eb) & set(es))
     res = {"base": base, "scaled": scaled, "side": side, "factor": f, "roles": roles,
            "blocks": common, "blocks_missing": sorted(set(eb) ^ set(es)), "per_block": []}
-    lo, hi, skipped = [], [], []
+    lo, hi = {}, {}
     for k in common:
         b, s = eb[k], es[k]
         r_lo, r_hi = stats.ratio(s["lower"], b["upper"]), stats.ratio(s["upper"], b["lower"])
         res["per_block"].append({"block": k, "ratio_min": r_lo, "ratio_max": r_hi,
                                  "efficiency_min": stats.ratio(r_lo, f),
                                  "efficiency_max": stats.ratio(r_hi, f)})
-        if r_lo is None:
-            skipped.append(k)
-            continue
-        lo.append(r_lo)
-        hi.append(r_hi)
+        lo[k], hi[k] = r_lo, r_hi
     res["t6_lower_ends"] = stats.t6_ratio_range([(k, es[k]["lower"], eb[k]["lower"])
                                                  for k in common])
     res["t6_upper_ends"] = stats.t6_ratio_range([(k, es[k]["upper"], eb[k]["upper"])
                                                  for k in common])
-    res["skipped_blocks"] = skipped
-    if not lo:
-        res.update(ratio=None, claim="NOT_RUN", why="no block with the base interval closed "
-                   "and the scaled lower end present")
+    if all(lo[k] is None for k in common):
+        res.update(ratio=None, claim="NOT_RUN", why="no common block with the base interval "
+                   "closed and the scaled lower end present")
         return res
-    rmax = None if any(h is None for h in hi) else max(hi)
-    res["ratio"] = {"min": min(lo), "max": rmax}
-    if min(lo) >= grows_min:
+    # every common block counts: a block whose end is unknown leaves the claim that needs that
+    # end unresolved, never decided on the other blocks
+    open_lo = [k for k in common if lo[k] is None]
+    open_hi = [k for k in common if hi[k] is None]
+    res["ratio"] = {"min": None if open_lo else min(lo.values()),
+                    "max": None if open_hi else max(hi.values()),
+                    "min_unknown_blocks": open_lo, "max_unknown_blocks": open_hi}
+    if res["ratio"]["min"] is not None and res["ratio"]["min"] >= grows_min:
         res["claim"] = "grows"
-    elif rmax is not None and rmax <= flat_max:
+    elif res["ratio"]["max"] is not None and res["ratio"]["max"] <= flat_max:
         res["claim"] = "flat"
     else:
         res["claim"] = "unresolved"

@@ -205,21 +205,33 @@ def tier_load(tier, load_key):
 
 
 def worker_share(ctx, tier, role, worker, split):
-    """Planned share of the tier's load carried by one worker of `role`. split 'schedule': the
-    worker's rows of the shared schedule over the role's rows (load generators); 'even':
-    1 / workers (a stub's workers share one listening socket; nothing plans a split)."""
+    """(planned share of the tier's load carried by one worker of `role`, None) or (None, why).
+    split 'schedule': the worker's rows of the shared schedule over the role's rows (load
+    generators); 'even': 1 / workers (a stub's workers share one listening socket; nothing
+    plans a split). 'even' takes the tier's load as the stub's, which holds for one client
+    role only: each client role runs the whole schedule, and how several of them load one stub
+    is not planned per stub (also when a role lacks `kind`)."""
     w = ctx.roles[role]["workers"]
     if split == "even":
-        return 1.0 / w
+        kinds = [r.get("kind") for r in ctx.roles.values()]
+        if None in kinds or kinds.count("client") != 1:
+            return None, ("stub load with %s client roles is not planned per stub"
+                          % ("unknown" if None in kinds else kinds.count("client")))
+        return 1.0 / w, None
     counts = per_worker_tier_counts(ctx.schedule_meta, w)
     tot = sum(counts.get((j, tier.seq), 0) for j in range(w))
-    return counts.get((worker, tier.seq), 0) / tot if tot else None
+    if not tot:
+        return None, "no request of role %s planned in tier %d" % (role, tier.seq)
+    return counts.get((worker, tier.seq), 0) / tot, None
 
 
 def worker_load(ctx, tier, role, worker, split, load_key):
+    """(planned load of one worker in `load_key` units, None) or (None, why)."""
     tl = tier_load(tier, load_key)
-    sh = worker_share(ctx, tier, role, worker, split)
-    return None if tl is None or sh is None else tl * sh
+    if tl is None:
+        return None, "planned load in %s not computable for this tier" % load_key
+    sh, why = worker_share(ctx, tier, role, worker, split)
+    return (None, why) if sh is None else (tl * sh, None)
 
 
 def shape_matches(shape, tier):
@@ -255,12 +267,16 @@ def loadgen_worker_stats(td, role, worker):
 
 def pid_thread_cpu_cores(th_rows, pid, ws, we, clk):
     """(cores, None) or (None, why): utime + stime of every thread of `pid` between its first
-    and last sidecar row inside [ws, we), over the longest such span, in cores."""
+    and last sidecar row inside [ws, we), over the longest such span, in cores. A thread with
+    a single row there (its CPU unknown) makes the reading None, never a smaller sum."""
     tf, tl = first_last_in_window(th_rows, lambda x: (x["pid"], x["tid"])
                                   if x.get("pid") == pid else None, ws, we)
     keys = [k for k in tf if tl[k] is not tf[k]]
     if not keys:
         return None, "pid %s: fewer than two sidecar thread rows in the window" % pid
+    one = sorted(k[1] for k in tf if tl[k] is tf[k])
+    if one:
+        return None, "pid %s: thread(s) %s have one sidecar row in the window" % (pid, one)
     span = max(tl[k]["t_rel_ns"] - tf[k]["t_rel_ns"] for k in keys)
     if span <= 0:
         return None, "pid %s: thread rows span no time in the window" % pid
@@ -295,8 +311,9 @@ def stub_worker_stats(ld, td, role, worker):
 # ---- builders --------------------------------------------------------------------------------
 
 def read_shape_list(path):
-    """Builder list file for loadgen_band / stub_calib: one line per launch tree,
-    `<tree>\\t<seq>[,<seq>...]\\t<role>\\t<shape>` (literal paths, no globs, no tree twice)."""
+    """Builder list file for loadgen_band / stub_calib: one line per (launch tree, role),
+    `<tree>\\t<seq>[,<seq>...]\\t<role>\\t<shape>` (literal paths, no globs; a tree may appear
+    once per role, so two roles of one launch can each contribute)."""
     import os
     out = []
     with open(path) as f:
@@ -316,8 +333,8 @@ def read_shape_list(path):
             out.append((parts[0], seqs, parts[2], parts[3]))
     if not out:
         raise CalibError("%s lists no tree" % path)
-    if len({os.path.abspath(t) for t, *_ in out}) != len(out):
-        raise CalibError("a tree is listed twice")
+    if len({(os.path.abspath(t), role) for t, _s, role, _sh in out}) != len(out):
+        raise CalibError("a (tree, role) is listed twice")
     return out
 
 
@@ -406,7 +423,9 @@ def build_shapes(kind, list_path, W):
     health bands are T3 [min, max] of the per-worker statistics (loadgen_worker_stats /
     stub_worker_stats) over the listed STABLE tiers; the healthy maximum is, per launch, the
     busiest worker's planned load in the highest STABLE tier (verdicts.json boundary_T4
-    lower end), and over launches the smallest of those (the lower end of the T4 envelope).
+    lower end), and over launches the smallest of those (the lower end of the T4 envelope); a
+    listed launch without that lower end, or whose planned load there cannot be computed, is
+    an error (CalibError naming the tree), never left out of the minimum.
     It is `censored` (only "at least this") unless every contributing launch's grade
     localised its first non-stable tier to the bound role (max_attribution; each input
     records its attribution): a launch whose limit was reached elsewhere, or never, says
@@ -458,15 +477,21 @@ def build_shapes(kind, list_path, W):
         b = sel["verdicts"].get("boundary_T4") or {}
         rec["boundary_T4"] = b
         measured, rec["attribution"] = max_attribution(sel["verdicts"], role)
-        if b.get("lower_seq") is not None:
-            t = ctx.tt.tiers[b["lower_seq"]]
-            loads = [worker_load(ctx, t, role, k, split, lk) for k in range(workers)]
-            if None not in loads:
-                S["maxes"].append(max(loads))
-                S["tk"].add(t.tokens_per_msg)
-                S["sc"].add(t.streams_c)
-                if b.get("kind") == "lower_bound_only" or not measured:
-                    S["censored"] = True
+        if b.get("lower_seq") is None:
+            raise CalibError("%s: T4 has no lower end (no stable tier below the first "
+                             "non-stable one): its healthy maximum is unknown; take the tree "
+                             "out of the list" % tree)
+        t = ctx.tt.tiers[b["lower_seq"]]
+        loads = [worker_load(ctx, t, role, k, split, lk) for k in range(workers)]
+        bad = sorted({why for v, why in loads if v is None})
+        if bad:
+            raise CalibError("%s: planned load of %s in tier %d not computable (%s); take the "
+                             "tree out of the list" % (tree, role, t.seq, "; ".join(bad)))
+        S["maxes"].append(max(v for v, _w in loads))
+        S["tk"].add(t.tokens_per_msg)
+        S["sc"].add(t.streams_c)
+        if b.get("kind") == "lower_bound_only" or not measured:
+            S["censored"] = True
     shapes = {}
     for shape, S in sorted(acc.items()):
         if not S["tk"]:

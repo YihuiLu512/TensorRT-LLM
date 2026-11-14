@@ -10,8 +10,10 @@ Input is a capjudge.boundary product. Two parts:
     per-pass path, three or more deltas; 1 / boundary against delta must have slope 1 once both
     are in the same unit. Launches judged in mode P+X+I+V: control launches (no dose) are
     delta = 0; dosed launches must dose one role, the same in all, with a heartbeat PASS (others
-    are excluded and listed). Per delta level the envelope of the launches' intervals; for every
-    pair of levels a < b the normalised slope lies in
+    are excluded and listed), and share one topology (roles, kind, measure_class, workers;
+    capjudge.boundary.topology); control launches of another topology are excluded (an arm
+    with other workers has another boundary). Per delta level the envelope of the launches'
+    intervals; for every pair of levels a < b the normalised slope lies in
         [(1/b.upper - 1/a.lower), (1/b.lower - 1/a.upper)] / (delta_b - delta_a) * W / p
     with W the dosed role's workers and p its passes per unit of load_value by construction
     (capcommon.expect on the launch's reconcile chain of the site's unit and the tier
@@ -34,8 +36,10 @@ Input is a capjudge.boundary product. Two parts:
   * sink health (with --sink-bands; E1 "隔离": the sink's thread CPU and event-loop lag stay
     in their sub-saturation band): per load tier and sink worker, the C2 statistics against the
     bands `T3:loop_lag_p99_ns:<sink>` / `T3:thread_cpu_cores:<sink>` of a registered
-    calibration file (regime subsat). Above the band -> OUTSIDE; no value or no band ->
-    NOT_RUN. The tree is re-verified (capjudge.inputs.verify) to read the raw data.
+    calibration file (regime subsat) from the launch's environment (hardware profile and
+    image, as the judge requires of every calibration file; else that launch is NOT_RUN).
+    Above the band -> OUTSIDE; no value or no band -> NOT_RUN. The tree is re-verified
+    (capjudge.inputs.verify) to read the raw data.
 """
 
 import argparse
@@ -53,13 +57,13 @@ from . import boundary as B
 from . import cmdrec
 from . import intervene
 from . import stats
+from .treedata import summary_value
 
 SCHEMA = "capkit.e1_report/1"
 PASS, FAIL, NOT_RUN, INCONCLUSIVE = "PASS", "FAIL", "NOT_RUN", "INCONCLUSIVE"
-# byte counters per tool module: (summary path, ...); the HTTP sink's include response heads
-CLIENT_BYTES = {"capload": ("frames", "bytes"), "capgrpc.load": ("msgs", "bytes")}
-SERVER_BYTES = {"capload.nullsse": ("counts", "bytes_sent"),
-                "capgrpc.nullgrpc": ("counts", "bytes_sent")}
+# byte counters per tool module (dotted summary path); the HTTP sink's include response heads
+CLIENT_BYTES = {"capload": "frames.bytes", "capgrpc.load": "msgs.bytes"}
+SERVER_BYTES = {"capload.nullsse": "counts.bytes_sent", "capgrpc.nullgrpc": "counts.bytes_sent"}
 HTTP_SINKS = ("capload.nullsse",)
 
 
@@ -120,6 +124,17 @@ def slope(bdoc, W):
     if not dosed:
         out["reasons"].append("no usable dosed launch")
         return out
+    topos = sorted({B.topology(x["roles"]) for x in dosed})
+    if len(topos) != 1:
+        out["reasons"].append("dosed launches have %d topologies (roles, kind, measure_class, "
+                              "workers), one is needed: %s" % (len(topos),
+                                                              [list(t) for t in topos]))
+        return out
+    other = [x for x in control if B.topology(x["roles"]) != topos[0]]
+    for x in other:
+        out["excluded"].append({"tree": x["tree"], "why": "control launch of another topology "
+                                "(roles, kind, measure_class, workers) than the dosed ones"})
+    control = [x for x in control if B.topology(x["roles"]) == topos[0]]
     targets = {(next(iter(x["doses"])), tuple(d["site"] for d in next(iter(
         x["doses"].values())))) for x in dosed}
     if len(targets) != 1:
@@ -207,21 +222,15 @@ def _summaries(tree, role):
     return out
 
 
-def _get(doc, path):
-    v = doc
-    for k in path:
-        v = v.get(k) if isinstance(v, dict) else None
-    return v
-
-
 def _sum(docs, path):
     """(sum of the integer at `path` over the summaries, None) or (None, why) when one lacks
     it (never counted as 0)."""
-    vals = [_get(d, path) for _t, _w, d in docs]
-    bad = [(t, w) for (t, w, _d), v in zip(docs, vals) if not isinstance(v, int)]
+    vals = [summary_value(d, path) for _t, _w, d in docs]
+    bad = [(t, w) for (t, w, _d), v in zip(docs, vals)
+           if not isinstance(v, int) or isinstance(v, bool)]
     if bad:
-        return None, "%d summaries lack %s (first: %s w%s)" % (len(bad), ".".join(path),
-                                                                bad[0][0], bad[0][1])
+        return None, "%d summaries lack %s (first: %s w%s)" % (len(bad), path, bad[0][0],
+                                                                bad[0][1])
     return sum(vals), None
 
 
@@ -266,8 +275,8 @@ def counts(tree):
         return out
     out["bytes"] = _bytes(tree, c, s, cs, ss)
     if s["module"] in HTTP_SINKS and c["module"] == "capload":
-        ca, wc = _sum(cs, ("conn_pool", "new_conns"))
-        sa, wa = _sum(ss, ("counts", "accepts"))
+        ca, wc = _sum(cs, "conn_pool.new_conns")
+        sa, wa = _sum(ss, "counts.accepts")
         out["accepts"] = {"client_new_conns": ca, "server_accepts": sa}
         if wc or wa:
             out["accepts"].update(status=NOT_RUN, why="; ".join(w for w in (wc, wa) if w))
@@ -290,9 +299,8 @@ def _bytes(tree, c, s, cs, ss):
     res = {"client_bytes": cb, "server_bytes": sb, "head_bytes": 0}
     if s["module"] in HTTP_SINKS:
         got = {}
-        for name, path in (("foreign", ("counts", "foreign_requests")),
-                           ("requests", ("counts", "requests")),
-                           ("overflow", ("overflow", "streams"))):
+        for name, path in (("foreign", "counts.foreign_requests"),
+                           ("requests", "counts.requests"), ("overflow", "overflow.streams")):
             got[name], why = _sum(ss, path)
             if why:
                 res.update(status=NOT_RUN, why="heads cannot be rebuilt: " + why)
@@ -318,8 +326,8 @@ def _bytes(tree, c, s, cs, ss):
 
 # load-generator counters of requests that may leave sink bytes in flight (capgrpc.load
 # counts a request it gave up on as failed; it has no unfinished counter)
-FAILED_COUNTERS = {"capload": (("counts", "failed"), ("counts", "unfinished")),
-                   "capgrpc.load": (("counts", "failed"),)}
+FAILED_COUNTERS = {"capload": ("counts.failed", "counts.unfinished"),
+                   "capgrpc.load": ("counts.failed",)}
 
 
 def _in_flight(cs, diff, module):
@@ -327,8 +335,8 @@ def _in_flight(cs, diff, module):
     load generator had failed or unfinished requests (bytes in flight when they were dropped),
     else FAIL."""
     n = {}
-    for path in FAILED_COUNTERS.get(module, (("counts", "failed"),)):
-        n[path[-1]], why = _sum(cs, path)
+    for path in FAILED_COUNTERS.get(module, ("counts.failed",)):
+        n[path.rsplit(".", 1)[-1]], why = _sum(cs, path)
         if why:
             return {"status": NOT_RUN, "why": "sink sent %d bytes more; %s" % (diff, why)}
     failed, unfinished = n.get("failed", 0), n.get("unfinished", 0)
@@ -345,8 +353,8 @@ SINK_STATS = ("T3:loop_lag_p99_ns", "T3:thread_cpu_cores")
 
 
 def load_sink_bands(path, W):
-    """noise_bands of a registered calibration file (any kind whose `noise_bands` carry the
-    sink keys; subsat regime only). Raises E1Error when the file is not registered."""
+    """(subsat noise_bands, environment) of a registered calibration file (any kind whose
+    `noise_bands` carry the sink keys). Raises E1Error when the file is not registered."""
     from capcommon import ledger  # noqa: PLC0415
     if ledger.registry_lookup(os.path.join(W, "REGISTRY.tsv"), sha256_file(path)) is None:
         raise E1Error("%s is not registered in <W>/REGISTRY.tsv" % path)
@@ -355,17 +363,21 @@ def load_sink_bands(path, W):
     if not isinstance(nb, dict):
         raise E1Error("%s has no noise_bands" % path)
     return {k: b for k, b in nb.items() if stats.band_is_valid(b)
-            and b.get("regime", "subsat") == "subsat"}
+            and b.get("regime", "subsat") == "subsat"}, {"environment": doc.get("environment")}
 
 
-def sink_health(tree, W, bands):
+def sink_health(tree, W, bands, env_doc):
     """Per load tier and sink worker: the C2 statistics (capjudge.calib.stub_worker_stats)
-    against the sink's sub-saturation bands; a reading above the band is OUTSIDE."""
+    against the sink's sub-saturation bands; a reading above the band is OUTSIDE. The bands'
+    file must come from the launch's environment (capjudge.inputs._check_env, the judge's
+    rule for every calibration file); `env_doc` carries its `environment`. Otherwise, or when
+    the tree does not verify, the launch is NOT_RUN."""
     from . import calib  # noqa: PLC0415
     from . import inputs as I  # noqa: PLC0415
     from .treedata import LaunchData, TierData  # noqa: PLC0415
     try:
         ctx = I.verify(W, tree)
+        I._check_env(ctx, env_doc, "--sink-bands")
     except I.InputInvalid as e:
         return {"status": NOT_RUN, "why": "input invalid: %s" % e}
     sinks = [r for r, d in sorted(ctx.roles.items())
@@ -420,11 +432,11 @@ def main(argv=None):
                "slope": slope(bdoc, W),
                "counts": [counts(x["tree"]) for x in bdoc["launches"]]}
         if a.sink_bands:
-            bands = load_sink_bands(a.sink_bands, W)
+            bands, env_doc = load_sink_bands(a.sink_bands, W)
             doc["sink_bands"] = {"path": os.path.abspath(a.sink_bands),
                                  "sha256": sha256_file(a.sink_bands)}
-            doc["sink_health"] = [dict(sink_health(x["tree"], W, bands), tree=x["tree"])
-                                  for x in bdoc["launches"]]
+            doc["sink_health"] = [dict(sink_health(x["tree"], W, bands, env_doc),
+                                       tree=x["tree"]) for x in bdoc["launches"]]
         else:
             doc["sink_health"] = {"status": NOT_RUN, "why": "no --sink-bands"}
     except (E1Error, ConfigError, OSError, ValueError, KeyError) as e:

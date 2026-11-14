@@ -993,21 +993,22 @@ SAMPLES = {
         "exit_code": 0, "tier_verdicts": {"2": "STABLE", "4": "UNSTABLE"}, "red_checks": [],
         "tier_localisation": {"4": {"status": "LOCALIZED", "role": "nullsse", "via": ["I1"],
                                     "finding": "domain_saturated"}},
-        "grade": {"grade": "LOCALIZED", "role": "nullsse", "finding": "domain_saturated"}}),
+        "grade": {"grade": "LOCALIZED", "role": "nullsse", "finding": "domain_saturated",
+                  "I_status": "LOCALIZED"}}),
     # I3 known-answer pair (design 2.6 I3 table: E3's slow server / slow reader). Server slow:
     # its pending queue grows, the in-flight to the reader stays flat -> nullsse (I1 and I3).
     "i_server_slow": ({"slow": "server", "ixv": True}, {
         "exit_code": 0, "tier_verdicts": {"2": "STABLE", "4": "UNSTABLE"}, "red_checks": [],
         "tier_localisation": {"4": {"status": "LOCALIZED", "role": "nullsse",
                                     "via": ["I1", "I3"], "finding": "domain_saturated"}},
-        "grade": {"grade": "LOCALIZED", "role": "nullsse"}}),
+        "grade": {"grade": "LOCALIZED", "role": "nullsse", "I_status": "LOCALIZED"}}),
     # Reader slow: the in-flight is held at a plateau, so the server's exit side is blocked ->
     # capload, the load source: the tool saturated first, a lower bound
     "i_reader_slow": ({"slow": "reader", "ixv": True}, {
         "exit_code": 0, "tier_verdicts": {"2": "STABLE", "4": "UNSTABLE"}, "red_checks": [],
         "tier_localisation": {"4": {"status": "LOCALIZED", "role": "capload",
                                     "via": ["I1", "I3"]}},
-        "grade": {"grade": "LOWER_BOUND", "role": "capload"}}),
+        "grade": {"grade": "LOWER_BOUND", "role": "capload", "I_status": "LOCALIZED"}}),
     # The same on the topology caplaunch writes on the cluster: capload's parent is registered
     # and the parent and both workers are pinned to the role's cores 2-3. I1 reads cores 2-3 as
     # one group (several cores: per process GIL domain) and lists all three pids.
@@ -1017,7 +1018,7 @@ SAMPLES = {
                                     "via": ["I1", "I3"], "finding": "domain_saturated",
                                     "pids": [CAPLOAD_PARENT] + list(CAPLOAD_PIDS),
                                     "granularity": "process"}},
-        "grade": {"grade": "LOWER_BOUND", "role": "capload"}}),
+        "grade": {"grade": "LOWER_BOUND", "role": "capload", "I_status": "LOCALIZED"}}),
     # every check on that topology, P + X only: the same verdicts as "good"
     "good_real_pins": ({"real_pins": True}, {"exit_code": 0, "tier_verdicts": GOOD_V,
                                              "red_checks": [], "state_last": "VALID"}),
@@ -1025,7 +1026,7 @@ SAMPLES = {
     "i_conflict": ({"slow": "conflict", "ixv": True}, {
         "exit_code": 0, "tier_verdicts": {"2": "STABLE", "4": "UNDETERMINED"},
         "red_checks": [], "tier_localisation": {"4": {"status": "UNDETERMINED"}},
-        "grade": {"grade": "UNDETERMINED"}}),
+        "grade": {"grade": "UNDETERMINED", "I_status": "UNDETERMINED"}}),
     # stage 2 (INTERFACES errata B2-2A): one broken sample per new item, plus the passing forms
     "c1_loadgen_overdriven": ({"c1_overdriven": True}, {
         "exit_code": 10, "tier_verdicts": {"2": "STABLE", "4": "VOID"}, "red_checks": ["C1"]}),

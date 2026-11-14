@@ -158,6 +158,15 @@ def _roles(tree):
                         "workers": r.get("workers")} for r in launch.get("roles") or []}
 
 
+def topology(roles):
+    """Topology key of a launch from its roles ({role: {kind, measure_class, workers}}, as
+    _roles): the sorted (role, kind, measure_class, workers). Readers that pool launches
+    (intervene's control and dose levels, e1report's slope levels) pool one topology only;
+    capjudge.scaling compares two."""
+    return tuple(sorted((r, d.get("kind"), d.get("measure_class"), d.get("workers"))
+                        for r, d in (roles or {}).items()))
+
+
 def build(trees, W, compares):
     W = os.path.abspath(W)
     out = {"schema": SCHEMA, "workdir": W, "inputs": [], "excluded": [], "launches": [],
