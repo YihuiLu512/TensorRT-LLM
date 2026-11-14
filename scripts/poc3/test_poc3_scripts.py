@@ -1023,14 +1023,11 @@ def _edited_repo(tmp_path, rev, path, edit, task, base_edit=None):
 
     ``base_edit``, when given, changes the lines of the file before the base is committed.
     """
-    found = subprocess.run(
-        ["git", "-C", str(Path(__file__).resolve().parents[2]), "show", f"{rev}:{path}"],
-        capture_output=True,
-        text=True,
-    )
-    if found.returncode != 0:
+    top = str(Path(__file__).resolve().parents[2])
+    known = subprocess.run(["git", "-C", top, "cat-file", "-e", f"{rev}^{{commit}}"], check=False)
+    if known.returncode != 0:
         pytest.skip(f"{rev} is not in this checkout")
-    text = found.stdout
+    text = _git(Path(top), "show", f"{rev}:{path}")
     if base_edit is not None:
         text = "\n".join(base_edit(text.split("\n"), check_ownership._regions(text)))
     repo = _repo(tmp_path)
@@ -1309,18 +1306,24 @@ def _indent(line):
     return line[: len(line) - len(line.lstrip())]
 
 
-# Each turns a change's (removed, added) lines into a change the exception does not list; a change
-# that adds no lines is tampered with on the side of the lines it removes.
+# Each turns a change's (removed, added) lines into a change the exception does not list, on the
+# side of the lines it adds; a change that adds no lines takes only "line-dropped", which removes
+# one line fewer, and "other-line".
 WT52_TAMPERS = {
     "line-dropped": lambda old, new: (old, new[:-1]) if new else (old[:-1], new),
-    "line-repeated": lambda old, new: (old, [*new, new[-1]]) if new else (old, [""]),
-    "line-altered": lambda old, new: (old, [*new[:-1], new[-1] + " "]) if new else (old, [" "]),
+    "line-repeated": lambda old, new: (old, [*new, new[-1]]),
+    "line-altered": lambda old, new: (old, [*new[:-1], new[-1] + " "]),
     "other-line": lambda old, new: (old, [_indent((new or old)[0]) + "pass"]),
 }
+WT52_TAMPER_CASES = [
+    (path, index, tamper)
+    for path, index in WT52_CHANGE_IDS
+    for tamper in WT52_TAMPERS
+    if WT52_CHANGES[path][index][2] or tamper in ("line-dropped", "other-line")
+]
 
 
-@pytest.mark.parametrize("path, index", WT52_CHANGE_IDS)
-@pytest.mark.parametrize("tamper", WT52_TAMPERS)
+@pytest.mark.parametrize("path, index, tamper", WT52_TAMPER_CASES)
 def test_wt52_may_not_change_anything_else(tmp_path, capsys, path, index, tamper):
     within, removed, added, after = WT52_CHANGES[path][index]
     parses = []
@@ -1340,6 +1343,28 @@ def test_wt52_may_not_change_anything_else(tmp_path, capsys, path, index, tamper
     assert f"OUT OF BOUNDS  {path}  (the exception allows" in out
     reason = "not one of the allowed changes" if parses[0] else "is not Python"
     assert reason in out
+
+
+@pytest.mark.parametrize(
+    "path, index",
+    [(path, index) for path, index in WT52_CHANGE_IDS if WT52_CHANGES[path][index][1]],
+)
+def test_wt52_may_not_replace_other_lines_than_the_listed_ones(tmp_path, capsys, path, index):
+    """A change's added lines in place of lines that differ from its removed ones in the last line."""
+    within, removed, added, after = WT52_CHANGES[path][index]
+    other = [*removed[:-1], f"{removed[-1]}  # x" if removed[-1] else "# x"]
+
+    def base_edit(lines, regions):
+        return _apply(lines, regions, within, removed, other, None)
+
+    def edit(lines, regions):
+        new = _apply(lines, regions, within, other, added, after)
+        ast.parse("\n".join(new))
+        return new
+
+    repo, base = _wt52_repo(tmp_path, path, edit, base_edit)
+    assert check_ownership.check("WT-52", f"{base}..HEAD", str(repo)) == 1
+    assert "not one of the allowed changes" in capsys.readouterr().out
 
 
 def _signed_asserts_in(test):

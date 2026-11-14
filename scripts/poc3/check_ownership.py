@@ -37,9 +37,9 @@ interpreter running the check parses at both. With either form nothing else
 about the file may change (its mode or final newline, for example); otherwise
 the path is out of bounds. Paths changed under
 ``shared`` and ``exception`` rules are listed for a reviewer to check by hand.
-Test files that already exist at the base are ``shared`` even for the item they
-belong to: existing assertions change only where tasks.md §0.3 or a ruling
-allows it, so changes there are listed too.
+Existing test files an item's rules name one by one are ``shared`` even for the
+item they belong to: existing assertions change only where tasks.md §0.3 or a
+ruling allows it, so changes there are listed too.
 A pattern starting with ``!`` excludes paths from the rules before it.
 
 The orchestrator's main files belong to no work item. Some code inside files
@@ -546,8 +546,8 @@ OWNERSHIP: dict[str, list[Rule]] = {
             f"{POC}/engine_client_impl.py",
             "CS-19: the debug dump, appended where GenerateRequest is built",
         ),
-        # CS-08 makes a worker frontend with a role need an engine that declares a KV connector,
-        # which WT-50's fake engine does not; a handoff then reaches the engine.
+        # CS-08: a worker frontend with a role needs an engine that declares a KV connector, so
+        # wt50_chain's fake engine declares one, and a handoff past the signature check reaches it.
         _exception(
             f"{POC_TESTS}/wt50/wt50_chain.py",
             "only engine() serving a disagg_profile, with its docstring and import",
