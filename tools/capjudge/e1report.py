@@ -243,6 +243,13 @@ def counts(tree):
     c, s = cl[0], sv[0]
     out.update(client=c["role"], server=s["role"])
     cs, ss = _summaries(tree, c["role"]), _summaries(tree, s["role"])
+    n_tiers = sum(1 for d in os.listdir(os.path.join(tree, "raw", "tiers"))
+                  if d[:3].isdigit() and d[3:4] == "_")
+    short = ["%s: %d of %d per-tier summaries" % (r["role"], len(x), r["workers"] * n_tiers)
+             for r, x in ((c, cs), (s, ss)) if len(x) != r["workers"] * n_tiers]
+    if short:  # a missing summary would drop from both sums alike: never a PASS
+        out["bytes"]["why"] = out["accepts"]["why"] = "; ".join(short)
+        return out
     out["bytes"] = _bytes(tree, c, s, cs, ss)
     if s["module"] in HTTP_SINKS and c["module"] == "capload":
         ca = sum(_get(d, ("conn_pool", "new_conns")) or 0 for _t, _w, d in cs)

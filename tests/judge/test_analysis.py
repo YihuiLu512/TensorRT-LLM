@@ -358,6 +358,16 @@ def test_counts_mismatches(tmp_path, kw, part, status):
     assert c[part]["status"] == status, c
 
 
+def test_counts_need_every_per_tier_summary(tmp_path):
+    tree = _sink_tree(tmp_path, 1000, [7])
+    td = os.path.join(tree, "raw", "tiers", "002_up")
+    os.makedirs(os.path.join(tree, "raw", "tiers", "003_drain"))  # a tier without summaries
+    c = E.counts(tree)
+    assert c["bytes"]["status"] == c["accepts"]["status"] == "NOT_RUN"
+    assert "1 of 2 per-tier summaries" in c["bytes"]["why"]
+    assert os.path.isfile(os.path.join(td, "ld.w0.summary.json"))
+
+
 def test_counts_need_the_e1_topology(tmp_path):
     tree = _sink_tree(tmp_path, 1000, [1])
     lj = os.path.join(tree, "raw", "launch.json")

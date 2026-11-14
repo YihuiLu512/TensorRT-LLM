@@ -1061,6 +1061,7 @@ python3 -m capjudge.e1report --boundary <boundary.json> --workdir <W> --out <新
   - 判定：每一对都闭合且包含 1 ⇒ PASS；某一对已知的一端把 1 排除在外 ⇒ FAIL；其余 ⇒ INCONCLUSIVE；少于 3 个 δ，或轴不是 `asc` ⇒ NOT_RUN。
 - **`counts`（E1 卡「计数真实性」，逐启动，启动范围求和）**：两个工具按计划档或事件档归档，口径不同，所以按全部档目录求和后再比。
   - 拓扑必须是 E1 形：恰好一个 `kind: client` 角色，恰好一个 `kind: server` 角色，且它是 `stub_out_of_domain`；否则 NOT_RUN。
+  - 两个角色在每个档目录（`raw/tiers/NNN_*`）里每个 worker 都要有逐档摘要，缺一份 ⇒ NOT_RUN。缺的摘要会同时从两侧的和里消失，不能让它变成 PASS。
   - 字节：HTTP 时，空汇的 `counts.bytes_sent` 包括每个响应的头，capload 的 `frames.bytes` 不包括。所以按空汇逐流记录（`streams.capbin` 的 `req_id`）用 `capload.sink.response_head` 重建头的字节数，要求空汇字节 − 头字节 = capload 字节。有外来请求、流记录溢出，或流记录条数 ≠ `counts.requests` ⇒ NOT_RUN。gRPC 时两侧都是消息负载字节，直接比。
   - accepts：capload 的 `conn_pool.new_conns` 之和 = 空汇的 `counts.accepts` 之和。nullgrpc 不计 accepts ⇒ NOT_RUN。
 - **`sink_health`（E1 卡「隔离」：空汇的线程 CPU 与事件循环延迟留在空载带内）**：
@@ -1336,7 +1337,7 @@ E0 第一轮的 pilot（`02_e0/E0/analysis/pilot.json`）定不出 `window_ns` /
    - gRPC 的 accepts 没有计数方；
    - `slope` 不检验截距。
 10. **验证**：
-    - **测试**：`tests/judge/test_analysis.py`，覆盖区间截断、T4 重算核对、T5 区组、对侧翻倍的分侧与归因、斜率 PASS / FAIL / INCONCLUSIVE / NOT_RUN、字节与 accepts、拓扑、空汇健康的登记核对与带比较、`.cmd.txt`、不覆盖。变异 M1～M7、E1～E6 全部杀死（`_local/b2-judge/mut/summary3.txt`、`summary4.txt`）。
+    - **测试**：`tests/judge/test_analysis.py`，覆盖区间截断、T4 重算核对、T5 区组、对侧翻倍的分侧与归因、斜率 PASS / FAIL / INCONCLUSIVE / NOT_RUN、字节与 accepts、逐档摘要齐全、拓扑、空汇健康的登记核对与带比较、`.cmd.txt`、不覆盖。变异 M1～M7、E1～E7 全部杀死（`_local/b2-judge/mut/summary3.txt`～`summary5.txt`）。`tests/judge` 全量 247 passed，`tests/capload` 33 passed，样本自测 36 个全过。
     - **e2e**：全部在 W 只读下进行，产物在 `_local/b2-judge/e2e/an/`：
       - E0(b) 12 棵已判真树跑 `boundary`；
       - e0a 3 棵树、E1-0 15 棵树（按 R、M 两条轴分组）跑 `boundary` 与 `e1report`：字节对账全部 PASS（HTTP 重建头后相等，gRPC 直接相等）；HTTP 的 accepts 全部 PASS（new-per-request 臂 30200 = 30200）；gRPC 的 accepts 是 NOT_RUN；这些树判定时还没有噪声带，T4 都是 `none`，斜率都是 NOT_RUN。

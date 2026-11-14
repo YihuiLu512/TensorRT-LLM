@@ -33,3 +33,4 @@
 - 2026-11-14 22:11:53 跑 tests/capload（sink.py 抽出 response_head，约 3 分钟）
 - 2026-11-14 22:13:18 样本自测 36 个（st7，约 3 分钟）
 - 2026-11-14 22:13:58 2E-analysis 验证完成（MEASURED）：tests/judge 247 passed（logs/j6.log）；tests/capload 33 passed（logs/cl1.log）；样本自测 36/36（logs/st7.log）；变异 M1–M7（summary3）、E1–E6（summary4）全部 KILLED；e2e（W 只读，产物 e2e/an/）：E0(b) 12 树 boundary EXIT=0；e0a 3 树、E1-0 15 树 boundary+e1_report EXIT=0，字节对账全部 PASS（HTTP 重建头后相等、gRPC 直接相等），HTTP accepts 全部 PASS，gRPC accepts NOT_RUN，T4 全为 none、斜率 NOT_RUN（判定时无带、无剂量）；localize 复跑 loc4 与 loc3 去 pid 后逐行相同；SM-9 判读写在 _local/b2-judge/sm9.md；fakebin.log 不存在（0 次调用）。提交。
+- 2026-11-14 22:15:22 补：counts 要求两侧每个档目录每个 worker 都有摘要（缺 ⇒ NOT_RUN），测试 28 passed（an4），变异 E7 KILLED（summary5）；E1-0 与 e0a e2e 复跑（*.r3.json）结论不变。提交。
