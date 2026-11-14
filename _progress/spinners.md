@@ -47,3 +47,39 @@
 ### NOT RUN
 - 作业路径 e2e（capjobs submit → capkit_inner.sh → caplaunch → capjudge）与 capjudge 对含自旋器启动树的判定（C13 是否真的 RED）：本机不做性能测量，留给 V0 的 c13-pc。
 - 三路自审（本步只实现，按 2.0 流程由子批次后续步骤做）。
+- 2026-11-15 06:05:54 全量验证开工（HEAD f1dadc262f）：建 _local/spinners/fullv.sh（从 b2-judge 拷来改路径；TMPDIR=/home/scratch.yihlu_coreai/tmp/20261114-capkit-sm1718/spinners/<轮>）与 e2e/jobpath；逐目录跑 tests（共约 15–25 分钟）
+- 2026-11-15 06:06:14 软链 probe-tree.link 移回 WT/probe-tree（测试用，提交前再移走）；后台跑全量验证 v2（fullv_all.sh v2，约 15–25 分钟）
+- 2026-11-15 06:18:54 v2 进行中：capcommon 190、capload 33、capprobe 159、envgate 96、grpc 53、jobs 221、judge 295 全过；正在跑 tests/launch（约 5–8 分钟）。e2e 脚本已备好（_local/spinners/e2e/jobpath：build.py 加「<base>+spin:<目标角色>」场景变体、run.sh 加自旋器绑定核对），测试跑完再跑
+- 2026-11-15 06:22:26 全量验证 v2 全绿（HEAD f1dadc26，logs/v2/summary.txt）。开跑作业路径 e2e：e0a-nullsse（J8530001）、e0a-nullsse+spin:nullsse（J8530002），各约 1–3 分钟
+- 2026-11-15 06:5x 作业路径 e2e 完成（见下）；pgrep 无残留；测试用软链已移回 _local/spinners/probe-tree.link（未删）。
+
+## V1CD-01 全量验证（HEAD f1dadc262f47da6cb09d16a97eba2336957440c5）
+
+### MEASURED
+| 项 | 结果 |
+|---|---|
+| tests/capcommon | 190 passed |
+| tests/capload | 33 passed |
+| tests/capprobe | 159 passed |
+| tests/envgate | 96 passed |
+| tests/grpc | 53 passed |
+| tests/jobs | 221 passed |
+| tests/judge | 295 passed |
+| tests/launch | 199 passed（这一轮 snapshot_child / gate_stalls 两条也过了，SM-21 未复现） |
+| tests/nullsse | 4 passed |
+| tests/sidecar | 5 passed |
+| samples/run_selftest.py --package capjudge --expect-samples 38 | EXIT 0，ran 38，errors 0 |
+| patchcheck --rev HEAD（探针树只读） | PASS，7/7 位点、8/8 位置、0 违例 |
+| py_compile | 208 ok / 0 bad |
+| bash -n | 3 ok / 0 bad（capkit_inner.sh、capkit_job.sbatch、prep_tokenizer.sbatch） |
+| 作业路径 e2e e0a-nullsse（J8530001） | build submit_rc 0、inner/launches rc 0、STATE VALID、judge rc 11（NOT_RUN）、RED 0、INPUT_INVALID 0、pyc 0；非 PASS 集合与 b2-judge 的 J8520003 逐行相同 |
+| 作业路径 e2e e0a-nullsse+spin:nullsse（J8530002，加一个 capenv.spinners aux 角色 `--target-role nullsse`） | STATE VALID、launches rc 0、各角色退出码 0；launch.json 里 spin 的 `--pin-table` = 本次启动树的 raw/env/pin_table.json；pin_table：spin [20]、nullsse [14, 15]；spin.json ready、problems 空、target_cpu 14；自旋进程 own cpu 20 亲和性 [20]、target cpu 14 亲和性 [14]，都已报告，last_cpu 分别 20、14；读入的 pin table sha 与拷回的一致；unattributed 空、自旋进程都在 monitor_children；judge rc 11、RED 0，非 PASS 集合与 J8530001 相同（C9 三档 PASS） |
+| fakebin.log | 2 行，都是门禁的 `scontrol show job 853000x`（替身退出 97，模拟里按设计忽略），无真实集群调用 |
+
+日志：`_local/spinners/logs/v2/summary.txt`；e2e：`_local/spinners/e2e/jobpath/*.run.log`。
+
+### INFERRED
+- 本地模拟里含自旋器的启动 C13 仍是 NOT_RUN（pilot.json 没有 D14 结果），所以这次 e2e 不说明 C13 阳性对照会不会判 RED；那要在集群上的 c13-pc 看。
+
+### NOT RUN
+- 集群上的 c13-pc 阳性对照、任何性能测量。
