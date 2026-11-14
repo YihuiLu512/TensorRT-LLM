@@ -1417,23 +1417,26 @@ R2 自审（slug `capkit-b2judge-J17871`）发现的问题已直接改进本子�
 1. **新入口 `python -m capenv.spinners`**（`tools/capenv/spinners.py`）。参数：通用（§2.1 身份、`--run-dir`、`--stop-grace-s`、`--cpus`）、`--origin-ns`、`--ready-file`、`--pin-table PATH`，全部必需；`--target-role ROLE` 可选；不收 `--inject`；参数不接受前缀缩写。行为：
    - `--cpus` 的每个核起一个自旋进程（fork），各自 `sched_setaffinity` 绑到该核，跑纯 Python 的 31 位 LCG（每单位 2000 步，单线程，持 GIL）。
    - 给了 `--target-role` 时，另起一个自旋进程，绑到绑核表 `roles[ROLE].cpus` 列表的第一项。ROLE 是绑核表 `roles` 的键（即被测角色的 `pin_role`）。这个自旋进程自己调用 `sched_setaffinity`，绑核表只读不改，绑核表的生成也不变。
-   - 起进程的那个进程只做监督，不自旋：它绑到 `--cpus`，等每个自旋进程报回亲和性读回值（恰好是自己那个核；每个最多等 10 s），然后才写就绪文件。
+   - 起进程的那个进程只做监督，不自旋：它绑到 `--cpus`，等每个自旋进程报回亲和性读回值（恰好是自己那个核；全部合计最多等 10 s），然后才写就绪文件。
    - 第一次 SIGTERM/SIGINT：向自旋进程发 SIGTERM，`--stop-grace-s` 之后还在的发 SIGKILL。第二次信号：剩下的立即 SIGKILL。
    - 自旋进程每 64 个单位查一次父进程是否还在，监督者被 SIGKILL 时自己退出。
-   - 退出码：0（被信号停止，每个自旋进程都报了结果；被第二次信号杀掉的不算缺）；3（绑核表读不到、不是 `capkit.pin_table/1` 或没有 `roles`、ROLE 不在表里或没有核、目标核落在 `--cpus` 里；这些都在起任何自旋进程之前判，不写就绪文件，也不写记录）；4（某个自旋进程绑核失败或读回不符，这时不写就绪文件；或者在停止之前就退出了；或者宽限期过后仍没有报结果）。监督者把自己绑到 `--cpus` 失败时也是 4。
+   - 退出码：
+     - 0：被信号停止，每个自旋进程都报了结果（被第二次信号杀掉的不算缺）；或者在就绪之前就收到停止信号，而已经报回的亲和性都正确（记录里 `ready: false`，不要求结果，没报回亲和性的也不算缺）。
+     - 3：绑核表读不到、不是 `capkit.pin_table/1` 或没有 `roles`、ROLE 不在表里或没有核、目标核落在 `--cpus` 里。这些都在起任何自旋进程之前判，不写就绪文件，也不写记录。ROLE 的条件在场景校验阶段已经核过（第 3 条），工具里的检查是兜底。
+     - 4：监督者把自己绑到 `--cpus` 失败（照常写记录，`supervisor_affinity: null`、`spinners: []`，不起自旋进程）；某个自旋进程绑核失败或读回不符，没报回亲和性就退出，或者在等待时限内没有报回亲和性（这几种都不写就绪文件）；在停止之前就退出了；宽限期过后仍没有报结果。凡是退出 4，都写记录，原因在 `problems`。
    - 本工具不做性能测量。记录只说明跑了什么，不作为判定依据。
-2. **接线**（`caplaunch/scenario.py`）：
-   - `TOOL_TABLE` 加 `"capenv.spinners": {"origin": True, "ready": True, "pin_table": True}`。
-   - 新参数组 `pin_table`：`build_argv` 追加 `--pin-table <T>/raw/env/pin_table.json`，路径用 `RunTree(<T>).env("pin_table.json")` 求出。这正是编排器在启动开始时放绑核表副本的位置（§5.1 的 `raw/env/`；设计稿写作「<启动树>/env/pin_table.json」，指的就是这个文件）。场景里不写这个路径。
+2. **接线**（`caplaunch/scenario.py`；作业级副本的核对在 `caplaunch/orchestrator.py`）：
+   - `TOOL_TABLE` 加 `"capenv.spinners": {"origin": True, "ready": True, "pin_table": True, "role_fixed": {…}}`（`role_fixed` 见第 3 条）。
+   - 新参数组 `pin_table`：`build_argv` 追加 `--pin-table <T>/raw/env/pin_table.json`，路径用 `RunTree(<T>).env("pin_table.json")` 求出。这正是编排器在启动开始时放绑核表副本的位置（§5.1 的 `raw/env/`；设计稿写作「<启动树>/env/pin_table.json」，指的就是这个文件）。作业级 env 目录（`--job-env-dir`）里若有同名文件，编排器要求它与 `--pin-table` 字节相同，否则在起任何进程之前拒绝（退出码 3）；所以启动树里的副本就是绑核用的那份。场景里不写这个路径。
    - `--pin-table` 加入 `MANAGED_FLAGS`，对所有 capkit 工具生效：场景 `args` 里出现 `--pin-table` 或 `--pin-table=…` ⇒ 场景校验失败（退出码 3）。
 3. **场景里的角色写法**：`kind: aux`，`measure_class: observer`，`workers: 1`，`expected_procs: 1`，`asyncio: false`，`loop: null`，`uses_grpc: false`，`snapshots: none`，`backlog_slots: []`，`readiness: [{"kind": "capkit_ready"}]`，`proc_kinds: []`。`cpus_needed` 等于本角色自己的自旋核数（至少 1）；给 `--target-role` 时，总自旋进程数是 `cpus_needed + 1`。
-   - **`measure_class` 必须属于编排器的 `MONITOR_CLASSES`**（实际就用 `observer`）。理由见第 4 条：自旋进程是未登记的子进程，在其他类别的角色下面会被记为 `unattributed`，导致 C13 判 RED（`tests/launch/test_launch_e2e.py` 有一条测试演示这个后果）。
-   - 场景校验目前不检查这一条，按本条写场景。
+   - `kind`、`measure_class`、`expected_procs`、`asyncio`、`uses_grpc`、`snapshots` 这六项由场景校验强制（`TOOL_TABLE` 的 `role_fixed`，不符 ⇒ 退出码 3）。`measure_class` 必须属于编排器的 `MONITOR_CLASSES`，这一对齐由编排器的导入期断言保证。理由见第 4 条：自旋进程是未登记的子进程，在其他类别的角色下面会被记为 `unattributed`。
+   - `--target-role X` 由场景校验核对（不符 ⇒ 退出码 3）：X 是字面值（不含 `{` 占位符），只出现一次；X 是场景里另一个角色的名字；该角色的 `pin_role` 等于 X（工具按 `pin_role` 在绑核表里取核，判定器的 C9/C13 按角色名取核，两者要指向同一条）；X 在本角色的 `start_after` 里（目标角色就绪之后才起自旋进程）。
    - 本工具只记录，不发快照，不判档。
 4. **§2.3「多进程工具必须列出子进程」的例外**：`capenv.spinners` 的就绪文件 `children` 是 `[]`，自旋进程不登记。
    - 原因：登记了的进程，C10 要求它有版本自报（§2.5）。编排器只从快照 meta，或从起进程那个进程自己的就绪文件里取版本自报（`orchestrator._versions`），自旋进程两者都没有，一旦登记，整次启动就 C10 NOT_RUN。
    - 后果：自旋进程是 observer 角色的未登记子孙，记在 `procs/monitor_children.json` 与各档 `tier.json` 的 `monitor_descendants`，不进窗口始末的 pid 比较，也不进 `unattributed`。
-   - 对 `c13-pc` 的影响：目标自旋进程在 relay1 核上的忙碌时间不属于 relay1 的任何登记线程，所以 C13 第二半把它算作外来忙碌，这正是阳性对照要的。C9 只看登记进程的 sidecar 线程行，看不到自旋进程，所以 C9 不会因为它判 RED。设计稿「C9 RED 预期」不再成立；设计稿本来就规定 C9 不计入 N1，也不作为通过依据，判据（C13 每窗与 `C13-MEAN` 都 RED）不受影响。
+   - 对 `c13-pc` 的影响（按代码推断，没有在真实 sidecar 与判定器上跑过，由 V0 的 c13-pc 读回确认）：`check_c9` 跳过不属于登记 pid 的线程行，`_foreign_frac` 用核忙碌减去 relay1 的登记线程。所以目标自旋进程的忙碌应当算进 C13 第二半的外来忙碌，C9 不应因它判 RED。设计稿里的「C9 RED 预期」按代码推断不会出现，见上。c13-pc 的判据不变（C13 每窗与 `C13-MEAN` 都 RED），C9 的结果在该启动上不作要求。
 5. **输出 `raw/spinners/<角色>.json`**（`capkit.spinners/1`，带本次启动的身份，判定器的身份扫描照常核对；判定器不读内容）。键：
    - `origin_ns`、`unit_ops`、`workload`、`cpus`、`supervisor_affinity`；
    - `pin_table`：`path` 与读到的字节的 `sha256`；
@@ -1443,9 +1446,9 @@ R2 自审（slug `capkit-b2judge-J17871`）发现的问题已直接改进本子�
    - `cores`：每个自旋核从就绪到停止的 `/proc/stat` 各列 tick 差、`busy_ticks`（同 `procfs.BUSY_COLS`）、`total_ticks`、`busy_frac`。读不到时为 null，原因写在 `cores_unreadable`；
    - `clk_tck`、`stop`（`control/stop.json` 的原文，§2.3）、`signals`、`problems`。
 6. **测试**：
-   - `tests/envgate/test_spinners.py`：纯函数，以及本机真实 fork 的 CLI：绑核、未给目标、配置错误、绑核失败、提前退出、监督者被杀、宽限期与第二次信号。
-   - `tests/launch/test_scenario.py`：接受 aux 角色；拒绝场景写 `--pin-table`；`build_argv` 的路径，以及工具自己的解析器能接受这条 argv。
-   - `tests/launch/test_launch_e2e.py`：用真实 `capenv.spinners` 的启动 e2e，以及非监测类角色的反例。
+   - `tests/envgate/test_spinners.py`：纯函数、监督者的等待与停止逻辑，以及本机真实 fork 的 CLI 的正常与各失败路径。
+   - `tests/launch/test_scenario.py`：本节对场景的接受与拒绝规则，以及 `build_argv` 给出的参数。
+   - `tests/launch/test_launch_e2e.py`：用真实 `capenv.spinners` 的启动 e2e，以及起进程之前的拒绝。
    - `tests/launch/fakepkgs/capenv/__init__.py` 现在把真实的 `tools/capenv` 接在假包之后：只有 canary、sidecar 是假的，其余 capenv 模块用真的。
 
 ## 审阅记录（r2，2026-11-13）

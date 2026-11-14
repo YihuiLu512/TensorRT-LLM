@@ -48,6 +48,9 @@ NONE = "none"  # explicit "not applicable" value for the provenance arguments
 # other class (under_test, stub_*) keep both checks.
 MONITOR_CLASSES = ("load_source", "observer")
 assert set(MONITOR_CLASSES) < set(sc.MEASURE_CLASSES)
+# a tool whose role_fixed names a measure_class runs unregistered children (capenv.spinners)
+assert all(t["role_fixed"]["measure_class"] in MONITOR_CLASSES for t in sc.TOOL_TABLE.values()
+           if "measure_class" in t.get("role_fixed", {}))
 # Helper processes a capkit tool's runtime starts on its own (category aux_helper): attributed to
 # the tool's role in roles.json "aux_helpers" and tier.json scans, never unattributed and never
 # part of the compared pid set. Matched on the command line `python [interpreter options] -c
@@ -195,6 +198,7 @@ class Launch:
         self._check_nvidia_smi()
         self._load_inputs()
         self._load_overlay()
+        self._check_job_env_pin_table()
         self._check_outer_probe_env()
         self.taskset = shutil.which("taskset")
         if self.taskset is None:
@@ -355,6 +359,16 @@ class Launch:
             raise ConfigError("--param %s must be an integer > 0, got %r" % (sc.LAG_PARAM, lag))
         self.rt = {n: RoleRT(d, self.cpus_of[n]) for n, d in self.roles.items()}
         self.order = sc.start_order(self.roles)
+
+    def _check_job_env_pin_table(self):
+        """_prepare_tree keeps a job-level env/pin_table.json as the tree's raw/env copy, which
+        tools (capenv.spinners) and the judge read: it must be byte-identical to --pin-table,
+        the table the roles are pinned by (checked before any process starts)."""
+        dup = os.path.join(self.a.job_env_dir, "pin_table.json")
+        if os.path.isfile(dup):
+            with open(dup, "rb") as f, open(self.a.pin_table, "rb") as g:
+                if f.read() != g.read():
+                    raise ConfigError("%s differs from --pin-table %s" % (dup, self.a.pin_table))
 
     def _load_overlay(self):
         """--overlay-manifest: the job-level overlay manifest, copied verbatim into

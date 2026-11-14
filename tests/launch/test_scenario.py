@@ -225,7 +225,8 @@ def test_e0_proc_kinds_are_capprobe_process_kinds():
 
 def _spin_role(args=("--target-role", "product")):
     return cf.role("spin", "capkit", "aux", asyncio=False, mclass="observer",
-                   module="capenv.spinners", snapshots="none", args=list(args))
+                   module="capenv.spinners", snapshots="none", start_after=["product"],
+                   args=list(args))
 
 
 def _spin_ctx():
@@ -243,6 +244,62 @@ def test_spinners_aux_role_is_accepted():
     roles = sc.validate_scenario(_doc(cf.default_roles() + [_spin_role()]))
     assert roles["spin"]["kind"] == "aux" and roles["spin"]["module"] == "capenv.spinners"
     sc.validate_scenario(_doc(cf.default_roles() + [_spin_role(args=())]))
+
+
+@pytest.mark.parametrize("key,val", [("kind", "server"), ("kind", "client")]
+                         + [("measure_class", m) for m in sc.MEASURE_CLASSES if m != "observer"]
+                         + [("expected_procs", 2), ("asyncio", True), ("uses_grpc", True),
+                            ("snapshots", "all")])
+def test_spinners_role_fields_are_fixed(key, val):
+    """errata SB-B1-3: the spinners role is an aux observer with one started process, no asyncio
+    loop, no gRPC and no snapshots; any other value is refused, naming the field."""
+    r = _spin_role()
+    r[key] = val
+    if key == "asyncio":
+        r["loop"] = "asyncio"
+    with pytest.raises(ConfigError, match="capenv.spinners needs %s " % key):
+        sc.validate_scenario(_doc(cf.default_roles() + [r]))
+
+
+def test_tools_with_a_fixed_measure_class_are_monitor_classes():
+    """The orchestrator's import-time assertion: a role_fixed measure_class is one of
+    MONITOR_CLASSES (whose unregistered children are monitor children, not unattributed)."""
+    from caplaunch.orchestrator import MONITOR_CLASSES  # noqa: PLC0415
+    fixed = [t["role_fixed"]["measure_class"] for t in sc.TOOL_TABLE.values()
+             if "measure_class" in t.get("role_fixed", {})]
+    assert fixed and set(fixed) <= set(MONITOR_CLASSES)
+
+
+def _spin_scenario(args, start_after=("product",), product_pin_role="product"):
+    r = _spin_role(args=args)
+    r["start_after"] = list(start_after)
+    roles = cf.default_roles()
+    [p for p in roles if p["role"] == "product"][0]["pin_role"] = product_pin_role
+    return _doc(roles + [r])
+
+
+@pytest.mark.parametrize("args,kw,needle", [
+    (["--target-role", "{own:role}"], {}, "needs a literal role name"),
+    (["--target-role"], {}, "needs a literal role name"),
+    (["--target-role", "nobody"], {}, "is not another role of this scenario"),
+    (["--target-role", "spin"], {}, "is not another role of this scenario"),
+    (["--target-role", "product"], {"product_pin_role": "prod_pin"},
+     "pin_role must equal its name"),
+    (["--target-role", "product"], {"start_after": ()}, "needs product in start_after"),
+    (["--target-role=product"], {"start_after": ("nullsse",)}, "needs product in start_after"),
+    (["--target-role", "product", "--target-role=product"], {}, "given 2 times"),
+])
+def test_spinners_target_role_is_checked_at_scenario_validation(args, kw, needle):
+    """errata SB-B1-3: --target-role X names (literally) another role of the scenario whose
+    pin_role is X and which is in the spinners role's start_after; refused otherwise (exit 3)."""
+    with pytest.raises(ConfigError, match=needle):
+        sc.validate_scenario(_spin_scenario(args, **kw))
+
+
+def test_spinners_target_role_accepted_forms():
+    for args in (["--target-role", "product"], ["--target-role=product"], []):
+        sc.validate_scenario(_spin_scenario(args))
+    sc.validate_scenario(_spin_scenario([], start_after=()))
 
 
 @pytest.mark.parametrize("extra", [["--pin-table", "/W/pin_table.json"],

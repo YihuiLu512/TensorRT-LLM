@@ -9,6 +9,7 @@ import json
 import os
 import signal
 import subprocess
+import threading
 import time
 
 import pytest
@@ -16,7 +17,7 @@ import pytest
 from b4_envgate_util import PY, capenv_env, id_args, wait_for
 from capcommon.exitcodes import ConfigError
 from capcommon.jsonio import read_json_stamped
-from capcommon.lifecycle import READY_SCHEMA
+from capcommon.lifecycle import READY_SCHEMA, StopController
 from capcommon.runtree import RunTree
 from capenv import procfs, spinners
 
@@ -113,7 +114,8 @@ def _alive(pid):
 class Run:
     """One capenv.spinners process on a fresh launch tree under tmp_path."""
 
-    def __init__(self, tmp_path, own, pin_roles, target=None, pin_doc=None, pin_arg=None):
+    def __init__(self, tmp_path, own, pin_roles, target=None, pin_doc=None, pin_arg=None,
+                 new_session=False):
         self.tree = RunTree(str(tmp_path / "T"))
         self.tree.make_skeleton()
         self.pin_path = self.tree.env("pin_table.json")
@@ -129,7 +131,7 @@ class Run:
         self.err_path = str(tmp_path / "spin.err")
         with open(self.err_path, "w") as err:
             self.p = subprocess.Popen(argv, env=capenv_env(), stdout=subprocess.DEVNULL,
-                                      stderr=err)
+                                      stderr=err, start_new_session=new_session)
 
     def ready(self, timeout=20):
         assert wait_for(lambda: os.path.exists(self.ready_file) or self.p.poll() is not None,
@@ -171,7 +173,6 @@ def test_target_role_binds_one_spinner_to_the_roles_first_core(tmp_path):
         sp = info["spinners"]
         assert [(s["cpu"], s["purpose"]) for s in sp] == [(a, "own"), (b, "own"), (c, "target")]
         assert [_allowed(s["pid"]) for s in sp] == [[a], [b], [c]]
-        assert all(_allowed(s["pid"]) != [d] for s in sp)
         r.p.send_signal(signal.SIGTERM)
         assert r.wait() == 0, r.stderr()
     finally:
@@ -323,3 +324,123 @@ def test_stop_kills_after_grace_or_at_once_on_a_second_signal(hard, why, problem
     probs = [spinners.spinner_record(sp, True)[1] for sp in plan]
     assert all(bool(pr) is problem for pr in probs), probs
     assert not [sp["pid"] for sp in plan if _alive(sp["pid"])]
+
+
+def test_supervisor_that_cannot_pin_itself_exits_4_with_a_record(tmp_path):
+    """--cpus the kernel refuses for the supervisor: no spinner starts, no ready file, exit 4,
+    and the record is written like on every other exit-4 path."""
+    r = Run(tmp_path, [4095], {"spin": {"cpus": [4095]}})
+    assert r.wait() == 4, r.stderr()
+    assert not os.path.exists(r.ready_file)
+    out = r.output()
+    assert out["ready"] is False and out["spinners"] == [] and out["cores"] is None
+    assert out["supervisor_affinity"] is None
+    assert len(out["problems"]) == 1 and "cannot pin the supervisor to [4095]" \
+        in out["problems"][0], out["problems"]
+
+
+@pytest.mark.parametrize("n", range(10))
+def test_group_sigterm_is_a_stop_not_an_early_exit(tmp_path, n):
+    """A SIGTERM to the whole process group (scancel, the launch sweep) reaches the spinners and
+    the supervisor together: the spinners that leave on it are not early exits (exit 0, no
+    problem). Repeated, as the order in which the two sides see the signal varies."""
+    a, b = _cpus(2)
+    r = Run(tmp_path, [a, b], {"spin": {"cpus": [a, b]}}, new_session=True)
+    try:
+        sp = r.ready()["info"]["spinners"]
+        os.killpg(r.p.pid, signal.SIGTERM)
+        assert r.wait() == 0, r.stderr()
+    finally:
+        if r.p.poll() is None:
+            r.p.kill()
+    out = r.output()
+    assert out["problems"] == [] and out["signals"] == [signal.SIGTERM]
+    assert all(x["reported"] for x in out["spinners"])
+    assert not [s["pid"] for s in sp if _alive(s["pid"])]
+
+
+def _silent_children(n, exit_at_once=False):
+    """n children that hold the write end of a pipe and never write to it (exit_at_once: exit 0
+    straight away), as plan entries."""
+    plan = []
+    for i in range(n):
+        rfd, wfd = os.pipe()
+        code = "pass" if exit_at_once else "import time\ntime.sleep(60)\n"
+        p = subprocess.Popen([PY, "-B", "-c", code], pass_fds=(wfd,))
+        os.close(wfd)
+        plan.append({"index": i, "cpu": i, "purpose": "own", "pid": p.pid, "rfd": rfd,
+                     "buf": b"", "events": [], "eof": False, "exit": None, "killed": False})
+    return plan
+
+
+def _reap(plan):
+    for sp in plan:
+        if sp["exit"] is None:
+            spinners._kill(sp, signal.SIGKILL)
+            os.waitpid(sp["pid"], 0)
+        if not sp["eof"]:
+            os.close(sp["rfd"])
+
+
+def test_wait_pinned_tells_a_closed_pipe_from_a_silent_spinner():
+    """A spinner gone without a report is reported as such, with its exit, not as a timeout."""
+    plan = _silent_children(1, exit_at_once=True)
+    try:
+        t0 = time.monotonic()
+        probs = spinners.wait_pinned(plan, StopController(install=False), wait_s=20)
+        assert time.monotonic() - t0 < 10
+        assert probs == ["spinner 0 (own, cpu 0): pipe closed before an affinity report "
+                         "(exit {'code': 0})"], probs
+    finally:
+        _reap(plan)
+
+
+def test_wait_pinned_uses_one_deadline_for_all_spinners():
+    """Silent spinners share one deadline: three of them cost wait_s, not 3 x wait_s."""
+    plan = _silent_children(3)
+    try:
+        t0 = time.monotonic()
+        probs = spinners.wait_pinned(plan, StopController(install=False), wait_s=0.6)
+        took = time.monotonic() - t0
+        assert 0.6 <= took < 0.6 + 0.5, took
+        assert probs == ["spinner %d (own, cpu %d): no affinity report within 0.6s" % (i, i)
+                         for i in range(3)], probs
+    finally:
+        _reap(plan)
+
+
+def test_stop_before_ready_counts_no_missing_report():
+    """A stop request before every spinner reported ends the wait at once; neither the missing
+    affinity reports nor the missing results of a never-ready tool are problems (exit 0)."""
+    plan = _silent_children(2)
+    try:
+        stop = StopController(install=False)
+        stop.trigger(signal.SIGTERM)
+        t0 = time.monotonic()
+        assert spinners.wait_pinned(plan, stop, wait_s=5) == []
+        assert time.monotonic() - t0 < 1
+        assert [spinners.spinner_record(sp, False)[1] for sp in plan] == [[], []]
+    finally:
+        _reap(plan)
+
+
+def test_exit_followed_by_the_stop_request_is_not_an_early_exit():
+    """watch: a spinner exit seen before the supervisor's own stop request (its handler ran
+    later than the spinner's) is the stop, not an early exit; without a stop request within
+    settle_s it is one."""
+    for delay, expect in ((0.35, []), (None, ["exited before the stop"])):
+        plan = _silent_children(1, exit_at_once=True)
+        try:
+            assert wait_for(lambda: procfs.read_stat("/proc/%d/stat" % plan[0]["pid"])["state"]
+                            == "Z", 10)
+            stop = StopController(install=False)
+            timer = threading.Timer(delay, stop.trigger, (signal.SIGTERM,)) if delay else None
+            if timer:
+                timer.start()
+            probs = spinners.watch(plan, stop, settle_s=0.7)
+            if timer:
+                timer.join()
+            assert len(probs) == len(expect) and all(e in p for e, p in zip(expect, probs)), probs
+            assert plan[0]["exit"] == {"code": 0}
+        finally:
+            _reap(plan)

@@ -22,10 +22,14 @@ Output raw/spinners/<role>.json (capkit.spinners/1): per spinner its core, purpo
 read-back, work units, CPU time and wall time; per spun core the /proc/stat tick deltas from
 ready to stop. These are a record of what ran, not a performance measurement.
 
-Exit codes: 0 stopped by a signal with every spinner reported; 3 configuration (pin table
-unreadable or not a pin table, target role absent or without cpus, target core inside --cpus);
-4 a spinner could not be pinned, did not report, or exited before the stop, or the supervisor
-could not pin itself.
+Exit codes: 0 stopped by a signal with every spinner reported, or stopped before it was ready
+with every affinity read-back received so far correct (the record then has ready false; missing
+reports and results are not counted); 3 configuration (pin table unreadable or not a pin table,
+target role absent or without cpus, target core inside --cpus; caplaunch's scenario validation
+checks the target role before the launch, this is the fallback); 4 the supervisor could not pin
+itself (no spinner started), a spinner could not be pinned, exited without an affinity report or
+sent none before the shared deadline, exited before the stop, or reported no result after it.
+Every exit 4 writes the record, with the reasons in `problems`.
 """
 
 import argparse
@@ -51,7 +55,11 @@ from .pins import PIN_SCHEMA
 SCHEMA = "capkit.spinners/1"
 UNIT_OPS = 2000  # LCG steps per work unit; a spinner checks its stop flag once per unit
 ORPHAN_CHECK_UNITS = 64  # units between two getppid() checks
-PIN_REPORT_WAIT_S = 10.0  # how long the supervisor waits for each spinner's affinity report
+PIN_REPORT_WAIT_S = 10.0  # one deadline for all spinners' affinity reports (forked together)
+# After a spinner exit seen while no stop was requested yet: how long to wait for a stop request
+# before calling it an early exit (a group-wide SIGTERM reaches the spinners and the supervisor
+# together, and the supervisor's handler may run after waitpid saw the spinner go).
+STOP_SETTLE_S = 0.5
 STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT)
 
 
@@ -121,10 +129,13 @@ def _last_cpu():
         return None
 
 
-def _child(cpu, wfd, parent_pid):
-    """Body of a forked spinner; never returns. Stop signals are blocked on entry."""
+def _child(cpu, wfd, parent_pid, close_fds):
+    """Body of a forked spinner; never returns. Stop signals are blocked on entry. close_fds:
+    the inherited read ends (its own pipe's and the earlier spinners'), closed first."""
     rc = exitcodes.INTERNAL
     try:
+        for fd in close_fds:
+            os.close(fd)
         stop = [False]
 
         def on_signal(_signum, _frame):
@@ -158,14 +169,14 @@ def start_spinners(plan):
     """Fork one spinner per plan entry (stop signals blocked across the fork, so a signal that
     arrives before the child installed its own handlers stays pending for it)."""
     parent = os.getpid()
-    for sp in plan:
+    for k, sp in enumerate(plan):
         rfd, wfd = os.pipe()
+        inherited = [rfd] + [p["rfd"] for p in plan[:k]]  # read ends the child must not hold
         old = signal.pthread_sigmask(signal.SIG_BLOCK, STOP_SIGNALS)
         try:
             pid = os.fork()
             if pid == 0:
-                os.close(rfd)
-                _child(sp["cpu"], wfd, parent)
+                _child(sp["cpu"], wfd, parent, inherited)
         finally:
             signal.pthread_sigmask(signal.SIG_SETMASK, old)
         os.close(wfd)
@@ -205,19 +216,27 @@ def _event(sp, name):
 
 def wait_pinned(plan, stop, wait_s=PIN_REPORT_WAIT_S):
     """Problems (strings) for spinners that did not report a correct affinity read-back within
-    wait_s each. A stop request ends the wait without counting the missing reports."""
+    wait_s, one deadline for all of them. A spinner whose pipe closed without a report is told
+    apart from one still silent at the deadline. A stop request ends the wait without counting
+    the missing reports."""
     problems = []
+    deadline = time.monotonic() + wait_s
     for sp in plan:
-        deadline = time.monotonic() + wait_s
         while _event(sp, "pinned") is None and not stop.requested:
             left = deadline - time.monotonic()
             if left <= 0 or not _read_some(sp, min(left, 0.2)):
                 break
         ev = _event(sp, "pinned")
         where = "spinner %d (%s, cpu %d)" % (sp["index"], sp["purpose"], sp["cpu"])
-        if ev is None and not stop.requested:
+        if ev is None and stop.requested:
+            continue
+        if ev is None and sp["eof"]:
+            _reap_soon(sp)
+            problems.append("%s: pipe closed before an affinity report (exit %s)"
+                            % (where, sp["exit"]))
+        elif ev is None:
             problems.append("%s: no affinity report within %.1fs" % (where, wait_s))
-        elif ev is not None and not ev.get("ok"):
+        elif not ev.get("ok"):
             problems.append("%s: pinning failed: %s" % (
                 where, ev.get("error") or "affinity read-back %s" % (ev.get("affinity"),)))
     return problems
@@ -234,6 +253,32 @@ def poll_exits(plan):
             continue
         if pid:
             sp["exit"] = {"code": os.waitstatus_to_exitcode(status)}
+
+
+def _reap_soon(sp, wait_s=1.0):
+    """poll_exits for one spinner until it has an exit status or wait_s passed (its pipe is at
+    EOF, so it is exiting)."""
+    end = time.monotonic() + wait_s
+    poll_exits([sp])
+    while sp["exit"] is None and time.monotonic() < end:
+        time.sleep(0.01)
+        poll_exits([sp])
+
+
+def watch(plan, stop, settle_s=STOP_SETTLE_S):
+    """Wait for the stop request. Problems (strings) for spinners that exited before it; an exit
+    followed within settle_s by the stop request is the stop itself, not a problem."""
+    while not stop.requested:
+        stop.wait(0.2)
+        poll_exits(plan)
+        if stop.requested or all(sp["exit"] is None for sp in plan):
+            continue
+        if stop.wait(settle_s):  # the same stop signal reached the spinners first
+            break
+        return ["spinner %d (%s, cpu %d) exited before the stop: %s"
+                % (sp["index"], sp["purpose"], sp["cpu"], sp["exit"])
+                for sp in plan if sp["exit"] is not None]
+    return []
 
 
 def _kill(sp, sig):
@@ -358,18 +403,19 @@ def main(argv=None):
     except ConfigError as e:
         print("capenv.spinners: %s" % e, file=sys.stderr)
         return exitcodes.CONFIG
+    origin = args.origin_ns
+    problems, ready, t0, t1, cores_why = [], False, None, None, None
     try:
         affinity = pin_self(common.cpus)
     except (OSError, CapkitError) as e:
-        print("capenv.spinners: cannot pin the supervisor to %s: %s" % (common.cpus, e),
-              file=sys.stderr)
-        return exitcodes.RUNTIME
-    origin = args.origin_ns
-    problems, ready, t0, t1, cores, cores_why = [], False, None, None, None, None
+        problems.append("cannot pin the supervisor to %s: %s" % (common.cpus, e))
+        print("capenv.spinners: %s" % problems[-1], file=sys.stderr)
+        affinity, plan = None, []
     try:
-        start_spinners(plan)
-        problems += wait_pinned(plan, stop)
-        if not problems and not stop.requested:
+        if plan:
+            start_spinners(plan)
+            problems += wait_pinned(plan, stop)
+        if plan and not problems and not stop.requested:
             t0, cores_why = cpu_ticks([sp["cpu"] for sp in plan])
             ready_ns = time.monotonic_ns()
             write_ready_file(common.ready_file, common.identity,
@@ -380,15 +426,7 @@ def main(argv=None):
                                                  ("index", "cpu", "purpose", "pid")}
                                                 for sp in plan]})
             ready = True
-            while not stop.requested:
-                stop.wait(0.2)
-                poll_exits(plan)
-                early = [sp for sp in plan if sp["exit"] is not None]
-                if early:
-                    problems += ["spinner %d (%s, cpu %d) exited before the stop: %s"
-                                 % (sp["index"], sp["purpose"], sp["cpu"], sp["exit"])
-                                 for sp in early]
-                    break
+            problems += watch(plan, stop)
             if t0 is not None:
                 t1, cores_why = cpu_ticks([sp["cpu"] for sp in plan])
             stop_ns = time.monotonic_ns()

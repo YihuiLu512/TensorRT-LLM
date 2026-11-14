@@ -505,19 +505,36 @@ def test_tree_with_a_state_line_is_refused(tmp_path):
     assert not os.path.exists(os.path.join(T, "raw", "launch.json"))
 
 
-def _spin_role(mclass="observer"):
-    return cf.role("spin", "capkit", "aux", asyncio=False, mclass=mclass,
-                   module="capenv.spinners", snapshots="none", args=["--target-role", "product"])
+def _spin_role(**over):
+    r = cf.role("spin", "capkit", "aux", asyncio=False, mclass="observer",
+                module="capenv.spinners", snapshots="none", start_after=["product"],
+                args=["--target-role", "product"])
+    r.update(over)
+    return r
+
+
+def _spin_launch(tmp_path, roles, job_pin=None):
+    """_launch, with job_pin(pin table bytes) -> bytes written as the job-level
+    env/pin_table.json first (None: no such file)."""
+    wd = cf.make_workdir(tmp_path, cf.tier_doc(_gate()), roles)
+    if job_pin is not None:
+        with open(wd["pin"], "rb") as f:
+            data = job_pin(f.read())
+        with open(os.path.join(wd["job_env_dir"], "pin_table.json"), "wb") as f:
+            f.write(data)
+    T = os.path.join(str(tmp_path), "T")
+    return cf.run_launch(cf.launch_argv(wd, T, os.path.join(str(tmp_path), "shm"))), T
 
 
 def test_spinners_aux_role_spins_on_the_target_roles_first_core(tmp_path):
     """SB-B1 / #26 end to end with the real capenv.spinners: the orchestrator passes the launch
     tree's pin table, one spinner runs on the role's own core and one on the product role's first
     core; the spinners are monitor children (not registered, not unattributed), the started
-    process has a version record, nothing is left behind."""
+    process has a version record, nothing is left behind. A job-level env/pin_table.json
+    identical to --pin-table is accepted (it is the tree's copy)."""
     roles = cf.default_roles(server_args=["--drain-delay-ms", "150"],
                              client_args=["--drain-delay-ms", "100"]) + [_spin_role()]
-    r, T = _launch(tmp_path, roles)
+    r, T = _spin_launch(tmp_path, roles, job_pin=lambda b: b)
     assert r.returncode == 0, r.stderr
     assert [s[1] for s in read_state(T)] == ["VALID"]
     pin_path = os.path.join(T, "raw", "env", "pin_table.json")
@@ -546,16 +563,28 @@ def test_spinners_aux_role_spins_on_the_target_roles_first_core(tmp_path):
     _no_leftovers(T)
 
 
-def test_spinners_role_outside_monitor_classes_leaves_unattributed_children(tmp_path):
-    """The spinners are unregistered children: below a role outside MONITOR_CLASSES the
-    orchestrator lists them as unattributed (C13 RED), so the role must be an observer."""
-    roles = cf.default_roles(server_args=["--drain-delay-ms", "150"],
-                             client_args=["--drain-delay-ms", "100"]) \
-        + [_spin_role(mclass="stub_out_of_domain")]
-    r, T = _launch(tmp_path, roles)
-    assert r.returncode == 0, r.stderr
-    out = _j(T, "raw", "spinners", "spin.json")
-    un = rj_unattributed(T)
-    assert {u["pid"] for u in un} == {x["pid"] for x in out["spinners"]}
-    assert {u["seen_via"] for u in un} == {"proc.children"}
-    _no_leftovers(T)
+@pytest.mark.parametrize("over,needle", [
+    ({"measure_class": "stub_out_of_domain"}, "measure_class"),
+    ({"start_after": []}, "needs product in start_after"),
+])
+def test_spinners_role_against_the_scenario_rules_is_refused_before_any_start(tmp_path, over,
+                                                                              needle):
+    """A spinners role outside the fixed role fields (errata SB-B1-3; its unregistered spin
+    processes would be unattributed below a non-monitor class) or with a target role it does
+    not start after is a config error: exit 3 before the launch tree is written."""
+    roles = cf.default_roles(with_observers=False) + [_spin_role(**over)]
+    r, T = _spin_launch(tmp_path, roles)
+    assert r.returncode == 3 and needle in r.stderr, (r.returncode, r.stderr[-2000:])
+    assert not os.path.exists(os.path.join(T, "raw", "launch.json"))
+    assert not os.path.exists(os.path.join(T, "raw", "spinners"))
+
+
+def test_job_level_pin_table_differing_from_pin_table_is_refused(tmp_path):
+    """A job-level env/pin_table.json would become the tree's raw/env copy (read by
+    capenv.spinners and the judge): one that differs from --pin-table is a config error, exit 3,
+    before the launch tree is written or any role starts."""
+    roles = cf.default_roles(with_observers=False) + [_spin_role()]
+    r, T = _spin_launch(tmp_path, roles, job_pin=lambda b: b + b"\n")
+    assert r.returncode == 3 and "differs from --pin-table" in r.stderr, (
+        r.returncode, r.stderr[-2000:])
+    assert not os.path.exists(os.path.join(T, "raw", "launch.json"))

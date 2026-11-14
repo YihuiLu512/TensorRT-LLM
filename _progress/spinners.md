@@ -83,3 +83,34 @@
 
 ### NOT RUN
 - 集群上的 c13-pc 阳性对照、任何性能测量。
+- 2026-11-15 07:14:43 R1 修复开工（HEAD e723ded267）：F1–F8 按 capkit-spinners-J17871/R1/compare.md 第 4 节；先改代码与测试，再全量验证（约 30–40 分钟）
+- 2026-11-15 07:26:19 R1 修复代码、测试、勘误改完（F1–F8），定向测试与变异 M1–M9 已过（_local/spinners/mut/r1fix/summary.txt）；先提交，再跑全量验证 v3（约 20–30 分钟）与作业路径 e2e
+- 2026-11-15 07:41:36 全量验证 v3 全绿（HEAD 8f1bc1ce，logs/v3/summary.txt）；开跑作业路径 e2e：e0a-nullsse（J8530003）、e0a-nullsse+spin:nullsse（J8530004），各约 1–3 分钟
+
+## R1 修复（slug capkit-spinners-J17871，修 e723ded267 的 F1–F8；代码验证于 8f1bc1ce605562a792f35672703cae84b2d3cf61）
+
+### 改动
+| 项 | 处 | 内容 |
+|---|---|---|
+| F1 | `scenario.py`、`orchestrator.py` | `TOOL_TABLE["capenv.spinners"]["role_fixed"]`（kind/measure_class/expected_procs/asyncio/uses_grpc/snapshots），`validate_role` 逐键强制；编排器导入期断言 role_fixed 的 measure_class ∈ MONITOR_CLASSES |
+| F2 | `scenario.py` `_check_target_role` | `--target-role X`：只出现一次、字面值、另一个角色、`pin_role == X`、X 在 start_after |
+| F3 | `orchestrator.py` `_check_job_env_pin_table` | 作业级 env 的 `pin_table.json` 与 `--pin-table` 字节不同 ⇒ ConfigError（退出 3，起进程之前） |
+| F4 | `spinners.py` main | 监督者绑核失败也写记录（`supervisor_affinity: null`、`spinners: []`）后退出 4；docstring/勘误补全退出码 0/4 |
+| F5 | `spinners.py` `watch` | 看到退出而停止请求未到 ⇒ 等 `STOP_SETTLE_S`（0.5 s），期间停止请求到达按正常停止 |
+| F6 | `spinners.py` | 子进程在 `_child` 的 try 内关闭继承的读端；`wait_pinned` 共用一个总截止时间；EOF 与超时分开写 |
+| F7 | 测试 | 假 capenv 包对真实目录加存在性断言；删掉死断言 |
+| F8 | `INTERFACES.md` SB-B1-4 | 改成「按代码推断，V0 的 c13-pc 读回确认」；C9 在 c13-pc 上不作要求 |
+
+### MEASURED
+- 定向：`tests/envgate/test_spinners.py` 40 passed；`tests/launch/test_scenario.py` 77 passed；spinners e2e 4 passed。
+- 变异（`_local/spinners/mut/r1fix/summary.txt`，每个变异后源文件 sha 校验还原）：M1 role_fixed 11 红；M2 pin_role 1 红；M3 start_after 3 红；M4 作业级 pin_table 护栏 1 红；M5 监督者绑核失败写记录 1 红；M6 settle 1 红（真实整组 SIGTERM ×10 在变异下仍全过，本机复现不出竞态，靠 `watch` 单元测试红）；M7 EOF 文字 1 红；M8 总截止时间 1 红；M9 假包路径 1 红。
+- 全量验证 v3（HEAD 8f1bc1ce，`logs/v3/summary.txt`）：capcommon 190、capload 33、capprobe 159、envgate 111、grpc 53、jobs 221、judge 295、launch 221、nullsse 4、sidecar 5 全过（SM-21 未出现）；selftest 38/38 errors 0；patchcheck PASS；py_compile 208/0；bash -n 3/0。
+- 作业路径 e2e：e0a-nullsse（J8530003）STATE VALID、judge rc 11、RED 0、INPUT_INVALID 0、pyc 0，非 PASS 集合与 J8530001 逐行相同；e0a-nullsse+spin:nullsse（J8530004）STATE VALID、各角色退出 0、spin.json ready/problems 空、own cpu 20 亲和性 [20]、target cpu 14（= nullsse 第一个核）亲和性 [14]、unattributed 空、自旋进程都在 monitor_children、RED 0，非 PASS 集合与 J8530003 相同。日志 `e2e/jobpath/*-853000[34].run.log`。
+- fakebin.log 共 4 行，都是模拟门禁的 `scontrol show job 853000x`（退出 97，按设计忽略）。
+
+### INFERRED
+- C13 阳性对照是否真的判 RED、C9 是否不受影响：本地 C13 第二半缺 D14 结果，仍是 NOT_RUN；按勘误 SB-B1-4 由 V0 的 c13-pc 读回确认。
+
+### NOT RUN
+- 集群上的 c13-pc、任何性能测量。
+- 「就绪前停止」的 CLI 级真实信号路径（只做了 `wait_pinned` + `spinner_record` 的单元测试）。

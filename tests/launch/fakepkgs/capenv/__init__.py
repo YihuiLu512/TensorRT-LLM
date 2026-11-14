@@ -8,5 +8,7 @@ searched after this directory."""
 
 import os
 
-__path__.append(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__)))))), "tools", "capenv"))
+_REAL = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__)))))), "tools", "capenv")
+assert os.path.isfile(os.path.join(_REAL, "spinners.py")), _REAL
+__path__.append(_REAL)
