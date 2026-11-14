@@ -13,9 +13,10 @@ completes the row's dependencies, provided nobody has recorded it as verified:
   to the row's ``fallback`` (R14, WT-79, unless the row names another item); a
   fallback landing after R13 owes only the completed rows that name it as
   their fallback (R14: those that name no other item);
-- a fix (``WT-xx-fixN``) owes only the rows that name it among their
-  dependencies, and its landing does not count as WT-xx landing: a row that
-  names the fix waits for the fix's own trailer, like any work item's;
+- a fix (``WT-xx-fixN``) lands under its own name: a row that names the fix
+  among its dependencies waits for the fix's trailer, and the fix owes the rows
+  its landing completes; its landing does not count as WT-xx landing, so it
+  owes no other row;
 - deferred rows are owed by nobody.
 
 When the row's fixed verifier (its ``assignee``, or the ``fallback`` of a
@@ -23,6 +24,10 @@ case-03 row once R13 has landed) runs before the row is complete, or the row
 completes after that verifier landed, nobody owes the row any more; both cases
 are listed so the coordinator can hand the row to someone. A fallback landing
 before R13 lists nothing: R13 still owes the rows its landing completes.
+
+A row waiting for a fix that has not landed is listed for every other name of
+that work item (WT-xx and its other fixes): if the fix lands under another
+number, the row would otherwise wait for nobody.
 
 Supplementary cases (``hopper_cases``, ``two_node_cases``) never create an
 obligation; integration rounds run them.
@@ -45,8 +50,8 @@ naming no row of ``feature_deps.yaml``, are reported and ignored::
 
 A ds-engine work item (``groups.ds-repo``) counts as landed when the ds-engine
 repository's integration branch (``--ds-repo``, ``--ds-ref``) has its trailer.
-Without ``--ds-repo`` their landing is unknown: rows waiting only on them are
-listed separately rather than counted as owed or not.
+Without ``--ds-repo`` their landing, and their fixes', is unknown: rows waiting
+only on them are listed separately rather than counted as owed or not.
 
 Run it after the last rebase onto the integration branch: pushes only fast
 forward, so whichever item lands second sees the first one as landed. The rows
@@ -118,7 +123,7 @@ class Obligations:
         unverified: Rows whose dependencies have all landed, without a
             verification record, that this item does not owe.
         unknown: Rows whose only missing dependencies are items whose landing
-            was not checked; the result for them is not known.
+            was not checked, or fixes of them; the result for them is not known.
         too_early: Rows this item is the fixed verifier of, whose dependencies
             have not all landed yet; nobody owes them once this item lands.
         orphaned: Rows this item completes whose fixed verifier has already
@@ -126,6 +131,8 @@ class Obligations:
         noted: Rows, deferred ones included, whose notes name this work item
             (``WT-xx`` for a fix ``WT-xx-fixN``): instructions the tables give
             outside the dependency set, such as an early re-run.
+        other_fix: Rows waiting for a fix of this work item other than this
+            one, which has not landed.
     """
 
     task: str
@@ -137,6 +144,7 @@ class Obligations:
     too_early: list[Row] = field(default_factory=list)
     orphaned: list[Row] = field(default_factory=list)
     noted: list[Row] = field(default_factory=list)
+    other_fix: list[Row] = field(default_factory=list)
 
 
 def load_rows(path: Path = FEATURE_DEPS) -> tuple[dict[str, list[str]], list[Row]]:
@@ -279,8 +287,8 @@ def obligations(
 
     Args:
         landed: Work items with a commit on the integration branch, fixes under
-            their own names; a fix does not make its work item count as landed,
-            only rows that name the fix itself.
+            their own names. A landed fix satisfies only the rows that name
+            that fix; it does not make its work item count as landed.
         unknown: Work items whose landing was not checked.
     """
     base, fix = parse_task(task)
@@ -288,7 +296,8 @@ def obligations(
     landed_names = set(landed)
     landed_bases = {name for name in landed_names if parse_task(name)[1] is None}
     done = set(verified)
-    unchecked = set(unknown) - landed_bases - {base}
+    # A fix landing says nothing of its work item, which stays unchecked.
+    unchecked = set(unknown) - landed_bases - ({base} if new else set())
     result = Obligations(task=task, landed=sorted(landed_names))
     # A fix stands for itself: rows naming WT-xx do not count it, rows naming WT-xx-fixN do.
     after = landed_names | {task}
@@ -300,6 +309,9 @@ def obligations(
         if row.deferred:
             continue
         missing = row.deps - after
+        # Another fix of this item: tell every name of the item which rows wait for it.
+        if any(parse_task(name)[0] == base and parse_task(name)[1] for name in missing):
+            result.other_fix.append(row)
         # A fix of an unchecked item (WT-42-fix1) was not checked either.
         if missing and all(parse_task(name)[0] in unchecked for name in missing):
             result.unknown.append(row)
@@ -355,6 +367,7 @@ def _format(result: Obligations) -> str:
     section("Waiting only on items whose landing was not checked", result.unknown)
     section("Fixed verifier is this item, dependencies not all landed: report it", result.too_early)
     section("Completed here after its fixed verifier landed: report it", result.orphaned)
+    section("Waiting for another fix of this item, not landed: check its name", result.other_fix)
     base = parse_task(result.task)[0]
     lines.append(f"\nRows whose notes name {base}, deferred rows included ({len(result.noted)}):")
     for row in result.noted:
@@ -435,6 +448,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
                     "too_early": [row.id for row in result.too_early],
                     "orphaned": [row.id for row in result.orphaned],
                     "noted": [row.id for row in result.noted],
+                    "other_fix": [row.id for row in result.other_fix],
                 },
                 indent=2,
             )

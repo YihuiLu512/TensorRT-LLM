@@ -98,6 +98,8 @@ def test_task_names_cover_wt30_to_wt79_and_fixes():
         "WT-30-R2",
         "WT-3\u0660",
         "WT-30-fix1\u0661",
+        "WT-30\n",
+        "WT-30-fix1\n",
     ],
 )
 def test_task_names_reject_poc2_and_malformed(name):
@@ -1552,7 +1554,7 @@ def test_fixed_performance_verifiers(rows):
     assert "DS-S19b" not in _owed("WT-62", landed - {"WT-62"}, rows)[0]
 
 
-def test_fixes_and_deferred_rows_owe_nothing(rows):
+def test_fixes_no_row_names_and_deferred_rows_owe_nothing(rows):
     assert _owed("WT-51-fix1", LINK, rows)[0] == []
     everything = WORK_ITEMS
     for task in sorted(everything):
@@ -1591,7 +1593,7 @@ def test_a_fix_landing_does_not_land_its_item(rows):
     assert "F-01" in _owed("WT-51", landed | {"WT-37"}, rows)[0]
 
 
-# Coordinator ruling N30: NT-080 and NT-179 wait for WT-51-fix2, which writes their GPU file.
+# WT-51-fix2 writes the GPU file of NT-080 and NT-179 (sync_feature_deps.SPLITS).
 SPLIT_ROWS = {"DG-16+WT-51-fix2": ["NT-080"], "DG-82+WT-51-fix2": ["NT-179"]}
 
 
@@ -1637,6 +1639,53 @@ def test_a_fix_lands_its_rows_only_under_its_exact_name():
     assert _owed("WT-35", {"WT-42-fix1"}, [row])[0] == [row.id]
     # Without the ds repository, a fix of a ds item is as unknown as the item.
     assert _owed("WT-35", set(), [row], unknown={"WT-42"})[3] == [row.id]
+
+
+def _fix_row(row_id, deps, **fields):
+    return pending_e2e.Row(
+        id=row_id, features=("F-99",), cases=("NT-999",), deps=frozenset(deps), **fields
+    )
+
+
+def test_a_ds_fix_leaves_its_unchecked_item_unknown():
+    # Without --ds-repo, WT-42 is unchecked; its fix landing says nothing of WT-42.
+    row = _fix_row("F-99", {"WT-35", "WT-42", "WT-42-fix2"})
+    unknown = {"WT-41", "WT-42", "WT-43"}
+    assert _owed("WT-42-fix2", {"WT-35"}, [row], unknown=unknown)[3] == ["F-99"]
+    assert _owed("WT-42-fix3", {"WT-35", "WT-42-fix2"}, [row], unknown=unknown)[3] == ["F-99"]
+    # The item itself, being run, is not unchecked: the row is owed.
+    assert _owed("WT-42", {"WT-35", "WT-42-fix2"}, [row], unknown=unknown)[0] == ["F-99"]
+
+
+def test_rows_waiting_for_another_fix_of_the_item_are_listed(rows):
+    # WT-51-fix2 not landed: every other name of WT-51 is told the split rows wait for it.
+    for task in ("WT-51-fix1", "WT-51-fix3", "WT-51"):
+        result = pending_e2e.obligations(task, LINK | {"WT-51-fix1"}, rows)
+        assert {row.id for row in result.other_fix} == set(SPLIT_ROWS), task
+    assert pending_e2e.obligations("WT-51-fix2", LINK, rows).other_fix == []
+    assert pending_e2e.obligations("WT-52", LINK, rows).other_fix == []
+    landed = LINK | {"WT-51-fix2"}
+    assert pending_e2e.obligations("WT-51-fix3", landed, rows).other_fix == []
+
+
+def test_rows_with_a_fixed_verifier_wait_for_a_named_fix_too():
+    r12 = _fix_row("EG-99", {"WT-35", "WT-51-fix2"}, assignee="WT-61")
+    ds = _fix_row("DS-99", {"WT-62", "WT-51-fix2"}, chain="case-03")
+    assert _owed("WT-61", {"WT-35"}, [r12])[0] == []
+    assert _owed("WT-61", {"WT-35", "WT-51-fix2"}, [r12])[0] == ["EG-99"]
+    assert _owed("WT-52", {"WT-35", "WT-51-fix2"}, [r12])[2] == ["EG-99"]  # unverified
+    assert _owed("WT-52", {"WT-35", "WT-51-fix1"}, [r12])[2] == []
+    # case-03: the fix completing the row after R13 leaves it to R14 ...
+    assert _owed("WT-51-fix2", {"WT-62"}, [ds])[1] == ["DS-99"]
+    # ... and once both landed, the row is landed but unverified for others.
+    assert _owed("WT-52", {"WT-62", "WT-51-fix2"}, [ds])[2] == ["DS-99"]
+    assert _owed("WT-52", {"WT-62", "WT-51-fix1"}, [ds])[2] == []
+
+
+def test_a_task_name_with_a_trailing_newline_is_a_usage_error(tmp_path, capsys):
+    with pytest.raises(SystemExit) as raised:
+        pending_e2e.main(["--task", "WT-37\n", "--repo", str(tmp_path)])
+    assert raised.value.code == 2
 
 
 def test_rows_left_without_a_verifier_are_reported(rows):
@@ -1865,23 +1914,28 @@ def test_the_groups_come_from_section_3_2():
         sync_feature_deps.derive_groups(GROUPS_TABLE)
 
 
-def _split_source():
-    return [
-        {"id": "DG-90", "features": ["DG-90"], "cases": ["NT-003", "NT-080"], "author": ["WT-51"],
-         "deps": ["link"], "chain": "case-04"},
-        {"id": "DG-90+rest", "features": ["DG-90"], "cases": ["XD-312"], "author": ["WT-54"],
-         "deps": ["link", "WT-54"], "chain": "case-04"},
-        {"id": "DG-90@03", "features": ["DG-90"], "cases": ["NT-144"], "author": ["WT-62"],
-         "deps": ["ds-link"], "chain": "case-03"},
-    ]  # fmt: skip
+SPLIT_TABLE = """\
+### 3.5 表 B（2 个主行）
+| 功能 | 用例 | 用例作者 | 依赖集合 |
+|---|---|---|---|
+| DG-90 x（04：✅；03：✅） | 04：NT-030、NT-080、XD-312【改】；03：NT-144 | \
+04：WT-40（NT-030）；WT-51（NT-080）；WT-54（XD-312）；03：WT-62 | \
+04：链路；其余用例另等 WT-54；03：ds 链路 |
+| DG-91 y（04：✅） | 04：NT-003、NT-081 | 04：WT-51 | 04：{DG91_DEPS} |
+"""
+
+
+def _split(split, dg91_deps="链路", table=SPLIT_TABLE):
+    text = table.replace("{DG91_DEPS}", dg91_deps)
+    return {row["id"]: row for row in sync_feature_deps.derive(text, (split,))}
 
 
 def test_a_split_moves_cases_to_a_row_after_the_source_rows():
-    source = _split_source()
-    rows = sync_feature_deps.apply_splits(source, (("DG-90", ("NT-080",), "WT-51-fix2"),))
-    assert [row["id"] for row in rows] == ["DG-90", "DG-90+rest", "DG-90+WT-51-fix2", "DG-90@03"]
-    assert rows[0]["cases"] == ["NT-003"] and source[0]["cases"] == ["NT-003", "NT-080"]
-    assert rows[2] == {
+    rows = _split(("DG-90", ("NT-080",), "WT-51-fix2"))
+    assert list(rows) == ["DG-90", "DG-90+rest", "DG-90+WT-51-fix2", "DG-90@03", "DG-91"]
+    # The source row's authors are worked out again from the cases it keeps.
+    assert rows["DG-90"]["cases"] == ["NT-030"] and rows["DG-90"]["author"] == ["WT-40"]
+    assert rows["DG-90+WT-51-fix2"] == {
         "id": "DG-90+WT-51-fix2",
         "features": ["DG-90"],
         "cases": ["NT-080"],
@@ -1889,28 +1943,67 @@ def test_a_split_moves_cases_to_a_row_after_the_source_rows():
         "deps": ["link", "WT-51-fix2"],
         "chain": "case-04",
     }
+    assert rows["DG-90+rest"]["cases"] == ["XD-312"]
+    assert sync_feature_deps.derive(SPLIT_TABLE.replace("{DG91_DEPS}", "链路"))[0]["author"] == [
+        "WT-40",
+        "WT-51",
+    ]
 
 
 @pytest.mark.parametrize(
-    "split, message",
+    "split, dg91_deps, message",
     [
-        (("DG-91", ("NT-080",), "WT-51-fix2"), "no such row"),
-        (("DG-90", ("NT-999",), "WT-51-fix2"), "not among its cases"),
-        (("DG-90", ("NT-003", "NT-080"), "WT-51-fix2"), "no case would be left"),
-        (("DG-90", ("NT-080",), "rest"), "exists already"),
+        (("DG-92", ("NT-080",), "WT-51-fix2"), "链路", "no such row"),
+        (("DG-90", ("NT-999",), "WT-51-fix2"), "链路", "not among the cases"),
+        (("DG-90", ("XD-312",), "WT-51-fix2"), "链路", "not among the cases"),
+        (("DG-91", ("NT-003", "NT-081"), "WT-51-fix2"), "链路", "no case would be left"),
+        (("DG-91", (), "WT-51-fix2"), "链路", "no case to move"),
+        (("DG-91", ("NT-081",), "WT-51-fx2"), "链路", "not a PoC-S3 work item"),
+        (("DG-91", ("NT-081",), "WT-52"), "链路、WT-52", "dependency of the row already"),
+        (("DG-91", ("NT-081",), "WT-51-fix2"), "不设 E2E：x", "deferred or has a fixed verifier"),
+        (("DG-91", ("NT-081",), "WT-51-fix2"), "R11 前提", "deferred or has a fixed verifier"),
+        (
+            ("DG-91", ("NT-081",), "WT-51-fix2"),
+            "链路；R12 验收",
+            "deferred or has a fixed verifier",
+        ),
+        (("DG-91", ("NT-081",), "WT-51-fix2"), "链路；由 WT-73 补", "deferred or has a fixed"),
+        (("DG-91", ("NT-081",), "WT-51-fix2"), "链路（只在 B200）", "has notes"),
     ],
-    ids=["missing-row", "foreign-case", "empties-the-row", "id-taken"],
+    ids=[
+        "missing-row",
+        "foreign-case",
+        "case-of-the-rest-row",
+        "empties-the-row",
+        "no-case",
+        "bad-item",
+        "item-already-a-dependency",
+        "deferred",
+        "assignee",
+        "r12",
+        "fallback",
+        "notes",
+    ],
 )
-def test_a_split_that_does_not_fit_the_tables_is_rejected(split, message):
+def test_a_split_that_does_not_fit_the_tables_is_rejected(split, dg91_deps, message):
     with pytest.raises(ValueError, match=message):
-        sync_feature_deps.apply_splits(_split_source(), (split,))
+        _split(split, dg91_deps)
 
 
-def test_a_split_of_a_row_with_a_fixed_verifier_is_rejected():
-    source = _split_source()
-    source[0]["assignee"] = "WT-60"
-    with pytest.raises(ValueError, match="fixed verifier"):
-        sync_feature_deps.apply_splits(source, (("DG-90", ("NT-080",), "WT-51-fix2"),))
+def test_a_split_of_a_row_with_supplementary_cases_is_rejected():
+    table = SPLIT_TABLE.replace(
+        "04：NT-003、NT-081 |", "04：NT-003、NT-081（Hopper 分片：XD-036） |"
+    )
+    with pytest.raises(ValueError, match="supplementary cases"):
+        _split(("DG-91", ("NT-081",), "WT-51-fix2"), table=table)
+
+
+def test_a_split_that_does_not_fit_fails_the_check_without_a_traceback(tmp_path, capsys):
+    tasks_md = tmp_path / "tasks.md"
+    tasks_md.write_text(GROUPS_TABLE + REPO_TABLE + SPLIT_TABLE.replace("{DG91_DEPS}", "链路"))
+    assert sync_feature_deps.main(["--tasks-md", str(tasks_md), "--check"]) == 1
+    out = capsys.readouterr().out
+    assert "FAIL" in out and "split of DG-16, DG-82: no such row" in out
 
 
 def test_the_splits_name_poc3_items_and_rows_of_the_file(rows):

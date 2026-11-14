@@ -32,11 +32,13 @@ file no longer matches the tables:
 - The ds-engine repository's items (group ``ds-repo``) come from the
   repository table of tasks.md §0.2.
 
-``SPLITS`` lists the rows the coordinator split after the tables were written:
-each moves some cases of a row to a row ``<id>+<item>`` that also waits for
-``<item>``, the work item that writes them (a fix such as ``WT-51-fix2``
-included). They are applied to the derived rows, so ``--check`` still compares
-everything else with the tables.
+``SPLITS`` lists rows split after the tables were written: each moves some
+cases of a row to a row ``<id>+<item>`` that also waits for ``<item>``, the work
+item (or fix, such as ``WT-51-fix2``) that writes them; the authors of the row
+are worked out again from the cases it keeps. A split of a row that is
+deferred, has a fixed verifier, or carries notes or supplementary cases is
+refused, as is a split naming no row of the tables, so ``--check`` still
+compares every row with the tables.
 
 The scripts need Python 3.9 or newer.
 
@@ -83,7 +85,8 @@ HEADER = """\
 #   cases         The cases whose passing verifies the row.
 #   author        The work items that write, move or re-expect those cases (a
 #                 list: one row's cases can come from several items).
-#   deps          Work items (or groups) that must have landed.
+#   deps          Work items, fixes of them (WT-51-fix2) or groups that must
+#                 have landed; a fix lands under its own name only.
 #   chain         case-04 (the TRT-LLM engine) or case-03 (ds-engine).
 #   assignee      A fixed verifier (an integration round or a performance item).
 #   fallback      case-03 only: who verifies the row when it completes after
@@ -111,11 +114,13 @@ _TASK_RE = re.compile(r"WT-\d\d")
 _SECTION_RE = re.compile(r"^### 3\.([2-7]) ")
 _MAIN_ROWS_RE = re.compile(r"（(\d+) 个主行）")
 _PU_RULE_RE = re.compile(r"(PU-\d+) 取证（(WT-\d\d)）")
+# A work item or a fix of one (poc3_common.parse_task's names).
+_SPLIT_ITEM_RE = re.compile(r"WT-[3-7][0-9](-fix[1-9][0-9]*)?")
 _OPEN, _CLOSE = "（(", "）)"
 
 # Rows split after the tables were written: (row id, cases moved out, the item that writes them).
-# The GPU file of NT-080 and NT-179 is written by WT-51-fix2 after the link lands, so the last
-# link item cannot verify them (coordinator ruling N30, 2026-11-14).
+# WT-51-fix2 writes the GPU file of NT-080 and NT-179 once the link has landed, so the item that
+# completes the link cannot verify them.
 SPLITS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("DG-16", ("NT-080",), "WT-51-fix2"),
     ("DG-82", ("NT-179",), "WT-51-fix2"),
@@ -305,12 +310,19 @@ def rows_for(
     case_parts: list[str],
     author_parts: list[str],
     dep_parts: list[str],
+    split: tuple[tuple[str, ...], str] | None = None,
 ) -> list[dict[str, Any]]:
-    """The feature_deps rows of one feature on one chain."""
+    """The feature_deps rows of one feature on one chain.
+
+    ``split`` (cases, work item) moves those cases of the row to a row
+    ``<row_id>+<item>`` that also waits for the item (``SPLITS``).
+    """
     cases = parse_cases(case_parts)
     authors = parse_authors(author_parts, cases["cases"])
     deps = parse_deps(dep_parts)
     notes = cases["notes"] + deps["notes"]
+    if split is not None:
+        _check_split(row_id, split, cases, deps, notes)
     if deps["deferred"]:
         row = {
             "id": row_id,
@@ -344,6 +356,25 @@ def rows_for(
     if deps["rest"] and not later:
         raise ValueError(f"{row_id}: no case is written by {deps['rest']}")
     now = {**main, "cases": [c for c in main["cases"] if c not in later]}
+    split_rows = []
+    if split is not None:
+        moved, item = split
+        missing = [c for c in moved if c not in now["cases"]]
+        if missing:
+            raise ValueError(f"split of {row_id}: {missing} not among the cases of {row_id}")
+        now = {**now, "cases": [c for c in now["cases"] if c not in moved]}
+        if not now["cases"]:
+            raise ValueError(f"split of {row_id}: no case would be left")
+        split_rows.append(
+            _row(
+                f"{row_id}+{item}",
+                feature,
+                chain,
+                {"cases": list(moved)},
+                dict.fromkeys(moved, item),
+                deps["deps"] + [item],
+            )
+        )
     rows = [
         _row(
             row_id,
@@ -367,7 +398,29 @@ def rows_for(
                 **extra,
             )
         )
-    return rows + out
+    return rows + split_rows + out
+
+
+def _check_split(
+    row_id: str,
+    split: tuple[tuple[str, ...], str],
+    cases: dict[str, list[str]],
+    deps: dict[str, Any],
+    notes: list[str],
+) -> None:
+    """Refuse a split the rows of the tables do not leave room for."""
+    moved, item = split
+    if not _SPLIT_ITEM_RE.fullmatch(item):
+        raise ValueError(f"split of {row_id}: {item!r} is not a PoC-S3 work item")
+    if not moved:
+        raise ValueError(f"split of {row_id}: no case to move")
+    if deps["deferred"] or deps["assignee"] or deps["fallback"] or deps["performance"]:
+        raise ValueError(f"split of {row_id}: the row is deferred or has a fixed verifier")
+    if item in deps["deps"] or item in deps["rest"]:
+        raise ValueError(f"split of {row_id}: {item} is a dependency of the row already")
+    # The notes and supplementary cases may concern the moved cases; the tables must say which.
+    if notes or any(cases[key] for key in ("hopper_cases", "two_node_cases", "not_runnable")):
+        raise ValueError(f"split of {row_id}: the row has notes or supplementary cases")
 
 
 def table_rows(tasks_md: str) -> list[tuple[str, list[str]]]:
@@ -424,8 +477,13 @@ def derive_groups(tasks_md: str) -> dict[str, list[str]]:
     return {name: groups[name] for name in names}
 
 
-def derive(tasks_md: str) -> list[dict[str, Any]]:
-    """The feature_deps rows of the plan's §3.4 to §3.7."""
+def derive(
+    tasks_md: str, splits: tuple[tuple[str, tuple[str, ...], str], ...] = ()
+) -> list[dict[str, Any]]:
+    """The feature_deps rows of the plan's §3.4 to §3.7, with ``splits`` applied."""
+    pending = {row_id: (moved, item) for row_id, moved, item in splits}
+    if len(pending) != len(splits):
+        raise ValueError("two splits of one row")
     rows: list[dict[str, Any]] = []
     features = []
     for section, (feature_cell, case_cell, author_cell, dep_cell) in table_rows(tasks_md):
@@ -441,69 +499,33 @@ def derive(tasks_md: str) -> list[dict[str, Any]]:
                 chain = "case-03" if key == "03" else "case-04"
                 row_id = f"{feature}@03" if key == "03" else feature
                 rows += rows_for(
-                    feature, chain, row_id, cases.get(key, []), authors.get(key, []), deps[key]
+                    feature,
+                    chain,
+                    row_id,
+                    cases.get(key, []),
+                    authors.get(key, []),
+                    deps[key],
+                    pending.pop(row_id, None),
                 )
         else:  # table D is case-04, table C case-03
             chain = "case-04" if section == "6" else "case-03"
             rows += rows_for(
-                feature, chain, feature, cases.get("", []), authors.get("", []), deps[""]
+                feature,
+                chain,
+                feature,
+                cases.get("", []),
+                authors.get("", []),
+                deps[""],
+                pending.pop(feature, None),
             )
+    if pending:
+        raise ValueError(f"split of {', '.join(sorted(pending))}: no such row")
     expected = main_row_count(tasks_md)
     if len(set(features)) != len(features) or len(features) != expected:
         raise ValueError(f"expected {expected} distinct feature rows, got {len(features)}")
     ids = [row["id"] for row in rows]
     if len(set(ids)) != len(ids):
         raise ValueError("duplicate row ids")
-    return rows
-
-
-def apply_splits(
-    rows: list[dict[str, Any]],
-    splits: tuple[tuple[str, tuple[str, ...], str], ...] = SPLITS,
-) -> list[dict[str, Any]]:
-    """Move each split's cases to a row ``<id>+<item>`` placed after row ``<id>``'s own rows.
-
-    The new row keeps the features and chain, takes ``<item>`` as its author and
-    adds it to the dependencies; nothing else of the source row is copied.
-
-    Raises:
-        ValueError: The row is missing, deferred or fixed to a verifier; a case
-            is not among its cases; the split would leave it without cases; or
-            the new id is taken.
-    """
-    rows = [dict(row) for row in rows]
-    for row_id, moved, item in splits:
-        index = {row["id"]: i for i, row in enumerate(rows)}
-        new_id = f"{row_id}+{item}"
-        if row_id not in index:
-            raise ValueError(f"split of {row_id}: no such row")
-        if new_id in index:
-            raise ValueError(f"split of {row_id}: row {new_id} exists already")
-        source = rows[index[row_id]]
-        if source.get("deferred") or source.get("assignee") or source.get("fallback"):
-            raise ValueError(f"split of {row_id}: the row is deferred or has a fixed verifier")
-        missing = [case for case in moved if case not in source["cases"]]
-        if missing:
-            raise ValueError(f"split of {row_id}: {missing} not among its cases")
-        kept = [case for case in source["cases"] if case not in moved]
-        if not kept:
-            raise ValueError(f"split of {row_id}: no case would be left")
-        rows[index[row_id]] = {**source, "cases": kept}
-        new = {
-            "id": new_id,
-            "features": list(source["features"]),
-            "cases": list(moved),
-            "author": [item],
-            "deps": [*source["deps"], item],
-            "chain": source["chain"],
-        }
-        # After row_id and the rows derived from it (row_id+rest, row_id+PU-nn, earlier splits).
-        last = max(
-            i
-            for i, row in enumerate(rows)
-            if row["id"] == row_id or row["id"].startswith(f"{row_id}+")
-        )
-        rows.insert(last + 1, new)
     return rows
 
 
@@ -532,7 +554,12 @@ def main(argv: list[str] | None = None) -> int:
     if not args.tasks_md:
         parser.error("--tasks-md (or $POC3_TASKS_MD) is required")
     tasks_md = Path(args.tasks_md).read_text()
-    expected = render(derive_groups(tasks_md), apply_splits(derive(tasks_md)))
+    try:
+        expected = render(derive_groups(tasks_md), derive(tasks_md, SPLITS))
+    except ValueError as error:
+        # The tables, or a split of SPLITS, cannot be read.
+        print(f"FAIL: {args.tasks_md}: {error}")
+        return 1
     if args.write:
         FEATURE_DEPS.write_text(expected)
         print(f"wrote {FEATURE_DEPS}")

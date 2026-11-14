@@ -48,7 +48,8 @@ def parse_task(name: str) -> tuple[str, int | None]:
     Raises:
         ValueError: Not a PoC-S3 work item name.
     """
-    match = _TASK_RE.match(name)
+    # fullmatch: with match, "$" would also accept a trailing newline ("WT-51\n").
+    match = _TASK_RE.fullmatch(name)
     if match is None:
         raise ValueError(f"not a PoC-S3 work item: {name!r}")
     fix = match.group("fix")

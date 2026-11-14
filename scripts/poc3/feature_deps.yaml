@@ -14,7 +14,8 @@
 #   cases         The cases whose passing verifies the row.
 #   author        The work items that write, move or re-expect those cases (a
 #                 list: one row's cases can come from several items).
-#   deps          Work items (or groups) that must have landed.
+#   deps          Work items, fixes of them (WT-51-fix2) or groups that must
+#                 have landed; a fix lands under its own name only.
 #   chain         case-04 (the TRT-LLM engine) or case-03 (ds-engine).
 #   assignee      A fixed verifier (an integration round or a performance item).
 #   fallback      case-03 only: who verifies the row when it completes after
