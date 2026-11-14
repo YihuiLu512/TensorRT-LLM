@@ -54,6 +54,7 @@ from tensorrt_llm.grpc.openengine_client import (
 )
 from tensorrt_llm.grpc.openengine_conventions import (
     BUCKET_AGGREGATED,
+    CAP_REQ_DISAGG_REQUEST_ID,
     CONVENTIONS_VERSION,
     CONVENTIONS_VERSION_KEY,
     META_PRIORITY,
@@ -652,7 +653,11 @@ class OpenEngineLLM:
         self._health_task.add_done_callback(self._health_watch_ended)
 
     def _check_engine(self, info: EngineInfo, caps: ModelCapabilities) -> None:
-        """Check the conventions version, token-id input and the tokenizer fingerprint."""
+        """Check the engine's conventions version, capabilities and tokenizer fingerprint.
+
+        The engine must take token ids; for a frontend started with
+        ``--server_role`` it must also declare ``trtllm.request.disagg_request_id``.
+        """
         version = conventions_version(info.extra)
         reported = info.extra.get(CONVENTIONS_VERSION_KEY)
         if version is None and reported is not None:
@@ -685,6 +690,13 @@ class OpenEngineLLM:
             raise self._startup_error(
                 "capabilities",
                 f"engine {info.engine_name!r} does not declare supports_token_ids_input",
+            )
+        # Both legs of a request carry the orchestrator's disagg_request_id (EX-DSG-1).
+        if role is not None and not caps.supports(CAP_REQ_DISAGG_REQUEST_ID):
+            raise self._startup_error(
+                "capabilities",
+                f"engine {info.engine_name!r} does not declare {CAP_REQ_DISAGG_REQUEST_ID}; "
+                f"a {role.name} worker needs it",
             )
         engine_fingerprint = caps.tokenizer_fingerprint
         if engine_fingerprint is None:
