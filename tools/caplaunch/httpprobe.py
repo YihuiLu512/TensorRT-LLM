@@ -10,7 +10,10 @@ answers "does the frontend send a chunk when the text delta is empty" (X2 premis
 Frames are also counted with capcommon.wire.SseCounter so the two counts can be compared.
 
 It writes --result, then (with --hold) stays alive until SIGTERM so the orchestrator can run it as
-an aux role (readiness file_exists on --result). No timing here is a measurement result.
+an aux role (readiness file_exists on --result). When the answers only come after the origin (a
+beat-paced stub behind the frontend), --started-file is written before the first request is sent
+and the role's readiness is file_exists on that file instead. No timing here is a measurement
+result.
 """
 
 import argparse
@@ -23,7 +26,8 @@ import threading
 import time
 
 from capcommon.cli import add_identity_args
-from capcommon.jsonio import atomic_write_bytes, dumps
+from capcommon.identity import Identity
+from capcommon.jsonio import atomic_write_bytes, dumps, write_json_stamped
 from capcommon.wire import SseCounter
 
 
@@ -97,10 +101,19 @@ def main(argv=None):
     p.add_argument("--timeout-s", type=float, required=True)
     p.add_argument("--result", required=True, help="output JSON (readiness: file_exists)")
     p.add_argument("--hold", action="store_true", help="stay alive until SIGTERM after writing")
+    p.add_argument("--started-file",
+                   help="written (identity-stamped) before the first request is sent; the "
+                        "readiness file when the answers come only after the origin")
     a = p.parse_args(argv)
     host, _, port = a.addr.rpartition(":")
     with open(a.requests) as f:
         reqs = json.load(f)
+    if a.started_file:
+        me = Identity(experiment=a.experiment, arm=a.arm, launch_seq=a.launch_seq,
+                      job_id=a.job_id, restart_count=a.restart_count,
+                      register_sha=a.register_sha, role=a.role, worker=a.worker).with_pid()
+        write_json_stamped(a.started_file, "capkit.httpprobe_started/1", me,
+                           {"addr": a.addr, "n_requests": len(reqs)})
     res = [one_request(host.strip("[]"), int(port), r, a.timeout_s) for r in reqs]
     atomic_write_bytes(a.result, (dumps({"schema": "capkit.httpprobe/1", "addr": a.addr,
                                          "role": a.role, "launch_seq": a.launch_seq,

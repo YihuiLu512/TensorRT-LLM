@@ -11,6 +11,8 @@ import subprocess
 import sys
 import types
 
+import pytest
+
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
 
 from capgrpc.reqbytes import (ReqBytes, build_openengine, encode_pb_string_field,
@@ -67,6 +69,23 @@ def test_openengine_template_merges_request_id(tmp_path):
     msg2 = pb2.GenerateRequest.FromString(encode_pb_string_field(1, "9") + rb.lookup("t", 0, 9))
     assert msg2.request_id == "9" and msg2.prompt == "hello" and msg2.stopping.max_tokens == 9
     assert rb.lookup("t", 0, 7) is None  # no template for a combination the table never uses
+
+
+@pytest.mark.parametrize("body,exc", [("raise RuntimeError('boom')\n", "RuntimeError"),
+                                      ("def f(:\n", "SyntaxError"),
+                                      ("import os\nos.no_such_attr_capkit\n", "AttributeError")])
+def test_import_pb2_maps_any_import_time_exception_to_config(tmp_path, monkeypatch, body, exc):
+    """RS29: a generated module that fails while importing (not only ImportError) is a
+    ConfigError (exit 3) naming the module and the exception type."""
+    from capcommon.exitcodes import ConfigError  # noqa: PLC0415
+    from capgrpc.reqbytes import import_pb2  # noqa: PLC0415
+    name = "capkit_test_bad_pb2_%s" % exc.lower()
+    (tmp_path / (name + ".py")).write_text(body)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    with pytest.raises(ConfigError) as ei:
+        import_pb2(name)
+    assert name in str(ei.value) and exc in str(ei.value) and ei.value.exit_code == 3
+    assert name not in sys.modules
 
 
 def test_import_guard_and_raw_cli(tmp_path):

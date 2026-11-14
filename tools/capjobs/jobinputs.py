@@ -24,10 +24,12 @@ from capcommon.clock import wall_iso
 from capcommon.exitcodes import CONFIG, OK, ConfigError
 from capcommon.hashing import sha256_file
 from capcommon.jsonio import atomic_write_bytes, dumps
+from capcommon.templates import parse_params
 
 
 class JobInputError(ConfigError):
-    """A generator failed; .records holds the records written so far (the failed one last)."""
+    """One kind failed; .records holds the records so far, the failed kind's last (a kind that
+    failed before its generator ran has rc None, an `error` and no record file)."""
 
     def __init__(self, msg, records):
         ConfigError.__init__(self, msg)
@@ -35,26 +37,22 @@ class JobInputError(ConfigError):
 
 
 def params_from_argv(argv):
-    """{KEY: VALUE} of every --param KEY=VALUE / --param=KEY=VALUE in a caplaunch argv."""
-    out = {}
+    """{KEY: VALUE} of every --param KEY=VALUE / --param=KEY=VALUE in a caplaunch argv, parsed
+    as caplaunch parses them (capcommon.templates.parse_params)."""
+    pairs = []
     for i, a in enumerate(argv):
         if a == "--param":
-            kv = argv[i + 1] if i + 1 < len(argv) else ""
+            pairs.append(argv[i + 1] if i + 1 < len(argv) else "")
         elif a.startswith("--param="):
-            kv = a[len("--param="):]
-        else:
-            continue
-        k, sep, v = kv.partition("=")
-        if not sep or not k or k in out:
-            raise ConfigError("bad or repeated --param %r" % kv)
-        out[k] = v
-    return out
+            pairs.append(a[len("--param="):])
+    return parse_params(pairs)
 
 
-def generate(doc, workdir, params, python, out_dir, env, timeout_s):
+def generate(doc, workdir, params, python, out_dir, env, timeout_s, run=subprocess.run):
     """Run every generator the scenario declares. Returns ({kind: path}, records); raises
-    ConfigError for a bad section or parameter, JobInputError naming the first generator that
-    failed (its log and record stay in out_dir)."""
+    ConfigError for a bad section, JobInputError naming the first kind that failed (its log and
+    record stay in out_dir). run: called as subprocess.run (capjobs.launches passes its
+    SIGTERM-aware run_helper; whatever else it raises propagates)."""
     kinds = JI.kinds_of(doc)
     if not kinds:
         return {}, []
@@ -64,20 +62,26 @@ def generate(doc, workdir, params, python, out_dir, env, timeout_s):
     paths, records = {}, []
     for kind in kinds:
         out = os.path.join(out_dir, "%s.json" % kind)
-        if os.path.lexists(out):
-            raise ConfigError("job input %s: %s already exists" % (kind, out))
-        argv = JI.generator_argv(doc, kind, params, inputs, python, out)
-        used = sorted({k for a in doc[JI.SECTION][kind]["args"] for k in JI.REGISTERED_INPUTS
-                       if "{input:%s}" % k in a})
-        used_sha = {k: sha256_file(inputs[k]) for k in used}
         log = out + ".log"
+        try:
+            if os.path.lexists(out):
+                raise ConfigError("%s already exists" % out)
+            argv = JI.generator_argv(doc, kind, params, inputs, python, out)
+            used = sorted({k for a in doc[JI.SECTION][kind]["args"]
+                           for k in JI.REGISTERED_INPUTS if "{input:%s}" % k in a})
+            used_sha = {k: sha256_file(inputs[k]) for k in used}
+        except (ConfigError, OSError) as e:
+            records.append({"schema": JI.RECORD_SCHEMA, "kind": kind,
+                            "module": JI.KINDS[kind][0], "rc": None, "out_sha256": None,
+                            "log": None, "error": str(e)})
+            raise JobInputError("job input %s: %s" % (kind, e), records)
         rec = {"schema": JI.RECORD_SCHEMA, "kind": kind, "module": JI.KINDS[kind][0],
                "argv": argv, "inputs": used_sha, "started_wall": wall_iso(), "rc": None,
                "out_sha256": None, "log": log}
         try:
             with open(log, "wb") as lf:
-                rec["rc"] = subprocess.run(argv, env=env, stdout=lf, stderr=lf,
-                                           stdin=subprocess.DEVNULL, timeout=timeout_s).returncode
+                rec["rc"] = run(argv, env=env, stdout=lf, stderr=lf,
+                                stdin=subprocess.DEVNULL, timeout=timeout_s).returncode
         except (OSError, subprocess.TimeoutExpired) as e:
             rec["error"] = str(e)
         rec["ended_wall"] = wall_iso()

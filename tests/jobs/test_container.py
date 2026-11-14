@@ -467,6 +467,15 @@ def test_launch_without_pin_table_is_not_run(tmp_path):
     res = launches.run_all(a, plan, manifest)
     assert res[0]["status"] == "NOT_RUN" and "capenv.pins generate exit 3" in res[0]["reason"]
     assert res[0]["pin_table_failed"] is True
+    # RS24: an unreadable scenario is reported as such (counted with pin_table_failed: the
+    # pin table and the job inputs both need it), not as a pin-table failure
+    (tmp_path / "noscen").mkdir()
+    a, plan, manifest = launch_env(tmp_path / "noscen", ["ok"])
+    os.rename(os.path.join(str(tmp_path / "noscen" / "W"), "scen.json"),
+              os.path.join(str(tmp_path / "noscen" / "W"), "scen.json.gone"))
+    res = launches.run_all(a, plan, manifest)
+    assert res[0]["status"] == "NOT_RUN" and res[0]["pin_table_failed"] is True
+    assert res[0]["reason"].startswith("skipped: scenario: "), res[0]["reason"]
 
 
 def test_config_error_before_launch_json_is_not_run(tmp_path, monkeypatch):

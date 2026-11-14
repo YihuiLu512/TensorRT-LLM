@@ -106,15 +106,19 @@ spb = role("spb", "capkit", "server", "stub_out_of_domain", True, "asyncio", Tru
            "all",
            ["--host", "127.0.0.1", "--port", "0", "--prebaked", "{input:prebaked}",
             "--lag-period-us", "{param:lag_period_us}",
+            "--max-stream-records", "{param:spb_max_stream_records}",
             "--sfe-module", "{param:sfe_module}", "--sfe-profile", "trtllm-like",
             "--model", "{param:sfe_model}",
             "--max-context-length", "{param:sfe_max_context_length}",
             {"splice_json": "{input:fingerprint}", "key": "sfe_args"}],
            start_after=["importprobe"], module="capstubs.prebaked_server",
            note="S-PB in frontend mode (D16): --sfe-module = the overlay manifest's stub module "
-                "sfe in the snapshot ({SNAP}/<its src>; the judge's C10 compares its sha); "
-                "fingerprint args from the job input (D15: same parameters as S-FE); no "
-                "--schedule, so streams are filed by acceptance time")
+                "sfe in the snapshot ({SNAP}/<its src>); S-PB only reports the sha it read, the "
+                "judge's C10 compares it (C10 is NOT_RUN here anyway: look for a 'role spb:' "
+                "item among its reasons); "
+                "fingerprint args from the job input (D15: as for S-FE); no --schedule, so "
+                "streams are filed by acceptance time; --max-stream-records >= the schedule's "
+                "rows + the httpprobe requests (they are not in the schedule)")
 fe = role("frontend", "product", "server", "under_test", True, "uvloop", True, "P0",
           [{"kind": "report_addr"},
            {"kind": "http_get", "path": "/health", "expect_status": 200, "timeout_s": 2.0}],
@@ -127,24 +131,30 @@ fe = role("frontend", "product", "server", "under_test", True, "uvloop", True, "
           port={"kind": "report_addr", "host": "127.0.0.1"},
           note="as e0c-frontend-http, connected to S-PB instead of S-FE")
 probe = role("httpprobe", "capkit", "aux", "observer", False, None, False, None,
-             [{"kind": "file_exists", "path": "{run_dir}/raw/httpprobe.json"}], [], "none",
+             [{"kind": "file_exists", "path": "{run_dir}/raw/httpprobe.started.json"}], [],
+             "none",
              ["--addr", "{addr:frontend}", "--requests", "{param:httpprobe_requests_json}",
               "--timeout-s", "{param:httpprobe_timeout_s}",
+              "--started-file", "{run_dir}/raw/httpprobe.started.json",
               "--result", "{run_dir}/raw/httpprobe.json", "--hold"],
              start_after=["frontend"], module="caplaunch.httpprobe",
              note="one /v1/completions and one /v1/chat/completions request "
                   "(configs/e0/e0c-httpprobe.requests.json; their max_tokens must have a "
-                  "prebaked stream, i.e. equal the tier table's max_tokens)")
+                  "prebaked stream, i.e. equal the tier table's max_tokens). Ready once the "
+                  "requests are sent (--started-file): S-PB answers only from the origin on, "
+                  "so --result is written after the origin; httpprobe_timeout_s must cover the "
+                  "wait from the first request to the origin plus the first beat")
 cl2 = role("capload", "capkit", "client", "load_source", True, "asyncio", False, None,
            CAPKIT_READY, ["backlog.inflight"], "all",
            ["--target", "{addr:frontend}", "--model", "{param:tokenizer_dir}"] + CAPLOAD_ARGS,
            start_after=["frontend", "httpprobe"], cpus_needed=1, workers=1, expected=2,
            module="capload",
            note="one low warmup rate and a gated drain through the frontend (as e0c)")
+# fingerprint: the same fixed tokenizer settings as configs/gen_e0_configs.py FP_INPUT (what the
+# frontend role's argv implies: trust_remote_code false, tokenizer_mode auto); change together.
 spb_inputs = {
     "fingerprint": {"args": ["--tokenizer", "{param:tokenizer_dir}",
-                             "--trust-remote-code", "{param:trust_remote_code}",
-                             "--tokenizer-mode", "{param:tokenizer_mode}"]},
+                             "--trust-remote-code", "false", "--tokenizer-mode", "auto"]},
     "prebaked": {"args": ["--pb2-module", PB2, "--tier-table", "{input:tier_table}",
                           "--token-ids", "{param:spb_token_ids}",
                           "--prompt-tokens", "{param:spb_prompt_tokens}"]}}
@@ -152,15 +162,17 @@ w("e0s-spb-frontend.scenario.json", scen(
   "e0s-spb-frontend", [importprobe(), spb, fe, probe, cl2],
   ["capload", "httpprobe", "frontend", "spb", "importprobe"],
   IMPORT_PARAMS + ["sfe_module", "sfe_model", "sfe_max_context_length", "tokenizer_dir",
-                   "trust_remote_code", "tokenizer_mode", "spb_token_ids", "spb_prompt_tokens",
+                   "spb_token_ids", "spb_prompt_tokens", "spb_max_stream_records",
                    "trtllm_serve", "httpprobe_requests_json", "httpprobe_timeout_s"]
   + CAPLOAD_PARAMS, REQ_ONLY(), "S-PB (capstubs.prebaked_server, frontend mode)",
   tok="TBD-by-registration (configs/tokenizers/<name>)",
   job_inputs=spb_inputs,
   note="E0 supplementary smoke item (2): real tokenizer + frontend + S-PB answer "
-       "/v1/completions and /v1/chat/completions (httpprobe, before the origin); capload then "
-       "places one low warmup rate and a gated drain. Fingerprint and prebaked bytes are job "
-       "inputs built in the job after the gate (capjobs.launches)."))
+       "/v1/completions and /v1/chat/completions (httpprobe: sent before the origin, answered "
+       "from the origin on at S-PB's beat); capload places one low warmup rate and a gated "
+       "drain. Fingerprint and prebaked bytes are job inputs built in the job after the gate "
+       "(capjobs.launches). The origin lead must cover the serial start-up: importprobe's two "
+       "cold imports, S-PB importing the S-FE module, the frontend start (configs/e0s/README.md)."))
 
 # ---------------- tier-table templates ----------------
 def gate_t(readings):

@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import time
+import types
 
 import grpc
 import pytest
@@ -18,10 +19,12 @@ from capcommon import expect
 from capcommon.lifecycle import read_port_file
 from capcommon.schedule import BeatSchedule, load_schedule
 from capgrpc.reqbytes import encode_pb_string_field
+from capjudge.checks import SPB_MODULE, stub_module_problems
+from capjudge.treedata import LaunchData
 from capstubs.prebaked import Prebaked
 
-from conftest import (METHOD, per_tier, spb_args, table_doc, total, write_json, write_prebaked,
-                      write_reqbytes)
+from conftest import (METHOD, STANDIN, per_tier, spb_args, table_doc, total, write_json,
+                      write_prebaked, write_reqbytes)
 
 MOD = "capstubs.prebaked_server"
 
@@ -72,6 +75,27 @@ def start_spb(launch, role, pb_path, *extra, cpus="0"):
 def ready_info(launch, role):
     with open(launch.tree.ready_file(role)) as f:
         return json.load(f)["info"]["workers"][0]["info"]
+
+
+class _ReadyLD:
+    """The judge's view of this launch's ready files (LaunchData's own accessor)."""
+
+    ready_tool_info = LaunchData.ready_tool_info
+
+    def __init__(self, launch, overlay, edit=None):
+        self.launch, self.overlay, self.edit = launch, overlay, edit
+
+    def ready_doc(self, role):
+        with open(self.launch.tree.ready_file(role)) as f:
+            doc = json.load(f)
+        return self.edit(doc) if self.edit else doc
+
+
+def judge_stub_item(launch, args, sha=None, edit=None):
+    """capjudge C10's S-PB item over the ready file this S-PB really wrote."""
+    ctx = types.SimpleNamespace(roles={"spb": {"module": SPB_MODULE, "args": list(args)}})
+    overlay = {"stub_modules": [{"key": "sfe", "sha256": sha}]} if sha else {}
+    return stub_module_problems(ctx, _ReadyLD(launch, overlay, edit))
 
 
 # ---- reader end to end -------------------------------------------------------------------------
@@ -135,6 +159,15 @@ def test_reader_end_to_end_with_schedule(launch):
     assert inj["send.msg"] == (total(sp, "counts.msgs_sent"),) * 2
     assert inj["beat.step"][0] == total(sp, "beat.steps") == len(steps["step"])
     assert inj["short.req"] == (total(sp, "counts.streams_accepted"), 0)
+    # the judge's C10 S-PB item reads this real Generate-only ready file: control null
+    gen_args = spb_args(pb_path, "--schedule", launch.sched_path)
+    assert judge_stub_item(launch, gen_args) == {"expected": 1, "checked": 1, "problems": []}
+
+    def add_control(d):
+        d["info"]["workers"][0]["info"]["control"] = {"sha256": "a" * 64}
+        return d
+    bad = judge_stub_item(launch, gen_args, edit=add_control)
+    assert bad["checked"] == 0 and "without --sfe-module" in bad["problems"][0]
 
 
 # ---- raw-bytes client -----------------------------------------------------------------------------
@@ -321,85 +354,7 @@ def test_refused_at_start_up(launch, case):
 
 # ---- frontend mode (stand-in S-FE module) ------------------------------------------------------
 
-# The names S-PB takes from fake_openengine.py (probe-tree tests/unittest/grpc/openengine_client):
-# _parse_args, _profile_from_args, FakeEngine(profile, tokens_per_step=, step_delay=, record=),
-# _Control(engine), _Health(engine), openengine_pb2_grpc.add_ControlServicer_to_server and
-# health_pb2_grpc.add_HealthServicer_to_server. The real module needs the product package, so this
-# stand-in answers Control/GetServerInfo with what S-PB handed it, as raw bytes.
-STANDIN = '''
-import argparse
-import dataclasses
-import json
-import types
-
-import grpc
-
-
-@dataclasses.dataclass
-class Prof:
-    fields: dict
-
-
-def _parse_args(argv):
-    p = argparse.ArgumentParser()
-    p.add_argument("--profile", default="trtllm-like")
-    p.add_argument("--model")
-    p.add_argument("--max-context-length", type=int)
-    p.add_argument("--vocab-size", type=int)
-    p.add_argument("--eos-token-ids", type=int, nargs="+")
-    p.add_argument("--profile-json")
-    return p.parse_args(argv)
-
-
-def _profile_from_args(args):
-    return Prof(dict(vars(args)))
-
-
-class FakeEngine:
-    def __init__(self, profile, tokens_per_step=1, step_delay=0.0, record=True):
-        self.profile, self.knobs = profile, [tokens_per_step, step_delay, record]
-
-
-class _Control:
-    def __init__(self, engine):
-        self.engine = engine
-
-
-class _Health:
-    def __init__(self, engine):
-        self.engine = engine
-
-
-class _Routes(grpc.GenericRpcHandler):
-    def __init__(self, routes):
-        self.routes = routes
-
-    def service(self, details):
-        return self.routes.get(details.method)
-
-
-def _unary(fn):
-    return grpc.unary_unary_rpc_method_handler(fn, request_deserializer=None,
-                                               response_serializer=None)
-
-
-def _add_control(servicer, server):
-    async def info(request, context):
-        e = servicer.engine
-        return json.dumps({"profile": e.profile.fields, "knobs": e.knobs}).encode()
-    server.add_generic_rpc_handlers([_Routes({"/openengine.v1.Control/GetServerInfo":
-                                              _unary(info)})])
-
-
-def _add_health(servicer, server):
-    async def check(request, context):
-        return b"SERVING"
-    server.add_generic_rpc_handlers([_Routes({"/grpc.health.v1.Health/Check": _unary(check)})])
-
-
-openengine_pb2_grpc = types.SimpleNamespace(add_ControlServicer_to_server=_add_control)
-health_pb2_grpc = types.SimpleNamespace(add_HealthServicer_to_server=_add_health)
-'''
+# STANDIN (conftest.py): a stand-in fake_openengine.py with the names S-PB takes from it.
 
 
 def _unary_call(port, method):
@@ -434,6 +389,49 @@ def test_frontend_mode_registers_control_and_health(launch):
     assert ctl["sfe_argv"] == ["--model", "m1", "--vocab-size", "151", "--eos-token-ids", "1",
                                "2", "--profile-json", profile_json]
     assert launch.summaries("spb")[0][0]["control"]["sha256"] == sha
+    # the judge's C10 S-PB item reads this real frontend-mode ready file
+    front_args = spb_args(pb_path, "--sfe-module", str(mod))
+    assert judge_stub_item(launch, front_args, sha) == {"expected": 1, "checked": 1,
+                                                        "problems": []}
+    bad = judge_stub_item(launch, front_args, "b" * 64)
+    assert bad["checked"] == 0 and "!= overlay stub module sfe" in bad["problems"][0]
+
+
+@pytest.mark.parametrize("body,exc", [("raise RuntimeError('boom')\n", "RuntimeError"),
+                                      ("def f(:\n", "SyntaxError"),
+                                      ("import os\nos.no_such_attr_capkit\n", "AttributeError"),
+                                      ("raise SystemExit(5)\n", "SystemExit"),
+                                      (STANDIN_IMPORT_ERROR, "ModuleNotFoundError")])
+def test_sfe_module_import_failures_are_config_errors(tmp_path, body, exc):
+    """RS29: any exception while the S-FE module runs is a ConfigError (exit 3) naming the path
+    and the exception type, and leaves nothing in sys.modules."""
+    import sys  # noqa: PLC0415
+    from capcommon.exitcodes import ConfigError  # noqa: PLC0415
+    from capstubs import prebaked_server as S  # noqa: PLC0415
+    f = tmp_path / "fake_openengine.py"
+    f.write_text(body)
+    before = set(sys.modules)
+    with pytest.raises(ConfigError) as ei:
+        S.load_sfe_module(str(f))
+    assert str(f) in str(ei.value) and exc in str(ei.value), ei.value
+    assert ei.value.exit_code == 3
+    assert not [m for m in set(sys.modules) - before if m.startswith("_capstubs_sfe_")]
+
+
+def test_sfe_module_runs_the_bytes_it_hashed(tmp_path, monkeypatch):
+    """RS29: the module is executed from the bytes whose sha256 is reported, not read again by
+    path (a file swapped in between would run unreported code)."""
+    import importlib.machinery  # noqa: PLC0415
+    from capstubs import prebaked_server as S  # noqa: PLC0415
+    f = tmp_path / "fake_openengine.py"
+    f.write_text("VALUE = 41 + 1\n")
+
+    def no_second_read(self, path):
+        raise AssertionError("second read of %s" % path)
+    monkeypatch.setattr(importlib.machinery.SourceFileLoader, "get_data", no_second_read)
+    mod, sha = S.load_sfe_module(str(f))
+    assert mod.VALUE == 42 and sha == hashlib.sha256(f.read_bytes()).hexdigest()
+    assert mod.__file__ == str(f)
 
 
 def test_frontend_mode_refuses_options_the_sfe_parser_rejects(launch):

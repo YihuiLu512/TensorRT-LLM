@@ -171,24 +171,27 @@ def plan_streams(tt, prebaked, specs):
 
 
 def load_sfe_module(path):
-    """Import fake_openengine.py from `path` under a private name; return (module, sha256)."""
+    """Run fake_openengine.py from `path` as a module under a private name; return (module,
+    sha256). The file is read once: the bytes hashed are the bytes executed. Any exception
+    while compiling or running it is a ConfigError (exit 3) and leaves no module behind."""
     try:
         with open(path, "rb") as f:
-            sha = hashlib.sha256(f.read()).hexdigest()
+            data = f.read()
     except OSError as e:
         raise ConfigError("cannot read --sfe-module %s: %s" % (path, e))
+    sha = hashlib.sha256(data).hexdigest()
     name = "_capstubs_sfe_%s" % sha[:12]
     spec = importlib.util.spec_from_file_location(name, path)
-    if spec is None or spec.loader is None:
+    if spec is None:
         raise ConfigError("--sfe-module %s is not a Python file" % path)
     mod = importlib.util.module_from_spec(spec)
     sys.modules[name] = mod  # dataclasses look the module up while the class body runs
     try:
-        spec.loader.exec_module(mod)
-    except ImportError as e:
-        del sys.modules[name]
-        raise ConfigError("--sfe-module %s cannot be imported here (it needs the product "
-                          "package): %s" % (path, e))
+        exec(compile(data, path, "exec"), mod.__dict__)  # noqa: S102
+    except (Exception, SystemExit) as e:  # noqa: BLE001 - whatever it raises, exit 3
+        sys.modules.pop(name, None)
+        raise ConfigError("--sfe-module %s cannot be imported here: %s: %s"
+                          % (path, type(e).__name__, e))
     return mod, sha
 
 

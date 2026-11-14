@@ -26,7 +26,7 @@
 
 ## S-FE 的指纹参数(SEAMS SM-6)
 
-`e0a-frontend-sfe`、`e0c-frontend-http` 声明作业输入 `job_inputs.fingerprint`(INTERFACES 勘误 B2B-9):作业在门禁之后用 `python -m capstubs.fingerprint --tokenizer {param:tokenizer_dir} --trust-remote-code {param:trust_remote_code} --tokenizer-mode {param:tokenizer_mode}` 生成，S-FE 角色用 `{"splice_json": "{input:fingerprint}", "key": "sfe_args"}` 拼参数。`trust_remote_code`、`tokenizer_mode` 必须与前端加载 tokenizer 的设置一致。
+`e0a-frontend-sfe`、`e0c-frontend-http` 声明作业输入 `job_inputs.fingerprint`(INTERFACES 勘误 B2B-9):作业在门禁之后用 `python -m capstubs.fingerprint --tokenizer {param:tokenizer_dir} --trust-remote-code false --tokenizer-mode auto` 生成，S-FE 角色用 `{"splice_json": "{input:fingerprint}", "key": "sfe_args"}` 拼参数。后两个值写死在生成器里，取的是前端角色 argv 隐含的设置(不带 `--trust_remote_code`,`trtllm-serve` 缺省为 false;不给 `--config`,`tokenizer_mode` 为 auto);给前端加这两项设置时，生成器的 `FP_INPUT` 必须同改。
 
 ## 冒烟(E0(c))
 

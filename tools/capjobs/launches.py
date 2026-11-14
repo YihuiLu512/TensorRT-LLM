@@ -11,10 +11,12 @@ the job's STATE line to each launch tree, after the launcher's own (INTERFACES.m
 Per launch: skip (NOT_RUN, recorded) when the remaining allocation time is below
 budget_s + kill_grace_s + margin_s + launchplan.in_job_bound_s (pin table + job inputs), or an
 earlier launch ended ENV_INVALID or left processes that survived SIGKILL; generate its pin table
-on this node (pin_table(); a failure skips the launch as NOT_RUN, marked pin_table_failed: main
-then exits 3 as for config_refused); generate the job inputs its scenario declares
-(capjobs.jobinputs into <job dir>/job_inputs/<tree>/; a failure skips the launch as NOT_RUN,
-marked job_input_failed, exit 3 likewise); otherwise run the plan's argv with
+on this node (pin_table(); a failure, or a scenario that cannot be read, skips the launch as
+NOT_RUN, marked pin_table_failed: main then exits 3 as for config_refused); generate the job
+inputs its scenario declares (capjobs.jobinputs into <job dir>/job_inputs/<tree>/; a failure
+skips the launch as NOT_RUN, marked job_input_failed, exit 3 likewise); the job's SIGTERM while
+either helper runs kills it (run_helper) and skips the launch as NOT_RUN, neither flag set;
+otherwise run the plan's argv with
 --overlay-manifest, --nvidia-smi, --job-env-dir <job dir>/env, --pin-table, one --job-input per
 generated kind and the identity arguments appended, under a budget_s timeout; kill
 whatever the launch left behind; copy <L>/runs/<tree> to <R>/<tree>; verify; chmod a-w raw/;
@@ -110,12 +112,47 @@ def launch_argv(plan, ln, values, job_id, restart_count, run_dir, overlay_manife
                    "--role", "launch", "--run-dir", run_dir]
 
 
+class JobTerminated(Exception):
+    """This job got SIGTERM while an in-job helper command (pin table, job input generator)
+    ran; the helper's process group has been stopped."""
+
+
+def _kill_group(p):
+    try:
+        os.killpg(p.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    p.wait()
+
+
+def run_helper(argv, env=None, stdout=None, stderr=None, stdin=None, timeout=None,
+               sleep=time.sleep, clock=time.monotonic):
+    """subprocess.run for the in-job helper commands (pin table, job input generators), polled
+    so that the job's SIGTERM is honoured while they run (within POLL_S): the helper gets its
+    own session; on the timeout or this process's SIGTERM its whole process group is killed
+    (SIGKILL, as subprocess.run kills on its timeout, so the in-job time bound is unchanged).
+    Returns CompletedProcess; raises subprocess.TimeoutExpired, or JobTerminated on SIGTERM."""
+    p = subprocess.Popen(argv, env=env, stdout=stdout, stderr=stderr, stdin=stdin,
+                         start_new_session=True)
+    end = None if timeout is None else clock() + timeout
+    while True:
+        rc = p.poll()
+        if rc is not None:
+            return subprocess.CompletedProcess(argv, rc)
+        if _TERMINATED or (end is not None and clock() >= end):
+            _kill_group(p)
+            if _TERMINATED:
+                raise JobTerminated("the job received SIGTERM")
+            raise subprocess.TimeoutExpired(argv, timeout)
+        sleep(POLL_S if end is None else min(POLL_S, max(0.0, end - clock())))
+
+
 def pin_table(a, plan, ln, env, out_path):
     """Generate one launch's pin table on this node with capenv.pins generate (INTERFACES.md
     5.5.1; plan RESOURCES 5 item 5): demand = the launch scenario's roles
     [{pin_role, cpus_needed, numa}], --source-sha = profile_sha256 of this job's hardware profile
     (--hw-profile), CPUs outside this process's affinity avoided, identity = this launch with role
-    "pins". Returns None, or why no table was written."""
+    "pins". Returns None, or why no table was written; raises JobTerminated (run_helper)."""
     try:
         roles = launchplan.load_scenario(ln)["roles"]
         demand = [{"role": r["pin_role"], "cpus_needed": r["cpus_needed"], "numa": r["numa"]}
@@ -137,8 +174,8 @@ def pin_table(a, plan, ln, env, out_path):
             "--only-affinity"]
     try:
         with open(out_path + ".log", "wb") as log:
-            rc = subprocess.run(argv, env=env, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
-                                timeout=launchplan.PINS_TIMEOUT_S).returncode
+            rc = run_helper(argv, env=env, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
+                            timeout=launchplan.PINS_TIMEOUT_S).returncode
     except (OSError, subprocess.TimeoutExpired) as e:
         return "pin table: %s" % e
     if rc != 0 or not os.path.isfile(out_path):
@@ -148,15 +185,16 @@ def pin_table(a, plan, ln, env, out_path):
 
 def job_inputs(a, ln, values, env, out_dir):
     """Generate the job inputs of one launch's scenario (capjobs.jobinputs.generate) with this
-    launch's --param values and the job's environment. Returns ({kind: path}, records, None) or
-    (None, records, why)."""
+    launch's --param values and the job's environment, each generator through run_helper.
+    Returns ({kind: path}, records, None) or (None, records, why); raises JobTerminated."""
     try:
         doc = launchplan.load_scenario(ln)
         wd, _rel = launchplan.scenario_path(ln)
         params = jobinputs.params_from_argv([launchplan.substitute(x, values)
                                              for x in ln["argv"]])
         paths, recs = jobinputs.generate(doc, os.path.realpath(wd), params, a.python, out_dir,
-                                         env, launchplan.JOB_INPUT_TIMEOUT_S)
+                                         env, launchplan.JOB_INPUT_TIMEOUT_S,
+                                         run=run_helper)
     except jobinputs.JobInputError as e:
         return None, e.records, "job inputs: %s" % e
     except (CapkitError, OSError, ValueError) as e:
@@ -403,8 +441,9 @@ def run_all(a, plan, manifest_doc, now_fn=time.time):
         grace = plan["kill_grace_s"]
         try:
             bound = launchplan.in_job_bound_s(ln)
-        except CapkitError as e:  # the scenario is unreadable: the pin table needs it too
-            r.update(ran=False, status="NOT_RUN", reason="skipped: pin table: %s" % e,
+        except CapkitError as e:  # the scenario is unreadable: the pin table and the job
+            # inputs need it too; counted with pin_table_failed (jobs/README.md)
+            r.update(ran=False, status="NOT_RUN", reason="skipped: scenario: %s" % e,
                      pin_table_failed=True)
             continue
         if left < ln["budget_s"] + grace + plan["margin_s"] + bound:
@@ -413,12 +452,22 @@ def run_all(a, plan, manifest_doc, now_fn=time.time):
                      % (left, ln["budget_s"], grace, plan["margin_s"], bound))
             continue
         pins = os.path.join(pins_dir, name + ".pin_table.json")
-        why = pin_table(a, plan, ln, env, pins)
+        try:
+            why = pin_table(a, plan, ln, env, pins)
+        except JobTerminated as e:
+            halted = str(e)
+            r.update(ran=False, status="NOT_RUN", reason="skipped: %s during the pin table" % e)
+            continue
         if why is not None:
             r.update(ran=False, status="NOT_RUN", reason="skipped: " + why, pin_table_failed=True)
             continue
-        jpaths, jrecs, why = job_inputs(a, ln, values, env,
-                                        os.path.join(a.job_dir, "job_inputs", name))
+        try:
+            jpaths, jrecs, why = job_inputs(a, ln, values, env,
+                                            os.path.join(a.job_dir, "job_inputs", name))
+        except JobTerminated as e:
+            halted = str(e)
+            r.update(ran=False, status="NOT_RUN", reason="skipped: %s during the job inputs" % e)
+            continue
         if jrecs:
             r["job_inputs"] = [{k: x.get(k) for k in ("kind", "rc", "out_sha256", "log")}
                                for x in jrecs]

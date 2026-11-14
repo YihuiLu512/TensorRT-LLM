@@ -16,9 +16,11 @@ scenario's params_required) and `{input:tier_table|schedule|prompts}` (the regis
 `--out` is appended and must not appear in them.
 """
 
-import re
+import json
 
 from .exitcodes import ConfigError
+from .hashing import sha256_bytes
+from .templates import PLACEHOLDER_RE, placeholders
 
 RECORD_SCHEMA = "capkit.job_input_record/1"
 # kind -> (generator module, schema of the file it writes)
@@ -29,7 +31,6 @@ KINDS = {
 }
 REGISTERED_INPUTS = ("tier_table", "schedule", "prompts")
 SECTION = "job_inputs"
-_PH_RE = re.compile(r"\{([a-z_]+)(?::([A-Za-z0-9_.-]+))?\}")
 
 
 def _err(msg):
@@ -60,7 +61,7 @@ def validate_section(sec, params_required):
         for a in args:
             if a.split("=", 1)[0] == "--out":
                 _err("%s.args must not contain --out (it is appended)" % kind)
-            for name, arg in _placeholders(a):
+            for name, arg in placeholders(a):
                 if name == "param" and arg in params_required:
                     continue
                 if name == "input" and arg in REGISTERED_INPUTS:
@@ -69,10 +70,6 @@ def validate_section(sec, params_required):
                      "{input:%s}" % (kind, name, "" if arg is None else ":" + arg,
                                      "|".join(REGISTERED_INPUTS)))
     return sec
-
-
-def _placeholders(text):
-    return [(m.group(1), m.group(2)) for m in _PH_RE.finditer(text)]
 
 
 def generator_argv(doc, kind, params, input_paths, python, out):
@@ -85,11 +82,11 @@ def generator_argv(doc, kind, params, input_paths, python, out):
         name, arg = m.group(1), m.group(2)
         if name == "param":
             if arg not in params:
-                raise ConfigError("job input %s: no --param %s" % (kind, arg))
+                raise ConfigError("no --param %s" % arg)
             return params[arg]
         return input_paths[arg]
-    return [python, "-m", KINDS[kind][0]] + [_PH_RE.sub(sub, a) for a in spec["args"]] \
-        + ["--out", out]
+    return [python, "-m", KINDS[kind][0]] \
+        + [PLACEHOLDER_RE.sub(sub, a) for a in spec["args"]] + ["--out", out]
 
 
 def check_record(record, kind, file_sha256, registered_sha256):
@@ -112,3 +109,19 @@ def check_record(record, kind, file_sha256, registered_sha256):
         if sha != registered_sha256.get(k):
             raise ConfigError("job input %s was built from %s sha %s, the launch registers %s"
                               % (kind, k, sha, registered_sha256.get(k)))
+
+
+def load_verified(kind, data, rec_bytes, registered_sha256):
+    """One generated file and its record, as bytes (caplaunch reads them from --job-input, the
+    judge from the launch tree): the file parses with its kind's schema and the record passes
+    check_record against the file's sha256. Returns the file's sha256; raises ConfigError."""
+    try:
+        doc = json.loads(data.decode("utf-8"))
+        record = json.loads(rec_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError) as e:
+        raise ConfigError("job input %s: not JSON: %s" % (kind, e))
+    if not isinstance(doc, dict) or doc.get("schema") != KINDS[kind][1]:
+        raise ConfigError("job input %s: the file is not a %s file" % (kind, KINDS[kind][1]))
+    sha = sha256_bytes(data)
+    check_record(record, kind, sha, registered_sha256)
+    return sha

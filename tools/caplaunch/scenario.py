@@ -9,12 +9,12 @@ scenario's verbatim extra args; it never guesses arguments from module or role n
 import functools
 import importlib.util
 import os
-import re
 
 from capcommon import jobinputs
 from capcommon.exitcodes import ConfigError
 from capcommon.expect import validate_reconcile
 from capcommon.identity import EXPERIMENT_RE, ROLE_RE
+from capcommon.templates import PLACEHOLDER_RE, placeholders
 
 SCHEMA = "capkit.scenario/1"
 
@@ -103,7 +103,6 @@ TOP_KEYS = ("schema", "experiment", "name", "tier_table", "schedule", "prompts",
 TOP_KEYS_OPTIONAL = ("note", "job_inputs")
 DIMS_KEYS = ("tokenizer", "stub", "response_timing_switches", "interpretation", "log_sink")
 
-_PH_RE = re.compile(r"\{([a-z_]+)(?::([A-Za-z0-9_.-]+))?\}")
 PH_SIMPLE = ("run_dir", "raw", "nvidia_smi")
 PH_ROLE = ("port_file", "addr")  # reference another role (must be in start_after)
 PH_OWN = ("own",)  # own:port_file | own:report_addr | own:role
@@ -115,11 +114,6 @@ INPUT_KEYS = jobinputs.REGISTERED_INPUTS + tuple(jobinputs.KINDS)
 
 def _err(where, msg):
     raise ConfigError("scenario %s: %s" % (where, msg))
-
-
-def placeholders(text):
-    """[(name, arg)] of every {name[:arg]} placeholder in a string."""
-    return [(m.group(1), m.group(2)) for m in _PH_RE.finditer(text)]
 
 
 def _check_template(where, s, role_names, start_after, params, job_kinds=()):
@@ -486,7 +480,7 @@ def resolve(text, role, ctx, runtime=True):
                 return role
             return ctx.own_files[role][arg]
         raise ConfigError("unknown placeholder %s" % m.group(0))
-    return _PH_RE.sub(sub, text)
+    return PLACEHOLDER_RE.sub(sub, text)
 
 
 def _splice(item, role, ctx, runtime):

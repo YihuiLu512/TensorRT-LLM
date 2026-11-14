@@ -300,9 +300,7 @@
   "sidecar_interval_ms",
   "sidecar_numa_every_s",
   "tokenizer_dir",
-  "tokenizer_mode",
-  "trtllm_serve",
-  "trust_remote_code"
+  "trtllm_serve"
  ],
  "dims": {
   "tokenizer": "TBD-by-registration (configs/tokenizers/<name>)",
@@ -318,9 +316,9 @@
     "--tokenizer",
     "{param:tokenizer_dir}",
     "--trust-remote-code",
-    "{param:trust_remote_code}",
+    "false",
     "--tokenizer-mode",
-    "{param:tokenizer_mode}"
+    "auto"
    ]
   }
  }

@@ -12,7 +12,7 @@ import os
 from capcommon import expect, jobinputs, ledger
 from capcommon.capbin import CapbinError, read_capbin
 from capcommon.exitcodes import ConfigError
-from capcommon.hashing import is_sha256_hex, sha256_file
+from capcommon.hashing import is_sha256_hex, sha256_bytes, sha256_file
 from capcommon.identity import LAUNCH_KEY_FIELDS
 from capcommon.jsonio import read_json, read_json_stamped
 from capcommon.runtree import STATE_VALUES, RunTree, read_state, worst_state
@@ -286,21 +286,20 @@ def _load_job_inputs(ctx):
         if not isinstance(ent, dict) or ent.get("relpath") != rel:
             raise InputInvalid(item, "relpath must be %s" % rel)
         p = os.path.join(ctx.root, rel)
+        rp = p[:-len(".json")] + ".record.json"
         try:
-            sha = sha256_file(p)
-            doc = read_json(p)
-            rp = p[:-len(".json")] + ".record.json"
-            rsha = sha256_file(rp)
-            record = read_json(rp)
-        except (OSError, ValueError) as e:
+            with open(p, "rb") as f:
+                data = f.read()
+            with open(rp, "rb") as f:
+                rec_bytes = f.read()
+        except OSError as e:
             raise InputInvalid(item, str(e))
+        sha, rsha = sha256_bytes(data), sha256_bytes(rec_bytes)
         if sha != ent.get("sha256") or rsha != ent.get("record_sha256"):
             raise InputInvalid(item, "sha256 %s / record %s != launch.json %s / %s"
                                % (sha, rsha, ent.get("sha256"), ent.get("record_sha256")))
-        if not isinstance(doc, dict) or doc.get("schema") != jobinputs.KINDS[k][1]:
-            raise InputInvalid(item, "schema must be %s" % jobinputs.KINDS[k][1])
         try:
-            jobinputs.check_record(record, k, sha, reg)
+            jobinputs.load_verified(k, data, rec_bytes, reg)
         except ConfigError as e:
             raise InputInvalid(item, str(e))
         ctx.note_file(p, sha)

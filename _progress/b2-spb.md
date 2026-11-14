@@ -98,3 +98,6 @@
 
 - S-PB 逐档：drain ok = planned（50/150/300/600/300/150）、failed 0；spb msgs_sent = 21 × 请求数；C10 PASS（5/5）、C3/C5/C9/C11/P-SENT/P-PIDS/RECORDS 全 PASS。输出存 e2e/runs/*-J920001[123].out。
 - fakebin.log 新增 9 行，都是真 capenv.gate 的 scontrol/squeue（替身 exit 97）；没碰集群。
+- 2026-11-15 00:28:33 开始 R1 修复（slug capkit-b2spb-J17871，head b43d6e6）：先读码核实 C1/C2/C4/C3/C5–C17，再逐条写失败测试、修复
+- 2026-11-15 00:46:07 R1 代码修复已落（C1/C2/C5+C19/C6/C7/C8/C10 测试/C14/C15/C16+C17），各自先红后绿、变异核过；接着改文档（INTERFACES 勘误、README）
+- 2026-11-15 00:50:34 文档修完（INTERFACES B2B-2/3/4/7/8/9/10/11/13/14 改写、新增 B2B-15；R4-11、R5-3、R5-5 加指引；jobs/configs/tools README），提交后在新 HEAD 上跑全量验证 r1v（约 15–20 分钟）与三个作业路径 e2e

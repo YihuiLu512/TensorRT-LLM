@@ -7,7 +7,10 @@ module behind the {PY} wrapper; the real generators run in tests/capstubs/test_s
 
 import json
 import os
+import signal
+import subprocess
 import sys
+import time
 
 import pytest
 
@@ -31,6 +34,13 @@ if mode == "fail":
     sys.exit(7)
 if mode == "noout":
     sys.exit(0)
+if mode == "sleep":  # a slow generator with a child of its own; both pids for the test
+    import subprocess, time
+    kid = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(300)"])
+    with open(os.environ["FAKEGEN_PIDS"] + ".tmp", "w") as f:
+        f.write("%d %d" % (os.getpid(), kid.pid))
+    os.rename(os.environ["FAKEGEN_PIDS"] + ".tmp", os.environ["FAKEGEN_PIDS"])
+    time.sleep(300)
 with open(out, "w") as f:
     json.dump({"schema": "capkit.other/1" if mode == "schema" else schema, "argv": sys.argv[3:]},
               f)
@@ -182,6 +192,131 @@ def test_launches_generator_failure_is_not_run(tmp_path, monkeypatch):
         assert "job inputs" in r["reason"] and "exit 7" in r["reason"]
         assert r["job_inputs"][0]["rc"] == 7
         assert not os.path.exists(os.path.join(a.run_root, r["tree"]))
+
+
+def _gone(pid):
+    try:
+        with open("/proc/%d/stat" % pid) as f:
+            return f.read().rsplit(")", 1)[1].split()[0] == "Z"
+    except OSError:
+        return True
+
+
+def test_sigterm_during_a_generator_stops_it_and_writes_the_record(tmp_path, monkeypatch):
+    """RS4/RS7: the job's SIGTERM while a job-input generator runs (up to 600 s each) stops the
+    generator's whole process group within the poll period; the launch is NOT_RUN (not
+    job_input_failed), the rest are skipped, and launches.json is written before KillWait."""
+    pids = tmp_path / "gen.pids"
+    monkeypatch.setenv("FAKEGEN_MOD", "capstubs.fingerprint")
+    monkeypatch.setenv("FAKEGEN_MODE", "sleep")
+    monkeypatch.setenv("FAKEGEN_PIDS", str(pids))
+    a, plan, manifest = jobinput_env(tmp_path, ("ok", "ok"))
+    pp, mp = tmp_path / "plan.json", tmp_path / "manifest.json"
+    pp.write_text(json.dumps(plan))
+    mp.write_text(json.dumps(manifest))
+    out = os.path.join(a.job_dir, "launches.json")
+    env = dict(os.environ, PYTHONPATH=os.path.join(CODE_ROOT, "tools"))
+    p = subprocess.Popen([sys.executable, "-B", "-m", "capjobs.launches", "--plan", str(pp),
+                          "--overlay-manifest", str(mp), "--nvidia-smi", a.nvidia_smi, "--snap",
+                          a.snap, "--job-dir", a.job_dir, "--local-root", a.local_root,
+                          "--shm-root", a.shm_root, "--run-root", a.run_root, "--job-id", "9",
+                          "--hw-profile", a.hw_profile, "--python", a.python, "--out", out,
+                          "--restart-count", "0", "--deadline-epoch", "1e12"], env=env)
+    try:
+        end = time.monotonic() + 60
+        while not pids.exists() and time.monotonic() < end and p.poll() is None:
+            time.sleep(0.1)
+        assert pids.exists(), "the generator never started"
+        gen, kid = map(int, pids.read_text().split())
+        t0 = time.monotonic()
+        p.send_signal(signal.SIGTERM)
+        assert p.wait(timeout=30) == 0
+        assert time.monotonic() - t0 < launches.TERM_GRACE_S
+    finally:
+        if p.poll() is None:
+            p.kill()
+        if pids.exists():  # never leave the stand-in generator behind, even on failure
+            for pid in map(int, pids.read_text().split()):
+                if not _gone(pid):
+                    os.kill(pid, signal.SIGKILL)
+    doc = json.load(open(out))
+    r0, r1 = doc["launches"]
+    assert r0["status"] == "NOT_RUN" and r0["ran"] is False, r0
+    assert "SIGTERM" in r0["reason"] and "job inputs" in r0["reason"], r0["reason"]
+    assert not r0.get("job_input_failed") and doc["job_input_failed"] == 0
+    assert r1["status"] == "NOT_RUN" and "SIGTERM" in r1["reason"]
+    end = time.monotonic() + 10
+    while not (_gone(gen) and _gone(kid)) and time.monotonic() < end:
+        time.sleep(0.1)
+    assert _gone(gen) and _gone(kid)  # the generator's whole process group
+
+
+def test_pin_table_and_job_inputs_run_through_the_polled_helper(tmp_path, monkeypatch):
+    """Both in-job helper commands go through launches.run_helper (SIGTERM-aware): a stop in
+    either is NOT_RUN for the job's SIGTERM, not a pin-table or job-input failure."""
+    real = launches.run_helper
+    for stop_at, where in (("capenv.pins", "pin table"), ("capstubs.fingerprint", "job inputs")):
+        d = tmp_path / stop_at
+        d.mkdir()
+        a, plan, manifest = jobinput_env(d, ("ok",))
+        calls = []
+
+        def fake(argv, stop_at=stop_at, calls=calls, **kw):
+            calls.append(argv[2])
+            if argv[2] == stop_at:
+                raise launches.JobTerminated("the job received SIGTERM")
+            return real(argv, **kw)
+        monkeypatch.setattr(launches, "run_helper", fake)
+        res = launches.run_all(a, plan, manifest)
+        assert calls[-1] == stop_at and res[0]["status"] == "NOT_RUN", res[0]
+        assert where in res[0]["reason"] and "SIGTERM" in res[0]["reason"], res[0]["reason"]
+        assert not res[0].get("pin_table_failed") and not res[0].get("job_input_failed")
+
+
+def test_run_helper_timeout_kills_the_group(tmp_path):
+    """The timeout path keeps subprocess.run's contract (TimeoutExpired, nothing left) and also
+    takes the helper's children."""
+    pidf = tmp_path / "kid.pid"
+    code = ("import subprocess, sys, time; k = subprocess.Popen([sys.executable, '-c', "
+            "'import time; time.sleep(300)']); open(%r, 'w').write(str(k.pid)); time.sleep(300)"
+            % str(pidf))
+    t0 = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        launches.run_helper([sys.executable, "-c", code], timeout=2.0)
+    assert time.monotonic() - t0 < 2.0 + 2 * launches.POLL_S + 1.0
+    kid = int(pidf.read_text())
+    end = time.monotonic() + 10
+    while not _gone(kid) and time.monotonic() < end:
+        time.sleep(0.1)
+    assert _gone(kid)
+    assert launches.run_helper([sys.executable, "-c", "raise SystemExit(4)"],
+                               timeout=30).returncode == 4
+
+
+@pytest.mark.parametrize("case", ["missing_param", "output_exists", "input_unreadable"])
+def test_failure_before_a_generator_runs_keeps_the_earlier_records(tmp_path, case):
+    """RS22: a kind that fails before its generator runs (no --param, output already there,
+    registered input unreadable) is a job-input failure like any other: the records of the
+    kinds already generated stay in launches.json, the failing kind is listed with rc null."""
+    a, plan, manifest = jobinput_env(tmp_path, ("ok",))
+    ln = plan["launches"][0]
+    name = launches.tree_dir_name(a.job_id, a.restart_count, ln["launch_seq"], ln["arm"])
+    if case == "missing_param":
+        ln["argv"] = ln["argv"][:-2]  # drops --param ids=5,6 (only prebaked uses it)
+    elif case == "output_exists":
+        d = os.path.join(a.job_dir, "job_inputs", name)
+        os.makedirs(d)
+        open(os.path.join(d, "prebaked.json"), "w").close()
+    else:
+        os.rename(os.path.join(str(tmp_path), "W", "t.json"),
+                  os.path.join(str(tmp_path), "W", "t.json.gone"))
+    res = launches.run_all(a, plan, manifest)
+    r = res[0]
+    assert r["status"] == "NOT_RUN" and r["job_input_failed"], r
+    assert [(j["kind"], j["rc"]) for j in r["job_inputs"]] == [("fingerprint", 0),
+                                                               ("prebaked", None)], r
+    assert r["reason"].startswith("skipped: job inputs: job input prebaked: "), r["reason"]
+    assert r["reason"].count("job input prebaked") == 1, r["reason"]
 
 
 def test_in_job_bound_counts_each_declared_kind(tmp_path):

@@ -83,6 +83,22 @@ def test_spb_arm_fits_what_spb_accepts():
     assert {r["body"]["max_tokens"] for r in reqs} == {common["max_tokens"]}
     pre = doc["job_inputs"]["prebaked"]["args"]
     assert pre[pre.index("--tier-table") + 1] == "{input:tier_table}"
+    # streams capacity is a plan parameter (schedule rows + the httpprobe requests)
+    assert args[args.index("--max-stream-records") + 1] == "{param:spb_max_stream_records}"
+    assert "spb_max_stream_records" in doc["params_required"]
+
+
+def test_spb_arm_httpprobe_is_ready_once_its_requests_are_sent():
+    """S-PB answers only after the origin, so httpprobe's readiness is its --started-file
+    (written before the first request), not --result (written after the answers)."""
+    doc = _load(E0S, "e0s-spb-frontend.scenario.json")
+    probe = {r["role"]: r for r in doc["roles"]}["httpprobe"]
+    a = probe["args"]
+    started, result = a[a.index("--started-file") + 1], a[a.index("--result") + 1]
+    assert started != result
+    assert probe["readiness"] == [{"kind": "file_exists", "path": started}]
+    e0c = {r["role"]: r for r in _load(E0, "e0c-frontend-http.scenario.json")["roles"]}
+    assert "--started-file" not in e0c["httpprobe"]["args"]  # S-FE answers before the origin
 
 
 def test_frontend_arms_take_the_fingerprint_from_the_job_input():
@@ -94,6 +110,13 @@ def test_frontend_arms_take_the_fingerprint_from_the_job_input():
             if "sfe_args" in text:
                 assert "fingerprint" in JI.kinds_of(doc), n
                 fp = doc["job_inputs"]["fingerprint"]["args"]
+                # fixed to what the frontend role's argv implies: no --trust_remote_code
+                # (trtllm-serve's default false) and no tokenizer_mode in a --config (auto)
                 assert fp == ["--tokenizer", "{param:tokenizer_dir}", "--trust-remote-code",
-                              "{param:trust_remote_code}", "--tokenizer-mode",
-                              "{param:tokenizer_mode}"], n
+                              "false", "--tokenizer-mode", "auto"], n
+                assert not {"trust_remote_code", "tokenizer_mode"} & set(
+                    doc["params_required"]), n
+                fe = {r["role"]: r for r in doc["roles"]}["frontend"]["args"]
+                assert not any(isinstance(x, str) and x.startswith(("--trust_remote_code",
+                                                                    "--config"))
+                               for x in fe), n

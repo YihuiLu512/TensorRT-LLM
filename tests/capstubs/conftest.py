@@ -85,3 +85,85 @@ def write_reqbytes(launch, pb2=None, name="reqbytes.json"):
 
 def spb_args(prebaked_path, *extra):
     return ["--workers", "1", "--prebaked", prebaked_path] + list(extra)
+
+
+# A stand-in for fake_openengine.py in S-PB's frontend mode. The names S-PB takes from the real
+# module (probe-tree tests/unittest/grpc/openengine_client): _parse_args, _profile_from_args,
+# FakeEngine(profile, tokens_per_step=, step_delay=, record=), _Control(engine), _Health(engine),
+# openengine_pb2_grpc.add_ControlServicer_to_server and
+# health_pb2_grpc.add_HealthServicer_to_server. The real module needs the product package, so this
+# stand-in answers Control/GetServerInfo with what S-PB handed it, as raw bytes.
+STANDIN = '''
+import argparse
+import dataclasses
+import json
+import types
+
+import grpc
+
+
+@dataclasses.dataclass
+class Prof:
+    fields: dict
+
+
+def _parse_args(argv):
+    p = argparse.ArgumentParser()
+    p.add_argument("--profile", default="trtllm-like")
+    p.add_argument("--model")
+    p.add_argument("--max-context-length", type=int)
+    p.add_argument("--vocab-size", type=int)
+    p.add_argument("--eos-token-ids", type=int, nargs="+")
+    p.add_argument("--profile-json")
+    return p.parse_args(argv)
+
+
+def _profile_from_args(args):
+    return Prof(dict(vars(args)))
+
+
+class FakeEngine:
+    def __init__(self, profile, tokens_per_step=1, step_delay=0.0, record=True):
+        self.profile, self.knobs = profile, [tokens_per_step, step_delay, record]
+
+
+class _Control:
+    def __init__(self, engine):
+        self.engine = engine
+
+
+class _Health:
+    def __init__(self, engine):
+        self.engine = engine
+
+
+class _Routes(grpc.GenericRpcHandler):
+    def __init__(self, routes):
+        self.routes = routes
+
+    def service(self, details):
+        return self.routes.get(details.method)
+
+
+def _unary(fn):
+    return grpc.unary_unary_rpc_method_handler(fn, request_deserializer=None,
+                                               response_serializer=None)
+
+
+def _add_control(servicer, server):
+    async def info(request, context):
+        e = servicer.engine
+        return json.dumps({"profile": e.profile.fields, "knobs": e.knobs}).encode()
+    server.add_generic_rpc_handlers([_Routes({"/openengine.v1.Control/GetServerInfo":
+                                              _unary(info)})])
+
+
+def _add_health(servicer, server):
+    async def check(request, context):
+        return b"SERVING"
+    server.add_generic_rpc_handlers([_Routes({"/grpc.health.v1.Health/Check": _unary(check)})])
+
+
+openengine_pb2_grpc = types.SimpleNamespace(add_ControlServicer_to_server=_add_control)
+health_pb2_grpc = types.SimpleNamespace(add_HealthServicer_to_server=_add_health)
+'''

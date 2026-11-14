@@ -4,7 +4,12 @@
 the REAL generators (capstubs.prebaked, capgrpc.reqbytes openengine; the pb2 module is the test
 double oe_double) for a scenario that declares them, then python -m caplaunch starts S-PB and
 capgrpc.load --request-format openengine with --job-input, the way capjobs.launches does in a
-job. The judge's job-input check and C10's stub-module item then read the finished tree."""
+job. The judge's job-input check and C10's stub-module item then read the finished tree, in
+Generate-only mode and in frontend mode (--sfe-module = a stand-in S-FE module listed in the
+overlay manifest's stub_modules). The child processes get PYTHONPATH here; in a job the overlay
+is installed into site-packages instead (errata B2B-14)."""
+
+import hashlib
 
 import json
 import os
@@ -12,7 +17,9 @@ import shutil
 import subprocess
 import sys
 
-from conftest import HERE, METHOD, TOOLS, g, per_tier, total
+import pytest
+
+from conftest import HERE, METHOD, STANDIN, TOOLS, g, per_tier, total
 from capcommon import expect
 from capcommon.hashing import sha256_file
 from capcommon.runtree import read_state
@@ -32,7 +39,7 @@ def _role(name, module, args, backlog, start_after=()):
             "snapshots": "all", "args": args, "env": {}, "proc_kinds": [], "module": module}
 
 
-def _workdir(tmp):
+def _workdir(tmp, frontend=False):
     W = os.path.join(tmp, "W")
     os.makedirs(os.path.join(W, "reg"))
     tt_doc = g.table_doc([("warmup", 400, 25.0, {"n": 5}), ("drain", 300, 0.0, {}),
@@ -43,10 +50,11 @@ def _workdir(tmp):
                    TierTable.load(os.path.join(W, "reg", "tiers.json")), 100000)
     with open(os.path.join(W, "reg", "prompts.json"), "w") as f:
         json.dump(g.prompts_doc(), f)
+    sfe = ["--sfe-module", "{param:sfe_module}", "--vocab-size", "151"] if frontend else []
     roles = [
         _role("spb", "capstubs.prebaked_server",
               ["--host", "127.0.0.1", "--port", "0", "--prebaked", "{input:prebaked}",
-               "--schedule", "{input:schedule}", "--lag-period-us", "1000"],
+               "--schedule", "{input:schedule}", "--lag-period-us", "1000"] + sfe,
               ["backlog.pending_msgs", "backlog.active_streams", "backlog.yielded"]),
         _role("drain", "capgrpc.load",
               ["--target-port-file", "{port_file:spb}", "--method", METHOD,
@@ -64,7 +72,8 @@ def _workdir(tmp):
                  "hops": [{"role": "drain", "source": "summary.counts.ok", "scope": "tier"},
                           {"role": "spb", "source": "summary.counts.streams_accepted",
                            "scope": "tier"}], "corrections": []}]},
-            "roles": roles, "params_required": ["token_ids"],
+            "roles": roles,
+            "params_required": ["token_ids"] + (["sfe_module"] if frontend else []),
             "dims": {"tokenizer": None, "stub": "S-PB", "response_timing_switches": None,
                      "interpretation": "test", "log_sink": "file"},
             "job_inputs": {
@@ -91,9 +100,18 @@ def _workdir(tmp):
                        "spb": {"cpus": [cpus[0]], "numa_node": 0},
                        "drain": {"cpus": [cpus[1]], "numa_node": 0}}, "unassigned": []}, f)
     shutil.copy2(shutil.which("sleep"), os.path.join(W, "nvsmi"))
+    stubs = []
+    if frontend:  # the snapshot's copy of the S-FE module, as capprobe.overlay lists it
+        data = STANDIN.encode()
+        with open(os.path.join(W, "fake_openengine.py"), "wb") as f:
+            f.write(data)
+        stubs = [{"key": "sfe", "repo_path": "tests/fake_openengine.py", "commit": ZERO,
+                  "src": "exp/tests/fake_openengine.py",
+                  "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)}]
     with open(os.path.join(W, "overlay_manifest.json"), "w") as f:
         json.dump({"schema": "capkit.overlay/1", "tier": "P0", "groups": [], "files": [],
-                   "capkit_packages": [], "capkit_code_sha": ZERO, "sites": {}}, f)
+                   "capkit_packages": [], "capkit_code_sha": ZERO, "sites": {},
+                   "stub_modules": stubs}, f)
     os.makedirs(os.path.join(W, "jobenv"))
     return W, files
 
@@ -119,12 +137,16 @@ def _summaries(T, role):
     return out
 
 
-def test_spb_job_path_with_generated_job_inputs(tmp_path):
-    W, files = _workdir(str(tmp_path))
+@pytest.mark.parametrize("frontend", [False, True], ids=["generate_only", "frontend"])
+def test_spb_job_path_with_generated_job_inputs(tmp_path, frontend):
+    W, files = _workdir(str(tmp_path), frontend)
+    params = ["--param", "token_ids=11,12,13"]
+    if frontend:
+        params += ["--param", "sfe_module=%s" % os.path.join(W, "fake_openengine.py")]
     gen = os.path.join(str(tmp_path), "job", "job_inputs", "L0")
     r = subprocess.run([sys.executable, "-m", "capjobs.jobinputs", "--workdir", W, "--scenario",
-                        "reg/scenario.json", "--python", sys.executable, "--out-dir", gen,
-                        "--param", "token_ids=11,12,13"], env=_env(TOOLS, HERE),
+                        "reg/scenario.json", "--python", sys.executable, "--out-dir", gen]
+                       + params, env=_env(TOOLS, HERE),
                        capture_output=True, text=True, timeout=120)
     assert r.returncode == 0, r.stderr
     job_args = r.stdout.split()
@@ -145,8 +167,7 @@ def test_spb_job_path_with_generated_job_inputs(tmp_path):
             "--snapshot-dir", "none", "--image-path", "none", "--image-sha256", "none",
             "--hw-profile-sha", "none", "--overlay-manifest",
             os.path.join(W, "overlay_manifest.json"), "--nvidia-smi", os.path.join(W, "nvsmi"),
-            "--job-env-dir", os.path.join(W, "jobenv"), "--param", "token_ids=11,12,13"] \
-        + job_args
+            "--job-env-dir", os.path.join(W, "jobenv")] + params + job_args
     r = subprocess.run(argv, env=_env(TOOLS), capture_output=True, text=True, timeout=180)
     assert r.returncode == 0, r.stderr
     assert [s[1] for s in read_state(T)] == ["VALID"], read_state(T)
@@ -175,5 +196,12 @@ def test_spb_job_path_with_generated_job_inputs(tmp_path):
     ctx.launch, ctx.register_files = L, files
     JIN._load_job_inputs(ctx)
     ctx.roles = roles
-    out = JC.stub_module_problems(ctx, LaunchData(ctx))
-    assert out == {"expected": 1, "checked": 1, "problems": []}  # Generate-only: no control
+    ld = LaunchData(ctx)
+    out = JC.stub_module_problems(ctx, ld)
+    assert out == {"expected": 1, "checked": 1, "problems": []}
+    info, why = ld.ready_tool_info("spb")
+    assert why is None
+    if frontend:  # the sha S-PB reported equals the manifest's stub module sfe
+        assert info["control"]["sha256"] == ld.overlay["stub_modules"][0]["sha256"]
+    else:
+        assert info["control"] is None

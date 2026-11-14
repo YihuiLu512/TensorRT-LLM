@@ -597,9 +597,11 @@ SPB_MODULE = "capstubs.prebaked_server"
 
 def stub_module_problems(ctx, ld):
     """S-PB in frontend mode (errata B2B-11, D16): a capstubs.prebaked_server role started with
-    --sfe-module must report in its ready file (info.control.sha256) the sha256 of the overlay
-    manifest's stub module "sfe" (the base-commit export); one without it must report no control.
-    One expected item per S-PB role."""
+    --sfe-module must report in its ready file (tool info control.sha256, read through
+    LaunchData.ready_tool_info: info.workers[0].info) the sha256 of the overlay manifest's stub
+    module "sfe" (the base-commit export); one without it must report control null. A ready
+    file that is missing, not of that shape or without the control key is a problem in either
+    mode. One expected item per S-PB role."""
     out = {"expected": 0, "checked": 0, "problems": []}
     want = None
     for e in (ld.overlay or {}).get("stub_modules") or []:
@@ -612,11 +614,13 @@ def stub_module_problems(ctx, ld):
         args = role.get("args") or []
         frontend = any(isinstance(a, str) and a.split("=", 1)[0] == "--sfe-module"
                        for a in args)
-        ready = ld.ready_doc(name)
-        if not isinstance(ready, dict):
-            out["problems"].append("role %s: no ready file" % name)
+        info, why = ld.ready_tool_info(name)
+        if why is None and "control" not in info:
+            why = "ready file tool info has no control key"
+        if why is not None:
+            out["problems"].append("role %s: %s" % (name, why))
             continue
-        control = (ready.get("info") or {}).get("control")
+        control = info["control"]
         if not frontend:
             if control is not None:
                 out["problems"].append("role %s: control %r without --sfe-module" % (name,

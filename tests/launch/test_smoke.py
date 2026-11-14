@@ -63,11 +63,45 @@ def test_httpprobe_counts_frames_and_empty_deltas(tmp_path):
         srv.shutdown()
         srv.server_close()
     assert rc == 0 and len(doc["results"]) == 2
+    assert os.listdir(str(tmp_path / "tree" / "raw")) == ["httpprobe.json"]  # no started file
     r = doc["results"][0]
     assert r["status"] == 200 and r["done_seen"] and not r["crlf_seen"]
     assert r["n_frames_excl_done"] == 4 == r["ssecounter"]["frames"]
     assert r["n_empty_text_frames"] == 1  # the "" delta; the usage-only frame has no choices
     assert [f.get("text_len") for f in r["frames"][:3]] == [1, 0, 1]
+
+
+def test_httpprobe_started_file_is_written_before_the_first_request(tmp_path):
+    """--started-file (readiness when the answers only come after the origin, errata B2B-13):
+    an identity-stamped file written before any request is sent; --result still follows the
+    answers. Without the flag nothing else is written (e0c unchanged)."""
+    started = tmp_path / "tree" / "raw" / "httpprobe.started.json"
+    seen = []
+
+    class _Check(_Sse):
+        def do_POST(self):  # noqa: N802
+            seen.append(started.exists())
+            super().do_POST()
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Check)
+    th = threading.Thread(target=srv.serve_forever, daemon=True)
+    th.start()
+    reqs = tmp_path / "reqs.json"
+    reqs.write_text(json.dumps([{"name": "c", "endpoint": "/v1/completions", "body": {}}]))
+    out = tmp_path / "tree" / "raw" / "httpprobe.json"
+    out.parent.mkdir(parents=True)
+    try:
+        rc = httpprobe.main(_ident() + ["--addr", "127.0.0.1:%d" % srv.server_address[1],
+                                        "--requests", str(reqs), "--timeout-s", "5",
+                                        "--result", str(out), "--started-file", str(started)])
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert rc == 0 and seen == [True]
+    doc = json.loads(started.read_text())
+    assert doc["schema"] == "capkit.httpprobe_started/1" and doc["n_requests"] == 1
+    assert doc["identity"]["role"] == "httpprobe" and doc["identity"]["pid"] == os.getpid()
+    assert json.loads(out.read_text())["results"][0]["status"] == 200
 
 
 def test_httpprobe_connection_refused_is_an_error(tmp_path):

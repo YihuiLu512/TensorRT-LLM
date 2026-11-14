@@ -104,11 +104,13 @@ w("e0a-nullsse.scenario.json", scen("e0a-nullsse", a1,
 
 # ---------------- (a) capload -> real new-arch frontend -> S-FE ----------------
 # The S-FE fingerprint arguments: a job input (capcommon.jobinputs) built in the job after the
-# gate by python -m capstubs.fingerprint with the frontend's tokenizer settings (SEAMS SM-6).
+# gate by python -m capstubs.fingerprint (SEAMS SM-6). Its tokenizer settings are fixed to what
+# the frontend roles' argv implies: no --trust_remote_code (trtllm-serve's default false) and no
+# --config setting tokenizer_mode (auto). Change both together: a frontend role that gains
+# --trust_remote_code or a tokenizer_mode needs the same values here.
 FP_INPUT = {"fingerprint": {"args": ["--tokenizer", "{param:tokenizer_dir}",
-                                     "--trust-remote-code", "{param:trust_remote_code}",
-                                     "--tokenizer-mode", "{param:tokenizer_mode}"]}}
-FP_PARAMS = ["trust_remote_code", "tokenizer_mode"]
+                                     "--trust-remote-code", "false",
+                                     "--tokenizer-mode", "auto"]}}
 recon_a2 = {"schema": "capkit.reconcile/1", "chains": [
     {"name": "requests", "kind": "requests", "gate": None, "include_usage": None,
      "hops": [{"role": "capload", "source": "summary.counts.ok", "scope": "tier"}],
@@ -151,7 +153,7 @@ a2 = [
 w("e0a-frontend-sfe.scenario.json", scen("e0a-frontend-sfe", a2,
   ["capload", "frontend", "sfe", "sidecar", "canary"],
   ["python", "sfe_script", "sfe_model", "sfe_max_context_length", "sfe_tokens_per_step",
-   "sfe_step_delay_s", "trtllm_serve", "tokenizer_dir"] + FP_PARAMS
+   "sfe_step_delay_s", "trtllm_serve", "tokenizer_dir"]
   + CAPLOAD_PARAMS + OBS_PARAMS, recon_a2,
   "S-FE (fake_openengine.py, zero changes)", tok="TBD-by-registration (configs/tokenizers/<name>)",
   job_inputs=FP_INPUT,
@@ -339,7 +341,7 @@ w("e0c-frontend-http.scenario.json", scen("e0c-frontend-http", [sfe_c, fe_c, pro
   ["capload", "httpprobe", "frontend", "sfe"],
   ["python", "sfe_script", "sfe_model", "sfe_max_context_length", "sfe_tokens_per_step",
    "sfe_step_delay_s", "trtllm_serve", "tokenizer_dir",
-   "httpprobe_requests_json", "httpprobe_timeout_s"] + FP_PARAMS + CAPLOAD_PARAMS, recon_c,
+   "httpprobe_requests_json", "httpprobe_timeout_s"] + CAPLOAD_PARAMS, recon_c,
   "S-FE (fake_openengine.py, zero changes)", tok="TBD-by-registration (configs/tokenizers/<name>)",
   job_inputs=FP_INPUT,
   note="E0 (c): real tokenizer + frontend + S-FE answer /v1/completions and "

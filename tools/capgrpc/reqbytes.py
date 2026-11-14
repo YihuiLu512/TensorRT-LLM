@@ -182,12 +182,15 @@ def build_openengine(pb2, prompts_doc, tier_table, model, method=None, source=No
 
 
 def import_pb2(module_name):
-    """Import the product's generated module, or exit 3 (CONFIG) when it is not available."""
+    """Import the product's generated module; any exception while importing it (not only a
+    missing product package) is exit 3 (CONFIG). A failed import leaves no module behind."""
     try:
         return importlib.import_module(module_name)
-    except ImportError as e:
+    except (Exception, SystemExit) as e:  # noqa: BLE001 - whatever it raises, exit 3
+        sys.modules.pop(module_name, None)
         raise ConfigError("cannot import %s (the openengine builder runs only where the "
-                          "product package is installed): %s" % (module_name, e))
+                          "product package is installed): %s: %s"
+                          % (module_name, type(e).__name__, e))
 
 
 def main(argv=None):

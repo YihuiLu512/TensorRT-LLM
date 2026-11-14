@@ -50,9 +50,11 @@ def main(argv=None):
     p.add_argument("--tokenizer", required=True, help="tokenizer copy (model dir, no weights)")
     p.add_argument("--out", required=True)
     p.add_argument("--trust-remote-code", required=True, choices=("true", "false"),
-                   help="must equal the frontend's setting")
+                   help="must equal the frontend's (trtllm-serve --trust_remote_code; "
+                        "default false)")
     p.add_argument("--tokenizer-mode", required=True, choices=("auto", "slow"),
-                   help="must equal the frontend's --tokenizer_mode")
+                   help="must equal the frontend's tokenizer_mode (trtllm-serve has no flag "
+                        "for it: auto unless its --config sets it)")
     a = p.parse_args(argv)
     if not os.path.isdir(a.tokenizer):
         print("fingerprint: --tokenizer %s is not a directory" % a.tokenizer, file=sys.stderr)
