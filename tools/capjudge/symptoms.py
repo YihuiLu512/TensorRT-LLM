@@ -7,9 +7,13 @@ per-tier part of the intervention test V enter through the `hooks` of evaluate_x
 "P+X+I+V": capjudge.localize and capjudge.intervene); without hooks (mode "P+X") they are
 NOT_REQUESTED.
 
-Statistic keys ("<T>:<quantity>:<role>") are listed in README.md; each tier's computed values
-are written to verdicts.json `stats` so the pilot builder can turn sub-saturation tiers into
-noise bands with exactly the same code path.
+Statistic keys ("<T>:<quantity>:<role>") are listed in README.md. Calibration v2 (calib-v2
+DESIGN-r7a 2.2, 2.9, P2-04): X2 / X3 compare the trend statistic z_d of each per-second series
+with the threshold capjudge.nullz gives for the key (a thresholds-stage pilot/2 key's thr_hi /
+thr_lo, or the bootstrap family constant), and X1 compares |norm - 1| with its tolerance. Every
+computed value is recorded whether or not a threshold exists: the raw-unit trend D and
+|norm - 1| in verdicts.json `stats`, z_d in `zstats` (a Record carries both); the calibration
+builders read them.
 """
 
 import bisect
@@ -17,12 +21,22 @@ import bisect
 from capcommon import expect
 from capcommon.schedule import BeatSchedule
 
-from . import stats
+from . import nullz, stats
 from .thresholds import band_key
 from .treedata import NS, per_second
 
 TRUE, FALSE, NOT_RUN = "TRUE", "FALSE", "NOT_RUN"
 NOT_REQUESTED = "NOT_REQUESTED"
+COUNT_QUANTUM = 1  # count family: integer readings (DESIGN-r7a 2.9)
+
+
+class Record(dict):
+    """The statistics one judged tier writes: the dict itself is verdicts.json `stats` (key ->
+    [values], raw units) and `z` is `zstats` (key -> [z_d])."""
+
+    def __init__(self):
+        super().__init__()
+        self.z = {}
 # Load-generator failure reasons that are connection failures (INTERFACES 5.4.1): never
 # overload-type, whatever the hint (design 2.6: a refused connection is non-overload; a failed
 # or reset connection is not a registered overload outcome either).
@@ -34,12 +48,9 @@ def _window(tier):
     return tier.window_start_ns, tier.window_end_ns
 
 
-def request_lag_series(rows, tier, which):
-    """Per-second median lag over the steady window, bucketed by planned time.
-
-    which: 'first' (first data frame - planned, successful requests) or 'send' (sent - planned,
-    every sent request)."""
-    ws, we = _window(tier)
+def request_lag_pairs(rows, tier, which):
+    """(planned times, lags) of the requests of `rows`. which: 'first' (first data frame -
+    planned, successful requests) or 'send' (sent - planned, every sent request)."""
     times, lags = [], []
     planned = rows.get("planned_rel_ns", [])
     status = rows.get("status", [])
@@ -50,16 +61,41 @@ def request_lag_series(rows, tier, which):
             continue
         times.append(p)
         lags.append(v - p)
+    return times, lags
+
+
+def request_lag_series(rows, tier, which):
+    """Per-second median lag over the steady window, bucketed by planned time (see
+    request_lag_pairs for `which`). Returns (series, every lag)."""
+    ws, we = _window(tier)
+    times, lags = request_lag_pairs(rows, tier, which)
     return per_second(times, lags, ws, we), lags
+
+
+def lag_series(times, lags, tier):
+    """(per-second median series of the steady window, level_switch_ratio of the same seconds:
+    a diagnostic, stats.level_switch_ratio)."""
+    ws, we = _window(tier)
+    return (per_second(times, lags, ws, we),
+            stats.level_switch_ratio(per_second(times, lags, ws, we, reducer=list)))
 
 
 def msg_lag_from_chunks(td, ctx, role, beat):
     """Message-level lag for SSE: join the receiver's chunks with the server's streams by req_id;
     content frame j is planned at BeatSchedule.planned_rel_ns(first_step + offsets[j]).
     Returns (series, n_used, reason_if_not_run)."""
+    times, lags, why = msg_lag_pairs_from_chunks(td, ctx, role, beat)
+    if why:
+        return None, 0, why
+    ws, we = _window(td.tier)
+    return per_second(times, lags, ws, we), len(lags), None
+
+
+def msg_lag_pairs_from_chunks(td, ctx, role, beat):
+    """(planned times, lags, reason_if_not_run) of the SSE content frames (msg_lag_from_chunks)."""
     chunks, _ = td.rows("loadgen.chunks", role)
     if not chunks.get("req_id"):
-        return None, 0, "no chunks"
+        return None, None, "no chunks"
     streams, _ = td.rows("server.streams")
     first_step = dict(zip(streams.get("req_id", []), streams.get("first_step", [])))
     t = td.tier
@@ -67,8 +103,7 @@ def msg_lag_from_chunks(td, ctx, role, beat):
         offsets = expect.msg_step_offsets(t.max_tokens, t.tokens_per_msg, t.stream_interval,
                                           "product")
     except expect.ExpectError as e:
-        return None, 0, str(e)
-    ws, we = _window(t)
+        return None, None, str(e)
     times, lags, asap, unjoined = [], [], 0, 0
     for rid, idx, recv in zip(chunks["req_id"], chunks["idx"], chunks["recv_rel_ns"]):
         fs = first_step.get(rid)
@@ -88,26 +123,41 @@ def msg_lag_from_chunks(td, ctx, role, beat):
         times.append(planned)
         lags.append(recv - planned)
     if asap:
-        return None, 0, "asap pacing (no planned step), INTERFACES 3.4"
+        return None, None, "asap pacing (no planned step), INTERFACES 3.4"
     if unjoined:
-        return None, 0, "%d chunk rows without a server stream / step" % unjoined
-    return per_second(times, lags, ws, we), len(lags), None
+        return None, None, "%d chunk rows without a server stream / step" % unjoined
+    return times, lags, None
 
 
 def msg_lag_from_msgs(td, role):
+    times, lags, why = msg_lag_pairs_from_msgs(td, role)
+    if why:
+        return None, 0, why
+    ws, we = _window(td.tier)
+    return per_second(times, lags, ws, we), len(lags), None
+
+
+def msg_lag_pairs_from_msgs(td, role):
+    """(planned times, lags, reason_if_not_run) of a drain role's received messages."""
     rows, _ = td.rows("drain.msgs", role)
     if not rows.get("planned_rel_ns"):
-        return None, 0, "no msgs"
-    ws, we = _window(td.tier)
+        return None, None, "no msgs"
     lags = [r - p for p, r in zip(rows["planned_rel_ns"], rows["recv_rel_ns"])]
-    return per_second(rows["planned_rel_ns"], lags, ws, we), len(lags), None
+    return list(rows["planned_rel_ns"]), lags, None
 
 
-def delivery_ratio(rows, tier):
+def delivery_counts(rows, tier):
+    """(offered, delivered) in the steady window: requests planned in it, successful requests
+    done in it."""
     ws, we = _window(tier)
     offered = sum(1 for p in rows.get("planned_rel_ns", []) if ws <= p < we)
     delivered = sum(1 for d, s in zip(rows.get("done_rel_ns", []), rows.get("status", []))
                     if s == 0 and ws <= d < we)
+    return offered, delivered
+
+
+def delivery_ratio(rows, tier):
+    offered, delivered = delivery_counts(rows, tier)
     if offered == 0:
         return None
     return delivered / offered
@@ -201,37 +251,80 @@ def reclassify_failure(role, failure, measure_class=None):
     return "non_overload", hint if hint == "non_overload" else "unclassified"
 
 
-def _trend(series, key, bands, record):
-    """T1 on a per-second series against the band of `key`. Returns (direction, entry):
-    direction 'above' (positive trend outside the band), 'below', 'inside', or None (NOT_RUN)."""
-    res = stats.t1_trend(series) if series is not None else None
-    band = bands.get(key)
-    entry = {"key": key, "D": None if res is None else res[0], "band": band,
-             "n_seconds": len(series) if series is not None else 0}
-    if res is not None:
-        record.setdefault(key, []).append(res[0])
-    if res is None:
-        entry["status"] = NOT_RUN
-        entry["reason"] = "fewer than one value in a half of the window"
+def _threshold(ctx, key, regime):
+    """capjudge.nullz entry of `key` for this arm's threshold configuration in `regime`, or
+    None (no source for it)."""
+    return ctx.thresholds.get(key, ctx.threshold_config, regime)
+
+
+def _th_summary(th):
+    if th is None:
+        return None
+    return {k: v for k, v in th.items() if k != "source"}
+
+
+def _trend_z(series, key, th, family, record):
+    """X2 / X3 on one per-second series (DESIGN-r7a 2.2, P2-04). Returns (direction, entry):
+    'above' / 'below' / 'inside', or None (NOT_RUN: z_d not computable, no threshold source for
+    the key, or the key uncalibrated).
+
+    z_d = stats.zd(series) (count family with quantum COUNT_QUANTUM); the comparison is
+    nullz.compare (thresholds stage: z > thr_hi above, z < thr_lo below; bootstrap lag
+    constant: z >= z and D >= min_D_ns above; bootstrap count constant: z > z above, z < -z
+    below). Recorded whatever the threshold: the raw-unit trend D (stats.t1_trend) in
+    record[key] and z_d in record.z[key], each when computable."""
+    if family not in nullz.FAMILIES:
+        raise ValueError("%s: X2 / X3 key of family %r" % (key, family))
+    t1 = stats.t1_trend(series) if series is not None else None
+    if t1 is not None:
+        record.setdefault(key, []).append(t1[0])
+    res = stats.zd(series, quantum=COUNT_QUANTUM if family == "count" else None) \
+        if series is not None else stats.NotRun("no series")
+    entry = {"key": key, "family": family, "D": None if t1 is None else t1[0],
+             "n_seconds": len(series) if series is not None else 0,
+             "threshold": _th_summary(th)}
+    if isinstance(res, stats.NotRun):
+        entry.update(z=None, status=NOT_RUN, reason="z_d not computable: %s" % res.reason)
         return None, entry
-    if band is None:
-        entry["status"] = NOT_RUN
-        entry["reason"] = "no registered band for %s" % key
+    record.z.setdefault(key, []).append(res["z"])
+    entry.update(z=res["z"], sigma=res["sigma"], n1=res["n1"], n2=res["n2"])
+    if th is None:
+        entry.update(status=NOT_RUN, reason="no threshold source for %s" % key)
         return None, entry
-    d = stats.compare_to_band(res[0], band)
+    d = nullz.compare(res["z"], th, D=res["D"])
+    if d is None:
+        entry.update(status=NOT_RUN, reason="%s is uncalibrated (%s)" % (key, th.get("key")))
+        return None, entry
     entry["status"] = d
     return d, entry
 
 
+def _x2(ctx, regime, record, out, x2_dirs, key, times, lags, tier, extra=None, why=None):
+    """One X2 lag series: z_d against the key's threshold; level_switch_ratio as a
+    diagnostic."""
+    series, lsr = (None, None) if why else lag_series(times, lags, tier)
+    d, e = _trend_z(series, key, _threshold(ctx, key, regime), "lag", record)
+    e.update(extra or {})
+    e["level_switch_ratio"] = None if lsr is None or isinstance(lsr, stats.NotRun) else lsr
+    if why:
+        e.update(status=NOT_RUN, reason=why)
+        d = None
+    out["X2"].append(e)
+    x2_dirs.append(d)
+
+
 def evaluate_x(ctx, ld, td, base_td, record, hooks=None):
-    """X for one load tier. `record` collects every computed statistic (key -> [values]).
+    """X for one load tier. `record` (a Record) collects every computed statistic: raw values
+    (key -> [values]) and z_d (record.z).
 
     Returns a dict: X2/X1/X3 entries, overload_failures, holds (True/False/None=NOT_RUN),
     contradiction (list), reasons, and I / V: hooks["I"](x) and hooks["V"]() when given (judge
     mode P+X+I+V), else {"status": NOT_REQUESTED}."""
+    if not isinstance(record, Record):
+        raise TypeError("evaluate_x needs a symptoms.Record (stats and zstats)")
     tier = td.tier
     beat = BeatSchedule(ctx.tt)
-    bands = ctx.bands.view(ctx.tier_regime[tier.seq])
+    regime = ctx.tier_regime[tier.seq]
     out = {"X2": [], "X1": [], "X3": [], "reasons": []}
     fails = failures_by_class(td, getattr(ctx, "roles", None))
     out["failures_by_category"] = fails["by_category"]
@@ -240,61 +333,58 @@ def evaluate_x(ctx, ld, td, base_td, record, hooks=None):
     x2_dirs = []
     for role in load_roles:
         rows, _ = td.rows("loadgen.requests", role)
-        series, _ = request_lag_series(rows, tier, "first")
-        d, e = _trend(series, band_key("T1", "req_first_lag_p50_ns", role), bands, record)
-        e["layer"] = "request"
-        out["X2"].append(e)
-        x2_dirs.append(d)
+        t, lg = request_lag_pairs(rows, tier, "first")
+        _x2(ctx, regime, record, out, x2_dirs, band_key("T1", "req_first_lag_p50_ns", role),
+            t, lg, tier, {"layer": "request"})
         if ctx.roles.get(role, {}).get("measure_class") == "under_test":
-            series, _ = request_lag_series(rows, tier, "send")
-            d, e = _trend(series, band_key("T1", "send_lag_p50_ns", role), bands, record)
-            e["layer"] = "send"
-            out["X2"].append(e)
-            x2_dirs.append(d)
+            t, lg = request_lag_pairs(rows, tier, "send")
+            _x2(ctx, regime, record, out, x2_dirs, band_key("T1", "send_lag_p50_ns", role),
+                t, lg, tier, {"layer": "send"})
         if tier.beat_ns > 0 and td.rows("loadgen.chunks", role)[0].get("req_id"):
-            series, n, why = msg_lag_from_chunks(td, ctx, role, beat)
-            d, e = _trend(series, band_key("T1", "msg_lag_p50_ns", role), bands, record)
-            e.update({"layer": "message", "n_msgs": n})
-            if why:
-                e.update({"status": NOT_RUN, "reason": why})
-                d = None
-            out["X2"].append(e)
-            x2_dirs.append(d)
+            t, lg, why = msg_lag_pairs_from_chunks(td, ctx, role, beat)
+            _x2(ctx, regime, record, out, x2_dirs, band_key("T1", "msg_lag_p50_ns", role),
+                t, lg, tier, {"layer": "message", "n_msgs": 0 if why else len(lg)}, why)
     for role in td.roles_with("drain.msgs"):
-        series, n, why = msg_lag_from_msgs(td, role)
-        d, e = _trend(series, band_key("T1", "msg_lag_p50_ns", role), bands, record)
-        e.update({"layer": "message", "n_msgs": n})
-        out["X2"].append(e)
-        x2_dirs.append(d)
+        t, lg, why = msg_lag_pairs_from_msgs(td, role)
+        _x2(ctx, regime, record, out, x2_dirs, band_key("T1", "msg_lag_p50_ns", role),
+            t, lg, tier, {"layer": "message", "n_msgs": 0 if why else len(lg)}, why)
     # X1 / X3 (reconciliation quantities)
     x1_dirs, x3_dirs = [], []
     for role in load_roles:
         rows, _ = td.rows("loadgen.requests", role)
-        r = delivery_ratio(rows, tier)
+        offered, delivered = delivery_counts(rows, tier)
+        r = delivered / offered if offered else None
         b = delivery_ratio(base_td.rows("loadgen.requests", role)[0], base_td.tier) \
             if base_td is not None else None
         key = band_key("T2", "delivery_ratio_norm", role)
         norm = None if (r is None or not b) else r / b
+        dev = None if norm is None else abs(norm - 1)
         if norm is not None and base_td is not td:
             # the baseline tier's own normalised ratio is 1 by construction, not a sample
-            record.setdefault(key, []).append(norm)
-        band = bands.get(key)
-        e = {"key": key, "ratio": r, "baseline_ratio": b, "normalised": norm, "band": band}
-        if norm is None or band is None:
+            record.setdefault(key, []).append(dev)
+        th = _threshold(ctx, key, regime)
+        e = {"key": key, "ratio": r, "baseline_ratio": b, "normalised": norm, "abs_dev": dev,
+             "planned_requests": offered, "threshold": _th_summary(th)}
+        d = None if norm is None or th is None else nullz.compare(
+            norm - 1, th, planned_requests=offered)
+        if d is None:
             e["status"] = NOT_RUN
-            e["reason"] = "no baseline tier ratio" if norm is None else "no registered band"
-            x1_dirs.append(None)
+            e["reason"] = ("no baseline tier ratio" if norm is None else
+                           "no threshold source for %s" % key if th is None else
+                           "%s is uncalibrated" % key)
         else:
-            e["status"] = stats.compare_to_band(norm, band)
-            x1_dirs.append(e["status"])
+            e["status"] = d
+        x1_dirs.append(d)
         out["X1"].append(e)
-        d, e = _trend(inflight_series(rows, tier), band_key("T1", "inflight_derived", role),
-                      bands, record)
+        key = band_key("T1", "inflight_derived", role)
+        d, e = _trend_z(inflight_series(rows, tier), key, _threshold(ctx, key, regime),
+                        "count", record)
         out["X3"].append(e)
         x3_dirs.append(d)
     for role in sorted(ctx.roles):
         for slot, series in gauge_series(ld, td, role).items():
-            d, e = _trend(series, band_key("T1", slot, role), bands, record)
+            key = band_key("T1", slot, role)
+            d, e = _trend_z(series, key, _threshold(ctx, key, regime), "count", record)
             out["X3"].append(e)
             x3_dirs.append(d)
     out = _combine(out, x2_dirs, x1_dirs, x3_dirs)
@@ -307,7 +397,7 @@ def evaluate_x(ctx, ld, td, base_td, record, hooks=None):
 def _combine(out, x2_dirs, x1_dirs, x3_dirs):
     """X2 holds if any lag series trends upward outside its band; it is NOT_RUN if none does
     and any series could not be evaluated. At least one reconciliation quantity must be
-    computed. Contradiction (VOID), symmetric:
+    computed. Contradiction (the judge gives the tier CONTRA), symmetric:
       X2 true  and (X1 significantly above its band, or X3 significantly below its band);
       X2 false and (X1 significantly below its band, or X3 significantly above its band)."""
     if not x2_dirs:

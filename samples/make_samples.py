@@ -334,7 +334,7 @@ class Builder:
                       "scenario": self.register_file(sn_rel, "scenario")}
         if self.opts.get("calibration_entries") is not None:
             calibration = self.copied_calibration()
-        elif self.opts.get("calib_v2"):
+        elif not self.opts.get("calib_v1"):
             calibration = self.build_v2_calibration()
         else:
             pilot = self.register_file(pi_rel, "pilot")
@@ -378,10 +378,13 @@ class Builder:
     def build_v2_calibration(self):
         """opts calib_v2 = {"stage": "bootstrap" | "thresholds", "configs": [...] (thresholds:
         configurations with a null_z key), "d14_env": {...} (environment overrides of
-        e0_d14.json), "d14": False (no d14_result)}: a registered d14_result and pilot/2
-        instead of the v1 pilot.json."""
-        W, cv = self.W, self.opts["calib_v2"]
-        rule_rel = "register/d14_rule.json"
+        e0_d14.json), "d14": False (no d14_result), "pilot": False (no pilot/2: V0-cal),
+        "bootstrap_set": {"<dotted path>": value} (bootstrap pilot/2 overrides)}: a
+        registered d14_result and pilot/2. The default of every sample (absent calib_v2: a
+        bootstrap pilot/2 with the r6 design constants); opts calib_v1 registers the v1
+        pilot.json instead (rejected by the judge, calib-v2 erratum)."""
+        W, cv = self.W, self.opts.get("calib_v2") or {}
+        rule_rel = "register/d14_rule.sample.json"  # not register/d14_rule.json (tests' rule)
         write_plain(os.path.join(W, rule_rel), {"schema": "capkit.d14_rule/1", "synthetic": True})
         rule = self.register_file(rule_rel, "d14_rule")
         d14_rel = "register/e0_d14.json"
@@ -398,7 +401,14 @@ class Builder:
                "synthetic": True, "environment": dict(ENV, judge_sha="b" * 40),
                "d14": dict(d14), "inputs": [], "c13_cap": C13_CAP}
         if stage == "bootstrap":
-            doc.update(BOOTSTRAP, select="capjudge.pilot.select_tiers", rule="synthetic")
+            doc.update(json.loads(json.dumps(BOOTSTRAP)), select="capjudge.pilot.select_tiers",
+                       rule="synthetic")
+            for path, value in (cv.get("bootstrap_set") or {}).items():
+                *head, last = path.split(".")
+                d = doc
+                for k in head:
+                    d = d[k]
+                d[last] = value
         else:
             doc.update(window_ns=60 * S, ratio={}, null_z={
                 "%s|%s|%s|L=60" % (NULL_Z_STAT, cfg, rg): {
@@ -407,7 +417,8 @@ class Builder:
                 i1_calibration={"near_one_core_min": I1_NEAR_ONE, "source_tiers": [], "n": 1})
         p2_rel = "register/pilot2.json"
         write_plain(os.path.join(W, p2_rel), doc)
-        out = [dict(self.register_file(p2_rel, "pilot"), kind="pilot")]
+        out = [dict(self.register_file(p2_rel, "pilot"), kind="pilot")] \
+            if cv.get("pilot", True) else []
         if cv.get("d14", True):
             out.append(dict(d14, kind="d14_result"))
         return out
@@ -583,6 +594,20 @@ class Builder:
             for tid, _c, _i, rate in ths:
                 v = self.ticks_at(pid, tid, rate, t)
                 n += v // len(cs) + (v % len(cs) if cpu == cs[0] else 0)
+        return n
+
+    def foreign_ticks(self, t):
+        """opts c13_foreign_rate = {"<tier seq>" | "all": fraction}: cumulative foreign busy
+        ticks on nullsse's core 4 up to row time t, `fraction` x CLK per second inside that
+        tier's steady window (every second for "all")."""
+        rate = self.opts["c13_foreign_rate"]
+        wins = {str(x.seq): (x.window_start_ns, x.window_end_ns) for x in self.tt.tiers}
+        n = 0
+        for j in range(-1, t // S):
+            for k, frac in rate.items():
+                lo, hi = wins[k] if k != "all" else (j * S, (j + 1) * S)
+                if lo <= j * S < hi:
+                    n += round(frac * CLK)
         return n
 
     def build_tree(self):
@@ -1002,6 +1027,8 @@ class Builder:
                     user = self.core_ticks(cpu, t)
                     if self.opts.get("c13_foreign") and cpu == 4:
                         user += 30 * n
+                    if self.opts.get("c13_foreign_rate") and cpu == 4:
+                        user += self.foreign_ticks(t)
                     w.write_row([t, cpu, user, 0, 0, max(0, 100 * n - user - n), 0, 0, n, 0,
                                  2000000])
         with JsonlWriter(sc("gpu.jsonl"), "capkit.sidecar.gpu/1", self.ident("sidecar"),
@@ -1092,8 +1119,9 @@ SAMPLES = {
                                               "red_checks": ["RECORDS"]}),
     "probe_tier_mismatch": ({"probe_mismatch": True}, {"exit_code": 10, "tier_verdicts": {
         "2": "VOID", "4": "VOID"}, "red_checks": ["PROBE-TIER"]}),
-    "x_contradiction": ({"x_contradiction": True}, {"exit_code": 10, "tier_verdicts": {
-        "2": "STABLE", "4": "VOID"}, "red_checks": []}),
+    # a counter contradiction: tier CONTRA, never VOID (calib-v2 DESIGN-r7a P2-06)
+    "x_contradiction": ({"x_contradiction": True}, {"exit_code": 0, "tier_verdicts": {
+        "2": "STABLE", "4": "CONTRA"}, "red_checks": []}),
     "sat_overloaded_tier": ({"overload": True}, {"exit_code": 0, "tier_verdicts": {
         "2": "STABLE", "4": "UNSTABLE"}, "red_checks": []}),
     # judged in mode P+X+I+V (errata B2-2E): the GIL domain (event loop + spin thread on one

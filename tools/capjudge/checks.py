@@ -9,6 +9,8 @@ any red evidence is RED even when nothing else could be checked; otherwise expec
 or checked_count == 0 -> NOT_RUN; never PASS.
 """
 
+import math
+
 from capcommon import expect
 from capcommon.cli import parse_cpu_list
 from capcommon.exitcodes import ConfigError
@@ -1086,12 +1088,26 @@ def check_c13_launch(ctx, ld):
     return r.finish()
 
 
+C13_STAT = "T3:foreign_busy_frac"
+
+
+def _c13_d14(ctx):
+    """irq_softirq_is_experiment of the registered d14_result (capjudge.nullz), or None."""
+    d14 = ctx.thresholds.d14()
+    v = d14.get("irq_softirq_is_experiment") if isinstance(d14, dict) else None
+    return v if isinstance(v, bool) else None
+
+
 def check_c13_tier(ctx, ld, td, record):
     """Per tier: window-boundary thread lists all identified; second half: busy ticks on each
     under_test role's cores not explained by registered threads, as a fraction of the cores'
-    ticks. Only softirq ticks are further subtracted, and only when the pilot's D14 result
-    (`irq_softirq_is_experiment`) is true: the registered D14 rule decides on softirq ticks
-    alone (capjudge.d14), so hard-irq ticks stay foreign."""
+    ticks (T3:foreign_busy_frac:<role>). Only softirq ticks are further subtracted, and only
+    when the registered D14 result (d14_result, `irq_softirq_is_experiment`) is true: the
+    registered D14 rule decides on softirq ticks alone (capjudge.d14), so hard-irq ticks stay
+    foreign. Calibration v2 (DESIGN-r7a 2.11.1, P2-05): a reading above the per-window cap of
+    the pilot/2 `c13_cap` (nullz.cap) is RED; every reading is written to `record`, also
+    without a cap (then the second half is NOT_RUN); without the D14 result no reading is
+    computed and the second half is NOT_RUN. The launch mean is check_c13_mean."""
     r = Result("C13", td.tier.seq, "launch.json roles[measure_class=under_test] + pin_table")
     ut = [x["role"] for x in _roles_of(ctx, "under_test")]
     r.expected = len(ut)
@@ -1105,10 +1121,9 @@ def check_c13_tier(ctx, ld, td, record):
     if not tj.get("threads"):
         r.red += 1
         r.detail.append("tier.json has no window-boundary thread lists")
-    pilot = ctx.bands.extras.get("pilot") or {}
-    d14 = pilot.get("d14_softirq")
-    if not isinstance(d14, dict) or not isinstance(d14.get("irq_softirq_is_experiment"), bool):
-        r.not_run.append("second half: pilot.json has no D14 result")
+    softirq_ours = _c13_d14(ctx)
+    if softirq_ours is None:
+        r.not_run.append("second half: no registered D14 result (d14_result)")
         r.checked = len(ut)
         return r.finish()
     cpus = role_cpus(ld.pin_table)
@@ -1118,26 +1133,61 @@ def check_c13_tier(ctx, ld, td, record):
         r.not_run.append("second half: sidecar cpus/threads/clk_tck missing")
         r.checked = len(ut)
         return r.finish()
+    cap = ctx.thresholds.cap(C13_STAT)
+    if cap is None:
+        r.not_run.append("second half: no c13_cap %s in a registered pilot/2 (readings "
+                         "recorded)" % C13_STAT)
     ws, we = td.tier.window_start_ns, td.tier.window_end_ns
     by_pid = ld.procs_by_pid()
     for role in ut:
         r.checked += 1
         cores = cpus.get(role) or set()
         frac, why = _foreign_frac(cpu_rows[1], th_rows[1], by_pid, role, cores, ws, we, clk,
-                                  d14["irq_softirq_is_experiment"])
+                                  softirq_ours)
         key = band_key("T3", "foreign_busy_frac", role)
         if frac is None:
             r.not_run.append("%s: %s" % (role, why))
             continue
         record.setdefault(key, []).append(frac)
-        band = ctx.bands.get(key, ctx.tier_regime[td.tier.seq])
-        if band is None:
-            r.not_run.append("no registered band %s" % key)
-        elif stats.compare_to_band(frac, band) == "above":
+        if cap is not None and frac > cap["window"]:
             r.red += 1
-            r.detail.append("%s foreign busy fraction %.4f above band max %s"
-                            % (role, frac, band["max"]))
+            r.detail.append("%s foreign busy fraction %.4f above the window cap %s"
+                            % (role, frac, cap["window"]))
     return r.finish()
+
+
+def check_c13_mean(ctx, tiers):
+    """C13-MEAN (DESIGN-r7a 2.11.1, P2-05), launch level: for each under_test role the mean of
+    its T3:foreign_busy_frac readings over all judged load tiers (verdicts.json `tiers[].stats`,
+    written by check_c13_tier) must not exceed the launch-mean cap of the pilot/2 `c13_cap`;
+    above -> RED (the launch is VOID). Without the cap or the D14 result -> NOT_RUN (the means
+    are still reported); a role without any reading -> NOT_RUN. Returns (Result, {role: {mean,
+    n, cap}})."""
+    r = Result("C13-MEAN", "launch", "launch.json roles[measure_class=under_test]")
+    ut = [x["role"] for x in _roles_of(ctx, "under_test")]
+    r.expected = len(ut)
+    cap = ctx.thresholds.cap(C13_STAT)
+    if _c13_d14(ctx) is None:
+        r.not_run.append("no registered D14 result (d14_result)")
+    if cap is None:
+        r.not_run.append("no c13_cap %s in a registered pilot/2" % C13_STAT)
+    means = {}
+    for role in ut:
+        key = band_key("T3", "foreign_busy_frac", role)
+        vals = [v for e in tiers if e.get("judged")
+                for v in (e.get("stats") or {}).get(key, [])]
+        if not vals:
+            r.not_run.append("%s: no %s reading on any judged load tier" % (role, key))
+            continue
+        r.checked += 1
+        m = math.fsum(vals) / len(vals)
+        means[role] = {"mean": m, "n": len(vals),
+                       "cap": None if cap is None else cap["launch_mean"]}
+        if cap is not None and m > cap["launch_mean"]:
+            r.red += 1
+            r.detail.append("%s mean foreign busy fraction %.4f over %d tiers above the "
+                            "launch-mean cap %s" % (role, m, len(vals), cap["launch_mean"]))
+    return r.finish(), means
 
 
 BUSY_COLS = ("user", "nice", "system", "irq", "softirq", "steal")

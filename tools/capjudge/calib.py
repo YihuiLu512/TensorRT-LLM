@@ -16,7 +16,6 @@ from capcommon import hist
 from capcommon.schedule import per_worker_tier_counts
 
 from . import stats
-from .symptoms import request_lag_series
 from .thresholds import REGIMES, BandError, check_noise_bands
 from .treedata import NS, first_last_in_window, summary_value
 
@@ -253,6 +252,8 @@ def loadgen_worker_stats(td, role, worker):
     _h, cols = worker_capbin(td, "loadgen.requests", role, worker)
     if doc is None or cols is None:
         return None
+    # imported here: symptoms -> nullz -> calib (ENV_KEYS, _check_i1) at module level
+    from .symptoms import request_lag_series
     ws, we = td.tier.window_start_ns, td.tier.window_end_ns
     series, _ = request_lag_series(cols, td.tier, "send")
     t1 = stats.t1_trend(series)
@@ -395,7 +396,8 @@ def _select(tree, seqs, W, drop):
 SPLIT = {"loadgen_band": "schedule", "stub_calib": "even"}
 # verdicts a builder leaves out: a noise band only where nothing reached its limit; a shape only
 # from tiers that were judged stable
-NOISE_DROP = ("VOID", "UNSTABLE", "UNDETERMINED")
+# CONTRA: a counter contradiction (VOID before calib-v2 DESIGN-r7a P2-06), still left out
+NOISE_DROP = ("VOID", "CONTRA", "UNSTABLE", "UNDETERMINED")
 SHAPE_DROP = NOISE_DROP + ("NOT_RUN",)
 
 

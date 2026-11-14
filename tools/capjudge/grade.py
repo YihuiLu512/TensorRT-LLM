@@ -21,9 +21,9 @@ Grades:
   NOT_RUN        (未运行)        no judged load tier passed P
 
 One launch (the judge): the first tier in load order that is not STABLE decides, skipping
-VOID / NOT_RUN tiers whose RED checks are not only C1 / C2 (they widen the interval, they are
-listed); `I_status` is I's status on that tier when it is UNSTABLE or UNDETERMINED, else
-null. V is a cross-launch result, so the judge's grade never reaches CONFIRMED;
+VOID / NOT_RUN tiers whose RED checks are not only C1 / C2, and CONTRA tiers (they widen the
+interval, they are listed); `I_status` is I's status on that tier when it is UNSTABLE or
+UNDETERMINED, else null. V is a cross-launch result, so the judge's grade never reaches CONFIRMED;
 capjudge.intervene combines the control launches' grades with V (final_grade). Granularity is
 the process (GIL domain), or the core group when the localised processes share one core (the
 core is the reading; I's `granularity`); thread shares are reported, never a thread's limit.
@@ -32,6 +32,9 @@ core is the reading; I's `granularity`); thread shares are reported, never a thr
 MEASURED = ("under_test", "stub_in_domain")
 TOOLS = ("load_source", "stub_out_of_domain")
 TOOL_CHECKS = ("C1", "C2")
+# verdicts the walk passes over: VOID / NOT_RUN (unless only C1 / C2 are RED) and CONTRA (a
+# counter contradiction, formerly a VOID without RED checks; calib-v2 DESIGN-r7a P2-06)
+SKIPPED = ("VOID", "NOT_RUN", "CONTRA")
 
 
 def _red_checks(entry):
@@ -45,12 +48,12 @@ def _tool_void(entry):
 
 def first_non_stable(tiers):
     """The walk launch_grade makes over verdicts.json `tiers`: the judged load tiers in load
-    order; VOID / NOT_RUN tiers whose RED checks are not only C1 / C2 are passed over (listed in
-    `skipped`). Returns {"judged", "first", "last_stable", "skipped"}: `first` is the first
-    tier that decides the grade (UNSTABLE, UNDETERMINED, or VOID with only C1 / C2 RED; None
-    when there is none) and `last_stable` the highest STABLE tier below it (the highest STABLE
-    tier overall when `first` is None) -- the grade's interval lower end, which the shape
-    builders (capjudge.calib) also take as a launch's healthy maximum."""
+    order; VOID / NOT_RUN tiers whose RED checks are not only C1 / C2, and CONTRA tiers, are
+    passed over (listed in `skipped`). Returns {"judged", "first", "last_stable", "skipped"}:
+    `first` is the first tier that decides the grade (UNSTABLE, UNDETERMINED, or VOID with
+    only C1 / C2 RED; None when there is none) and `last_stable` the highest STABLE tier below
+    it (the highest STABLE tier overall when `first` is None) -- the grade's interval lower
+    end, which the shape builders (capjudge.calib) also take as a launch's healthy maximum."""
     judged = [e for e in tiers if e.get("judged") and e.get("order_key") is not None]
     judged.sort(key=lambda e: (e["order_key"], e["tier_seq"]))
     last_stable, skipped = None, []
@@ -59,7 +62,7 @@ def first_non_stable(tiers):
         if v == "STABLE":
             last_stable = e
             continue
-        if v in ("VOID", "NOT_RUN") and not _tool_void(e):
+        if v in SKIPPED and not _tool_void(e):
             skipped.append({"tier_seq": e["tier_seq"], "verdict": v, "red": _red_checks(e)})
             continue
         return {"judged": judged, "first": e, "last_stable": last_stable, "skipped": skipped}
@@ -111,7 +114,7 @@ def launch_grade(tiers, boundary):
                  > last_stable["order_key"])]
     if above:
         _lower(out, last_stable, "no unstable tier, but tiers %s above the highest stable tier "
-               "were not judged (VOID / NOT_RUN): X was not evaluated there" % above)
+               "were not judged (VOID / NOT_RUN / CONTRA): X was not evaluated there" % above)
         out["grade"] = "NOT_RUN"
         return out
     return _lower(out, last_stable, "X never held within the tool's range")

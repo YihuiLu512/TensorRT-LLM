@@ -249,13 +249,16 @@ class Thresholds:
         """The threshold entry of `stat_key` for `config` in `regime`, or None (no source for
         it). Entries are dicts with "form" in null_z / lag_const / count_const / ratio_abs /
         ratio_tol, read by compare(). A thresholds-stage key marked uncalibrated is returned
-        (compare gives None for it)."""
+        (compare gives None for it). `config` None (a v1 register: no arm_config) reads only
+        the configuration-free values: a bootstrap family value or a thresholds-stage ratio;
+        a null_z key needs a configuration (missing). Lookups record it as "-"."""
         fam = family_of(stat_key)
         if regime not in REGIMES:
             raise ValueError("unknown regime %r" % (regime,))
-        if not isinstance(config, str) or not config or "|" in config or "*" in config:
+        if config is not None and (not isinstance(config, str) or not config or "|" in config
+                                   or "*" in config):
             raise ValueError("bad configuration name %r" % (config,))
-        look = "%s|%s|%s" % (stat_key, config, regime)
+        look = "%s|%s|%s" % (stat_key, "-" if config is None else config, regime)
         e = self._entry(stat_key, fam, config, regime)
         self.lookups[look] = "missing" if e is None else (
             "uncalibrated" if e.get("uncalibrated") else "found")
@@ -284,6 +287,8 @@ class Thresholds:
             r = p["ratio"].get(key)
             return None if r is None else dict(src, form="ratio_abs", key=key,
                                                abs_tol=r["abs_tol"])
+        if config is None:
+            return None
         key = "%s|%s|%s|L=%d" % (stat_key, config, REGIME_KEY[regime],
                                  p["window_ns"] // NS_PER_S)
         n = p["null_z"].get(key)

@@ -7,6 +7,7 @@ attempt directory and exits 13. Nothing here relaxes a rule for synthetic or loc
 """
 
 import json
+import math
 import os
 import re
 
@@ -426,6 +427,10 @@ def _load_tier_regimes(ctx):
                        for t in ctx.tt.tiers if t.kind in ("up", "down")}
 
 
+def _is_num(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
 def _is_seq(v):
     return isinstance(v, int) and not isinstance(v, bool)
 
@@ -450,13 +455,20 @@ def _load_ladder(ctx):
     levels = doc.get("levels")
     if not isinstance(levels, list) or not all(isinstance(lv, dict) for lv in levels):
         raise InputInvalid(item, "levels must be a list of objects")
+    loads = {t.seq: t.load_value for t in ctx.tt.tiers}
     for lv in levels:
         if not _is_seq(lv.get("up_seq")) or not (lv.get("down_seq") is None
                                                  or _is_seq(lv.get("down_seq"))):
             raise InputInvalid(item, "levels[] needs an int up_seq and an int or null down_seq")
+        # the judge composes levels[] and b from these (calib-v2 DESIGN-r7a 2.4, P2-06)
+        if not _is_seq(lv.get("level")) or not _is_num(lv.get("rho")) \
+                or not _is_num(lv.get("load_value")):
+            raise InputInvalid(item, "levels[] needs an int level and numeric rho, load_value")
         named.append((lv["up_seq"], "levels", "up"))
         if lv["down_seq"] is not None:
             named.append((lv["down_seq"], "levels", "down"))
+    if len({lv["level"] for lv in levels}) != len(levels):
+        raise InputInvalid(item, "levels[] level numbers must be distinct")
     for role in LADDER_SEQ_LISTS:
         lst = doc.get(role)
         if not isinstance(lst, list) or not all(isinstance(e, dict) and _is_seq(e.get("seq"))
@@ -480,6 +492,13 @@ def _load_ladder(ctx):
     unnamed = sorted(s for s, k in kinds.items() if k in ("up", "down") and s not in roles)
     if unnamed:
         raise InputInvalid(item, "load tiers %s are named by no ladder role" % unnamed)
+    for lv in levels:
+        for q in (lv["up_seq"], lv["down_seq"]):
+            want = loads.get(q)
+            if q is not None and not (_is_num(want) and math.isclose(
+                    lv["load_value"], want, rel_tol=1e-9, abs_tol=0.0)):
+                raise InputInvalid(item, "level %d load_value %r != tier %d load_value %r"
+                                   % (lv["level"], lv["load_value"], q, want))
     return doc, roles
 
 

@@ -26,7 +26,7 @@
 2. 输入核对（`inputs.py`，任一不过 → 尝试目录里的 `inputs.json` 写明哪一项，13）：`launch.json`；`submissions.tsv` 里该作业的 `submitted_at`；`register.json` 与它列出的每个文件、每个标定文件现算 sha、已登记、登记时刻严格早于提交；`launch.json` 的 tier_table/schedule/prompts/scenario 与 `register.json` 一致；`inline_thresholds` 只许 E0；pilot 的 `environment` 与本树一致；时间表头的档位表 sha；`reconcile` 过 `expect.validate_reconcile`；`raw/` 下全部带 `identity` 的文件（json、jsonl 头、capbin 头、快照元数据）前六个字段一致；最后读判定之前已记下的启动级结论（上游）：`STATE` 里全部非 `capjudge` 写的行（caplaunch、capjobs.launches）、`raw/launch_end.json` 的 `state`（缺失或不是四个状态之一按 NOT_RUN）与 `leftovers.after`（非空按 VOID），取最差（VALID < NOT_RUN < VOID < ENV_INVALID）。`STATE` 读不了、或没有任何非 `capjudge` 的行（作业还没记下结果）⇒ 13。
 3. 判定器代码 sha：`CAPKIT_CODE_SHA`（40 位）优先；否则 `git rev-parse HEAD` 且 `git status --porcelain -- tools` 为空。取不到或工作树脏 ⇒ 整次判定 `NOT_RUN`。
 4. 启动级前提：LAUNCH-STATE（上游 VALID ⇒ PASS，NOT_RUN ⇒ NOT_RUN，VOID / ENV_INVALID ⇒ RED）、C10、GPU-IDLE、C13（第一半，登记了 C13 时）、PROBE-TIER（有产品角色时）。任一 RED ⇒ 全部被判档 VOID；任一 NOT_RUN ⇒ 全部 NOT_RUN。另：缺 `launch_end.json` 的 `tiers_completed`、档位表没有基线档 ⇒ NOT_RUN。
-5. 逐档（只判 `up` / `down`；`warmup`、`drain` 档 `judged: false`、`verdict: null`）：前提 P = RECORDS、P-PIDS、P-SENT + 适用检查；P 有 RED ⇒ VOID；有 NOT_RUN ⇒ NOT_RUN；否则看 X：矛盾 ⇒ VOID；X 算不出 ⇒ NOT_RUN；X 成立 ⇒ UNSTABLE，否则 STABLE。模式 `P+X+I+V`（登记表 `judge.mode`）下另算 I 与逐档 V 心跳（`localize.py`、`intervene.py`，经 `symptoms.evaluate_x` 的 `hooks`），UNSTABLE 档的 I 信号指向不同角色 ⇒ UNDETERMINED；启动级再给结论等级（`grade.py`）。
+5. 逐档（只判 `up` / `down`；`warmup`、`drain` 档 `judged: false`、`verdict: null`）：前提 P = RECORDS、P-PIDS、P-SENT + 适用检查；P 有 RED ⇒ VOID；有 NOT_RUN ⇒ NOT_RUN；否则看 X：矛盾 ⇒ VOID；X 算不出 ⇒ NOT_RUN；X 成立 ⇒ UNSTABLE，否则 STABLE。模式 `P+X+I+V`（登记表 `judge.mode`）下另算 I 与逐档 V 心跳（`localize.py`、`intervene.py`，经 `symptoms.evaluate_x` 的 `hooks`），UNSTABLE 档的 I 信号指向不同角色 ⇒ UNDETERMINED；启动级再给结论等级（`grade.py`）。（calib-v2：矛盾改判 CONTRA，有 `ladder.json` 时另写 `levels[]`、`boundary`、`t7`，见 INTERFACES 勘误 calib-v2-A3。）
 6. 在尝试目录写 `inputs.json`、`verdicts.json`、`checks.tsv`、`judge.log`、`attempt.json`（`status = JUDGED`）；再查一次 `JUDGED.tsv`，然后把尝试目录原子改名为 `<T>/judge`（这一步就是「已判」标记；期间别的判定先建了 `judge/` 或台账行 ⇒ 12，本次尝试记 `ALREADY_JUDGED` 留在原处）；最后追加 `JUDGED.tsv` 一行、`STATE` 一行（`by = capjudge`；状态 = 上游与本次 `launch_verdict` 中较差者，所以判定器不会把 caplaunch / capjobs 记的 VOID、ENV_INVALID、NOT_RUN 改好；原因写 `launch_verdict=… upstream=… verdicts_sha=…`；这一行的状态与原因也记在 `verdicts.json` 的 `state_line`，上游明细记在 `upstream`）。
 
 **一棵树只判一次，失败可复查**：只有产出了判定结果的那次运行会建立 `judge/`。输入无效（13）或异常中断（1）时，尝试目录留在 `judge.attempts/` 下（`attempt.json` 记 `status`：`INPUT_INVALID` / `ERROR`（含 traceback），连同 `inputs.json`、`judge.log`），不建 `judge/`、不写台账；输入修好后可以再判，已判过的树再判 ⇒ 12。
@@ -61,12 +61,12 @@
 - **X1（对账）**：`窗口内完成数 ÷ 窗口内计划数`，除以同一次启动基线档的同一比值。基线档自身的归一值恒为 1，不记作样本。
 - **X3（对账）**：由逐请求记录推出的在途数（每秒中点 `sent ≤ t < done`）的 T1；以及 `sidecar/snapshots.jsonl` 里各角色 `backlog.*` **gauge**（种类取自窗口快照的槽表；`backlog.unread_bytes` 除外）逐秒和的 T1。
 - 过载型失败 > 0 ⇒ X 成立。X1、X3 至少要算出一个，否则 X NOT_RUN。
-- **矛盾 ⇒ VOID（对称）**：X2 成立而 X1 显著高于带（交付超过提供）或 X3 显著低于带（积压在降）；X2 不成立而 X1 显著低于带或 X3 显著高于带。
+- **矛盾 ⇒ VOID（对称）**：X2 成立而 X1 显著高于带（交付超过提供）或 X3 显著低于带（积压在降）；X2 不成立而 X1 显著低于带或 X3 显著高于带。（calib-v2 起判 `CONTRA`、不作废；X 改用 z_d 对 `capjudge.nullz` 的阈值比较，见 INTERFACES 勘误 calib-v2-A3 第 1、6 条。）
 - **I、V 与等级**：只在模式 `P+X+I+V` 下算，定义、门槛来源与输出字段见 INTERFACES 勘误 B2-2E（`localize.py`、`intervene.py`、`grade.py` 的模块说明是同一份规则的代码版）。模式 `P+X` 下每档的 `X.I`、`X.V` 与顶层 `localisation_I`、`intervention_V`、`grade` 写 `NOT_REQUESTED`，UNSTABLE 只表示「X 成立」。
 
 ## 统计量键（`<T>:<量>:<对象>`，对象 = 角色名）
 
-判定器把每档算出的值写进 `verdicts.json` 的 `tiers[].stats`（键 → 值列表），`pilot` 只从这里取值。
+判定器把每档算出的值写进 `verdicts.json` 的 `tiers[].stats`（键 → 值列表），`pilot` 只从这里取值。（calib-v2 起另有 `tiers[].zstats`，X1 记 `|norm − 1|`，见 INTERFACES 勘误 calib-v2-A3 第 3 条。）
 
 | 键 | 含义 | 用在 |
 |---|---|---|
@@ -87,7 +87,7 @@
 | `T1:i3_backlog:<读数名>`、`T2:i3_backlog:<读数名>` | 登记的 I3 积压读数（`judge.localize`）逐秒序列的 T1、相对基线档的 T2 | I3 |
 | `T2:loop_lag_p50_ns:<角色>` | 事件循环延迟 p50 相对基线档的偏移 | I2（只作旁证） |
 
-阈值只来自登记表 `calibration` 里的标定文件与 E0 的 `inline_thresholds`（形状 `{"noise_bands": {键: {"min","max","n"}}}`）。（calib-v2 起 `pilot/1`、`near_boundary_noise` 与 v2 登记表的 `inline_thresholds` 都不再是阈值源，阈值源改为 `capjudge.nullz` 读的 pilot/2 与 `d14_result`，见 INTERFACES 勘误 calib-v2-A2。）噪声带（`pilot`、`near_boundary_noise`、`inline_thresholds` 的 `noise_bands`）按档的 regime 选：登记表 `judge.near_boundary_tiers` 列出的档只读 `regime: near_boundary` 的带，其余负载档只读 `subsat` 的带（带上没写按 `subsat`），近边界档不退回亚饱和带；同一 (键, regime) 出现在两个来源 ⇒ 13。查不到 ⇒ 用它的检查 NOT_RUN。C1、C2 的带不在 `noise_bands` 里，而在 `loadgen_band` / `stub_calib` 的形态里（按登记项 `bind` 取）。每种标定文件都核 `environment` 与本树一致。
+阈值只来自登记表 `calibration` 里的标定文件与 E0 的 `inline_thresholds`（形状 `{"noise_bands": {键: {"min","max","n"}}}`）。（calib-v2 起 `pilot/1`、`near_boundary_noise` 与 v2 登记表的 `inline_thresholds` 都不再是阈值源，阈值源改为 `capjudge.nullz` 读的 pilot/2 与 `d14_result`，见 INTERFACES 勘误 calib-v2-A2；X 与 C13 第二半已不读噪声带，见勘误 calib-v2-A3 第 1、5 条。）噪声带（`pilot`、`near_boundary_noise`、`inline_thresholds` 的 `noise_bands`）按档的 regime 选：登记表 `judge.near_boundary_tiers` 列出的档只读 `regime: near_boundary` 的带，其余负载档只读 `subsat` 的带（带上没写按 `subsat`），近边界档不退回亚饱和带；同一 (键, regime) 出现在两个来源 ⇒ 13。查不到 ⇒ 用它的检查 NOT_RUN。C1、C2 的带不在 `noise_bands` 里，而在 `loadgen_band` / `stub_calib` 的形态里（按登记项 `bind` 取）。每种标定文件都核 `environment` 与本树一致。
 
 ## 本包对其他组件文件的读取约定（INTERFACES 没写死、本包按此读；对应组件请对齐或提出）
 

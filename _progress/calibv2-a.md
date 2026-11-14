@@ -77,3 +77,15 @@
   - capjudge 样本自测（n=38）：35 个样本得 13（期望各自的退出码），即上面同一原因；empty_tree 照旧；三个本就期望 13 的样本退出码仍对，但 input_calib_invalid、input_identity_mismatch 现在先因 pilot/1 被拒而得 13（calibration[0] 在前），原意的检查被遮住，换源时要复核。
   - 变异 r2 + r2b（mut/r2、mut/r2b/summary.txt）：22 项全部变红（N19 补测试后变红；N16 分测试目录后两边都红）；对照：judge 两文件 11 failed（都是 test_calib 的样本构建器用例，同上原因）/ 132 passed，ledger 9 passed。
   - 未做（NOT RUN）：把默认样本换成 v2 源并更新期望（要等 SB-A-3 的 X / C13 改读 nullz）；I 相关样本要等 P2-13（SB-C）；tests/launch 等其余目录（本步未改其代码）。
+- 2026-11-15 07:07:36 SB-A-3 开工：读完 impl-steps 第 3 条、DESIGN-r7a §2.2/2.4/2.9/2.11.1～2.11.3、P2-04～P2-06、§3.4、§3.5 第 6/9/10/14/15/16/18/19 条与 symptoms/checks/judge/nullz/inputs/grade 现码。先改 symptoms（_trend_z、Record、X1 |norm−1|、level_switch_ratio），再改 checks（C13 上限、C13-MEAN）、judge（CONTRA、levels、boundary、t7、batch）。
+- 2026-11-15 07:19:31 symptoms/checks/judge 改完；新测试 tests/judge/test_judge_levels.py 的 P2-04 部分 7 条已过（含真实两级切换片段 samples/calibv2_real/j5940628_l1_t4_requests.json：z −1.577、比值 5.13）。接着写 X1 / C13 / 级合成 / b / T7 测试。
+- 2026-11-15 07:23:48 test_judge_levels.py 52 passed。样本生成器默认改为 v2 源（bootstrap pilot/2 + d14_result；calib_v1 选项保留旧 pilot/1）。后台跑全量 tests/judge（约 5～6 分钟），期间写 INTERFACES calib-v2-A3。
+- 2026-11-15 07:32:30 全量 tests/judge（改样本规则文件名之前）23 failed / 436 passed（46→23：其余是已提交样本仍为 pilot/1、I 样本、regime_nb 样本、test_pilot 的 d14_rule 文件名冲突，已改名）。按新缺省生成样本自测只剩 I 5 个与 regime_nb 2 个不符。INTERFACES calib-v2-A3 与指引已写。后台跑变异 r3（27 项 + 对照，逐个串行，每项约 15 s）。
+- 2026-11-15 07:38:19 变异 r3：27 项中 25 项变红；P04（X1 不按计划请求数）补测试后在 r3b 变红；P15（inside 改成含端点）是等价变异（端点按定义是 STABLE / UNSTABLE，不影响任何标记），保留存活并记录。后台跑全量 tests/judge（约 5～6 分钟）。
+- 2026-11-15 07:46 SB-A-3 收尾（P2-04 x-zd + P2-05 c13-cap + P2-06 judge-levels），实测（MEASURED）：
+  - tests/judge：14 failed / 448 passed（logs/a3full2，319.6 s）；SB-A-2 收尾时 46 failed / 361 passed。剩下 14 条逐条归因：10 条读已提交样本目录（test_analysis 5、test_intervene 5，样本仍登记 pilot/1 ⇒ 13）；test_calib 2 条是 I 样本（i_reader_slow、i_server_slow；P2-13 之前 I1 读不到 i1_calibration ⇒ I NOT_RUN）；test_selftest 2 条（已提交样本同上；按新缺省生成的样本只剩 I 的 5 个与 regime_nb_good / regime_nb_missing 不符）。
+  - 新文件 tests/judge/test_judge_levels.py 55 passed（含真实树 J5940628-r0-L2 的 C13 用例，本机实跑、未跳过）；tests/capcommon 191 passed；py_compile 210/0；fakebin.log 0 行。
+  - capjudge 已提交样本自测（n=38）：仍是 pilot/1 ⇒ 13（74 条错误，与 SB-A-2 同一原因，本步没有重新生成已提交样本）。
+  - 变异 r3（mut/r3/summary.txt，27 项）：25 项变红；P04（X1 不按计划请求数取容差）补测试 test_x1_tolerance_uses_the_tiers_planned_requests 后 r3b 变红；P15（inside 含端点）是等价变异，存活。
+  - 真实数据核对：J5940628:L1 档 4 请求逐秒序列 z_d = −1.577、D = −36 293.75 ns、level_switch_ratio = 5.126（设计稿 −1.58、−36.3 µs、5.13）；J5940628:L2 五个负载档 C13 读数 −0.0094～+0.0007，全部 PASS。
+  - 未做（NOT RUN）：已提交样本目录重新生成与 I / regime_nb 样本改写（P2-10、P2-13）；tests/launch 等其余目录（本步没改它们的代码）。

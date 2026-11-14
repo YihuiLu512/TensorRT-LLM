@@ -667,6 +667,59 @@ def t7_single(lam, g):
     return lam / (g + 1.0)
 
 
+def count_floor_z(L, quantum=1):
+    """z_1q of the count family (DESIGN-r7a 2.9): the z_d of a one-quantum difference of the
+    half medians at the scale floor quantum / sqrt(12) on an L-second window,
+    1 / (1.2533 * (1 / sqrt(12)) * sqrt(2 / (L // 2))); 10.705 (rounded) at L = 60. It does
+    not depend on the quantum."""
+    n = L // 2
+    if n < 1 or quantum <= 0:
+        raise ValueError("count_floor_z: L >= 2 and quantum > 0 required")
+    return quantum / (ZD_MEDIAN_SE * (quantum / math.sqrt(12)) * math.sqrt(2.0 / n))
+
+
+def floor_count_thresholds(thr, L, quantum=1):
+    """A count-family key's thresholds (order_stat_thresholds output) with the floor of 2.9:
+    thr_hi below z_1q takes z_1q and thr_lo above -z_1q takes -z_1q; `floor_bound` is true when
+    either did. An uncalibrated key is returned unchanged (floor_bound false)."""
+    out = dict(thr, floor_bound=False)
+    if thr.get("uncalibrated"):
+        return out
+    z1 = count_floor_z(L, quantum)
+    if thr["thr_hi"] < z1:
+        out.update(thr_hi=z1, floor_bound=True)
+    if thr["thr_lo"] > -z1:
+        out.update(thr_lo=-z1, floor_bound=True)
+    return out
+
+
+def level_switch_ratio(buckets):
+    """Two-level switching diagnostic of one steady window (DESIGN-r7a 2.13; the definition of
+    calib-v2 drift/excess.py): SD over the seconds of the per-second medians divided by the RMS
+    of each second's sampling SE of its median. buckets: per second, the list of raw values (or
+    None / empty for an empty second). A second's SE = (x[hi] - x[lo]) / 3.92 over its sorted
+    values, ranks lo = floor(n/2 - 1.96 sqrt(n)/2), hi = ceil(n/2 + 1.96 sqrt(n)/2) clipped to
+    [0, n - 1] (distribution-free 95% interval of the median). About 1 for pure sampling noise;
+    > 3 is reported, never judged. Fewer than 2 non-empty seconds -> NotRun("too_few_seconds"),
+    zero RMS SE -> NotRun("zero_sampling_se")."""
+    meds, ses = [], []
+    for b in buckets:
+        if not b:
+            continue
+        xs = sorted(b)
+        n = len(xs)
+        h = 1.96 * math.sqrt(n) / 2
+        lo, hi = max(0, int(math.floor(n / 2 - h))), min(n - 1, int(math.ceil(n / 2 + h)))
+        meds.append(statistics.median(xs))
+        ses.append((xs[hi] - xs[lo]) / 3.92)
+    if len(meds) < 2:
+        return NotRun("too_few_seconds")
+    rms = math.sqrt(math.fsum(s * s for s in ses) / len(ses))
+    if rms == 0:
+        return NotRun("zero_sampling_se")
+    return statistics.pstdev(meds) / rms
+
+
 # ---- settle segment S (2.6 steps 3-5) --------------------------------------------------------
 
 SETTLE_CANDS = (0, 30, 60, 90, 120, 150, 180, 240, 300, 400)   # candidate S, seconds
