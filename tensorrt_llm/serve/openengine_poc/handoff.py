@@ -328,8 +328,11 @@ def encode_kv_session(
             f"openengine_handoff_attributes holds {HANDOFF_DECODE_PREPARATION}: a multimodal "
             "disaggregated request is not supported when serving through an OpenEngine engine"
         )
-    for key, value in passthrough.items():
-        _check_struct_numbers(value, key)
+    try:
+        for key, value in passthrough.items():
+            _check_struct_numbers(value, key)
+    except RecursionError:
+        raise ValueError("openengine_handoff_attributes is nested too deeply") from None
 
     attributes: dict[str, Any] = {}
     if params.ctx_info_endpoint is not None:

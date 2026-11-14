@@ -192,8 +192,8 @@ def _kv_session_ref(session: KvSessionSpec) -> kv_pb2.KvSessionRef:
         attributes = struct_pb2.Struct()
         try:
             attributes.update(dict(session.attributes))
-        except (TypeError, ValueError, OverflowError) as error:
-            raise ValueError(f"the kv_session attributes cannot be sent: {error}") from None
+        except (TypeError, ValueError, OverflowError, RecursionError) as error:
+            raise ValueError(f"the kv_session attributes cannot be sent: {error!r}") from None
         message.attributes_struct.CopyFrom(attributes)
     return message
 

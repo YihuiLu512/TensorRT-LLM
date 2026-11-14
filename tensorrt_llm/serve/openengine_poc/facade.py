@@ -181,10 +181,13 @@ def _http_bucket(body: bytes, msgpack: bool) -> str:
             probe = msgspec.msgpack.decode(body, type=_BodyProbe)
         else:
             probe = msgspec.json.decode(body, type=_BodyProbe)
-    except (msgspec.DecodeError, msgspec.ValidationError):
+    except (msgspec.DecodeError, msgspec.ValidationError, RecursionError):
         return BUCKET_AGGREGATED
     params = probe.disaggregated_params
     request_type = None if params is None else params.request_type
+    if isinstance(request_type, str):
+        # As DisaggregatedParams reads it.
+        request_type = request_type.lower()
     if request_type in (REQUEST_TYPE_CONTEXT_ONLY, REQUEST_TYPE_GENERATION_ONLY):
         return request_type
     return BUCKET_AGGREGATED
@@ -231,6 +234,7 @@ class _CountGenerationRequests:
             if not received:
                 received = True
                 bucket = _http_bucket(b"".join(chunks), msgpack)
+                chunks.clear()
                 self._facade._count(SERVE_COUNTER_HTTP_RECEIVED_BUCKETS[bucket])
 
         def count_end() -> None:
@@ -243,7 +247,7 @@ class _CountGenerationRequests:
 
         async def receive_counting() -> Any:
             message = await receive()
-            if message.get("type") == "http.request":
+            if message.get("type") == "http.request" and not received:
                 chunks.append(message.get("body", b""))
                 if not message.get("more_body", False):
                     count_received()
@@ -1086,13 +1090,25 @@ class OpenEngineLLM:
 
         Raises:
             ValueError: The request cannot be mapped; ``handoff_attributes`` is
-                given to a request that is not ``generation_only``.
+                given to a request that is not ``generation_only``, or a
+                ``context_only`` or ``generation_only`` request is sent to an
+                engine without KV transfer.
         """
         client = self.client
         caps = client.model_info()
         info = client.server_info()
         params = options.disaggregated_params
         generation_only = params is not None and params.request_type == REQUEST_TYPE_GENERATION_ONLY
+        if params is not None and params.request_type in (
+            REQUEST_TYPE_CONTEXT_ONLY,
+            REQUEST_TYPE_GENERATION_ONLY,
+        ):
+            connector = info.kv_connector
+            if connector is None or not (connector.enabled and connector.supports_remote_prefill):
+                raise ValueError(
+                    f"disaggregated_params.request_type={params.request_type} is not supported: "
+                    f"OpenEngine engine {info.engine_name!r} has no KV transfer enabled"
+                )
         if handoff_attributes is not None and not generation_only:
             raise ValueError(
                 "disaggregated_params.openengine_handoff_attributes is only accepted on a "

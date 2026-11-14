@@ -129,8 +129,9 @@ class OpenEngineResponseAssembler:
     ``disaggregated_params`` to the handoff it carries, decoded by
     :func:`.handoff.decode_kv_session` with its
     ``openengine_handoff_attributes`` kept on it
-    (:class:`.handoff.OpenEngineDisaggregatedParams`). Its text and tokens
-    are those received before it.
+    (:class:`.handoff.OpenEngineDisaggregatedParams`). Its token ids are
+    those received before it; text the detokenizer still holds back is not
+    released.
 
     See :func:`create_response_assembler` for the arguments.
     """
