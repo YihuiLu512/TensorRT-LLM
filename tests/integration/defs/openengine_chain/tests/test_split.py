@@ -243,12 +243,13 @@ def _no_ports(count):
     raise AssertionError("no KV event ports expected")
 
 
-def _engine_config(tmp_path, config, *, args=(), kv_aware_router=None, ports=_no_ports):
+def _engine_config(tmp_path, config, *, args=(), env=None, kv_aware_router=None, ports=_no_ports):
     path = _config(tmp_path, "worker.yaml", config) if config is not None else None
     engine_path = sp.disagg_engine_yaml(
         path,
         str(tmp_path / "out"),
         args=list(args),
+        env=env or {},
         kv_aware_router=kv_aware_router,
         ports=ports,
     )
@@ -410,20 +411,44 @@ def test_kv_events_are_not_runnable_where_the_publisher_cannot_run(tmp_path, con
 # --- Moving an aggregated test ----------------------------------------------------------
 
 
-def test_parallel_size_takes_the_configuration_over_the_command_line(tmp_path):
-    path = _config(tmp_path, "c.yaml", {"tensor_parallel_size": 4})
+def test_parallel_size_resolves_each_size_as_trtllm_serve_does(tmp_path):
+    path = _config(tmp_path, "c.yaml", {"tensor_parallel_size": 4, "pipeline_parallel_size": 2})
     assert sp.parallel_size(["--tp_size", "2", "--pp_size", "2"]) == 4
+    # An explicit option wins over the file; --set wins over both.
     assert sp.parallel_size(["--tp_size", "2", "--config", path]) == 4
+    assert sp.parallel_size(["--config", path]) == 8
+    assert sp.parallel_size(["--config", path, "--set", "pipeline_parallel_size=1"]) == 4
     assert sp.parallel_size([]) == 1
 
 
-def _moved(tmp_path, cmd):
+def test_setting_takes_set_then_the_option_then_the_file(tmp_path):
+    config = {"kv_cache_config": {"free_gpu_memory_fraction": 0.4}, "enable_attention_dp": False}
+    path = ("kv_cache_config", "free_gpu_memory_fraction")
+    option = "--kv_cache_free_gpu_memory_fraction"
+    assert sp.setting(config, [], path, option) == 0.4
+    assert sp.setting(config, [option, "0.6"], path, option) == "0.6"
+    sets = [option, "0.6", "--set", "kv_cache_config.free_gpu_memory_fraction=0.3"]
+    assert sp.setting(config, sets, path, option) == 0.3
+    assert sp.setting({}, [], path, option) is None
+    dp = ("enable_attention_dp",)
+    assert sp.setting(config, [], dp, "--enable_attention_dp") is False
+    assert sp.setting(config, ["--enable_attention_dp"], dp, "--enable_attention_dp") is True
+
+
+def test_attention_dp_ranks_take_the_command_line_over_the_file():
+    config = {"enable_attention_dp": False, "tensor_parallel_size": 1}
+    assert sp.attention_dp_ranks(config, ["--enable_attention_dp", "--tp_size", "4"]) == 4
+    assert sp.attention_dp_ranks(config, []) == 1
+
+
+def _moved(tmp_path, cmd, strict=True):
     workers = sp.disagg_worker_commands(
         cmd,
         ports={"context": 7001, "generation": 7002},
         host="localhost",
         auth_key="key",
         out_dir=str(tmp_path / "out"),
+        strict=strict,
     )
     configs = {role: yaml.safe_load(open(path)) for role, path in workers.configs.items()}
     return workers, configs
@@ -492,6 +517,39 @@ def test_moved_workers_halve_the_kv_cache_share_only_when_they_share_a_gpu(tmp_p
     assert "--tp_size" in workers.commands["generation"]
 
 
+def test_moved_workers_on_one_gpu_drop_the_command_lines_kv_cache_share(tmp_path):
+    # trtllm-serve takes an explicit option and --set over the file, so the halved share
+    # must be the only one left.
+    own = _config(tmp_path, "own.yaml", {"kv_cache_config": {"free_gpu_memory_fraction": 0.4}})
+    cmd = ["trtllm-serve", "/m", "--config", own, "--kv_cache_free_gpu_memory_fraction", "0.8"]
+    workers, configs = _moved(tmp_path, cmd)
+    assert configs["context"]["kv_cache_config"] == {"free_gpu_memory_fraction": 0.4}
+    assert "--kv_cache_free_gpu_memory_fraction" not in workers.commands["context"]
+    cmd += ["--set", "kv_cache_config.free_gpu_memory_fraction=0.5", "--set", "max_seq_len=64"]
+    workers, configs = _moved(tmp_path, cmd)
+    assert configs["generation"]["kv_cache_config"] == {"free_gpu_memory_fraction": 0.25}
+    assert workers.commands["generation"].count("--set") == 1
+    assert "max_seq_len=64" in workers.commands["generation"]
+    # Workers on GPUs of their own keep the command line's share.
+    workers, _ = _moved(tmp_path, cmd + ["--tp_size", "2"])
+    assert "--kv_cache_free_gpu_memory_fraction" in workers.commands["context"]
+
+
+def test_moved_command_line_without_a_chain_keeps_options_the_table_does_not_know(tmp_path):
+    cmd = ["trtllm-serve", "/m", "--log_level", "info", "--port", "8000", "--trust_remote_code"]
+    cmd += ["--metadata_server_config_file", "m.yaml"]
+    workers, _ = _moved(tmp_path, cmd, strict=False)
+    assert workers.commands["context"][8:-2] == (
+        "--log_level",
+        "info",
+        "--trust_remote_code",
+        "--metadata_server_config_file",
+        "m.yaml",
+    )
+    with pytest.raises(sp.UnknownServeOptionError):
+        _moved(tmp_path, ["trtllm-serve", "/m", "--log_level", "info"])
+
+
 def test_a_disaggregated_worker_is_not_moved(tmp_path):
     with pytest.raises(ValueError, match="already a disaggregated worker"):
         _moved(tmp_path, ["trtllm-serve", "/m", "--server_role", "context"])
@@ -520,3 +578,67 @@ def test_worker_gpus():
     }
     with pytest.raises(sp.ChainUnrunnableError, match="needs 8 GPUs"):
         sp.worker_gpus([str(i) for i in range(7)], 4, False)
+
+
+def test_set_of_service_discovery_makes_a_worker_and_stays_with_the_front_end():
+    args = ["--set", "disagg_cluster.cluster_uri=http://h:1", "--set", "max_seq_len=64"]
+    assert sp.is_disagg_worker(args)
+    result = sp.split_args(args, rewrite_yaml=lambda p: p)
+    assert result.engine == ("--set", "max_seq_len=64")
+    assert result.frontend == tuple(args)
+    assert sp.is_disagg_worker(["--set", "cache_transceiver_config.backend=NIXL"])
+    assert not sp.is_disagg_worker(["--set", "max_seq_len=64"])
+
+
+@pytest.mark.parametrize(
+    "assignment",
+    [
+        "cache_transceiver_config.backend=UCX",
+        "kv_cache_config.event_buffer_max_size=16",
+        "kv_cache_config.use_kv_cache_manager_v2=false",
+    ],
+)
+def test_disagg_engine_yaml_refuses_a_set_of_what_the_harness_writes(tmp_path, assignment):
+    with pytest.raises(sp.UnknownServeOptionError, match="configuration file instead"):
+        _engine_config(tmp_path, None, args=["--set", assignment])
+
+
+def test_default_backend_follows_the_legacy_environment_variables(tmp_path):
+    config = {"cache_transceiver_config": {"backend": "DEFAULT"}}
+    env = {"TRTLLM_USE_UCX_KVCACHE": "1", "TRTLLM_USE_MPI_KVCACHE": "1"}
+    engine = _engine_config(tmp_path, config, env=env, kv_aware_router=False)
+    # As the engine resolves DEFAULT under the control form: the Python runtime then refuses
+    # UCX in both forms alike.
+    assert engine["cache_transceiver_config"] == {"backend": "UCX"}
+    engine = _engine_config(tmp_path, config, env={"TRTLLM_USE_UCX_KVCACHE": "0"})
+    assert engine["cache_transceiver_config"] == {"backend": "NIXL"}
+
+
+@pytest.mark.parametrize(
+    "transceiver, runtime",
+    [
+        ({}, "PYTHON"),
+        ({"transceiver_runtime": "CPP"}, "CPP"),
+        ({"transceiver_runtime": None}, "CPP"),
+        ({"transceiver_runtime": "auto", "backend": "NIXL"}, "AUTO"),
+        ({"transceiver_runtime": "auto"}, "AUTO"),
+        ({"transceiver_runtime": "auto", "backend": "UCX"}, "CPP"),
+        ({"transceiver_runtime": "auto", "kv_transfer_timeout_ms": None}, "CPP"),
+    ],
+)
+def test_transceiver_runtime(transceiver, runtime):
+    assert sp.transceiver_runtime({"cache_transceiver_config": transceiver}) == runtime
+
+
+def test_auto_runtime_gets_nixl_and_kv_events(tmp_path):
+    config = _events_config()
+    config["cache_transceiver_config"]["transceiver_runtime"] = "auto"
+    engine = _engine_config(tmp_path, config, ports=lambda count: 45000)
+    assert engine["cache_transceiver_config"] == {"backend": "NIXL", "transceiver_runtime": "auto"}
+    assert "kv_events_config" in engine["kv_cache_config"]
+
+
+def test_kv_aware_router_types_are_compared_in_lower_case():
+    assert sp.is_kv_aware_router("KV_CACHE_AWARE")
+    assert not sp.is_kv_aware_router("round_robin")
+    assert not sp.is_kv_aware_router(None)

@@ -625,6 +625,7 @@ def fake_topology(tmp_path, monkeypatch):
     monkeypatch.setattr(launch, "require_plugin", lambda: None)
     monkeypatch.setattr(launch, "frontend_supports_ready_timeout", lambda: True)
     monkeypatch.setattr(launch, "engine_supports_metrics_port", lambda: True)
+    monkeypatch.setattr(launch, "read_engine_capacity", lambda endpoint: {})
     monkeypatch.setenv(cv.ENV_RESULTS_DIR, str(tmp_path / "results"))
     env = dict(
         os.environ,
@@ -727,3 +728,118 @@ def test_topology_without_a_chain_starts_a_worker_of_a_role_as_before(
     assert proc.args[0][-2:] == ["--server_role", "CONTEXT"]
     assert server._chain_handle is None and server.proc is proc
     server.terminate()
+
+
+def test_worker_of_a_role_keeps_its_address_and_its_engine_listens_locally(
+    fake_topology, monkeypatch
+):
+    """The 2-node form: a worker each node starts keeps the host and port it was given."""
+    monkeypatch.setenv(cv.ENV_CHAIN, "trtllm")
+    monkeypatch.delenv(cv.ENV_TOPOLOGY, raising=False)
+    port = _free_port()
+    cmd = [fake_topology.exe, "/m", "--host", "0.0.0.0", "--port", str(port)]
+    cmd += ["--server_role", "CONTEXT"]
+    handle = remote.launch_for_remote_server(
+        cmd, env=fake_topology.env, llmapi_launch=False, role="CONTEXT", sink=None
+    )
+    try:
+        (frontend,) = _records(fake_topology.records, "frontend-start", 1)
+        (engine,) = _records(fake_topology.records, "engine-start", 1)
+        argv = frontend["argv"]
+        assert argv[argv.index("--host") + 1] == "0.0.0.0"
+        assert argv[argv.index("--port") + 1] == str(port)
+        assert argv[argv.index("--server_role") + 1] == "CONTEXT"
+        assert engine["argv"][engine["argv"].index("--host") + 1] == "127.0.0.1"
+        assert "--server_role" not in engine["argv"]
+        # Clients reach a front end listening on every address through localhost.
+        assert (handle.host, handle.port) == ("localhost", port)
+    finally:
+        handle.terminate(grace=5)
+
+
+@pytest.mark.parametrize("role", [None, "CONTEXT"])
+def test_topology_on_the_glm_chain_is_refused(monkeypatch, role):
+    monkeypatch.setenv(cv.ENV_CHAIN, "glm")
+    monkeypatch.setenv(cv.ENV_TOPOLOGY, cv.TOPOLOGY_DISAGG)
+    monkeypatch.setattr(remote, "launch_serve_command", lambda *a, **k: pytest.fail("started"))
+    with pytest.raises(remote.ChainUnrunnableError, match="glm chain"):
+        remote.launch_for_remote_server(
+            ["trtllm-serve", "/m"], env={}, llmapi_launch=False, role=role, sink=None
+        )
+
+
+def test_topology_without_a_chain_moves_options_the_split_table_does_not_know(monkeypatch):
+    monkeypatch.delenv(cv.ENV_CHAIN, raising=False)
+    monkeypatch.setenv(cv.ENV_TOPOLOGY, cv.TOPOLOGY_DISAGG)
+    moved = []
+    monkeypatch.setattr(remote, "launch_disagg_topology", lambda cmd, **kw: moved.append(cmd))
+    cmd = ["trtllm-serve", "/m", "--log_level", "info", "--metadata_server_config_file", "m.yaml"]
+    remote.launch_for_remote_server(cmd, env={}, llmapi_launch=False, role=None, sink=None)
+    assert moved == [cmd]
+
+
+def test_topology_worker_ports_avoid_the_servers_port(fake_topology, monkeypatch):
+    from openengine_chain import launch
+
+    port = _free_port()
+    real = launch.free_port
+    first = iter([port, port])
+    monkeypatch.setattr(launch, "free_port", lambda: next(first, None) or real())
+    monkeypatch.setattr(remote, "launch_serve_commands", lambda cmds, **kw: pytest.skip("ports"))
+    seen = {}
+
+    def commands(cmd, *, ports, **kwargs):
+        seen.update(ports)
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(remote, "disagg_worker_commands", commands)
+    with pytest.raises(RuntimeError, match="stop"):
+        remote.launch_disagg_topology(
+            [fake_topology.exe, "/m", "--port", str(port)],
+            env=fake_topology.env,
+            sink=None,
+            chain="trtllm",
+        )
+    assert port not in seen.values() and seen["context"] != seen["generation"]
+
+
+def test_topology_reports_a_server_that_outlives_sigkill_on_the_context_handle():
+    class Stuck:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout=None):
+            raise remote.subprocess.TimeoutExpired("x", timeout)
+
+    class Worker:
+        def __init__(self):
+            self.teardown_errors = []
+            self.stopped = False
+
+        def terminate(self, grace=None):
+            self.stopped = True
+
+    ctx, gen = Worker(), Worker()
+    topology = remote.DisaggTopology(
+        chain="trtllm",
+        host="h",
+        port=1,
+        ctx_handle=ctx,
+        gen_handle=gen,
+        server=Stuck(),
+        workdir="/w",
+    )
+    topology.terminate(grace=0)
+    assert ctx.teardown_errors == topology.teardown_errors
+    assert "pid 4242 still running after SIGKILL" in ctx.teardown_errors[0]
+    assert ctx.stopped and gen.stopped
+    with pytest.raises(AttributeError, match="read it from ctx_handle or gen_handle"):
+        topology.engine_endpoint

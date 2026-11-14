@@ -22,13 +22,14 @@ from .launch import (
     ServeHandle,
     _address,
     _results_dir,
-    free_port,
     launch_serve_command,
     launch_serve_commands,
+    pick_port,
     resolve_chain,
 )
 from .split import (
     WORKER_ROLES,
+    ChainUnrunnableError,
     disagg_server_config,
     disagg_worker_commands,
     is_disagg_worker,
@@ -57,13 +58,15 @@ def launch_for_remote_server(
 ) -> ServeHandle | DisaggTopology | None:
     """Start ``launch_cmd`` for ``RemoteOpenAIServer``; the caller waits for ``/health``.
 
-    With ``TRTLLM_TEST_OPENENGINE_TOPOLOGY=disagg``, an aggregated server (no
+    The caller calls this with a chain or the topology selected. With
+    ``TRTLLM_TEST_OPENENGINE_TOPOLOGY=disagg``, an aggregated server (no
     ``role``, and not a disaggregated worker by
     :func:`~openengine_chain.split.is_disagg_worker`) starts as a
-    :class:`DisaggTopology`. Any other server starts as an engine plus a front
-    end, except that with the topology set and no chain, a disaggregated
-    worker or a ``trtllm-llmapi-launch`` server is left to the caller: the
-    function returns ``None``.
+    :class:`DisaggTopology`; with the topology set and no chain, a
+    disaggregated worker or a ``trtllm-llmapi-launch`` server is left to the
+    caller: the function returns ``None``. With a chain, a
+    ``trtllm-llmapi-launch`` server is refused, the topology is refused on the
+    glm chain, and any other server starts as an engine plus a front end.
     """
     chain = resolve_chain()
     topology = resolve_topology()
@@ -72,7 +75,15 @@ def launch_for_remote_server(
     if llmapi_launch:
         raise ChainError("the OpenEngine chain does not support trtllm-llmapi-launch")
     if topology is not None:
-        if role is None and not is_disagg_worker(parse_serve_command(launch_cmd).args):
+        if chain == cv.CHAIN_GLM:
+            raise ChainUnrunnableError(
+                f"not runnable: {cv.ENV_TOPOLOGY}={topology} on the glm chain, whose engine "
+                "serves no disaggregated worker (it refuses kv.session)"
+            )
+        strict = chain != cv.CHAIN_NONE
+        if role is None and not is_disagg_worker(
+            parse_serve_command(launch_cmd, strict).args, strict
+        ):
             return launch_disagg_topology(launch_cmd, env=env, sink=sink, chain=chain)
         if chain == cv.CHAIN_NONE:
             return None
@@ -125,9 +136,19 @@ class DisaggTopology:
         self.gen_handle = gen_handle
         self.server = server
         self.workdir = workdir
-        # The disaggregated server outliving SIGKILL; the workers report theirs themselves.
+        # The disaggregated server outliving SIGKILL. They are also added to the context
+        # worker's handle, whose teardown errors the pytest plugin reports when a chain is
+        # selected; the workers' handles report their own processes.
         self.teardown_errors: list[str] = []
         self._stopped = False
+
+    def __getattr__(self, name: str) -> Any:
+        # Only reached for attributes the topology does not have, such as a ServeHandle's
+        # engine_endpoint or counter_dir: those are per worker.
+        raise AttributeError(
+            f"{type(self).__name__} has no {name!r}: a moved test has two workers; read it "
+            "from ctx_handle or gen_handle"
+        )
 
     @property
     def frontend(self) -> subprocess.Popen:
@@ -173,9 +194,9 @@ class DisaggTopology:
                     with contextlib.suppress(subprocess.TimeoutExpired):
                         self.server.wait(timeout=grace)
             if self.server.poll() is None:
-                self.teardown_errors.append(
-                    f"disaggregated server pid {self.server.pid} still running after SIGKILL"
-                )
+                error = f"disaggregated server pid {self.server.pid} still running after SIGKILL"
+                self.teardown_errors.append(error)
+                self.ctx_handle.teardown_errors.append(error)
         finally:
             try:
                 self.gen_handle.terminate(grace)
@@ -201,16 +222,15 @@ def launch_disagg_topology(
     ``--port`` with the workers' addresses as static URLs. On a failure
     everything started is stopped before the error propagates.
     """
-    command = parse_serve_command(cmd)
+    strict = chain != cv.CHAIN_NONE
+    command = parse_serve_command(cmd, strict)
     host, port = _address(command.args)
     workdir = _results_dir()
     auth_key = secrets.token_hex(32)
-    ports = {"context": free_port()}
-    ports["generation"] = free_port()
-    while ports["generation"] in (ports["context"], port):
-        ports["generation"] = free_port()
+    ports = {"context": pick_port(port)}
+    ports["generation"] = pick_port(port, ports["context"])
     workers = disagg_worker_commands(
-        cmd, ports=ports, host=host, auth_key=auth_key, out_dir=workdir
+        cmd, ports=ports, host=host, auth_key=auth_key, out_dir=workdir, strict=strict
     )
     gpus = worker_gpus(visible_gpus(env), workers.gpus_per_worker, workers.share_gpu)
     ctx_handle, gen_handle = launch_serve_commands(

@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 import time
+import types
 
 import pytest
 import requests
@@ -1167,7 +1168,11 @@ def _worker(fake, tmp_path, config, role="context"):
     return args
 
 
-def test_disagg_worker_is_split_by_the_disaggregated_rules(fake, tmp_path):
+def test_disagg_worker_is_split_by_the_disaggregated_rules(fake, tmp_path, monkeypatch):
+    read = []
+    monkeypatch.setattr(
+        launch, "read_engine_capacity", lambda endpoint: read.append(endpoint) or {}
+    )
     fake.env.update(
         FAKE_ENGINE_SAY=launch.TRANSCEIVER_STARTED_LINE,
         CUDA_VISIBLE_DEVICES="3",
@@ -1193,6 +1198,7 @@ def test_disagg_worker_is_split_by_the_disaggregated_rules(fake, tmp_path):
     assert "TRTLLM_DISAGG_NO_RETRY" not in frontend["env"]
     assert _environ(engine["pid"])["CUDA_VISIBLE_DEVICES"] == "3"
     assert "CUDA_VISIBLE_DEVICES" not in _environ(frontend["pid"])
+    assert read == [handle.engine_endpoint]
     handle.terminate(grace=1)
 
 
@@ -1313,6 +1319,7 @@ def test_worker_whose_front_end_was_killed_stops_its_engine(fake, tmp_path, monk
     os.kill(worker.pid, signal.SIGKILL)
     assert worker.wait(timeout=10) == -signal.SIGKILL
     _wait_gone(engine)
+    worker.kill()
     assert not worker.handle.alive
 
 
@@ -1330,3 +1337,137 @@ def test_disagg_engine_gets_a_kv_event_publisher(fake, tmp_path):
     assert events["kv_events_config"]["replay_endpoint"] == f"tcp://127.0.0.1:{port + 1}"
     assert "event_buffer_max_size" not in events
     handle.terminate(grace=1)
+
+
+def test_disagg_engine_that_disagrees_with_its_front_end_fails_the_start(
+    fake, tmp_path, monkeypatch
+):
+    fake.env["FAKE_ENGINE_SAY"] = launch.TRANSCEIVER_STARTED_LINE
+    reported = {"max_batch_size": 8, "tokens_per_block": 64}
+    monkeypatch.setattr(launch, "read_engine_capacity", lambda endpoint: reported)
+    config = {
+        "cache_transceiver_config": {"backend": "DEFAULT"},
+        "max_batch_size": 4,
+        "kv_cache_config": {"tokens_per_block": 64},
+    }
+    with pytest.raises(launch.ChainStartupError, match="max_batch_size: front end 4, engine 8"):
+        _start(fake, _worker(fake, tmp_path, config), chain="trtllm")
+    assert not (fake.records / "frontend-start.json").exists()
+    # The engine-only --max_batch_size is not what the front end reads.
+    reported["max_batch_size"] = 4
+    args = _worker(fake, tmp_path, config, "generation") + ["--max_batch_size", "8"]
+    _start(fake, args, chain="trtllm").terminate(grace=1)
+
+
+def test_expected_capacity_is_what_the_front_end_reads(tmp_path):
+    path = _write_config(
+        tmp_path,
+        "c.yaml",
+        {"max_batch_size": 4, "kv_cache_config": {"kv_cache_event_hash_algo": "auto"}},
+    )
+    assert launch.expected_capacity(["--config", path]) == {"max_batch_size": 4}
+    args = ["--config", path, "--set", "kv_cache_config.tokens_per_block=16"]
+    assert launch.expected_capacity(args) == {"max_batch_size": 4, "tokens_per_block": 16}
+    assert launch.capacity_problems({"max_batch_size": 4}, {}) == []
+    assert launch.capacity_problems(
+        {"kv_cache_event_hash_algo": "v2_sha256"}, {"kv_cache_event_hash_algo": "v2_sha256_64"}
+    ) == ["kv_cache_event_hash_algo: front end 'v2_sha256', engine 'v2_sha256_64'"]
+
+
+@pytest.mark.parametrize(
+    "env, logs_info",
+    [
+        ({}, True),
+        ({"TLLM_LOG_LEVEL": "INFO"}, True),
+        ({"TLLM_LOG_LEVEL": "debug"}, True),
+        ({"TLLM_LOG_LEVEL": "warning"}, False),
+        ({"TLLM_LOG_LEVEL": "nonsense"}, False),
+        ({"TLLM_LOG_LEVEL_BY_MODULE": "debug:_torch"}, False),
+    ],
+)
+def test_engine_logs_info(env, logs_info):
+    assert launch.engine_logs_info(env) is logs_info
+
+
+def test_transceiver_check_without_info_lines_or_a_known_runtime(fake, tmp_path, monkeypatch):
+    monkeypatch.setattr(launch, "TRANSCEIVER_LOG_GRACE_S", 0.5)
+    config = {"cache_transceiver_config": {"backend": "DEFAULT"}}
+    # An engine that does not write INFO lines is not checked.
+    fake.env["TLLM_LOG_LEVEL"] = "warning"
+    _start(fake, _worker(fake, tmp_path, config), chain="trtllm").terminate(grace=1)
+    # Under ``auto`` the model may choose the C++ runtime, which does not log the start.
+    del fake.env["TLLM_LOG_LEVEL"]
+    auto = {"cache_transceiver_config": {"backend": "DEFAULT", "transceiver_runtime": "auto"}}
+    args = _worker(fake, tmp_path, auto, "generation")
+    _start(fake, args, chain="trtllm").terminate(grace=1)
+    check = launch.TransceiverLogCheck("AUTO")
+    assert check.problem(started=False, disabled=True) is not None
+
+
+def test_glm_chain_refuses_a_disaggregated_worker(fake, tmp_path, monkeypatch):
+    monkeypatch.setenv(cv.ENV_GLM_SERVE_CMD, fake.exe)
+    with pytest.raises(launch.ChainUnrunnableError, match="glm chain"):
+        _start(fake, _worker(fake, tmp_path, None), chain="glm")
+    assert not (fake.records / "engine-start.json").exists()
+
+
+def test_refused_command_line_keeps_its_error_type_when_started_with_others(
+    fake, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(launch, "_HANDLES", [])
+    cmds, envs, _ = _two_workers(fake, tmp_path)
+    cmds[1] = cmds[1] + ["--metadata_server_config_file", "m.yaml"]
+    with pytest.raises(launch.ChainUnrunnableError) as raised:
+        launch.launch_serve_commands(
+            cmds,
+            labels=["context", "generation"],
+            envs=envs,
+            sinks=[None, None],
+            chain="trtllm",
+            interval=0.1,
+        )
+    assert "while starting generation" in raised.value.__notes__
+    (context,) = launch._HANDLES
+    assert not context.alive and context.engine.poll() is not None
+
+
+def test_harness_port_picks_avoid_ports_picked_or_given_before(monkeypatch):
+    monkeypatch.setattr(launch, "_PICKED_PORTS", set())
+    ports = iter([5, 6, 6, 7, 8, 10, 11, 12, 13])
+    monkeypatch.setattr(launch, "free_port", lambda: next(ports))
+    launch.reserve_ports(None, 0, 7)
+    assert launch.pick_port() == 5
+    assert launch.pick_port(5) == 6
+    assert launch.pick_port() == 8
+    monkeypatch.setattr(
+        launch.socket,
+        "socket",
+        lambda *a: types.SimpleNamespace(bind=lambda address: None, close=lambda: None),
+    )
+    launch.reserve_ports(12)
+    # 10..12 overlaps 12; 13..15 is free.
+    assert launch._free_port_block(3) == 13
+    assert {13, 14, 15} <= launch._PICKED_PORTS
+
+
+def test_worker_poll_signals_the_other_process_without_waiting(fake, tmp_path, monkeypatch):
+    monkeypatch.setenv(cv.ENV_CHAIN, "trtllm")
+    fake.env["FAKE_ENGINE_SAY"] = launch.TRANSCEIVER_STARTED_LINE
+    fake.env["FAKE_ENGINE_IGNORE_TERM"] = "1"
+    config = {"cache_transceiver_config": {"backend": "DEFAULT"}}
+    worker = launch.launch_worker(
+        [fake.exe, "/model"] + _worker(fake, tmp_path, config), env=fake.env
+    )
+    fake.handles.append(worker.handle)
+    os.kill(worker.pid, signal.SIGKILL)
+    deadline = time.monotonic() + 10
+    while worker.poll() is None:
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    started = time.monotonic()
+    assert worker.poll() == -signal.SIGKILL
+    assert time.monotonic() - started < 1
+    # The engine ignores SIGTERM; kill() stops it.
+    assert _record(fake.records, "engine-term")
+    worker.kill()
+    assert not worker.handle.alive

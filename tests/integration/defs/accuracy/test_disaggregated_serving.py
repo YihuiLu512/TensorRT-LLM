@@ -491,6 +491,7 @@ def launch_disaggregated_llm(
         """The ctx and gen workers through the OpenEngine chain; all engines load at once."""
         # Importable only when the harness runner sets PYTHONPATH.
         from openengine_chain.launch import launch_workers
+        from openengine_chain.split import is_kv_aware_router
 
         workers = [("ctx", i, env, args)
                    for i, (env, args) in enumerate(ctx_servers)]
@@ -502,7 +503,7 @@ def launch_disaggregated_llm(
             for servers in ("context_servers", "generation_servers")
         }
         kv_aware_router = (
-            "kv_cache_aware" in routers
+            any(is_kv_aware_router(router) for router in routers)
             or disaggregated_server_config.get("conditional_disagg_config")
             is not None)
         log_files = []
@@ -523,7 +524,8 @@ def launch_disaggregated_llm(
                 labels=[f"{name} worker {i}" for name, i, _, _ in workers],
                 envs=[env for _, _, env, _ in workers],
                 sinks=sinks,
-                kv_aware_router=kv_aware_router)
+                kv_aware_router=kv_aware_router,
+                engine_ready_timeout=server_waiting_timeout)
             try:
                 yield (processes[:len(ctx_servers)],
                        processes[len(ctx_servers):])

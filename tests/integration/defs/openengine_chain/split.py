@@ -138,8 +138,13 @@ def _option_name(token: str) -> str:
     return token.split("=", 1)[0]
 
 
-def _iter_options(args: Sequence[str]):
-    """Yield ``(name, tokens, value)`` per option, or ``(None, [token], None)`` per positional."""
+def _iter_options(args: Sequence[str], strict: bool = True):
+    """Yield ``(name, tokens, value)`` per option, or ``(None, [token], None)`` per positional.
+
+    ``strict`` refuses the options the split table does not list or refuses.
+    Without it, as for a command line that runs unchanged, such an option takes
+    the next token as its value unless that token starts with ``--``.
+    """
     i = 0
     while i < len(args):
         token = args[i]
@@ -148,6 +153,17 @@ def _iter_options(args: Sequence[str]):
             i += 1
             continue
         name = _option_name(token)
+        if not strict and (name in REFUSED_OPTIONS or name not in OPTIONS):
+            if "=" in token:
+                yield name, [token], token.split("=", 1)[1]
+                i += 1
+            elif i + 1 < len(args) and not args[i + 1].startswith("--"):
+                yield name, [token, args[i + 1]], args[i + 1]
+                i += 2
+            else:
+                yield name, [token], None
+                i += 1
+            continue
         if name in REFUSED_OPTIONS:
             raise ChainUnrunnableError(
                 f"not runnable in the OpenEngine chain: {name}: {REFUSED_OPTIONS[name]}"
@@ -174,8 +190,11 @@ def _iter_options(args: Sequence[str]):
             i += 1
 
 
-def parse_serve_command(cmd: Sequence[str]) -> ServeCommand:
-    """Take apart ``trtllm-serve [serve] MODEL ...`` or ``python -m tensorrt_llm.commands.serve ...``."""
+def parse_serve_command(cmd: Sequence[str], strict: bool = True) -> ServeCommand:
+    """Take apart ``trtllm-serve [serve] MODEL ...`` or ``python -m tensorrt_llm.commands.serve ...``.
+
+    ``strict`` as in :func:`_iter_options`.
+    """
     cmd = list(cmd)
     if cmd and os.path.basename(cmd[0]) == "trtllm-serve":
         n = 1
@@ -188,7 +207,7 @@ def parse_serve_command(cmd: Sequence[str]) -> ServeCommand:
     rest = cmd[n:]
     positionals = []
     args = []
-    for name, tokens, _ in _iter_options(rest):
+    for name, tokens, _ in _iter_options(rest, strict):
         if name is None:
             positionals.append(tokens[0])
         else:
@@ -248,17 +267,20 @@ def split_args(args: Sequence[str], *, rewrite_yaml: Callable[[str], str]) -> Sp
         elif side is Side.BOTH:
             if name in CONFIG_OPTIONS:
                 engine.extend([name, rewrite_yaml(value)])
-            elif name == "--set" and value.split("=", 1)[0].strip() in FRONTEND_ONLY_YAML_KEYS:
+            elif name == "--set" and (
+                value.split("=", 1)[0].strip() in FRONTEND_ONLY_YAML_KEYS
+                or _set_path(value)[0] in DISAGG_FRONTEND_ONLY_YAML_KEYS
+            ):
                 continue
             else:
                 engine.extend(tokens)
     return SplitArgs(engine=tuple(engine), frontend=tuple(frontend), host=host, port=port)
 
 
-def option_value(args: Sequence[str], name: str) -> str | None:
+def option_value(args: Sequence[str], name: str, strict: bool = True) -> str | None:
     """The value ``args`` gives option ``name`` last, or ``None`` if it does not give one."""
     value = None
-    for found, _, found_value in _iter_options(args):
+    for found, _, found_value in _iter_options(args, strict):
         if found == name:
             value = found_value
     return value
@@ -311,7 +333,9 @@ def frontend_env(env: Mapping[str, str]) -> dict[str, str]:
 # YAML keys only the front end gets in a disaggregated worker: the engine's gRPC mode
 # refuses service discovery, and only the front end registers the worker.
 DISAGG_FRONTEND_ONLY_YAML_KEYS = ("disagg_cluster",)
-# Environment variables only the engine reads, in a disaggregated worker.
+# Environment variables a disaggregated worker's front end does not get: the GPUs, the
+# disaggregated-serving switches the engine reads, and the engine's KV-cache and TLLM_*
+# settings (the front end then logs at its default level).
 DISAGG_ENGINE_ONLY_ENV = (
     "CUDA_VISIBLE_DEVICES",
     "TRTLLM_DISAGG_BENCHMARK_GEN_ONLY",
@@ -323,7 +347,16 @@ DISAGG_ENGINE_ONLY_ENV_PREFIXES = ("TRTLLM_KVCACHE_", "TLLM_")
 CPP_TRANSCEIVER_BACKENDS = ("UCX", "MPI", "MOONCAKE")
 # The transceiver runtime a configuration gets when it names none.
 DEFAULT_TRANSCEIVER_RUNTIME = "PYTHON"
-# Router types of the disaggregated server that read the workers' KV cache events.
+# The legacy environment variables that resolve backend DEFAULT, by priority, as in
+# tensorrt_llm.llmapi.llm_args._CACHE_TRANSCEIVER_BACKEND_ENV_VARS.
+BACKEND_ENV_VARS = (
+    ("TRTLLM_USE_NIXL_KVCACHE", "NIXL"),
+    ("TRTLLM_USE_UCX_KVCACHE", "UCX"),
+    ("TRTLLM_USE_MOONCAKE_KVCACHE", "MOONCAKE"),
+    ("TRTLLM_USE_MPI_KVCACHE", "MPI"),
+)
+# Router types of the disaggregated server that read the workers' KV cache events
+# (the server compares router types in lower case).
 KV_AWARE_ROUTERS = ("kv_cache_aware",)
 # The configuration keys of the three parallel sizes, and their command-line options.
 _PARALLEL_KEYS = (
@@ -331,12 +364,25 @@ _PARALLEL_KEYS = (
     ("pipeline_parallel_size", "--pp_size"),
     ("context_parallel_size", "--cp_size"),
 )
+# ``--set`` paths a disaggregated worker cannot take: the harness writes these settings into
+# the engine's configuration, and a ``--set`` would override them there.
+_DISAGG_RULE_SET_PATHS = (
+    ("cache_transceiver_config",),
+    ("kv_cache_config", "event_buffer_max_size"),
+    ("kv_cache_config", "use_kv_cache_manager_v2"),
+    ("kv_cache_config", "kv_events_config"),
+)
 
 
-def last_config_file(args: Sequence[str]) -> str | None:
+def is_kv_aware_router(router_type: str | None) -> bool:
+    """Whether a disaggregated server's router type routes on KV cache events."""
+    return router_type is not None and router_type.lower() in KV_AWARE_ROUTERS
+
+
+def last_config_file(args: Sequence[str], strict: bool = True) -> str | None:
     """The configuration file ``trtllm-serve`` reads: the last ``--config`` or ``--extra_llm_api_options``."""
     path = None
-    for name, _, value in _iter_options(args):
+    for name, _, value in _iter_options(args, strict):
         if name in CONFIG_OPTIONS:
             path = value
     return path
@@ -353,18 +399,69 @@ def load_config(path: str | None) -> dict[str, Any]:
     return config
 
 
-def is_disagg_worker(args: Sequence[str]) -> bool:
+def _set_path(assignment: str) -> tuple[str, ...]:
+    """The configuration path of one ``--set PATH=VALUE``."""
+    return tuple(part.strip() for part in assignment.split("=", 1)[0].split("."))
+
+
+def set_overrides(args: Sequence[str], strict: bool = True) -> list[tuple[tuple[str, ...], Any]]:
+    """The ``--set`` overrides of a command line, in order: ``(path, value)``."""
+    found = []
+    for name, _, value in _iter_options(args, strict):
+        if name == "--set" and value is not None:
+            found.append((_set_path(value), yaml.safe_load(value.split("=", 1)[1])))
+    return found
+
+
+def setting(
+    config: Mapping[str, Any],
+    args: Sequence[str],
+    path: tuple[str, ...],
+    option: str | None = None,
+    strict: bool = True,
+) -> Any:
+    """The value ``trtllm-serve`` gives configuration ``path``, or ``None`` if nothing sets it.
+
+    As in ``trtllm-serve``: the last ``--set`` of the path wins; then the
+    command-line ``option``, when the command line gives it; then the
+    configuration file.
+    """
+    value = None
+    for found, found_value in set_overrides(args, strict):
+        if found == path:
+            value = found_value
+    if value is not None:
+        return value
+    if option is not None:
+        given = option_value(args, option, strict)
+        if given is not None:
+            return given
+        if not OPTIONS.get(option, Option(Side.ENGINE)).takes_value:
+            if any(name == option for name, _, _ in _iter_options(args, strict)):
+                return True
+    node: Any = config
+    for key in path:
+        if not isinstance(node, Mapping) or key not in node:
+            return None
+        node = node[key]
+    return node
+
+
+def is_disagg_worker(args: Sequence[str], strict: bool = True) -> bool:
     """Whether a ``trtllm-serve`` command line (without its model) starts a disaggregated worker."""
-    if option_value(args, "--server_role") is not None:
+    if option_value(args, "--server_role", strict) is not None:
         return True
-    if option_value(args, "--disagg_cluster_uri") is not None:
+    if option_value(args, "--disagg_cluster_uri", strict) is not None:
         return True
-    config = load_config(last_config_file(args))
-    return "disagg_cluster" in config or "cache_transceiver_config" in config
+    sections = ("disagg_cluster", "cache_transceiver_config")
+    if any(path[0] in sections for path, _ in set_overrides(args, strict)):
+        return True
+    config = load_config(last_config_file(args, strict))
+    return any(section in config for section in sections)
 
 
 def disagg_frontend_env(env: Mapping[str, str]) -> dict[str, str]:
-    """A disaggregated worker front end's environment: ``env`` without what only the engine reads."""
+    """A disaggregated worker front end's environment: ``env`` without what it does not get."""
     return {
         key: value
         for key, value in frontend_env(env).items()
@@ -372,15 +469,15 @@ def disagg_frontend_env(env: Mapping[str, str]) -> dict[str, str]:
     }
 
 
-def parallel_size(args: Sequence[str]) -> int:
+def parallel_size(args: Sequence[str], strict: bool = True) -> int:
     """GPUs one instance of the command line's model takes: tensor x pipeline x context parallel.
 
-    The configuration file wins over the command-line options, as in ``trtllm-serve``.
+    Each size is resolved as :func:`setting` resolves it.
     """
-    config = load_config(last_config_file(args))
+    config = load_config(last_config_file(args, strict))
     size = 1
     for key, option in _PARALLEL_KEYS:
-        value = config.get(key, option_value(args, option))
+        value = setting(config, args, (key,), option, strict)
         size *= int(value) if value is not None else 1
     return size
 
@@ -400,46 +497,67 @@ def kv_events_wanted(config: Mapping[str, Any], kv_aware_router: bool | None) ->
     return kv_aware_router is not False
 
 
-def _transceiver_template(config: dict[str, Any]) -> None:
+def env_backend(env: Mapping[str, str]) -> str | None:
+    """The backend the legacy environment variables select for backend DEFAULT, if any."""
+    for name, backend in BACKEND_ENV_VARS:
+        if env.get(name) == "1":
+            return backend
+    return None
+
+
+def _transceiver_template(config: dict[str, Any], env: Mapping[str, str]) -> None:
     """Spell out the KV-transfer settings the engine needs, in ``config``.
 
-    The backend is always written, so that the engine builds a transceiver:
-    NIXL for the Python runtime, the only backend it takes; DEFAULT for the C++
-    runtime when the configuration names none. A C++-only backend gets the C++
-    runtime and KV cache manager V1 unless the configuration chooses otherwise.
-    Nothing else is set: ``kv_transfer_timeout_ms`` and ``max_tokens_in_buffer``
-    keep the configuration's values or their defaults.
+    The backend is always written, so that the engine builds a transceiver.
+    Without one, or with DEFAULT, the Python runtime (also ``auto``, which
+    prefers it) gets the backend the legacy environment variables select, as
+    the engine would resolve DEFAULT, or else NIXL; the C++ runtime gets
+    DEFAULT. A C++-only backend gets the C++ runtime and KV cache manager V1
+    unless the configuration chooses otherwise. Nothing else is set:
+    ``kv_transfer_timeout_ms`` and ``max_tokens_in_buffer`` keep the
+    configuration's values or their defaults.
     """
     transceiver = dict(config.get("cache_transceiver_config") or {})
     backend = transceiver.get("backend")
+    runtime = transceiver.get("transceiver_runtime", DEFAULT_TRANSCEIVER_RUNTIME)
     if backend in CPP_TRANSCEIVER_BACKENDS:
         transceiver.setdefault("transceiver_runtime", "CPP")
         kv_cache = dict(config.get("kv_cache_config") or {})
         kv_cache.setdefault("use_kv_cache_manager_v2", False)
         config["kv_cache_config"] = kv_cache
-    elif transceiver.get("transceiver_runtime", DEFAULT_TRANSCEIVER_RUNTIME) == "PYTHON":
+    elif runtime in ("PYTHON", "auto"):
         if backend in (None, "DEFAULT"):
-            transceiver["backend"] = "NIXL"
+            transceiver["backend"] = env_backend(env) or "NIXL"
     elif backend is None:
         transceiver["backend"] = "DEFAULT"
     config["cache_transceiver_config"] = transceiver
 
 
 def transceiver_runtime(config: Mapping[str, Any]) -> str:
-    """The transceiver runtime an engine configuration selects: ``PYTHON`` or ``CPP``."""
+    """The transceiver runtime an engine configuration selects: ``PYTHON``, ``CPP`` or ``AUTO``.
+
+    ``AUTO`` is ``auto`` that the configuration alone does not resolve: the
+    model's preference decides. ``auto`` with a non-NIXL backend or no
+    ``kv_transfer_timeout_ms`` resolves to the C++ runtime.
+    """
     transceiver = config.get("cache_transceiver_config") or {}
     runtime = transceiver.get("transceiver_runtime", DEFAULT_TRANSCEIVER_RUNTIME)
+    if runtime == "auto":
+        timeout_off = "kv_transfer_timeout_ms" in transceiver and (
+            transceiver["kv_transfer_timeout_ms"] is None
+        )
+        if transceiver.get("backend") not in (None, "NIXL") or timeout_off:
+            return "CPP"
+        return "AUTO"
     return "PYTHON" if runtime == "PYTHON" else "CPP"
 
 
 def attention_dp_ranks(config: Mapping[str, Any], args: Sequence[str]) -> int:
     """KV event publishers of one engine: one per attention-DP rank."""
-    enabled = config.get("enable_attention_dp")
-    if enabled is None:
-        enabled = any(name == "--enable_attention_dp" for name, _, _ in _iter_options(args))
-    if not enabled:
+    enabled = setting(config, args, ("enable_attention_dp",), "--enable_attention_dp")
+    if enabled is None or not _as_bool(enabled):
         return 1
-    value = config.get("tensor_parallel_size", option_value(args, "--tp_size"))
+    value = setting(config, args, ("tensor_parallel_size",), "--tp_size")
     return max(1, int(value) if value is not None else 1)
 
 
@@ -453,7 +571,7 @@ def _kv_events_template(
     replay endpoint alike.
     """
     for key, option in _PARALLEL_KEYS[1:]:
-        value = config.get(key, option_value(args, option))
+        value = setting(config, args, (key,), option)
         if value is not None and int(value) > 1:
             raise ChainUnrunnableError(
                 f"not runnable in the OpenEngine chain (DV-23): KV cache events need {key} 1, "
@@ -484,25 +602,40 @@ def _kv_events_template(
     config["kv_cache_config"] = kv_cache
 
 
+def check_disagg_sets(args: Sequence[str]) -> None:
+    """Refuse the ``--set`` overrides a disaggregated worker cannot take (the harness writes them)."""
+    for path, _ in set_overrides(args):
+        for refused in _DISAGG_RULE_SET_PATHS:
+            if path[: len(refused)] == refused:
+                raise UnknownServeOptionError(
+                    f"--set {'.'.join(path)}: the harness writes this setting into a "
+                    "disaggregated worker's engine configuration; give it in the configuration "
+                    "file instead"
+                )
+
+
 def disagg_engine_yaml(
     path: str | None,
     out_dir: str,
     *,
     args: Sequence[str],
+    env: Mapping[str, str],
     kv_aware_router: bool | None,
     ports: Callable[[int], int],
 ) -> str:
     """Write the engine's configuration for a disaggregated worker and return its path.
 
-    ``path`` is the worker's configuration file (``None``: it has none) and
-    ``args`` its command line. The copy drops the front-end-only keys, spells
-    out the KV-transfer settings and, when the worker serves KV cache events,
-    sets up the streaming publisher (:func:`kv_events_wanted`).
+    ``path`` is the worker's configuration file (``None``: it has none),
+    ``args`` its command line and ``env`` the engine's environment. The copy
+    drops the front-end-only keys, spells out the KV-transfer settings and,
+    when the worker serves KV cache events, sets up the streaming publisher
+    (:func:`kv_events_wanted`).
     """
+    check_disagg_sets(args)
     config = load_config(path)
     for key in FRONTEND_ONLY_YAML_KEYS + DISAGG_FRONTEND_ONLY_YAML_KEYS:
         config.pop(key, None)
-    _transceiver_template(config)
+    _transceiver_template(config, env)
     if kv_events_wanted(config, kv_aware_router):
         _kv_events_template(config, args, ports)
     os.makedirs(out_dir, exist_ok=True)
@@ -541,6 +674,7 @@ def disagg_worker_commands(
     host: str,
     auth_key: str,
     out_dir: str,
+    strict: bool = True,
 ) -> DisaggWorkerCommands:
     """Take one aggregated ``trtllm-serve`` command line apart for two disaggregated workers.
 
@@ -550,31 +684,38 @@ def disagg_worker_commands(
     from ``ports``, ``--server_role``, and a configuration file: the one
     ``cmd`` reads, plus a KV transceiver (unless it has one), the
     disaggregated server's signing key and, when the two workers share a GPU,
-    half of the KV cache memory share each.
+    half of the KV cache memory share each. That share is resolved as
+    ``trtllm-serve`` resolves it (:func:`setting`), so the command line's own
+    ``--kv_cache_free_gpu_memory_fraction`` and ``--set`` of it are dropped.
+    ``strict`` as in :func:`_iter_options` (``False`` when no chain splits the
+    workers).
     """
-    command = parse_serve_command(cmd)
-    if is_disagg_worker(command.args):
+    command = parse_serve_command(cmd, strict)
+    if is_disagg_worker(command.args, strict):
         raise ValueError(f"already a disaggregated worker, not moved: {list(cmd)!r}")
-    config_path = last_config_file(command.args)
-    config = load_config(config_path)
+    config = load_config(last_config_file(command.args, strict))
     config.setdefault("cache_transceiver_config", {"backend": "DEFAULT"})
     config["internal_request_auth_key"] = auth_key
-    gpus = parallel_size(command.args)
+    gpus = parallel_size(command.args, strict)
     share_gpu = gpus == 1
+    fraction_path = ("kv_cache_config", "free_gpu_memory_fraction")
+    fraction_option = "--kv_cache_free_gpu_memory_fraction"
     if share_gpu:
-        kv_cache = dict(config.get("kv_cache_config") or {})
-        fraction = kv_cache.get("free_gpu_memory_fraction")
+        fraction = setting(config, command.args, fraction_path, fraction_option, strict)
         if fraction is None:
-            given = option_value(command.args, "--kv_cache_free_gpu_memory_fraction")
-            fraction = (
-                float(given) if given is not None else (DEFAULT_KV_CACHE_FREE_GPU_MEMORY_FRACTION)
-            )
+            fraction = DEFAULT_KV_CACHE_FREE_GPU_MEMORY_FRACTION
+        kv_cache = dict(config.get("kv_cache_config") or {})
         kv_cache["free_gpu_memory_fraction"] = float(fraction) / 2
         config["kv_cache_config"] = kv_cache
     kept: list[str] = []
-    for name, tokens, _ in _iter_options(command.args):
-        if name not in ("--host", "--port") and name not in CONFIG_OPTIONS:
-            kept.extend(tokens)
+    for name, tokens, value in _iter_options(command.args, strict):
+        if name in ("--host", "--port") or name in CONFIG_OPTIONS:
+            continue
+        if share_gpu and (
+            name == fraction_option or (name == "--set" and _set_path(value) == fraction_path)
+        ):
+            continue
+        kept.extend(tokens)
     os.makedirs(out_dir, exist_ok=True)
     commands: dict[str, tuple[str, ...]] = {}
     configs: dict[str, str] = {}

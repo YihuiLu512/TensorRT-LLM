@@ -36,6 +36,7 @@ import yaml
 
 from . import conventions as cv
 from .split import (
+    ChainUnrunnableError,
     ServeCommand,
     disagg_engine_yaml,
     disagg_frontend_env,
@@ -44,8 +45,10 @@ from .split import (
     is_disagg_worker,
     iteration_stats_enabled,
     last_config_file,
+    load_config,
     option_value,
     parse_serve_command,
+    setting,
     split_args,
     transceiver_runtime,
 )
@@ -852,56 +855,137 @@ class FrontendCheck:
 ENGINE_FATAL_LINE = re.compile(
     r"MPI Error in|MPI_ABORT was invoked|An error occurred in MPI_", re.IGNORECASE
 )
-# Lines of a TensorRT-LLM engine log about its KV cache transceiver: the Python
+# INFO lines of a TensorRT-LLM engine log about its KV cache transceiver: the Python
 # runtime's transceiver logs the first when it is built; any runtime logs the second
 # when the configuration builds none.
 TRANSCEIVER_STARTED_LINE = "Using KvCacheTransceiverV2"
 TRANSCEIVER_DISABLED_LINE = "cache_transceiver is disabled"
+_TRANSCEIVER_LINES = re.compile(
+    f"{re.escape(TRANSCEIVER_STARTED_LINE)}|{re.escape(TRANSCEIVER_DISABLED_LINE)}"
+)
+# The settings both processes of a disaggregated worker read, compared once the engine is
+# ready: configuration paths, and the GetServerInfo extra key of the hash algorithm.
+_COMPARED_SETTINGS = {
+    "max_batch_size": ("max_batch_size",),
+    "tokens_per_block": ("kv_cache_config", "tokens_per_block"),
+    "kv_cache_event_hash_algo": ("kv_cache_config", "kv_cache_event_hash_algo"),
+}
+_ENGINE_HASH_ALGO_KEY = "trtllm_kv_event_hash_algo"
+# Levels at which the TensorRT-LLM logger writes INFO lines (tensorrt_llm/logger.py).
+_INFO_LOG_LEVELS = ("info", "verbose", "debug", "trace")
 # How long after the engine reports SERVING its log may take to show the transceiver line.
 TRANSCEIVER_LOG_GRACE_S = 30.0
 
 
 class _LogScanner:
-    """Reads a log as it grows and finds the first line matching a pattern."""
+    """Reads a log as it grows, a complete line at a time."""
 
     def __init__(self, path: str) -> None:
         self._path = path
         self._offset = 0
         self._partial = b""
 
-    def find(self, pattern: re.Pattern[str]) -> str | None:
+    def new_lines(self) -> list[str]:
+        """The complete lines written since the last call."""
         try:
             with open(self._path, "rb") as f:
                 f.seek(self._offset)
                 data = f.read()
         except OSError:
-            return None
+            return []
         self._offset += len(data)
         lines = (self._partial + data).split(b"\n")
         self._partial = lines.pop()
-        for line in lines:
-            text = line.decode("utf-8", "replace")
+        return [line.decode("utf-8", "replace") for line in lines]
+
+    def find(self, pattern: re.Pattern[str]) -> str | None:
+        """The first new line matching ``pattern``; the lines read after it are skipped."""
+        for text in self.new_lines():
             if pattern.search(text):
                 return text
         return None
 
 
+def engine_logs_info(env: Mapping[str, str]) -> bool:
+    """Whether an engine started with ``env`` writes the logger's INFO lines.
+
+    ``trtllm-serve`` logs at INFO unless ``TLLM_LOG_LEVEL`` sets another
+    level; ``TLLM_LOG_LEVEL_BY_MODULE`` may silence any module, so with it
+    the answer is no.
+    """
+    if env.get("TLLM_LOG_LEVEL_BY_MODULE"):
+        return False
+    level = env.get("TLLM_LOG_LEVEL")
+    return level is None or level.lower() in _INFO_LOG_LEVELS
+
+
+def expected_capacity(frontend_args: Sequence[str]) -> dict[str, int | str]:
+    """The settings a disaggregated worker's front end reads that its engine must agree on.
+
+    ``max_batch_size``, ``tokens_per_block`` and ``kv_cache_event_hash_algo``
+    (TH-DSG-2), as the front end's command line and configuration give them;
+    a setting they leave out, or a hash algorithm ``auto``, is not compared.
+    """
+    config = load_config(last_config_file(frontend_args))
+    expected: dict[str, int | str] = {}
+    for name, path in _COMPARED_SETTINGS.items():
+        value = setting(config, frontend_args, path)
+        if value is None or (name == "kv_cache_event_hash_algo" and value == "auto"):
+            continue
+        expected[name] = value if name == "kv_cache_event_hash_algo" else int(value)
+    return expected
+
+
+def read_engine_capacity(endpoint: str) -> dict[str, int | str]:
+    """What an engine's GetServerInfo reports of the settings :func:`expected_capacity` reads."""
+    from tensorrt_llm.grpc.openengine.bindings import server_pb2
+
+    from .proof import _RPC_TIMEOUT_S, _control_stub
+
+    channel, stub = _control_stub(endpoint)
+    with channel:
+        info = stub.GetServerInfo(server_pb2.GetServerInfoRequest(), timeout=_RPC_TIMEOUT_S)
+    reported: dict[str, int | str] = {}
+    if info.capacity.max_running_requests:
+        reported["max_batch_size"] = info.capacity.max_running_requests
+    if info.capacity.kv_block_size:
+        reported["tokens_per_block"] = info.capacity.kv_block_size
+    if _ENGINE_HASH_ALGO_KEY in info.extra:
+        reported["kv_cache_event_hash_algo"] = info.extra[_ENGINE_HASH_ALGO_KEY]
+    return reported
+
+
+def capacity_problems(expected: Mapping[str, Any], reported: Mapping[str, Any]) -> list[str]:
+    """The settings the engine reports with another value than the front end reads."""
+    return [
+        f"{name}: front end {expected[name]!r}, engine {reported[name]!r}"
+        for name in expected
+        if name in reported and reported[name] != expected[name]
+    ]
+
+
 class TransceiverLogCheck:
     """Whether a disaggregated worker's engine has built its KV cache transceiver, from its log.
 
-    ``runtime`` is ``PYTHON`` or ``CPP``: only the Python runtime logs that
-    its transceiver started; any runtime logs that a configuration without a
-    backend has none.
+    ``runtime`` is ``PYTHON``, ``CPP`` or ``AUTO``
+    (:func:`~openengine_chain.split.transceiver_runtime`): only the Python
+    runtime logs that its transceiver started, so only ``PYTHON`` needs that
+    line; any runtime logs that a configuration without a backend has none.
+    An engine that does not write INFO lines (``logs_info`` false) is not
+    checked.
     """
 
-    def __init__(self, runtime: str) -> None:
+    def __init__(self, runtime: str, logs_info: bool = True) -> None:
         self.runtime = runtime
+        self.logs_info = logs_info
 
-    def problem(self, text: str) -> str | None:
-        """Why a log ``text`` does not show a started transceiver, or ``None``."""
-        if TRANSCEIVER_DISABLED_LINE in text:
+    def problem(self, started: bool, disabled: bool) -> str | None:
+        """Why a log that has (or lacks) the two lines does not show a started transceiver."""
+        if not self.logs_info:
+            return None
+        if disabled:
             return f"the engine log says {TRANSCEIVER_DISABLED_LINE!r}"
-        if self.runtime == "PYTHON" and TRANSCEIVER_STARTED_LINE not in text:
+        if self.runtime == "PYTHON" and not started:
             return f"the engine log has no {TRANSCEIVER_STARTED_LINE!r}"
         return None
 
@@ -929,6 +1013,8 @@ class _EngineWait:
         self._deadline = time.monotonic() + timeout
         self._transceiver_deadline: float | None = None
         self._fatal = _LogScanner(engine.log_path)
+        self._transceiver_scan = _LogScanner(engine.log_path)
+        self._transceiver_lines: set[str] = set()
         self._channel = grpc.insecure_channel(endpoint)
         self._stub = health_pb2_grpc.HealthStub(self._channel)
 
@@ -982,15 +1068,20 @@ class _EngineWait:
         """Whether the log of a SERVING engine shows its transceiver; raises once the grace is over."""
         if self._transceiver is None:
             return True
-        with open(self.engine.log_path, "rb") as f:
-            text = f.read().decode("utf-8", "replace")
-        problem = self._transceiver.problem(text)
+        for text in self._transceiver_scan.new_lines():
+            found = _TRANSCEIVER_LINES.search(text)
+            if found:
+                self._transceiver_lines.add(found.group(0))
+        disabled = TRANSCEIVER_DISABLED_LINE in self._transceiver_lines
+        problem = self._transceiver.problem(
+            TRANSCEIVER_STARTED_LINE in self._transceiver_lines, disabled
+        )
         if problem is None:
             return True
         now = time.monotonic()
         if self._transceiver_deadline is None:
             self._transceiver_deadline = now + TRANSCEIVER_LOG_GRACE_S
-        if TRANSCEIVER_DISABLED_LINE in text or now > self._transceiver_deadline:
+        if disabled or now > self._transceiver_deadline:
             raise ChainStartupError(
                 f"engine at {self.endpoint} is SERVING but has no KV cache transceiver: "
                 f"{problem}; log {self.engine.log_path}:\n{tail(self.engine.log_path)}"
@@ -1119,27 +1210,41 @@ class ServeStart:
         self._workdir = workdir
         disagg = is_disagg_worker(command.args)
         self._transceiver: TransceiverLogCheck | None = None
+        self._expected_capacity: dict[str, int | str] = {}
         if disagg:
-            runtimes: list[str] = []
+            if chain == cv.CHAIN_GLM:
+                raise ChainUnrunnableError(
+                    "not runnable in the OpenEngine chain: the glm chain's engine serves no "
+                    "disaggregated worker (it refuses kv.session)"
+                )
+            last = last_config_file(command.args)
+            engine_configs: list[dict[str, Any]] = []
 
             def rewrite_yaml(path: str | None) -> str:
+                # The engine reads the last configuration file only; the others need no
+                # KV event ports.
                 engine_path = disagg_engine_yaml(
                     path,
                     workdir,
                     args=command.args,
-                    kv_aware_router=kv_aware_router,
+                    env=env,
+                    kv_aware_router=kv_aware_router if path == last else False,
                     ports=_free_port_block,
                 )
                 with open(engine_path, encoding="utf-8") as f:
-                    runtimes.append(transceiver_runtime(yaml.safe_load(f) or {}))
+                    engine_configs.append(yaml.safe_load(f) or {})
                 return engine_path
 
             split = split_args(command.args, rewrite_yaml=rewrite_yaml)
             engine_args = list(split.engine)
-            if last_config_file(command.args) is None:
+            if last is None:
                 engine_args += ["--extra_llm_api_options", rewrite_yaml(None)]
-            # The engine reads the last configuration file only.
-            self._transceiver = TransceiverLogCheck(runtimes[-1])
+            if chain == cv.CHAIN_TRTLLM:
+                self._transceiver = TransceiverLogCheck(
+                    transceiver_runtime(engine_configs[-1]), engine_logs_info(env)
+                )
+                # What the front end reads from its own configuration and --set.
+                self._expected_capacity = expected_capacity(split.frontend)
         else:
             split = split_args(command.args, rewrite_yaml=lambda path: engine_yaml(path, workdir))
             engine_args = list(split.engine)
@@ -1164,7 +1269,7 @@ class ServeStart:
         self._fe_env = fe_env
         # Runs while the engine loads, so that a configuration the front end refuses
         # does not wait for the engine.
-        self._check_port = free_port()
+        self._check_port = _free_port_other_than(port)
         self._check = FrontendCheck(
             lambda check_endpoint: self._frontend_cmd(check_endpoint, str(self._check_port)),
             check_env,
@@ -1294,6 +1399,16 @@ class ServeStart:
                 return handle
             self._check.stop()
             endpoint = handle.engine_endpoint
+            if self._expected_capacity:
+                with handle.stop_on_error():
+                    problems = capacity_problems(
+                        self._expected_capacity, read_engine_capacity(endpoint)
+                    )
+                    if problems:
+                        raise ChainStartupError(
+                            f"engine at {endpoint} disagrees with its front end's configuration: "
+                            f"{'; '.join(problems)}; log {handle.engine_log}"
+                        )
 
             def start_frontend(frontend_port: str | None) -> LoggedProcess:
                 return LoggedProcess(
@@ -1420,13 +1535,16 @@ def launch_serve_commands(
 ) -> list[ServeHandle]:
     """Start several servers at once: all engines load in parallel.
 
-    Each command is started as :func:`launch_serve_command` starts it. If any
-    of them fails to start, its front end refuses to start, or its front end
-    exits while the others load, every server is stopped and a
-    :class:`ChainStartupError` names it by its entry in ``labels``.
+    Each command is started as :func:`launch_serve_command` starts it; the
+    ports the harness picks avoid every command's ``--port``. If any of them
+    fails to start, its front end refuses to start, or its front end exits
+    while the others load, every server is stopped and the error names it by
+    its entry in ``labels``: a :class:`ChainStartupError`, or, for a command
+    line the harness refuses, that error with a note.
     """
     starts: list[ServeStart] = []
     handles: list[ServeHandle | None] = [None] * len(cmds)
+    reserve_ports(*(_address(cmd)[1] for cmd in cmds))
     try:
         for label, cmd, env, sink in zip(labels, cmds, envs, sinks, strict=True):
             try:
@@ -1441,8 +1559,11 @@ def launch_serve_commands(
                         kv_aware_router=kv_aware_router,
                     )
                 )
-            except Exception as error:
+            except ChainStartupError as error:
                 raise ChainStartupError(f"{label} failed to start: {error}") from error
+            except Exception as error:
+                error.add_note(f"while starting {label}")
+                raise
         while True:
             for i, start in enumerate(starts):
                 if handles[i] is None:
@@ -1469,11 +1590,22 @@ def launch_serve_commands(
         raise
 
 
+# Ports the harness picked in this process for the processes it starts, and the ports of
+# servers started together: a process binds its port only later (an engine after loading
+# its model), so later picks avoid these rather than rely on the port being bound.
+_PICKED_PORTS: set[int] = set()
+
+
+def reserve_ports(*ports: int | None) -> None:
+    """Keep the harness's later port picks off ``ports`` (``None`` and 0 are ignored)."""
+    _PICKED_PORTS.update(port for port in ports if port)
+
+
 def _free_port_block(count: int) -> int:
-    """The first of ``count`` consecutive ports that were free a moment ago."""
+    """The first of ``count`` consecutive ports that were free a moment ago and not picked before."""
     for _ in range(100):
         base = free_port()
-        if base + count > 65536:
+        if base + count > 65536 or _PICKED_PORTS.intersection(range(base, base + count)):
             continue
         socks = []
         try:
@@ -1481,6 +1613,7 @@ def _free_port_block(count: int) -> int:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 socks.append(sock)
                 sock.bind((ENGINE_HOST, port))
+            reserve_ports(*range(base, base + count))
             return base
         except OSError:
             continue
@@ -1499,15 +1632,21 @@ def _as_port(value: str | None) -> int | None:
 
 
 def _free_port_other_than(*taken: int | None) -> int:
-    """A :func:`free_port` that is none of ``taken``.
+    """A :func:`free_port` that is none of ``taken`` and was not picked before.
 
     ``taken`` are ports that another process or option of the server uses.
     """
     for _ in range(100):
         port = free_port()
-        if port not in taken:
+        if port not in taken and port not in _PICKED_PORTS:
+            reserve_ports(port)
             return port
     raise ChainError(f"no free port other than {taken} found")
+
+
+def pick_port(*taken: int | None) -> int:
+    """A free port for a process the harness starts, kept off its later picks."""
+    return _free_port_other_than(*taken)
 
 
 def _lost_its_port(log_path: str | None, port: int) -> bool:
@@ -1630,13 +1769,19 @@ class WorkerProcess(ChainProcess):
     The front end stands for the worker: its pid and exit code (or the
     engine's, as :meth:`ServeHandle.poll` gives them) are the worker's, so a
     test that kills the worker by pid kills the front end. Once :meth:`poll`
-    sees either process gone, the harness stops the other one.
+    sees either process gone, it sends SIGTERM to the other one without
+    waiting; :meth:`terminate` or :meth:`kill` then stops the worker fully.
     """
+
+    _signalled = False
 
     def poll(self) -> int | None:
         rc = self.handle.poll()
-        if rc is not None and self.handle.alive:
-            self.handle.terminate()
+        if rc is not None and not self._signalled:
+            self._signalled = True
+            for proc in (self.handle.frontend, self.handle.engine):
+                if proc is not None and proc.poll() is None:
+                    proc.terminate()
         return rc
 
 
@@ -1663,10 +1808,16 @@ def launch_workers(
     envs: Sequence[Mapping[str, str] | None],
     sinks: Sequence[IO[Any] | int | None],
     kv_aware_router: bool | None = None,
+    engine_ready_timeout: float = DEFAULT_ENGINE_READY_TIMEOUT_S,
 ) -> list[WorkerProcess]:
     """Start several disaggregated workers through the chain at once, as :func:`launch_serve_commands`."""
     handles = launch_serve_commands(
-        cmds, labels=labels, envs=envs, sinks=sinks, kv_aware_router=kv_aware_router
+        cmds,
+        labels=labels,
+        envs=envs,
+        sinks=sinks,
+        kv_aware_router=kv_aware_router,
+        engine_ready_timeout=engine_ready_timeout,
     )
     return [WorkerProcess(handle) for handle in handles]
 
