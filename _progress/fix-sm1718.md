@@ -39,3 +39,42 @@
 | `tools/capgrpc/common.py` | `UNREQUESTED_OPTION`、`add_server_args`、`resolve_max_unrequested`；`make_server` 第二参数必填 |
 | `tools/capgrpc/nullgrpc/server.py`、`tools/capselfcheck/relay.py` | 接 `--max-unrequested-s`，就绪 info 与每档 summary 记 `grpc_server_options` |
 | 文档 | INTERFACES 勘误节 + §5.5.2、§11 三行指针；jobs、nullgrpc、capselfcheck README |
+- 2026-11-14 22:05:11 全量验证 v1（HEAD 2c8bbf4，脚本 _local/fix-sm1718/fullv.sh 逐步调用：10 个测试目录逐个、selftest 25、patchcheck、py_compile、bash -n，约 10 分钟）
+- 2026-11-14 22:07:29 capprobe 8 failed：测试读 WT/probe-tree（照 fix-SM14/SM16 建测试用软链 WT/probe-tree -> ../../probe-tree，收尾移到 _local/fix-sm1718/probe-tree.link），重跑 capprobe
+- 2026-11-14 22:18:07 tests/launch 7 failed 全是 test_aux_helper multiprocessing forkserver「AF_UNIX path too long」（TMPDIR=$L/tmp/v1 过长，环境问题）；改用短 TMPDIR /home/scratch.yihlu_coreai/tmp/20261114-capkit-sm1718（含 PROVENANCE.md）重跑 tests/launch
+- 2026-11-14 22:21:43 作业路径 e2e 终版：重建 P0 覆盖清单（HEAD 2c8bbf4a），跑 e0b-s1-single（J9300011）与 e0a-nullsse（J9300012），各约 1–3 分钟
+- 2026-11-14 23:12:17 恢复（暂停后重启）：此前全量验证 v1 与 e2e 作废；恢复测试用软链 WT/probe-tree（从 _local/fix-sm1718/probe-tree.link.230403 改名回来）；开始全量验证 v2（HEAD 2c8bbf4，TMPDIR /home/scratch.yihlu_coreai/tmp/20261114-capkit-sm1718/v2，10 个测试目录逐个，约 15 分钟）
+- 2026-11-14 23:24:39 全量验证 v2 完成：10 个目录全过（1018 passed）、selftest 25 过、patchcheck PASS、py_compile 190/0、bash -n 3/0；下一步作业路径 e2e（e0b-s1-single、e0a-nullsse，约 5 分钟）
+- 2026-11-14 23:27:40 作业路径 e2e v2（overlay 重建于 e2e/ovl/v2，HEAD 2c8bbf4a）：e0b-s1-single J9300021、e0a-nullsse J9300022 均 L0 VALID、judge rc=11 NOT_RUN、0 RED、无 INPUT_INVALID；e0b 的 beat、relay1 就绪与 24 个服务端 summary 记 grpc_server_options=18 s；下一步 SM-18 过载档本地复现（修前 1176861 导出树 vs HEAD）
+- 2026-11-14 23:30:39 SM-18 过载档复现 v2：repro/sm18-v2/{pre,post} 由 git archive 导出（pre=1176861d main 基线、post=HEAD 2c8bbf4a），同一复现测试用 e0w60 e0b-s1 参数（beat 4 ms、50 msg/流、relay 每 msg busy 1 ms、up-over 30 rps × 60 s、超时 60 s），每侧约 2–3 分钟
+- 2026-11-14 23:34:30 SM-18 修前（pre 1176861d）：drain grpc_CANCELLED 158/1800（tier 2 up-over），relay1 streams_accepted 1642 = ok；修后（post HEAD）开跑约 2–3 分钟
+- 2026-11-14 23:38:12 SM-17 假 ssh 复现 v2：repro/sm17-v2（bin/ssh 按调用序号返回 255，其余回放 Slurm 文本；pre-tools=1176861d 导出），5 个用例约 1 分钟
+- 2026-11-14 23:4x SM-17 假 ssh 复现 v2 完成；结果见下节「全量验证 v2（恢复后重做）」
+
+## 全量验证 v2（恢复后重做，HEAD 2c8bbf4a；v1 与此前 e2e 作废）
+
+### MEASURED
+| 项 | 结果 |
+|---|---|
+| tests/capcommon | 190 passed |
+| tests/capload | 33 passed |
+| tests/capprobe（测试用软链 WT/probe-tree） | 159 passed |
+| tests/envgate | 71 passed |
+| tests/grpc | 52 passed |
+| tests/jobs | 218 passed |
+| tests/judge | 97 passed |
+| tests/nullsse | 4 passed |
+| tests/sidecar | 5 passed |
+| tests/launch（短 TMPDIR） | 189 passed |
+| `samples/run_selftest.py --package capjudge --expect-samples 25` | rc 0，25 个样本，errors [] |
+| patchcheck（探针树只读，base 2f22a98d，--rev HEAD） | PASS，violations [] |
+| py_compile | 190 ok / 0 bad |
+| bash -n | 3 ok / 0 bad（capkit_inner.sh、capkit_job.sbatch、prep_tokenizer.sbatch） |
+| 作业路径 e2e e0b-s1-single（J9300021，overlay 重建 e2e/ovl/v2） | L0 VALID（拷回 222 文件），judge rc 11 NOT_RUN，0 RED，无 INPUT_INVALID；beat、relay1 就绪与 24 个服务端 summary 记 grpc_server_options = 18 s（default） |
+| 作业路径 e2e e0a-nullsse（J9300022） | L0 VALID（拷回 318 文件），judge rc 11 NOT_RUN，0 RED，无 INPUT_INVALID |
+| SM-18 过载档复现（repro/sm18-v2，e0w60 e0b-s1 参数：beat 4 ms、50 msg/流、relay 每 msg busy 1 ms、up-over 30 rps × 60 s、超时 60 s） | 修前 1176861d：grpc_CANCELLED 158/1800，失败流 frames 0、done−sent 30.00–30.07 s，relay1 streams_accepted 1642 = ok；修后 HEAD：0 失败、1800 ok = streams_accepted，relay1 自报 127 s（default），首帧晚于 30 s 的流 367 个全部完成（最长 37.8 s） |
+| SM-17 假 ssh 复现（repro/sm17-v2，bin/ssh 按调用序号返回 255） | 修前：255 一次 ⇒ rc 0 且写出含 item 1 rc 255 的 slurm_view.json（只发 1 次 ssh）；修后：第 1 次或第 2 次调用 255 ⇒ 重试（attempts 2、retried_rcs [255]）后 rc 0、文件三项 rc 0；始终 255 ⇒ rc 4、不写文件（attempts 3）；`--attempts 2` 两次 255 ⇒ rc 4、不写；item 3 连续 3 次 255 ⇒ rc 4、不写。修后写出的文件里没有失败项 |
+
+### 说明
+- 本机同时有其他会话的 pytest 在跑（b2-judge 树、J17912），不是本子批次的进程；本子批次的 pytest 始终一次一个。
+- fakebin.log：v2 的 10 个测试目录与 selftest 期间无新增行；e2e 每个作业 3 行（simgate 的 scontrol show job/node、squeue，均为 exit 97 替身，与往轮同形）；SM-17 复现的 ssh 调用走 repro/sm17-v2/bin/ssh（不连网）。
