@@ -1,16 +1,587 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-# Entries for the feature rows this work item verifies are added once their runs on the chain
-# have passed.
-# Its own end-to-end checks, on 7d3fdc319bf0dcac9053daa05269fa41c88b5b1c (an earlier version of
-# this work item's code, before its rebase onto the integration branch), 1xB200 and 2xB200:
-# 1. Neither switch set, a sample of the single-node B200 tests of
-#    records/WT-31/r10_results.tsv, compared entry by entry with it: test_disaggregated_single_gpu,
-#    test_disaggregated_cuda_graph, test_workers_kv_cache_events,
-#    test_worker_restart[http-round_robin], test_disagg_serving_perf_metrics.py::
-#    test_completion_metrics and TestQwen3_8B::test_nixl_backend passed;
-#    test_workers_kv_cache_aware_router_eviction failed with the recorded assertion (2016 < 1984).
-# 2. TRTLLM_TEST_OPENENGINE_TOPOLOGY=disagg without a chain: the aggregated
-#    test_e2e.py::test_trtllm_serve_top_logprobs[pytorch] moved to a context worker, a
-#    generation worker and a disaggregated server on one GPU passed three times out of three.
-entries: []
+# End-to-end checks of the disaggregated chain (case-04, trtllm chain, B200; 1, 4 or 8 GPUs per
+# node as each test needs). junit paths are relative to the run's result directory; cpu-gate/ is
+# the CPU acceptance run of the same commit.
+# Why chain_proof is incomplete, by kind of case:
+# - [ch6] Cases that start the disaggregated server and workers themselves: CH-1 to CH-5 hold on
+#   both legs; CH-6 reads "the disaggregated server lists no worker", because the member list was
+#   taken from the server's last reading, after the workers had left.
+# - [restart] Cases that restart the disaggregated server: its counters start again at the
+#   restart, so CH-5 counts on its side are a lower bound.
+# - [cpu] CPU tests: no chain runs in them.
+# - [direct] NT-041 starts two engines and hands off between them directly, with no worker front
+#   end; it runs without a chain, and the chain proof does not apply.
+entries:
+  # XD-014 ch6, XD-022 ch6
+  - row: F-01
+    features:
+    - F-01
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_overlap
+    - disaggregated/test_disaggregated.py::test_disaggregated_chat_completion_tool_calls
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e04/outer-junit.xml
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e05/outer-junit.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-002 ch6
+  - row: F-02
+    features:
+    - F-02
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_single_gpu
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e01/outer-junit.xml
+    result: passed
+    chain_proof: incomplete
+  # NT-001 cpu
+  - row: F-05a
+    features:
+    - F-05a
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_cpu_control.py::test_worker_frontend_models_version_health
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - cpu-gate/unittest_llmapi_apps__test_openengine_disagg_cpu_control.xml
+    result: passed
+    chain_proof: incomplete
+  # NT-001 cpu
+  - row: F-05b
+    features:
+    - F-05b
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_cpu_control.py::test_worker_frontend_models_version_health
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - cpu-gate/unittest_llmapi_apps__test_openengine_disagg_cpu_control.xml
+    result: passed
+    chain_proof: incomplete
+  # NT-001 cpu
+  - row: F-05c
+    features:
+    - F-05c
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_cpu_control.py::test_worker_frontend_models_version_health
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - cpu-gate/unittest_llmapi_apps__test_openengine_disagg_cpu_control.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-014 ch6, XD-001 ch6
+  - row: F-14
+    features:
+    - F-14
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_overlap
+    - disaggregated/test_disaggregated.py::test_disaggregated_diff_max_tokens
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e00/outer-junit.xml
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e04/outer-junit.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-014 ch6
+  - row: F-16
+    features:
+    - F-16
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_overlap
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e04/outer-junit.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-002 ch6
+  - row: DG-12
+    features:
+    - DG-12
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_single_gpu
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e01/outer-junit.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-002 ch6
+  - row: DG-13
+    features:
+    - DG-13
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_single_gpu
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e01/outer-junit.xml
+    result: passed
+    chain_proof: incomplete
+  # NT-003 cpu
+  - row: DG-16
+    features:
+    - DG-16
+    cases:
+    - unittest/serve/openengine_poc/wt51/test_poc3_wt51_two_leg_flow.py::test_ctx_finished_skips_the_gen_leg
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - cpu-gate/unittest_serve_openengine_poc.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-013 ch6, XD-011 ch6
+  - row: DG-17
+    features:
+    - DG-17
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_mixed
+    - disaggregated/test_disaggregated.py::test_disaggregated_multi_gpu
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e03/outer-junit.xml
+    - b200-4g-o2/b200-4g-o2/job-5947126_0-r0/node0/results/e00/outer-junit.xml
+    result: passed
+    chain_proof: incomplete
+  # NT-005 cpu
+  # NT-005: skipped by its own test: it needs a two-leg request, which needs PrefillReady from the fake engine and the facade's handoff mapping
+  - row: DG-27
+    features:
+    - DG-27
+    cases:
+    - unittest/serve/openengine_poc/wt50/test_poc3_wt50_worker_registration.py::test_static_urls_reach_worker_frontends
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - cpu-gate/unittest_serve_openengine_poc.xml
+    result: skipped
+    chain_proof: incomplete
+  # XD-105 ch6, XD-117 restart, NT-002 cpu
+  - row: DG-28
+    features:
+    - DG-28
+    cases:
+    - disaggregated/test_auto_scaling.py::test_service_discovery[http-round_robin]
+    - disaggregated/test_auto_scaling.py::test_disagg_server_restart[http-round_robin]
+    - unittest/serve/openengine_poc/wt50/test_poc3_wt50_worker_registration.py::test_worker_frontend_registers_over_http_storage
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-4g-o2/b200-4g-o2/job-5947126_0-r0/node0/results/e05/outer-junit.xml
+    - b200-8g-o2/b200-8g-o2/job-5947127_0-r0/node0/results/e02/outer-junit.xml
+    - cpu-gate/unittest_serve_openengine_poc.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-102 ch6, XD-116 restart+ch6, NT-006 cpu
+  - row: DG-29
+    features:
+    - DG-29
+    cases:
+    - disaggregated/test_auto_scaling.py::test_service_discovery[etcd-round_robin]
+    - disaggregated/test_auto_scaling.py::test_disagg_server_restart[etcd-round_robin]
+    - unittest/serve/openengine_poc/wt50/test_poc3_wt50_worker_registration.py::test_worker_frontend_registers_over_etcd
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-8g-o2/b200-8g-o2/job-5947127_0-r0/node0/results/e01/outer-junit.xml
+    - b200-8g-o2/b200-8g-o2/job-5947127_0-r0/node0/results/e04/outer-junit.xml
+    - cpu-gate/unittest_serve_openengine_poc.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-108 ch6, XD-109 ch6, NT-002 cpu
+  - row: DG-31
+    features:
+    - DG-31
+    cases:
+    - disaggregated/test_auto_scaling.py::test_minimal_instances[etcd-round_robin]
+    - disaggregated/test_auto_scaling.py::test_minimal_instances[http-round_robin]
+    - unittest/serve/openengine_poc/wt50/test_poc3_wt50_worker_registration.py::test_worker_frontend_registers_over_http_storage
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-4g-o2/b200-4g-o2/job-5947126_0-r0/node0/results/e04/outer-junit.xml
+    - b200-8g-o2/b200-8g-o2/job-5947127_0-r0/node0/results/e03/outer-junit.xml
+    - cpu-gate/unittest_serve_openengine_poc.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-105 ch6, NT-007 cpu
+  - row: DG-32
+    features:
+    - DG-32
+    cases:
+    - disaggregated/test_auto_scaling.py::test_service_discovery[http-round_robin]
+    - unittest/serve/openengine_poc/wt50/test_poc3_wt50_worker_registration.py::test_new_worker_is_listed_after_clock_sync_and_server_info
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-8g-o2/b200-8g-o2/job-5947127_0-r0/node0/results/e02/outer-junit.xml
+    - cpu-gate/unittest_serve_openengine_poc.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-105 ch6, NT-008 cpu
+  - row: DG-34
+    features:
+    - DG-34
+    cases:
+    - disaggregated/test_auto_scaling.py::test_service_discovery[http-round_robin]
+    - unittest/serve/openengine_poc/wt50/test_poc3_wt50_internal_auth.py::test_gen_worker_frontend_rejects_a_tampered_handoff_signature
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-8g-o2/b200-8g-o2/job-5947127_0-r0/node0/results/e02/outer-junit.xml
+    - cpu-gate/unittest_serve_openengine_poc.xml
+    result: passed
+    chain_proof: incomplete
+  # NT-008 cpu
+  - row: DG-37
+    features:
+    - DG-37
+    cases:
+    - unittest/serve/openengine_poc/wt50/test_poc3_wt50_internal_auth.py::test_gen_worker_frontend_rejects_a_tampered_handoff_signature
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - cpu-gate/unittest_serve_openengine_poc.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-002 ch6
+  - row: DG-43
+    features:
+    - DG-43
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_single_gpu
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e01/outer-junit.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-002 ch6
+  - row: DG-46
+    features:
+    - DG-46
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_single_gpu
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e01/outer-junit.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-002 ch6
+  - row: DG-47
+    features:
+    - DG-47
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_single_gpu
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e01/outer-junit.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-002 ch6
+  - row: DG-49
+    features:
+    - DG-49
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_single_gpu
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e01/outer-junit.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-002 ch6
+  - row: DG-50
+    features:
+    - DG-50
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_single_gpu
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e01/outer-junit.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-002 ch6
+  - row: DG-51
+    features:
+    - DG-51
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_single_gpu
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e01/outer-junit.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-021 skip, XD-312 skip
+  # XD-021: skipped on the trtllm chain by expectations/WT-54.py (engine-side transfer times; the chain's version is NT-203)
+  # XD-312: skipped on the trtllm chain by expectations/WT-54.py (per-step headers only the engine measures; the chain's version is NT-203)
+  - row: DG-40
+    features:
+    - DG-40
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_perf_metrics
+    - unittest/llmapi/apps/test_disagg_serving_perf_metrics.py::test_return_perf_metrics_and_jsonl_dump
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e08/outer-junit.xml
+    - b200-4g-o2/b200-4g-o2/job-5947126_0-r0/node0/results/e12/junit/inner-20261115T022227-1794680547730511048-1312988-s.py_test_unittests_v2_unittest_llmapi_apps_test_disagg_serving_perf_metrics.py_test_return_perf_metrics_and_jsonl_dump_.xml
+    result: skipped
+    chain_proof: incomplete
+  # XD-021 skip, NT-096 ok, NT-007 cpu
+  # XD-021: skipped on the trtllm chain by expectations/WT-54.py (engine-side transfer times; the chain's version is NT-203)
+  - row: DG-54
+    features:
+    - DG-54
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_perf_metrics
+    - unittest/llmapi/apps/_test_openengine_disagg_perf_metrics.py::test_clock_offset_reaches_each_worker_frontend
+    - unittest/serve/openengine_poc/wt50/test_poc3_wt50_worker_registration.py::test_new_worker_is_listed_after_clock_sync_and_server_info
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e08/outer-junit.xml
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e10/junit/inner-20261115T011733-1794676653959418735-3922965-nittests_v2_unittest_llmapi_apps__test_openengine_disagg_perf_metrics.py_test_clock_offset_reaches_each_worker_frontend_.xml
+    - cpu-gate/unittest_serve_openengine_poc.xml
+    result: skipped
+    chain_proof: incomplete
+  # XD-313 ok
+  - row: DG-57
+    features:
+    - DG-57
+    cases:
+    - unittest/llmapi/apps/test_disagg_serving_perf_metrics.py::test_completion_metrics
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-4g-o2/b200-4g-o2/job-5947126_0-r0/node0/results/e13/junit/inner-20261115T022304-1794680584495910762-1314013-test_unittests.py_test_unittests_v2_unittest_llmapi_apps_test_disagg_serving_perf_metrics.py_test_completion_metrics_.xml
+    result: passed
+    chain_proof: ok
+  # NT-017 cpu, NT-030 cpu
+  - row: DG-82
+    features:
+    - DG-82
+    cases:
+    - unittest/serve/openengine_poc/wt51/test_poc3_wt51_two_leg_flow.py::test_caller_disagg_request_id_reaches_both_engines
+    - unittest/grpc/openengine/test_disagg_servicer.py::test_context_only_uses_the_caller_disagg_request_id
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - cpu-gate/unittest_grpc_openengine.xml
+    - cpu-gate/unittest_serve_openengine_poc.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-312 skip
+  # XD-312: skipped on the trtllm chain by expectations/WT-54.py (per-step headers only the engine measures; the chain's version is NT-203)
+  - row: DG-82+rest
+    features:
+    - DG-82
+    cases:
+    - unittest/llmapi/apps/test_disagg_serving_perf_metrics.py::test_return_perf_metrics_and_jsonl_dump
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-4g-o2/b200-4g-o2/job-5947126_0-r0/node0/results/e12/junit/inner-20261115T022227-1794680547730511048-1312988-s.py_test_unittests_v2_unittest_llmapi_apps_test_disagg_serving_perf_metrics.py_test_return_perf_metrics_and_jsonl_dump_.xml
+    result: skipped
+    chain_proof: incomplete
+  # NT-018 cpu, NT-019 cpu, XD-002 ch6
+  - row: DG-83
+    features:
+    - DG-83
+    cases:
+    - unittest/serve/openengine_poc/wt51/test_poc3_wt51_handoff_codec.py::test_handoff_fields_round_trip
+    - unittest/serve/openengine_poc/wt51/test_poc3_wt51_handoff_codec.py::test_unmapped_session_attribute_rides_the_new_field
+    - disaggregated/test_disaggregated.py::test_disaggregated_single_gpu
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e01/outer-junit.xml
+    - cpu-gate/unittest_serve_openengine_poc.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-027 ch6
+  - row: EG-01c
+    features:
+    - EG-01c
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_ngram
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e06/outer-junit.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-028 ch6
+  - row: EG-01d
+    features:
+    - EG-01d
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_sa
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e07/outer-junit.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-001 ch6, XD-030 ch6, XD-031 ch6, XD-034 ch6, XD-218 ch6, XD-222 ch6, XD-216 ch6
+  - row: EG-14e
+    features:
+    - EG-14e
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_diff_max_tokens
+    - disaggregated/test_disaggregated.py::test_disaggregated_ctxtp2_genpp2
+    - disaggregated/test_disaggregated.py::test_disaggregated_ctxpp2_gentp2
+    - disaggregated/test_disaggregated.py::test_disaggregated_ctxpp4_gentp4
+    - accuracy/test_disaggregated_serving.py::TestQwen3_5_4B::test_ctx_pp_gen_tp_asymmetric
+    - accuracy/test_disaggregated_serving.py::TestNemotron3Super120B::test_ctx_dp2_gen_tp4
+    - accuracy/test_disaggregated_serving.py::TestQwen3_30B_A3B::test_mixed_ctx_gen_model[ctxpp2gentp2]
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e00/outer-junit.xml
+    - b200-4g-o2/b200-4g-o2/job-5947126_0-r0/node0/results/e01/outer-junit.xml
+    - b200-4g-o2/b200-4g-o2/job-5947126_0-r0/node0/results/e02/outer-junit.xml
+    - b200-4g-o2/b200-4g-o2/job-5947126_0-r0/node0/results/e06/outer-junit.xml
+    - b200-4g-o2/b200-4g-o2/job-5947126_0-r0/node0/results/e07/outer-junit.xml
+    - b200-8g-o2/b200-8g-o2/job-5947127_0-r0/node0/results/e00/outer-junit.xml
+    - b200-8g-o2/b200-8g-o2/job-5947127_0-r0/node0/results/e09/outer-junit.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-012 ch6, XD-014 ch6, XD-043 ch6, XD-204 ch6, XD-212 ch6
+  - row: EG-18
+    features:
+    - EG-18
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_cuda_graph
+    - disaggregated/test_disaggregated.py::test_disaggregated_overlap
+    - disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_attention_dp_overlap[DeepSeek-V3-Lite-fp8]
+    - accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype_with_helix[*]
+    - accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype[*]
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e02/outer-junit.xml
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e04/outer-junit.xml
+    - b200-4g-o2/b200-4g-o2/job-5947126_0-r0/node0/results/e03/outer-junit.xml
+    - b200-4g-o2/b200-4g-o2/job-5947126_0-r0/node0/results/e08/outer-junit.xml
+    - b200-4g-o2/b200-4g-o2/job-5947126_0-r0/node0/results/e09/outer-junit.xml
+    - b200-4g-o2/b200-4g-o2/job-5947126_0-r0/node0/results/e10/outer-junit.xml
+    - b200-4g-o2/b200-4g-o2/job-5947126_0-r0/node0/results/e11/outer-junit.xml
+    - b200-8g-o2/b200-8g-o2/job-5947127_0-r0/node0/results/e05/outer-junit.xml
+    - b200-8g-o2/b200-8g-o2/job-5947127_0-r0/node0/results/e06/outer-junit.xml
+    - b200-8g-o2/b200-8g-o2/job-5947127_0-r0/node0/results/e07/outer-junit.xml
+    - b200-8g-o2/b200-8g-o2/job-5947127_0-r0/node0/results/e08/outer-junit.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-023 ch6, XD-021 skip, NT-203 ok
+  # XD-021: skipped on the trtllm chain by expectations/WT-54.py (engine-side transfer times; the chain's version is NT-203)
+  - row: EG-23
+    features:
+    - EG-23
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_kv_cache_time_output
+    - disaggregated/test_disaggregated.py::test_disaggregated_perf_metrics
+    - unittest/llmapi/apps/_test_openengine_disagg_perf_metrics.py::test_engine_side_transfer_stats_join_by_disagg_request_id
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e08/outer-junit.xml
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e09/outer-junit.xml
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e11/junit/inner-20261115T012053-1794676853470001808-3929015-_unittest_llmapi_apps__test_openengine_disagg_perf_metrics.py_test_engine_side_transfer_stats_join_by_disagg_request_id_.xml
+    result: skipped
+    chain_proof: incomplete
+  # NT-173 cpu, XD-002 ch6
+  - row: EP-02
+    features:
+    - EP-02
+    cases:
+    - openengine_chain/tests/test_split.py::test_disagg_engine_yaml_keeps_transceiver_prerequisites
+    - disaggregated/test_disaggregated.py::test_disaggregated_single_gpu
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e01/outer-junit.xml
+    - cpu-gate/openengine_chain_tests.xml
+    result: passed
+    chain_proof: incomplete
+  # NT-173 cpu, XD-002 ch6
+  - row: EP-03
+    features:
+    - EP-03
+    cases:
+    - openengine_chain/tests/test_split.py::test_disagg_engine_yaml_keeps_transceiver_prerequisites
+    - disaggregated/test_disaggregated.py::test_disaggregated_single_gpu
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e01/outer-junit.xml
+    - cpu-gate/openengine_chain_tests.xml
+    result: passed
+    chain_proof: incomplete
+  # NT-173 cpu
+  - row: EP-04
+    features:
+    - EP-04
+    cases:
+    - openengine_chain/tests/test_split.py::test_disagg_engine_yaml_keeps_transceiver_prerequisites
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - cpu-gate/openengine_chain_tests.xml
+    result: passed
+    chain_proof: incomplete
+  # NT-173 cpu, XD-002 ch6
+  - row: EP-05
+    features:
+    - EP-05
+    cases:
+    - openengine_chain/tests/test_split.py::test_disagg_engine_yaml_keeps_transceiver_prerequisites
+    - disaggregated/test_disaggregated.py::test_disaggregated_single_gpu
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e01/outer-junit.xml
+    - cpu-gate/openengine_chain_tests.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-002 ch6
+  - row: EP-06
+    features:
+    - EP-06
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_single_gpu
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e01/outer-junit.xml
+    result: passed
+    chain_proof: incomplete
+  # NT-174 cpu, NT-041 direct
+  - row: EP-07
+    features:
+    - EP-07
+    cases:
+    - unittest/serve/openengine_poc/wt51/test_poc3_wt51_role_check.py::test_a_worker_frontend_needs_the_disagg_request_id_capability
+    - unittest/grpc/openengine/_test_direct_handoff.py::test_two_engines_complete_a_handoff
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2-nochain/b200-1g-o2-nochain/job-5947171_0-r0/node0/results/e00/outer-junit.xml
+    - cpu-gate/unittest_serve_openengine_poc.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-002 ch6
+  - row: EP-08
+    features:
+    - EP-08
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_single_gpu
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e01/outer-junit.xml
+    result: passed
+    chain_proof: incomplete
+  # NT-173 cpu
+  - row: EP-09
+    features:
+    - EP-09
+    cases:
+    - openengine_chain/tests/test_split.py::test_disagg_engine_yaml_keeps_transceiver_prerequisites
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - cpu-gate/openengine_chain_tests.xml
+    result: passed
+    chain_proof: incomplete
+  # NT-175 cpu
+  - row: EP-10
+    features:
+    - EP-10
+    cases:
+    - openengine_chain/tests/test_launch.py::test_disagg_engine_ready_requires_the_transceiver_log_line
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - cpu-gate/openengine_chain_tests.xml
+    result: passed
+    chain_proof: incomplete
+  # NT-173 cpu
+  - row: EP-11
+    features:
+    - EP-11
+    cases:
+    - openengine_chain/tests/test_split.py::test_disagg_engine_yaml_keeps_transceiver_prerequisites
+    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    junit:
+    - cpu-gate/openengine_chain_tests.xml
+    result: passed
+    chain_proof: incomplete
