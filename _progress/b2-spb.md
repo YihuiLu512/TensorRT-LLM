@@ -101,3 +101,52 @@
 - 2026-11-15 00:28:33 开始 R1 修复（slug capkit-b2spb-J17871，head b43d6e6）：先读码核实 C1/C2/C4/C3/C5–C17，再逐条写失败测试、修复
 - 2026-11-15 00:46:07 R1 代码修复已落（C1/C2/C5+C19/C6/C7/C8/C10 测试/C14/C15/C16+C17），各自先红后绿、变异核过；接着改文档（INTERFACES 勘误、README）
 - 2026-11-15 00:50:34 文档修完（INTERFACES B2B-2/3/4/7/8/9/10/11/13/14 改写、新增 B2B-15；R4-11、R5-3、R5-5 加指引；jobs/configs/tools README），提交后在新 HEAD 上跑全量验证 r1v（约 15–20 分钟）与三个作业路径 e2e
+- 2026-11-15 01:07:22 r1v 全量验证完（tests/grpc 首跑 1 个时序用例 test_mode2_two_chained_relays 超界，整目录重跑 39 passed、该用例再串行 3 次全过；其余全绿）；开跑作业路径 e2e：e2e-spb-null J9200021（约 2–3 分钟，覆盖清单 P0-9dc8c002）
+
+## R1 自审修复（slug capkit-b2spb-J17871，审阅 head b43d6e6 → 修复提交 9dc8c00）
+
+修复清单 18 项全部落实（`code-review/self-review-compare/capkit-b2spb-J17871/R1/triage.md` 第 4 节）；不修 C18、C20、C21。每项先写测试并在旧代码上跑红（日志 `_local/b2-spb/logs/r1/*-red*.log`），修后转绿；C1、C2、C8 另做变异核对（`*-mut.log`）。
+
+| 簇 | 改动 | 失败在先的测试 |
+|---|---|---|
+| C1 | `capcommon.lifecycle.inprocess_ready_info` / `inprocess_tool_info`（写读同处），`LaunchData.ready_tool_info`；C10 经它读，缺失/形状不对/无 control 键两种模式都记问题 | `tests/judge/test_c10_stub_module.py`（就绪文件用真写方生成）、`test_prebaked_server.py` 两种模式真实就绪文件喂 C10、`test_spb_job_path.py` 前端模式 |
+| C2 | `caplaunch.httpprobe --started-file`（`capkit.httpprobe_started/1`）；e0s-spb-frontend 的 httpprobe 就绪改为它 | `tests/launch/test_smoke.py`、`test_e0s_configs.py` |
+| C5+C19 | `load_sfe_module` 读一次、`compile` 同一份字节执行，任何异常（含 SystemExit）→ ConfigError、清 `sys.modules`；`capgrpc.reqbytes.import_pb2` 同改 | `test_prebaked_server.py`（5 种异常、不二次读）、`tests/grpc/test_reqbytes.py` |
+| C6 | e0s S-PB 加 `--max-stream-records {param:spb_max_stream_records}` | `test_e0s_configs.py` |
+| C7 | 指纹作业输入写死 `--trust-remote-code false --tokenizer-mode auto`，去掉两个参数；e0/e0s 重新生成；`fingerprint.py` help 改正 | `test_e0s_configs.py` |
+| C8 | `capjobs.launches.run_helper`（独立会话、轮询；超时或 SIGTERM 杀进程组）；绑核表与生成器都走它；`generate(run=)` | `tests/jobs/test_job_inputs.py`（真进程发 SIGTERM、经 helper、超时杀组） |
+| C14 | 场景读不到 ⇒ `skipped: scenario: …`（计数仍 `pin_table_failed`） | `tests/jobs/test_container.py` |
+| C15 | 生成前失败（缺 param、输出已存在、登记输入读不到）也是 `JobInputError(records)`，保留已成功种类 | `test_job_inputs.py` 参数化 3 例 |
+| C16+C17 | `capcommon.templates`（占位符、`parse_params`）、`capcommon.jobinputs.load_verified`；编排器、判定器、scenario、capjobs 改用 | `tests/capcommon/test_templates.py`；原有测试原样通过 |
+| C3/C4/C9/C10/C11/C12/C13/17/18 | 文档：INTERFACES B2B-2/3/4/7/8/9/10/11/13/14 改写、新增 B2B-15；R4-11、R5-3、R5-5 指引注；jobs/README、configs/e0(s)/README、capstubs/capjudge/capcommon/caplaunch README | — |
+
+### 全量验证 r1v（HEAD 9dc8c00；`fullv2.sh r1v 25`，短 TMPDIR）
+
+| 项 | 结果 | 证据 |
+|---|---|---|
+| tests/capcommon | 193 passed | `_local/b2-spb/logs/r1v/t_capcommon.log` |
+| tests/capload | 33 passed | r1v/t_capload.log |
+| tests/capprobe | 171 passed | r1v/t_capprobe.log |
+| tests/capstubs | 90 passed | r1v/t_capstubs.log |
+| tests/envgate | 71 passed | r1v/t_envgate.log |
+| tests/grpc | 首跑 1 failed / 38 passed（`test_relay_modes.py::test_mode2_two_chained_relays[2000000-500000]` 的 per_msg_ns 4.28 ms 超出上界 3.08 ms，时序用例，本轮未改 relay）；整目录重跑 39 passed；该用例再串行 3 次全过 | r1v/t_grpc.log、logs/r1/r1v-grpc-rerun.log、logs/r1/r1v-relay-rep1..3.log |
+| tests/jobs | 217 passed | r1v/t_jobs.log |
+| tests/judge | 98 passed | r1v/t_judge.log |
+| tests/launch | 227 passed | r1v/t_launch.log |
+| tests/nullsse | 4 passed | r1v/t_nullsse.log |
+| tests/sidecar | 5 passed | r1v/t_sidecar.log |
+| selftest --package capjudge --expect-samples 25 | EXIT=0，ran 25，errors [] | r1v/selftest.log |
+| patchcheck --rev HEAD（探针树只读） | PASS，7 位点 / 8 处 | r1v/patchcheck.json |
+| py_compile | 204 / 0 | r1v/summary.txt |
+| bash -n | 3 / 0 | r1v/summary.txt |
+
+### 作业路径 e2e（覆盖清单按 HEAD 9dc8c00 重生成：e2e/ovl/P0-9dc8c002，37 个产品文件 sha 与 5a0046ec 版相同）
+
+| 场景 | 作业 | submit | launches | judge | RED | INPUT_INVALID | C10 |
+|---|---|---|---|---|---|---|---|
+| e2e-spb-null（capgrpc.load --request-format openengine 读者打 S-PB，pb2 = oe_double） | J9200021 | rc 0 | L0 VALID | rc 11（NOT_RUN：C1/C6/C7/C13） | 0 | 0 | PASS 5/5（含 S-PB 一项，经新读法） |
+| e0a-nullsse | J9200022 | rc 0 | L0 VALID | rc 11 | 0 | 0 | PASS 8/8 |
+| e0b-s1-single | J9200023 | rc 0 | L0 VALID | rc 11 | 0 | 0 | PASS 5/5 |
+
+- fakebin.log 新增 9 行，都是真 capenv.gate 的 scontrol/squeue（替身 exit 97）；没碰集群。输出存 e2e/runs/*-J920002[123].out。
+- 2026-11-15 01:09:52 R1 修复验证全部完成，记录进度并提交
