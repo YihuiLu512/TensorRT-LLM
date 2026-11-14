@@ -469,7 +469,8 @@ def test_null_runtime_with_pipelined_transfer_resolves_default_as_the_engine(tmp
     assert engine["cache_transceiver_config"] == {**transceiver, "backend": "NIXL"}
     assert sp.transceiver_runtime(engine) == "PYTHON"
     assert "kv_events_config" in engine["kv_cache_config"]
-    # A legacy variable that selects another backend leaves the C++ runtime.
+    # With a legacy variable that selects another backend the engine refuses pipelined
+    # transfer; counted as the C++ runtime, the configuration gets no KV events.
     with pytest.raises(sp.ChainUnrunnableError, match="DV-23.*C\\+\\+ transceiver"):
         _engine_config(
             tmp_path, config, env={"TRTLLM_USE_UCX_KVCACHE": "1"}, ports=lambda count: 44000
@@ -605,6 +606,18 @@ def test_moved_aggregated_command_line_becomes_two_workers(tmp_path):
         assert sp.is_disagg_worker(workers.commands[role][2:])
     assert (workers.share_gpu, workers.gpus_per_worker) == (True, 1)
     assert yaml.safe_load(open(own)) == {"max_batch_size": 8, "kv_cache_config": {"x": 1}}
+
+
+@pytest.mark.parametrize(
+    "transceiver, expected",
+    [(None, {"backend": "DEFAULT"}), ({"backend": "UCX"}, {"backend": "UCX"})],
+)
+def test_moved_workers_get_a_transceiver_unless_the_configuration_has_one(
+    tmp_path, transceiver, expected
+):
+    own = _config(tmp_path, "own.yaml", {"cache_transceiver_config": transceiver})
+    _, configs = _moved(tmp_path, ["trtllm-serve", "/m", "--config", own])
+    assert configs["context"]["cache_transceiver_config"] == expected
 
 
 def test_moved_workers_halve_the_kv_cache_share_only_when_they_share_a_gpu(tmp_path):

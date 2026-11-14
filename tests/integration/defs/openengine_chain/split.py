@@ -584,9 +584,10 @@ def transceiver_runtime(config: Mapping[str, Any]) -> str:
     the engine takes the model's preferred runtime when the model declares
     one, and otherwise the Python runtime unless the configuration rules it
     out. A null runtime is the C++ one, except with
-    ``enable_pipelined_transfer`` and backend NIXL, where the engine takes the
-    Python one. DEFAULT counts as not NIXL here: :func:`disagg_engine_yaml`
-    resolves it for this case first.
+    ``enable_pipelined_transfer``: with backend NIXL the engine takes the
+    Python one, and with another backend it refuses the configuration, which
+    counts as the C++ runtime here. DEFAULT counts as not NIXL here:
+    :func:`disagg_engine_yaml` resolves it for this case first.
     """
     transceiver = config.get("cache_transceiver_config") or {}
     runtime = transceiver.get("transceiver_runtime", DEFAULT_TRANSCEIVER_RUNTIME)
@@ -770,7 +771,8 @@ def disagg_worker_commands(
     if is_disagg_worker(command.args, strict):
         raise ValueError(f"already a disaggregated worker, not moved: {list(cmd)!r}")
     config = load_config(last_config_file(command.args, strict))
-    config.setdefault("cache_transceiver_config", {"backend": "DEFAULT"})
+    if config.get("cache_transceiver_config") is None:
+        config["cache_transceiver_config"] = {"backend": "DEFAULT"}
     config["internal_request_auth_key"] = auth_key
     gpus = parallel_size(command.args, strict)
     share_gpu = gpus == 1

@@ -497,9 +497,10 @@ def launch_disaggregated_llm(
                    for i, (env, args) in enumerate(ctx_servers)]
         workers += [("gen", i, env, args)
                     for i, (env, args) in enumerate(gen_servers)]
+        # A top-level router applies to both kinds of servers.
         routers = {
             ((disaggregated_server_config.get(servers) or {}).get("router")
-             or {}).get("type")
+             or disaggregated_server_config.get("router") or {}).get("type")
             for servers in ("context_servers", "generation_servers")
         }
         kv_aware_router = (

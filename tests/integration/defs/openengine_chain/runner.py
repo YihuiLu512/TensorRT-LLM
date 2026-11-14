@@ -17,7 +17,7 @@ markers. ``LLM_ROOT`` defaults to this checkout, as CI sets it.
 
 There are two smoke unions: ``--smoke`` runs the PoC-S2 work items' lists
 (``smoke/WT-00.txt`` to ``smoke/WT-29.txt``, fixes and rounds included) with
-aggregated servers; ``--smoke-s3`` runs the lists of WT-30 and later with
+aggregated servers; ``--smoke-s3`` runs the later lists (``smoke/WT-30.txt`` on) with
 ``--topology disagg``, so that an aggregated test in them is moved to two
 workers and a disaggregated server.
 """

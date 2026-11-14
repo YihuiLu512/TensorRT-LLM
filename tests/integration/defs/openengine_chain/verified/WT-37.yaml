@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # Entries for the feature rows this work item verifies are added once their runs on the chain
 # have passed.
-# Its own end-to-end checks, on 7d3fdc319bf0dcac9053daa05269fa41c88b5b1c (this work item's code
-# before its rebase onto the integration branch), 1xB200 and 2xB200:
+# Its own end-to-end checks, on 7d3fdc319bf0dcac9053daa05269fa41c88b5b1c (an earlier version of
+# this work item's code, before its rebase onto the integration branch), 1xB200 and 2xB200:
 # 1. Neither switch set, a sample of the single-node B200 tests of
 #    records/WT-31/r10_results.tsv, compared entry by entry with it: test_disaggregated_single_gpu,
 #    test_disaggregated_cuda_graph, test_workers_kv_cache_events,
