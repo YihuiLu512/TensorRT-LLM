@@ -1,0 +1,12 @@
+xd	entry	group	gpus	gpu_model	outcome	time_s	job	verdict	reason	waived_in
+XD-301	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp2pp1-gen_tp2pp1]	2node	8	B200	passed	562.901	job-2641926_0-r0	passed		-
+XD-302	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp2pp1-gen_tp1pp2]	2node	8	B200	passed	402.829	job-2641926_0-r0	passed		-
+XD-303	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp2pp1-gen_tp1pp1]	2node	8	B200	passed	582.277	job-2641926_0-r0	passed		-
+XD-304	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp1pp2-gen_tp2pp1]	2node	8	B200	passed	399.433	job-2641926_0-r0	passed		-
+XD-305	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp1pp2-gen_tp1pp2]	2node	8	B200	passed	193.508	job-2641926_0-r0	passed		-
+XD-306	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp1pp2-gen_tp1pp1]	2node	8	B200	passed	589.937	job-2642508_0-r0	passed		-
+XD-307	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp1pp1-gen_tp2pp1]	2node	8	B200	passed	632.573	job-2642508_0-r0	passed		-
+XD-308	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp1pp1-gen_tp1pp2]	2node	8	B200	passed	442.543	job-2642508_0-r0	passed		-
+XD-309	test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp1pp1-gen_tp1pp1]	2node	8	B200	passed	441.376	job-2642508_0-r0	passed		-
+XD-310	test_e2e.py::test_openai_disagg_multi_nodes_completion_service_discovery[etcd]	2node	8	B200	passed	423.104	job-2642508_0-r0	passed		-
+XD-314	accuracy/test_disaggregated_multinode.py::TestDeepSeekV4ProDSparkMultinode::test_gsm8k_1p1d_dep4	2node	8	B200	error	57.134	job-2641927_0-r0	not-runnable	B200 GPU memory: on both nodes executor creation fails for the Model component (insufficient GPU memory, 178.35 GiB per GPU), so the model weights do not fit with the test's TP4 / EP4 per server	-

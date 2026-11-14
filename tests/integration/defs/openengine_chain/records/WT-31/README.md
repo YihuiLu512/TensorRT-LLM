@@ -3,30 +3,32 @@
 
 # R10: baseline of the existing disagg tests on the control form
 
-R10 ran the disaggregated-serving tests of the PoC plan (XD-001..XD-319, 149 planned rows,
-169 pytest entries) once on the control form T: no `TRTLLM_TEST_OPENENGINE_CHAIN`, no
-`TRTLLM_TEST_OPENENGINE_TOPOLOGY`, no waives file (waived tests ran too), no `-x`.
+R10 ran the disaggregated-serving tests of the PoC plan (XD-001..XD-319, 149 planned rows, 169
+pytest entries) on the control form T: no `TRTLLM_TEST_OPENENGINE_CHAIN`, no
+`TRTLLM_TEST_OPENENGINE_TOPOLOGY`, no waives file (waived tests ran too), no `-x`. The 2-node group
+except XD-311 was run again on another cluster (2-node group rerun below).
 
 - Source: `9b4022dd0dfe7581dd0580750d79f3261d7fc5be`, its Python files overlaid on the images
   `e17503-9fd3822a00-x86-sm100-cv2.ready.sqsh` (B200) and `e17503-9fd3822a00-x86-sm90-cv2.ready.sqsh`
   (Hopper), both built from `9fd3822a00`.
-- Drivers: `scripts/`. The reruns used them as committed in `115ad0e039` (frozen copy
+- Drivers: `scripts/`. The 11-entry reruns of the first run (below) used them as committed in
+  `115ad0e039` (frozen copy
   `/home/scratch.yihlu_coreai/tmp/20261113-wt31-r10/drivers/284da90b1b64d69390c75beec69add1b5dfa574a/`,
   the same files); the first run, including the shards run again, used an earlier, unpushed version (frozen copy
   `/home/scratch.yihlu_coreai/tmp/20261113-wt31-r10/drivers/ed53945ee86f37c5f0d0e8de28723b3aa065b23b/`)
   that lacked the per-entry `timeout(1)`, `--src-rw`, `--clean-slurm-env` and some bookkeeping
   fixes.
 - Results: `r10_results.tsv`, one line per pytest entry after the header (169 lines; `xd` repeats
-  where a plan row has several entries). `group` is b200 (one node), hopper or 2node; `gpus` is
-  GPUs per node; `gpu_model` is the GPU model the entry ran on (B200, H100-80GB or H200, from the
-  job's node precheck). `outcome` / `time_s` / `job` are the first run, for the three shards run
-  again as a whole (below) their second attempt; `rerun_*` the single rerun of the 11 entries
-  listed below (empty otherwise). `verdict` is the final classification and `reason`
+  where a plan row has several entries). `group` is b200 (one node), hopper or 2node; `gpus` is GPUs
+  per node; `gpu_model` is the GPU model the entry ran on (B200, H100-80GB or H200, from the job's
+  node precheck). `outcome` / `time_s` / `job` are the first run, for the three shards run again as
+  a whole (below) their second attempt; `rerun_*` the single rerun of the 11 single-node entries
+  listed below (empty otherwise). `verdict` is the classification after those reruns and `reason`
   its cause: for skipped entries the test's skip message, for failures a summary from reading the
   entry's log, empty for passed entries. Both were assigned from the summary of
-  `scripts/summarize_r10.py`. `waived_in` lists the
-  platforms `waives.txt` waives the entry on (`any` = all, `-` = none). `time_s` is empty where
-  no junit was written.
+  `scripts/summarize_r10.py`. `waived_in` lists the platforms `waives.txt` waives the entry on
+  (`any` = all, `-` = none). `time_s` is empty where no junit was written. The 2-node rerun has its
+  own table, `r10_2node_rerun.tsv` (2-node group rerun below).
 - Raw logs and per-entry junit: `/home/scratch.yihlu_coreai/tmp/20261113-wt31-r10/results/`.
 
 ## Totals (verdict)
@@ -35,7 +37,7 @@ R10 ran the disaggregated-serving tests of the PoC plan (XD-001..XD-319, 149 pla
 |---|---|---|---|---|---|---|
 | B200, single node (1/2/4/8 GPUs) | 113 | 1 | 12 | 9 | 0 | 135 |
 | Hopper (H100-80GB / H200, `skip_no_hopper` rows) | 21 | 0 | 1 | 0 | 0 | 22 |
-| B200, 2 nodes x 8 GPUs | 0 | 0 | 11 | 0 | 1 | 12 |
+| B200, 2 nodes x 8 GPUs (see the 2-node group rerun below) | 0 | 0 | 11 | 0 | 1 | 12 |
 
 Reruns (11 entries, all single node): 10 passed. In the first run they had failed because the
 source tree was mounted read-only (tests that write `output.json` / logs into their working
@@ -62,6 +64,7 @@ initialization with "unhandled cuda error", which no other node showed) and hopp
 | XD-101 | first run: read-only source mount (`output.json`); not rerun, because the test also writes `examples/disaggregated/*` relative to the defs directory, where it does not exist (read from the test, not run) |
 | XD-125 | the cancel-stress harness imports `test_disaggregated` by bare name; each R10 entry runs in its own pytest session, where that name does not resolve (`ModuleNotFoundError`) |
 | XD-318, XD-319 | the image has no Ray |
+| XD-314 | 2 nodes, from the 2-node group rerun (first-run verdict `killed`, as in the totals): with the test's TP4 / EP4 per server the model weights do not fit in B200 GPU memory (2-node group rerun below) |
 
 ## Existing failures on the control form
 
@@ -73,14 +76,16 @@ initialization with "unhandled cuda error", which no other node showed) and hopp
 | XD-071 | Qwen3-32B FP8 stress: 98% request errors (500, and 400 "Error in kv cache transfer") |
 | XD-072 | Nemotron-3-Super FP8: server start exceeded the test's 300 s limit in both runs (cause not measured) |
 | XD-123 | `test_workers_kv_cache_aware_router_eviction`: `assert 2016 < 1984` |
-| XD-301..309 | 2 nodes: the cross-node KV transfer fails (the NIXL wait returns transfer state FAILURE after about 33 s; gen answers 400 "Error in kv cache transfer") |
-| XD-310 | 2 nodes, etcd service discovery: requests answered 400; no response body and no KV transfer failure in the logs, cause not identified |
-| XD-311 | 2 nodes, HTTP service discovery: the disagg server exits at start ("HTTP cluster storage is only supported for loopback-only disaggregated serving") because the test's cluster URI names the first node; `/health` never answers |
+| XD-301..309 | 2 nodes (first run; all pass in the rerun below): the cross-node KV transfer fails (the NIXL wait returns transfer state FAILURE after about 33 s; gen answers 400 "Error in kv cache transfer") |
+| XD-310 | 2 nodes, etcd service discovery (first run; passes in the rerun below): requests answered 400; no response body and no KV transfer failure in the logs, cause not identified |
+| XD-311 | 2 nodes, HTTP service discovery (not rerun): the disagg server exits at start ("HTTP cluster storage is only supported for loopback-only disaggregated serving") because the test's cluster URI names the first node; `/health` never answers |
 
-XD-314 (2 nodes) did not finish: it was the last of the 12 entries of the 4 h 2-node job, started
-with about 94 min left and was ended by the driver's timeout on the container step (exit 124),
-before its own 7200 s server-start limit; no junit. XD-071, XD-123 and XD-209 are waived on the platform they ran on (`waived_in`). XD-118 skips
-itself (nvbugs 5372970).
+XD-314 (2 nodes) did not finish in the first run: it was the last of the 12 entries of the 4 h
+2-node job, started with about 94 min left and was ended by the driver's timeout on the container
+step (exit 124), before its own 7200 s server-start limit; no junit, and the test's output was not
+kept, so where it stood is not known. In the 2-node group rerun below its servers exit within a
+minute with a GPU memory error, so it is listed as not runnable above. XD-071, XD-123 and XD-209 are
+waived on the platform they ran on (`waived_in`). XD-118 skips itself (nvbugs 5372970).
 
 ## KV transfer path
 
@@ -92,12 +97,66 @@ itself (nvbugs 5372970).
 - One Hopper node (UV-75): 21 of the 22 entries pass; the failing one is the KV-cache OOM above
   (XD-201, on H100-80GB; the Hopper shards ran on H100-80GB or H200, see `gpu_model`). The
   transport was not probed separately on Hopper.
-- Two B200 nodes (UV-08, UV-32, G1b): the tests use `KvCacheTransceiverV2` with a NIXL agent on
-  the NIXL UCX backend (worker logs). XD-301..309 reached the transfer and failed in it, XD-310
-  got 400s without a logged cause, XD-311 failed before serving (HTTP cluster storage refuses a
-  non-loopback URI) and XD-314 did not finish, so no 2-node test passed and the cross-node KV
-  path is not shown to work. Inside the container `ucx_info` lists RDMA (mlx5) devices, `cuda_ipc` and
-  `gdr_copy`. No UCX tuning was retried (the 2-node group was allocated once). G1b does not hold.
+- Two B200 nodes (UV-08, UV-32, G1b): the tests use `KvCacheTransceiverV2` with a NIXL agent on the
+  NIXL UCX backend (worker logs). XD-301..309 reached the transfer and failed in it, XD-310 got 400s
+  without a logged cause, XD-311 failed before serving (HTTP cluster storage refuses a non-loopback
+  URI) and XD-314 did not finish, so in the first run no 2-node test passed and the cross-node KV
+  path was not shown to work. Inside the container `ucx_info` lists RDMA (mlx5) devices, `cuda_ipc`
+  and `gdr_copy`. In this run no UCX tuning was retried (the 2-node group was allocated once). G1b
+  did not hold after this run; the 2-node group rerun below settles it.
+
+## 2-node group rerun (WT-31-fix1)
+
+In the first run XD-301..309 failed in the cross-node KV transfer, so the 2-node group except XD-311
+was run again on another cluster, with 8 x B200 per node and an InfiniBand fabric between the nodes,
+on the same control form, source and image (a copy with the same sha256). The two runs differ in
+cluster, interconnect, GPU driver and container environment; these differences were not listed one
+by one. The drivers were `scripts/` as changed by the WT-31-fix1 drivers commit (git tree
+`27f2d505c8`; the jobs ran a frozen copy of that tree). A preflight job on two nodes checked the
+GPUs, the full image checksum and the transport facts; then XD-301..305 and XD-306..310 ran as two
+jobs with a 2 h limit and XD-314 as one job with a 5 h limit, each job with its own node precheck.
+XD-311 was not rerun. Results: `r10_2node_rerun.tsv`, one line per rerun entry, with the columns of
+`r10_results.tsv` except `rerun_*`: `outcome` and `time_s` are node 0's, as
+`scripts/summarize_r10.py` reports them for these jobs, and `verdict` / `reason` come from reading
+the logs. Raw logs and per-entry junit:
+`/home/scratch.yihlu_coreai/tmp/20261114-wt31fix1-eg39/results/`.
+
+| Group | passed | not-runnable | entries |
+|---|---|---|---|
+| B200, 2 nodes x 8 GPUs (rerun) | 10 | 1 | 11 |
+
+- XD-301..310 pass: on node 0, which runs the client and checks the completions, and on node 1,
+  which hosts the gen server, each entry's junit records one passed test with no failure, error or
+  skip. Their junit time on node 0 is 194 to 633 s.
+- XD-314 is not runnable on B200 with the test's configuration. Measured: on both nodes executor
+  creation fails for the Model component with "insufficient GPU memory" (178.35 GiB per GPU, 177.06
+  or 177.74 GiB free), and the test errors at setup (junit time 57 s on node 0, 73 s on node 1).
+  Estimated, not measured: each server runs TP4 / EP4 with attention DP and the checkpoint is 879
+  GiB, so each GPU needs over 200 GiB for the weights. Unlike the KV-cache OOMs of the first run,
+  which fail later, when the KV cache is allocated, the model weights themselves do not fit, so the
+  entry is `not-runnable` rather than `failed`. It could run on GPUs with more memory per GPU; that
+  is left to R12 / R14. This job was submitted with `UCX_NET_DEVICES` set in its environment (not by
+  the drivers), which the test's worker environment uses; the test never reached a KV transfer. The
+  test class is marked `skip_less_device_memory(140000)`, below that estimate, so on B200 it starts
+  instead of skipping; the threshold is left to R12 / R14 as well.
+- XD-311 keeps its first-run result (`failed`) and is not in the rerun table: a code limit
+  (HTTP cluster storage only for loopback-only serving, see above), not the transport.
+
+KV transfer path (G1b): the two test files that XD-301..310 run
+(`tests/unittest/llmapi/apps/_test_disagg_serving_multi_nodes.py` and
+`_test_disagg_serving_multi_nodes_service_discovery.py` beside it) start the ctx server on node 0
+and the gen server on node 1, so a passed completion means the KV cache crossed the nodes. Every job
+was submitted with `UCX_PROTO_INFO=y` in its environment and the XD-306..310 job also with
+`UCX_LOG_FILE` set to a shared directory (neither is set by the drivers); that job left 65 UCX logs
+(43 non-empty). Each of XD-306..310 has inter-node protocol tables there, and the 1438 inter-node
+tables name no transport other than `rc_mlx5` (RDMA) in the rows they print; six of the tables are
+cut off at the end of their log, two before any row and four after their first two rows. Four of the
+1438 describe puts from GPU memory to a remote GPU (`ucp_put*` from `cuda/GPU<n>` to `cuda/dev`), in
+processes of XD-306, 307 and 308; all four use zero-copy over two paths for every non-empty message.
+For XD-301..305 the protocol was not recorded: the output UCX prints goes to the test's captured
+output, which pytest does not keep for a passed test. Every 2-node entry has a result or a reason
+and ten of them show the cross-node KV path working, so G1b holds on nodes joined by InfiniBand; why
+the transfer failed on the first cluster was not identified.
 
 ## Behaviors of the control form (probe, Qwen3-0.6B, 2 x B200)
 
@@ -125,12 +184,14 @@ itself (nvbugs 5372970).
   and 2 x B200 (XD-219, 182 s).
 - UV-70 (first half): `Qwen3/Qwen3-30B-A3B` and `Qwen3/Qwen3-30B-eagle3` are in the model store.
 - UV-74: `DeepSeek-V4-Pro-nvfp4-DSpark` (XD-314's model) is in the model store (read-only listing,
-  879 GiB); whether it runs on 2 x 8 B200 is not established (see XD-314 above).
+  879 GiB); with the test's TP4 / EP4 per server it does not fit on B200 (2-node group rerun below).
 - UV-23: the first run was 12 submissions with 33 array tasks (31 shards and two attempts of the
-  probe, the first stopped in the node precheck), plus 2 resubmitted shards; the reruns were 5
-  jobs. Queue wait from submission to start was 0 min for most single-node tasks, up to 154 min
-  for 8-GPU tasks (mostly the array's 4-at-a-time limit), and 0 min for the 2-node job. Wall time
-  of the first run: 00:16 to 04:08 (UTC+8).
+  probe, the first stopped in the node precheck), plus 2 resubmitted shards; the 11-entry reruns
+  were 5 jobs. Queue wait from submission to start was 0 min for most single-node tasks, up to 154
+  min for 8-GPU tasks (mostly the array's 4-at-a-time limit), and 0 min for the first run's 2-node
+  job. Wall time of the first run: 00:16 to 04:08 (UTC+8). The 2-node rerun was 4 jobs (the
+  preflight and three test jobs); each waited about 2 min or less except the XD-314 job (70 min);
+  the first was submitted at 14:26 and the last ended at 16:01 (UTC+8).
 
 ## Durations and the smoke budget
 
