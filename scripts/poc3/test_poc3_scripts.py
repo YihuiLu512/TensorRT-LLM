@@ -1018,16 +1018,15 @@ def _apply(lines, regions, within, removed, added, after):
     raise AssertionError(f"no place for the change in {within}")
 
 
-def _wt40_repo(tmp_path, path, edit):
-    """A repo holding ``path`` as at the frozen base, then ``edit`` of its lines as WT-40."""
+def _edited_repo(tmp_path, rev, path, edit, task):
+    """A repo holding ``path`` as at ``rev`` of this checkout, then ``edit`` of its lines as ``task``."""
     found = subprocess.run(
-        ["git", "-C", str(Path(__file__).resolve().parents[2]), "show"]
-        + [f"{check_invariants.FROZEN_BASE}:{path}"],
+        ["git", "-C", str(Path(__file__).resolve().parents[2]), "show", f"{rev}:{path}"],
         capture_output=True,
         text=True,
     )
     if found.returncode != 0:
-        pytest.skip("the frozen base is not in this checkout")
+        pytest.skip(f"{rev} is not in this checkout")
     text = found.stdout
     repo = _repo(tmp_path)
     base = _commit(repo, {"tensorrt_llm/__init__.py": "", path: text}, "base")
@@ -1035,9 +1034,14 @@ def _wt40_repo(tmp_path, path, edit):
     _commit(
         repo,
         {path: "\n".join(edit(lines, check_ownership._regions(text)))},
-        "t\n\nPoC3-Task: WT-40",
+        f"t\n\nPoC3-Task: {task}",
     )
     return repo, base
+
+
+def _wt40_repo(tmp_path, path, edit):
+    """A repo holding ``path`` as at the frozen base, then ``edit`` of its lines as WT-40."""
+    return _edited_repo(tmp_path, check_invariants.FROZEN_BASE, path, edit, "WT-40")
 
 
 @pytest.mark.parametrize("path", WT40_CHANGES)
@@ -1135,6 +1139,226 @@ def test_wt40_may_not_move_the_statements_it_adds(tmp_path, capsys, where):
 
     repo, base = _wt40_repo(tmp_path, path, edit)
     assert check_ownership.check("WT-40", f"{base}..HEAD", str(repo)) == 1
+    assert "not one of the allowed changes" in capsys.readouterr().out
+
+
+# The stage03 commit WT-52 works on; the three files below are as WT-52 found them.
+WT52_BASE = "6b0f267c9258143c1a7f5c2bd0721f51f4895e92"
+WT52_WT50_CHAIN = "tests/unittest/serve/openengine_poc/wt50/wt50_chain.py"
+WT52_WT50_AUTH = "tests/unittest/serve/openengine_poc/wt50/test_poc3_wt50_internal_auth.py"
+WT52_WT11 = "tests/unittest/serve/openengine_poc/wt11/test_poc2_wt11_no_silent_drop.py"
+TAMPERED_HANDOFF_TEST = "test_gen_worker_frontend_rejects_a_tampered_handoff_signature"
+SIGNED_HANDOFF_TEST = "test_a_signed_handoff_is_not_refused_for_a_missing_transceiver"
+OVER_GRPC_TEST = "test_over_grpc_the_engine_receives_what_the_mapping_sends"
+# WT-52's changes to tests it does not own, in the form of WT40_CHANGES.
+WT52_CHANGES = {
+    WT52_WT50_CHAIN: [
+        (
+            "import",
+            ["from fake_openengine import PROFILES, FakeEngine, running_in_thread  # noqa: E402"],
+            [
+                "from fake_openengine import PROFILES, FakeEngine, disagg_profile,"
+                " running_in_thread  # noqa: E402"
+            ],
+            None,
+        ),
+        (
+            "engine",
+            ['    """A ``trtllm-like`` fake engine serving the tokenizer in ``model_path``."""'],
+            [
+                '    """A ``trtllm-like`` fake engine with KV transfer, serving the tokenizer'
+                ' in ``model_path``."""'
+            ],
+            None,
+        ),
+        (
+            "engine",
+            ['    profile = PROFILES["trtllm-like"].replace('],
+            ['    profile = disagg_profile(PROFILES["trtllm-like"]).replace('],
+            None,
+        ),
+    ],
+    WT52_WT50_AUTH: [
+        (
+            "_refused_by_the_facade",
+            [
+                "def _refused_by_the_facade(response: requests.Response) -> bool:",
+                '    """A 400 about ``disaggregated_params``, past the signature and'
+                ' transceiver checks."""',
+                "    text = response.text",
+                "    return (",
+                "        response.status_code == 400",
+                '        and "disaggregated_params" in text',
+                "        and AUTH_FAILED not in text",
+                "        and NO_TRANSCEIVER not in text",
+                "    )",
+                "",
+                "",
+            ],
+            [],
+            None,
+        ),
+        (
+            TAMPERED_HANDOFF_TEST,
+            ["    # to the facade's refusal of the handoff fields."],
+            ["    # to the engine.", "    keyless_before = chain.generate_calls(keyless_engine)"],
+            None,
+        ),
+        (
+            TAMPERED_HANDOFF_TEST,
+            [
+                "    assert _refused_by_the_facade(response), (response.status_code, response.text)",
+                "    assert chain.generate_calls(keyless_engine) == 0",
+            ],
+            [
+                "    assert response.status_code == 200, response.text",
+                "    assert chain.generate_calls(keyless_engine) == keyless_before + 1",
+            ],
+            None,
+        ),
+        (
+            SIGNED_HANDOFF_TEST,
+            ["    facade, which refuses the handoff fields it does not map."],
+            ["    engine."],
+            None,
+        ),
+        (
+            SIGNED_HANDOFF_TEST,
+            [
+                "    assert _refused_by_the_facade(response), (response.status_code, response.text)",
+                "    assert chain.generate_calls(keyed_engine) == before",
+            ],
+            [
+                "    assert response.status_code == 200, response.text",
+                "    assert chain.generate_calls(keyed_engine) == before + 1",
+            ],
+            None,
+        ),
+    ],
+    WT52_WT11: [
+        (
+            OVER_GRPC_TEST,
+            [],
+            [
+                '        if name == "min_tokens" and (',
+                "            conv.conventions_version(facade.client.server_info().extra)"
+                " == conv.CONVENTIONS_VERSION",
+                "            and not caps.supports(conv.CAP_STOPPING_MIN_TOKENS)",
+                "        ):",
+                "            # DQ-48: an engine on the current conventions refuses min_tokens"
+                " unless it declares it.",
+                '            with pytest.raises(ValueError, match="min_tokens"):',
+                "                await facade.generate_async(GRPC_PROMPT, _sampling(probe.params),"
+                " **options)",
+                "            assert engine.requests == []",
+                "            return",
+            ],
+            "        engine_name = facade.client.server_info().engine_name",
+        ),
+    ],
+}
+
+
+def _wt52_repo(tmp_path, path, edit):
+    """A repo holding ``path`` as at WT-52's base, then ``edit`` of its lines as WT-52."""
+    return _edited_repo(tmp_path, WT52_BASE, path, edit, "WT-52")
+
+
+@pytest.mark.parametrize("path", WT52_CHANGES)
+def test_the_wt52_exceptions_list_exactly_its_changes(path):
+    rule = check_ownership.match_rule("WT-52", path)
+    assert rule.kind == "exception" and not rule.lines
+    assert list(rule.changes) == [
+        check_ownership.Change(tuple(map(re.escape, old)), tuple(map(re.escape, new)), within)
+        for within, old, new, _ in WT52_CHANGES[path]
+    ]
+    assert check_ownership.match_rule("WT-53", path) is None
+    if "/wt50/" in path:
+        assert check_ownership.match_rule("WT-50", path).kind == "own"
+
+
+@pytest.mark.parametrize("path", WT52_CHANGES)
+def test_wt52_may_make_its_changes_to_the_files_at_its_base(tmp_path, capsys, path):
+    def edit(lines, regions):
+        for change in WT52_CHANGES[path]:
+            lines = _apply(lines, regions, *change)
+            regions = check_ownership._regions("\n".join(lines))
+        return lines
+
+    repo, base = _wt52_repo(tmp_path, path, edit)
+    assert check_ownership.check("WT-52", f"{base}..HEAD", str(repo)) == 0
+    assert f"CHECK BY HAND  EXCEPTION  {path}" in capsys.readouterr().out
+
+
+def _indent(line):
+    return line[: len(line) - len(line.lstrip())]
+
+
+@pytest.mark.parametrize("path", WT52_CHANGES)
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        lambda added: added[:-1],
+        lambda added: [*added, added[-1]],
+        lambda added: [*added[:-1], added[-1] + " "],
+        lambda added: [_indent(added[0]) + "pass"],
+    ],
+    ids=["line-dropped", "line-repeated", "line-altered", "other-line"],
+)
+def test_wt52_may_not_change_anything_else(tmp_path, capsys, path, tamper):
+    within, removed, added, after = max(
+        WT52_CHANGES[path], key=lambda change: (len(change[2]), len(change[1]))
+    )
+
+    def edit(lines, regions):
+        new = _apply(lines, regions, within, removed, tamper(added), after)
+        ast.parse("\n".join(new))
+        return new
+
+    repo, base = _wt52_repo(tmp_path, path, edit)
+    assert check_ownership.check("WT-52", f"{base}..HEAD", str(repo)) == 1
+    assert f"OUT OF BOUNDS  {path}  (the exception allows" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "path, change",
+    [
+        # The over-gRPC probe's refusal, in the facade-mapped fields' over-gRPC test.
+        (
+            WT52_WT11,
+            (
+                "test_over_grpc_a_facade_mapped_field_reaches_the_engine_or_is_rejected",
+                [],
+                WT52_CHANGES[WT52_WT11][0][2],
+                "    async def check(engine, facade):",
+            ),
+        ),
+        # The mapping-level probes run through _run, which stays as it is.
+        (
+            WT52_WT11,
+            ("_run", [], ["    params = dict(params)"], "    sampling_params = SamplingParams()"),
+        ),
+        # The tampered handoff's new lines, in the test without a transceiver.
+        (
+            WT52_WT50_AUTH,
+            (
+                "test_a_worker_frontend_without_a_transceiver_refuses_a_handoff",
+                [],
+                WT52_CHANGES[WT52_WT50_AUTH][1][2],
+                '    model = chain.model_dir(tmp_path / "model")',
+            ),
+        ),
+    ],
+    ids=["wt11-other-over-grpc-test", "wt11-mapping-level", "wt50-auth-other-test"],
+)
+def test_wt52_may_not_make_its_changes_in_another_statement(tmp_path, capsys, path, change):
+    def edit(lines, regions):
+        new = _apply(lines, regions, *change)
+        ast.parse("\n".join(new))
+        return new
+
+    repo, base = _wt52_repo(tmp_path, path, edit)
+    assert check_ownership.check("WT-52", f"{base}..HEAD", str(repo)) == 1
     assert "not one of the allowed changes" in capsys.readouterr().out
 
 

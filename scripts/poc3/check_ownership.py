@@ -38,8 +38,8 @@ about the file may change (its mode or final newline, for example); otherwise
 the path is out of bounds. Paths changed under
 ``shared`` and ``exception`` rules are listed for a reviewer to check by hand.
 Test files that already exist at the base are ``shared`` even for the item they
-belong to: tasks.md §0.3 lets existing assertions change only for the flips it
-names, so changes there are listed too.
+belong to: existing assertions change only for the flips tasks.md §0.3 and the
+user's rulings name, so changes there are listed too.
 A pattern starting with ``!`` excludes paths from the rules before it.
 
 The orchestrator's main files belong to no work item. Some code inside files
@@ -142,6 +142,8 @@ DS_OE = "python/dsv4_serve/openengine"
 _SPECULATION_TEST = (
     "test_model_info_reports_only_no_effect_min_p_and_penalties_under_one_model_speculation"
 )
+_TAMPERED_HANDOFF_TEST = "test_gen_worker_frontend_rejects_a_tampered_handoff_signature"
+_SIGNED_HANDOFF_TEST = "test_a_signed_handoff_is_not_refused_for_a_missing_transceiver"
 # The registry of lines check_invariants.py lets CS-20 add.
 INVARIANT_ADDITIONS = "scripts/poc3/invariant_additions.yaml"
 # Gate files only WT-30 and its fixes may change (see the module docstring).
@@ -543,6 +545,126 @@ OWNERSHIP: dict[str, list[Rule]] = {
         _shared(
             f"{POC}/engine_client_impl.py",
             "CS-19: the debug dump, appended where GenerateRequest is built",
+        ),
+        # CS-08 makes a worker frontend with a role need an engine that declares a KV connector,
+        # which WT-50's fake engine does not; a handoff then reaches the engine.
+        _exception(
+            f"{POC_TESTS}/wt50/wt50_chain.py",
+            "only engine() serving a disagg_profile, with its docstring and import",
+            changes=(
+                _change(
+                    "import",
+                    (
+                        "from fake_openengine import PROFILES, FakeEngine, running_in_thread"
+                        "  # noqa: E402",
+                    ),
+                    (
+                        "from fake_openengine import PROFILES, FakeEngine, disagg_profile,"
+                        " running_in_thread  # noqa: E402",
+                    ),
+                ),
+                _change(
+                    "engine",
+                    (
+                        '    """A ``trtllm-like`` fake engine serving the tokenizer in ``model_path``."""',
+                    ),
+                    (
+                        '    """A ``trtllm-like`` fake engine with KV transfer, serving the tokenizer'
+                        ' in ``model_path``."""',
+                    ),
+                ),
+                _change(
+                    "engine",
+                    ('    profile = PROFILES["trtllm-like"].replace(',),
+                    ('    profile = disagg_profile(PROFILES["trtllm-like"]).replace(',),
+                ),
+            ),
+        ),
+        _exception(
+            f"{POC_TESTS}/wt50/test_poc3_wt50_internal_auth.py",
+            "only the two handoffs past the signature check expecting 200 and one engine call,"
+            " with their comment and docstring, and _refused_by_the_facade removed",
+            changes=(
+                _change(
+                    "_refused_by_the_facade",
+                    (
+                        "def _refused_by_the_facade(response: requests.Response) -> bool:",
+                        '    """A 400 about ``disaggregated_params``, past the signature and'
+                        ' transceiver checks."""',
+                        "    text = response.text",
+                        "    return (",
+                        "        response.status_code == 400",
+                        '        and "disaggregated_params" in text',
+                        "        and AUTH_FAILED not in text",
+                        "        and NO_TRANSCEIVER not in text",
+                        "    )",
+                        "",
+                        "",
+                    ),
+                ),
+                _change(
+                    _TAMPERED_HANDOFF_TEST,
+                    ("    # to the facade's refusal of the handoff fields.",),
+                    (
+                        "    # to the engine.",
+                        "    keyless_before = chain.generate_calls(keyless_engine)",
+                    ),
+                ),
+                _change(
+                    _TAMPERED_HANDOFF_TEST,
+                    (
+                        "    assert _refused_by_the_facade(response),"
+                        " (response.status_code, response.text)",
+                        "    assert chain.generate_calls(keyless_engine) == 0",
+                    ),
+                    (
+                        "    assert response.status_code == 200, response.text",
+                        "    assert chain.generate_calls(keyless_engine) == keyless_before + 1",
+                    ),
+                ),
+                _change(
+                    _SIGNED_HANDOFF_TEST,
+                    ("    facade, which refuses the handoff fields it does not map.",),
+                    ("    engine.",),
+                ),
+                _change(
+                    _SIGNED_HANDOFF_TEST,
+                    (
+                        "    assert _refused_by_the_facade(response),"
+                        " (response.status_code, response.text)",
+                        "    assert chain.generate_calls(keyed_engine) == before",
+                    ),
+                    (
+                        "    assert response.status_code == 200, response.text",
+                        "    assert chain.generate_calls(keyed_engine) == before + 1",
+                    ),
+                ),
+            ),
+        ),
+        _exception(
+            f"{POC_TESTS}/wt11/test_poc2_wt11_no_silent_drop.py",
+            "DQ-48 flip only: the over-gRPC min_tokens probe expecting the refusal of an engine on"
+            " the current conventions that does not declare trtllm.stopping.min_tokens; the"
+            " mapping-level probes are unchanged",
+            changes=(
+                _change(
+                    "test_over_grpc_the_engine_receives_what_the_mapping_sends",
+                    added=(
+                        '        if name == "min_tokens" and (',
+                        "            conv.conventions_version(facade.client.server_info().extra)"
+                        " == conv.CONVENTIONS_VERSION",
+                        "            and not caps.supports(conv.CAP_STOPPING_MIN_TOKENS)",
+                        "        ):",
+                        "            # DQ-48: an engine on the current conventions refuses min_tokens"
+                        " unless it declares it.",
+                        '            with pytest.raises(ValueError, match="min_tokens"):',
+                        "                await facade.generate_async(GRPC_PROMPT,"
+                        " _sampling(probe.params), **options)",
+                        "            assert engine.requests == []",
+                        "            return",
+                    ),
+                ),
+            ),
         ),
     ],
     "WT-53": _own(
