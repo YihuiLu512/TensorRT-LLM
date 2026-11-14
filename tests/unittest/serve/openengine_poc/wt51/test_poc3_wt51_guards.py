@@ -5,7 +5,8 @@
 A disaggregated request to an engine without KV transfer is refused by the
 worker frontend, before any Generate call. A handoff the engine could not read
 back, and a call that sets the prefill or decode fields where the client does
-not take them, are refused before they are sent.
+not take them, are refused before they are sent. The request counters bucket a
+body as the server reads its request type.
 """
 
 from __future__ import annotations
@@ -16,8 +17,12 @@ import pytest
 import requests
 import yaml
 
-from tensorrt_llm.grpc.openengine_conventions import REQ_REQUEST_TYPE
-from tensorrt_llm.serve.openengine_poc import handoff
+from tensorrt_llm.grpc.openengine_conventions import (
+    BUCKET_AGGREGATED,
+    BUCKET_CONTEXT_ONLY,
+    REQ_REQUEST_TYPE,
+)
+from tensorrt_llm.serve.openengine_poc import facade, handoff
 from tensorrt_llm.serve.openengine_poc.engine_client import EngineRequest, KvSessionSpec
 from tensorrt_llm.serve.openengine_poc.engine_client_impl import to_generate_request
 
@@ -60,6 +65,18 @@ def test_pass_through_attributes_a_struct_cannot_hold_are_refused(attributes):
     params, _ = handoff.decode_kv_session(KvSessionSpec(session_id="12"))
     with pytest.raises(ValueError):
         handoff.encode_kv_session(params, attributes, "")
+
+
+@pytest.mark.parametrize(
+    "body, bucket",
+    [
+        (b'{"disaggregated_params": {"request_type": "CONTEXT_ONLY"}}', BUCKET_CONTEXT_ONLY),
+        (b'{"prompt": ' + b"[" * 5000 + b"]" * 5000 + b"}", BUCKET_AGGREGATED),
+    ],
+    ids=["upper-case-type", "nested-too-deeply"],
+)
+def test_a_body_is_bucketed_as_the_server_reads_it(body, bucket):
+    assert facade._http_bucket(body, msgpack=False) == bucket
 
 
 @pytest.fixture(scope="module")
