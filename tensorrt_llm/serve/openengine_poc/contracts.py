@@ -89,7 +89,7 @@ if TYPE_CHECKING:
 
 # Bump on any change to a signature, type or message in this module or in
 # engine_client.py, in a commit of its own.
-POC2_CONTRACT_VERSION = 10
+POC2_CONTRACT_VERSION = 11
 
 _PACKAGE = "tensorrt_llm.serve.openengine_poc"
 
@@ -1446,15 +1446,21 @@ class MetricsRecorder(Protocol):
         """One ``/metrics`` entry derived from an engine load snapshot; None for none."""
         ...
 
+    def subscribe_kv_cache_events(self, client: EngineClient) -> Awaitable[None]:
+        """Subscribe to the engine's KV-cache events; the facade calls it at most once, at its start.
+
+        Events received once the subscription is connected are returned by
+        later :meth:`kv_cache_events` calls. It does not raise when it cannot
+        subscribe (the engine cannot be reached, or publishes no events):
+        :meth:`kv_cache_events` then subscribes itself, or answers no events.
+        """
+        ...
+
     def kv_cache_events(self, client: EngineClient, timeout: float | None) -> Awaitable[Any]:
         """The KV-cache events received so far, in ``/kv_cache_events`` format.
 
-        For an engine that publishes no KV-cache events, a recorder either
-        raises :class:`OpenEngineUnsupportedError` (the endpoint answers 501) or
-        returns an empty list, which a disaggregated router reads as no events.
-
-        Raises:
-            OpenEngineUnsupportedError: The engine publishes no KV-cache events.
+        An engine that publishes no KV-cache events gets an empty list, which a
+        disaggregated router reads as no events.
         """
         ...
 
@@ -1502,10 +1508,11 @@ class _NoMetrics:
     def iteration_stats(self, load: EngineLoad | None) -> dict[str, Any] | None:
         return None
 
+    async def subscribe_kv_cache_events(self, client: EngineClient) -> None:
+        pass
+
     async def kv_cache_events(self, client: EngineClient, timeout: float | None) -> Any:
-        raise OpenEngineUnsupportedError(
-            "/kv_cache_events is not supported when serving through an OpenEngine engine"
-        )
+        return []
 
 
 @_slot("create_metrics_recorder", "metrics", owner="WT-15")

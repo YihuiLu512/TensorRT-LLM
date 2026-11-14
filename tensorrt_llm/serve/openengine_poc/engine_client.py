@@ -333,6 +333,10 @@ class EngineInfo:
         extra: ``ServerInfo.extra``.
         engine_role: ``ServerInfo.engine_role``, for logs only.
         kv_connector: ``ServerInfo.kv_connector``; None when the engine reports none.
+        kv_block_size: ``ServerInfo.capacity.kv_block_size``, the tokens in one
+            KV-cache block; None when the engine reports none.
+        total_kv_blocks: ``ServerInfo.capacity.total_kv_blocks``, the KV-cache
+            blocks the engine can allocate; None when the engine reports none.
     """
 
     engine_name: str
@@ -346,6 +350,8 @@ class EngineInfo:
     extra: Mapping[str, Any] = field(default_factory=dict)
     engine_role: EngineRole = "unspecified"
     kv_connector: KvConnectorInfo | None = None
+    kv_block_size: int | None = None
+    total_kv_blocks: int | None = None
 
 
 @dataclass(frozen=True)

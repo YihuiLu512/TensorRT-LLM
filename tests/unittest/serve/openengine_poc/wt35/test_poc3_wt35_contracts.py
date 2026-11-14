@@ -39,7 +39,7 @@ def _session() -> ec.KvSessionSpec:
 
 
 def test_contract_version():
-    assert contracts.POC2_CONTRACT_VERSION == 10
+    assert contracts.POC2_CONTRACT_VERSION == 11
 
 
 def test_new_request_fields_default_to_an_aggregated_call():

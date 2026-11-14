@@ -54,7 +54,7 @@ def _fresh_slots():
 
 
 def test_contract_version():
-    assert contracts.POC2_CONTRACT_VERSION == 10
+    assert contracts.POC2_CONTRACT_VERSION == 11
 
 
 def test_slot_table():
@@ -823,8 +823,8 @@ def test_default_metrics_record_nothing():
     assert output.request_perf_metrics is None
     assert request.candidate_metrics() == []
     assert recorder.iteration_stats(None) is None
-    with pytest.raises(contracts.OpenEngineUnsupportedError):
-        asyncio.run(recorder.kv_cache_events(FakeEngineClient(), None))
+    asyncio.run(recorder.subscribe_kv_cache_events(FakeEngineClient()))
+    assert asyncio.run(recorder.kv_cache_events(FakeEngineClient(), None)) == []
 
 
 @pytest.mark.parametrize(
