@@ -1661,8 +1661,49 @@ def test_harness_error_while_others_load_is_not_a_startup_failure(fake, tmp_path
     assert not any(handle.alive for handle in launch._HANDLES)
 
 
+def test_harness_port_picks_stay_below_the_ephemeral_range(monkeypatch):
+    monkeypatch.setattr(launch, "_PICKED_PORTS", set())
+    monkeypatch.setattr(launch, "_ephemeral_low", lambda: 32768)
+    monkeypatch.setattr(launch, "free_port", lambda: pytest.fail("free_port used"))
+    draws = iter([20001, 20002, 20003, 20004])
+    ranges = []
+
+    def randrange(start, stop):
+        ranges.append((start, stop))
+        return next(draws)
+
+    monkeypatch.setattr(launch.random, "randrange", randrange)
+    monkeypatch.setattr(launch, "_bindable", lambda port: port != 20003)
+    launch.reserve_ports(20002)
+    # 20001 is taken by the caller, 20002 was reserved and 20003 cannot be bound.
+    assert launch.pick_port(20001) == 20004
+    assert ranges == [(launch._LISTEN_PORT_FLOOR, 32768)] * 4
+    assert 20004 in launch._PICKED_PORTS
+
+
+@pytest.mark.parametrize("low", [None, 20999])
+def test_harness_port_picks_use_free_port_without_room_below_the_ephemeral_range(monkeypatch, low):
+    monkeypatch.setattr(launch, "_PICKED_PORTS", set())
+    monkeypatch.setattr(launch, "_ephemeral_low", lambda: low)
+    monkeypatch.setattr(launch.random, "randrange", lambda *a: pytest.fail("randrange used"))
+    monkeypatch.setattr(launch, "free_port", lambda: 45000)
+    assert launch.pick_port() == 45000
+
+
+def test_ephemeral_low_reads_the_kernel_range(monkeypatch, tmp_path):
+    path = tmp_path / "range"
+    path.write_text("32768\t60999\n")
+    monkeypatch.setattr(launch, "_EPHEMERAL_RANGE_FILE", str(path))
+    assert launch._ephemeral_low() == 32768
+    path.write_text("")
+    assert launch._ephemeral_low() is None
+    monkeypatch.setattr(launch, "_EPHEMERAL_RANGE_FILE", str(tmp_path / "missing"))
+    assert launch._ephemeral_low() is None
+
+
 def test_harness_port_picks_avoid_ports_picked_or_given_before(monkeypatch):
     monkeypatch.setattr(launch, "_PICKED_PORTS", set())
+    monkeypatch.setattr(launch, "_ephemeral_low", lambda: None)
     ports = iter([5, 6, 6, 7, 8, 10, 11, 12, 13])
     monkeypatch.setattr(launch, "free_port", lambda: next(ports))
     launch.reserve_ports(None, 0, 7)

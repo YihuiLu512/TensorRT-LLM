@@ -20,6 +20,7 @@ import functools
 import importlib.util
 import itertools
 import os
+import random
 import re
 import select
 import shlex
@@ -1735,8 +1736,47 @@ def _free_port_other_than(*taken: int | None) -> int:
     raise ChainError(f"no free port other than {taken} found")
 
 
+# Where pick_port looks first: from this port up to the kernel's ephemeral range.
+_LISTEN_PORT_FLOOR = 20000
+_EPHEMERAL_RANGE_FILE = "/proc/sys/net/ipv4/ip_local_port_range"
+
+
+def _ephemeral_low() -> int | None:
+    """The lowest port of the kernel's ephemeral range, or ``None`` if it cannot be read."""
+    try:
+        with open(_EPHEMERAL_RANGE_FILE) as f:
+            return int(f.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _bindable(port: int) -> bool:
+    """Whether ``port`` can be bound on all interfaces now."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind(("", port))
+        except OSError:
+            return False
+    return True
+
+
 def pick_port(*taken: int | None) -> int:
-    """A free port for a process the harness starts, kept off its later picks."""
+    """A free port for a process the harness starts, kept off its later picks.
+
+    The port is below the kernel's ephemeral range when at least 1000 ports
+    lie between ``_LISTEN_PORT_FLOOR`` and it: the process binds the port only
+    after its engine has loaded, and until then the kernel can hand a port of
+    that range to any other process's outgoing connection or port-0 bind.
+    Otherwise the port comes from :func:`free_port`.
+    """
+    low = _ephemeral_low()
+    if low is not None and low - _LISTEN_PORT_FLOOR >= 1000:
+        for _ in range(100):
+            port = random.randrange(_LISTEN_PORT_FLOOR, low)
+            if port in taken or port in _PICKED_PORTS or not _bindable(port):
+                continue
+            reserve_ports(port)
+            return port
     return _free_port_other_than(*taken)
 
 
