@@ -236,13 +236,14 @@ def test_disagg_frontend_env_keeps_only_what_the_front_end_reads():
         "TRTLLM_SERVER_DISABLE_GC": "1",
         "UCX_TLS": "^ib",
     }
-    # The front end keeps the worker's GPUs and the TLLM_* settings, as an aggregated
-    # server's front end does.
+    # The front end keeps the worker's GPUs, the TLLM_* settings and the KV transfer
+    # timing path (it writes perf metrics there), as an aggregated server's front end does.
     assert sp.disagg_frontend_env(env) == {
         "PATH": "/bin",
         "CUDA_VISIBLE_DEVICES": "3",
         "TLLM_LOG_LEVEL": "info",
         "TLLM_FRONTEND_READY_TIMEOUT": "900",
+        "TRTLLM_KVCACHE_TIME_OUTPUT_PATH": "/k",
         "TRTLLM_SERVER_DISABLE_GC": "1",
         "UCX_TLS": "^ib",
     }
@@ -656,8 +657,9 @@ def test_default_backend_follows_the_legacy_environment_variables(tmp_path):
         ({"transceiver_runtime": None}, "CPP"),
         ({"transceiver_runtime": "auto", "backend": "NIXL"}, "AUTO"),
         ({"transceiver_runtime": "auto"}, "AUTO"),
-        ({"transceiver_runtime": "auto", "backend": "UCX"}, "CPP"),
-        ({"transceiver_runtime": "auto", "kv_transfer_timeout_ms": None}, "CPP"),
+        # The model's preferred runtime, if it declares one, wins over the configuration.
+        ({"transceiver_runtime": "auto", "backend": "UCX"}, "AUTO"),
+        ({"transceiver_runtime": "auto", "kv_transfer_timeout_ms": None}, "AUTO"),
     ],
 )
 def test_transceiver_runtime(transceiver, runtime):

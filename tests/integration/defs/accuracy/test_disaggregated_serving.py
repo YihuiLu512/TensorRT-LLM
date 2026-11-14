@@ -530,8 +530,10 @@ def launch_disaggregated_llm(
                 yield (processes[:len(ctx_servers)],
                        processes[len(ctx_servers):])
             finally:
-                for process in processes:
-                    process.terminate()
+                # Every worker is stopped even if stopping one raises.
+                with contextlib.ExitStack() as stop:
+                    for process in processes:
+                        stop.callback(process.terminate)
         finally:
             for f in log_files:
                 f.close()

@@ -28,7 +28,6 @@ import socket
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import IO, Any
@@ -1534,9 +1533,9 @@ def launch_serve_command(
     ``None``: unknown) is not False. On the trtllm chain, the engine's log
     must not show that it has no KV cache transceiver, nor lack the started
     transceiver of the Python runtime (:class:`TransceiverLogCheck`), and
-    the front end starts only if the engine reports the settings
-    :func:`expected_capacity` gives; the glm chain refuses a disaggregated
-    worker.
+    the front end does not start if a setting the engine reports differs
+    from what :func:`expected_capacity` gives; the glm chain refuses a
+    disaggregated worker.
     """
     return ServeStart(
         cmd,
@@ -1800,38 +1799,33 @@ class WorkerProcess(ChainProcess):
     The front end stands for the worker: its pid and exit code (or the
     engine's, as :meth:`ServeHandle.poll` gives them) are the worker's, so a
     test that kills the worker by pid kills the front end. Once :meth:`poll`
-    sees either process gone, a background thread stops the worker as
-    :meth:`ServeHandle.terminate` does, so the other process and everything it
-    started are stopped even if the test never calls :meth:`terminate`;
-    :meth:`terminate` and :meth:`kill` wait for that thread.
+    sees either process gone, it sends SIGTERM to the other one without
+    waiting. :meth:`wait` returns once the worker is stopped as
+    :meth:`ServeHandle.terminate` stops it, the other process and everything
+    it started included, so that a test that starts a new worker on the same
+    GPUs finds them free; the stop gets what is left of ``timeout`` as its
+    grace period.
     """
 
-    _reaper: threading.Thread | None = None
+    _signalled = False
 
     def poll(self) -> int | None:
         rc = self.handle.poll()
-        if rc is not None and self._reaper is None:
-            self._reaper = threading.Thread(
-                target=self._reap, name=f"stop worker {self.pid}", daemon=True
-            )
-            self._reaper.start()
+        if rc is not None and not self._signalled:
+            self._signalled = True
+            for proc in (self.handle.frontend, self.handle.engine):
+                if proc is not None and proc.poll() is None:
+                    proc.terminate()
         return rc
 
-    def _reap(self) -> None:
-        try:
-            self.handle.terminate()
-        except BaseException as error:  # noqa: BLE001 - a thread has no caller to raise to
-            self.handle.teardown_errors.append(f"stopping the worker failed: {error!r}")
-
-    def terminate(self) -> None:
-        if self._reaper is not None:
-            self._reaper.join()
-        self.handle.terminate()
-
-    def kill(self) -> None:
-        if self._reaper is not None:
-            self._reaper.join()
-        self.handle.terminate(grace=0)
+    def wait(self, timeout: float | None = None) -> int:
+        started = time.monotonic()
+        rc = super().wait(timeout)
+        grace = TERMINATE_GRACE_S
+        if timeout is not None:
+            grace = max(0.0, min(grace, timeout - (time.monotonic() - started)))
+        self.handle.terminate(grace=grace)
+        return rc
 
 
 def launch_worker(

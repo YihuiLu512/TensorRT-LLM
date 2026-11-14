@@ -13,6 +13,7 @@ import socket
 import stat
 import subprocess
 import sys
+import threading
 import time
 import types
 
@@ -1541,9 +1542,10 @@ def test_harness_port_picks_avoid_ports_picked_or_given_before(monkeypatch):
     assert {13, 14, 15} <= launch._PICKED_PORTS
 
 
-def test_worker_poll_stops_the_worker_without_waiting(fake, tmp_path, monkeypatch):
+def test_worker_poll_signals_without_waiting_and_wait_stops_the_worker(fake, tmp_path, monkeypatch):
     monkeypatch.setenv(cv.ENV_CHAIN, "trtllm")
     fake.env["FAKE_ENGINE_SAY"] = launch.TRANSCEIVER_STARTED_LINE
+    fake.env["FAKE_ENGINE_IGNORE_TERM"] = "1"
     config = {"cache_transceiver_config": {"backend": "DEFAULT"}}
     worker = launch.launch_worker(
         [fake.exe, "/model"] + _worker(fake, tmp_path, config), env=fake.env
@@ -1557,11 +1559,12 @@ def test_worker_poll_stops_the_worker_without_waiting(fake, tmp_path, monkeypatc
     started = time.monotonic()
     assert worker.poll() == -signal.SIGKILL
     assert time.monotonic() - started < 1
-    # The worker is stopped although the test never calls terminate().
-    deadline = time.monotonic() + 20
-    while worker.handle.alive:
-        assert time.monotonic() < deadline, "the worker was not stopped"
-        time.sleep(0.05)
     assert _record(fake.records, "engine-term")
+    # The engine ignores SIGTERM; wait() returns only once it is stopped, within its timeout.
+    threads = threading.active_count()
+    started = time.monotonic()
+    assert worker.wait(timeout=3) == -signal.SIGKILL
+    assert time.monotonic() - started < 15
+    assert not worker.handle.alive
     assert worker.handle.engine.poll() is not None
-    worker.kill()
+    assert threading.active_count() == threads

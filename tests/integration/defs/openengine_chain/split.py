@@ -334,14 +334,13 @@ def frontend_env(env: Mapping[str, str]) -> dict[str, str]:
 # refuses service discovery, and only the front end registers the worker.
 DISAGG_FRONTEND_ONLY_YAML_KEYS = ("disagg_cluster",)
 # Environment variables a disaggregated worker's front end does not get, besides the
-# ENGINE_ONLY_ENV of any front end: the disaggregated-serving switches and KV-cache
-# settings the engine reads.
+# ENGINE_ONLY_ENV of any front end: disaggregated-serving switches that only the engine
+# of a worker reads.
 DISAGG_ENGINE_ONLY_ENV = (
     "TRTLLM_DISAGG_BENCHMARK_GEN_ONLY",
     "TRTLLM_DISAGG_NO_RETRY",
     "TRTLLM_WORKER_DISABLE_GC",
 )
-DISAGG_ENGINE_ONLY_ENV_PREFIXES = ("TRTLLM_KVCACHE_",)
 # KV-transfer backends of the C++ transceiver, which needs KV cache manager V1.
 CPP_TRANSCEIVER_BACKENDS = ("UCX", "MPI", "MOONCAKE")
 # The transceiver runtime a configuration gets when it names none.
@@ -415,7 +414,7 @@ def set_overrides(args: Sequence[str], strict: bool = True) -> list[tuple[tuple[
             continue
         try:
             parsed = yaml.safe_load(value.split("=", 1)[1])
-        except yaml.YAMLError:
+        except (yaml.YAMLError, ValueError, OverflowError, RecursionError):
             continue
         found.append((_set_path(value), parsed))
     return found
@@ -476,9 +475,7 @@ def is_disagg_worker(args: Sequence[str], strict: bool = True) -> bool:
 def disagg_frontend_env(env: Mapping[str, str]) -> dict[str, str]:
     """A disaggregated worker front end's environment: ``env`` without what it does not get."""
     return {
-        key: value
-        for key, value in frontend_env(env).items()
-        if key not in DISAGG_ENGINE_ONLY_ENV and not key.startswith(DISAGG_ENGINE_ONLY_ENV_PREFIXES)
+        key: value for key, value in frontend_env(env).items() if key not in DISAGG_ENGINE_ONLY_ENV
     }
 
 
@@ -522,8 +519,9 @@ def _transceiver_template(config: dict[str, Any], env: Mapping[str, str]) -> Non
     """Spell out the KV-transfer settings the engine needs, in ``config``.
 
     The backend is always written, so that the engine builds a transceiver.
-    Without one, or with DEFAULT, the Python runtime (also ``auto``, which
-    prefers it) gets the backend the legacy environment variables select, as
+    Without one, or with DEFAULT, the Python runtime and ``auto`` (which
+    takes it unless the model prefers another) get the backend the legacy
+    environment variables select, as
     the engine would resolve DEFAULT, or else NIXL; the C++ runtime gets
     DEFAULT. A C++-only backend gets the C++ runtime and KV cache manager V1
     unless the configuration chooses otherwise. Nothing else is set:
@@ -549,18 +547,14 @@ def _transceiver_template(config: dict[str, Any], env: Mapping[str, str]) -> Non
 def transceiver_runtime(config: Mapping[str, Any]) -> str:
     """The transceiver runtime an engine configuration selects: ``PYTHON``, ``CPP`` or ``AUTO``.
 
-    ``AUTO`` is ``auto`` that the configuration alone does not resolve: the
-    model's preference decides. ``auto`` with a non-NIXL backend or with
-    ``kv_transfer_timeout_ms`` set to null resolves to the C++ runtime.
+    ``AUTO`` is ``auto``, which the configuration alone does not resolve:
+    the engine takes the model's preferred runtime when the model declares
+    one, and otherwise the Python runtime unless the configuration rules it
+    out.
     """
     transceiver = config.get("cache_transceiver_config") or {}
     runtime = transceiver.get("transceiver_runtime", DEFAULT_TRANSCEIVER_RUNTIME)
     if runtime == "auto":
-        timeout_off = "kv_transfer_timeout_ms" in transceiver and (
-            transceiver["kv_transfer_timeout_ms"] is None
-        )
-        if transceiver.get("backend") not in (None, "NIXL") or timeout_off:
-            return "CPP"
         return "AUTO"
     return "PYTHON" if runtime == "PYTHON" else "CPP"
 
