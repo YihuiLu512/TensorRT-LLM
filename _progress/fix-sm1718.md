@@ -83,3 +83,42 @@
 - 2026-11-15 00:35:48 R1 修复变异 M9（make_server 不设排队条数上限）/M10（第 2 项失败仍查第 3 项）/M11（不留之前各次 stderr），约 2 分钟
 - 2026-11-15 00:37:33 R1 修复：代码与测试已改（F1–F4、F7），变异 M9/M10/M11 均被抓到；排队条数复现 repro/r1-pending 重跑；下一步改 INTERFACES 勘误与 README
 - 2026-11-15 00:40:22 R1 修复：勘误第 1–3 条重写、§5.5.2 指引注、jobs/README 已同步；累计规则 RS1–RS27 全量核对后再收紧 2 处措辞（测试 docstring 不写内核缺省值、勘误变异数写明一次运行）；提交
+- 2026-11-15 00:40:41 全量验证 v3（HEAD a3b6cecd95，fullv.sh 轮名 v3，TMPROOT 短路径；先 tests/grpc、tests/jobs，约 4 分钟）
+- 2026-11-15 00:44:31 v3：tests/capcommon capload capprobe envgate nullsse sidecar（约 3 分钟）
+- 2026-11-15 00:46:55 v3：tests/judge、tests/launch（约 5 分钟）
+- 2026-11-15 00:52:49 作业路径 e2e v3：重建 P0 覆盖清单（HEAD a3b6cecd，e2e/ovl/v3），再跑 e0b-s1-single（J9300031）与 e0a-nullsse（J9300032），各约 1–3 分钟
+- 2026-11-15 00:54:45 SM-18 过载档复现 v3（repro/sm18-v3，pre=1176861d、post=HEAD a3b6cecd95 由 git archive 导出，同 v2 测试文件），每侧约 2–3 分钟
+- 2026-11-15 00:59:35 SM-17 假 ssh 复现 v3（repro/sm17-v3；pre=1176861d、post=HEAD 导出树），6 个用例约 1 分钟
+
+## R1 修复（slug capkit-fixsm1718-J17871，修复提交 a3b6cecd95；base 4cb310a1cb）
+
+| 项 | 改动 |
+|---|---|
+| F1 | `capgrpc.common.server_queue_options`：时限 + `grpc.server.max_pending_requests` / `_hard_limit` 都取 2³¹−1；`make_server` 与自报 `grpc_server_options` 取自它；新测试 `test_queue_length_limit_drops_no_call_behind_a_stalled_loop`（两进程，2500 个调用排在阻塞的事件循环后） |
+| F2 | `slurmview.collect`：第 1 项仍失败或没给出单个节点 ⇒ 第 2、3 项不查；第 2 项仍失败 ⇒ 第 3 项不查（`attempts` 0，`stderr` 写 `not run: …`） |
+| F3 | 条目加 `retried_stderr`；`slurm-view` 标准输出 `failed[]` 也带上 |
+| F4 | `slurmview.check_job_dir`，`cmd_slurm_view` 与 `write` 都调它 |
+| F5–F9 | INTERFACES 勘误第 1–3 条重写（版本范围、最坏耗时、证据位置、被测系统范围、S-PB 时点）；§5.5.2 指引注；`jobs/README.md`；两处测试 docstring 不强于断言 |
+
+### MEASURED（HEAD a3b6cecd95，全量验证 v3，logs/v3/summary.txt）
+| 项 | 结果 |
+|---|---|
+| 变异 M9（`make_server` 不设两项条数上限） | `test_queue_length_limit…` 失败：`{"OK": 2042, "CANCELLED": 458}`（logs/r1_mut_M9.log） |
+| 变异 M10（第 2 项仍失败后仍查第 3 项） | 2 failed（logs/r1_mut_M10.log） |
+| 变异 M11（不留之前各次 stderr） | 6 failed（logs/r1_mut_M11.log） |
+| 条数上限复现重跑（repro/r1-pending，grpcio 1.85.1，阻塞 8 s） | 不设：N 1500 ⇒ 61 CANCELLED、N 4000 ⇒ 1454；显式 1000/3000：N 1500 ⇒ 47；2³¹−1：N 4000 ⇒ 全部 OK |
+| tests/grpc | 53 passed |
+| tests/jobs | 221 passed |
+| tests/capcommon / capload / capprobe（测试用软链 WT/probe-tree）/ envgate / nullsse / sidecar | 190 / 33 / 159 / 71 / 4 / 5 passed |
+| tests/judge / tests/launch（短 TMPDIR） | 97 / 189 passed |
+| selftest（25 样本） | rc 0，errors [] |
+| patchcheck（--rev HEAD） | PASS，violations [] |
+| py_compile / bash -n | 190 ok 0 bad / 3 ok 0 bad |
+| 作业路径 e2e e0b-s1-single（J9300031，覆盖清单 e2e/ovl/v3） | L0 VALID（222 文件），judge rc 11 NOT_RUN（C1/C7/C13，与往轮同形），0 RED，无 INPUT_INVALID；beat、relay1 的就绪文件与 24 个 summary 的 `grpc_server_options` 都是三个选项键（时限 18 s，两项条数上限 2147483647）+ source |
+| 作业路径 e2e e0a-nullsse（J9300032） | L0 VALID（318 文件），0 RED，无 INPUT_INVALID |
+| SM-18 过载档复现 v3（repro/sm18-v3，同 v2 参数） | 修前 1176861d：drain `grpc_CANCELLED` 187/1800，relay1 streams_accepted 1613；修后 HEAD：0 失败，1800 ok = streams_accepted，relay1 自报三个选项键（时限 127 s） |
+| SM-17 假 ssh 复现 v3（repro/sm17-v3） | 修前：第 3 项 255 一次 ⇒ rc 0、写出含 item 3 rc 255 的文件；修后：第 3 项或第 1 项 255 一次 ⇒ 重试后 rc 0、文件三项 rc 0、`retried_stderr` 记下 255 的 stderr；始终 255 ⇒ rc 4、3 次 ssh、不写；第 2 项连续 3 次 255 ⇒ rc 4、4 次 ssh（第 3 项未查）、不写；第 3 项连续 3 次 255 ⇒ rc 4、5 次 ssh、不写。修后写出的文件里没有失败项 |
+
+### NOT RUN
+- grpcio 1.84.0（集群镜像版本）上的选项语义：本机没有 1.84.0，按勘误第 2 条由首个集群作业复核。
+- follow-up 登记（真实链路排队提前取消的归类；ControlMaster 复用 ssh）不在本仓库，交主会话写 `W/02_e0/SEAMS.md` 或 `W/STATUS.md`。
