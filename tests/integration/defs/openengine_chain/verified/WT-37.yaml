@@ -628,29 +628,19 @@ entries:
     - cpu-gate/unittest_serve_openengine_poc.xml
     result: passed
     chain_proof: incomplete
-  # XD-001 ch6, XD-030 ch6, XD-031 ch6, XD-034 ch6, XD-218 ch6, XD-222 ch6, XD-216 ch6
+  # XD-001 ok
+  # Not listed: XD-030, XD-031, XD-034, XD-218, XD-222, XD-216, which ran only on an earlier commit,
+  #   where CH-6 was as the ch6 tag describes
   - row: EG-14e
     features:
     - EG-14e
     cases:
     - disaggregated/test_disaggregated.py::test_disaggregated_diff_max_tokens
-    - disaggregated/test_disaggregated.py::test_disaggregated_ctxtp2_genpp2
-    - disaggregated/test_disaggregated.py::test_disaggregated_ctxpp2_gentp2
-    - disaggregated/test_disaggregated.py::test_disaggregated_ctxpp4_gentp4
-    - accuracy/test_disaggregated_serving.py::TestQwen3_5_4B::test_ctx_pp_gen_tp_asymmetric
-    - accuracy/test_disaggregated_serving.py::TestNemotron3Super120B::test_ctx_dp2_gen_tp4
-    - accuracy/test_disaggregated_serving.py::TestQwen3_30B_A3B::test_mixed_ctx_gen_model[ctxpp2gentp2]
-    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    commit: b85dc161b8663ef9c6b74ca986672c7c6beeb07d
     junit:
-    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e00/outer-junit.xml
-    - b200-4g-o2/b200-4g-o2/job-5947126_0-r0/node0/results/e01/outer-junit.xml
-    - b200-4g-o2/b200-4g-o2/job-5947126_0-r0/node0/results/e02/outer-junit.xml
-    - b200-4g-o2/b200-4g-o2/job-5947126_0-r0/node0/results/e06/outer-junit.xml
-    - b200-4g-o2/b200-4g-o2/job-5947126_0-r0/node0/results/e07/outer-junit.xml
-    - b200-8g-o2/b200-8g-o2/job-5947127_0-r0/node0/results/e00/outer-junit.xml
-    - b200-8g-o2/b200-8g-o2/job-5947127_0-r0/node0/results/e09/outer-junit.xml
+    - b200-1g-r3/b200-1g-r3/job-5950553_0-r0/node0/results/e00/outer-junit.xml
     result: passed
-    chain_proof: incomplete
+    chain_proof: ok
   # XD-055 ok
   - row: EG-16a
     features:
@@ -662,31 +652,23 @@ entries:
     - b200-4g-r3/b200-4g-r3/job-5950556_0-r0/node0/results/e07/outer-junit.xml
     result: passed
     chain_proof: ok
-  # XD-012 ch6, XD-014 ch6, XD-043 ch6, XD-204 ch6, XD-212 ch6
+  # XD-012 ok, XD-014 ok, XD-212 ok
+  # Not listed: XD-043, XD-204, which ran only on an earlier commit, where CH-6 was as the ch6 tag
+  #   describes
   - row: EG-18
     features:
     - EG-18
     cases:
     - disaggregated/test_disaggregated.py::test_disaggregated_cuda_graph
     - disaggregated/test_disaggregated.py::test_disaggregated_overlap
-    - disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_attention_dp_overlap[DeepSeek-V3-Lite-fp8]
-    - accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype_with_helix[*]
-    - accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype[*]
-    commit: c5a08e9073272350081ccf99ea5b863f5aee4af6
+    - accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype[False-False]
+    commit: b85dc161b8663ef9c6b74ca986672c7c6beeb07d
     junit:
-    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e02/outer-junit.xml
-    - b200-1g-o2/b200-1g-o2/job-5947125_0-r0/node0/results/e04/outer-junit.xml
-    - b200-4g-o2/b200-4g-o2/job-5947126_0-r0/node0/results/e03/outer-junit.xml
-    - b200-4g-o2/b200-4g-o2/job-5947126_0-r0/node0/results/e08/outer-junit.xml
-    - b200-4g-o2/b200-4g-o2/job-5947126_0-r0/node0/results/e09/outer-junit.xml
-    - b200-4g-o2/b200-4g-o2/job-5947126_0-r0/node0/results/e10/outer-junit.xml
-    - b200-4g-o2/b200-4g-o2/job-5947126_0-r0/node0/results/e11/outer-junit.xml
-    - b200-8g-o2/b200-8g-o2/job-5947127_0-r0/node0/results/e05/outer-junit.xml
-    - b200-8g-o2/b200-8g-o2/job-5947127_0-r0/node0/results/e06/outer-junit.xml
-    - b200-8g-o2/b200-8g-o2/job-5947127_0-r0/node0/results/e07/outer-junit.xml
-    - b200-8g-o2/b200-8g-o2/job-5947127_0-r0/node0/results/e08/outer-junit.xml
+    - b200-1g-r3/b200-1g-r3/job-5950553_0-r0/node0/results/e02/outer-junit.xml
+    - b200-1g-r3/b200-1g-r3/job-5950553_0-r0/node0/results/e04/outer-junit.xml
+    - b200-4g-r3/b200-4g-r3/job-5950556_0-r0/node0/results/e02/outer-junit.xml
     result: passed
-    chain_proof: incomplete
+    chain_proof: ok
   # NT-027 cpu
   - row: EG-19
     features:
