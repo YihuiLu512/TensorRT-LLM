@@ -696,11 +696,11 @@ def test_a_server_without_a_role_next_to_the_workers(legs):
 
 @pytest.fixture
 def leaving(request, legs):
-    # Two more workers the disaggregated server lists when the test starts, with a third
-    # outside the chain for a test named so.
+    # Two more workers the disaggregated server lists when the test starts, with the
+    # addresses outside the chain a test passes as the parameter.
     ctx, gen = Worker("ctx", 8005), Worker("gen", 8006)
     before = STATE["members"]
-    outside = ("localhost:8099",) if "outside" in request.node.name else ()
+    outside = getattr(request, "param", ())
     STATE["members"] = {"ctx": ("localhost:8005",), "gen": ("localhost:8006", *outside)}
     yield ctx, gen
     ctx.end()
@@ -715,6 +715,7 @@ def test_workers_leave_the_lists(leaving):
     STATE["members"] = {"ctx": (), "gen": ()}
 
 
+@pytest.mark.parametrize("leaving", [("localhost:8099",)], indirect=True, ids=["outside"])
 def test_a_worker_outside_leaves_the_lists(leaving):
     leaving[0].take(1)
     leaving[1].take(1)
@@ -857,7 +858,7 @@ def test_the_plugin_keeps_the_workers_that_left_the_lists(run_disagg):
     cases = run_disagg()
     outcome, props = cases["test_workers_leave_the_lists"]
     assert (outcome, props["chain_proof"]) == ("passed", "ok"), props
-    outcome, props = cases["test_a_worker_outside_leaves_the_lists"]
+    outcome, props = cases["test_a_worker_outside_leaves_the_lists[outside]"]
     assert outcome == "failure", props
     assert "CH-6: fail" in props["chain_proof_detail"] and "8099" in props["chain_proof_detail"]
 
@@ -1167,12 +1168,27 @@ def test_the_watch_takes_a_cross_node_worker_s_topology_while_it_runs(monkeypatc
     assert handle.proven_topology == P.Check(P.OK, "checked")
 
 
-def _watch_readings(monkeypatch, members):
+def _watch_readings(monkeypatch, members, earlier=(), current=()):
     """The watch's reading of one disaggregated server whose worker lists are ``members`` in turn.
 
     The watch reads it when started, once per entry between and when stopped.
+    ``earlier`` and ``current`` are ports of chain servers that stopped before
+    the test and of servers outside the chain that run during it.
     """
-    plugin, seq = _quiet_watch(monkeypatch, [P.Orchestrator(7, "http://o:1", "c")])
+    from plugin_support import FakeHandle
+
+    plugin, _ = _quiet_watch(monkeypatch, [P.Orchestrator(7, "http://o:1", "c")])
+
+    def handle(port, chain="trtllm"):
+        h = FakeHandle()
+        h.host, h.port, h.chain = "node0", port, chain
+        return h
+
+    for port in earlier:
+        handle(port).end()
+    for port in current:
+        handle(port, chain="none")
+    seq = plugin.next_seq()
     monkeypatch.setattr(P, "live_descendants", lambda root: {7})
     lists = iter(members)
     monkeypatch.setattr(
@@ -1189,7 +1205,10 @@ def _watch_readings(monkeypatch, members):
 
 
 def _ch6(workers, orchestrator):
-    return {(n, r): c for n, r, c in _judge(workers, orchestrator).checks}[("CH-6", None)]
+    """The result of CH-6's member check (the only CH-6 check over all legs)."""
+    sums = P.role_sums([w.leg() for w in workers])
+    (check,) = [c for n, _, c in P.judge_roles(sums, orchestrator, P.LegRule()) if n == "CH-6"]
+    return check
 
 
 def test_workers_that_leave_the_lists_before_the_last_reading_still_count(monkeypatch):
@@ -1201,8 +1220,6 @@ def test_workers_that_leave_the_lists_before_the_last_reading_still_count(monkey
     )
     assert reading.members == {CTX: (ctx.address,), GEN: (gen.address,)}
     assert _ch6([ctx, gen], reading).status == P.OK
-    # The last reading alone lists no worker, which left CH-6 incomplete.
-    assert _ch6([ctx, gen], _orchestrator(2, 2)).status == P.INCOMPLETE
 
 
 def test_a_worker_outside_the_chain_fails_ch6_even_if_it_left_the_lists(monkeypatch):
@@ -1213,6 +1230,27 @@ def test_a_worker_outside_the_chain_fails_ch6_even_if_it_left_the_lists(monkeypa
     assert reading.members[GEN] == (gen.address, "other-host:8003")
     check = _ch6([ctx, gen], reading)
     assert (check.status, "other-host:8003" in check.detail) == (P.FAIL, True), check
+
+
+@pytest.mark.parametrize(
+    "current, last, status",
+    [
+        # A server lists an earlier test's stopped worker for a while after the test starts.
+        ((), (), P.OK),
+        # Still listed by the last reading: the server routes to it during the test.
+        ((), ("node0:8009",), P.FAIL),
+        # A server outside the chain of this test took the earlier worker's address.
+        ((8009,), (), P.FAIL),
+    ],
+)
+def test_an_earlier_test_s_worker_counts_only_while_the_last_reading_lists_it(
+    monkeypatch, current, last, status
+):
+    ctx, gen = _two_legs()
+    stale = {CTX: (ctx.address,), GEN: (gen.address, "node0:8009")}
+    end = {CTX: (ctx.address,), GEN: (gen.address, *last)}
+    reading = _watch_readings(monkeypatch, [stale, stale, end], earlier=(8009,), current=current)
+    assert _ch6([ctx, gen], reading).status == status
 
 
 def test_a_disaggregated_server_that_never_lists_a_worker_leaves_ch6_unproven(monkeypatch):
