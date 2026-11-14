@@ -60,3 +60,41 @@
 - S-PB 场景逐档：drain ok = planned（50/150/300/600/300/150）、failed 0；每请求 21 条消息（20 token + finished），spb msgs_sent = drain msgs；C10 PASS 5/5、C3/C5/C9/C11/P-SENT/RECORDS 全 PASS。
 - 真 capenv.gate 退出 6（UNREGISTERED、无 Slurm，预期）；fakebin.log 只有门禁的 scontrol/squeue（替身 exit 97），没碰集群。
 - 未覆盖：真容器、真 pb2 模块、`--request-format openengine` 打真前端（1.4 补充冒烟）。
+- 2026-11-14 23:10:44 暂停后重启：在 HEAD 5a0046e（与 f9246b5 只差进度日志）重做全量验证 z1（fullv2.sh：短 TMPDIR=~/tmp/20261114-capkit-sm1718/b2-spb/z1、selftest 带 --tools/--tmp；11 目录逐个 + selftest 25 + patchcheck + py_compile + bash -n，约 15 分钟）；probe-tree 软链移回 WT/probe-tree
+- 2026-11-14 23:24:33 z1 结果：10 目录全绿，tests/launch 1 failed（test_full_launch_passes：末档 drain-5 的 pids_stable=False，capload 在 wend 扫描前已退出，wend 扫描比窗口末晚 38 ms；同机有其他会话的 pytest 在跑，判为时序抖动）；selftest 25 EXIT=0、patchcheck PASS、py_compile 202/0、bash -n 3/0。重跑 tests/launch（z1b，约 3 分钟）
+- 2026-11-14 23:29:20 z1b tests/launch 重跑 225 passed（logs/z1b-launch.log）；单测 test_full_launch_passes 再串行跑 5 次全过（logs/z1c-rep1..5.log）。覆盖清单按 HEAD 5a0046ec 重生成（e2e/ovl/P0-5a0046ec，37 文件 sha 与 f9246b59 版逐一相同，只差 src 路径）；开跑作业路径 e2e：e2e-spb-null J9200011（约 2–3 分钟）
+- 2026-11-14 23:30:40 e2e-spb-null J9200011：submit rc 0、L0 VALID、judge rc 11（NOT_RUN：C1/C6/C7/C13）、0 RED、无 INPUT_INVALID、C10 PASS；开跑回归 e0a-nullsse J9200012 与 e0b-s1-single J9200013（串行，各约 2 分钟）
+- 2026-11-14 23:32 e0a-nullsse J9200012、e0b-s1-single J9200013：launches VALID、judge rc 11、0 RED、无 INPUT_INVALID。probe-tree 软链移回 _local/b2-spb/probe-tree.link。
+
+## 暂停后重启的全量复验（HEAD 5a0046e，代码与 f9246b5 相同，只差本进度日志）
+
+全量脚本 `_local/b2-spb/fullv2.sh z1 25`（短 TMPDIR = ~/tmp/20261114-capkit-sm1718/b2-spb/z1；每个目录 `ulimit -v 8388608` + `timeout 900` + fakebin 替身，逐个串行）。
+
+| 项 | 结果 | 证据 |
+|---|---|---|
+| tests/capcommon | 190 passed | _local/b2-spb/logs/z1/t_capcommon.log |
+| tests/capload | 33 passed | z1/t_capload.log |
+| tests/capprobe | 171 passed | z1/t_capprobe.log |
+| tests/capstubs | 83 passed | z1/t_capstubs.log |
+| tests/envgate | 71 passed | z1/t_envgate.log |
+| tests/grpc | 36 passed | z1/t_grpc.log |
+| tests/jobs | 211 passed | z1/t_jobs.log |
+| tests/judge | 97 passed | z1/t_judge.log |
+| tests/launch | z1 首跑 1 failed / 224 passed（test_full_launch_passes：末档 drain-5 的 pids_stable=False，capload 在 wend 扫描前退出，扫描比窗口末晚 38 ms；同机有别的会话在跑 pytest）；重跑整目录 225 passed，单测再串行 5 次全过 | z1/t_launch.log、logs/z1b-launch.log、logs/z1c-rep1..5.log |
+| tests/nullsse | 4 passed | z1/t_nullsse.log |
+| tests/sidecar | 5 passed | z1/t_sidecar.log |
+| selftest --package capjudge --expect-samples 25 | EXIT=0，ran 25，errors [] | z1/selftest.log |
+| patchcheck --rev HEAD（探针树只读） | PASS，7 位点 / 8 处 | z1/patchcheck.json |
+| py_compile | 202 / 0 | z1/summary.txt |
+| bash -n | 3 / 0 | z1/summary.txt |
+
+作业路径 e2e（覆盖清单按 HEAD 重生成：e2e/ovl/P0-5a0046ec，37 个产品文件 sha 与 f9246b59 版相同；launch.json 的 capkit_sha = 5a0046ec…）：
+
+| 场景 | 作业 | submit | launches | judge | RED | INPUT_INVALID |
+|---|---|---|---|---|---|---|
+| e2e-spb-null（capgrpc.load --request-format openengine 读者打 S-PB，pb2 = oe_double） | J9200011 | rc 0 | L0 VALID | rc 11（NOT_RUN：C1/C6/C7/C13） | 0 | 0 |
+| e0a-nullsse | J9200012 | rc 0 | L0 VALID | rc 11 | 0 | 0 |
+| e0b-s1-single | J9200013 | rc 0 | L0 VALID | rc 11 | 0 | 0 |
+
+- S-PB 逐档：drain ok = planned（50/150/300/600/300/150）、failed 0；spb msgs_sent = 21 × 请求数；C10 PASS（5/5）、C3/C5/C9/C11/P-SENT/P-PIDS/RECORDS 全 PASS。输出存 e2e/runs/*-J920001[123].out。
+- fakebin.log 新增 9 行，都是真 capenv.gate 的 scontrol/squeue（替身 exit 97）；没碰集群。
