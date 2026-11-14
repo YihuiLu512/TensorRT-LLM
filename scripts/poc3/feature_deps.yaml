@@ -26,6 +26,10 @@
 #   not_runnable  Cases the PoC machines cannot run.
 #   notes         Clauses of the tables this file does not model, verbatim.
 #
+# A row <id>+<item> (DG-16+WT-51-fix2) holds cases split out of row <id> after
+# the tables were written, because <item> writes them; it waits for <item> too.
+# sync_feature_deps.SPLITS lists these splits.
+#
 # A row with an assignee is verified by it. Otherwise the verifier of a case-04
 # row is the dependency that lands last, and a case-03 row is verified by R13
 # (WT-62), or by its fallback when it completes after R13 landed.
@@ -823,9 +827,15 @@ rows:
   chain: case-04
 - id: DG-16
   features: [DG-16]
-  cases: [NT-003, NT-080]
+  cases: [NT-003]
   author: [WT-51]
   deps: [link]
+  chain: case-04
+- id: DG-16+WT-51-fix2
+  features: [DG-16]
+  cases: [NT-080]
+  author: [WT-51-fix2]
+  deps: [link, WT-51-fix2]
   chain: case-04
 - id: DG-16@03
   features: [DG-16]
@@ -1293,7 +1303,7 @@ rows:
   chain: case-04
 - id: DG-82
   features: [DG-82]
-  cases: [NT-017, NT-030, NT-179]
+  cases: [NT-017, NT-030]
   author: [WT-40, WT-51]
   deps: [link]
   chain: case-04
@@ -1302,6 +1312,12 @@ rows:
   cases: [XD-312]
   author: [WT-54]
   deps: [link, WT-54]
+  chain: case-04
+- id: DG-82+WT-51-fix2
+  features: [DG-82]
+  cases: [NT-179]
+  author: [WT-51-fix2]
+  deps: [link, WT-51-fix2]
   chain: case-04
 - id: DG-82@03
   features: [DG-82]

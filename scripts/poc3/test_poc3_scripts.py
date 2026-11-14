@@ -1591,6 +1591,54 @@ def test_a_fix_landing_does_not_land_its_item(rows):
     assert "F-01" in _owed("WT-51", landed | {"WT-37"}, rows)[0]
 
 
+# Coordinator ruling N30: NT-080 and NT-179 wait for WT-51-fix2, which writes their GPU file.
+SPLIT_ROWS = {"DG-16+WT-51-fix2": ["NT-080"], "DG-82+WT-51-fix2": ["NT-179"]}
+
+
+def test_the_split_rows_wait_for_the_fix_that_writes_their_cases(rows):
+    by_id = {row.id: row for row in rows}
+    assert by_id["DG-16"].cases == ("NT-003",)
+    assert by_id["DG-82"].cases == ("NT-017", "NT-030")
+    for row_id, cases in SPLIT_ROWS.items():
+        assert list(by_id[row_id].cases) == cases
+        assert by_id[row_id].deps == frozenset(LINK | {"WT-51-fix2"})
+
+
+def test_the_last_link_item_does_not_owe_the_split_cases(rows):
+    landed = (LINK - {"WT-37"}) | {"WT-51-fix1"}
+    owed = _owed("WT-37", landed, rows)[0]
+    assert {"DG-16", "DG-82"} <= set(owed)
+    assert not set(SPLIT_ROWS) & set(owed)
+    assert not {"NT-080", "NT-179"} & {case for row in rows if row.id in owed for case in row.cases}
+
+
+def test_a_fix_named_in_the_dependencies_owes_the_rows_its_landing_completes(rows):
+    owed, _, unverified, _ = _owed("WT-51-fix2", LINK | {"WT-51-fix1"}, rows)
+    assert set(owed) == set(SPLIT_ROWS)
+    assert "DG-16" in unverified  # the link completed it; the fix does not owe it
+    # Landing before the link is complete owes nothing; the link's last item then owes the rows.
+    assert _owed("WT-51-fix2", LINK - {"WT-37"}, rows)[0] == []
+    assert set(SPLIT_ROWS) <= set(_owed("WT-37", (LINK - {"WT-37"}) | {"WT-51-fix2"}, rows)[0])
+    # Another fix of the same item does not stand for it.
+    assert not set(SPLIT_ROWS) & set(_owed("WT-51-fix1", LINK, rows)[0])
+    assert not set(SPLIT_ROWS) & set(_owed("WT-51-fix3", LINK | {"WT-51-fix1"}, rows)[0])
+    # Once the fix landed, the rows count as landed but unverified for everybody else.
+    assert set(SPLIT_ROWS) <= set(_owed("WT-52", LINK | {"WT-51-fix2"}, rows)[2])
+
+
+def test_a_fix_lands_its_rows_only_under_its_exact_name():
+    row = pending_e2e.Row(
+        id="F-99+WT-42-fix1",
+        features=("F-99",),
+        cases=("NT-999",),
+        deps=frozenset({"WT-35", "WT-42-fix1"}),
+    )
+    assert _owed("WT-35", {"WT-42"}, [row])[0] == []
+    assert _owed("WT-35", {"WT-42-fix1"}, [row])[0] == [row.id]
+    # Without the ds repository, a fix of a ds item is as unknown as the item.
+    assert _owed("WT-35", set(), [row], unknown={"WT-42"})[3] == [row.id]
+
+
 def test_rows_left_without_a_verifier_are_reported(rows):
     # WT-60 running before the R11 prerequisites landed: F-33 is listed, not silently dropped.
     assert "F-33" in _extra("WT-60", LINK, rows)[0]
@@ -1668,6 +1716,28 @@ def test_pending_on_a_constructed_history(tmp_path, capsys):
         assert set(FB2_ROWS) - {"DG-12"} <= set(out["owed"]), last
         assert "DG-12" not in out["owed"]
         assert set(out["landed"]) == set(order)
+
+
+def test_pending_of_the_split_rows_on_a_constructed_history(tmp_path, capsys):
+    """WT-37 completes the link without NT-080 / NT-179; WT-51-fix2 owes them when it lands."""
+    repo = _repo(tmp_path)
+    _commit(repo, {"README": "x\n"}, "s2 history\n\nPoC2-Task: WT-10")
+    for item in ["WT-30", "WT-35", "WT-38", "WT-40", "WT-50", "WT-51", "WT-51-fix1"]:
+        _commit(repo, {}, f"{item}\n\nPoC3-Task: {item}")
+
+    def pending(task):
+        assert (
+            pending_e2e.main(["--repo", str(repo), "--ref", "main", "--task", task, "--json"]) == 0
+        )
+        return yaml.safe_load(capsys.readouterr().out)
+
+    owed = pending("WT-37")["owed"]
+    assert {"DG-16", "DG-82"} <= set(owed) and not set(SPLIT_ROWS) & set(owed)
+    _commit(repo, {}, "WT-37\n\nPoC3-Task: WT-37")
+    _commit(repo, {}, "WT-51-fix2\n\nPoC3-Task: WT-51-fix2")
+    out = pending("WT-51-fix2")
+    assert set(out["owed"]) == set(SPLIT_ROWS)
+    assert "WT-51-fix2" in out["landed"]
 
 
 # --- feature_deps.yaml against the plan ---------------------------------------------------------
@@ -1793,6 +1863,61 @@ def test_the_groups_come_from_section_3_2():
         )
     with pytest.raises(ValueError, match="ds-repo"):
         sync_feature_deps.derive_groups(GROUPS_TABLE)
+
+
+def _split_source():
+    return [
+        {"id": "DG-90", "features": ["DG-90"], "cases": ["NT-003", "NT-080"], "author": ["WT-51"],
+         "deps": ["link"], "chain": "case-04"},
+        {"id": "DG-90+rest", "features": ["DG-90"], "cases": ["XD-312"], "author": ["WT-54"],
+         "deps": ["link", "WT-54"], "chain": "case-04"},
+        {"id": "DG-90@03", "features": ["DG-90"], "cases": ["NT-144"], "author": ["WT-62"],
+         "deps": ["ds-link"], "chain": "case-03"},
+    ]  # fmt: skip
+
+
+def test_a_split_moves_cases_to_a_row_after_the_source_rows():
+    source = _split_source()
+    rows = sync_feature_deps.apply_splits(source, (("DG-90", ("NT-080",), "WT-51-fix2"),))
+    assert [row["id"] for row in rows] == ["DG-90", "DG-90+rest", "DG-90+WT-51-fix2", "DG-90@03"]
+    assert rows[0]["cases"] == ["NT-003"] and source[0]["cases"] == ["NT-003", "NT-080"]
+    assert rows[2] == {
+        "id": "DG-90+WT-51-fix2",
+        "features": ["DG-90"],
+        "cases": ["NT-080"],
+        "author": ["WT-51-fix2"],
+        "deps": ["link", "WT-51-fix2"],
+        "chain": "case-04",
+    }
+
+
+@pytest.mark.parametrize(
+    "split, message",
+    [
+        (("DG-91", ("NT-080",), "WT-51-fix2"), "no such row"),
+        (("DG-90", ("NT-999",), "WT-51-fix2"), "not among its cases"),
+        (("DG-90", ("NT-003", "NT-080"), "WT-51-fix2"), "no case would be left"),
+        (("DG-90", ("NT-080",), "rest"), "exists already"),
+    ],
+    ids=["missing-row", "foreign-case", "empties-the-row", "id-taken"],
+)
+def test_a_split_that_does_not_fit_the_tables_is_rejected(split, message):
+    with pytest.raises(ValueError, match=message):
+        sync_feature_deps.apply_splits(_split_source(), (split,))
+
+
+def test_a_split_of_a_row_with_a_fixed_verifier_is_rejected():
+    source = _split_source()
+    source[0]["assignee"] = "WT-60"
+    with pytest.raises(ValueError, match="fixed verifier"):
+        sync_feature_deps.apply_splits(source, (("DG-90", ("NT-080",), "WT-51-fix2"),))
+
+
+def test_the_splits_name_poc3_items_and_rows_of_the_file(rows):
+    ids = {row.id for row in rows}
+    for row_id, cases, item in sync_feature_deps.SPLITS:
+        assert parse_task(item)[0] in WORK_ITEMS
+        assert row_id in ids and f"{row_id}+{item}" in ids
 
 
 def test_the_table_parser_rejects_unknown_dependencies():

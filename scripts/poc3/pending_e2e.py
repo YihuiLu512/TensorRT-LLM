@@ -13,8 +13,9 @@ completes the row's dependencies, provided nobody has recorded it as verified:
   to the row's ``fallback`` (R14, WT-79, unless the row names another item); a
   fallback landing after R13 owes only the completed rows that name it as
   their fallback (R14: those that name no other item);
-- a fix (``WT-xx-fixN``) owes nothing new, and its landing does not count as
-  WT-xx landing;
+- a fix (``WT-xx-fixN``) owes only the rows that name it among their
+  dependencies, and its landing does not count as WT-xx landing: a row that
+  names the fix waits for the fix's own trailer, like any work item's;
 - deferred rows are owed by nobody.
 
 When the row's fixed verifier (its ``assignee``, or the ``fallback`` of a
@@ -278,16 +279,19 @@ def obligations(
 
     Args:
         landed: Work items with a commit on the integration branch, fixes under
-            their own names; a fix does not make its work item count as landed.
+            their own names; a fix does not make its work item count as landed,
+            only rows that name the fix itself.
         unknown: Work items whose landing was not checked.
     """
     base, fix = parse_task(task)
     new = fix is None
-    landed_bases = {name for name in landed if parse_task(name)[1] is None}
+    landed_names = set(landed)
+    landed_bases = {name for name in landed_names if parse_task(name)[1] is None}
     done = set(verified)
     unchecked = set(unknown) - landed_bases - {base}
-    result = Obligations(task=task, landed=sorted(landed))
-    after = landed_bases | {base} if new else landed_bases
+    result = Obligations(task=task, landed=sorted(landed_names))
+    # A fix stands for itself: rows naming WT-xx do not count it, rows naming WT-xx-fixN do.
+    after = landed_names | {task}
     for row in rows:
         if row.id in done:
             continue
@@ -296,17 +300,18 @@ def obligations(
         if row.deferred:
             continue
         missing = row.deps - after
-        if missing and missing <= unchecked:
+        # A fix of an unchecked item (WT-42-fix1) was not checked either.
+        if missing and all(parse_task(name)[0] in unchecked for name in missing):
             result.unknown.append(row)
             continue
         complete = not missing
-        completed_by_task = complete and base in row.deps and new
+        completed_by_task = complete and task in row.deps
         if row.assignee is not None:
             if row.assignee == base and new:
                 (result.owed if complete else result.too_early).append(row)
             elif completed_by_task and row.assignee in landed_bases:
                 result.orphaned.append(row)
-            elif row.deps <= landed_bases:
+            elif row.deps <= landed_names:
                 result.unverified.append(row)
             continue
         if row.chain == "case-03":
@@ -321,12 +326,12 @@ def obligations(
                     result.orphaned.append(row)
                 else:
                     result.left_to_fallback.append(row)
-            elif row.deps <= landed_bases:
+            elif row.deps <= landed_names:
                 result.unverified.append(row)
             continue
         if completed_by_task:
             result.owed.append(row)
-        elif row.deps <= landed_bases:
+        elif row.deps <= landed_names:
             result.unverified.append(row)
     return result
 

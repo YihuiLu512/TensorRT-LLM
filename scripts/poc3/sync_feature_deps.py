@@ -32,6 +32,12 @@ file no longer matches the tables:
 - The ds-engine repository's items (group ``ds-repo``) come from the
   repository table of tasks.md §0.2.
 
+``SPLITS`` lists the rows the coordinator split after the tables were written:
+each moves some cases of a row to a row ``<id>+<item>`` that also waits for
+``<item>``, the work item that writes them (a fix such as ``WT-51-fix2``
+included). They are applied to the derived rows, so ``--check`` still compares
+everything else with the tables.
+
 The scripts need Python 3.9 or newer.
 
 Usage::
@@ -89,6 +95,10 @@ HEADER = """\
 #   not_runnable  Cases the PoC machines cannot run.
 #   notes         Clauses of the tables this file does not model, verbatim.
 #
+# A row <id>+<item> (DG-16+WT-51-fix2) holds cases split out of row <id> after
+# the tables were written, because <item> writes them; it waits for <item> too.
+# sync_feature_deps.SPLITS lists these splits.
+#
 # A row with an assignee is verified by it. Otherwise the verifier of a case-04
 # row is the dependency that lands last, and a case-03 row is verified by R13
 # (WT-62), or by its fallback when it completes after R13 landed.
@@ -102,6 +112,14 @@ _SECTION_RE = re.compile(r"^### 3\.([2-7]) ")
 _MAIN_ROWS_RE = re.compile(r"（(\d+) 个主行）")
 _PU_RULE_RE = re.compile(r"(PU-\d+) 取证（(WT-\d\d)）")
 _OPEN, _CLOSE = "（(", "）)"
+
+# Rows split after the tables were written: (row id, cases moved out, the item that writes them).
+# The GPU file of NT-080 and NT-179 is written by WT-51-fix2 after the link lands, so the last
+# link item cannot verify them (coordinator ruling N30, 2026-11-14).
+SPLITS: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("DG-16", ("NT-080",), "WT-51-fix2"),
+    ("DG-82", ("NT-179",), "WT-51-fix2"),
+)
 
 
 def split_top(text: str, sep: str) -> list[str]:
@@ -439,6 +457,56 @@ def derive(tasks_md: str) -> list[dict[str, Any]]:
     return rows
 
 
+def apply_splits(
+    rows: list[dict[str, Any]],
+    splits: tuple[tuple[str, tuple[str, ...], str], ...] = SPLITS,
+) -> list[dict[str, Any]]:
+    """Move each split's cases to a row ``<id>+<item>`` placed after row ``<id>``'s own rows.
+
+    The new row keeps the features and chain, takes ``<item>`` as its author and
+    adds it to the dependencies; nothing else of the source row is copied.
+
+    Raises:
+        ValueError: The row is missing, deferred or fixed to a verifier; a case
+            is not among its cases; the split would leave it without cases; or
+            the new id is taken.
+    """
+    rows = [dict(row) for row in rows]
+    for row_id, moved, item in splits:
+        index = {row["id"]: i for i, row in enumerate(rows)}
+        new_id = f"{row_id}+{item}"
+        if row_id not in index:
+            raise ValueError(f"split of {row_id}: no such row")
+        if new_id in index:
+            raise ValueError(f"split of {row_id}: row {new_id} exists already")
+        source = rows[index[row_id]]
+        if source.get("deferred") or source.get("assignee") or source.get("fallback"):
+            raise ValueError(f"split of {row_id}: the row is deferred or has a fixed verifier")
+        missing = [case for case in moved if case not in source["cases"]]
+        if missing:
+            raise ValueError(f"split of {row_id}: {missing} not among its cases")
+        kept = [case for case in source["cases"] if case not in moved]
+        if not kept:
+            raise ValueError(f"split of {row_id}: no case would be left")
+        rows[index[row_id]] = {**source, "cases": kept}
+        new = {
+            "id": new_id,
+            "features": list(source["features"]),
+            "cases": list(moved),
+            "author": [item],
+            "deps": [*source["deps"], item],
+            "chain": source["chain"],
+        }
+        # After row_id and the rows derived from it (row_id+rest, row_id+PU-nn, earlier splits).
+        last = max(
+            i
+            for i, row in enumerate(rows)
+            if row["id"] == row_id or row["id"].startswith(f"{row_id}+")
+        )
+        rows.insert(last + 1, new)
+    return rows
+
+
 def render(groups: dict[str, list[str]], rows: list[dict[str, Any]]) -> str:
     body = yaml.safe_dump(
         {"version": 1, "groups": groups, "rows": rows},
@@ -464,7 +532,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.tasks_md:
         parser.error("--tasks-md (or $POC3_TASKS_MD) is required")
     tasks_md = Path(args.tasks_md).read_text()
-    expected = render(derive_groups(tasks_md), derive(tasks_md))
+    expected = render(derive_groups(tasks_md), apply_splits(derive(tasks_md)))
     if args.write:
         FEATURE_DEPS.write_text(expected)
         print(f"wrote {FEATURE_DEPS}")
