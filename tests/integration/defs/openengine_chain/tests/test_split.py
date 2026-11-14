@@ -251,6 +251,21 @@ def test_disagg_frontend_env_keeps_only_what_the_front_end_reads():
     assert sp.frontend_env(env)["TRTLLM_DISAGG_NO_RETRY"] == "1"
 
 
+@pytest.mark.parametrize(
+    "args, role",
+    [
+        (["--server_role", "CONTEXT"], "context"),
+        (["--server_role=generation"], "generation"),
+        (["--disagg_cluster_uri", "http://h:1"], "coordinator"),
+    ],
+)
+def test_disagg_engine_env_sets_the_role_server_role_sets(args, role):
+    # trtllm-serve overwrites the variable from --server_role; without the option it keeps it.
+    env = {"PATH": "/bin", "TRTLLM_DISAGG_ROLE": "coordinator"}
+    assert sp.disagg_engine_env(env, args) == {"PATH": "/bin", "TRTLLM_DISAGG_ROLE": role}
+    assert env["TRTLLM_DISAGG_ROLE"] == "coordinator"
+
+
 def _no_ports(count):
     raise AssertionError("no KV event ports expected")
 
@@ -440,6 +455,25 @@ def test_kv_events_are_not_runnable_where_the_publisher_cannot_run(tmp_path, con
     merged["kv_cache_config"].update(config.get("kv_cache_config", {}))
     with pytest.raises(sp.ChainUnrunnableError, match=f"DV-23.*{match}"):
         _engine_config(tmp_path, merged, args=args, ports=lambda count: 44000)
+
+
+@pytest.mark.parametrize("backend", ["DEFAULT", None])
+def test_null_runtime_with_pipelined_transfer_resolves_default_as_the_engine(tmp_path, backend):
+    # The engine resolves DEFAULT first and then takes the Python runtime for NIXL.
+    config = _events_config()
+    transceiver = {"transceiver_runtime": None, "enable_pipelined_transfer": True}
+    if backend is not None:
+        transceiver["backend"] = backend
+    config["cache_transceiver_config"] = transceiver
+    engine = _engine_config(tmp_path, config, ports=lambda count: 44000)
+    assert engine["cache_transceiver_config"] == {**transceiver, "backend": "NIXL"}
+    assert sp.transceiver_runtime(engine) == "PYTHON"
+    assert "kv_events_config" in engine["kv_cache_config"]
+    # A legacy variable that selects another backend leaves the C++ runtime.
+    with pytest.raises(sp.ChainUnrunnableError, match="DV-23.*C\\+\\+ transceiver"):
+        _engine_config(
+            tmp_path, config, env={"TRTLLM_USE_UCX_KVCACHE": "1"}, ports=lambda count: 44000
+        )
 
 
 def test_kv_events_refuse_auto_when_the_environment_selects_another_backend(tmp_path):

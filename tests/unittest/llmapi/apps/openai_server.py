@@ -32,7 +32,9 @@ class RemoteOpenAIServer:
     DUMMY_API_KEY = "tensorrt_llm"
     MAX_SERVER_START_WAIT_S = 7200  # wait for server to start for 7200 seconds (~ 2 hours) for LLM models weight loading
     # Engine and front end when TRTLLM_TEST_OPENENGINE_CHAIN selects the OpenEngine
-    # chain harness (tests/integration/defs/openengine_chain); None otherwise.
+    # chain harness (tests/integration/defs/openengine_chain), or the two workers and
+    # disaggregated server TRTLLM_TEST_OPENENGINE_TOPOLOGY=disagg moves the server to
+    # (with or without a chain); None otherwise.
     _chain_handle = None
     # Limit of one /health request while a chain starts: a process that took the
     # front end's port may accept the connection and never answer.

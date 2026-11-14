@@ -38,6 +38,7 @@ from . import conventions as cv
 from .split import (
     ChainUnrunnableError,
     ServeCommand,
+    disagg_engine_env,
     disagg_engine_yaml,
     disagg_frontend_env,
     engine_yaml,
@@ -1193,6 +1194,8 @@ class ServeStart:
         # Set once the start is over: the server, or the server whose start failed.
         self.handle: ServeHandle | None = None
         self.done = False
+        # Set when the front end refused to start; :attr:`handle` then holds its check.
+        self.refused = False
         if chain == cv.CHAIN_NONE:
             # Unchanged command line: the split table does not apply.
             proc = subprocess.Popen(list(cmd), env=env, stdout=sink, stderr=sink)
@@ -1275,7 +1278,8 @@ class ServeStart:
             engine_args = list(split.engine)
         self._split = split
         self._engine_args = engine_args
-        self._engine_env = {k: v for k, v in env.items() if k != cv.ENV_COUNTER_DIR}
+        engine_env = disagg_engine_env(env, command.args) if disagg else env
+        self._engine_env = {k: v for k, v in engine_env.items() if k != cv.ENV_COUNTER_DIR}
         engine_flags = []
         if chain == cv.CHAIN_TRTLLM and iteration_stats_enabled(command.args):
             engine_flags.append(ENGINE_LOAD_METRICS_FLAG)
@@ -1358,6 +1362,8 @@ class ServeStart:
             engine_endpoint=endpoint,
             workdir=self._workdir,
             counter_dir=self._counter_dir,
+            # Known before the front end starts, so that an engine that fails has it too.
+            role=ServeHandle.role_in(self._command.args),
             role_index=self._role_index,
         )
         handle.teardown_errors.extend(self._replaced_errors)
@@ -1421,6 +1427,7 @@ class ServeStart:
                 # it to load, and the check's exited process stands for the front end.
                 handle.teardown_errors.extend(handle._engine.stop(TERMINATE_GRACE_S))
                 handle._frontend = self._check.adopt()
+                self.refused = True
                 self._finish()
                 return handle
             self._check.stop()
@@ -1537,7 +1544,9 @@ def launch_serve_command(
     their handle stays registered with its logs.
 
     A disaggregated worker (:func:`~openengine_chain.split.is_disagg_worker`)
-    is split by the disaggregated rules of the split table: its engine gets a
+    is split by the disaggregated rules of the split table: its engine gets
+    the role variable ``--server_role`` sets
+    (:func:`~openengine_chain.split.disagg_engine_env`) and a
     configuration with its KV-transfer settings spelled out, and with the
     streaming KV event publisher when it serves KV cache events and
     ``kv_aware_router`` (whether the disaggregated server routes on them;
@@ -1623,6 +1632,11 @@ def launch_serve_commands(
                         raise
             for i, handle in enumerate(handles):
                 rc = handle.poll() if handle is not None else None
+                if rc is not None and starts[i].refused:
+                    raise ChainStartupError(
+                        f"{labels[i]} failed to start: its front end refused to start (exit "
+                        f"code {rc}); log {handle.frontend_log}"
+                    )
                 if rc is not None:
                     raise ChainStartupError(
                         f"{labels[i]} exited with code {rc} while the others started; logs "

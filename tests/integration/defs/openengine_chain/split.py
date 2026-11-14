@@ -352,6 +352,9 @@ DISAGG_ENGINE_ONLY_ENV = (
     "TRTLLM_DISAGG_NO_RETRY",
     "TRTLLM_WORKER_DISABLE_GC",
 )
+# The variable trtllm-serve sets in its own process from --server_role (lower case) before
+# it builds the model; some models and cache managers read it.
+DISAGG_ROLE_ENV = "TRTLLM_DISAGG_ROLE"
 # KV-transfer backends of the C++ transceiver, which needs KV cache manager V1.
 CPP_TRANSCEIVER_BACKENDS = ("UCX", "MPI", "MOONCAKE")
 # The transceiver runtime a configuration gets when it names none.
@@ -490,6 +493,21 @@ def disagg_frontend_env(env: Mapping[str, str]) -> dict[str, str]:
     }
 
 
+def disagg_engine_env(
+    env: Mapping[str, str], args: Sequence[str], strict: bool = True
+) -> dict[str, str]:
+    """A disaggregated worker engine's environment: ``env``, with :data:`DISAGG_ROLE_ENV` set.
+
+    The engine does not get ``--server_role``, so it gets the variable that
+    option sets, with the same value (and in place of any value ``env`` has).
+    """
+    engine_env = dict(env)
+    role = option_value(args, "--server_role", strict)
+    if role is not None:
+        engine_env[DISAGG_ROLE_ENV] = role.lower()
+    return engine_env
+
+
 def parallel_size(args: Sequence[str], strict: bool = True) -> int:
     """GPUs one instance of the command line's model takes: tensor x pipeline x context parallel.
 
@@ -530,9 +548,10 @@ def _transceiver_template(config: dict[str, Any], env: Mapping[str, str]) -> Non
     """Spell out the KV-transfer settings the engine needs, in ``config``.
 
     The backend is always written, so that the engine builds a transceiver.
-    Without one, or with DEFAULT, the Python runtime and ``auto`` get the
-    backend the legacy environment variables select, as the engine would
-    resolve DEFAULT, or else NIXL; the C++ runtime gets DEFAULT. (The engine
+    Without one, or with DEFAULT, the Python runtime, ``auto`` and a null
+    runtime with ``enable_pipelined_transfer`` get the backend the legacy
+    environment variables select, as the engine would resolve DEFAULT, or
+    else NIXL; the C++ runtime gets DEFAULT. (The engine
     resolves ``auto`` to the model's preferred runtime, or else to the Python
     one, falling back to the C++ one for a backend other than NIXL or a null
     ``kv_transfer_timeout_ms``.) A C++-only backend gets the C++ runtime and KV cache manager V1
@@ -548,7 +567,9 @@ def _transceiver_template(config: dict[str, Any], env: Mapping[str, str]) -> Non
         kv_cache = dict(config.get("kv_cache_config") or {})
         kv_cache.setdefault("use_kv_cache_manager_v2", False)
         config["kv_cache_config"] = kv_cache
-    elif runtime in ("PYTHON", "auto"):
+    elif runtime in ("PYTHON", "auto") or (
+        runtime is None and transceiver.get("enable_pipelined_transfer")
+    ):
         if backend in (None, "DEFAULT"):
             transceiver["backend"] = env_backend(env) or "NIXL"
     elif backend is None:
@@ -564,7 +585,8 @@ def transceiver_runtime(config: Mapping[str, Any]) -> str:
     one, and otherwise the Python runtime unless the configuration rules it
     out. A null runtime is the C++ one, except with
     ``enable_pipelined_transfer`` and backend NIXL, where the engine takes the
-    Python one (any other backend is counted as not NIXL here).
+    Python one. DEFAULT counts as not NIXL here: :func:`disagg_engine_yaml`
+    resolves it for this case first.
     """
     transceiver = config.get("cache_transceiver_config") or {}
     runtime = transceiver.get("transceiver_runtime", DEFAULT_TRANSCEIVER_RUNTIME)

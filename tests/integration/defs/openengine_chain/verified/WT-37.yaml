@@ -1,7 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-# This work item owes no feature row (pending_e2e.py lists none), so there are no entries.
-# Its own end-to-end checks, on 7d3fdc319bf0dcac9053daa05269fa41c88b5b1c, 1xB200 and 2xB200:
+# Entries for the feature rows this work item verifies are added once their runs on the chain
+# have passed.
+# Its own end-to-end checks, on 7d3fdc319bf0dcac9053daa05269fa41c88b5b1c (this work item's code
+# before its rebase onto the integration branch), 1xB200 and 2xB200:
 # 1. Neither switch set, a sample of the single-node B200 tests of
 #    records/WT-31/r10_results.tsv, compared entry by entry with it: test_disaggregated_single_gpu,
 #    test_disaggregated_cuda_graph, test_workers_kv_cache_events,

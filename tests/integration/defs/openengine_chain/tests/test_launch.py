@@ -1182,6 +1182,7 @@ def test_disagg_worker_is_split_by_the_disaggregated_rules(fake, tmp_path, monke
         TLLM_LOG_LEVEL="info",
         TRTLLM_DISAGG_NO_RETRY="1",
         TRTLLM_SERVER_DISABLE_GC="1",
+        TRTLLM_DISAGG_ROLE="coordinator",
     )
     config = {"cache_transceiver_config": {"backend": "DEFAULT"}, "max_batch_size": 4}
     args = _worker(fake, tmp_path, config)
@@ -1195,6 +1196,8 @@ def test_disagg_worker_is_split_by_the_disaggregated_rules(fake, tmp_path, monke
     assert _option(frontend["argv"], "--config") == args[-1]
     assert engine["env"]["TLLM_LOG_LEVEL"] == "info"
     assert engine["env"]["TRTLLM_DISAGG_NO_RETRY"] == "1"
+    # The variable trtllm-serve sets from --server_role, which the engine does not get.
+    assert engine["env"]["TRTLLM_DISAGG_ROLE"] == "context"
     assert frontend["env"]["TRTLLM_SERVER_DISABLE_GC"] == "1"
     assert frontend["env"][cv.ENV_COUNTER_DIR] == handle.counter_dir
     assert frontend["env"]["TLLM_LOG_LEVEL"] == "info"
@@ -1313,6 +1316,33 @@ def test_one_worker_failing_stops_the_other_and_names_it(fake, tmp_path):
         )
     _wait_gone(_record(records[0], "engine-start")["pid"])
     assert not (records[0] / "frontend-start.json").exists()
+
+
+def test_worker_handle_has_its_role_before_its_front_end_starts(fake, tmp_path):
+    cmds, envs, _ = _two_workers(fake, tmp_path, generation={"FAKE_ENGINE_DELAY": "600"})
+    start = launch.ServeStart(cmds[1], chain="trtllm", env=envs[1], role_index=2)
+    try:
+        assert start.handle.frontend is None
+        assert (start.handle.role, start.handle.role_index) == ("gen", 2)
+    finally:
+        start.abort()
+
+
+def test_worker_whose_front_end_refuses_to_start_is_named_as_refused(fake, tmp_path):
+    cmds, envs, records = _two_workers(fake, tmp_path, context={"FAKE_ENGINE_DELAY": "600"})
+    cmds[1] += ["--max_beam_width", "2"]
+    with pytest.raises(
+        launch.ChainStartupError, match="^generation failed to start: its front end refused"
+    ):
+        launch.launch_serve_commands(
+            cmds,
+            labels=["context", "generation"],
+            envs=envs,
+            sinks=[None, None],
+            chain="trtllm",
+            interval=0.1,
+        )
+    _wait_gone(_record(records[0], "engine-start")["pid"])
 
 
 def test_worker_whose_front_end_was_killed_stops_its_engine(fake, tmp_path, monkeypatch):

@@ -705,10 +705,17 @@ def test_aggregated_server_runs_as_two_workers_and_a_disaggregated_server(fake_t
             worker = yaml.safe_load(open(argv[argv.index("--extra_llm_api_options") + 1]))
             assert worker["internal_request_auth_key"] == key
             assert worker["cache_transceiver_config"] == {"backend": "DEFAULT"}
+        assert [(h.role, h.role_index) for h in topology.handles] == (
+            [("ctx", 0), ("gen", 0)] if chain == "trtllm" else [(None, 0), (None, 0)]
+        )
         if chain == "trtllm":
             engines = _records(fake_topology.records, "engine-start", 2)
             assert all(e["env"].get("TLLM_X") is None for e in engines)
             assert [e["argv"].count("--tp_size") for e in engines] == [1, 1]
+            assert sorted(e["env"]["TRTLLM_DISAGG_ROLE"] for e in engines) == [
+                "context",
+                "generation",
+            ]
     finally:
         topology.terminate(grace=5)
     (stopped,) = _records(fake_topology.records, "disagg-term", 1)
