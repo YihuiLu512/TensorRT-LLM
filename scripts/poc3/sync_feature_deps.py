@@ -35,10 +35,12 @@ file no longer matches the tables:
 ``SPLITS`` lists rows split after the tables were written: each moves some
 cases of a row to a row ``<id>+<item>`` that also waits for ``<item>``, the work
 item (or fix, such as ``WT-51-fix2``) that writes them; the authors of the row
-are worked out again from the cases it keeps. A split of a row that is
-deferred, has a fixed verifier, or carries notes or supplementary cases is
-refused, as is a split naming no row of the tables, so ``--check`` still
-compares every row with the tables.
+are worked out again from the cases it keeps. A split is refused when its row
+is missing, deferred, has a fixed verifier or performance evidence, or carries
+notes or Hopper, two-node or unrunnable cases; when a case is not one the row
+keeps (``+rest`` cases included) or would leave it none; and when the item is
+malformed or a dependency of the row already, groups expanded. So ``--check``
+still compares every row with the tables.
 
 The scripts need Python 3.9 or newer.
 
@@ -62,6 +64,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from poc3_common import parse_task
 
 FEATURE_DEPS = Path(__file__).resolve().parent / "feature_deps.yaml"
 
@@ -114,8 +117,6 @@ _TASK_RE = re.compile(r"WT-\d\d")
 _SECTION_RE = re.compile(r"^### 3\.([2-7]) ")
 _MAIN_ROWS_RE = re.compile(r"（(\d+) 个主行）")
 _PU_RULE_RE = re.compile(r"(PU-\d+) 取证（(WT-\d\d)）")
-# A work item or a fix of one (poc3_common.parse_task's names).
-_SPLIT_ITEM_RE = re.compile(r"WT-[3-7][0-9](-fix[1-9][0-9]*)?")
 _OPEN, _CLOSE = "（(", "）)"
 
 # Rows split after the tables were written: (row id, cases moved out, the item that writes them).
@@ -311,18 +312,20 @@ def rows_for(
     author_parts: list[str],
     dep_parts: list[str],
     split: tuple[tuple[str, ...], str] | None = None,
+    groups: dict[str, list[str]] | None = None,
 ) -> list[dict[str, Any]]:
     """The feature_deps rows of one feature on one chain.
 
     ``split`` (cases, work item) moves those cases of the row to a row
-    ``<row_id>+<item>`` that also waits for the item (``SPLITS``).
+    ``<row_id>+<item>`` that also waits for the item (``SPLITS``); ``groups``
+    expands the dependency groups when checking it.
     """
     cases = parse_cases(case_parts)
     authors = parse_authors(author_parts, cases["cases"])
     deps = parse_deps(dep_parts)
     notes = cases["notes"] + deps["notes"]
     if split is not None:
-        _check_split(row_id, split, cases, deps, notes)
+        _check_split(row_id, split, cases, deps, notes, groups or {})
     if deps["deferred"]:
         row = {
             "id": row_id,
@@ -361,7 +364,8 @@ def rows_for(
         moved, item = split
         missing = [c for c in moved if c not in now["cases"]]
         if missing:
-            raise ValueError(f"split of {row_id}: {missing} not among the cases of {row_id}")
+            # A case of the +rest row is split in the tables already.
+            raise ValueError(f"split of {row_id}: {missing} not among the cases row {row_id} keeps")
         now = {**now, "cases": [c for c in now["cases"] if c not in moved]}
         if not now["cases"]:
             raise ValueError(f"split of {row_id}: no case would be left")
@@ -370,7 +374,7 @@ def rows_for(
                 f"{row_id}+{item}",
                 feature,
                 chain,
-                {"cases": list(moved)},
+                {"cases": [c for c in main["cases"] if c in moved]},
                 dict.fromkeys(moved, item),
                 deps["deps"] + [item],
             )
@@ -407,20 +411,29 @@ def _check_split(
     cases: dict[str, list[str]],
     deps: dict[str, Any],
     notes: list[str],
+    groups: dict[str, list[str]],
 ) -> None:
     """Refuse a split the rows of the tables do not leave room for."""
     moved, item = split
-    if not _SPLIT_ITEM_RE.fullmatch(item):
-        raise ValueError(f"split of {row_id}: {item!r} is not a PoC-S3 work item")
-    if not moved:
-        raise ValueError(f"split of {row_id}: no case to move")
+    try:
+        parse_task(item)
+    except ValueError:
+        raise ValueError(f"split of {row_id}: {item!r} is not a PoC-S3 work item") from None
+    if not moved or len(set(moved)) != len(moved):
+        raise ValueError(f"split of {row_id}: no case to move, or a case listed twice")
     if deps["deferred"] or deps["assignee"] or deps["fallback"] or deps["performance"]:
-        raise ValueError(f"split of {row_id}: the row is deferred or has a fixed verifier")
-    if item in deps["deps"] or item in deps["rest"]:
+        raise ValueError(
+            f"split of {row_id}: the row is deferred, has a fixed verifier or performance evidence"
+        )
+    members = {*deps["deps"], *deps["rest"]}
+    members |= {member for name in deps["deps"] for member in groups.get(name, ())}
+    if item in members:
         raise ValueError(f"split of {row_id}: {item} is a dependency of the row already")
-    # The notes and supplementary cases may concern the moved cases; the tables must say which.
+    # These may concern the moved cases; the tables must say which.
     if notes or any(cases[key] for key in ("hopper_cases", "two_node_cases", "not_runnable")):
-        raise ValueError(f"split of {row_id}: the row has notes or supplementary cases")
+        raise ValueError(
+            f"split of {row_id}: the row has notes, or Hopper, two-node or unrunnable cases"
+        )
 
 
 def table_rows(tasks_md: str) -> list[tuple[str, list[str]]]:
@@ -484,6 +497,7 @@ def derive(
     pending = {row_id: (moved, item) for row_id, moved, item in splits}
     if len(pending) != len(splits):
         raise ValueError("two splits of one row")
+    groups = derive_groups(tasks_md) if splits else {}
     rows: list[dict[str, Any]] = []
     features = []
     for section, (feature_cell, case_cell, author_cell, dep_cell) in table_rows(tasks_md):
@@ -506,6 +520,7 @@ def derive(
                     authors.get(key, []),
                     deps[key],
                     pending.pop(row_id, None),
+                    groups,
                 )
         else:  # table D is case-04, table C case-03
             chain = "case-04" if section == "6" else "case-03"
@@ -517,6 +532,7 @@ def derive(
                 authors.get("", []),
                 deps[""],
                 pending.pop(feature, None),
+                groups,
             )
     if pending:
         raise ValueError(f"split of {', '.join(sorted(pending))}: no such row")

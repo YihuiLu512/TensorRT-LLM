@@ -14,9 +14,10 @@ completes the row's dependencies, provided nobody has recorded it as verified:
   fallback landing after R13 owes only the completed rows that name it as
   their fallback (R14: those that name no other item);
 - a fix (``WT-xx-fixN``) lands under its own name: a row that names the fix
-  among its dependencies waits for the fix's trailer, and the fix owes the rows
-  its landing completes; its landing does not count as WT-xx landing, so it
-  owes no other row;
+  among its dependencies waits for the fix's trailer, and the fix's landing
+  completes it as any item's landing would (a case-04 row without an
+  ``assignee`` is then owed by the fix); its landing does not count as WT-xx
+  landing, so rows that do not name the fix are never completed by it;
 - deferred rows are owed by nobody.
 
 When the row's fixed verifier (its ``assignee``, or the ``fallback`` of a
@@ -25,9 +26,9 @@ completes after that verifier landed, nobody owes the row any more; both cases
 are listed so the coordinator can hand the row to someone. A fallback landing
 before R13 lists nothing: R13 still owes the rows its landing completes.
 
-A row waiting for a fix that has not landed is listed for every other name of
-that work item (WT-xx and its other fixes): if the fix lands under another
-number, the row would otherwise wait for nobody.
+A row waiting for a fix that has not landed (as far as was checked) is listed
+for every other name of that work item (WT-xx and its other fixes): if the fix
+lands under another number, the row would otherwise wait for nobody.
 
 Supplementary cases (``hopper_cases``, ``two_node_cases``) never create an
 obligation; integration rounds run them.
@@ -132,7 +133,7 @@ class Obligations:
             (``WT-xx`` for a fix ``WT-xx-fixN``): instructions the tables give
             outside the dependency set, such as an early re-run.
         other_fix: Rows waiting for a fix of this work item other than this
-            one, which has not landed.
+            one, whose landing was checked and has not happened.
     """
 
     task: str
@@ -296,8 +297,15 @@ def obligations(
     landed_names = set(landed)
     landed_bases = {name for name in landed_names if parse_task(name)[1] is None}
     done = set(verified)
+    unknown_items = set(unknown)
     # A fix landing says nothing of its work item, which stays unchecked.
-    unchecked = set(unknown) - landed_bases - ({base} if new else set())
+    unchecked = unknown_items - landed_bases - ({base} if new else set())
+
+    def not_checked(name: str) -> bool:
+        item, number = parse_task(name)
+        # A fix's landing is checked where its item's is: not at all for an unknown item.
+        return item in unknown_items if number else name in unchecked
+
     result = Obligations(task=task, landed=sorted(landed_names))
     # A fix stands for itself: rows naming WT-xx do not count it, rows naming WT-xx-fixN do.
     after = landed_names | {task}
@@ -309,13 +317,15 @@ def obligations(
         if row.deferred:
             continue
         missing = row.deps - after
-        # Another fix of this item: tell every name of the item which rows wait for it.
-        if any(parse_task(name)[0] == base and parse_task(name)[1] for name in missing):
-            result.other_fix.append(row)
-        # A fix of an unchecked item (WT-42-fix1) was not checked either.
-        if missing and all(parse_task(name)[0] in unchecked for name in missing):
+        if missing and all(not_checked(name) for name in missing):
             result.unknown.append(row)
             continue
+        # Another fix of this item, checked and not landed: every name of the item hears of it.
+        if any(
+            parse_task(name)[0] == base and parse_task(name)[1] and not not_checked(name)
+            for name in missing
+        ):
+            result.other_fix.append(row)
         complete = not missing
         completed_by_task = complete and task in row.deps
         if row.assignee is not None:
