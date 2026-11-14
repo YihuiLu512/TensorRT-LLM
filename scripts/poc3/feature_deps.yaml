@@ -953,7 +953,7 @@ rows:
   chain: case-04
   deferred: true
   notes: ["XD-101 \u662F\u6B7B\u7528\u4F8B\uFF0C\u4E0D\u63A5\u94FE", "\u4E0D\u8BBE E2E\uFF1A\U0001F173\
-      \uFF08DQ-08\uFF0C\u5F85\u7528\u6237\u5B9A\uFF09"]
+      \uFF08DQ-08\uFF0C\u5DF2\u5B9A\uFF09"]
 - id: DG-31
   features: [DG-31]
   cases: [XD-108, XD-109, NT-002]
@@ -1257,7 +1257,7 @@ rows:
   deps: []
   chain: case-04
   deferred: true
-  notes: ["\u4E0D\u8BBE E2E\uFF1A\U0001F173\uFF08DQ-33\uFF0C\u5F85\u7528\u6237\u5B9A\uFF09"]
+  notes: ["\u4E0D\u8BBE E2E\uFF1A\U0001F173\uFF08DQ-33\uFF0C\u5DF2\u5B9A\uFF09"]
 - id: DG-77
   features: [DG-77]
   cases: []
@@ -1265,7 +1265,7 @@ rows:
   deps: []
   chain: case-04
   deferred: true
-  notes: ["\u4E0D\u8BBE E2E\uFF1A\U0001F173\uFF08DQ-33\uFF0C\u5F85\u7528\u6237\u5B9A\uFF09"]
+  notes: ["\u4E0D\u8BBE E2E\uFF1A\U0001F173\uFF08DQ-33\uFF0C\u5DF2\u5B9A\uFF09"]
 - id: DG-78
   features: [DG-78]
   cases: [XD-004]
@@ -1412,7 +1412,7 @@ rows:
   deps: []
   chain: case-04
   deferred: true
-  notes: ["\u4E0D\u8BBE E2E\uFF1A\U0001F173\uFF08DQ-33\uFF0C\u5F85\u7528\u6237\u5B9A\uFF09"]
+  notes: ["\u4E0D\u8BBE E2E\uFF1A\U0001F173\uFF08DQ-33\uFF0C\u5DF2\u5B9A\uFF09"]
 - id: EG-01a
   features: [EG-01a]
   cases: [XD-225, XD-205, NT-189]
@@ -1720,7 +1720,7 @@ rows:
   deferred: true
   notes: ["XD-019 \u53EA\u5728 GB200 / GB300 \u4E0A\u8DD1", "\u4E0D\u8BBE E2E\uFF1A\u672A\u9A8C\u8BC1\uFF08\
       \u786C\u4EF6\uFF09", "PB-3 \u8D70 GB \u8DEF\u7EBF\u65F6\u7531 WT-72 \u987A\u5E26\u53D6\u8BC1\uFF08\
-      DQ-23\uFF0C\u5F85\u7528\u6237\u5B9A\uFF09"]
+      DQ-23\uFF0C\u5DF2\u5B9A\uFF09"]
 - id: EG-26
   features: [EG-26]
   cases: [XD-231]
@@ -1728,8 +1728,7 @@ rows:
   deps: [link, WT-57]
   chain: case-04
   not_runnable: [XD-020]
-  notes: ["\u8865\u5145\u7528\u4F8B XD-020 \u968F PB-3\uFF08WT-72\uFF1BDQ-23\uFF0C\u5F85\u7528\u6237\u5B9A\
-      \uFF09"]
+  notes: ["\u8865\u5145\u7528\u4F8B XD-020 \u968F PB-3\uFF08WT-72\uFF1BDQ-23\uFF0C\u5DF2\u5B9A\uFF09"]
 - id: EG-27
   features: [EG-27]
   cases: [XD-221, XD-072, XD-003]
@@ -1744,8 +1743,8 @@ rows:
   chain: case-04
   assignee: WT-61
   hopper_cases: [XD-042]
-  notes: ["R12 \u9A8C\u6536\uFF08\u6761\u4EF6\uFF1ADQ-42\uFF0C\u5F85\u7528\u6237\u5B9A\uFF09", "XD-009\
-      \ \u5728 CO-12 \u5408\u5165\u540E\u7531 WT-40 \u5148\u8865\u8DD1"]
+  notes: ["R12 \u9A8C\u6536\uFF08\u6761\u4EF6\uFF1ADQ-42\uFF0C\u5DF2\u5B9A\uFF09", "XD-009 \u5728 CO-12\
+      \ \u5408\u5165\u540E\u7531 WT-40 \u5148\u8865\u8DD1"]
 - id: EG-29
   features: [EG-29]
   cases: [NT-204]
@@ -1772,7 +1771,7 @@ rows:
   chain: case-04
   deferred: true
   notes: ["\u4E0D\u8BBE E2E\uFF1A\u2014\uFF08\u524D\u63D0\u5728\u94FE\u8DEF\u5F62\u6001\u4E0B\u4E0D\u5B58\
-      \u5728\uFF1BDQ-33\uFF0C\u5F85\u7528\u6237\u5B9A\uFF09"]
+      \u5728\uFF1BDQ-33\uFF0C\u5DF2\u5B9A\uFF09"]
 - id: EG-33
   features: [EG-33]
   cases: [NT-208]
@@ -1795,8 +1794,8 @@ rows:
   chain: case-04
   deferred: true
   notes: ["\u4E0D\u8BBE E2E\uFF1A\u2014\uFF08\u4E0D\u9002\u7528\uFF1A\u73B0\u6210\u8D77\u6CD5\u662F MPI\
-      \ worker \u5F62\u6001\uFF0C\u94FE\u8DEF\u5F62\u6001\u4E0B\u4E0D\u5B58\u5728\uFF1BDQ-33\uFF0C\u5F85\
-      \u7528\u6237\u5B9A\uFF09"]
+      \ worker \u5F62\u6001\uFF0C\u94FE\u8DEF\u5F62\u6001\u4E0B\u4E0D\u5B58\u5728\uFF1BDQ-33\uFF0C\u5DF2\
+      \u5B9A\uFF09"]
 - id: EG-36
   features: [EG-36]
   cases: [NT-211]
