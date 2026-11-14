@@ -1542,6 +1542,41 @@ def test_harness_port_picks_avoid_ports_picked_or_given_before(monkeypatch):
     assert {13, 14, 15} <= launch._PICKED_PORTS
 
 
+def test_worker_wait_gives_the_stop_what_is_left_of_its_timeout():
+    class Proc:
+        args = ["front-end"]
+        pid = 1
+
+        def poll(self):
+            return 0
+
+        def terminate(self):
+            pass
+
+    class Handle:
+        frontend = engine = Proc()
+
+        def __init__(self):
+            self.polls = 0
+            self.graces = []
+
+        def poll(self):
+            self.polls += 1
+            return None if self.polls <= 5 else 0
+
+        def terminate(self, grace=None):
+            self.graces.append(grace)
+
+    handle = Handle()
+    assert launch.WorkerProcess(handle).wait(timeout=2) == 0
+    # About 0.5 s went to waiting for the exit.
+    (grace,) = handle.graces
+    assert 0 < grace < 1.8
+    handle = Handle()
+    assert launch.WorkerProcess(handle).wait() == 0
+    assert handle.graces == [launch.TERMINATE_GRACE_S]
+
+
 def test_worker_poll_signals_without_waiting_and_wait_stops_the_worker(fake, tmp_path, monkeypatch):
     monkeypatch.setenv(cv.ENV_CHAIN, "trtllm")
     fake.env["FAKE_ENGINE_SAY"] = launch.TRANSCEIVER_STARTED_LINE

@@ -87,7 +87,7 @@ class RemoteOpenAIServer:
             env = os.environ.copy()
         # TRTLLM_TEST_OPENENGINE_TOPOLOGY=disagg starts an aggregated server
         # (not a trtllm-llmapi-launch one) as two workers and a disaggregated
-        # server, through the chain if one is set.
+        # server, through the chain if one is set (the glm chain refuses it).
         if (os.environ.get("TRTLLM_TEST_OPENENGINE_CHAIN")
                 or os.environ.get("TRTLLM_TEST_OPENENGINE_TOPOLOGY")):
             try:

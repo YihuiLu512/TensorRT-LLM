@@ -1804,7 +1804,8 @@ class WorkerProcess(ChainProcess):
     :meth:`ServeHandle.terminate` stops it, the other process and everything
     it started included, so that a test that starts a new worker on the same
     GPUs finds them free; the stop gets what is left of ``timeout`` as its
-    grace period.
+    grace period, at most ``TERMINATE_GRACE_S`` (all of it when ``timeout`` is
+    ``None``).
     """
 
     _signalled = False

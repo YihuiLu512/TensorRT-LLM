@@ -334,8 +334,8 @@ def frontend_env(env: Mapping[str, str]) -> dict[str, str]:
 # refuses service discovery, and only the front end registers the worker.
 DISAGG_FRONTEND_ONLY_YAML_KEYS = ("disagg_cluster",)
 # Environment variables a disaggregated worker's front end does not get, besides the
-# ENGINE_ONLY_ENV of any front end: disaggregated-serving switches that only the engine
-# of a worker reads.
+# ENGINE_ONLY_ENV of any front end: settings only a worker's engine reads (two
+# disaggregated-serving switches and the executor worker's garbage-collection switch).
 DISAGG_ENGINE_ONLY_ENV = (
     "TRTLLM_DISAGG_BENCHMARK_GEN_ONLY",
     "TRTLLM_DISAGG_NO_RETRY",
@@ -519,11 +519,12 @@ def _transceiver_template(config: dict[str, Any], env: Mapping[str, str]) -> Non
     """Spell out the KV-transfer settings the engine needs, in ``config``.
 
     The backend is always written, so that the engine builds a transceiver.
-    Without one, or with DEFAULT, the Python runtime and ``auto`` (which
-    takes it unless the model prefers another) get the backend the legacy
-    environment variables select, as
-    the engine would resolve DEFAULT, or else NIXL; the C++ runtime gets
-    DEFAULT. A C++-only backend gets the C++ runtime and KV cache manager V1
+    Without one, or with DEFAULT, the Python runtime and ``auto`` get the
+    backend the legacy environment variables select, as the engine would
+    resolve DEFAULT, or else NIXL; the C++ runtime gets DEFAULT. (The engine
+    resolves ``auto`` to the model's preferred runtime, or else to the Python
+    one, falling back to the C++ one for a backend other than NIXL or a null
+    ``kv_transfer_timeout_ms``.) A C++-only backend gets the C++ runtime and KV cache manager V1
     unless the configuration chooses otherwise. Nothing else is set:
     ``kv_transfer_timeout_ms`` and ``max_tokens_in_buffer`` keep the
     configuration's values or their defaults.
@@ -584,16 +585,31 @@ def _kv_events_template(
                 f"not runnable in the OpenEngine chain (DV-23): KV cache events need {key} 1, "
                 f"got {value}"
             )
-    if transceiver_runtime(config) == "CPP":
+    runtime = transceiver_runtime(config)
+    if runtime == "CPP":
         raise ChainUnrunnableError(
             "not runnable in the OpenEngine chain (DV-23): KV cache events need KV cache "
             "manager V2, which the C++ transceiver runtime cannot use"
+        )
+    transceiver = config.get("cache_transceiver_config") or {}
+    if runtime == "AUTO" and (
+        transceiver.get("backend") != "NIXL"
+        or (
+            "kv_transfer_timeout_ms" in transceiver
+            and transceiver["kv_transfer_timeout_ms"] is None
+        )
+    ):
+        raise ChainUnrunnableError(
+            "not runnable in the OpenEngine chain (DV-23): KV cache events need KV cache "
+            "manager V2 and so the Python transceiver, which takes only NIXL and a finite "
+            "kv_transfer_timeout_ms; with transceiver_runtime auto the engine falls back to "
+            "the C++ transceiver here, or fails to build the one the model prefers"
         )
     kv_cache = dict(config.get("kv_cache_config") or {})
     if kv_cache.get("use_kv_cache_manager_v2") is False:
         raise ChainUnrunnableError(
             "not runnable in the OpenEngine chain (DV-23): KV cache events need KV cache "
-            "manager V2, and the configuration turns it off"
+            "manager V2, and kv_cache_config.use_kv_cache_manager_v2 is false"
         )
     kv_cache.pop("event_buffer_max_size", None)
     kv_cache["use_kv_cache_manager_v2"] = True

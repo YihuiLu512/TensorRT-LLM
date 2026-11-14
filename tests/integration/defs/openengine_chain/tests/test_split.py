@@ -237,7 +237,8 @@ def test_disagg_frontend_env_keeps_only_what_the_front_end_reads():
         "UCX_TLS": "^ib",
     }
     # The front end keeps the worker's GPUs, the TLLM_* settings and the KV transfer
-    # timing path (it writes perf metrics there), as an aggregated server's front end does.
+    # timing path (setting it turns on the front end's per-request perf metrics), as an
+    # aggregated server's front end does.
     assert sp.disagg_frontend_env(env) == {
         "PATH": "/bin",
         "CUDA_VISIBLE_DEVICES": "3",
@@ -407,7 +408,24 @@ def test_kv_events_publish_one_port_per_attention_dp_rank(tmp_path):
         (
             {"kv_cache_config": {"event_buffer_max_size": 8, "use_kv_cache_manager_v2": False}},
             [],
-            "turns it off",
+            "use_kv_cache_manager_v2 is false",
+        ),
+        # auto falls back to the C++ transceiver for these, or the model's runtime cannot run.
+        (
+            {"cache_transceiver_config": {"backend": "UCX", "transceiver_runtime": "auto"}},
+            [],
+            "Python transceiver",
+        ),
+        (
+            {
+                "cache_transceiver_config": {
+                    "backend": "NIXL",
+                    "transceiver_runtime": "auto",
+                    "kv_transfer_timeout_ms": None,
+                }
+            },
+            [],
+            "Python transceiver",
         ),
     ],
 )
@@ -417,6 +435,19 @@ def test_kv_events_are_not_runnable_where_the_publisher_cannot_run(tmp_path, con
     merged["kv_cache_config"].update(config.get("kv_cache_config", {}))
     with pytest.raises(sp.ChainUnrunnableError, match=f"DV-23.*{match}"):
         _engine_config(tmp_path, merged, args=args, ports=lambda count: 44000)
+
+
+def test_kv_events_refuse_auto_when_the_environment_selects_another_backend(tmp_path):
+    config = _events_config()
+    config["cache_transceiver_config"]["transceiver_runtime"] = "auto"
+    with pytest.raises(sp.ChainUnrunnableError, match="DV-23.*Python transceiver"):
+        _engine_config(
+            tmp_path, config, env={"TRTLLM_USE_UCX_KVCACHE": "1"}, ports=lambda count: 44000
+        )
+    # A finite timeout keeps auto on the Python transceiver.
+    config["cache_transceiver_config"]["kv_transfer_timeout_ms"] = 1000
+    engine = _engine_config(tmp_path, config, ports=lambda count: 44000)
+    assert "kv_events_config" in engine["kv_cache_config"]
 
 
 # --- Moving an aggregated test ----------------------------------------------------------
@@ -444,6 +475,19 @@ def test_setting_takes_set_then_the_option_then_the_file(tmp_path):
     dp = ("enable_attention_dp",)
     assert sp.setting(config, [], dp, "--enable_attention_dp") is False
     assert sp.setting(config, ["--enable_attention_dp"], dp, "--enable_attention_dp") is True
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2001-13-01",  # ValueError
+        "[" * 3000 + "]" * 3000,  # RecursionError
+        "[1",  # YAMLError
+    ],
+)
+def test_set_overrides_leave_out_a_value_trtllm_serve_refuses_as_yaml(value):
+    args = ["--set", f"max_batch_size={value}", "--set", "max_num_tokens=8"]
+    assert sp.set_overrides(args) == [(("max_num_tokens",), 8)]
 
 
 def test_setting_takes_a_set_above_the_path_and_a_null_set():

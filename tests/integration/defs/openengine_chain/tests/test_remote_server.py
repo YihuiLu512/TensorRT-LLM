@@ -24,6 +24,12 @@ _SERVER = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _no_topology_from_the_environment(monkeypatch):
+    # The switch-off tests describe a run with neither switch set.
+    monkeypatch.delenv(cv.ENV_TOPOLOGY, raising=False)
+
+
 @pytest.fixture
 def server_module():
     pytest.importorskip("openai")
