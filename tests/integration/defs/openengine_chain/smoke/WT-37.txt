@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# No entry yet. The PoC-S3 smoke union runs on the trtllm chain with --topology disagg, which
+# serves disaggregated requests only once the minimum chain (WT-35, WT-37, WT-38, WT-40, WT-50,
+# WT-51) has landed. The moved form without a chain is verified in verified/WT-37.yaml.
+# Candidate entry for then (150 to 280 s on 1xB200 without a chain, both workers on one GPU):
+#   test_e2e.py::test_trtllm_serve_top_logprobs[pytorch]
