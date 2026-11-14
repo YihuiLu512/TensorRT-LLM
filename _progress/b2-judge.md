@@ -22,3 +22,8 @@
 - 2026-11-14 21:32:56 e2e：E0(b) J5933747 L1–L4（s1–s4）raw 拷到 _local/b2-judge/e2e/trees2，进程内以 P+X+I+V 跑 localize（诊断用阈值 0.90，非登记值；约 5 分钟）
 - 2026-11-14 21:38:31 改 I1：统计量不论 pilot 有无门槛 / D14 都记录（单核分不含 / 含软中断两键，按 D14 取其一），样本重生成；复跑 tests/judge 全量（约 5 分钟）
 - 2026-11-14 21:47:27 2E-localize-intervene-grade 验证完成（MEASURED）：tests/judge 220 passed（logs/j5.log）；样本自测 36/36（logs/st6.log）；tests/capcommon 190 passed（logs/cc1.log）；变异 N1–N14 全部 KILLED（mut/summary2.txt）；e2e：E0(b) J5933747 L1–L4 进程内 P+X+I+V（诊断门槛 0.90，非登记值）：s1/s2/s3 档 6 relay1 I1 成立（核忙碌 0.996–0.998），s3 线程份额 capkit-inject-aux-relay.msg 0.915 核、MainThread 0.046 核；s2 relay2 不成立；s4（sleep）各档 I1 不成立；X 因 E0 第一轮无带为 NOT_RUN；fakebin.log 不存在（0 次调用）。提交。
+- 2026-11-14 21:57:14 2E-analysis 开工：已读设计 §2.6 T4–T6、E1 卡、E0(b)、DATA §4/§6、INTERFACES §10/勘误 B2-2E、stats/intervene/grade。注意 STATUS 21:42 用户要求 1 小时内暂停（b2-judge 到点冻结 diff），本步按优先级：boundary.py → scaling.py → §14/勘误 → sm9.md → e1_report.py，到点前提交完整一致的部分。
+- 2026-11-14 21:59:53 跑 tests/judge/test_analysis.py（约 2 分钟）
+- 2026-11-14 22:00:12 e2e：E0(b) J5933747 L1–L4 进程内 localize 复跑（loc4，诊断门槛 0.90，后台串行约 5 分钟），供 sm9.md
+- 2026-11-14 22:01:13 e2e：capjudge.boundary 对 E0 第一轮 15 棵已判真树（W 只读，产物写 _local/b2-judge/e2e/an）
+- 2026-11-14 22:03:30 boundary/scaling/cmdrec + §14.1/14.2 + 勘误 B2-2E-A 1–6 写完；test_analysis 18 passed；变异 M1–M7 全杀（mut/summary3.txt，M6 首轮存活后补测试）；E0(b) 12 棵真树 boundary e2e EXIT=0；sm9.md 写完。先提交，再写 e1_report。

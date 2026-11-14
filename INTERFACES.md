@@ -1010,6 +1010,41 @@ python3 -m capjudge --tree <启动树的路径> --workdir <W>
 - U-5：P0 档（无探针补丁）的产品进程不 import `capprobe`，没有快照也就没有版本自报；P0 启动的 C10 怎样取产品进程的版本（例如由内层脚本用同一解释器另起一次 `version_record` 并登记为「同镜像同解释器」的旁证）待 B3 / B5 定，在此之前 P0 启动的 C10 会是 `NOT_RUN`。
 - U-6：产品前端一侧的块数修正项（`reconcile.corrections`，如 `PromptInfo` 不产生块、到 `max_tokens` 的一步与结束合并）的具体数值，由 E0 冒烟确认后登记；本约定不预设。
 
+## 14. 分析脚本的输入与输出（DATA-AND-ANALYSIS §6 第②～④步，见勘误 B2-2E-A）
+
+跨启动的合并只在分析脚本里做（DATA-AND-ANALYSIS §4 第 1 条）。每个脚本都是 `capjudge` 里的一个模块，`analysis/<名>.py` 是薄封装（与 `calib_build.py` 相同，用 `python3.11 analysis/<名>.py …` 或 `PYTHONPATH=<C>/tools python3 -m capjudge.<名> …`）。共同规则：
+
+- **输入**：列表文件每行一棵已判的启动树（字面路径，不许通配符、制表符，不许重复）；每棵树的 `judge/verdicts.json` 的 sha 必须与 `<W>/JUDGED.tsv` 里该启动的行一致，否则退出码 3。
+- **筛选**（DATA-AND-ANALYSIS §4 第 4 条）：判定前的启动级结论不是 VALID 的树整棵剔除，并在输出的 `excluded` 里列出原因。这里的「判定前的结论」取三者中最差的：`verdicts.json` 的 `upstream`、`launch_checks.LAUNCH-STATE`、现在读到的 `STATE` 里不是 `capjudge` 写的全部行（判定之后追加的行也算）。判定器自己写的 NOT_RUN 不剔除整树：档级的 VOID / NOT_RUN 只让区间变宽。
+- **产物**：`--out` 指定的新文件，已存在 ⇒ 退出码 3，不覆盖。旁边写同名的 `.cmd.txt`（`x.json` → `x.cmd.txt`，`capjudge.cmdrec`），制表符分隔的键值行：`product`、`product_sha256`、`module`、`code_sha`（取法同判定器，§10.2）、`cwd`、`pythonpath`、`invoked`（解释器与 `sys.argv` 原样）、`command`（等价的 `python -m` 命令）、`exit_code`、`written_at`，以及每个输入文件一行 `input\t<绝对路径>\t<sha256>`。`.cmd.txt` 在产物之后写，有产物没有 `.cmd.txt` ⇒ 那次运行被打断，产物不可用。
+- **退出码**：0 成功；2 参数错误；3 输入或配置错误（不写任何文件）。
+
+### 14.1 `capjudge.boundary`（每启动 T4、包络、T5；`schema: capkit.boundary/1`）
+
+```
+python3 -m capjudge.boundary --inputs <列表> --workdir <W> --out <新文件> [--compare <臂A>,<臂B> …]
+```
+
+- 全部入选的树必须扫同一条轴（`verdicts.json` 的 `axis` 完全相同），否则 3。
+- `launches[]`：`tree`、`identity`（实验、臂、作业号、重启次数、启动序号）、`block`（区组 = 作业号：一个作业里每臂一次启动）、`mode`、`launch_verdict`、`roles`（`raw/launch.json` 每个角色的 `kind`、`measure_class`、`workers`）、`grade`（`P+X+I+V` 模式的逐启动等级，否则 null）、`doses` 与 `heartbeat`（`intervention_V` 的同名字段，否则 null），以及两个区间：
+  - `t4`：判定器写的 `boundary_T4`。脚本按 `tiers` 重算一遍，`lower`、`upper`、`lower_seq`、`upper_seq`、`kind` 有一个不同 ⇒ 3。
+  - `interval`（跨启动用的区间）：在第一个「工具到顶档」以下的负载档上算 T4。工具到顶档指 RED 检查只有 C1 / C2 的 VOID 档，或 I 定位到 `load_source` / `stub_out_of_domain` 的 UNSTABLE 档（设计稿 §2.6「负载源或域外桩先离开健康带 ⇒ 下界」，与 `capjudge.grade` 同一判据）。截断发生在第一个不稳定档之前 ⇒ 上端为 null，`kind: lower_bound_only`，`censored_by` 写明是哪一档、为什么。`skipped` 列出既不是 STABLE 也不是 UNSTABLE 的档。
+- `arms.<臂>`：`envelope`（该臂全部启动的 T4 包络，按 `axis.order` 取 [各次下端的最小值, 各次上端的最大值]，任一次缺端 ⇒ 该端 null）、`by_block`（每个区组一个包络）、`n_launches`。
+- `t5[]`（每个 `--compare` 一项）：只用两臂都有的区组，`stats.t5_compare` 逐区组比包络。结果是 `different`（附方向）或 `indistinguishable`（附本次能分辨的最小差）；没有共同区组 ⇒ `NOT_RUN`。`blocks_missing` 列出只有一臂的区组。臂名不在输入里 ⇒ 3。
+
+### 14.2 `capjudge.scaling`（T6 与对侧翻倍归因；`schema: capkit.scaling/1`）
+
+```
+python3 -m capjudge.scaling --boundary <boundary.json> --pair <基准臂>,<加倍臂> [--pair …]
+    --grows-min <比值> --flat-max <比值> --out <新文件>
+```
+
+- 输入是 14.1 的产物（T4 只在那里算一次）。轴必须是 `asc`。两个界取实验登记表里事先登记的值，显式传入并写进输出；要求 0 < `flat-max` < `grows-min`。
+- 每一对：两臂的角色集合、`kind`、`measure_class` 相同；只有**一侧**（`kind` 为 `client`，即负载器；或为 `server`，即空汇 / 桩）的角色改了 `workers`，这一侧的全部角色按同一个倍数 f > 1 改，另一侧不变。不满足 ⇒ 3。一臂的各次启动角色不同 ⇒ 3。
+- 逐区组（两臂都有的区组）：基准臂包络 E_b，加倍臂包络 E_s，边界比值落在 [E_s.lower ÷ E_b.upper, E_s.upper ÷ E_b.lower] 内；缺端 ⇒ 对应一端为 null。同时给出效率（比值 ÷ f）。`t6_lower_ends`、`t6_upper_ends` 分别是只用下端、只用上端的 T6 区间（`stats.t6_ratio_range`），作对照。
+- 判断用不利端（设计稿 §2.6 T6）：最小比值 ≥ `grows-min` ⇒ `grows`；最大比值 ≤ `flat-max` ⇒ `flat`；否则 `unresolved`；没有可用区组（基准臂包络不闭合，或加倍臂没有下端）⇒ `NOT_RUN`。`grows` ⇒ `limit_side` 为加倍的那一侧；`flat` ⇒ 另一侧。
+- `attribution`（E1 卡「隔离」：两种情形各出现一次才知道谁是谁）：同时有 server 侧加倍为 `flat`、client 侧加倍为 `grows` ⇒ `client`（限制在负载器）；镜像情形 ⇒ `server`（限制在空汇）。两侧都有已判的对，但组合不是这两种，或同一侧的几对结论不一致 ⇒ `UNDETERMINED`；缺一侧的已判对 ⇒ `NOT_RUN`。
+
 ## 勘误与补充
 
 - **2026-11-13，r2（原地修订，不是追加勘误）**：按审阅意见（24 条，逐条见下方「审阅记录」）修订 §0、§2.2、§2.5、§3、§4.4、新增 §4.5、§5.1～§5.6、新增 §5.5.2、§5.5.3、§5.8、§5.9、§6.2、§6.5、§6.6、§7.3、§8、§9.3、§9.5、§10、§11、§11.1、§12。原地修订而不是逐条追加，是因为写本约定时还没有任何组件按 r1 写出代码或数据（`_progress/` 下只有本约定与评审两份进度），追加 24 条勘误只会让组件作者读两遍。schema 名的版本号没有升：没有任何文件以 r1 的格式写出过。capcommon 同步新增 `expect`、`wire`、`hwprofile`、`policy`、`scratchpath` 五个模块，并改了 `clock`（毫秒）、`ledger`、`tiers`、`inject`、`gate`、`versions`、`snapshot`、`runtree`。r1 没有提交进 git，原文不另保留；r1 → r2 改了什么以本条与下方「审阅记录」为准。
@@ -1250,7 +1285,7 @@ E0 第一轮的 pilot（`02_e0/E0/analysis/pilot.json`）定不出 `window_ns` /
     - ⑥ 弱读者检验仍未实现（B2-2A-10①），C2 的「积压所在一侧」由 I3 承担，但 I3 不进 P。
     - ⑦ I3 按角色判，I1 按进程判。多进程角色的「指向同一进程」按角色比较，`pids` 列出 I1 成立的进程。
     - ⑧ 合成的读者慢样本为了让 I 被判到，保持 C1 绿；真实的读者慢多半会让 C1 的 FIONREAD 变红，档 VOID，等级同样是 `LOWER_BOUND`（经 C1 那条路）。
-    - ⑨ 分析脚本 `boundary.py`、`scaling.py`、`e1_report.py` 与 §14 不在本步。
+    - ⑨ 分析脚本 `boundary.py`、`scaling.py`、`e1_report.py` 与 §14 不在本步（已补，见勘误 B2-2E-A）。
 11. **验证**：
     - **测试**：`tests/judge/test_localize.py`、`tests/judge/test_intervene.py`（I1 单核 / 多核 / 非 GIL / 独占核，I3 四种状态与两侧规则，合并，失败归类，心跳逐项，剂量–反应 PASS / FAIL / INCONCLUSIVE / NOT_RUN，降序轴，等级，`mode` 与 `localize` 的输入核对，`i1_calibration` 格式，CLI）；`tests/judge` 全量 220 passed；样本自测 36 个全过；变异 N1～N14 全部杀死（`_local/b2-judge/mut/summary2.txt`）。
     - **e2e**：E0(b) J5933747 L1～L4 拷到 `_local/b2-judge/e2e/trees2`，在进程内按 `P+X+I+V` 判。门槛用诊断值 0.90，不是登记值；E0 第一轮没有 X 的带，所以 X 为 NOT_RUN，只看 I1。结果：
@@ -1259,6 +1294,17 @@ E0 第一轮的 pilot（`02_e0/E0/analysis/pilot.json`）定不出 `window_ns` /
       - s3 的线程份额：`capkit-inject-aux-relay.msg` 0.915 核、`MainThread` 0.046 核，辅助线程一侧在 GIL 域内判出；
       - s4（sleep，不耗 CPU）各档 I1 都不成立，与已知答案「I1 认不出不耗 CPU 的瓶颈」一致。
     - 记录在 `_progress/b2-judge.md`。
+
+#### B2-2E-A：分析脚本（2026-11-14）
+
+新增正文 §14（分析脚本的输入与输出）。判定器的输入、输出与退出码都不变。
+
+1. **`capjudge.boundary`、`capjudge.scaling`（§14.1、§14.2）**：薄封装 `analysis/boundary.py`、`analysis/scaling.py`。共同的 `.cmd.txt` 由 `capjudge.cmdrec` 写，满足 DATA-AND-ANALYSIS §4 第 8 条。
+2. **跨启动用的区间不完全等于判定器的 T4**：在第一个工具到顶档以下截断（§14.1），工具先到顶时上端写 null。判定器的 `boundary_T4` 原样并列输出。`capjudge.grade` 的逐启动区间是另一种口径：它取第一个非稳定档，非单调时不同。T4 包络与 T5、T6 一律用 `interval`。
+3. **区组 = 作业号**（设计稿 §2.6 T5「同区组」、RUNBOOK §1.3「3 个作业 = 3 个区组」）。同一作业里同一臂有几次启动时，它们进同一个区组的包络。
+4. **T6 用区间算比值**：设计稿 T6 的分子分母是数，这里两臂的边界都是区间，所以逐区组给比值的上下界，判断取不利端（§14.2）。只用下端、只用上端的两个 T6 区间并列给出，作对照。`grows-min`、`flat-max` 的取值设计稿没有给，要在实验登记表里事先登记，运行时显式传入。
+5. **对侧翻倍按 `kind` 分侧**：client 侧是负载器，server 侧是空汇 / 桩，aux 角色不参与。E1 卡「只加 Z 不加 W 时不再增长 ⇒ 限制在负载器；只加 W 不加 Z 时不再增长 ⇒ 限制在空汇」写成：加倍的一侧 `grows` ⇒ 限制在这一侧，`flat` ⇒ 限制在另一侧；两侧的结论吻合才给出 `client` / `server`。
+6. **验证**：`tests/judge/test_analysis.py`；E0(b) 12 棵已判真树（W 只读）跑 `analysis/boundary.py`，产物在 `_local/b2-judge/e2e/an/`；SM-9 的离线判读写在 `_local/b2-judge/sm9.md`。
 
 ## 审阅记录（r2，2026-11-13）
 
