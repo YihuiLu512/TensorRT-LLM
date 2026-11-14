@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+unittest/llmapi/apps/_test_openengine_ds_disagg_direct.py::test_direct_grpc_handoff
+unittest/llmapi/apps/_test_openengine_ds_disagg_direct.py::test_direct_grpc_abort
+$DS/tests/openengine/test_disagg_roles.py::test_role_and_argument_errors
+$DS/tests/openengine/test_disagg_roles.py::test_two_stage_num_sequences_rejected
+$DS/tests/openengine/test_disagg_roles.py::test_params_keys_are_engine_known
+$DS/tests/openengine/test_disagg_roles.py::test_prefill_ready_and_generation_only
+$DS/tests/openengine/test_disagg_roles.py::test_capability_declaration_matches_validation
+$DS/tests/openengine/test_disagg_roles.py::test_abort_unknown_or_finished_and_kv_session
+$DS/tests/openengine/test_disagg_roles.py::test_disagg_request_on_agg_instance_rejected
