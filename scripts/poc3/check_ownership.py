@@ -38,8 +38,8 @@ about the file may change (its mode or final newline, for example); otherwise
 the path is out of bounds. Paths changed under
 ``shared`` and ``exception`` rules are listed for a reviewer to check by hand.
 Test files that already exist at the base are ``shared`` even for the item they
-belong to: existing assertions change only for the flips tasks.md §0.3 and the
-user's rulings name, so changes there are listed too.
+belong to: existing assertions change only where tasks.md §0.3 or a ruling
+allows it, so changes there are listed too.
 A pattern starting with ``!`` excludes paths from the rules before it.
 
 The orchestrator's main files belong to no work item. Some code inside files
@@ -583,7 +583,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
         _exception(
             f"{POC_TESTS}/wt50/test_poc3_wt50_internal_auth.py",
             "only the two handoffs past the signature check expecting 200 and one engine call,"
-            " with their comment and docstring, and _refused_by_the_facade removed",
+            " with their comment and docstrings, and _refused_by_the_facade removed",
             changes=(
                 _change(
                     "_refused_by_the_facade",
@@ -600,6 +600,17 @@ OWNERSHIP: dict[str, list[Rule]] = {
                         "    )",
                         "",
                         "",
+                    ),
+                ),
+                _change(
+                    _TAMPERED_HANDOFF_TEST,
+                    (
+                        '    """NT-008 (DG-34, DG-37): a handoff whose signature does not match is'
+                        ' refused before the engine."""',
+                    ),
+                    (
+                        '    """NT-008 (DG-34, DG-37): a keyed worker refuses a handoff whose signature'
+                        ' does not match."""',
                     ),
                 ),
                 _change(
@@ -643,9 +654,9 @@ OWNERSHIP: dict[str, list[Rule]] = {
         ),
         _exception(
             f"{POC_TESTS}/wt11/test_poc2_wt11_no_silent_drop.py",
-            "DQ-48 flip only: the over-gRPC min_tokens probe expecting the refusal of an engine on"
-            " the current conventions that does not declare trtllm.stopping.min_tokens; the"
-            " mapping-level probes are unchanged",
+            "DQ-48 flip only: the over-gRPC min_tokens probe expecting the facade to refuse"
+            " min_tokens to an engine on the current conventions that does not declare"
+            " trtllm.stopping.min_tokens; the mapping-level probes are unchanged",
             changes=(
                 _change(
                     "test_over_grpc_the_engine_receives_what_the_mapping_sends",
@@ -655,8 +666,8 @@ OWNERSHIP: dict[str, list[Rule]] = {
                         " == conv.CONVENTIONS_VERSION",
                         "            and not caps.supports(conv.CAP_STOPPING_MIN_TOKENS)",
                         "        ):",
-                        "            # DQ-48: an engine on the current conventions refuses min_tokens"
-                        " unless it declares it.",
+                        "            # DQ-48: the facade refuses min_tokens to an engine on the current",
+                        "            # conventions that does not declare it.",
                         '            with pytest.raises(ValueError, match="min_tokens"):',
                         "                await facade.generate_async(GRPC_PROMPT,"
                         " _sampling(probe.params), **options)",
