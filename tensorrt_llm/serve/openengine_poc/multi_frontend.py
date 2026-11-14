@@ -694,7 +694,8 @@ async def _run_attached(
     sigterm.cancel_on_signal(asyncio.current_task())
     _maybe_disable_gc()
     try:
-        await facade.start()
+        # The launcher answers /kv_cache_events for every frontend (a forwarded route).
+        await facade.start(kv_cache_events=False)
         # Only a frontend connected to the engine counts as started.
         _signal_frontend_ready(mode)
         await _wait_for_launcher(launcher_uds, launcher_pid)

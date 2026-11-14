@@ -887,7 +887,8 @@ def test_kv_cache_events_arrive_through_get_kv_event_sources(tmp_path):
     engine = FakeEngine(_profile(kv_event_sources=(_source(port),)))
 
     async def body(engine, facade, http):
-        # The first call subscribes; nothing was received before it.
+        # The frontend subscribed at its start; nothing was published since, and
+        # the engine's load reports no total_kv_blocks for a created event.
         first = await http.post("/kv_cache_events")
         assert first.status_code == 200, first.text
         assert first.json() == []
@@ -943,14 +944,15 @@ def test_kv_cache_events_arrive_through_get_kv_event_sources(tmp_path):
     [(), (_source(1, encoding="protobuf"),), (_source(1, transport="grpc"),)],
     ids=["none", "protobuf", "grpc"],
 )
-def test_kv_cache_events_the_frontend_cannot_read_answer_501(tmp_path, sources):
+def test_kv_cache_events_the_frontend_cannot_read_answer_no_events(tmp_path, sources):
     engine = FakeEngine(_profile(kv_event_sources=sources))
 
     async def body(engine, facade, http):
         return [await http.post("/kv_cache_events") for _ in range(2)]
 
     responses = _serve(engine, tmp_path, body, _args())
-    assert [r.status_code for r in responses] == [501, 501], responses[0].text
+    assert [r.status_code for r in responses] == [200, 200], responses[0].text
+    assert [r.json() for r in responses] == [[], []]
     # The engine's answer is kept: asked once.
     assert [rpc for rpc, _ in engine.control_calls].count("GetKvEventSources") == 1
 
@@ -1074,7 +1076,10 @@ class _Client:
         self.calls = 0
 
     def server_info(self):
-        return SimpleNamespace(engine_name="e", extra={})
+        return SimpleNamespace(engine_name="e", extra={}, total_kv_blocks=None)
+
+    async def load(self):
+        return None
 
     async def kv_event_sources(self):
         self.calls += 1
@@ -1095,24 +1100,15 @@ def test_kv_cache_events_are_empty_while_the_sources_cannot_be_read():
     assert client.calls == 2
 
 
-def test_kv_cache_events_unsupported_raise_a_new_error_each_call():
+def test_kv_cache_events_unsupported_answer_no_events_each_call():
     client = _Client(sources=[])
     subscription = metrics_module._KvEventSubscription()
 
-    async def raised():
-        try:
-            await subscription.events(client, 0)
-        except contracts.OpenEngineUnsupportedError as error:
-            return error
-        raise AssertionError("not raised")
-
     async def twice():
-        return [await raised() for _ in range(2)]
+        return [await subscription.events(client, 0) for _ in range(2)]
 
-    first, second = asyncio.run(twice())
-    # Raising the same error again would lengthen its traceback at every call.
-    assert first is not second
-    assert str(first) == str(second)
+    assert asyncio.run(twice()) == [[], []]
+    # The engine's answer is kept: asked once.
     assert client.calls == 1
 
 

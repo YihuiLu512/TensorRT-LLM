@@ -432,6 +432,8 @@ def _engine_info(info: server_pb2.ServerInfo) -> EngineInfo:
         extra=struct_to_dict(info.extra) if info.HasField("extra") else {},
         engine_role=_ENGINE_ROLES.get(info.engine_role, "unspecified"),
         kv_connector=_kv_connector(info),
+        kv_block_size=capacity.kv_block_size or None,
+        total_kv_blocks=capacity.total_kv_blocks or None,
     )
 
 

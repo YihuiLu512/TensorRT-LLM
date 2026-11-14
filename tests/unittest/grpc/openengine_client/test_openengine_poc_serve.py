@@ -2099,7 +2099,11 @@ def test_server_info_has_the_engine_block(tmp_path) -> None:
 def test_an_unsupported_error_from_a_handler_answers_501(tmp_path) -> None:
     engine = _engine()
 
+    async def unsupported(client, timeout):
+        raise contracts.OpenEngineUnsupportedError("no KV-cache events")
+
     async def body(engine, facade, http):
+        facade._metrics.kv_cache_events = unsupported
         response = await http.post("/kv_cache_events")
         assert response.status_code == 501, response.text
         assert "/kv_cache_events" in response.text

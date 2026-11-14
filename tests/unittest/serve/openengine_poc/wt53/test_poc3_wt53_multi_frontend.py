@@ -230,6 +230,12 @@ def test_multi_frontend_worker_two_stage(chain):
     assert len(engine_calls) == sum(sent.values()) == ready
 
 
+def test_only_the_launcher_subscribes_to_kv_cache_events(chain):
+    # The attached frontend forwards /kv_cache_events to the launcher: it does not subscribe.
+    calls = [rpc for rpc, _ in list(chain.ctx.engine.control_calls)]
+    assert calls.count("GetKvEventSources") == 1
+
+
 def test_affinity_headers_without_a_key_send_no_generate(chain):
     """SV-DSG-14: a worker frontend without internal_request_auth_key refuses affinity headers.
 

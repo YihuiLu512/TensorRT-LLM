@@ -15,14 +15,15 @@ handler in ``outputs[0]._postprocess_result``.
 
 Startup (:meth:`OpenEngineLLM.start`) connects, waits for the engine, checks
 its schema revision and conventions version, reads its capabilities, checks
-the tokenizer fingerprint and the serving prerequisites. Afterwards the facade
-polls the engine's health. It records a fatal error and stops the frontend
-when the engine stays unreachable or not ready longer than
-``engine_lost_timeout``, when a restarted engine fails the startup checks, and
-when the health watcher itself fails. :func:`adapt_server` adds the ``engine``
-block to ``/server_info``, takes its ``max_batch_size`` and
-``kv_cache_hash_algo`` from the engine, and answers the endpoints this path does
-not support with 501.
+the tokenizer fingerprint and the serving prerequisites, and, unless told not
+to, subscribes to the engine's KV-cache events. Afterwards the facade polls
+the engine's health. It records a fatal error and stops the frontend when the
+engine stays unreachable or not ready longer than ``engine_lost_timeout``,
+when a restarted engine fails the startup checks, and when the health watcher
+itself fails.
+:func:`adapt_server` adds the ``engine`` block to ``/server_info``, takes its
+``max_batch_size``, ``kv_cache_hash_algo`` and ``tokens_per_block`` from the
+engine, and answers the endpoints this path does not support with 501.
 """
 
 from __future__ import annotations
@@ -711,13 +712,15 @@ class OpenEngineLLM:
             f"OpenEngine startup failed at step '{step}' for the engine at {self._endpoint}: {problem}"
         )
 
-    async def start(self) -> None:
+    async def start(self, *, kv_cache_events: bool = True) -> None:
         """Connect to and check the engine, then start watching its health.
 
         The checks: the schema revision, the capabilities the engine declares,
         the conventions version, token-id input, the tokenizer fingerprint and,
         for a worker started with a role, the engine's KV transfer and role.
-        With a counter directory, it also publishes the Generate count.
+        With a counter directory, it also publishes the Generate count. With
+        ``kv_cache_events``, it subscribes the metrics recorder to the engine's
+        KV-cache events, for a frontend that answers ``/kv_cache_events``.
 
         Raises:
             OpenEngineStartupError: A step failed; the message names the step.
@@ -760,6 +763,13 @@ class OpenEngineLLM:
             raise self._startup_error(
                 "Generate count", f"could not publish it in {self._counter_dir}: {error}"
             ) from error
+        if kv_cache_events:
+            try:
+                await self._metrics.subscribe_kv_cache_events(self._client)
+            except BaseException:
+                await self._client.close()
+                await self.close_counter()
+                raise
         self._healthy = True
         self._health_task = asyncio.create_task(self._watch_health())
         self._health_task.add_done_callback(self._health_watch_ended)
@@ -1095,11 +1105,12 @@ class OpenEngineLLM:
         """The ``/server_info`` fields the engine's ``ServerInfo`` gives (SV-DSG-11).
 
         They replace the values this frontend's configuration gives:
-        ``max_batch_size`` is the engine's ``max_running_requests``, and
+        ``max_batch_size`` is the engine's ``max_running_requests``,
         ``kv_cache_hash_algo`` the algorithm of the engine's KV-cache events,
-        which a KV-cache-aware router hashes blocks with. A field the engine
-        does not report is not returned, so ``/server_info`` keeps the
-        frontend's own value for it.
+        which a KV-cache-aware router hashes blocks with, and
+        ``tokens_per_block`` the engine's ``kv_block_size``, the number of
+        tokens in each of those blocks. A field the engine does not report is
+        not returned, so ``/server_info`` keeps the frontend's own value for it.
         """
         info = self.client.server_info()
         fields: dict[str, Any] = {}
@@ -1108,6 +1119,8 @@ class OpenEngineLLM:
         hash_algo = info.extra.get(_KV_EVENT_HASH_ALGO_KEY)
         if isinstance(hash_algo, str) and hash_algo:
             fields["kv_cache_hash_algo"] = hash_algo
+        if info.kv_block_size:
+            fields["tokens_per_block"] = info.kv_block_size
         return fields
 
     def engine_block(self) -> dict[str, Any]:

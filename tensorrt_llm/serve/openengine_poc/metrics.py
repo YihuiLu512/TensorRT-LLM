@@ -23,15 +23,29 @@ The ``create_metrics_recorder`` slot of :mod:`.contracts` (SV-MET):
   queued requests, its load is the one the last entry reported and no request
   has started on this frontend since: in-process an idle engine produces no
   iteration stats, and a multi-frontend launcher reads them every second.
-- ``/kv_cache_events`` (SV-MET-4) subscribes, at its first call, to the ZeroMQ
-  publishers ``GetKvEventSources`` names, and returns the events received since
-  the last call (at most :data:`KV_EVENT_MAX_BATCHES` batches per call; the
-  rest wait for the next), converted to the in-process format; see
-  :func:`to_in_process_events` for what the conversion cannot carry over.
-  Events published before the subscription is connected, which happens in
-  the background after the first call, are not received. While the engine
-  cannot be reached, or names a publisher address ZeroMQ rejects, it answers
-  with no events and tries to subscribe again at the next call.
+- ``/kv_cache_events`` (SV-MET-4, SV-DSG-11): the frontend subscribes, when
+  it starts, to the ZeroMQ publishers ``GetKvEventSources`` names (a
+  multi-frontend launcher's attached frontends, which forward the route to
+  the launcher, do not), and each
+  call returns the events received since the last call (at most
+  :data:`KV_EVENT_MAX_BATCHES` batches per call; the rest wait for the next),
+  converted to the in-process format; see :func:`to_in_process_events` for
+  what the conversion cannot carry over. Events published before the
+  subscription is connected, which happens in the background, are not
+  received. Until a call reads them, the received events wait in the
+  subscription, up to :data:`KV_EVENT_RECEIVE_HWM` batches per publisher,
+  also when no KV-cache-aware router ever calls; once that is full, the
+  engine's publisher queues further batches for this frontend up to its own
+  limit, then drops them, so a router that starts calling late reads the
+  oldest events and misses later ones. As in-process, where they start with
+  the size of the block pool, the first events start with a ``created``
+  event stating the engine's ``total_kv_blocks``, as its ``ServerInfo``
+  reports it, else as its load reports it when the frontend subscribes: one
+  event, for all attention-DP ranks together, with one cache level. There is
+  none when neither reports it. While the engine cannot be reached, or names a
+  publisher address ZeroMQ rejects, a call answers with no events and tries to
+  subscribe again. An engine that publishes no KV-cache events, or none in a
+  form the frontend reads, gets no events at every call.
 - Tracing (SV-MET-5): with ``otlp_traces_endpoint`` the frontend sets up the
   OTLP tracer, and each request that completes or is aborted records one
   ``llm_request`` span, named as in-process, with the in-process attributes
@@ -63,7 +77,6 @@ from tensorrt_llm.metrics.collector import MetricsCollector
 from tensorrt_llm.metrics.enums import MetricNames, RequestEventTiming
 from tensorrt_llm.metrics.perf_utils import process_req_perf_metrics
 
-from .contracts import OpenEngineUnsupportedError
 from .engine_client import (
     EngineClient,
     EngineEvent,
@@ -190,6 +203,9 @@ class OpenEngineMetricsRecorder:
         self._last_load = snapshot
         self._started_since_entry = False
         return iteration_stats_from_load(load)
+
+    async def subscribe_kv_cache_events(self, client: EngineClient) -> None:
+        await self._kv_events.subscribe(client)
 
     async def kv_cache_events(self, client: EngineClient, timeout: float | None) -> list[dict]:
         return await self._kv_events.events(client, timeout)
@@ -603,7 +619,8 @@ def to_in_process_events(
     each. What the published events do not carry is None (a block's
     ``priority`` and ``cache_salt``, the ``window_size`` of a full-attention
     group), 0 (a token's ``token_extra_id``) or absent (the engine's
-    ``created`` and ``updated`` events); a block's ``cache_level`` follows its
+    ``created`` and ``updated`` events; the subscription puts a ``created``
+    event of its own first); a block's ``cache_level`` follows its
     medium. An ``mm_key``'s ``hash`` is the published digest, with its
     ``uuid`` beside it when it has one. All blocks cleared, which has no
     in-process counterpart, becomes ``{"type": "all_blocks_cleared"}``.
@@ -698,9 +715,10 @@ class _Subscriber:
 class _KvEventSubscription:
     """The frontend's subscription to the engine's KV-cache event publishers.
 
-    Subscribes at the first call and keeps the received batches in the sockets
-    (up to :data:`KV_EVENT_RECEIVE_HWM` per publisher) until a call reads them.
-    The subscription lasts as long as the frontend process.
+    Subscribes at :meth:`subscribe`, or failing that at a later call to
+    :meth:`events`, and keeps the received batches in the sockets (up to
+    :data:`KV_EVENT_RECEIVE_HWM` per publisher) until a call reads them. The
+    subscription lasts as long as the frontend process.
     """
 
     def __init__(self) -> None:
@@ -709,21 +727,30 @@ class _KvEventSubscription:
         self._next_event_id = 0
         self._hash_algo: str | None = None
         self._dp_rank_known = False
+        # Whether the created event is still to be made, and then the event,
+        # until a call returns it.
+        self._created_due = False
+        self._created: list[dict] = []
         # Why the engine's events cannot be read, once that is known.
         self._unsupported: str | None = None
 
-    async def events(self, client: EngineClient, timeout: float | None) -> list[dict]:
+    def _the_lock(self) -> asyncio.Lock:
+        # Made on first use, inside the event loop that uses it.
         if self._lock is None:
             self._lock = asyncio.Lock()
-        async with self._lock:
-            if self._unsupported is not None:
-                # A new error each time: raising one again would grow its traceback.
-                raise OpenEngineUnsupportedError(self._unsupported)
-            if self._subscribers is None:
-                self._subscribers = await self._subscribe(client)
-                if self._subscribers is None:
-                    return []
-            entries = self._drain()
+        return self._lock
+
+    async def subscribe(self, client: EngineClient) -> None:
+        """Subscribe unless subscribed already, or known to have no events to subscribe to."""
+        async with self._the_lock():
+            await self._subscribe_locked(client)
+
+    async def events(self, client: EngineClient, timeout: float | None) -> list[dict]:
+        async with self._the_lock():
+            if not await self._subscribe_locked(client):
+                return []
+            entries = self._created + self._drain()
+            self._created = []
             if not entries and timeout:
                 deadline = time.monotonic() + timeout
                 while not entries and time.monotonic() < deadline:
@@ -731,12 +758,62 @@ class _KvEventSubscription:
                     entries = self._drain()
             return entries
 
-    async def _subscribe(self, client: EngineClient) -> list[_Subscriber] | None:
-        """Subscribe to every publisher; None when that cannot be done now.
+    async def _subscribe_locked(self, client: EngineClient) -> bool:
+        """Subscribe unless subscribed already; whether the subscription exists."""
+        if self._unsupported is not None:
+            return False
+        if self._subscribers is None:
+            self._subscribers = await self._subscribe(client)
+            if self._subscribers is None:
+                return False
+            self._created_due = True
+        if self._created_due:
+            # Numbered before any received event: events are drained only under
+            # the lock, after this. Made again by the next call if interrupted.
+            self._created = await self._created_event(client)
+            self._created_due = False
+        return True
 
-        Raises:
-            OpenEngineUnsupportedError: The engine publishes no KV-cache events
-                in a form the frontend can read.
+    async def _created_event(self, client: EngineClient) -> list[dict]:
+        """The ``created`` event that starts the events, from the engine's ``total_kv_blocks``.
+
+        Taken from the engine's ``ServerInfo``, else from its load; there is
+        none when neither reports it, or the load cannot be read.
+        """
+        engine = client.server_info()
+        engine_name = engine.engine_name
+        total = engine.total_kv_blocks
+        if not total:
+            try:
+                load = await client.load()
+            except OpenEngineClientError as error:
+                logger.warning(
+                    f"Could not read the KV-cache size of the OpenEngine engine {engine_name!r}; "
+                    f"/kv_cache_events has no created event: {error}"
+                )
+                return []
+            total = None if load is None else load.total_kv_blocks
+        if not total:
+            logger.warning(
+                f"The OpenEngine engine {engine_name!r} reports no total_kv_blocks; "
+                "/kv_cache_events has no created event"
+            )
+            return []
+        entry: dict[str, Any] = {
+            "event_id": self._next_event_id,
+            "data": {"type": "created", "num_blocks_per_cache_level": [total]},
+            "window_size": None,
+        }
+        if self._hash_algo is not None:
+            entry["hash_algo"] = self._hash_algo
+        self._next_event_id += 1
+        return [entry]
+
+    async def _subscribe(self, client: EngineClient) -> list[_Subscriber] | None:
+        """Subscribe to every publisher; None when that cannot be done now or ever.
+
+        When the engine publishes no KV-cache events in a form the frontend can
+        read, the reason is kept, and no later call subscribes.
         """
         engine = client.server_info()
         try:
@@ -765,10 +842,12 @@ class _KvEventSubscription:
                 )
                 break
         if reason is not None:
-            # The 501 response names only the endpoint: the reason goes to the log, once.
-            logger.warning(f"/kv_cache_events is not supported: {reason}")
+            # The reason goes to the log, once; every call answers with no events.
+            # An engine without publishers is a configuration, not a fault.
+            log = logger.warning if sources else logger.info
+            log(f"/kv_cache_events has no events: {reason}")
             self._unsupported = reason
-            raise OpenEngineUnsupportedError(reason)
+            return None
         import zmq
 
         self._hash_algo = engine.extra.get(KV_EVENT_HASH_ALGO_KEY)
