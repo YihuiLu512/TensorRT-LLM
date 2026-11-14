@@ -57,7 +57,10 @@ Usage::
     python3 scripts/poc3/pending_e2e.py --task WT-51 --ds-repo ../deepseek-v4.1-flash
     python3 scripts/poc3/pending_e2e.py --landed            # just list what landed
 
-The scripts need Python 3.9 or newer.
+Exit status: 0 when the result is printed; 1 when git fails (an unknown
+``--ref`` included), git cannot be run or ``feature_deps.yaml`` cannot be
+read; 2 when the arguments cannot be parsed. The scripts need Python 3.9 or
+newer.
 """
 
 from __future__ import annotations
@@ -76,6 +79,8 @@ import yaml
 from poc3_common import DEFAULT_REF, DS_DEFAULT_REF, git, git_error, landed_tasks, parse_task
 
 FEATURE_DEPS = Path(__file__).resolve().parent / "feature_deps.yaml"
+# What PyYAML may raise for a document it cannot load (see check_invariants.YAML_ERRORS).
+YAML_ERRORS = (yaml.YAMLError, ValueError, LookupError, AttributeError, TypeError, RuntimeError)
 VERIFIED_DIR = "tests/integration/defs/openengine_chain/verified"
 R13 = "WT-62"
 R14 = "WT-79"
@@ -229,8 +234,8 @@ def read_verified(repo: str | Path, ref: str, known: Iterable[str] | None = None
             continue
         try:
             records.append(yaml.safe_load(git(repo, "show", f"{ref}:{VERIFIED_DIR}/{name}")))
-        except (yaml.YAMLError, ValueError) as error:
-            # ValueError: not UTF-8, or a value YAML cannot convert, such as the date 2026-02-30.
+        except YAML_ERRORS as error:
+            # ValueError also covers a record that is not UTF-8 (UnicodeDecodeError).
             print(
                 f"warning: {name} is not valid YAML, ignored: {type(error).__name__}: {error}",
                 file=sys.stderr,
@@ -358,9 +363,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return _run(args, parser)
     except subprocess.CalledProcessError as error:
-        parser.exit(2, f"{parser.prog}: error: {git_error(error)}\n")
-    except OSError as error:
-        parser.exit(2, f"{parser.prog}: error: {type(error).__name__}: {error}\n")
+        parser.exit(1, f"{parser.prog}: error: {git_error(error)}\n")
+    except (OSError, ValueError) as error:
+        # ValueError: a feature_deps.yaml naming something that is not a work item.
+        parser.exit(1, f"{parser.prog}: error: {type(error).__name__}: {error}\n")
 
 
 def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:

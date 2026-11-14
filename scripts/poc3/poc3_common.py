@@ -10,13 +10,16 @@ The scripts read the trailer from the raw commit message, not through git's
 trailer parsing: a ``PoC3-Task`` line is any line of the message whose key, the
 text before the first colon with surrounding whitespace ignored, is ``PoC3-Task`` in
 any letter case. It names ``<item>`` only when it is in the message's last
-paragraph (a message that is only a subject has no trailers), reads exactly
+paragraph (a message that is only a subject has no trailers; blank lines
+before the subject are skipped, as git does), reads exactly
 ``PoC3-Task: <item>`` and is not folded onto the next line; that
 is the line tasks.md §0.2 looks for with ``git log --grep='^PoC3-Task: <item>$'``.
 Any other ``PoC3-Task`` line (``poc3-task: WT-41``, ``PoC3-Task:WT-42``, extra
 spaces, or an exact line in the subject or an earlier paragraph, which the §0.2
 grep would also find) is malformed: the ownership gate rejects the commit, and
-the line lands nothing. The branch was cut from the PoC-S2 branch, whose
+the line lands nothing. So is every ``PoC3-Task`` line of a commit that declares
+an encoding other than UTF-8 or whose message holds a NUL byte: ``git log
+--grep`` reads such a message re-encoded or not at all. The branch was cut from the PoC-S2 branch, whose
 history carries ``PoC2-Task`` trailers; those name PoC-S2 items and never count
 here.
 """
@@ -52,6 +55,7 @@ def parse_task(name: str) -> tuple[str, int | None]:
 
 
 # Environment variables that change how git reads pathspecs or how many context lines a diff has.
+# GIT_DIR and GIT_WORK_TREE are kept: a caller sets them to name the repository on purpose.
 _GIT_ENV_DROPPED = (
     "GIT_DIFF_OPTS",
     "GIT_LITERAL_PATHSPECS",
@@ -62,19 +66,32 @@ _GIT_ENV_DROPPED = (
 
 
 def git_env() -> dict[str, str]:
-    """The environment for every git command the scripts run, without ``_GIT_ENV_DROPPED``."""
-    return {key: value for key, value in os.environ.items() if key not in _GIT_ENV_DROPPED}
+    """The environment for every git command the scripts run.
+
+    It drops ``_GIT_ENV_DROPPED`` and turns off replace refs (``refs/replace/``),
+    so git reads the objects themselves.
+    """
+    env = {key: value for key, value in os.environ.items() if key not in _GIT_ENV_DROPPED}
+    env["GIT_NO_REPLACE_OBJECTS"] = "1"
+    return env
+
+
+def run_git(
+    repo: str | Path, *args: str, check: bool = True, stdin: bytes | None = None
+) -> subprocess.CompletedProcess[bytes]:
+    """Run git in ``repo`` with :func:`git_env`; stdout and stderr are captured as bytes."""
+    return subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=check,
+        capture_output=True,
+        input=stdin,
+        env=git_env(),
+    )
 
 
 def git(repo: str | Path, *args: str) -> str:
-    """Run git in ``repo`` and return its stdout."""
-    return subprocess.run(
-        ["git", "-C", str(repo), *args],
-        check=True,
-        capture_output=True,
-        text=True,
-        env=git_env(),
-    ).stdout
+    """Run git in ``repo`` and return its stdout, decoded as UTF-8."""
+    return run_git(repo, *args).stdout.decode()
 
 
 def git_error(error: subprocess.CalledProcessError) -> str:
@@ -98,6 +115,8 @@ def task_lines(message: str) -> tuple[list[str], list[str]]:
     lines = message.split("\n")
     while lines and not lines[-1].strip():
         lines.pop()
+    while lines and not lines[0].strip():
+        lines.pop(0)
     # The last paragraph; a message of one paragraph (the subject) has no trailers.
     start = max((i + 1 for i, line in enumerate(lines) if not line.strip()), default=len(lines))
     values, malformed = [], []
@@ -114,23 +133,32 @@ def task_lines(message: str) -> tuple[list[str], list[str]]:
     return values, malformed
 
 
-def _messages(repo: str | Path, shas: list[str]) -> dict[str, str]:
-    """The raw commit message of each of ``shas``."""
-    out = subprocess.run(
-        ["git", "-C", str(repo), "cat-file", "--batch"],
-        input="".join(f"{sha}\n" for sha in shas).encode(),
-        check=True,
-        capture_output=True,
-        env=git_env(),
-    ).stdout
+# What a malformed entry says about a line of a commit whose message git log re-encodes or skips.
+UNREADABLE = "(the commit declares an encoding other than UTF-8 or its message holds a NUL byte)"
+
+
+def _messages(repo: str | Path, shas: list[str]) -> dict[str, tuple[str, bool]]:
+    """The raw commit message of each of ``shas``, and whether git log reads it as it is.
+
+    git log re-encodes a message whose commit declares another encoding, and
+    its ``--grep`` stops at a NUL byte.
+    """
+    out = run_git(repo, "cat-file", "--batch", stdin="".join(f"{sha}\n" for sha in shas).encode())
     messages, pos = {}, 0
     for sha in shas:
-        header_end = out.index(b"\n", pos)
-        name, kind, size = out[pos:header_end].decode().split()
+        header_end = out.stdout.index(b"\n", pos)
+        name, kind, size = out.stdout[pos:header_end].decode().split()
         if kind != "commit":
             raise ValueError(f"{sha} is a {kind}, not a commit")
-        body = out[header_end + 1 : header_end + 1 + int(size)]
-        messages[sha] = body.decode("utf-8", errors="replace").partition("\n\n")[2]
+        body = out.stdout[header_end + 1 : header_end + 1 + int(size)]
+        headers, _, message = body.partition(b"\n\n")
+        encodings = [
+            line[len(b"encoding ") :].strip().lower()
+            for line in headers.split(b"\n")
+            if line.startswith(b"encoding ")
+        ]
+        readable = b"\0" not in message and all(e in (b"utf-8", b"utf8") for e in encodings)
+        messages[sha] = (message.decode("utf-8", errors="replace"), readable)
         pos = header_end + 1 + int(size) + 1
     return messages
 
@@ -140,7 +168,14 @@ def trailer_log(repo: str | Path, *log_args: str) -> list[TrailerRecord]:
     # --encoding: --grep matches the message in the output encoding (i18n.logOutputEncoding).
     shas = git(repo, "rev-list", "--encoding=UTF-8", *log_args).split()
     messages = _messages(repo, shas) if shas else {}
-    return [TrailerRecord(sha, *task_lines(messages[sha])) for sha in shas]
+    records = []
+    for sha in shas:
+        message, readable = messages[sha]
+        values, malformed = task_lines(message)
+        if not readable:
+            values, malformed = [], [f"{line} {UNREADABLE}" for line in values + malformed]
+        records.append(TrailerRecord(sha, values, malformed))
+    return records
 
 
 def landed_tasks(repo: str | Path, ref: str) -> set[str]:
@@ -150,7 +185,9 @@ def landed_tasks(repo: str | Path, ref: str) -> set[str]:
     PoC-S3 work item, are reported on stderr and not counted.
     """
     landed: set[str] = set()
-    # Only a superset of the commits with a PoC3-Task line is read; the options pin the match.
+    # Only a superset of the commits whose PoC3-Task lines can count is read (a message with a
+    # NUL byte can hide its lines from --grep, but such lines never count); the options pin the
+    # match.
     candidates = ("--fixed-strings", "--regexp-ignore-case", f"--grep={TRAILER}")
     for record in trailer_log(repo, *candidates, ref):
         for value in record.malformed:

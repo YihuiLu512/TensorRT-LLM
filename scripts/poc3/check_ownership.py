@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Check that a PoC-S3 work item changes only the paths it owns.
+r"""Check that a PoC-S3 work item changes only the paths it owns.
 
 Every path changed in ``<base>...<head>`` must match one of the work item's
 rules in :data:`OWNERSHIP`, every commit in ``<base>..<head>`` must carry
@@ -17,9 +17,17 @@ under a ``shared`` or ``exception`` rule of its own), ``shared`` (this item may
 change only the part the note names; the rest of the file belongs to its owner,
 which may be another item or code outside PoC-S3) or ``exception`` (a one-off
 allowance the note describes). An ``exception`` may also list the only lines
-it allows, as regular expressions: then the range may only replace lines of
-that file in place, each removed and each added line matching one of them in
-full, and nothing else about the file may change (its mode or final newline,
+it allows, as regular expressions (``\d`` and ``\w`` match ASCII characters
+only), in one of two forms:
+
+- ``lines``: the range may only replace lines of that file in place, each
+  removed and each added line matching one of them in full;
+- ``changes``: each hunk of the range's diff (``-U0``) must be one of the
+  listed changes, each listed change used at most once: the same number of
+  removed and of added lines, each matching its counterpart in the change in
+  full, in order. Where in the file a change is made is not checked.
+
+Either way nothing else about the file may change (its mode or final newline,
 for example); otherwise the path is out of bounds. Paths changed under
 ``shared`` and ``exception`` rules are listed for a reviewer to check by hand.
 Test files that already exist at the base are ``shared`` even for the item they
@@ -57,10 +65,14 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
-from poc3_common import TRAILER, git, git_env, git_error, parse_task, trailer_log
+from poc3_common import TRAILER, UNREADABLE, git, git_error, parse_task, run_git, trailer_log
 
 TRTLLM = "trtllm"
 DS = "ds"
+
+
+# A hunk an exception allows: the patterns of its removed lines, then of its added lines.
+Change = "tuple[tuple[str, ...], tuple[str, ...]]"
 
 
 @dataclass(frozen=True)
@@ -69,8 +81,11 @@ class Rule:
     kind: str = "own"
     note: str = ""
     repo: str = TRTLLM
-    # For an exception: regular expressions, one of which every changed line must match in full.
+    # For an exception: regular expressions, one of which every changed line must match in full,
+    # for lines replaced in place ...
     lines: tuple[str, ...] = ()
+    # ... or the only hunks allowed, as (removed lines, added lines), each used at most once.
+    changes: tuple[Change, ...] = ()
 
 
 def _own(*patterns: str, repo: str = TRTLLM) -> list[Rule]:
@@ -81,8 +96,21 @@ def _shared(pattern: str, note: str, repo: str = TRTLLM) -> Rule:
     return Rule(pattern, "shared", note, repo)
 
 
-def _exception(pattern: str, note: str, repo: str = TRTLLM, lines: tuple[str, ...] = ()) -> Rule:
-    return Rule(pattern, "exception", note, repo, lines)
+def _exception(
+    pattern: str,
+    note: str,
+    repo: str = TRTLLM,
+    lines: tuple[str, ...] = (),
+    changes: tuple[Change, ...] = (),
+) -> Rule:
+    if lines and changes:
+        raise ValueError(f"{pattern}: an exception lists lines or changes, not both")
+    return Rule(pattern, "exception", note, repo, lines, changes)
+
+
+def _change(removed: tuple[str, ...] = (), added: tuple[str, ...] = ()) -> Change:
+    """A hunk that removes exactly the lines ``removed`` and adds exactly the lines ``added``."""
+    return tuple(re.escape(line) for line in removed), tuple(re.escape(line) for line in added)
 
 
 POC = "tensorrt_llm/serve/openengine_poc"
@@ -227,7 +255,120 @@ OWNERSHIP: dict[str, list[Rule]] = {
         f"{OE_SERVER_TESTS}/test_disagg_control.py",
         f"{APPS}/_test_openengine_disagg_direct.py",
     )
-    + [_shared(f"{OE_SERVER_TESTS}/_test_direct_handoff.py", "NT-041 (§3.3)")],
+    + [
+        _shared(f"{OE_SERVER_TESTS}/_test_direct_handoff.py", "NT-041 (§3.3)"),
+        # CO-03 refuses disagg requests without a KV cache transceiver and CO-06 adds the
+        # version 4 capability keys and counters, which break these expectations.
+        _exception(
+            f"{OE_SERVER_TESTS}/test_control.py",
+            "only the version 4 capability keys and counters in the expectations,"
+            ' kv_transfer_backend="" for two GetModelInfo cases, and min_tokens following'
+            " one-model speculation",
+            changes=(
+                _change(
+                    added=(
+                        "from tensorrt_llm.grpc.openengine_conventions import (  # noqa: E402",
+                        "    COUNTER_GENERATE_ACCEPTED_BUCKETS,",
+                        "    VERSION_4_ENGINE_COUNTERS,",
+                        ")",
+                    )
+                ),
+                _change(
+                    added=(
+                        '    "trtllm.stopping.min_tokens": True,',
+                        "    # No KV cache transceiver is configured.",
+                        '    "trtllm.request.disagg_request_id": False,',
+                        '    "trtllm.disagg.generation_first": False,',
+                        '    "trtllm.disagg.orig_elapsed_s": False,',
+                    )
+                ),
+                _change(
+                    ("    info = await _servicer(_tokenizer=None).GetModelInfo(",),
+                    (
+                        '    info = await _servicer(kv_transfer_backend="", _tokenizer=None).GetModelInfo(',
+                    ),
+                ),
+                _change(
+                    ("    info = await _servicer(speculative_config=make_config()).GetModelInfo(",),
+                    (
+                        '    info = await _servicer(kv_transfer_backend="",'
+                        " speculative_config=make_config()).GetModelInfo(",
+                    ),
+                ),
+                _change(
+                    ("    assert counters.attributes() == {RECEIVED: 0, ACCEPTED: 0}",),
+                    (
+                        "    zero = {key: 0 for key in VERSION_4_ENGINE_COUNTERS}",
+                        "    assert counters.attributes() == {RECEIVED: 0, ACCEPTED: 0, **zero}",
+                    ),
+                ),
+                _change(
+                    ("    assert counters.attributes() == {RECEIVED: 2, ACCEPTED: 1}",),
+                    (
+                        '    aggregated = COUNTER_GENERATE_ACCEPTED_BUCKETS["aggregated"]',
+                        "    assert counters.attributes() =="
+                        " {RECEIVED: 2, ACCEPTED: 1, **zero, aggregated: 1}",
+                    ),
+                ),
+                _change(
+                    added=(
+                        "    # The one-model speculative sampler rejects min_tokens as well.",
+                        '    assert info.extra["trtllm.stopping.min_tokens"] == supported',
+                    )
+                ),
+                _change(added=('    other_keys.discard("trtllm.stopping.min_tokens")',)),
+            ),
+        ),
+        _exception(
+            f"{OE_SERVER_TESTS}/test_servicer.py",
+            'only kv_transfer_backend="NIXL" for the two servicers that receive disagg requests',
+            changes=(
+                _change(
+                    (
+                        '        llm, model="test-model", subagent_affinity_auth_key="shared-secret"',
+                    ),
+                    (
+                        "        llm,",
+                        '        model="test-model",',
+                        '        subagent_affinity_auth_key="shared-secret",',
+                        '        kv_transfer_backend="NIXL",',
+                    ),
+                ),
+                _change(
+                    (
+                        "    servicer = OpenEngineInferenceServicer(_FakeLlm(results),"
+                        ' model="test-model", metrics=metrics)',
+                    ),
+                    (
+                        "    servicer = OpenEngineInferenceServicer(",
+                        '        _FakeLlm(results), model="test-model", metrics=metrics,'
+                        ' kv_transfer_backend="NIXL"',
+                        "    )",
+                    ),
+                ),
+            ),
+        ),
+        _exception(
+            f"{OE_SERVER_TESTS}/test_multimodal.py",
+            "only a kv_transfer_backend for the servicers of"
+            " test_audio_text_prompt_survives_preparation_without_placeholders",
+            changes=(
+                _change(
+                    (
+                        '    inference = OpenEngineInferenceServicer(llm, "audio-model")',
+                        '    control = OpenEngineControlServicer(llm, "audio-model", inference)',
+                    ),
+                    (
+                        '    backend = "NIXL" if context_only else ""',
+                        '    inference = OpenEngineInferenceServicer(llm, "audio-model",'
+                        " kv_transfer_backend=backend)",
+                        '    control = OpenEngineControlServicer(llm, "audio-model", inference,'
+                        " kv_transfer_backend=backend)",
+                    ),
+                ),
+            ),
+        ),
+    ],
     "WT-41": _own(
         f"{DS_OE}/**",
         "tests/openengine/**",
@@ -253,6 +394,32 @@ OWNERSHIP: dict[str, list[Rule]] = {
             DS,
         ),
         _shared("python/dsv4_serve/engine_api.py", "MockEngine's disagg behaviour", DS),
+        _shared(
+            "python/dsv4_serve/cli.py",
+            "the OpenEngine entry branch: disagg roles and the affinity key",
+            DS,
+        ),
+        _shared("README.md", "the OpenEngine section", DS),
+        # The user's ruling U14 let WT-41 serve aggregated requests only and pin that down in
+        # its tests; WT-42 opens the disagg roles, so it flips these assertions (DECISIONS N9).
+        _exception(
+            "tests/openengine/test_cli_entry.py",
+            "U14 flip only: test_openengine_refuses_a_disagg_role turned into the roles' acceptance",
+            DS,
+        ),
+        _exception(
+            "tests/openengine/test_openengine_server.py",
+            "U14 flips only: conversation_id and disagg_request_id reported true in"
+            " test_ctl_4_model_info_explicit; disagg_request_id INVALID_ARGUMENT instead of"
+            " UNIMPLEMENTED in test_extra_conventions",
+            DS,
+        ),
+        _exception(
+            "tests/openengine/test_validation.py",
+            "U14 flip only: disagg_request_id INVALID_ARGUMENT instead of UNIMPLEMENTED in"
+            " test_disagg_request_keys_refused",
+            DS,
+        ),
     ],
     "WT-43": _own("dev/openengine_stress*", repo=DS)
     + [
@@ -521,57 +688,84 @@ _PLAIN_HEADER = ("diff --git ", "index ", "--- ", "+++ ")
 _HUNK = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
+def _matches_change(change: tuple[list, list], removed: list[str], added: list[str]) -> bool:
+    return (
+        len(change[0]) == len(removed)
+        and len(change[1]) == len(added)
+        and all(p.fullmatch(line) for p, line in zip(change[0], removed))
+        and all(p.fullmatch(line) for p, line in zip(change[1], added))
+    )
+
+
 def disallowed_lines(
     rule: Rule, repo_dir: str, base_ref: str, head_ref: str, path: str
 ) -> list[str]:
     """What ``base_ref...head_ref`` changes in ``path`` beyond the lines ``rule`` allows.
 
-    Empty when every hunk replaces lines in place (as many removed as added, at
-    the same line number), every removed and added line matches one of
-    ``rule.lines``, and the diff changes nothing but lines.
+    Empty when the diff changes nothing but lines and, with ``rule.lines``,
+    every hunk replaces lines in place (as many removed as added, at the same
+    line number) and every removed and added line matches one of
+    ``rule.lines``; with ``rule.changes``, every hunk is one of the changes,
+    none used twice.
     """
-    # Bytes, not text mode: universal newlines would hide a CRLF line ending.
-    diff = subprocess.run(
-        [
-            "git",
-            "-C",
-            repo_dir,
-            "diff",
-            "-U0",
-            "--inter-hunk-context=0",
-            "--no-color",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--no-renames",
-            "--no-relative",
-            "--ignore-submodules=none",
-            f"{base_ref}...{head_ref}",
-            "--",
-            f":(top,literal){path}",
-        ],
-        check=True,
-        capture_output=True,
-        env=git_env(),
+    # Bytes, not text mode: universal newlines would hide a CRLF line ending. --text: a file git
+    # takes for binary (core.bigFileThreshold, a -diff attribute) is still diffed by line.
+    diff = run_git(
+        repo_dir,
+        "diff",
+        "-U0",
+        "--inter-hunk-context=0",
+        "--text",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--no-renames",
+        "--no-relative",
+        "--ignore-submodules=none",
+        f"{base_ref}...{head_ref}",
+        "--",
+        f":(top,literal){path}",
     ).stdout.decode("utf-8", errors="replace")
-    patterns = [re.compile(line) for line in rule.lines]
+    patterns = [re.compile(line, re.ASCII) for line in rule.lines]
+    unused = [
+        ([re.compile(p, re.ASCII) for p in removed], [re.compile(p, re.ASCII) for p in added])
+        for removed, added in rule.changes
+    ]
     bad = []
-    in_hunk = False
+    # The hunk being read: its header, removed lines and added lines.
+    hunk: tuple[str, list[str], list[str]] | None = None
+
+    def end_hunk() -> None:
+        if hunk is None or rule.lines:
+            return
+        header, removed, added = hunk
+        index = next((i for i, c in enumerate(unused) if _matches_change(c, removed, added)), None)
+        if index is None:
+            bad.append(f"{header}: not one of the allowed changes")
+        else:
+            del unused[index]
+
     for line in diff.split("\n")[:-1]:
         if line.startswith("@@"):
-            in_hunk = True
-            hunk = _HUNK.match(line)
+            end_hunk()
+            hunk = (line, [], [])
+            match = _HUNK.match(line)
             # (old start, old count, new start, new count); a missing count is 1.
-            span = [int(n) if n is not None else 1 for n in hunk.groups()] if hunk else None
-            if span is None or span[:2] != span[2:]:
+            span = [int(n) if n is not None else 1 for n in match.groups()] if match else None
+            if span is None:
+                bad.append(f"{line}: not a hunk header")
+            elif rule.lines and span[:2] != span[2:]:
                 bad.append(f"{line}: not a replacement in place")
-        elif not in_hunk:
+        elif hunk is None:
             if not line.startswith(_PLAIN_HEADER):
                 bad.append(line)
         elif line[:1] in ("+", "-"):
-            if not any(p.fullmatch(line[1:]) for p in patterns):
+            hunk[1 if line[0] == "-" else 2].append(line[1:])
+            if rule.lines and not any(p.fullmatch(line[1:]) for p in patterns):
                 bad.append(line)
         else:
             bad.append(line)  # "\ No newline at end of file", or anything unexpected
+    end_hunk()
     return bad
 
 
@@ -606,7 +800,9 @@ def check(task: str, revision_range: str, repo_dir: str = ".", repo: str | None 
             others = ", ".join(name for name, _ in owners(path, repo)) or "nobody"
             print(f"OUT OF BOUNDS  {path}  (owned by {others})")
             status = 1
-        elif rule.lines and (bad := disallowed_lines(rule, repo_dir, base_ref, head_ref, path)):
+        elif (rule.lines or rule.changes) and (
+            bad := disallowed_lines(rule, repo_dir, base_ref, head_ref, path)
+        ):
             print(
                 f"OUT OF BOUNDS  {path}  (the exception allows {rule.note}; also changed: {bad[0]!r})"
             )
@@ -621,16 +817,17 @@ def check(task: str, revision_range: str, repo_dir: str = ".", repo: str | None 
         print(f"NO COMMITS     in {revision_range}")
         status = 1
     for sha, values, malformed in commits:
-        if malformed:
-            print(
-                f"BAD TRAILER    {sha[:12]}  {TRAILER} {malformed} is not written as the exact line"
-                f" '{TRAILER}: <work item>'"
-            )
+        for value in malformed:
+            if value.endswith(UNREADABLE):
+                problem = UNREADABLE
+                value = value[: -len(UNREADABLE)].rstrip()
+            else:
+                problem = f"is not written as the exact line '{TRAILER}: <work item>'"
+            print(f"BAD TRAILER    {sha[:12]}  {TRAILER} line {value!r} {problem}")
             status = 1
-        elif values != [task]:
-            print(
-                f"BAD TRAILER    {sha[:12]}  has {values or 'no trailer'}, expected {TRAILER}: {task}"
-            )
+        if not malformed and values != [task]:
+            found = ", ".join(values) or "no trailer"
+            print(f"BAD TRAILER    {sha[:12]}  has {found}, expected {TRAILER}: {task}")
             status = 1
     print(f"{'PASS' if status == 0 else 'FAIL'}: {task} {revision_range} ({repo})")
     return status
