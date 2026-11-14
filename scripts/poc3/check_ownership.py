@@ -17,7 +17,7 @@ under a ``shared`` or ``exception`` rule of its own), ``shared`` (this item may
 change only the part the note names; the rest of the file belongs to its owner,
 which may be another item or code outside PoC-S3) or ``exception`` (a one-off
 allowance the note describes). An ``exception`` may also limit what it allows,
-in one of three forms (patterns are regular expressions in which ``\d`` and
+in one of two forms (patterns are regular expressions in which ``\d`` and
 ``\w`` match ASCII characters only):
 
 - ``lines``: the range may only replace lines of that file in place, each
@@ -25,17 +25,17 @@ in one of three forms (patterns are regular expressions in which ``\d`` and
 - ``changes``: each hunk of the range's diff (``-U0``) must be one of the
   listed changes, each listed change used at most once: in the top-level
   statement the change names, with the same number of removed and of added
-  lines, each matching its counterpart in the change in full, in order;
-- ``within``: each hunk must lie in one of the named top-level statements,
-  whatever it changes.
+  lines, each matching its counterpart in the change in full, in order.
 
-A hunk lies in a top-level statement of the file as it is at the merge base:
-a ``def`` or ``class`` (from its first decorator), an assignment to a name, or
-any import (named ``import``), up to the line before the next top-level
-statement. A hunk that removes lines lies where those lines are; one that only
-adds lines lies where the lines before and after it are. With any of the three forms
-nothing else about the file may change (its mode or final newline, for
-example); otherwise the path is out of bounds. Paths changed under
+A top-level statement is a ``def`` or ``class`` (from its first decorator), an
+assignment to a name, or any import (named ``import``), up to the line before
+the next top-level statement. A hunk lies in a statement when its removed lines
+lie in it in the file at the merge base, and its added lines lie in it in the
+file at the head; a hunk that only adds lines must also follow or precede a
+line of that statement at the merge base, and the file must be Python the
+interpreter running the check parses at both. With either form nothing else
+about the file may change (its mode or final newline, for example); otherwise
+the path is out of bounds. Paths changed under
 ``shared`` and ``exception`` rules are listed for a reviewer to check by hand.
 Test files that already exist at the base are ``shared`` even for the item they
 belong to: tasks.md §0.3 lets existing assertions change only for the flips it
@@ -72,7 +72,7 @@ import sys
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import NamedTuple, Optional
+from typing import NamedTuple
 
 from poc3_common import TRAILER, UNREADABLE, git, git_error, parse_task, run_git, trailer_log
 
@@ -85,7 +85,7 @@ class Change(NamedTuple):
 
     removed: tuple[str, ...]  # patterns of its removed lines, in order
     added: tuple[str, ...]  # patterns of its added lines, in order
-    within: Optional[str]  # the top-level statement it lies in (see _regions), or anywhere
+    within: str  # the top-level statement it lies in (see _hunk_regions)
 
 
 @dataclass(frozen=True)
@@ -97,10 +97,8 @@ class Rule:
     # For an exception: regular expressions, one of which every changed line must match in full,
     # for lines replaced in place ...
     lines: tuple[str, ...] = ()
-    # ... or the only hunks allowed, each used at most once ...
+    # ... or the only hunks allowed, each used at most once.
     changes: tuple[Change, ...] = ()
-    # ... or the top-level statements every hunk must lie in, whatever it changes.
-    within: tuple[str, ...] = ()
 
 
 def _own(*patterns: str, repo: str = TRTLLM) -> list[Rule]:
@@ -117,11 +115,10 @@ def _exception(
     repo: str = TRTLLM,
     lines: tuple[str, ...] = (),
     changes: tuple[Change, ...] = (),
-    within: tuple[str, ...] = (),
 ) -> Rule:
-    if sum(map(bool, (lines, changes, within))) > 1:
-        raise ValueError(f"{pattern}: an exception lists lines, changes or within, not two")
-    return Rule(pattern, "exception", note, repo, lines, changes, within)
+    if lines and changes:
+        raise ValueError(f"{pattern}: an exception lists lines or changes, not both")
+    return Rule(pattern, "exception", note, repo, lines, changes)
 
 
 def _change(within: str, removed: tuple[str, ...] = (), added: tuple[str, ...] = ()) -> Change:
@@ -761,34 +758,40 @@ def _regions(source: str) -> list[str | None]:
     return regions
 
 
-def _hunk_regions(regions: list[str | None], span: list[int]) -> set[str]:
-    """The named statements a hunk with ``span`` (old start, old count, ...) lies in.
+def _hunk_regions(base: list[str | None], head: list[str | None], span: list[int]) -> set[str]:
+    """The named statement a hunk lies in (a set of at most one), given the regions of the file.
 
-    One that removes lines lies in the statement of all of them, if they share
-    one; one that only adds lines lies in the statements of the lines before
-    and after it.
+    ``span`` is the hunk's (old start, old count, new start, new count). Its
+    removed lines must all lie in one statement of ``base``, its added lines in
+    one of ``head``, the same one; a hunk that only adds lines must also follow
+    or precede a line of that statement in ``base``.
     """
-    start, count = span[0], span[1]
-    if count:
-        names = set(regions[start - 1 : start - 1 + count]) if start >= 1 else {None}
-        names = names if len(names) == 1 and start - 1 + count <= len(regions) else set()
+
+    def one(regions: list[str | None], start: int, count: int) -> set[str | None]:
+        found = set(regions[start - 1 : start - 1 + count])
+        return found if len(found) == 1 and start - 1 + count <= len(regions) else set()
+
+    old_start, old_count, new_start, new_count = span
+    if old_count:
+        names = one(base, old_start, old_count)
     else:
-        names = {regions[i] for i in (start - 1, start) if 0 <= i < len(regions)}
+        names = {base[i] for i in (old_start - 1, old_start) if 0 <= i < len(base)}
+    if new_count:
+        names &= one(head, new_start, new_count)
     return {name for name in names if name is not None}
 
 
-def _base_regions(repo_dir: str, base_ref: str, head_ref: str, path: str) -> list[str | None]:
-    """:func:`_regions` of ``path`` at the merge base; empty when it cannot be read or parsed."""
-    merge_base = run_git(repo_dir, "merge-base", base_ref, head_ref).stdout.decode().strip()
-    found = run_git(repo_dir, "show", f"{merge_base}:{path}", check=False)
+def _regions_at(repo_dir: str, rev: str, path: str) -> list[str | None] | None:
+    """:func:`_regions` of ``path`` at ``rev``; None when it cannot be read or parsed."""
+    found = run_git(repo_dir, "show", f"{rev}:{path}", check=False)
     if found.returncode != 0:
-        return []
+        return None
     try:
         return _regions(found.stdout.decode())
     except (SyntaxError, ValueError, RuntimeError, MemoryError):
         # ValueError: not UTF-8, a NUL byte or a lone carriage return; RuntimeError
         # (RecursionError) and MemoryError: nested too deep to parse.
-        return []
+        return None
 
 
 def disallowed_lines(
@@ -800,8 +803,7 @@ def disallowed_lines(
     every hunk replaces lines in place (as many removed as added, at the same
     line number) and every removed and added line matches one of
     ``rule.lines``; with ``rule.changes``, every hunk is one of the changes,
-    none used twice; with ``rule.within``, every hunk lies in one of the named
-    statements.
+    none used twice.
     """
     # Bytes, not text mode: universal newlines would hide a CRLF line ending. --text: a file git
     # takes for binary (core.bigFileThreshold, a -diff attribute) is still diffed by line.
@@ -810,6 +812,8 @@ def disallowed_lines(
         "diff",
         "-U0",
         "--inter-hunk-context=0",
+        "--diff-algorithm=myers",
+        "--indent-heuristic",
         "--text",
         "--no-color",
         "--no-ext-diff",
@@ -830,7 +834,14 @@ def disallowed_lines(
         )
         for change in rule.changes
     ]
-    regions = _base_regions(repo_dir, base_ref, head_ref, path) if not rule.lines else []
+    base_regions: list[str | None] | None = []
+    head_regions: list[str | None] | None = []
+    if rule.changes:
+        merge_base = run_git(repo_dir, "merge-base", base_ref, head_ref).stdout.decode().strip()
+        base_regions = _regions_at(repo_dir, merge_base, path)
+        head_regions = _regions_at(repo_dir, head_ref, path)
+        if base_regions is None or head_regions is None:
+            return [f"{path} is not Python this interpreter parses, at the merge base or the head"]
     bad = []
     # The hunk being read: its header, the statements it lies in, its removed and added lines.
     hunk: tuple[str, set[str], list[str], list[str]] | None = None
@@ -861,14 +872,12 @@ def disallowed_lines(
             match = _HUNK.match(line)
             # (old start, old count, new start, new count); a missing count is 1.
             span = [int(n) if n is not None else 1 for n in match.groups()] if match else None
-            where = _hunk_regions(regions, span) if span else set()
+            where = _hunk_regions(base_regions, head_regions, span) if span else set()
             hunk = (line, where, [], [])
             if span is None:
                 bad.append(f"{line}: not a hunk header")
             elif rule.lines and span[:2] != span[2:]:
                 bad.append(f"{line}: not a replacement in place")
-            elif rule.within and not where & set(rule.within):
-                bad.append(f"{line}: not in {', '.join(rule.within)}")
         elif hunk is None:
             if not line.startswith(_PLAIN_HEADER):
                 bad.append(line)
@@ -913,7 +922,7 @@ def check(task: str, revision_range: str, repo_dir: str = ".", repo: str | None 
             others = ", ".join(name for name, _ in owners(path, repo)) or "nobody"
             print(f"OUT OF BOUNDS  {path}  (owned by {others})")
             status = 1
-        elif (rule.lines or rule.changes or rule.within) and (
+        elif (rule.lines or rule.changes) and (
             bad := disallowed_lines(rule, repo_dir, base_ref, head_ref, path)
         ):
             print(

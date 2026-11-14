@@ -158,7 +158,7 @@ def _load_rows(path: Path) -> tuple[dict[str, list[str]], list[Row]]:
     seen = set()
     for raw in data["rows"]:
         if raw["id"] in seen:
-            raise ValueError(f"duplicate row id {raw['id']!r} in {path}")
+            raise ValueError(f"duplicate row id {raw['id']!r}")
         seen.add(raw["id"])
         if raw.get("chain", "case-04") not in CHAINS:
             raise ValueError(f"row {raw['id']!r}: unknown chain {raw['chain']!r}")

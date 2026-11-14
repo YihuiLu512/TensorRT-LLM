@@ -1041,7 +1041,7 @@ def _wt40_repo(tmp_path, path, edit):
 @pytest.mark.parametrize("path", WT40_CHANGES)
 def test_the_wt40_exceptions_list_exactly_its_changes(path):
     rule = check_ownership.match_rule("WT-40", path)
-    assert rule.kind == "exception" and not rule.lines and not rule.within
+    assert rule.kind == "exception" and not rule.lines
     assert list(rule.changes) == [
         check_ownership.Change(tuple(map(re.escape, old)), tuple(map(re.escape, new)), within)
         for within, old, new, _ in WT40_CHANGES[path]
@@ -1100,14 +1100,36 @@ def test_wt40_may_not_make_a_change_in_another_statement(tmp_path, capsys, path)
     within, removed, added, after = _largest(path, insertion=True)
 
     def edit(lines, regions):
-        # The first line of the last test function that is not the change's own.
+        # After the last line of the last test function that is not the change's own.
         other = max(
             i
             for i, name in enumerate(regions)
             if name and name.startswith("test_") and name != within
         )
-        other = regions.index(regions[other])
         return lines[: other + 1] + added + lines[other + 1 :]
+
+    repo, base = _wt40_repo(tmp_path, path, edit)
+    assert check_ownership.check("WT-40", f"{base}..HEAD", str(repo)) == 1
+    assert f"OUT OF BOUNDS  {path}" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("where", ["before-its-decorator", "in-another-test"])
+def test_wt40_may_not_move_the_statements_it_adds(tmp_path, capsys, where):
+    path = "tests/unittest/grpc/openengine/test_control.py"
+    [(within, _, added, _)] = [
+        change for change in WT40_CHANGES[path] if any('min_tokens"] ==' in a for a in change[2])
+    ]
+
+    def edit(lines, regions):
+        if where == "before-its-decorator":  # the end of the statement before it, to Python
+            at = regions.index(within)
+        else:  # the end of the last other test
+            at = 1 + max(
+                i for i, n in enumerate(regions) if n and n.startswith("test_") and n != within
+            )
+        new = lines[:at] + added + lines[at:]
+        ast.parse("\n".join(new))
+        return new
 
     repo, base = _wt40_repo(tmp_path, path, edit)
     assert check_ownership.check("WT-40", f"{base}..HEAD", str(repo)) == 1
@@ -1157,43 +1179,53 @@ def test_each_listed_change_is_made_once_where_it_names(tmp_path, new, bad):
         assert found and any(bad in line for line in found)
 
 
+INSERTION = check_ownership._change("f", (), ("    b = 3",))
+DECORATOR = check_ownership._change("f", (), ("@decorated",))
+INSERTION_IN_G = check_ownership._change("g", (), ("    b = 3",))
+
+
 @pytest.mark.parametrize(
-    "new, allowed",
+    "change, new, allowed",
     [
-        (FUNCTIONS.replace("    return a\n", "    return a + 1\n", 1), True),
+        (INSERTION, FUNCTIONS.replace("    a = 1\n", "    a = 1\n    b = 3\n", 1), True),
         (
-            FUNCTIONS.replace(
-                "    return a\n\n\ndef g", "    return a\n\n\ndef h():\n    pass\n\n\ndef g"
-            ),
+            INSERTION,
+            FUNCTIONS.replace("    return a\n\n\n", "    return a\n    b = 3\n\n\n", 1),
             True,
         ),
-        (FUNCTIONS.replace("def f():", "@decorated\ndef f():"), True),
-        (FUNCTIONS[::-1].replace("a nruter", "1 + a nruter", 1)[::-1], False),
-        (FUNCTIONS.replace("import os", "import sys"), False),
-        ("# header\n" + FUNCTIONS, False),
-        (FUNCTIONS.replace("    return a\n\n\ndef g():", "    return b\n\n\ndef h():"), False),
+        (INSERTION, FUNCTIONS.replace("\n\ndef g", "\n\n    b = 3\ndef g"), True),
+        (INSERTION, FUNCTIONS[::-1].replace("a nruter", "a nruter\n3 = b    ", 1)[::-1], False),
+        (DECORATOR, FUNCTIONS.replace("def f():", "@decorated\ndef f():"), True),
+        (DECORATOR, FUNCTIONS.replace("def g():", "@decorated\ndef g():"), False),
+        (INSERTION_IN_G, FUNCTIONS.replace("\n\ndef g", "\n\n    b = 3\ndef g"), False),
     ],
     ids=[
         "inside",
-        "after-it",
-        "its-decorator",
+        "at-its-end",
+        "indented-before-the-next-def",
         "in-another-function",
-        "an-import",
-        "before-everything",
-        "in-both",
+        "its-decorator",
+        "the-next-def's-decorator",
+        "indented-before-its-def",
     ],
 )
-def test_within_limits_the_statements_a_change_may_touch(tmp_path, new, allowed):
-    found = _limited_diff(tmp_path, new, within=("f",))
+def test_an_added_line_lies_where_python_reads_it(tmp_path, change, new, allowed):
+    found = _limited_diff(tmp_path, new, changes=(change,))
     assert (found == []) == allowed, found
 
 
-def test_within_needs_a_base_python_can_parse(tmp_path):
-    rule = check_ownership._exception("x.py", "test", within=("f",))
+@pytest.mark.parametrize(
+    "base, head",
+    [("def f(:\n    pass\n", "def f(:\n    pass\n    pass\n"), (FUNCTIONS, "def f(:\n")],
+    ids=["at-the-merge-base", "at-the-head"],
+)
+def test_a_change_needs_python_the_interpreter_parses(tmp_path, base, head):
+    rule = check_ownership._exception("x.py", "test", changes=(A_TO_2,))
     repo = _repo(tmp_path)
-    base = _commit(repo, {"x.py": "def f(:\n    pass\n"}, "base")
-    _commit(repo, {"x.py": "def f(:\n    pass\n    pass\n"}, "change")
-    assert check_ownership.disallowed_lines(rule, str(repo), base, "HEAD", "x.py")
+    first = _commit(repo, {"x.py": base}, "base")
+    _commit(repo, {"x.py": head}, "change")
+    found = check_ownership.disallowed_lines(rule, str(repo), first, "HEAD", "x.py")
+    assert found == ["x.py is not Python this interpreter parses, at the merge base or the head"]
 
 
 @pytest.mark.parametrize(
@@ -1261,18 +1293,9 @@ def test_wt42_may_change_the_tests_of_wt41_it_flips_for_review(tmp_path, capsys,
     assert "OUT OF BOUNDS  tests/openengine/test_unlisted.py" in capsys.readouterr().out
 
 
-@pytest.mark.parametrize(
-    "limits",
-    [
-        {"lines": ("a",), "changes": (A_TO_2,)},
-        {"lines": ("a",), "within": ("f",)},
-        {"changes": (A_TO_2,), "within": ("f",)},
-    ],
-    ids=["lines-changes", "lines-within", "changes-within"],
-)
-def test_an_exception_limits_in_one_form_only(limits):
+def test_an_exception_limits_in_one_form_only():
     with pytest.raises(ValueError):
-        check_ownership._exception("x.py", "test", **limits)
+        check_ownership._exception("x.py", "test", lines=("a",), changes=(A_TO_2,))
 
 
 def test_a_missing_git_fails_with_a_message(tmp_path, capsys, monkeypatch):
@@ -2221,6 +2244,13 @@ def test_an_owner_only_executable_bit_is_a_mode_change(invariant_repo):
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="root reads any file")
+def test_the_repository_top_level_follows_the_working_directory(tmp_path, monkeypatch):
+    first, second = _repo(tmp_path, "first"), _repo(tmp_path, "second")
+    for repo in (first, second):
+        monkeypatch.chdir(repo)
+        assert check_invariants._toplevel(".") == repo.resolve()
+
+
 def test_an_unreadable_whole_file_fails_its_own_check(invariant_repo):
     repo, base = invariant_repo
     path = "tensorrt_llm/serve/router.py"
