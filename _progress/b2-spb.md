@@ -153,3 +153,50 @@
 - 2026-11-15 02:03:29 开始 R2 修复（slug capkit-b2spb-J17871，head cb583882cc）：C4/C5/C6（作业输入场景校验）、C1（S-PB S-FE 设置整段边界）、C2（schedule_sha256）、C10/C9（措辞）；先写失败测试再改
 - 2026-11-15 02:09:28 R2 修复已写完（新测试修前 17 个失败、修后全过）；开始变异检查（约 8 个，每个 10–30 s）
 - 2026-11-15 02:13:38 变异 m1–m10 全部被杀（m5、m9 首轮存活，已补断言/兜底测试后被杀）；文档改完（INTERFACES B2B-2/8/9/14/15、§5.4.1 指引、capstubs/e0s/jobs README）；开始全量验证 r2v（约 15–20 分钟）
+- 2026-11-15 02:28:21 全量验证 r2v（HEAD f7225c2）全绿；开跑三个作业路径 e2e（覆盖清单 P0-f7225c26，J9200031–33，各约 2–3 分钟）
+
+## R2 修复（slug capkit-b2spb-J17871，审阅 head cb583882cc；修复提交 f7225c26）
+
+改动（triage.md 第 4 节第 1–7 项；第 8 项是主会话的 RUNBOOK 改动，不在本树）：
+- C4/C5（RS32）：新增 `capcommon.jobinputs.declares` 与 `check_scenario`（有 `job_inputs` 键 ⇒ 段过 `validate_section`、`params_required` 是名字列表、`tier_table`/`schedule`/`prompts` 是 `<W>` 内相对路径，与 `validate_scenario` 同一口径）；`capjobs.jobinputs.generate` 与 `capjobs.submit.check_plan_argv` 都调它（提交端不过 ⇒ SubmitError，退出 3）；`launches.job_inputs` 与 `jobinputs.main` 的 except 加 `KeyError, TypeError`。
+- C6（RS24）：`launches.job_inputs` 对没有 `job_inputs` 键的场景直接返回 `({}, [], None)`，不解析 `--param`；CLI 改按「有没有键」判断。
+- C1（RS31）：`prebaked_server.frontend_control` 把导入之后的整段 S-FE 设置（入口、profile、FakeEngine、_Control/_Health、两个注册函数）放进一个边界；SystemExit ⇒「rejected by」，其余异常 ⇒ ConfigError（退出 3）；`run()` 只注册。
+- C2（RS15）：给了 `--schedule` 时就绪自报与每档 summary 的 `schedule_sha256` = 时间表文件 sha（`sha256_file`），否则 null。
+- C10/C9（RS30）：删 `import_pb2` 的冗余 pop 与两处 docstring 的「leaves no module behind」；文档：INTERFACES B2B-2/8④/9/14③/15（新增 schedule_sha256 一条，标题改为 R1、R2）、§5.4.1 指引注；capstubs、configs/e0s、jobs README；capjobs.jobinputs/launches 头注释。
+- 测试（修前失败、修后通过）：`tests/jobs/test_job_inputs.py` 新增 5×2 场景校验（generate 直接、经 `launches.main` ⇒ 该启动 NOT_RUN + job_input_failed、下一个启动 VALID、launches.json 照写、退出 3）、无 job_inputs 不解析 --param、KeyError/TypeError 兜底（run_all 与 CLI）；`tests/jobs/test_submit.py` 提交端拒绝种类拼错/空段/`prompts: 5`；`tests/capstubs/test_prebaked_server.py` 三种 S-FE 设置失败 ⇒ 退出 3，有/无 `--schedule` 的 `schedule_sha256`。修前：新测试 17 个失败（logs/r2/pre-jobs.log、pre-spb.log）。
+- 变异（`_local/b2-spb/mut-r2/run.sh`，logs/r2/mut-*.log）：m1 边界收窄、m2/m3 summary/就绪 sha 置 null、m4 关相对路径检查、m5 关 params_required 检查、m6 去掉无键早返回、m7 提交端不检查、m8 改回 kinds_of 判断、m9 launches except 去掉 KeyError/TypeError、m10 CLI except 同上——全部被杀（m5、m9 首轮存活：m5 因段里的 `{param:}` 占位符照样报错，改为按消息断言；m9 是兜底分支，补了 monkeypatch 测试；两者复跑均被杀）。
+
+### 全量验证 r2v（HEAD f7225c26；`fullv2.sh r2v 25`，短 TMPDIR）
+
+| 项 | 结果 |
+|---|---|
+| tests/capcommon | 193 passed |
+| tests/capload | 33 passed |
+| tests/capprobe | 171 passed |
+| tests/capstubs | 93 passed |
+| tests/envgate | 71 passed |
+| tests/grpc | 39 passed |
+| tests/jobs | 230 passed |
+| tests/judge | 98 passed |
+| tests/launch | 227 passed |
+| tests/nullsse | 4 passed |
+| tests/sidecar | 5 passed |
+| selftest --package capjudge --expect-samples 25 | EXIT=0，ran 25，errors [] |
+| patchcheck --rev HEAD（探针树只读） | PASS，7 位点 / 8 处，0 violations |
+| py_compile | 204 / 0 |
+| bash -n | 3 / 0 |
+
+日志：`_local/b2-spb/logs/r2v/`。
+
+### 作业路径 e2e（覆盖清单 e2e/ovl/P0-f7225c26，37 个产品文件 sha 与 9dc8c002 版相同）
+
+| 场景 | 作业 | submit | launches | judge | RED | INPUT_INVALID | C10 |
+|---|---|---|---|---|---|---|---|
+| e2e-spb-null（capgrpc.load --request-format openengine 读者打 S-PB，pb2 = oe_double） | J9200031 | rc 0 | L0 VALID | rc 11（NOT_RUN：C1/C6/C7/C13） | 0 | 0 | PASS 5/5 |
+| e0a-nullsse | J9200032 | rc 0 | L0 VALID | rc 11 | 0 | 0 | PASS 8/8 |
+| e0b-s1-single | J9200033 | rc 0 | L0 VALID | rc 11 | 0 | 0 | PASS 5/5 |
+
+- 三个场景的判定表（档、检查、结论）与 R1 那一轮（J920002[123]）逐行相同。
+- e2e-spb-null 里 S-PB 每档 summary 的 `schedule_sha256` = launch.json 的时间表 sha（2089fe94…），`tier_attribution` = schedule。
+- fakebin.log 新增 9 行，都是真 capenv.gate 的 scontrol/squeue（替身 exit 97）；没碰集群。
+- 2026-11-15 02:31:09 R2 修复验证全部完成，记录进度并提交
