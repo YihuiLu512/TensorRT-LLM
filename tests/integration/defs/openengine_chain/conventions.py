@@ -7,10 +7,14 @@ ENV_CHAIN = "TRTLLM_TEST_OPENENGINE_CHAIN"
 CHAIN_NONE = "none"
 CHAIN_TRTLLM = "trtllm"
 CHAIN_GLM = "glm"
-CHAINS = (CHAIN_TRTLLM, CHAIN_GLM)
+CHAIN_DS = "ds"
+CHAINS = (CHAIN_TRTLLM, CHAIN_GLM, CHAIN_DS)
 
 # Command prefix of the glm engine; required when the chain is "glm".
 ENV_GLM_SERVE_CMD = "TRTLLM_TEST_GLM_SERVE_CMD"
+
+# Command prefix of the ds engine (dsv4-serve); required when the chain is "ds".
+ENV_DS_SERVE_CMD = "TRTLLM_TEST_DS_SERVE_CMD"
 
 # Where the harness writes the inner pytest junit files and per-process logs.
 ENV_RESULTS_DIR = "TRTLLM_OPENENGINE_RESULTS_DIR"

@@ -872,6 +872,11 @@ def _results_dir() -> str:
 def _engine_prefix(chain: str, command: ServeCommand) -> list[str]:
     if chain == cv.CHAIN_TRTLLM:
         return list(command.prefix)
+    if chain == cv.CHAIN_DS:
+        ds = os.environ.get(cv.ENV_DS_SERVE_CMD, "")
+        if not ds:
+            raise ChainError(f"{cv.ENV_CHAIN}=ds needs {cv.ENV_DS_SERVE_CMD}")
+        return shlex.split(ds)
     glm = os.environ.get(cv.ENV_GLM_SERVE_CMD, "")
     if not glm:
         raise ChainError(f"{cv.ENV_CHAIN}=glm needs {cv.ENV_GLM_SERVE_CMD}")
