@@ -34,6 +34,7 @@ from google.protobuf import struct_pb2
 from tensorrt_llm.executor.utils import context_length_exceeded_message
 from tensorrt_llm.grpc.openengine.bindings import generation_pb2, model_pb2
 from tensorrt_llm.grpc.openengine_conventions import (
+    CAP_DISAGG_GENERATION_FIRST,
     CAP_DISAGG_ORIG_ELAPSED_S,
     CAP_REQ_BEST_OF,
     CAP_REQ_CONVERSATION_ID,
@@ -57,6 +58,7 @@ from tensorrt_llm.grpc.openengine_conventions import (
     REQ_KV_HINTS,
     REQ_LOGIT_BIAS,
     REQ_ORIG_ELAPSED_S,
+    REQ_SCHEDULE_STYLE,
     REQ_SCHEDULING,
     REQ_THINKING_TOKEN_BUDGET,
     REQUEST_TYPE_CONTEXT_AND_GENERATION,
@@ -79,6 +81,7 @@ from .field_classes import GENERATE_OPTIONS, SAMPLING_PARAMS, Kind
 __all__ = [
     "build_generate_request",
     "check_min_tokens",
+    "is_generation_first",
     "log_sequence_capability",
     "map_request",
 ]
@@ -583,6 +586,12 @@ def check_min_tokens(
         raise _not_supported("min_tokens", sampling_params.min_tokens, engine_name)
 
 
+def is_generation_first(params: Any) -> bool:
+    """Whether a request's disaggregated params ask for generation-first scheduling."""
+    style = getattr(params, "schedule_style", None)
+    return style is not None and int(style) == SCHEDULE_STYLE_GENERATION_FIRST
+
+
 def _disaggregation(
     params: Any, capabilities: ModelCapabilities, engine_name: str
 ) -> tuple[str | None, dict[str, Any]]:
@@ -594,17 +603,20 @@ def _disaggregation(
     decode call) sends neither: its handoff goes in ``kv_session``, which the
     facade sets. A ``generation_only`` request sends its ``orig_elapsed_s``
     when the engine declares it (EX-DSG-3), and leaves it out otherwise. A
-    ``context_only`` request must ask for context-first scheduling (the
-    default); a ``generation_only`` one is mapped whatever its
-    ``schedule_style``, which travels in the handoff for the engine to judge.
+    ``context_only`` request that asks for generation-first scheduling also
+    sends ``schedule_style`` (EX-DSG-2); context-first, the default, is not
+    sent. A ``generation_only`` request carries its ``schedule_style`` in the
+    handoff, whatever the engine declares.
 
     Raises:
         ValueError: The request type is unknown; or, for a ``context_only``
-            request, it asks for generation-first scheduling, or its
-            ``disagg_request_id`` is outside the range the conventions give
-            it or the engine does not declare ``disagg_request_id``; or, for
-            a ``generation_only`` request, its ``orig_elapsed_s`` is not a
-            finite number of seconds >= 0.
+            request, it asks for generation-first scheduling and the engine
+            does not declare ``trtllm.disagg.generation_first`` or the request
+            has no ``disagg_request_id``, or its ``disagg_request_id`` is
+            outside the range the conventions give it or the engine does not
+            declare ``disagg_request_id``; or, for a ``generation_only``
+            request, its ``orig_elapsed_s`` is not a finite number of
+            seconds >= 0.
     """
     if params is None:
         return None, {}
@@ -615,16 +627,24 @@ def _disaggregation(
         return request_type, {}
     if request_type != REQUEST_TYPE_CONTEXT_ONLY:
         raise _not_supported("disaggregated_params.request_type", request_type, engine_name)
-    if params.schedule_style is not None and int(params.schedule_style) == (
-        SCHEDULE_STYLE_GENERATION_FIRST
-    ):
-        raise _not_supported(
-            "disaggregated_params.schedule_style",
-            "generation-first",
-            engine_name,
-            "only context-first scheduling is served",
-        )
     extra: dict[str, Any] = {}
+    if is_generation_first(params):
+        if not capabilities.supports(CAP_DISAGG_GENERATION_FIRST):
+            raise _not_supported(
+                "disaggregated_params.schedule_style",
+                "generation-first",
+                engine_name,
+                f"the engine does not declare {CAP_DISAGG_GENERATION_FIRST}",
+            )
+        if params.disagg_request_id is None:
+            raise _not_supported(
+                "disaggregated_params.schedule_style",
+                "generation-first",
+                engine_name,
+                "a generation-first context leg needs a disagg_request_id, "
+                "by which its generation leg names it",
+            )
+        extra[REQ_SCHEDULE_STYLE] = SCHEDULE_STYLE_GENERATION_FIRST
     if params.disagg_request_id is not None:
         if not capabilities.supports(CAP_REQ_DISAGG_REQUEST_ID):
             raise _not_supported(

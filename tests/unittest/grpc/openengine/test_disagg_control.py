@@ -227,7 +227,7 @@ def test_model_info_declares_every_version_4_capability_key(backend):
     enabled = bool(backend)
     assert declared == {
         "trtllm.request.disagg_request_id": enabled,
-        "trtllm.disagg.generation_first": False,
+        "trtllm.disagg.generation_first": enabled,
         "trtllm.disagg.orig_elapsed_s": enabled,
         "trtllm.stopping.min_tokens": True,
     }

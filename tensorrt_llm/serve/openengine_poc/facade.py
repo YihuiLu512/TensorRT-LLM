@@ -99,7 +99,7 @@ from .engine_client import (
     TokenDelta,
 )
 from .engine_client_impl import EngineEventStream, OpenEngineEngineClient
-from .mapping import check_min_tokens
+from .mapping import check_min_tokens, is_generation_first
 
 __all__ = [
     "DEFAULT_CONTROL_TIMEOUT_S",
@@ -1331,9 +1331,11 @@ class OpenEngineLLM:
         Raises:
             ValueError: The request cannot be mapped. Among the reasons:
                 :meth:`_check_request` refuses it, ``handoff_attributes`` is
-                given to a request that is not ``generation_only``, or a
+                given to a request that is not ``generation_only``, a
                 ``context_only`` or ``generation_only`` request is sent to an
-                engine without KV transfer.
+                engine without KV transfer, or a generation-first
+                ``context_only`` request is sent to an engine whose KV
+                connector names no ``local_endpoints``.
         """
         client = self.client
         caps = client.model_info()
@@ -1359,6 +1361,19 @@ class OpenEngineLLM:
         requests = contracts.map_request(
             prompt_token_ids, sampling_params, caps, options, engine_name=info.engine_name
         )
+        if (
+            params is not None
+            and params.request_type == REQUEST_TYPE_CONTEXT_ONLY
+            and is_generation_first(params)
+            and not info.kv_connector.local_endpoints
+        ):
+            # The generation leg reaches this engine at the address /server_info gives,
+            # which comes from local_endpoints.
+            raise ValueError(
+                "disaggregated_params.schedule_style=generation-first is not supported: "
+                f"OpenEngine engine {info.engine_name!r} names no address in "
+                "kv_connector.local_endpoints for a generation engine to reach it"
+            )
         metadata = self._metadata(options, caps)
         kv_session = None
         if generation_only:

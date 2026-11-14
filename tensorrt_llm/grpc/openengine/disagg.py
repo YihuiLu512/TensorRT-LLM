@@ -30,8 +30,11 @@ from tensorrt_llm.grpc.openengine_conventions import (
     REQ_DISAGG_REQUEST_ID,
     REQ_ORIG_ELAPSED_S,
     REQ_REQUEST_TYPE,
+    REQ_SCHEDULE_STYLE,
     REQUEST_TYPE_CONTEXT_ONLY,
     REQUEST_TYPE_GENERATION_ONLY,
+    SCHEDULE_STYLE_CONTEXT_FIRST,
+    SCHEDULE_STYLE_GENERATION_FIRST,
     parse_disagg_request_id,
     request_bucket,
 )
@@ -58,12 +61,14 @@ class DisaggUnavailableError(Exception):
 def disagg_capabilities(kv_transfer_enabled: bool) -> dict[str, bool]:
     """The disaggregated-serving capability keys of conventions version 4, as this server reports them.
 
-    The request keys work only on a server with a KV cache transceiver. Generation-first
-    scheduling (``schedule_style``) is not supported.
+    All are declared with any KV cache transceiver. The C++ transceiver cannot
+    serve generation-first scheduling and leaves
+    ``ServerInfo.kv_connector.local_endpoints`` empty, so on it
+    ``trtllm.disagg.generation_first`` is declared without that address.
     """
     return {
         CAP_REQ_DISAGG_REQUEST_ID: kv_transfer_enabled,
-        CAP_DISAGG_GENERATION_FIRST: False,
+        CAP_DISAGG_GENERATION_FIRST: kv_transfer_enabled,
         CAP_DISAGG_ORIG_ELAPSED_S: kv_transfer_enabled,
     }
 
@@ -105,6 +110,20 @@ def _reject_off_leg(extra: Mapping[str, Any], keys: Sequence[str], leg: str) -> 
     for key in keys:
         if key in extra:
             raise ValueError(f"extra.{key} is not accepted on {leg}")
+
+
+def _schedule_style(value: Any) -> DisaggScheduleStyle:
+    # Struct numbers arrive as float; a bool is a separate Struct kind and must not pass.
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or value not in (SCHEDULE_STYLE_CONTEXT_FIRST, SCHEDULE_STYLE_GENERATION_FIRST)
+    ):
+        raise ValueError(
+            f"extra.{REQ_SCHEDULE_STYLE} must be {SCHEDULE_STYLE_CONTEXT_FIRST} (context-first) "
+            f"or {SCHEDULE_STYLE_GENERATION_FIRST} (generation-first), got {value!r}"
+        )
+    return DisaggScheduleStyle(int(value))
 
 
 def _orig_elapsed_s(value: Any) -> float:
@@ -262,8 +281,11 @@ def disaggregated_params_from_request(
     dp_rank). Otherwise the phase comes from ``extra["request_type"]``.
 
     A context_only request takes its ``disagg_request_id`` from
-    ``extra["disagg_request_id"]`` when present, and a generation_only request
-    its ``orig_elapsed_s`` from ``extra["orig_elapsed_s"]``.
+    ``extra["disagg_request_id"]`` when present, and its ``schedule_style`` from
+    ``extra["schedule_style"]`` (context-first when absent); a generation-first
+    one must carry its ``disagg_request_id``, by which its generation leg names
+    it. A generation_only request takes its ``orig_elapsed_s`` from
+    ``extra["orig_elapsed_s"]``.
 
     Args:
         request: The Generate request.
@@ -288,7 +310,9 @@ def disaggregated_params_from_request(
     _check_disagg_keys(extra, disagg_capabilities(kv_transfer_enabled))
     has_session = request.HasField("kv") and request.kv.HasField("session")
     if has_session:
-        _reject_off_leg(extra, (REQ_DISAGG_REQUEST_ID,), "a request with a kv.session")
+        _reject_off_leg(
+            extra, (REQ_DISAGG_REQUEST_ID, REQ_SCHEDULE_STYLE), "a request with a kv.session"
+        )
         if gen_only_benchmark is None:
             gen_only_benchmark = os.environ.get(GEN_ONLY_BENCHMARK_ENV) == "1"
         session = request.kv.session
@@ -345,7 +369,11 @@ def disaggregated_params_from_request(
 
     request_type = extra.get(_REQUEST_TYPE_KEY)
     if request_type is None:
-        _reject_off_leg(extra, (REQ_DISAGG_REQUEST_ID, REQ_ORIG_ELAPSED_S), "an aggregated request")
+        _reject_off_leg(
+            extra,
+            (REQ_DISAGG_REQUEST_ID, REQ_SCHEDULE_STYLE, REQ_ORIG_ELAPSED_S),
+            "an aggregated request",
+        )
         return None
     if request_type == "generation_only":
         raise ValueError(
@@ -356,7 +384,11 @@ def disaggregated_params_from_request(
         raise ValueError(f"extra.{_REQUEST_TYPE_KEY} must be one of {sorted(_EXTRA_REQUEST_TYPES)}")
     params = DisaggregatedParams(request_type=request_type)
     if request_type != REQUEST_TYPE_CONTEXT_ONLY:
-        _reject_off_leg(extra, (REQ_DISAGG_REQUEST_ID, REQ_ORIG_ELAPSED_S), "an aggregated request")
+        _reject_off_leg(
+            extra,
+            (REQ_DISAGG_REQUEST_ID, REQ_SCHEDULE_STYLE, REQ_ORIG_ELAPSED_S),
+            "an aggregated request",
+        )
         return params
     _reject_off_leg(extra, (REQ_ORIG_ELAPSED_S,), "a context_only request")
     if REQ_DISAGG_REQUEST_ID in extra:
@@ -372,10 +404,23 @@ def disaggregated_params_from_request(
         params.disagg_request_id = DISAGG_REQUEST_ID_MIN + secrets.randbelow(
             DISAGG_REQUEST_ID_LIMIT - DISAGG_REQUEST_ID_MIN
         )
-    # This server schedules every prefill context-first, and says so explicitly as
-    # the HTTP orchestrator does: where the context side checks KV ownership, an
-    # unset style skips the checks that CONTEXT_FIRST runs.
-    params.schedule_style = DisaggScheduleStyle.CONTEXT_FIRST
+    # A prefill without the key is scheduled context-first, and says so explicitly
+    # as the HTTP orchestrator does: where the context side checks KV ownership,
+    # an unset style skips the checks that CONTEXT_FIRST runs.
+    params.schedule_style = (
+        _schedule_style(extra[REQ_SCHEDULE_STYLE])
+        if REQ_SCHEDULE_STYLE in extra
+        else DisaggScheduleStyle.CONTEXT_FIRST
+    )
+    if (
+        params.schedule_style == DisaggScheduleStyle.GENERATION_FIRST
+        and REQ_DISAGG_REQUEST_ID not in extra
+    ):
+        # The generation leg names its context request by the caller's id; a
+        # minted one matches no generation leg.
+        raise ValueError(
+            f"a generation-first context_only request must carry extra.{REQ_DISAGG_REQUEST_ID}"
+        )
     return params
 
 

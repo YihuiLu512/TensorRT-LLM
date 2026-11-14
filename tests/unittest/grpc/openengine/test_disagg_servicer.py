@@ -253,17 +253,30 @@ def test_a_request_key_on_the_wrong_leg_is_invalid_argument(fields):
     assert llm.calls == []
 
 
-def test_schedule_style_is_unimplemented_without_generation_first():
-    request = _request(extra={"request_type": "context_only", "schedule_style": 1})
+def test_context_only_takes_a_generation_first_schedule_style():
+    llm = _Llm([_prefill_result()])
+    request = _request(
+        extra={
+            "request_type": "context_only",
+            "disagg_request_id": str(CALLER_ID),
+            "schedule_style": 1,
+        }
+    )
 
-    _, context = _generate(_servicer(), request)
+    _, context = _generate(_servicer(llm), request)
 
-    assert context.abort_code == grpc.StatusCode.UNIMPLEMENTED
-    assert "schedule_style" in context.abort_details
+    assert context.abort_code is None, context.abort_details
+    params = llm.calls[0]["disaggregated_params"]
+    assert params.schedule_style == DisaggScheduleStyle.GENERATION_FIRST
+    assert params.disagg_request_id == CALLER_ID
 
 
 def test_disagg_request_keys_are_unimplemented_without_a_transceiver():
-    for extra in ({"disagg_request_id": str(CALLER_ID)}, {"orig_elapsed_s": 0.5}):
+    for extra in (
+        {"disagg_request_id": str(CALLER_ID)},
+        {"schedule_style": 1},
+        {"orig_elapsed_s": 0.5},
+    ):
         _, context = _generate(_servicer(backend=""), _request(extra=extra))
 
         assert context.abort_code == grpc.StatusCode.UNIMPLEMENTED, extra
