@@ -264,7 +264,8 @@ class _Watch:
 
     It reads the disaggregated servers when started, when stopped and every
     ``_WATCH_INTERVAL_S`` in between from a thread, so that one the test starts
-    and stops is still seen. For a test with worker roles it also looks for
+    and stops is still seen, and so is a worker that leaves its lists before
+    the last reading. For a test with worker roles it also looks for
     in-process workers holding a GPU, and takes each worker's topology and
     engine information while it runs (for a test that kills a worker), every
     ``_GPU_CHECK_INTERVAL_S`` and when stopped.
@@ -287,6 +288,8 @@ class _Watch:
         # Per server address: the counters the increase is taken from, and the last reading.
         self._base: dict[str, dict[str, int]] = {}
         self._last: dict[str, proof.OrchestratorReading] = {}
+        # Per server address: by role, every worker any reading of its worker lists named.
+        self._members: dict[str, dict[str, set[str]]] = {}
         # Servers found when the test started, those whose increase is only a lower bound
         # (not read when the test started, or restarted during it), and those alive at the end.
         self._present_at_start: set[str] = set()
@@ -360,6 +363,10 @@ class _Watch:
             self._base[url] = {}
             self._lower_bound.add(url)
         self._last[url] = reading
+        if reading.members is not None:
+            seen = self._members.setdefault(url, {r: set() for r in proof.ROLES})
+            for r in proof.ROLES:
+                seen[r].update(proof.normalize_address(a) for a in reading.members.get(r, ()))
 
     def stop(self) -> None:
         self._stop.set()
@@ -367,19 +374,19 @@ class _Watch:
         self._poll(at_end=True)
 
     def orchestrator(self) -> proof.OrchestratorReading | None:
-        """The increase of every disaggregated server's counters during the test; ``None`` if none ran."""
+        """The increase of every disaggregated server's counters during the test; ``None`` if none ran.
+
+        Its worker lists hold every worker a reading during the test named, by role;
+        a server whose lists no reading could read has none (``members`` is ``None``).
+        """
         with self._lock:
             if not self._last:
                 return None
             readings = []
             for url, last in self._last.items():
                 base = self._base[url]
-                members = None
-                if last.members is not None:
-                    members = {
-                        r: tuple(proof.normalize_address(a) for a in last.members[r])
-                        for r in proof.ROLES
-                    }
+                seen = self._members.get(url)
+                members = None if seen is None else {r: tuple(sorted(seen[r])) for r in proof.ROLES}
                 readings.append(
                     proof.OrchestratorReading(
                         {k: v - base.get(k, 0) for k, v in last.counts.items()},

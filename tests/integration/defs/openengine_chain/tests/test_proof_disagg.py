@@ -692,6 +692,33 @@ def test_a_server_without_a_role_next_to_the_workers(legs):
     legs[1].take(1)
     other.send(1)
     other.end()
+
+
+@pytest.fixture
+def leaving(request, legs):
+    # Two more workers the disaggregated server lists when the test starts, with a third
+    # outside the chain for a test named so.
+    ctx, gen = Worker("ctx", 8005), Worker("gen", 8006)
+    before = STATE["members"]
+    outside = ("localhost:8099",) if "outside" in request.node.name else ()
+    STATE["members"] = {"ctx": ("localhost:8005",), "gen": ("localhost:8006", *outside)}
+    yield ctx, gen
+    ctx.end()
+    gen.end()
+    STATE["members"] = before
+
+
+def test_workers_leave_the_lists(leaving):
+    leaving[0].take(1)
+    leaving[1].take(1)
+    # The workers stop before the disaggregated server, which drops them from its lists.
+    STATE["members"] = {"ctx": (), "gen": ()}
+
+
+def test_a_worker_outside_leaves_the_lists(leaving):
+    leaving[0].take(1)
+    leaving[1].take(1)
+    STATE["members"] = {"ctx": (), "gen": ()}
 """
 
 AGG = """
@@ -823,6 +850,16 @@ def test_the_plugin_proves_each_leg(run_disagg):
     assert (props["chain_topology"], props["chain_proof"]) == ("agg", "incomplete"), props
     outcome, props = cases["test_a_server_without_a_role_next_to_the_workers"]
     assert (outcome, props["chain_proof"]) == ("passed", "incomplete"), props
+
+
+def test_the_plugin_keeps_the_workers_that_left_the_lists(run_disagg):
+    """CH-6 checks every worker the disaggregated server listed during the test."""
+    cases = run_disagg()
+    outcome, props = cases["test_workers_leave_the_lists"]
+    assert (outcome, props["chain_proof"]) == ("passed", "ok"), props
+    outcome, props = cases["test_a_worker_outside_leaves_the_lists"]
+    assert outcome == "failure", props
+    assert "CH-6: fail" in props["chain_proof_detail"] and "8099" in props["chain_proof_detail"]
 
 
 def test_orphan_handoffs_are_counted(run_disagg):
@@ -1128,3 +1165,75 @@ def test_the_watch_takes_a_cross_node_worker_s_topology_while_it_runs(monkeypatc
     watch = plugin._Watch(seq, root=1, disagg=True, node_role=CTX)
     watch.stop()
     assert handle.proven_topology == P.Check(P.OK, "checked")
+
+
+def _watch_readings(monkeypatch, members):
+    """The watch's reading of one disaggregated server whose worker lists are ``members`` in turn.
+
+    The watch reads it when started, once per entry between and when stopped.
+    """
+    plugin, seq = _quiet_watch(monkeypatch, [P.Orchestrator(7, "http://o:1", "c")])
+    monkeypatch.setattr(P, "live_descendants", lambda root: {7})
+    lists = iter(members)
+    monkeypatch.setattr(
+        P,
+        "read_orchestrator",
+        lambda o: dataclasses.replace(_orchestrator(2, 2), members=next(lists)),
+    )
+    watch = plugin._Watch(seq, root=1)
+    for _ in members[1:-1]:
+        watch._poll()
+    watch.stop()
+    assert next(lists, None) is None, "every list was read"
+    return watch.orchestrator()
+
+
+def _ch6(workers, orchestrator):
+    return {(n, r): c for n, r, c in _judge(workers, orchestrator).checks}[("CH-6", None)]
+
+
+def test_workers_that_leave_the_lists_before_the_last_reading_still_count(monkeypatch):
+    """A test that stops its workers before the disaggregated server ends with empty lists."""
+    ctx, gen = _two_legs()
+    both = {CTX: (ctx.address,), GEN: (gen.address,)}
+    reading = _watch_readings(
+        monkeypatch, [both, {CTX: (), GEN: (gen.address,)}, {CTX: (), GEN: ()}]
+    )
+    assert reading.members == {CTX: (ctx.address,), GEN: (gen.address,)}
+    assert _ch6([ctx, gen], reading).status == P.OK
+    # The last reading alone lists no worker, which left CH-6 incomplete.
+    assert _ch6([ctx, gen], _orchestrator(2, 2)).status == P.INCOMPLETE
+
+
+def test_a_worker_outside_the_chain_fails_ch6_even_if_it_left_the_lists(monkeypatch):
+    ctx, gen = _two_legs()
+    both = {CTX: (ctx.address,), GEN: (gen.address,)}
+    outside = {CTX: (ctx.address,), GEN: (gen.address, "other-host:8003")}
+    reading = _watch_readings(monkeypatch, [both, outside, both])
+    assert reading.members[GEN] == (gen.address, "other-host:8003")
+    check = _ch6([ctx, gen], reading)
+    assert (check.status, "other-host:8003" in check.detail) == (P.FAIL, True), check
+
+
+def test_a_disaggregated_server_that_never_lists_a_worker_leaves_ch6_unproven(monkeypatch):
+    ctx, gen = _two_legs()
+    empty = {CTX: (), GEN: ()}
+    reading = _watch_readings(monkeypatch, [empty, empty, empty])
+    check = _ch6([ctx, gen], reading)
+    assert (check.status, check.detail) == (
+        P.INCOMPLETE,
+        "the disaggregated server lists no worker",
+    )
+
+
+@pytest.mark.parametrize(
+    "unread, members",
+    [((0, 2), {CTX: (), GEN: ("node0:8002",)}), ((0, 1, 2), None)],
+)
+def test_worker_lists_that_could_not_be_read_are_left_out(monkeypatch, unread, members):
+    """A reading without worker lists (``/cluster_info`` failed) adds none; with none read, there are none."""
+    ctx, gen = _two_legs()
+    lists = [{CTX: (ctx.address,), GEN: ()}, {CTX: (), GEN: (gen.address,)}, {CTX: (), GEN: ()}]
+    for i in unread:
+        lists[i] = None
+    assert _watch_readings(monkeypatch, lists).members == members
