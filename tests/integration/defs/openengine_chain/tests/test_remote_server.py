@@ -801,6 +801,30 @@ def test_topology_worker_ports_avoid_the_servers_port(fake_topology, monkeypatch
             chain="trtllm",
         )
     assert port not in seen.values() and seen["context"] != seen["generation"]
+    # The server binds its port only after the workers have started; later picks avoid it.
+    assert port in launch._PICKED_PORTS
+
+
+def test_topology_listens_where_the_command_line_says(fake_topology):
+    port = _free_port()
+    cmd = [fake_topology.exe, "/m", "--host", "0.0.0.0", "--port", str(port)]
+    topology = remote.launch_disagg_topology(
+        cmd, env=fake_topology.env, sink=None, chain=cv.CHAIN_NONE, server_start_timeout=60
+    )
+    try:
+        (server,) = _records(fake_topology.records, "disagg-start", 1)
+        frontends = _records(fake_topology.records, "frontend-start", 2)
+    finally:
+        topology.terminate(grace=5)
+    # Clients, the disaggregated server included, reach 0.0.0.0 at localhost.
+    assert (topology.host, server["config"]["hostname"]) == ("localhost", "0.0.0.0")
+    for fe in frontends:
+        argv = fe["argv"]
+        assert argv[argv.index("--host") + 1] == "0.0.0.0"
+        assert f"localhost:{argv[argv.index('--port') + 1]}" in (
+            server["config"]["context_servers"]["urls"]
+            + server["config"]["generation_servers"]["urls"]
+        )
 
 
 def test_topology_reports_a_server_that_outlives_sigkill_on_the_context_handle():

@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Start order, arguments, logs, shutdown order and timeouts, against fake processes."""
 
+import contextlib
 import glob
 import json
 import os
@@ -15,6 +16,7 @@ import sys
 import time
 import types
 
+import grpc
 import pytest
 import requests
 import yaml
@@ -1194,10 +1196,10 @@ def test_disagg_worker_is_split_by_the_disaggregated_rules(fake, tmp_path, monke
     assert engine["env"]["TRTLLM_DISAGG_NO_RETRY"] == "1"
     assert frontend["env"]["TRTLLM_SERVER_DISABLE_GC"] == "1"
     assert frontend["env"][cv.ENV_COUNTER_DIR] == handle.counter_dir
-    assert "TLLM_LOG_LEVEL" not in frontend["env"]
+    assert frontend["env"]["TLLM_LOG_LEVEL"] == "info"
     assert "TRTLLM_DISAGG_NO_RETRY" not in frontend["env"]
     assert _environ(engine["pid"])["CUDA_VISIBLE_DEVICES"] == "3"
-    assert "CUDA_VISIBLE_DEVICES" not in _environ(frontend["pid"])
+    assert _environ(frontend["pid"])["CUDA_VISIBLE_DEVICES"] == "3"
     assert read == [handle.engine_endpoint]
     handle.terminate(grace=1)
 
@@ -1339,7 +1341,7 @@ def test_disagg_engine_gets_a_kv_event_publisher(fake, tmp_path):
     handle.terminate(grace=1)
 
 
-def test_disagg_engine_that_disagrees_with_its_front_end_fails_the_start(
+def test_disagg_engine_that_disagrees_with_the_command_line_fails_the_start(
     fake, tmp_path, monkeypatch
 ):
     fake.env["FAKE_ENGINE_SAY"] = launch.TRANSCEIVER_STARTED_LINE
@@ -1350,28 +1352,92 @@ def test_disagg_engine_that_disagrees_with_its_front_end_fails_the_start(
         "max_batch_size": 4,
         "kv_cache_config": {"tokens_per_block": 64},
     }
-    with pytest.raises(launch.ChainStartupError, match="max_batch_size: front end 4, engine 8"):
+    with pytest.raises(launch.ChainStartupError, match="max_batch_size: command line 4, engine 8"):
         _start(fake, _worker(fake, tmp_path, config), chain="trtllm")
     assert not (fake.records / "frontend-start.json").exists()
-    # The engine-only --max_batch_size is not what the front end reads.
-    reported["max_batch_size"] = 4
+    # The engine-only --max_batch_size counts over the file, as in trtllm-serve.
     args = _worker(fake, tmp_path, config, "generation") + ["--max_batch_size", "8"]
     _start(fake, args, chain="trtllm").terminate(grace=1)
 
 
-def test_expected_capacity_is_what_the_front_end_reads(tmp_path):
+def test_expected_capacity_is_what_the_command_line_resolves(tmp_path):
     path = _write_config(
         tmp_path,
         "c.yaml",
-        {"max_batch_size": 4, "kv_cache_config": {"kv_cache_event_hash_algo": "auto"}},
+        {"max_batch_size": 4, "kv_cache_config": {"kv_cache_event_hash_algo": "v2_sha256"}},
     )
+    # The hash algorithm is not compared: the engine reports a fixed one.
     assert launch.expected_capacity(["--config", path]) == {"max_batch_size": 4}
     args = ["--config", path, "--set", "kv_cache_config.tokens_per_block=16"]
     assert launch.expected_capacity(args) == {"max_batch_size": 4, "tokens_per_block": 16}
+    assert launch.expected_capacity(args + ["--max_batch_size", "8"])["max_batch_size"] == 8
     assert launch.capacity_problems({"max_batch_size": 4}, {}) == []
-    assert launch.capacity_problems(
-        {"kv_cache_event_hash_algo": "v2_sha256"}, {"kv_cache_event_hash_algo": "v2_sha256_64"}
-    ) == ["kv_cache_event_hash_algo: front end 'v2_sha256', engine 'v2_sha256_64'"]
+
+
+class _RpcError(grpc.RpcError):
+    def __init__(self, code):
+        self._code = code
+
+    def code(self):
+        return self._code
+
+    def details(self):
+        return "not ready"
+
+
+def _fake_control(monkeypatch, answers):
+    """GetServerInfo answers ``answers`` in turn (an exception is raised); returns the calls."""
+    calls = []
+    bindings = types.SimpleNamespace(
+        server_pb2=types.SimpleNamespace(GetServerInfoRequest=lambda: None)
+    )
+    monkeypatch.setitem(sys.modules, "tensorrt_llm.grpc.openengine.bindings", bindings)
+
+    def get_server_info(request, timeout):
+        calls.append(timeout)
+        answer = answers[min(len(calls), len(answers)) - 1]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    stub = types.SimpleNamespace(GetServerInfo=get_server_info)
+    monkeypatch.setattr(proof, "_control_stub", lambda endpoint: (contextlib.nullcontext(), stub))
+    return calls
+
+
+def _server_info(max_running_requests=0, kv_block_size=0):
+    capacity = types.SimpleNamespace(
+        max_running_requests=max_running_requests, kv_block_size=kv_block_size
+    )
+    return types.SimpleNamespace(capacity=capacity)
+
+
+def test_read_engine_capacity_retries_while_the_engine_is_unavailable(monkeypatch):
+    unavailable = _RpcError(grpc.StatusCode.UNAVAILABLE)
+    calls = _fake_control(monkeypatch, [unavailable, unavailable, _server_info(8, 32)])
+    reported = launch.read_engine_capacity("127.0.0.1:1", timeout=10, interval=0)
+    assert reported == {"max_batch_size": 8, "tokens_per_block": 32}
+    assert len(calls) == 3
+    _fake_control(monkeypatch, [unavailable])
+    with pytest.raises(grpc.RpcError):
+        launch.read_engine_capacity("127.0.0.1:1", timeout=0, interval=0)
+    calls = _fake_control(monkeypatch, [_RpcError(grpc.StatusCode.INTERNAL), _server_info()])
+    with pytest.raises(grpc.RpcError):
+        launch.read_engine_capacity("127.0.0.1:1", timeout=10, interval=0)
+    assert len(calls) == 1
+
+
+def test_disagg_engine_whose_settings_cannot_be_read_fails_the_start(fake, tmp_path, monkeypatch):
+    fake.env["FAKE_ENGINE_SAY"] = launch.TRANSCEIVER_STARTED_LINE
+
+    def unreadable(endpoint):
+        raise _RpcError(grpc.StatusCode.UNAVAILABLE)
+
+    monkeypatch.setattr(launch, "read_engine_capacity", unreadable)
+    config = {"cache_transceiver_config": {"backend": "DEFAULT"}, "max_batch_size": 4}
+    with pytest.raises(launch.ChainStartupError, match="reading the settings of the engine"):
+        _start(fake, _worker(fake, tmp_path, config), chain="trtllm")
+    assert not (fake.records / "frontend-start.json").exists()
 
 
 @pytest.mark.parametrize(
@@ -1431,6 +1497,31 @@ def test_refused_command_line_keeps_its_error_type_when_started_with_others(
     assert not context.alive and context.engine.poll() is not None
 
 
+def test_harness_error_while_others_load_is_not_a_startup_failure(fake, tmp_path, monkeypatch):
+    monkeypatch.setattr(launch, "_HANDLES", [])
+    fake.env["FAKE_ENGINE_SAY"] = launch.TRANSCEIVER_STARTED_LINE
+
+    def broken(endpoint):
+        raise KeyError("harness bug")
+
+    monkeypatch.setattr(launch, "read_engine_capacity", broken)
+    cmds, envs, _ = _two_workers(fake, tmp_path)
+    # A setting to compare, so that the engine's settings are read.
+    cmds = [cmd + ["--max_batch_size", "4"] for cmd in cmds]
+    with pytest.raises(KeyError) as raised:
+        launch.launch_serve_commands(
+            cmds,
+            labels=["context", "generation"],
+            envs=envs,
+            sinks=[None, None],
+            chain="trtllm",
+            interval=0.1,
+        )
+    assert not isinstance(raised.value, launch.ChainStartupError)
+    assert any(note.startswith("while starting") for note in raised.value.__notes__)
+    assert not any(handle.alive for handle in launch._HANDLES)
+
+
 def test_harness_port_picks_avoid_ports_picked_or_given_before(monkeypatch):
     monkeypatch.setattr(launch, "_PICKED_PORTS", set())
     ports = iter([5, 6, 6, 7, 8, 10, 11, 12, 13])
@@ -1450,10 +1541,9 @@ def test_harness_port_picks_avoid_ports_picked_or_given_before(monkeypatch):
     assert {13, 14, 15} <= launch._PICKED_PORTS
 
 
-def test_worker_poll_signals_the_other_process_without_waiting(fake, tmp_path, monkeypatch):
+def test_worker_poll_stops_the_worker_without_waiting(fake, tmp_path, monkeypatch):
     monkeypatch.setenv(cv.ENV_CHAIN, "trtllm")
     fake.env["FAKE_ENGINE_SAY"] = launch.TRANSCEIVER_STARTED_LINE
-    fake.env["FAKE_ENGINE_IGNORE_TERM"] = "1"
     config = {"cache_transceiver_config": {"backend": "DEFAULT"}}
     worker = launch.launch_worker(
         [fake.exe, "/model"] + _worker(fake, tmp_path, config), env=fake.env
@@ -1467,7 +1557,11 @@ def test_worker_poll_signals_the_other_process_without_waiting(fake, tmp_path, m
     started = time.monotonic()
     assert worker.poll() == -signal.SIGKILL
     assert time.monotonic() - started < 1
-    # The engine ignores SIGTERM; kill() stops it.
+    # The worker is stopped although the test never calls terminate().
+    deadline = time.monotonic() + 20
+    while worker.handle.alive:
+        assert time.monotonic() < deadline, "the worker was not stopped"
+        time.sleep(0.05)
     assert _record(fake.records, "engine-term")
+    assert worker.handle.engine.poll() is not None
     worker.kill()
-    assert not worker.handle.alive

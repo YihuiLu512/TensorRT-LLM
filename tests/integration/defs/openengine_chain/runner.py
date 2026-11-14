@@ -118,12 +118,15 @@ _SMOKE_NAME = re.compile(r"^WT-(\d+)(?:-.+)?\.txt$")
 
 
 def smoke_lists(stage: str = "s2") -> list[str]:
-    """The smoke lists of PoC-S2 (``s2``) or PoC-S3 (``s3``) work items."""
+    """The smoke lists of PoC-S2 (``s2``) or PoC-S3 (``s3``) work items.
+
+    Raises ``ValueError`` for a ``WT-*.txt`` whose name gives no work item number.
+    """
     found = []
     for path in sorted(glob.glob(os.path.join(_HERE, "smoke", "WT-*.txt"))):
         match = _SMOKE_NAME.match(os.path.basename(path))
         if match is None:
-            continue
+            raise ValueError(f"{path}: a smoke list is named WT-<number>[-<suffix>].txt")
         if (int(match.group(1)) >= _S3_FIRST_ITEM) == (stage == "s3"):
             found.append(path)
     return found

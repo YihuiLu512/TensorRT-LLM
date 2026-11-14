@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import os
 import secrets
 import subprocess
@@ -22,9 +21,11 @@ from .launch import (
     ServeHandle,
     _address,
     _results_dir,
+    _stop_waits,
     launch_serve_command,
     launch_serve_commands,
     pick_port,
+    reserve_ports,
     resolve_chain,
 )
 from .split import (
@@ -33,9 +34,13 @@ from .split import (
     disagg_server_config,
     disagg_worker_commands,
     is_disagg_worker,
+    option_value,
     parse_serve_command,
     worker_gpus,
 )
+
+# The address trtllm-serve listens on without --host.
+DEFAULT_SERVE_HOST = "localhost"
 
 
 def resolve_topology() -> str | None:
@@ -65,8 +70,8 @@ def launch_for_remote_server(
     :class:`DisaggTopology`; with the topology set and no chain, a
     disaggregated worker or a ``trtllm-llmapi-launch`` server is left to the
     caller: the function returns ``None``. With a chain, a
-    ``trtllm-llmapi-launch`` server is refused, the topology is refused on the
-    glm chain, and any other server starts as an engine plus a front end.
+    ``trtllm-llmapi-launch`` server is refused, and so is the topology on the
+    glm chain; a server that is not moved starts as an engine plus a front end.
     """
     chain = resolve_chain()
     topology = resolve_topology()
@@ -185,14 +190,7 @@ class DisaggTopology:
             return
         self._stopped = True
         try:
-            if self.server.poll() is None:
-                self.server.terminate()
-                try:
-                    self.server.wait(timeout=grace)
-                except subprocess.TimeoutExpired:
-                    self.server.kill()
-                    with contextlib.suppress(subprocess.TimeoutExpired):
-                        self.server.wait(timeout=grace)
+            _stop_waits(self.server, grace)
             if self.server.poll() is None:
                 error = f"disaggregated server pid {self.server.pid} still running after SIGKILL"
                 self.teardown_errors.append(error)
@@ -215,22 +213,26 @@ def launch_disagg_topology(
     """Start an aggregated ``trtllm-serve`` command line as two workers and a disaggregated server.
 
     :func:`~openengine_chain.split.disagg_worker_commands` takes the command
-    line apart; the workers get ports the harness picks on the command line's
-    host, and GPUs by :func:`~openengine_chain.split.worker_gpus`, and they
-    load at the same time. Once both have started, the disaggregated server
-    (never through the chain) starts on the command line's ``--host`` and
-    ``--port`` with the workers' addresses as static URLs. On a failure
-    everything started is stopped before the error propagates.
+    line apart; the workers listen on the command line's ``--host`` at ports
+    the harness picks, get GPUs by :func:`~openengine_chain.split.worker_gpus`,
+    and load at the same time. Once both have started, the disaggregated
+    server (never through the chain) listens on the command line's ``--host``
+    and ``--port`` and reaches the workers at the address clients use for
+    that host. On a failure everything started is stopped before the error
+    propagates.
     """
     strict = chain != cv.CHAIN_NONE
     command = parse_serve_command(cmd, strict)
     host, port = _address(command.args)
+    listen_host = option_value(command.args, "--host", strict) or DEFAULT_SERVE_HOST
     workdir = _results_dir()
     auth_key = secrets.token_hex(32)
+    # The disaggregated server binds its port only after the workers have started.
+    reserve_ports(port)
     ports = {"context": pick_port(port)}
     ports["generation"] = pick_port(port, ports["context"])
     workers = disagg_worker_commands(
-        cmd, ports=ports, host=host, auth_key=auth_key, out_dir=workdir, strict=strict
+        cmd, ports=ports, host=listen_host, auth_key=auth_key, out_dir=workdir, strict=strict
     )
     gpus = worker_gpus(visible_gpus(env), workers.gpus_per_worker, workers.share_gpu)
     ctx_handle, gen_handle = launch_serve_commands(
@@ -243,7 +245,7 @@ def launch_disagg_topology(
     )
     try:
         config = disagg_server_config(
-            host=host,
+            host=listen_host,
             port=port,
             workers={role: f"{host}:{ports[role]}" for role in WORKER_ROLES},
             auth_key=auth_key,

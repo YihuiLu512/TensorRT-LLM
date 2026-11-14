@@ -209,7 +209,12 @@ def test_unknown_options_of_a_disaggregated_worker_are_still_errors():
         (["--server_role", "generation"], {}, True),
         (["--disagg_cluster_uri", "http://h:1"], {}, True),
         ([], {"disagg_cluster": {"cluster_uri": "http://h:1"}}, True),
-        ([], {"cache_transceiver_config": {"backend": "DEFAULT"}}, True),
+        # An aggregated server may configure a transceiver; it stays aggregated.
+        ([], {"cache_transceiver_config": {"backend": "DEFAULT"}}, False),
+        (["--set", "cache_transceiver_config.backend=NIXL"], {}, False),
+        # A malformed --set is left to trtllm-serve to refuse.
+        (["--set", "max_batch_size"], {}, False),
+        (["--set", "max_batch_size=[1"], {}, False),
     ],
 )
 def test_is_disagg_worker(tmp_path, args, config, disagg):
@@ -222,6 +227,7 @@ def test_disagg_frontend_env_keeps_only_what_the_front_end_reads():
         "PATH": "/bin",
         "CUDA_VISIBLE_DEVICES": "3",
         "TLLM_LOG_LEVEL": "info",
+        "TLLM_FRONTEND_READY_TIMEOUT": "900",
         "TLLM_SPEC_DECODE_FORCE_NUM_ACCEPTED_TOKENS": "2",
         "TRTLLM_KVCACHE_TIME_OUTPUT_PATH": "/k",
         "TRTLLM_DISAGG_BENCHMARK_GEN_ONLY": "1",
@@ -230,13 +236,17 @@ def test_disagg_frontend_env_keeps_only_what_the_front_end_reads():
         "TRTLLM_SERVER_DISABLE_GC": "1",
         "UCX_TLS": "^ib",
     }
+    # The front end keeps the worker's GPUs and the TLLM_* settings, as an aggregated
+    # server's front end does.
     assert sp.disagg_frontend_env(env) == {
         "PATH": "/bin",
+        "CUDA_VISIBLE_DEVICES": "3",
+        "TLLM_LOG_LEVEL": "info",
+        "TLLM_FRONTEND_READY_TIMEOUT": "900",
         "TRTLLM_SERVER_DISABLE_GC": "1",
         "UCX_TLS": "^ib",
     }
-    # An aggregated server's front end keeps them, as before.
-    assert sp.frontend_env(env)["CUDA_VISIBLE_DEVICES"] == "3"
+    assert sp.frontend_env(env)["TRTLLM_DISAGG_NO_RETRY"] == "1"
 
 
 def _no_ports(count):
@@ -435,6 +445,21 @@ def test_setting_takes_set_then_the_option_then_the_file(tmp_path):
     assert sp.setting(config, ["--enable_attention_dp"], dp, "--enable_attention_dp") is True
 
 
+def test_setting_takes_a_set_above_the_path_and_a_null_set():
+    # trtllm-serve applies --set last and replaces the whole value at its path.
+    config = {"kv_cache_config": {"free_gpu_memory_fraction": 0.4, "tokens_per_block": 32}}
+    path = ("kv_cache_config", "free_gpu_memory_fraction")
+    option = "--kv_cache_free_gpu_memory_fraction"
+    whole = ["--set", "kv_cache_config={free_gpu_memory_fraction: 0.7}"]
+    assert sp.setting(config, [option, "0.6"] + whole, path, option) == 0.7
+    other = ["--set", "kv_cache_config={tokens_per_block: 64}"]
+    assert sp.setting(config, [option, "0.6"] + other, path, option) is None
+    assert sp.setting(config, other, ("kv_cache_config", "tokens_per_block")) == 64
+    # null resets the setting to its default; the file and the option no longer count.
+    null = ["--set", "kv_cache_config.free_gpu_memory_fraction=null"]
+    assert sp.setting(config, [option, "0.6"] + null, path, option) is None
+
+
 def test_attention_dp_ranks_take_the_command_line_over_the_file():
     config = {"enable_attention_dp": False, "tensor_parallel_size": 1}
     assert sp.attention_dp_ranks(config, ["--enable_attention_dp", "--tp_size", "4"]) == 4
@@ -535,6 +560,14 @@ def test_moved_workers_on_one_gpu_drop_the_command_lines_kv_cache_share(tmp_path
     assert "--kv_cache_free_gpu_memory_fraction" in workers.commands["context"]
 
 
+def test_moved_workers_on_one_gpu_refuse_a_set_of_the_whole_kv_cache_config(tmp_path):
+    cmd = ["trtllm-serve", "/m", "--set", "kv_cache_config={free_gpu_memory_fraction: 0.9}"]
+    with pytest.raises(sp.UnknownServeOptionError, match="kv_cache_config"):
+        _moved(tmp_path, cmd)
+    workers, _ = _moved(tmp_path, cmd + ["--tp_size", "2"])
+    assert "kv_cache_config={free_gpu_memory_fraction: 0.9}" in workers.commands["context"]
+
+
 def test_moved_command_line_without_a_chain_keeps_options_the_table_does_not_know(tmp_path):
     cmd = ["trtllm-serve", "/m", "--log_level", "info", "--port", "8000", "--trust_remote_code"]
     cmd += ["--metadata_server_config_file", "m.yaml"]
@@ -586,7 +619,6 @@ def test_set_of_service_discovery_makes_a_worker_and_stays_with_the_front_end():
     result = sp.split_args(args, rewrite_yaml=lambda p: p)
     assert result.engine == ("--set", "max_seq_len=64")
     assert result.frontend == tuple(args)
-    assert sp.is_disagg_worker(["--set", "cache_transceiver_config.backend=NIXL"])
     assert not sp.is_disagg_worker(["--set", "max_seq_len=64"])
 
 
@@ -596,6 +628,8 @@ def test_set_of_service_discovery_makes_a_worker_and_stays_with_the_front_end():
         "cache_transceiver_config.backend=UCX",
         "kv_cache_config.event_buffer_max_size=16",
         "kv_cache_config.use_kv_cache_manager_v2=false",
+        # A path above one the harness writes replaces it.
+        "kv_cache_config={event_buffer_max_size: 16}",
     ],
 )
 def test_disagg_engine_yaml_refuses_a_set_of_what_the_harness_writes(tmp_path, assignment):

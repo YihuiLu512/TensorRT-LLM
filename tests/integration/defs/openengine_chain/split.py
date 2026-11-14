@@ -327,22 +327,21 @@ def frontend_env(env: Mapping[str, str]) -> dict[str, str]:
 # --- Disaggregated workers --------------------------------------------------------------
 #
 # A worker is disaggregated when its command line gives a role or a service-discovery URI,
-# or its configuration has a service-discovery or KV-transfer section. Only such workers
-# get the rules below; an aggregated server is split as before.
+# or its configuration has a service-discovery section. Only such workers get the rules
+# below; an aggregated server is split as before, even with a KV-transfer section.
 
 # YAML keys only the front end gets in a disaggregated worker: the engine's gRPC mode
 # refuses service discovery, and only the front end registers the worker.
 DISAGG_FRONTEND_ONLY_YAML_KEYS = ("disagg_cluster",)
-# Environment variables a disaggregated worker's front end does not get: the GPUs, the
-# disaggregated-serving switches the engine reads, and the engine's KV-cache and TLLM_*
-# settings (the front end then logs at its default level).
+# Environment variables a disaggregated worker's front end does not get, besides the
+# ENGINE_ONLY_ENV of any front end: the disaggregated-serving switches and KV-cache
+# settings the engine reads.
 DISAGG_ENGINE_ONLY_ENV = (
-    "CUDA_VISIBLE_DEVICES",
     "TRTLLM_DISAGG_BENCHMARK_GEN_ONLY",
     "TRTLLM_DISAGG_NO_RETRY",
     "TRTLLM_WORKER_DISABLE_GC",
 )
-DISAGG_ENGINE_ONLY_ENV_PREFIXES = ("TRTLLM_KVCACHE_", "TLLM_")
+DISAGG_ENGINE_ONLY_ENV_PREFIXES = ("TRTLLM_KVCACHE_",)
 # KV-transfer backends of the C++ transceiver, which needs KV cache manager V1.
 CPP_TRANSCEIVER_BACKENDS = ("UCX", "MPI", "MOONCAKE")
 # The transceiver runtime a configuration gets when it names none.
@@ -405,11 +404,20 @@ def _set_path(assignment: str) -> tuple[str, ...]:
 
 
 def set_overrides(args: Sequence[str], strict: bool = True) -> list[tuple[tuple[str, ...], Any]]:
-    """The ``--set`` overrides of a command line, in order: ``(path, value)``."""
+    """The ``--set`` overrides of a command line, in order: ``(path, value)``.
+
+    A malformed one (no ``=``, or a value that is not YAML) is left out:
+    ``trtllm-serve`` refuses it when it starts.
+    """
     found = []
     for name, _, value in _iter_options(args, strict):
-        if name == "--set" and value is not None:
-            found.append((_set_path(value), yaml.safe_load(value.split("=", 1)[1])))
+        if name != "--set" or value is None or "=" not in value:
+            continue
+        try:
+            parsed = yaml.safe_load(value.split("=", 1)[1])
+        except yaml.YAMLError:
+            continue
+        found.append((_set_path(value), parsed))
     return found
 
 
@@ -420,18 +428,21 @@ def setting(
     option: str | None = None,
     strict: bool = True,
 ) -> Any:
-    """The value ``trtllm-serve`` gives configuration ``path``, or ``None`` if nothing sets it.
+    """The value ``trtllm-serve`` gives configuration ``path``, or ``None`` for its default.
 
-    As in ``trtllm-serve``: the last ``--set`` of the path wins; then the
-    command-line ``option``, when the command line gives it; then the
-    configuration file.
+    The last ``--set`` of the path or of a path above it wins, as
+    ``trtllm-serve`` applies ``--set`` last and replaces the whole value at
+    its path (``null`` included); then the command-line ``option``, when the
+    command line gives it; then the configuration file.
     """
-    value = None
-    for found, found_value in set_overrides(args, strict):
-        if found == path:
-            value = found_value
-    if value is not None:
-        return value
+    overrides = [
+        (found, found_value)
+        for found, found_value in set_overrides(args, strict)
+        if path[: len(found)] == found
+    ]
+    if overrides:
+        found, node = overrides[-1]
+        return _lookup(node, path[len(found) :])
     if option is not None:
         given = option_value(args, option, strict)
         if given is not None:
@@ -439,7 +450,11 @@ def setting(
         if not OPTIONS.get(option, Option(Side.ENGINE)).takes_value:
             if any(name == option for name, _, _ in _iter_options(args, strict)):
                 return True
-    node: Any = config
+    return _lookup(config, path)
+
+
+def _lookup(node: Any, path: tuple[str, ...]) -> Any:
+    """The value at ``path`` below ``node``, or ``None`` if there is none."""
     for key in path:
         if not isinstance(node, Mapping) or key not in node:
             return None
@@ -453,11 +468,9 @@ def is_disagg_worker(args: Sequence[str], strict: bool = True) -> bool:
         return True
     if option_value(args, "--disagg_cluster_uri", strict) is not None:
         return True
-    sections = ("disagg_cluster", "cache_transceiver_config")
-    if any(path[0] in sections for path, _ in set_overrides(args, strict)):
+    if any(path[0] == "disagg_cluster" for path, _ in set_overrides(args, strict)):
         return True
-    config = load_config(last_config_file(args, strict))
-    return any(section in config for section in sections)
+    return "disagg_cluster" in load_config(last_config_file(args, strict))
 
 
 def disagg_frontend_env(env: Mapping[str, str]) -> dict[str, str]:
@@ -537,8 +550,8 @@ def transceiver_runtime(config: Mapping[str, Any]) -> str:
     """The transceiver runtime an engine configuration selects: ``PYTHON``, ``CPP`` or ``AUTO``.
 
     ``AUTO`` is ``auto`` that the configuration alone does not resolve: the
-    model's preference decides. ``auto`` with a non-NIXL backend or no
-    ``kv_transfer_timeout_ms`` resolves to the C++ runtime.
+    model's preference decides. ``auto`` with a non-NIXL backend or with
+    ``kv_transfer_timeout_ms`` set to null resolves to the C++ runtime.
     """
     transceiver = config.get("cache_transceiver_config") or {}
     runtime = transceiver.get("transceiver_runtime", DEFAULT_TRANSCEIVER_RUNTIME)
@@ -603,10 +616,13 @@ def _kv_events_template(
 
 
 def check_disagg_sets(args: Sequence[str]) -> None:
-    """Refuse the ``--set`` overrides a disaggregated worker cannot take (the harness writes them)."""
+    """Refuse the ``--set`` overrides a disaggregated worker cannot take (the harness writes them).
+
+    An override of a path above one of them is refused too: it replaces it.
+    """
     for path, _ in set_overrides(args):
         for refused in _DISAGG_RULE_SET_PATHS:
-            if path[: len(refused)] == refused:
+            if path[: len(refused)] == refused or refused[: len(path)] == path:
                 raise UnknownServeOptionError(
                     f"--set {'.'.join(path)}: the harness writes this setting into a "
                     "disaggregated worker's engine configuration; give it in the configuration "
@@ -678,17 +694,18 @@ def disagg_worker_commands(
 ) -> DisaggWorkerCommands:
     """Take one aggregated ``trtllm-serve`` command line apart for two disaggregated workers.
 
-    Each worker gets every option of ``cmd`` except ``--host`` and ``--port``:
-    the model and engine options start an engine per worker, the front-end
-    options a front end per worker. Each also gets ``--host host``, its port
-    from ``ports``, ``--server_role``, and a configuration file: the one
-    ``cmd`` reads, plus a KV transceiver (unless it has one), the
-    disaggregated server's signing key and, when the two workers share a GPU,
-    half of the KV cache memory share each. That share is resolved as
-    ``trtllm-serve`` resolves it (:func:`setting`), so the command line's own
-    ``--kv_cache_free_gpu_memory_fraction`` and ``--set`` of it are dropped.
-    ``strict`` as in :func:`_iter_options` (``False`` when no chain splits the
-    workers).
+    Each worker gets the options of ``cmd`` but ``--host``, ``--port`` and the
+    configuration file options: the model and engine options start an engine
+    per worker, the front-end options a front end per worker. Each also gets
+    ``--host host``, its port from ``ports``, ``--server_role``, and a
+    configuration file: the one ``cmd`` reads, plus a KV transceiver (unless it
+    has one), the disaggregated server's signing key and, when the two workers
+    share a GPU, half of the KV cache memory share each. That share is resolved
+    as ``trtllm-serve`` resolves it (:func:`setting`), so the command line's own
+    ``--kv_cache_free_gpu_memory_fraction`` and ``--set`` of it are dropped too;
+    a ``--set`` of ``kv_cache_config`` as a whole is refused then
+    (:class:`UnknownServeOptionError`). ``strict`` as in :func:`_iter_options`
+    (``False`` when no chain splits the workers).
     """
     command = parse_serve_command(cmd, strict)
     if is_disagg_worker(command.args, strict):
@@ -701,6 +718,11 @@ def disagg_worker_commands(
     fraction_path = ("kv_cache_config", "free_gpu_memory_fraction")
     fraction_option = "--kv_cache_free_gpu_memory_fraction"
     if share_gpu:
+        if any(path == fraction_path[:1] for path, _ in set_overrides(command.args, strict)):
+            raise UnknownServeOptionError(
+                "--set kv_cache_config: the harness halves the KV cache memory share of two "
+                "workers on one GPU; set kv_cache_config's keys one by one instead"
+            )
         fraction = setting(config, command.args, fraction_path, fraction_option, strict)
         if fraction is None:
             fraction = DEFAULT_KV_CACHE_FREE_GPU_MEMORY_FRACTION

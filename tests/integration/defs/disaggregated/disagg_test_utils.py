@@ -155,8 +155,8 @@ def _run_worker(
         if device != -1:
             env["CUDA_VISIBLE_DEVICES"] = str(device)
         if os.environ.get("TRTLLM_TEST_OPENENGINE_CHAIN"):
-            # An engine plus a worker front end; only the engine gets the GPUs. The
-            # harness is importable only when its runner sets PYTHONPATH.
+            # An engine plus a worker front end. The harness is importable only when
+            # its runner sets PYTHONPATH.
             from openengine_chain.launch import launch_worker
 
             process = launch_worker(cmd, env=env, sink=stdout)

@@ -28,6 +28,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from typing import IO, Any
@@ -863,14 +864,16 @@ TRANSCEIVER_DISABLED_LINE = "cache_transceiver is disabled"
 _TRANSCEIVER_LINES = re.compile(
     f"{re.escape(TRANSCEIVER_STARTED_LINE)}|{re.escape(TRANSCEIVER_DISABLED_LINE)}"
 )
-# The settings both processes of a disaggregated worker read, compared once the engine is
-# ready: configuration paths, and the GetServerInfo extra key of the hash algorithm.
+# The settings of a disaggregated worker that its engine must report, compared once the
+# engine is ready (TH-DSG-2): their configuration paths and the command-line options that
+# set them. The KV event hash algorithm is not compared: GetServerInfo reports a fixed
+# value for it, not the configured one.
 _COMPARED_SETTINGS = {
-    "max_batch_size": ("max_batch_size",),
-    "tokens_per_block": ("kv_cache_config", "tokens_per_block"),
-    "kv_cache_event_hash_algo": ("kv_cache_config", "kv_cache_event_hash_algo"),
+    "max_batch_size": (("max_batch_size",), "--max_batch_size"),
+    "tokens_per_block": (("kv_cache_config", "tokens_per_block"), None),
 }
-_ENGINE_HASH_ALGO_KEY = "trtllm_kv_event_hash_algo"
+# How long the comparison retries GetServerInfo while the engine answers UNAVAILABLE.
+CAPACITY_READ_TIMEOUT_S = 60.0
 # Levels at which the TensorRT-LLM logger writes INFO lines (tensorrt_llm/logger.py).
 _INFO_LOG_LEVELS = ("info", "verbose", "debug", "trace")
 # How long after the engine reports SERVING its log may take to show the transceiver line.
@@ -919,46 +922,61 @@ def engine_logs_info(env: Mapping[str, str]) -> bool:
     return level is None or level.lower() in _INFO_LOG_LEVELS
 
 
-def expected_capacity(frontend_args: Sequence[str]) -> dict[str, int | str]:
-    """The settings a disaggregated worker's front end reads that its engine must agree on.
+def expected_capacity(args: Sequence[str]) -> dict[str, int]:
+    """The settings of a disaggregated worker that its engine must report (TH-DSG-2).
 
-    ``max_batch_size``, ``tokens_per_block`` and ``kv_cache_event_hash_algo``
-    (TH-DSG-2), as the front end's command line and configuration give them;
-    a setting they leave out, or a hash algorithm ``auto``, is not compared.
+    ``max_batch_size`` and ``tokens_per_block``, as the worker's command line
+    ``args`` resolves them (:func:`setting`); a setting it leaves out is not
+    compared.
     """
-    config = load_config(last_config_file(frontend_args))
-    expected: dict[str, int | str] = {}
-    for name, path in _COMPARED_SETTINGS.items():
-        value = setting(config, frontend_args, path)
-        if value is None or (name == "kv_cache_event_hash_algo" and value == "auto"):
-            continue
-        expected[name] = value if name == "kv_cache_event_hash_algo" else int(value)
+    config = load_config(last_config_file(args))
+    expected: dict[str, int] = {}
+    for name, (path, option) in _COMPARED_SETTINGS.items():
+        value = setting(config, args, path, option)
+        if value is not None:
+            expected[name] = int(value)
     return expected
 
 
-def read_engine_capacity(endpoint: str) -> dict[str, int | str]:
-    """What an engine's GetServerInfo reports of the settings :func:`expected_capacity` reads."""
+def read_engine_capacity(
+    endpoint: str, timeout: float = CAPACITY_READ_TIMEOUT_S, interval: float = 1.0
+) -> dict[str, int]:
+    """What an engine's GetServerInfo reports of the settings :func:`expected_capacity` reads.
+
+    The engine answers UNAVAILABLE while its node discovery or its per-rank
+    KV capacity is not ready yet; that answer is retried for ``timeout``
+    seconds. Any other error, or UNAVAILABLE after that, raises
+    ``grpc.RpcError``.
+    """
+    import grpc
+
     from tensorrt_llm.grpc.openengine.bindings import server_pb2
 
     from .proof import _RPC_TIMEOUT_S, _control_stub
 
+    deadline = time.monotonic() + timeout
     channel, stub = _control_stub(endpoint)
     with channel:
-        info = stub.GetServerInfo(server_pb2.GetServerInfoRequest(), timeout=_RPC_TIMEOUT_S)
-    reported: dict[str, int | str] = {}
+        while True:
+            try:
+                info = stub.GetServerInfo(server_pb2.GetServerInfoRequest(), timeout=_RPC_TIMEOUT_S)
+                break
+            except grpc.RpcError as error:
+                if error.code() != grpc.StatusCode.UNAVAILABLE or time.monotonic() >= deadline:
+                    raise
+            time.sleep(interval)
+    reported: dict[str, int] = {}
     if info.capacity.max_running_requests:
         reported["max_batch_size"] = info.capacity.max_running_requests
     if info.capacity.kv_block_size:
         reported["tokens_per_block"] = info.capacity.kv_block_size
-    if _ENGINE_HASH_ALGO_KEY in info.extra:
-        reported["kv_cache_event_hash_algo"] = info.extra[_ENGINE_HASH_ALGO_KEY]
     return reported
 
 
 def capacity_problems(expected: Mapping[str, Any], reported: Mapping[str, Any]) -> list[str]:
-    """The settings the engine reports with another value than the front end reads."""
+    """The settings the engine reports with another value than the command line gives."""
     return [
-        f"{name}: front end {expected[name]!r}, engine {reported[name]!r}"
+        f"{name}: command line {expected[name]!r}, engine {reported[name]!r}"
         for name in expected
         if name in reported and reported[name] != expected[name]
     ]
@@ -1210,7 +1228,7 @@ class ServeStart:
         self._workdir = workdir
         disagg = is_disagg_worker(command.args)
         self._transceiver: TransceiverLogCheck | None = None
-        self._expected_capacity: dict[str, int | str] = {}
+        self._expected_capacity: dict[str, int] = {}
         if disagg:
             if chain == cv.CHAIN_GLM:
                 raise ChainUnrunnableError(
@@ -1243,8 +1261,7 @@ class ServeStart:
                 self._transceiver = TransceiverLogCheck(
                     transceiver_runtime(engine_configs[-1]), engine_logs_info(env)
                 )
-                # What the front end reads from its own configuration and --set.
-                self._expected_capacity = expected_capacity(split.frontend)
+                self._expected_capacity = expected_capacity(command.args)
         else:
             split = split_args(command.args, rewrite_yaml=lambda path: engine_yaml(path, workdir))
             engine_args = list(split.engine)
@@ -1400,13 +1417,20 @@ class ServeStart:
             self._check.stop()
             endpoint = handle.engine_endpoint
             if self._expected_capacity:
+                import grpc
+
                 with handle.stop_on_error():
-                    problems = capacity_problems(
-                        self._expected_capacity, read_engine_capacity(endpoint)
-                    )
+                    try:
+                        reported = read_engine_capacity(endpoint)
+                    except grpc.RpcError as error:
+                        raise ChainStartupError(
+                            f"reading the settings of the engine at {endpoint} failed: "
+                            f"{error.code()} {error.details()}; log {handle.engine_log}"
+                        ) from error
+                    problems = capacity_problems(self._expected_capacity, reported)
                     if problems:
                         raise ChainStartupError(
-                            f"engine at {endpoint} disagrees with its front end's configuration: "
+                            f"engine at {endpoint} disagrees with the worker's command line: "
                             f"{'; '.join(problems)}; log {handle.engine_log}"
                         )
 
@@ -1507,8 +1531,12 @@ def launch_serve_command(
     configuration with its KV-transfer settings spelled out, and with the
     streaming KV event publisher when it serves KV cache events and
     ``kv_aware_router`` (whether the disaggregated server routes on them;
-    ``None``: unknown) is not False; the engine is ready only once its log
-    shows the KV cache transceiver (:class:`TransceiverLogCheck`).
+    ``None``: unknown) is not False. On the trtllm chain, the engine's log
+    must not show that it has no KV cache transceiver, nor lack the started
+    transceiver of the Python runtime (:class:`TransceiverLogCheck`), and
+    the front end starts only if the engine reports the settings
+    :func:`expected_capacity` gives; the glm chain refuses a disaggregated
+    worker.
     """
     return ServeStart(
         cmd,
@@ -1539,8 +1567,8 @@ def launch_serve_commands(
     ports the harness picks avoid every command's ``--port``. If any of them
     fails to start, its front end refuses to start, or its front end exits
     while the others load, every server is stopped and the error names it by
-    its entry in ``labels``: a :class:`ChainStartupError`, or, for a command
-    line the harness refuses, that error with a note.
+    its entry in ``labels``: a :class:`ChainStartupError`, or any other error
+    (a command line the harness refuses, say) with a note.
     """
     starts: list[ServeStart] = []
     handles: list[ServeHandle | None] = [None] * len(cmds)
@@ -1569,8 +1597,11 @@ def launch_serve_commands(
                 if handles[i] is None:
                     try:
                         handles[i] = start.step()
-                    except Exception as error:
+                    except ChainStartupError as error:
                         raise ChainStartupError(f"{labels[i]} failed to start: {error}") from error
+                    except Exception as error:
+                        error.add_note(f"while starting {labels[i]}")
+                        raise
             for i, handle in enumerate(handles):
                 rc = handle.poll() if handle is not None else None
                 if rc is not None:
@@ -1769,20 +1800,38 @@ class WorkerProcess(ChainProcess):
     The front end stands for the worker: its pid and exit code (or the
     engine's, as :meth:`ServeHandle.poll` gives them) are the worker's, so a
     test that kills the worker by pid kills the front end. Once :meth:`poll`
-    sees either process gone, it sends SIGTERM to the other one without
-    waiting; :meth:`terminate` or :meth:`kill` then stops the worker fully.
+    sees either process gone, a background thread stops the worker as
+    :meth:`ServeHandle.terminate` does, so the other process and everything it
+    started are stopped even if the test never calls :meth:`terminate`;
+    :meth:`terminate` and :meth:`kill` wait for that thread.
     """
 
-    _signalled = False
+    _reaper: threading.Thread | None = None
 
     def poll(self) -> int | None:
         rc = self.handle.poll()
-        if rc is not None and not self._signalled:
-            self._signalled = True
-            for proc in (self.handle.frontend, self.handle.engine):
-                if proc is not None and proc.poll() is None:
-                    proc.terminate()
+        if rc is not None and self._reaper is None:
+            self._reaper = threading.Thread(
+                target=self._reap, name=f"stop worker {self.pid}", daemon=True
+            )
+            self._reaper.start()
         return rc
+
+    def _reap(self) -> None:
+        try:
+            self.handle.terminate()
+        except BaseException as error:  # noqa: BLE001 - a thread has no caller to raise to
+            self.handle.teardown_errors.append(f"stopping the worker failed: {error!r}")
+
+    def terminate(self) -> None:
+        if self._reaper is not None:
+            self._reaper.join()
+        self.handle.terminate()
+
+    def kill(self) -> None:
+        if self._reaper is not None:
+            self._reaper.join()
+        self.handle.terminate(grace=0)
 
 
 def launch_worker(
