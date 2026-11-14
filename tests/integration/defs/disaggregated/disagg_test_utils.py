@@ -160,7 +160,7 @@ def _run_worker(
             from openengine_chain.launch import launch_worker
 
             try:
-                process = launch_worker(cmd, env=env, sink=stdout)
+                process = launch_worker(cmd, env=env, sink=stdout, role_index=worker_index)
             except BaseException:
                 if log_file is not None:
                     log_file.close()

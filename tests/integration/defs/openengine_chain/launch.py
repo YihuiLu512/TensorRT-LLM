@@ -1185,9 +1185,11 @@ class ServeStart:
         engine_ready_timeout: float = DEFAULT_ENGINE_READY_TIMEOUT_S,
         check_plugin: bool = True,
         kv_aware_router: bool | None = None,
+        role_index: int | None = None,
     ) -> None:
         env = dict(os.environ if env is None else env)
         chain = resolve_chain() if chain is None else chain
+        self._role_index = role_index
         # Set once the start is over: the server, or the server whose start failed.
         self.handle: ServeHandle | None = None
         self.done = False
@@ -1205,6 +1207,7 @@ class ServeStart:
                 engine_endpoint=None,
                 workdir=None,
                 counter_dir=None,
+                role_index=role_index,
             )
             self.done = True
             return
@@ -1355,6 +1358,7 @@ class ServeStart:
             engine_endpoint=endpoint,
             workdir=self._workdir,
             counter_dir=self._counter_dir,
+            role_index=self._role_index,
         )
         handle.teardown_errors.extend(self._replaced_errors)
         handle.teardown_notes.extend(self._replaced_notes)
@@ -1507,6 +1511,7 @@ def launch_serve_command(
     engine_ready_timeout: float = DEFAULT_ENGINE_READY_TIMEOUT_S,
     check_plugin: bool = True,
     kv_aware_router: bool | None = None,
+    role_index: int | None = None,
 ) -> ServeHandle:
     """Start what ``cmd`` (a ``trtllm-serve`` command line) starts, through the chain if one is selected.
 
@@ -1541,7 +1546,8 @@ def launch_serve_command(
     transceiver of the Python runtime (:class:`TransceiverLogCheck`), and
     the front end does not start if a setting the engine reports differs
     from what :func:`expected_capacity` gives; the glm chain refuses a
-    disaggregated worker.
+    disaggregated worker. ``role_index`` becomes the handle's
+    :attr:`ServeHandle.role_index`.
     """
     return ServeStart(
         cmd,
@@ -1551,6 +1557,7 @@ def launch_serve_command(
         engine_ready_timeout=engine_ready_timeout,
         check_plugin=check_plugin,
         kv_aware_router=kv_aware_router,
+        role_index=role_index,
     ).wait()
 
 
@@ -1565,6 +1572,7 @@ def launch_serve_commands(
     check_plugin: bool = True,
     kv_aware_router: bool | None = None,
     interval: float = 2.0,
+    role_indices: Sequence[int | None] | None = None,
 ) -> list[ServeHandle]:
     """Start several servers at once: all engines load in parallel.
 
@@ -1573,13 +1581,18 @@ def launch_serve_commands(
     fails to start, its front end refuses to start, or its front end exits
     while the others load, every server is stopped and the error names it by
     its entry in ``labels``: a :class:`ChainStartupError`, or any other error
-    (a command line the harness refuses, say) with a note.
+    (a command line the harness refuses, say) with a note. ``role_indices``
+    (default: none) gives each handle its :attr:`ServeHandle.role_index`.
     """
     starts: list[ServeStart] = []
     handles: list[ServeHandle | None] = [None] * len(cmds)
+    if role_indices is None:
+        role_indices = [None] * len(cmds)
     reserve_ports(*(_address(cmd)[1] for cmd in cmds))
     try:
-        for label, cmd, env, sink in zip(labels, cmds, envs, sinks, strict=True):
+        for label, cmd, env, sink, role_index in zip(
+            labels, cmds, envs, sinks, role_indices, strict=True
+        ):
             try:
                 starts.append(
                     ServeStart(
@@ -1590,6 +1603,7 @@ def launch_serve_commands(
                         engine_ready_timeout=engine_ready_timeout,
                         check_plugin=check_plugin,
                         kv_aware_router=kv_aware_router,
+                        role_index=role_index,
                     )
                 )
             except ChainStartupError as error:
@@ -1840,15 +1854,17 @@ def launch_worker(
     *,
     env: Mapping[str, str] | None = None,
     sink: IO[Any] | int | None = None,
+    role_index: int | None = None,
 ) -> WorkerProcess:
     """Start a disaggregated worker's ``trtllm-serve`` command line through the chain.
 
     For tests that start their workers one at a time: returns once the engine
     is ready and the front end is started, as :func:`launch_serve_command`.
     The disaggregated server's routing is not known here, so a worker that
-    serves KV cache events gets the streaming publisher.
+    serves KV cache events gets the streaming publisher. ``role_index`` is the
+    worker's position among the workers of its role.
     """
-    return WorkerProcess(launch_serve_command(cmd, env=env, sink=sink))
+    return WorkerProcess(launch_serve_command(cmd, env=env, sink=sink, role_index=role_index))
 
 
 def launch_workers(
@@ -1859,6 +1875,7 @@ def launch_workers(
     sinks: Sequence[IO[Any] | int | None],
     kv_aware_router: bool | None = None,
     engine_ready_timeout: float = DEFAULT_ENGINE_READY_TIMEOUT_S,
+    role_indices: Sequence[int | None] | None = None,
 ) -> list[WorkerProcess]:
     """Start several disaggregated workers through the chain at once, as :func:`launch_serve_commands`."""
     handles = launch_serve_commands(
@@ -1868,6 +1885,7 @@ def launch_workers(
         sinks=sinks,
         kv_aware_router=kv_aware_router,
         engine_ready_timeout=engine_ready_timeout,
+        role_indices=role_indices,
     )
     return [WorkerProcess(handle) for handle in handles]
 

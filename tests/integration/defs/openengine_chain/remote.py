@@ -242,6 +242,7 @@ def launch_disagg_topology(
         sinks=[sink, sink],
         chain=chain,
         kv_aware_router=False,
+        role_indices=[0, 0],
     )
     try:
         config = disagg_server_config(

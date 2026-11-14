@@ -1275,9 +1275,14 @@ def test_workers_load_their_engines_in_parallel(fake, tmp_path, monkeypatch):
     delay = {"FAKE_ENGINE_DELAY": "2"}
     cmds, envs, records = _two_workers(fake, tmp_path, context=delay, generation=delay)
     workers = launch.launch_workers(
-        cmds, labels=["context", "generation"], envs=envs, sinks=[None, None]
+        cmds,
+        labels=["context", "generation"],
+        envs=envs,
+        sinks=[None, None],
+        role_indices=[0, 3],
     )
     try:
+        assert [w.handle.role_index for w in workers] == [0, 3]
         ctx, gen = (_record(r, "engine-start") for r in records)
         ctx_fe, gen_fe = (_record(r, "frontend-start") for r in records)
         # Both engines started before either was ready.
@@ -1315,9 +1320,10 @@ def test_worker_whose_front_end_was_killed_stops_its_engine(fake, tmp_path, monk
     fake.env["FAKE_ENGINE_SAY"] = launch.TRANSCEIVER_STARTED_LINE
     config = {"cache_transceiver_config": {"backend": "DEFAULT"}}
     worker = launch.launch_worker(
-        [fake.exe, "/model"] + _worker(fake, tmp_path, config), env=fake.env
+        [fake.exe, "/model"] + _worker(fake, tmp_path, config), env=fake.env, role_index=1
     )
     fake.handles.append(worker.handle)
+    assert worker.handle.role_index == 1
     engine = _record(fake.records, "engine-start")["pid"]
     os.kill(worker.pid, signal.SIGKILL)
     assert worker.wait(timeout=10) == -signal.SIGKILL

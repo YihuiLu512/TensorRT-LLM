@@ -525,7 +525,8 @@ def launch_disaggregated_llm(
                 envs=[env for _, _, env, _ in workers],
                 sinks=sinks,
                 kv_aware_router=kv_aware_router,
-                engine_ready_timeout=server_waiting_timeout)
+                engine_ready_timeout=server_waiting_timeout,
+                role_indices=[i for _, i, _, _ in workers])
             try:
                 yield (processes[:len(ctx_servers)],
                        processes[len(ctx_servers):])
