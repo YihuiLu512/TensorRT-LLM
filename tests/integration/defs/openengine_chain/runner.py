@@ -5,6 +5,7 @@
     python3 tests/integration/defs/openengine_chain/runner.py --chain trtllm \
         --out <dir> --list tests/integration/defs/openengine_chain/lists/case02_full.txt
     python3 tests/integration/defs/openengine_chain/runner.py --chain trtllm --out <dir> --smoke
+    python3 tests/integration/defs/openengine_chain/runner.py --chain trtllm --out <dir> --smoke-s3
 
 Entries use the test-db syntax (``test_e2e.py::...``, ``unittest/... -k ...``,
 ``TIMEOUT (N)``, ``ISOLATION``). pytest runs in ``tests/integration/defs`` with
@@ -13,6 +14,12 @@ entry with it, as CI does; tests that start an inner pytest pass the
 environment on, so the inner runs load the plugin too and write their junit
 files to ``<out>/junit``. ``<out>/summary.md`` lists every test with its chain
 markers. ``LLM_ROOT`` defaults to this checkout, as CI sets it.
+
+There are two smoke unions: ``--smoke`` runs the PoC-S2 work items' lists
+(``smoke/WT-00.txt`` to ``smoke/WT-29.txt``, fixes and rounds included) with
+aggregated servers; ``--smoke-s3`` runs the lists of WT-30 and later with
+``--topology disagg``, so that an aggregated test in them is moved to two
+workers and a disaggregated server.
 """
 
 from __future__ import annotations
@@ -105,8 +112,21 @@ def import_dir(out: str) -> str:
     return path
 
 
-def smoke_lists() -> list[str]:
-    return sorted(glob.glob(os.path.join(_HERE, "smoke", "WT-*.txt")))
+# The first work item number of PoC-S3; smaller numbers are PoC-S2's.
+_S3_FIRST_ITEM = 30
+_SMOKE_NAME = re.compile(r"^WT-(\d+)(?:-.+)?\.txt$")
+
+
+def smoke_lists(stage: str = "s2") -> list[str]:
+    """The smoke lists of PoC-S2 (``s2``) or PoC-S3 (``s3``) work items."""
+    found = []
+    for path in sorted(glob.glob(os.path.join(_HERE, "smoke", "WT-*.txt"))):
+        match = _SMOKE_NAME.match(os.path.basename(path))
+        if match is None:
+            continue
+        if (int(match.group(1)) >= _S3_FIRST_ITEM) == (stage == "s3"):
+            found.append(path)
+    return found
 
 
 def test_files(entries: list[str]) -> list[str]:
@@ -119,12 +139,18 @@ def test_files(entries: list[str]) -> list[str]:
     return files
 
 
-def run_env(chain: str, out: str, base: dict[str, str]) -> dict[str, str]:
+def run_env(
+    chain: str, out: str, base: dict[str, str], topology: str | None = None
+) -> dict[str, str]:
     env = dict(base)
     if chain == cv.CHAIN_NONE:
         env.pop(cv.ENV_CHAIN, None)
     else:
         env[cv.ENV_CHAIN] = chain
+    if topology is None:
+        env.pop(cv.ENV_TOPOLOGY, None)
+    else:
+        env[cv.ENV_TOPOLOGY] = topology
     env[cv.ENV_RESULTS_DIR] = out
     env.setdefault("LLM_ROOT", _REPO)
     env["PYTHONPATH"] = os.pathsep.join(
@@ -348,7 +374,20 @@ def main(argv: list[str] | None = None) -> int:
         "--out", required=True, help="results directory (created; must hold no junit files yet)"
     )
     parser.add_argument("--list", action="append", default=[], help="test list file")
-    parser.add_argument("--smoke", action="store_true", help="add every work item's smoke/WT-*.txt")
+    smoke = parser.add_mutually_exclusive_group()
+    smoke.add_argument(
+        "--smoke", action="store_true", help="add the PoC-S2 work items' smoke/WT-*.txt"
+    )
+    smoke.add_argument(
+        "--smoke-s3",
+        action="store_true",
+        help="add the PoC-S3 work items' smoke/WT-*.txt; implies --topology disagg",
+    )
+    parser.add_argument(
+        "--topology",
+        choices=(cv.TOPOLOGY_DISAGG,),
+        help=f"set {cv.ENV_TOPOLOGY}: move aggregated tests to the disaggregated form",
+    )
     parser.add_argument("--timeout", type=int, default=7200, help="per-test timeout (s)")
     parser.add_argument(
         "--waives", help="waives file (CI: tests/integration/test_lists/waives.txt)"
@@ -370,23 +409,32 @@ def main(argv: list[str] | None = None) -> int:
         return (
             1 if any(r["file"] == CROSS_NODE_FILE and r["outcome"] == "failed" for r in rows) else 0
         )
-    lists = args.list + (smoke_lists() if args.smoke else [])
+    lists = args.list + (smoke_lists("s2") if args.smoke else [])
+    lists += smoke_lists("s3") if args.smoke_s3 else []
+    topology = cv.TOPOLOGY_DISAGG if args.smoke_s3 else args.topology
     entries = read_entries(lists)
     if not entries:
-        parser.error("no test entries; give --list and/or --smoke")
+        parser.error("no test entries; give --list, --smoke or --smoke-s3")
     if junit_files(out):
         parser.error(f"{out} already holds junit files; the summary would mix runs")
     os.makedirs(out, exist_ok=True)
     # pytest runs in tests/integration/defs, not in the caller's directory.
     waives = os.path.abspath(args.waives) if args.waives else None
     extra = [a for a in args.extra if a != "--"]
-    env = run_env(args.chain, out, dict(os.environ))
+    env = run_env(args.chain, out, dict(os.environ), topology)
     print("cwd:", _DEFS)
     print(
         "env:",
         {
             k: env.get(k)
-            for k in (cv.ENV_CHAIN, cv.ENV_RESULTS_DIR, "LLM_ROOT", "PYTHONPATH", "PYTEST_ADDOPTS")
+            for k in (
+                cv.ENV_CHAIN,
+                cv.ENV_TOPOLOGY,
+                cv.ENV_RESULTS_DIR,
+                "LLM_ROOT",
+                "PYTHONPATH",
+                "PYTEST_ADDOPTS",
+            )
         },
     )
     rc = 0

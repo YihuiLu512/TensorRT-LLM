@@ -486,6 +486,54 @@ def launch_disaggregated_llm(
             for f in log_files:
                 f.close()
 
+    @contextlib.contextmanager
+    def chain_workers(enable_redirect_log=False):
+        """The ctx and gen workers through the OpenEngine chain; all engines load at once."""
+        # Importable only when the harness runner sets PYTHONPATH.
+        from openengine_chain.launch import launch_workers
+
+        workers = [("ctx", i, env, args)
+                   for i, (env, args) in enumerate(ctx_servers)]
+        workers += [("gen", i, env, args)
+                    for i, (env, args) in enumerate(gen_servers)]
+        routers = {
+            ((disaggregated_server_config.get(servers) or {}).get("router")
+             or {}).get("type")
+            for servers in ("context_servers", "generation_servers")
+        }
+        kv_aware_router = (
+            "kv_cache_aware" in routers
+            or disaggregated_server_config.get("conditional_disagg_config")
+            is not None)
+        log_files = []
+        try:
+            sinks = []
+            for name, i, _, _ in workers:
+                if enable_redirect_log:
+                    log_path = os.path.join(temp_dir.name,
+                                            f"output_{name}_{i}.log")
+                    f = open(log_path, "w+", encoding="utf-8", errors="replace")
+                    log_files.append(f)
+                    worker_log_paths.append(log_path)
+                    sinks.append(f)
+                else:
+                    sinks.append(None)
+            processes = launch_workers(
+                [args for _, _, _, args in workers],
+                labels=[f"{name} worker {i}" for name, i, _, _ in workers],
+                envs=[env for _, _, env, _ in workers],
+                sinks=sinks,
+                kv_aware_router=kv_aware_router)
+            try:
+                yield (processes[:len(ctx_servers)],
+                       processes[len(ctx_servers):])
+            finally:
+                for process in processes:
+                    process.terminate()
+        finally:
+            for f in log_files:
+                f.close()
+
     server_cmd = [
         trtllm_serve_path, "disaggregated", "-c",
         disaggregated_serving_config_path, "--server_start_timeout",
@@ -508,16 +556,21 @@ def launch_disaggregated_llm(
         print(f"Using HTTP service discovery at http://localhost:{serve_port}")
         write_worker_configs(f"http://localhost:{serve_port}")
 
-        ctx_processes = server_stack.enter_context(
-            multi_popen(ctx_servers,
-                        "ctx",
-                        enable_redirect_log=assert_worker_log_contains
-                        is not None))
-        gen_processes = server_stack.enter_context(
-            multi_popen(gen_servers,
-                        "gen",
-                        enable_redirect_log=assert_worker_log_contains
-                        is not None))
+        if os.environ.get("TRTLLM_TEST_OPENENGINE_CHAIN"):
+            ctx_processes, gen_processes = server_stack.enter_context(
+                chain_workers(
+                    enable_redirect_log=assert_worker_log_contains is not None))
+        else:
+            ctx_processes = server_stack.enter_context(
+                multi_popen(ctx_servers,
+                            "ctx",
+                            enable_redirect_log=assert_worker_log_contains
+                            is not None))
+            gen_processes = server_stack.enter_context(
+                multi_popen(gen_servers,
+                            "gen",
+                            enable_redirect_log=assert_worker_log_contains
+                            is not None))
 
         start_time = time.time()
         server_is_ready = False

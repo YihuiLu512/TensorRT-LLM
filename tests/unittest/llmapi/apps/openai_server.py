@@ -85,7 +85,10 @@ class RemoteOpenAIServer:
             launch_cmd = ["trtllm-llmapi-launch"] + launch_cmd
         if not env:
             env = os.environ.copy()
-        if os.environ.get("TRTLLM_TEST_OPENENGINE_CHAIN"):
+        # TRTLLM_TEST_OPENENGINE_TOPOLOGY=disagg starts an aggregated server as
+        # two workers and a disaggregated server, through the chain if one is set.
+        if (os.environ.get("TRTLLM_TEST_OPENENGINE_CHAIN")
+                or os.environ.get("TRTLLM_TEST_OPENENGINE_TOPOLOGY")):
             try:
                 # Importable only when the harness runner sets PYTHONPATH.
                 from openengine_chain.remote import launch_for_remote_server
@@ -95,9 +98,12 @@ class RemoteOpenAIServer:
                     llmapi_launch=llmapi_launch,
                     role=self.role,
                     sink=self._get_output())
-                self.proc = self._chain_handle.frontend
-                if wait:
-                    self.wait_for_server(timeout=self.MAX_SERVER_START_WAIT_S)
+                # None: no chain and nothing to move; started below as usual.
+                if self._chain_handle is not None:
+                    self.proc = self._chain_handle.frontend
+                    if wait:
+                        self.wait_for_server(
+                            timeout=self.MAX_SERVER_START_WAIT_S)
             except BaseException:
                 # __exit__ does not run for a constructor that raised.
                 if self._chain_handle is not None:
@@ -105,7 +111,8 @@ class RemoteOpenAIServer:
                 self.proc = None
                 self._release_files()
                 raise
-            return
+            if self._chain_handle is not None:
+                return
         self.proc = subprocess.Popen(launch_cmd,
                                      env=env,
                                      stdout=self._get_output(),

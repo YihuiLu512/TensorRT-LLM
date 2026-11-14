@@ -1146,3 +1146,187 @@ def test_engine_port_avoids_the_ports_of_the_server(fake, monkeypatch):
     assert engine_port not in (check_port, frontend_port, given)
     assert len(_engine_logs(handle)) == 1
     handle.terminate(grace=1)
+
+
+# --- Disaggregated workers ---------------------------------------------------------------
+
+
+def _option(argv, name):
+    return argv[argv.index(name) + 1]
+
+
+def _environ(pid):
+    with open(f"/proc/{pid}/environ", "rb") as f:
+        return dict(item.decode().split("=", 1) for item in f.read().split(b"\0") if b"=" in item)
+
+
+def _worker(fake, tmp_path, config, role="context"):
+    args = ["--host", "127.0.0.1", "--port", str(_port()), "--server_role", role]
+    if config is not None:
+        args += ["--config", _write_config(tmp_path, f"{role}.yaml", config)]
+    return args
+
+
+def test_disagg_worker_is_split_by_the_disaggregated_rules(fake, tmp_path):
+    fake.env.update(
+        FAKE_ENGINE_SAY=launch.TRANSCEIVER_STARTED_LINE,
+        CUDA_VISIBLE_DEVICES="3",
+        TLLM_LOG_LEVEL="info",
+        TRTLLM_DISAGG_NO_RETRY="1",
+        TRTLLM_SERVER_DISABLE_GC="1",
+    )
+    config = {"cache_transceiver_config": {"backend": "DEFAULT"}, "max_batch_size": 4}
+    args = _worker(fake, tmp_path, config)
+    handle = _start(fake, args, chain="trtllm")
+    engine = _record(fake.records, "engine-start")
+    frontend = _record(fake.records, "frontend-start")
+    engine_config = yaml.safe_load(open(_option(engine["argv"], "--config")))
+    assert engine_config == {"cache_transceiver_config": {"backend": "NIXL"}, "max_batch_size": 4}
+    assert "--server_role" not in engine["argv"]
+    assert _option(frontend["argv"], "--server_role") == "context"
+    assert _option(frontend["argv"], "--config") == args[-1]
+    assert engine["env"]["TLLM_LOG_LEVEL"] == "info"
+    assert engine["env"]["TRTLLM_DISAGG_NO_RETRY"] == "1"
+    assert frontend["env"]["TRTLLM_SERVER_DISABLE_GC"] == "1"
+    assert frontend["env"][cv.ENV_COUNTER_DIR] == handle.counter_dir
+    assert "TLLM_LOG_LEVEL" not in frontend["env"]
+    assert "TRTLLM_DISAGG_NO_RETRY" not in frontend["env"]
+    assert _environ(engine["pid"])["CUDA_VISIBLE_DEVICES"] == "3"
+    assert "CUDA_VISIBLE_DEVICES" not in _environ(frontend["pid"])
+    handle.terminate(grace=1)
+
+
+def test_disagg_worker_without_a_configuration_gets_one_for_its_engine(fake, tmp_path):
+    fake.env["FAKE_ENGINE_SAY"] = launch.TRANSCEIVER_STARTED_LINE
+    handle = _start(fake, _worker(fake, tmp_path, None, "generation"), chain="trtllm")
+    engine = _record(fake.records, "engine-start")["argv"]
+    frontend = _record(fake.records, "frontend-start")["argv"]
+    path = _option(engine, "--extra_llm_api_options")
+    assert yaml.safe_load(open(path)) == {"cache_transceiver_config": {"backend": "NIXL"}}
+    assert path.startswith(handle.workdir)
+    assert "--extra_llm_api_options" not in frontend
+    handle.terminate(grace=1)
+
+
+def test_disagg_engine_ready_requires_the_transceiver_log_line(fake, tmp_path, monkeypatch):
+    """NT-175: a SERVING engine without its KV cache transceiver fails the start."""
+    monkeypatch.setattr(launch, "TRANSCEIVER_LOG_GRACE_S", 0.5)
+    args = _worker(fake, tmp_path, {"cache_transceiver_config": {"backend": "DEFAULT"}})
+    with pytest.raises(launch.ChainStartupError, match="no KV cache transceiver.*has no"):
+        _start(fake, args, chain="trtllm")
+    assert not (fake.records / "frontend-start.json").exists()
+    assert _gone(_record(fake.records, "engine-start")["pid"])
+
+    fake.env["FAKE_ENGINE_SAY"] = f"[TRT-LLM] {launch.TRANSCEIVER_DISABLED_LINE}"
+    monkeypatch.setattr(launch, "TRANSCEIVER_LOG_GRACE_S", 600)
+    started = time.monotonic()
+    with pytest.raises(launch.ChainStartupError, match="cache_transceiver is disabled"):
+        _start(fake, args, chain="trtllm")
+    assert time.monotonic() - started < 60
+
+    # The C++ runtime does not log that its transceiver started.
+    del fake.env["FAKE_ENGINE_SAY"]
+    cpp = _worker(fake, tmp_path, {"cache_transceiver_config": {"backend": "UCX"}}, "generation")
+    _start(fake, cpp, chain="trtllm").terminate(grace=1)
+    # An aggregated server is not checked.
+    _start(fake, ["--port", str(_port())], chain="trtllm").terminate(grace=1)
+
+
+def test_engine_whose_mpi_workers_cannot_start_fails_at_once(fake):
+    fake.env["FAKE_ENGINE_MODE"] = "never_ready"
+    fake.env["FAKE_ENGINE_SAY"] = "MPI Error in NBC subrequest 0 of 1: 17"
+    started = time.monotonic()
+    with pytest.raises(launch.ChainStartupError, match="cannot start its workers.*MPI Error"):
+        _start(fake, ["--port", str(_port())], chain="trtllm", engine_ready_timeout=600)
+    assert time.monotonic() - started < 60
+    assert _gone(_record(fake.records, "engine-start")["pid"])
+
+
+def _two_workers(fake, tmp_path, **envs):
+    cmds, environments, records = [], [], []
+    for role in ("context", "generation"):
+        record_dir = tmp_path / f"records-{role}"
+        record_dir.mkdir()
+        records.append(record_dir)
+        environments.append(
+            dict(
+                fake.env,
+                FAKE_RECORD_DIR=str(record_dir),
+                FAKE_ENGINE_SAY=launch.TRANSCEIVER_STARTED_LINE,
+                **envs.get(role, {}),
+            )
+        )
+        config = {"cache_transceiver_config": {"backend": "DEFAULT"}}
+        cmds.append([fake.exe, "/model"] + _worker(fake, tmp_path, config, role))
+    return cmds, environments, records
+
+
+def test_workers_load_their_engines_in_parallel(fake, tmp_path, monkeypatch):
+    monkeypatch.setenv(cv.ENV_CHAIN, "trtllm")
+    delay = {"FAKE_ENGINE_DELAY": "2"}
+    cmds, envs, records = _two_workers(fake, tmp_path, context=delay, generation=delay)
+    workers = launch.launch_workers(
+        cmds, labels=["context", "generation"], envs=envs, sinks=[None, None]
+    )
+    try:
+        ctx, gen = (_record(r, "engine-start") for r in records)
+        ctx_fe, gen_fe = (_record(r, "frontend-start") for r in records)
+        # Both engines started before either was ready.
+        assert abs(ctx["time"] - gen["time"]) < 1.5
+        assert min(ctx_fe["time"], gen_fe["time"]) > max(ctx["time"], gen["time"])
+        assert [w.pid for w in workers] == [ctx_fe["pid"], gen_fe["pid"]]
+        assert all(w.poll() is None for w in workers)
+    finally:
+        for worker in workers:
+            worker.terminate()
+
+
+def test_one_worker_failing_stops_the_other_and_names_it(fake, tmp_path):
+    cmds, envs, records = _two_workers(
+        fake,
+        tmp_path,
+        context={"FAKE_ENGINE_DELAY": "600"},
+        generation={"FAKE_ENGINE_MODE": "exit"},
+    )
+    with pytest.raises(launch.ChainStartupError, match="^generation failed to start"):
+        launch.launch_serve_commands(
+            cmds,
+            labels=["context", "generation"],
+            envs=envs,
+            sinks=[None, None],
+            chain="trtllm",
+            interval=0.1,
+        )
+    _wait_gone(_record(records[0], "engine-start")["pid"])
+    assert not (records[0] / "frontend-start.json").exists()
+
+
+def test_worker_whose_front_end_was_killed_stops_its_engine(fake, tmp_path, monkeypatch):
+    monkeypatch.setenv(cv.ENV_CHAIN, "trtllm")
+    fake.env["FAKE_ENGINE_SAY"] = launch.TRANSCEIVER_STARTED_LINE
+    config = {"cache_transceiver_config": {"backend": "DEFAULT"}}
+    worker = launch.launch_worker(
+        [fake.exe, "/model"] + _worker(fake, tmp_path, config), env=fake.env
+    )
+    fake.handles.append(worker.handle)
+    engine = _record(fake.records, "engine-start")["pid"]
+    os.kill(worker.pid, signal.SIGKILL)
+    assert worker.wait(timeout=10) == -signal.SIGKILL
+    _wait_gone(engine)
+    assert not worker.handle.alive
+
+
+def test_disagg_engine_gets_a_kv_event_publisher(fake, tmp_path):
+    fake.env["FAKE_ENGINE_SAY"] = launch.TRANSCEIVER_STARTED_LINE
+    config = {
+        "cache_transceiver_config": {"backend": "DEFAULT"},
+        "kv_cache_config": {"event_buffer_max_size": 1024},
+    }
+    handle = _start(fake, _worker(fake, tmp_path, config), chain="trtllm", kv_aware_router=True)
+    engine = _record(fake.records, "engine-start")["argv"]
+    events = yaml.safe_load(open(_option(engine, "--config")))["kv_cache_config"]
+    endpoint = events["kv_events_config"]["endpoint"]
+    port = int(endpoint.rsplit(":", 1)[1])
+    assert events["kv_events_config"]["replay_endpoint"] == f"tcp://127.0.0.1:{port + 1}"
+    assert "event_buffer_max_size" not in events
+    handle.terminate(grace=1)

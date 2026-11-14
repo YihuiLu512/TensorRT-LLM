@@ -10,6 +10,12 @@ CHAIN_GLM = "glm"
 CHAIN_DS = "ds"
 CHAINS = (CHAIN_TRTLLM, CHAIN_GLM, CHAIN_DS)
 
+# Selects how RemoteOpenAIServer starts the server of an aggregated test: unset or empty
+# starts one server; "disagg" starts a context worker and a generation worker, each
+# through the chain when one is selected, and a disaggregated server in front of them.
+ENV_TOPOLOGY = "TRTLLM_TEST_OPENENGINE_TOPOLOGY"
+TOPOLOGY_DISAGG = "disagg"
+
 # Command prefix of the glm engine; required when the chain is "glm".
 ENV_GLM_SERVE_CMD = "TRTLLM_TEST_GLM_SERVE_CMD"
 

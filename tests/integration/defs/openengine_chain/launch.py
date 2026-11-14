@@ -37,12 +37,17 @@ import yaml
 from . import conventions as cv
 from .split import (
     ServeCommand,
+    disagg_engine_yaml,
+    disagg_frontend_env,
     engine_yaml,
     frontend_env,
+    is_disagg_worker,
     iteration_stats_enabled,
+    last_config_file,
     option_value,
     parse_serve_command,
     split_args,
+    transceiver_runtime,
 )
 
 ENGINE_HOST = "127.0.0.1"
@@ -842,52 +847,182 @@ class FrontendCheck:
             self._address.close()
 
 
+# A line of an engine log saying that its MPI workers cannot start: the engine process
+# itself keeps running, so without this the wait lasts until the ready timeout.
+ENGINE_FATAL_LINE = re.compile(
+    r"MPI Error in|MPI_ABORT was invoked|An error occurred in MPI_", re.IGNORECASE
+)
+# Lines of a TensorRT-LLM engine log about its KV cache transceiver: the Python
+# runtime's transceiver logs the first when it is built; any runtime logs the second
+# when the configuration builds none.
+TRANSCEIVER_STARTED_LINE = "Using KvCacheTransceiverV2"
+TRANSCEIVER_DISABLED_LINE = "cache_transceiver is disabled"
+# How long after the engine reports SERVING its log may take to show the transceiver line.
+TRANSCEIVER_LOG_GRACE_S = 30.0
+
+
+class _LogScanner:
+    """Reads a log as it grows and finds the first line matching a pattern."""
+
+    def __init__(self, path: str) -> None:
+        self._path = path
+        self._offset = 0
+        self._partial = b""
+
+    def find(self, pattern: re.Pattern[str]) -> str | None:
+        try:
+            with open(self._path, "rb") as f:
+                f.seek(self._offset)
+                data = f.read()
+        except OSError:
+            return None
+        self._offset += len(data)
+        lines = (self._partial + data).split(b"\n")
+        self._partial = lines.pop()
+        for line in lines:
+            text = line.decode("utf-8", "replace")
+            if pattern.search(text):
+                return text
+        return None
+
+
+class TransceiverLogCheck:
+    """Whether a disaggregated worker's engine has built its KV cache transceiver, from its log.
+
+    ``runtime`` is ``PYTHON`` or ``CPP``: only the Python runtime logs that
+    its transceiver started; any runtime logs that a configuration without a
+    backend has none.
+    """
+
+    def __init__(self, runtime: str) -> None:
+        self.runtime = runtime
+
+    def problem(self, text: str) -> str | None:
+        """Why a log ``text`` does not show a started transceiver, or ``None``."""
+        if TRANSCEIVER_DISABLED_LINE in text:
+            return f"the engine log says {TRANSCEIVER_DISABLED_LINE!r}"
+        if self.runtime == "PYTHON" and TRANSCEIVER_STARTED_LINE not in text:
+            return f"the engine log has no {TRANSCEIVER_STARTED_LINE!r}"
+        return None
+
+
+class _EngineWait:
+    """Polls one engine until it is ready: :func:`wait_engine_ready` one check at a time."""
+
+    def __init__(
+        self,
+        endpoint: str,
+        engine: LoggedProcess,
+        timeout: float,
+        give_up: Callable[[], bool] | None = None,
+        transceiver: TransceiverLogCheck | None = None,
+    ) -> None:
+        import grpc
+        from grpc_health.v1 import health_pb2_grpc
+
+        self.endpoint = endpoint
+        self.engine = engine
+        self.timeout = timeout
+        self._give_up = give_up
+        self._transceiver = transceiver
+        self._port = int(endpoint.rsplit(":", 1)[1])
+        self._deadline = time.monotonic() + timeout
+        self._transceiver_deadline: float | None = None
+        self._fatal = _LogScanner(engine.log_path)
+        self._channel = grpc.insecure_channel(endpoint)
+        self._stub = health_pb2_grpc.HealthStub(self._channel)
+
+    def close(self) -> None:
+        self._channel.close()
+
+    def check(self) -> bool | None:
+        """True once the engine is ready, False if ``give_up`` returned True, else None."""
+        import grpc
+        from grpc_health.v1 import health_pb2
+
+        engine = self.engine
+        rc = engine.poll()
+        if rc is not None:
+            raise ChainStartupError(
+                f"engine exited with code {rc} before it was ready; log {engine.log_path}:\n"
+                f"{tail(engine.log_path)}"
+            )
+        fatal = self._fatal.find(ENGINE_FATAL_LINE)
+        if fatal is not None:
+            raise ChainStartupError(
+                f"engine cannot start its workers ({fatal.strip()}); log {engine.log_path}:\n"
+                f"{tail(engine.log_path)}"
+            )
+        if self._give_up is not None and self._give_up():
+            return False
+        try:
+            response = self._stub.Check(
+                health_pb2.HealthCheckRequest(service="inference"), timeout=5
+            )
+            if response.status == health_pb2.HealthCheckResponse.SERVING:
+                # The answer may come from another server on the same port.
+                foreign = foreign_listeners(self._port, live_process_tree(engine.pid))
+                if foreign:
+                    raise EnginePortTaken(
+                        f"another process also listens on {self.endpoint} (sockets "
+                        f"{sorted(foreign)}); log {engine.log_path}"
+                    )
+                if self._transceiver_ready():
+                    return True
+        except grpc.RpcError:
+            pass
+        if time.monotonic() > self._deadline:
+            raise ChainStartupError(
+                f"engine at {self.endpoint} not SERVING within {self.timeout:.0f} s; log "
+                f"{engine.log_path}:\n{tail(engine.log_path)}"
+            )
+        return None
+
+    def _transceiver_ready(self) -> bool:
+        """Whether the log of a SERVING engine shows its transceiver; raises once the grace is over."""
+        if self._transceiver is None:
+            return True
+        with open(self.engine.log_path, "rb") as f:
+            text = f.read().decode("utf-8", "replace")
+        problem = self._transceiver.problem(text)
+        if problem is None:
+            return True
+        now = time.monotonic()
+        if self._transceiver_deadline is None:
+            self._transceiver_deadline = now + TRANSCEIVER_LOG_GRACE_S
+        if TRANSCEIVER_DISABLED_LINE in text or now > self._transceiver_deadline:
+            raise ChainStartupError(
+                f"engine at {self.endpoint} is SERVING but has no KV cache transceiver: "
+                f"{problem}; log {self.engine.log_path}:\n{tail(self.engine.log_path)}"
+            )
+        return False
+
+
 def wait_engine_ready(
     endpoint: str,
     engine: LoggedProcess,
     timeout: float,
     interval: float = 2.0,
     give_up: Callable[[], bool] | None = None,
+    transceiver: TransceiverLogCheck | None = None,
 ) -> bool:
     """Poll gRPC health service ``inference`` until it reports SERVING, from ``engine`` alone.
 
-    Returns True then, or False as soon as ``give_up`` returns True.
+    Returns True then, or False as soon as ``give_up`` returns True. Fails at
+    once when the engine exits or its log says its MPI workers cannot start
+    (:data:`ENGINE_FATAL_LINE`). With ``transceiver``, a SERVING engine is
+    ready only once its log shows the KV cache transceiver it needs, which may
+    take up to :data:`TRANSCEIVER_LOG_GRACE_S` more.
     """
-    import grpc
-    from grpc_health.v1 import health_pb2, health_pb2_grpc
-
-    port = int(endpoint.rsplit(":", 1)[1])
-    deadline = time.monotonic() + timeout
-    with grpc.insecure_channel(endpoint) as channel:
-        stub = health_pb2_grpc.HealthStub(channel)
+    waiter = _EngineWait(endpoint, engine, timeout, give_up, transceiver)
+    try:
         while True:
-            rc = engine.poll()
-            if rc is not None:
-                raise ChainStartupError(
-                    f"engine exited with code {rc} before it was ready; log {engine.log_path}:\n"
-                    f"{tail(engine.log_path)}"
-                )
-            if give_up is not None and give_up():
-                return False
-            try:
-                response = stub.Check(health_pb2.HealthCheckRequest(service="inference"), timeout=5)
-                if response.status == health_pb2.HealthCheckResponse.SERVING:
-                    # The answer may come from another server on the same port.
-                    foreign = foreign_listeners(port, live_process_tree(engine.pid))
-                    if foreign:
-                        raise EnginePortTaken(
-                            f"another process also listens on {endpoint} (sockets "
-                            f"{sorted(foreign)}); log {engine.log_path}"
-                        )
-                    return True
-            except grpc.RpcError:
-                pass
-            if time.monotonic() > deadline:
-                raise ChainStartupError(
-                    f"engine at {endpoint} not SERVING within {timeout:.0f} s; log "
-                    f"{engine.log_path}:\n{tail(engine.log_path)}"
-                )
+            ready = waiter.check()
+            if ready is not None:
+                return ready
             time.sleep(interval)
+    finally:
+        waiter.close()
 
 
 def _results_dir() -> str:
@@ -915,6 +1050,310 @@ def _engine_prefix(chain: str, command: ServeCommand) -> list[str]:
     return shlex.split(glm)
 
 
+class ServeStart:
+    """The start of one served endpoint, split into starting it and waiting until it is ready.
+
+    Creating it does what :func:`launch_serve_command` does before it waits:
+    it starts the engine (and the front-end check) and returns. :meth:`step`
+    checks the engine once and, once it is ready, starts the front end;
+    :meth:`wait` steps until then. Several starts can so load their engines at
+    the same time (:func:`launch_serve_commands`). Without a chain the command
+    runs unchanged and :attr:`handle` is set at once.
+    """
+
+    def __init__(
+        self,
+        cmd: Sequence[str],
+        *,
+        chain: str | None = None,
+        env: Mapping[str, str] | None = None,
+        sink: IO[Any] | int | None = None,
+        engine_ready_timeout: float = DEFAULT_ENGINE_READY_TIMEOUT_S,
+        check_plugin: bool = True,
+        kv_aware_router: bool | None = None,
+    ) -> None:
+        env = dict(os.environ if env is None else env)
+        chain = resolve_chain() if chain is None else chain
+        # Set once the start is over: the server, or the server whose start failed.
+        self.handle: ServeHandle | None = None
+        self.done = False
+        if chain == cv.CHAIN_NONE:
+            # Unchanged command line: the split table does not apply.
+            proc = subprocess.Popen(list(cmd), env=env, stdout=sink, stderr=sink)
+            host, port = _address(cmd)
+            self.handle = ServeHandle(
+                chain=chain,
+                model="",
+                host=host,
+                port=port,
+                frontend=proc,
+                engine=None,
+                engine_endpoint=None,
+                workdir=None,
+                counter_dir=None,
+            )
+            self.done = True
+            return
+        command = parse_serve_command(cmd)
+        if check_plugin:
+            require_plugin()
+        self._chain = chain
+        self._command = command
+        self._sink = sink
+        self._engine_ready_timeout = engine_ready_timeout
+        self._engine_prefix = _engine_prefix(chain, command)
+        given_metrics_port = option_value(command.args, ENGINE_METRICS_PORT_OPTION)
+        if given_metrics_port is not None and chain != cv.CHAIN_TRTLLM:
+            raise ChainError(
+                f"{ENGINE_METRICS_PORT_OPTION} is a TensorRT-LLM engine option; the harness does "
+                f"not pass it to the {chain} chain's engine"
+            )
+        host, port = _address(command.args)
+        # trtllm-serve refuses a metrics port equal to its --port, but the engine gets a
+        # --port the harness picks, so that check does not see a clash with the front end's.
+        if _as_port(given_metrics_port) and _as_port(given_metrics_port) == port:
+            raise ChainError(f"{ENGINE_METRICS_PORT_OPTION} must differ from --port")
+        self._host, self._port = host, port
+        self._given_metrics_port = _as_port(given_metrics_port)
+        workdir = _results_dir()
+        self._workdir = workdir
+        disagg = is_disagg_worker(command.args)
+        self._transceiver: TransceiverLogCheck | None = None
+        if disagg:
+            runtimes: list[str] = []
+
+            def rewrite_yaml(path: str | None) -> str:
+                engine_path = disagg_engine_yaml(
+                    path,
+                    workdir,
+                    args=command.args,
+                    kv_aware_router=kv_aware_router,
+                    ports=_free_port_block,
+                )
+                with open(engine_path, encoding="utf-8") as f:
+                    runtimes.append(transceiver_runtime(yaml.safe_load(f) or {}))
+                return engine_path
+
+            split = split_args(command.args, rewrite_yaml=rewrite_yaml)
+            engine_args = list(split.engine)
+            if last_config_file(command.args) is None:
+                engine_args += ["--extra_llm_api_options", rewrite_yaml(None)]
+            # The engine reads the last configuration file only.
+            self._transceiver = TransceiverLogCheck(runtimes[-1])
+        else:
+            split = split_args(command.args, rewrite_yaml=lambda path: engine_yaml(path, workdir))
+            engine_args = list(split.engine)
+        self._split = split
+        self._engine_args = engine_args
+        self._engine_env = {k: v for k, v in env.items() if k != cv.ENV_COUNTER_DIR}
+        engine_flags = []
+        if chain == cv.CHAIN_TRTLLM and iteration_stats_enabled(command.args):
+            engine_flags.append(ENGINE_LOAD_METRICS_FLAG)
+        if (
+            chain == cv.CHAIN_TRTLLM
+            and given_metrics_port is None
+            and engine_supports_metrics_port()
+        ):
+            engine_flags += [ENGINE_METRICS_PORT_OPTION, "0"]
+        self._engine_flags = engine_flags
+        self._counter_dir = os.path.join(workdir, "counters")
+        fe_env = disagg_frontend_env(env) if disagg else frontend_env(env)
+        check_env = {k: v for k, v in fe_env.items() if k != cv.ENV_COUNTER_DIR}
+        check_env[FRONTEND_CHECK_ENV] = "1"
+        fe_env[cv.ENV_COUNTER_DIR] = self._counter_dir
+        self._fe_env = fe_env
+        # Runs while the engine loads, so that a configuration the front end refuses
+        # does not wait for the engine.
+        self._check_port = free_port()
+        self._check = FrontendCheck(
+            lambda check_endpoint: self._frontend_cmd(check_endpoint, str(self._check_port)),
+            check_env,
+            workdir,
+            sink,
+        )
+        self._attempt = 0
+        self._replaced_errors: list[str] = []
+        self._replaced_notes: list[str] = []
+        self._waiter: _EngineWait | None = None
+        try:
+            self._start_attempt()
+        except BaseException:
+            self._finish()
+            raise
+
+    def _frontend_cmd(self, engine_endpoint: str, frontend_port: str | None) -> list[str]:
+        command = self._command
+        cmd = list(command.prefix) + [command.model, "--openengine-endpoint", engine_endpoint]
+        if frontend_supports_ready_timeout():
+            cmd += ["--openengine-ready-timeout", str(FRONTEND_READY_TIMEOUT_S)]
+        if self._split.host is not None:
+            cmd += ["--host", self._split.host]
+        if frontend_port is not None:
+            cmd += ["--port", frontend_port]
+        return cmd + list(self._split.frontend)
+
+    def _start_attempt(self) -> None:
+        """Start the engine on a new gRPC port, as a new server."""
+        self._attempt += 1
+        # The engine binds its gRPC port only after loading the model, so another
+        # process may take it in between. The front end's port, the front-end check's
+        # port and a metrics port the command line gives may be unbound at this point
+        # too, so free_port() may return them.
+        engine_port = _free_port_other_than(self._given_metrics_port, self._port, self._check_port)
+        endpoint = f"{ENGINE_HOST}:{engine_port}"
+        engine_cmd = (
+            self._engine_prefix
+            + [
+                self._command.model,
+                "--grpc",
+                "--grpc-protocol",
+                "openengine",
+                "--host",
+                ENGINE_HOST,
+                "--port",
+                str(engine_port),
+            ]
+            + self._engine_args
+            + self._engine_flags
+        )
+        handle = ServeHandle(
+            chain=self._chain,
+            model=self._command.model,
+            host=self._host,
+            port=self._port,
+            frontend=None,
+            engine=LoggedProcess(
+                "engine", engine_cmd, self._engine_env, self._workdir, self._sink, defer_sink=True
+            ),
+            engine_endpoint=endpoint,
+            workdir=self._workdir,
+            counter_dir=self._counter_dir,
+        )
+        handle.teardown_errors.extend(self._replaced_errors)
+        handle.teardown_notes.extend(self._replaced_notes)
+        self.handle = handle
+        self._engine_port = engine_port
+        with handle.stop_on_error():
+            self._waiter = _EngineWait(
+                endpoint,
+                handle._engine,
+                self._engine_ready_timeout,
+                give_up=self._check.refused,
+                transceiver=self._transceiver,
+            )
+
+    def step(self) -> ServeHandle | None:
+        """Check the engine once; return the server once it is started, else ``None``.
+
+        A server whose front end refused to start is returned with the check's
+        exited process as its front end. On a failure the started processes are
+        stopped before the error propagates.
+        """
+        if self.done:
+            return self.handle
+        handle = self.handle
+        try:
+            try:
+                with handle.stop_on_error():
+                    ready = self._waiter.check()
+                    if ready:
+                        # The engine has started its workers by now.
+                        handle._engine.remember_tree()
+                        handle._engine.attach_sink()
+            except BaseException as error:
+                self._close_waiter()
+                if (
+                    isinstance(error, ChainStartupError)
+                    and self._attempt < ENGINE_PORT_ATTEMPTS
+                    and (
+                        isinstance(error, EnginePortTaken)
+                        or _lost_its_port(handle.engine_log, self._engine_port)
+                    )
+                ):
+                    # The next attempt replaces this server; it is no test's server.
+                    _HANDLES.remove(handle)
+                    self._replaced_errors = list(handle.teardown_errors)
+                    self._replaced_notes = self._replaced_notes + [
+                        f"engine pid {handle._engine.pid} lost its gRPC port {self._engine_port} "
+                        f"to another process (log {handle.engine_log}); started again on a new "
+                        "port"
+                    ]
+                    self._start_attempt()
+                    return None
+                handle._engine.copy_to_sink()
+                raise
+            if ready is None:
+                return None
+            self._close_waiter()
+            if not ready:
+                # The front end refused to start: the engine is stopped without waiting for
+                # it to load, and the check's exited process stands for the front end.
+                handle.teardown_errors.extend(handle._engine.stop(TERMINATE_GRACE_S))
+                handle._frontend = self._check.adopt()
+                self._finish()
+                return handle
+            self._check.stop()
+            endpoint = handle.engine_endpoint
+
+            def start_frontend(frontend_port: str | None) -> LoggedProcess:
+                return LoggedProcess(
+                    "frontend",
+                    self._frontend_cmd(endpoint, frontend_port),
+                    self._fe_env,
+                    self._workdir,
+                    self._sink,
+                )
+
+            handle._start_frontend = start_frontend
+            with handle.stop_on_error():
+                os.makedirs(self._counter_dir, exist_ok=True)
+                handle._frontend = start_frontend(self._split.port)
+            self._finish()
+            return handle
+        except BaseException:
+            self._finish()
+            raise
+
+    def wait(self, interval: float = 2.0) -> ServeHandle:
+        """Step until the server is started; see :func:`launch_serve_command`."""
+        while (handle := self.step()) is None:
+            time.sleep(interval)
+        return handle
+
+    def abort(self) -> None:
+        """Stop what this start has started, finished or not."""
+        try:
+            if self.handle is not None:
+                self.handle.terminate()
+        finally:
+            if not self.done:
+                self._finish()
+
+    def _close_waiter(self) -> None:
+        if self._waiter is not None:
+            self._waiter.close()
+            self._waiter = None
+
+    def _finish(self) -> None:
+        """End the start: stop the front-end check and report what it left."""
+        if self.done:
+            return
+        self.done = True
+        self._close_waiter()
+        check = self._check
+        check.stop()
+        handle = self.handle
+        if handle is not None and handle in _HANDLES:
+            handle.teardown_errors.extend(check.problems)
+            handle.teardown_notes.extend(check.notes)
+        else:
+            # The start failed before a server that reports them was registered.
+            for line in check.problems + check.notes:
+                print(f"front-end check of a failed start: {line}", file=sys.stderr, flush=True)
+        check.problems.clear()
+        check.notes.clear()
+
+
 def launch_serve_command(
     cmd: Sequence[str],
     *,
@@ -923,6 +1362,7 @@ def launch_serve_command(
     sink: IO[Any] | int | None = None,
     engine_ready_timeout: float = DEFAULT_ENGINE_READY_TIMEOUT_S,
     check_plugin: bool = True,
+    kv_aware_router: bool | None = None,
 ) -> ServeHandle:
     """Start what ``cmd`` (a ``trtllm-serve`` command line) starts, through the chain if one is selected.
 
@@ -946,171 +1386,108 @@ def launch_serve_command(
     and the metrics port ``cmd`` gives, and from the front-end check's port. On a startup
     failure the started processes are stopped before the error propagates, and
     their handle stays registered with its logs.
+
+    A disaggregated worker (:func:`~openengine_chain.split.is_disagg_worker`)
+    is split by the disaggregated rules of the split table: its engine gets a
+    configuration with its KV-transfer settings spelled out, and with the
+    streaming KV event publisher when it serves KV cache events and
+    ``kv_aware_router`` (whether the disaggregated server routes on them;
+    ``None``: unknown) is not False; the engine is ready only once its log
+    shows the KV cache transceiver (:class:`TransceiverLogCheck`).
     """
-    env = dict(os.environ if env is None else env)
-    chain = resolve_chain() if chain is None else chain
-    if chain == cv.CHAIN_NONE:
-        # Unchanged command line: the split table does not apply.
-        proc = subprocess.Popen(list(cmd), env=env, stdout=sink, stderr=sink)
-        host, port = _address(cmd)
-        return ServeHandle(
-            chain=chain,
-            model="",
-            host=host,
-            port=port,
-            frontend=proc,
-            engine=None,
-            engine_endpoint=None,
-            workdir=None,
-            counter_dir=None,
-        )
-    command = parse_serve_command(cmd)
-    if check_plugin:
-        require_plugin()
-    engine_prefix = _engine_prefix(chain, command)
-    given_metrics_port = option_value(command.args, ENGINE_METRICS_PORT_OPTION)
-    if given_metrics_port is not None and chain != cv.CHAIN_TRTLLM:
-        raise ChainError(
-            f"{ENGINE_METRICS_PORT_OPTION} is a TensorRT-LLM engine option; the harness does "
-            f"not pass it to the {chain} chain's engine"
-        )
-    host, port = _address(command.args)
-    # trtllm-serve refuses a metrics port equal to its --port, but the engine gets a
-    # --port the harness picks, so that check does not see a clash with the front end's.
-    if _as_port(given_metrics_port) and _as_port(given_metrics_port) == port:
-        raise ChainError(f"{ENGINE_METRICS_PORT_OPTION} must differ from --port")
-    workdir = _results_dir()
-    split = split_args(command.args, rewrite_yaml=lambda path: engine_yaml(path, workdir))
-    engine_env = {k: v for k, v in env.items() if k != cv.ENV_COUNTER_DIR}
-    engine_flags = []
-    if chain == cv.CHAIN_TRTLLM and iteration_stats_enabled(command.args):
-        engine_flags.append(ENGINE_LOAD_METRICS_FLAG)
-    if chain == cv.CHAIN_TRTLLM and given_metrics_port is None and engine_supports_metrics_port():
-        engine_flags += [ENGINE_METRICS_PORT_OPTION, "0"]
-    counter_dir = os.path.join(workdir, "counters")
-    fe_env = frontend_env(env)
-    check_env = {k: v for k, v in fe_env.items() if k != cv.ENV_COUNTER_DIR}
-    check_env[FRONTEND_CHECK_ENV] = "1"
-    fe_env[cv.ENV_COUNTER_DIR] = counter_dir
+    return ServeStart(
+        cmd,
+        chain=chain,
+        env=env,
+        sink=sink,
+        engine_ready_timeout=engine_ready_timeout,
+        check_plugin=check_plugin,
+        kv_aware_router=kv_aware_router,
+    ).wait()
 
-    def frontend_cmd(engine_endpoint: str, frontend_port: str | None) -> list[str]:
-        cmd = list(command.prefix) + [command.model, "--openengine-endpoint", engine_endpoint]
-        if frontend_supports_ready_timeout():
-            cmd += ["--openengine-ready-timeout", str(FRONTEND_READY_TIMEOUT_S)]
-        if split.host is not None:
-            cmd += ["--host", split.host]
-        if frontend_port is not None:
-            cmd += ["--port", frontend_port]
-        return cmd + list(split.frontend)
 
-    # Runs while the engine loads, so that a configuration the front end refuses
-    # does not wait for the engine.
-    check_port = free_port()
-    check = FrontendCheck(
-        lambda check_endpoint: frontend_cmd(check_endpoint, str(check_port)),
-        check_env,
-        workdir,
-        sink,
-    )
-    handle: ServeHandle | None = None
+def launch_serve_commands(
+    cmds: Sequence[Sequence[str]],
+    *,
+    labels: Sequence[str],
+    envs: Sequence[Mapping[str, str] | None],
+    sinks: Sequence[IO[Any] | int | None],
+    chain: str | None = None,
+    engine_ready_timeout: float = DEFAULT_ENGINE_READY_TIMEOUT_S,
+    check_plugin: bool = True,
+    kv_aware_router: bool | None = None,
+    interval: float = 2.0,
+) -> list[ServeHandle]:
+    """Start several servers at once: all engines load in parallel.
+
+    Each command is started as :func:`launch_serve_command` starts it. If any
+    of them fails to start, its front end refuses to start, or its front end
+    exits while the others load, every server is stopped and a
+    :class:`ChainStartupError` names it by its entry in ``labels``.
+    """
+    starts: list[ServeStart] = []
+    handles: list[ServeHandle | None] = [None] * len(cmds)
     try:
-        replaced_errors: list[str] = []
-        replaced_notes: list[str] = []
-        for attempt in range(1, ENGINE_PORT_ATTEMPTS + 1):
-            # The engine binds its gRPC port only after loading the model, so another
-            # process may take it in between. The front end's port, the front-end check's
-            # port and a metrics port the command line gives may be unbound at this point
-            # too, so free_port() may return them.
-            engine_port = _free_port_other_than(_as_port(given_metrics_port), port, check_port)
-            endpoint = f"{ENGINE_HOST}:{engine_port}"
-            engine_cmd = (
-                engine_prefix
-                + [
-                    command.model,
-                    "--grpc",
-                    "--grpc-protocol",
-                    "openengine",
-                    "--host",
-                    ENGINE_HOST,
-                    "--port",
-                    str(engine_port),
-                ]
-                + list(split.engine)
-                + engine_flags
-            )
-            handle = ServeHandle(
-                chain=chain,
-                model=command.model,
-                host=host,
-                port=port,
-                frontend=None,
-                engine=LoggedProcess(
-                    "engine", engine_cmd, engine_env, workdir, sink, defer_sink=True
-                ),
-                engine_endpoint=endpoint,
-                workdir=workdir,
-                counter_dir=counter_dir,
-            )
-            handle.teardown_errors.extend(replaced_errors)
-            handle.teardown_notes.extend(replaced_notes)
+        for label, cmd, env, sink in zip(labels, cmds, envs, sinks, strict=True):
             try:
-                with handle.stop_on_error():
-                    ready = wait_engine_ready(
-                        endpoint, handle._engine, engine_ready_timeout, give_up=check.refused
+                starts.append(
+                    ServeStart(
+                        cmd,
+                        chain=chain,
+                        env=env,
+                        sink=sink,
+                        engine_ready_timeout=engine_ready_timeout,
+                        check_plugin=check_plugin,
+                        kv_aware_router=kv_aware_router,
                     )
-                    if ready:
-                        # The engine has started its workers by now.
-                        handle._engine.remember_tree()
-                        handle._engine.attach_sink()
-            except BaseException as error:
-                if (
-                    isinstance(error, ChainStartupError)
-                    and attempt < ENGINE_PORT_ATTEMPTS
-                    and (
-                        isinstance(error, EnginePortTaken)
-                        or _lost_its_port(handle.engine_log, engine_port)
+                )
+            except Exception as error:
+                raise ChainStartupError(f"{label} failed to start: {error}") from error
+        while True:
+            for i, start in enumerate(starts):
+                if handles[i] is None:
+                    try:
+                        handles[i] = start.step()
+                    except Exception as error:
+                        raise ChainStartupError(f"{labels[i]} failed to start: {error}") from error
+            for i, handle in enumerate(handles):
+                rc = handle.poll() if handle is not None else None
+                if rc is not None:
+                    raise ChainStartupError(
+                        f"{labels[i]} exited with code {rc} while the others started; logs "
+                        f"{handle.frontend_log} {handle.engine_log}"
                     )
-                ):
-                    # The next attempt replaces this server; it is no test's server.
-                    _HANDLES.remove(handle)
-                    replaced_errors = list(handle.teardown_errors)
-                    replaced_notes = replaced_notes + [
-                        f"engine pid {handle._engine.pid} lost its gRPC port {engine_port} to "
-                        f"another process (log {handle.engine_log}); started again on a new port"
-                    ]
-                    continue
-                handle._engine.copy_to_sink()
-                raise
-            break
-        if not ready:
-            # The front end refused to start: the engine is stopped without waiting for
-            # it to load, and the check's exited process stands for the front end.
-            handle.teardown_errors.extend(handle._engine.stop(TERMINATE_GRACE_S))
-            handle._frontend = check.adopt()
-            return handle
-        check.stop()
+            if all(handle is not None for handle in handles):
+                return list(handles)
+            time.sleep(interval)
+    except BaseException:
+        for start in starts:
+            try:
+                start.abort()
+            except Exception as error:  # noqa: BLE001 - the other servers must still stop
+                print(f"stopping a server of a failed start: {error!r}", file=sys.stderr)
+        raise
 
-        def start_frontend(frontend_port: str | None) -> LoggedProcess:
-            return LoggedProcess(
-                "frontend", frontend_cmd(endpoint, frontend_port), fe_env, workdir, sink
-            )
 
-        handle._start_frontend = start_frontend
-        with handle.stop_on_error():
-            os.makedirs(counter_dir, exist_ok=True)
-            handle._frontend = start_frontend(split.port)
-        return handle
-    finally:
-        check.stop()
-        if handle is not None and handle in _HANDLES:
-            handle.teardown_errors.extend(check.problems)
-            handle.teardown_notes.extend(check.notes)
-        else:
-            # The start failed before a server that reports them was registered.
-            for line in check.problems + check.notes:
-                print(f"front-end check of a failed start: {line}", file=sys.stderr, flush=True)
-        check.problems.clear()
-        check.notes.clear()
+def _free_port_block(count: int) -> int:
+    """The first of ``count`` consecutive ports that were free a moment ago."""
+    for _ in range(100):
+        base = free_port()
+        if base + count > 65536:
+            continue
+        socks = []
+        try:
+            for port in range(base, base + count):
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                socks.append(sock)
+                sock.bind((ENGINE_HOST, port))
+            return base
+        except OSError:
+            continue
+        finally:
+            for sock in socks:
+                sock.close()
+    raise ChainError(f"no {count} consecutive free ports found")
 
 
 def _as_port(value: str | None) -> int | None:
@@ -1245,6 +1622,53 @@ class ChainProcess:
 
     def kill(self) -> None:
         self.handle.terminate(grace=0)
+
+
+class WorkerProcess(ChainProcess):
+    """A disaggregated worker that a test starts itself, standing in for its ``subprocess.Popen``.
+
+    The front end stands for the worker: its pid and exit code (or the
+    engine's, as :meth:`ServeHandle.poll` gives them) are the worker's, so a
+    test that kills the worker by pid kills the front end. Once :meth:`poll`
+    sees either process gone, the harness stops the other one.
+    """
+
+    def poll(self) -> int | None:
+        rc = self.handle.poll()
+        if rc is not None and self.handle.alive:
+            self.handle.terminate()
+        return rc
+
+
+def launch_worker(
+    cmd: Sequence[str],
+    *,
+    env: Mapping[str, str] | None = None,
+    sink: IO[Any] | int | None = None,
+) -> WorkerProcess:
+    """Start a disaggregated worker's ``trtllm-serve`` command line through the chain.
+
+    For tests that start their workers one at a time: returns once the engine
+    is ready and the front end is started, as :func:`launch_serve_command`.
+    The disaggregated server's routing is not known here, so a worker that
+    serves KV cache events gets the streaming publisher.
+    """
+    return WorkerProcess(launch_serve_command(cmd, env=env, sink=sink))
+
+
+def launch_workers(
+    cmds: Sequence[Sequence[str]],
+    *,
+    labels: Sequence[str],
+    envs: Sequence[Mapping[str, str] | None],
+    sinks: Sequence[IO[Any] | int | None],
+    kv_aware_router: bool | None = None,
+) -> list[WorkerProcess]:
+    """Start several disaggregated workers through the chain at once, as :func:`launch_serve_commands`."""
+    handles = launch_serve_commands(
+        cmds, labels=labels, envs=envs, sinks=sinks, kv_aware_router=kv_aware_router
+    )
+    return [WorkerProcess(handle) for handle in handles]
 
 
 @contextlib.contextmanager

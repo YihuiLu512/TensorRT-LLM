@@ -227,10 +227,16 @@ def test_remote_entry_rejects_unsupported_modes():
         remote.launch_for_remote_server(
             ["trtllm-serve", "/m"], env={}, llmapi_launch=True, role=None, sink=None
         )
-    with pytest.raises(remote.ChainError, match="server_role"):
-        remote.launch_for_remote_server(
-            ["trtllm-serve", "/m"], env={}, llmapi_launch=False, role="CONTEXT", sink=None
-        )
+
+
+def test_remote_entry_starts_a_worker_of_a_role_through_the_chain(monkeypatch):
+    monkeypatch.setenv(cv.ENV_CHAIN, "trtllm")
+    monkeypatch.delenv(cv.ENV_TOPOLOGY, raising=False)
+    started = []
+    monkeypatch.setattr(remote, "launch_serve_command", lambda cmd, **kw: started.append(cmd))
+    cmd = ["trtllm-serve", "/m", "--server_role", "CONTEXT"]
+    remote.launch_for_remote_server(cmd, env={}, llmapi_launch=False, role="CONTEXT", sink=None)
+    assert started == [cmd]
 
 
 def test_chain_without_the_harness_on_the_path_releases_its_files(
@@ -504,3 +510,220 @@ def test_chain_server_whose_front_end_refuses_fails_without_waiting_for_the_engi
         log_contains="max_beam_width > 1 is not supported",
     )
     assert pytest_plugin._startup_rejected(refused, info.value, [handle]) == (True, "")
+
+
+# ------------------------------------------------- an aggregated test as a disaggregated one
+
+
+@pytest.mark.parametrize(
+    "chain, role, llmapi_launch, args",
+    [
+        ("", "CONTEXT", False, ["--server_role", "CONTEXT"]),
+        ("", None, True, []),
+        ("", None, False, ["--server_role", "context"]),
+    ],
+)
+def test_topology_without_a_chain_leaves_workers_to_the_caller(
+    monkeypatch, chain, role, llmapi_launch, args
+):
+    monkeypatch.setenv(cv.ENV_CHAIN, chain)
+    monkeypatch.setenv(cv.ENV_TOPOLOGY, cv.TOPOLOGY_DISAGG)
+    monkeypatch.setattr(remote, "launch_serve_command", lambda *a, **k: pytest.fail("started"))
+    monkeypatch.setattr(remote, "launch_disagg_topology", lambda *a, **k: pytest.fail("moved"))
+    assert (
+        remote.launch_for_remote_server(
+            ["trtllm-serve", "/m"] + args,
+            env={},
+            llmapi_launch=llmapi_launch,
+            role=role,
+            sink=None,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("chain", ["", "trtllm"])
+def test_topology_moves_an_aggregated_server(monkeypatch, chain):
+    monkeypatch.setenv(cv.ENV_CHAIN, chain)
+    monkeypatch.setenv(cv.ENV_TOPOLOGY, cv.TOPOLOGY_DISAGG)
+    moved = []
+    monkeypatch.setattr(
+        remote, "launch_disagg_topology", lambda cmd, **kw: moved.append((cmd, kw["chain"]))
+    )
+    cmd = ["trtllm-serve", "/m", "--port", "1"]
+    remote.launch_for_remote_server(cmd, env={}, llmapi_launch=False, role=None, sink=None)
+    assert moved == [(cmd, chain or cv.CHAIN_NONE)]
+
+
+def test_topology_with_a_chain_starts_a_worker_of_a_role_as_one_server(monkeypatch):
+    monkeypatch.setenv(cv.ENV_CHAIN, "trtllm")
+    monkeypatch.setenv(cv.ENV_TOPOLOGY, cv.TOPOLOGY_DISAGG)
+    started = []
+    monkeypatch.setattr(remote, "launch_serve_command", lambda cmd, **kw: started.append(cmd))
+    monkeypatch.setattr(remote, "launch_disagg_topology", lambda *a, **k: pytest.fail("moved"))
+    cmd = ["trtllm-serve", "/m", "--server_role", "GENERATION"]
+    remote.launch_for_remote_server(cmd, env={}, llmapi_launch=False, role="GENERATION", sink=None)
+    assert started == [cmd]
+
+
+def test_topology_takes_only_disagg(monkeypatch):
+    monkeypatch.setenv(cv.ENV_TOPOLOGY, "agg")
+    with pytest.raises(remote.ChainError, match="expected unset or 'disagg'"):
+        remote.resolve_topology()
+    monkeypatch.setenv(cv.ENV_TOPOLOGY, "")
+    assert remote.resolve_topology() is None
+
+
+def test_visible_gpus_come_from_cuda_visible_devices():
+    assert remote.visible_gpus({"CUDA_VISIBLE_DEVICES": "2, 5"}) == ["2", "5"]
+    assert remote.visible_gpus({"CUDA_VISIBLE_DEVICES": ""}) == []
+
+
+# Runs fake_serve.py with a record directory of its own, or with ``disaggregated -c <file>``
+# serves /health on the file's port and records its arguments, file and environment.
+_TOPOLOGY_EXE = """
+import http.server, json, os, signal, sys, time, yaml
+base = os.environ["FAKE_RECORD_DIR"]
+record_dir = os.path.join(base, str(os.getpid()))
+os.makedirs(record_dir)
+if sys.argv[1:2] != ["disaggregated"]:
+    os.environ["FAKE_RECORD_DIR"] = record_dir
+    os.execv(sys.executable, [sys.executable, FAKE] + sys.argv[1:])
+config = yaml.safe_load(open(sys.argv[sys.argv.index("-c") + 1]))
+def record(name, data):
+    with open(os.path.join(record_dir, name + ".json"), "w") as f:
+        json.dump(data, f)
+def on_term(signum, frame):
+    record("disagg-term", {"time": time.monotonic()})
+    sys.exit(0)
+signal.signal(signal.SIGTERM, on_term)
+record("disagg-start", {"argv": sys.argv[1:], "config": config, "env": dict(os.environ)})
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200 if self.path == "/health" else 404)
+        self.end_headers()
+    def log_message(self, *a):
+        pass
+httpd = http.server.HTTPServer(("127.0.0.1", config["port"]), Handler)
+httpd.timeout = 0.1
+while True:
+    httpd.handle_request()
+"""
+
+
+@pytest.fixture
+def fake_topology(tmp_path, monkeypatch):
+    """``trtllm-serve`` for the workers and for ``trtllm-serve disaggregated``."""
+    from openengine_chain import launch
+
+    exe = tmp_path / "trtllm-serve"
+    fake = pathlib.Path(__file__).parent / "fake_serve.py"
+    exe.write_text(f"#!{sys.executable}\nFAKE = {str(fake)!r}\n{_TOPOLOGY_EXE}")
+    exe.chmod(0o755)
+    records = tmp_path / "records"
+    records.mkdir()
+    monkeypatch.setattr(launch, "require_plugin", lambda: None)
+    monkeypatch.setattr(launch, "frontend_supports_ready_timeout", lambda: True)
+    monkeypatch.setattr(launch, "engine_supports_metrics_port", lambda: True)
+    monkeypatch.setenv(cv.ENV_RESULTS_DIR, str(tmp_path / "results"))
+    env = dict(
+        os.environ,
+        FAKE_RECORD_DIR=str(records),
+        FAKE_ENGINE_SAY=launch.TRANSCEIVER_STARTED_LINE,
+        CUDA_VISIBLE_DEVICES="0",
+    )
+    env.pop(cv.ENV_COUNTER_DIR, None)
+    return types.SimpleNamespace(exe=str(exe), records=records, env=env)
+
+
+def _records(records, name, count, timeout=20.0):
+    import json
+    import time
+
+    deadline = time.monotonic() + timeout
+    while len(found := sorted(records.glob(f"*/{name}.json"))) < count:
+        assert time.monotonic() < deadline, f"{len(found)} of {count} {name} records"
+        time.sleep(0.05)
+    return [json.loads(path.read_text()) for path in found]
+
+
+def _free_port():
+    import socket
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+@pytest.mark.parametrize("chain", ["trtllm", cv.CHAIN_NONE])
+def test_aggregated_server_runs_as_two_workers_and_a_disaggregated_server(fake_topology, chain):
+    import time
+
+    import requests
+    import yaml
+
+    port = _free_port()
+    cmd = [fake_topology.exe, "/m", "--host", "127.0.0.1", "--port", str(port), "--tp_size", "1"]
+    topology = remote.launch_disagg_topology(
+        cmd, env=fake_topology.env, sink=None, chain=chain, server_start_timeout=60
+    )
+    try:
+        (server,) = _records(fake_topology.records, "disagg-start", 1)
+        deadline = time.monotonic() + 20
+        while True:
+            try:
+                if requests.get(f"http://127.0.0.1:{port}/health", timeout=1).status_code == 200:
+                    break
+            except requests.ConnectionError:
+                pass
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        assert (topology.host, topology.port, topology.poll()) == ("127.0.0.1", port, None)
+        assert server["argv"][:2] == ["disaggregated", "-c"]
+        assert server["argv"][3:] == ["--server_start_timeout", "60"]
+        assert "CUDA_VISIBLE_DEVICES" not in server["env"]
+        config = server["config"]
+        key = config["internal_request_auth_key"]
+        assert (config["hostname"], config["port"]) == ("127.0.0.1", port)
+        frontends = {
+            fe["argv"][fe["argv"].index("--server_role") + 1]: fe
+            for fe in _records(fake_topology.records, "frontend-start", 2)
+        }
+        assert sorted(frontends) == ["context", "generation"]
+        for role in ("context", "generation"):
+            argv = frontends[role]["argv"]
+            (url,) = config[f"{role}_servers"]["urls"]
+            assert url == f"127.0.0.1:{argv[argv.index('--port') + 1]}"
+            assert "--tp_size" in argv if chain == cv.CHAIN_NONE else "--tp_size" not in argv
+            worker = yaml.safe_load(open(argv[argv.index("--extra_llm_api_options") + 1]))
+            assert worker["internal_request_auth_key"] == key
+            assert worker["cache_transceiver_config"] == {"backend": "DEFAULT"}
+        if chain == "trtllm":
+            engines = _records(fake_topology.records, "engine-start", 2)
+            assert all(e["env"].get("TLLM_X") is None for e in engines)
+            assert [e["argv"].count("--tp_size") for e in engines] == [1, 1]
+    finally:
+        topology.terminate(grace=5)
+    (stopped,) = _records(fake_topology.records, "disagg-term", 1)
+    assert topology.poll() is not None
+    assert not any(handle.alive for handle in topology.handles)
+
+
+def test_topology_that_needs_more_gpus_than_it_sees_starts_nothing(fake_topology):
+    cmd = [fake_topology.exe, "/m", "--port", str(_free_port()), "--tp_size", "2"]
+    with pytest.raises(ValueError, match="needs 4 GPUs"):
+        remote.launch_disagg_topology(cmd, env=fake_topology.env, sink=None, chain="trtllm")
+    assert not list(fake_topology.records.iterdir())
+
+
+def test_topology_without_a_chain_starts_a_worker_of_a_role_as_before(
+    monkeypatch, server_module, popen
+):
+    monkeypatch.delenv(cv.ENV_CHAIN, raising=False)
+    monkeypatch.setenv(cv.ENV_TOPOLOGY, cv.TOPOLOGY_DISAGG)
+    role = types.SimpleNamespace(name="CONTEXT")
+    server = server_module.RemoteOpenAIServer("/m", [], port=1234, wait=False, role=role)
+    (proc,) = popen
+    assert proc.args[0][-2:] == ["--server_role", "CONTEXT"]
+    assert server._chain_handle is None and server.proc is proc
+    server.terminate()
