@@ -180,6 +180,8 @@ def test_worker_role_frontend_refuses_an_engine_without_kv_connector(tmp_path):
                 "127.0.0.1",
                 "--port",
                 "0",
+                "--report_addr",
+                str(tmp_path / "addr"),
                 "--served_model_name",
                 MODEL,
                 "--openengine-endpoint",

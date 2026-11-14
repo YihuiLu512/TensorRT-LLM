@@ -105,7 +105,7 @@ def _refused(chain, role: str, body: dict, leg: str, *named: str) -> None:
     before = chain.snapshot()
     response = chain.post("/v1/completions", body, url=worker.url)
     assert response.status_code == 400, response.text
-    message = response.json()["error"]["message"]
+    message = response.json()["message"]
     assert message.startswith(f"{leg}: "), message
     for text in named:
         assert text in message, message
@@ -148,13 +148,19 @@ def test_n_above_one_through_the_orchestrator_is_refused(chain):
     after = chain.snapshot()
     for role in ("context", "generation"):
         assert _delta(before, after, role, SERVE_COUNTER_GENERATE_SENT) == 0
-    assert _delta(before, after, "context", SERVE_COUNTER_HTTP_REJECTED) == 1
+    # The orchestrator may resend a context leg it got an error for (its max_retries).
+    assert _delta(before, after, "context", SERVE_COUNTER_HTTP_REJECTED) >= 1
+    assert _delta(before, after, "generation", SERVE_COUNTER_HTTP_REJECTED) == 0
 
 
 @pytest.mark.parametrize(
     "params, named",
     [
-        ({"first_gen_logits": [[0.5]]}, ["first_gen_logits"]),
+        # One float32 0.5, serialized as the HTTP field carries a tensor.
+        (
+            {"first_gen_logits": [{"data": "AAAAPw==", "shape": [1], "dtype": "float32"}]},
+            ["first_gen_logits"],
+        ),
         ({"remote_tail_start": 1}, ["remote_tail_start"]),
         ({"multimodal_positions": [0], "multimodal_lengths": [1]}, ["multimodal"]),
         (
@@ -194,7 +200,7 @@ def test_an_engine_error_names_the_leg(chain, code, status):
     chain.gen.engine.push_script(Fail(code, "scripted leg failure"))
     response = chain.post("/v1/completions", _generation_leg_body(ctx), url=chain.gen.url)
     assert response.status_code == status, response.text
-    message = response.json()["error"]["message"]
+    message = response.json()["message"]
     assert message.startswith(f"{GEN_LEG}: "), message
     assert "OpenEngine engine 'tensorrt_llm'" in message and "scripted leg failure" in message
     assert f":{chain.gen.engine.port}" not in message
@@ -204,7 +210,7 @@ def test_an_aggregated_request_error_names_no_leg(chain):
     chain.gen.engine.push_script(Fail(grpc.StatusCode.INVALID_ARGUMENT, "scripted failure"))
     response = chain.complete(prompt=PROMPT, url=chain.gen.url)
     assert response.status_code == 400, response.text
-    message = response.json()["error"]["message"]
+    message = response.json()["message"]
     assert "leg" not in message and "scripted failure" in message
 
 
@@ -238,27 +244,35 @@ def _capabilities(min_tokens: bool) -> dict:
 
 
 @pytest.mark.parametrize(
-    "changes, refused",
+    "changes, refused_by",
     [
-        (_capabilities(min_tokens=False), True),
-        (_capabilities(min_tokens=True), False),
+        (_capabilities(min_tokens=False), "facade"),
+        (_capabilities(min_tokens=True), None),
         (
             {**_capabilities(min_tokens=False), "server_info_extra": {CONVENTIONS_VERSION_KEY: 3}},
-            False,
+            "engine",
         ),
     ],
     ids=["v4-without-key", "v4-with-key", "v3"],
 )
-def test_min_tokens_needs_the_capability_on_version_4(tmp_path, changes, refused):
-    """DQ-48: ``min_tokens >= 1`` is refused only by an engine on version 4 that does not declare it."""
+def test_min_tokens_needs_the_capability_on_version_4(tmp_path, changes, refused_by):
+    """DQ-48: the facade refuses ``min_tokens >= 1`` only for an engine on version 4 that does not declare it.
+
+    An engine on version 3 is sent the field as before, and refuses it itself
+    when it does not support it.
+    """
 
     async def check(facade, fake) -> None:
         sent = len(fake.requests)
         params = SamplingParams(max_tokens=2, min_tokens=1)
-        if refused:
+        if refused_by == "facade":
             with pytest.raises(ValueError, match="min_tokens=1 is not supported"):
                 facade.generate_async({"prompt_token_ids": [5, 6]}, params)
             assert len(fake.requests) == sent
+        elif refused_by == "engine":
+            with pytest.raises(ValueError, match="failed the request .*min_tokens"):
+                await facade.generate_async({"prompt_token_ids": [5, 6]}, params)
+            assert fake.requests[-1].stopping.min_tokens == 1
         else:
             output = await facade.generate_async({"prompt_token_ids": [5, 6]}, params)
             assert output.outputs[0].finish_reason is not None
@@ -310,6 +324,8 @@ def _start_worker(tmp_path: Path, config: dict) -> subprocess.CompletedProcess:
                 "127.0.0.1",
                 "--port",
                 "0",
+                "--report_addr",
+                str(tmp_path / "addr"),
                 "--served_model_name",
                 MODEL,
                 "--openengine-endpoint",

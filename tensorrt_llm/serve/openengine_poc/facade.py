@@ -457,9 +457,14 @@ def _names_the_leg(method: Callable[..., Any]) -> Callable[..., Any]:
             return method(*args, **kwargs)
         except ValueError as error:
             named = _on_leg(error, leg(args, kwargs))
-            if named is error:
-                raise
-            raise named from error
+            try:
+                if named is error:
+                    raise
+                raise named from error
+            finally:
+                # The raised error's traceback holds this frame: keeping it here would make a
+                # cycle that keeps the facade's gRPC objects alive until the next collection.
+                del named
 
     return wrapper
 
