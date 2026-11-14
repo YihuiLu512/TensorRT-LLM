@@ -123,7 +123,7 @@ SAMPLING_PARAMS: dict[str, FieldClass] = {
     "min_tokens": _mapped(
         "stopping.min_tokens",
         "trtllm.stopping.min_tokens",
-        fallback="sent as before when the engine reports an earlier conventions version, or none",
+        fallback="sent unchecked when the engine reports an earlier conventions version, or none",
     ),
     "beam_search_diversity_rate": _rejected(_BEAM),
     "repetition_penalty": _mapped(

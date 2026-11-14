@@ -207,15 +207,20 @@ def dump_generate_request(message: generation_pb2.GenerateRequest) -> Path | Non
     A debugging aid for comparing the requests of the two legs of a
     disaggregated request (SV-DSG-7). The file is
     ``<request_id>.json`` (the SHA-256 of the id when the id is not a plain
-    file name): the request as protobuf JSON, with the prompt token ids and
-    any raw media bytes replaced by their length and SHA-256. Unset, nothing
-    is written.
+    file name): the request as protobuf JSON, except that the prompt token
+    ids become their ``count`` and the ``length`` and ``sha256`` of their
+    compact JSON text (``[1,2,3]``), and each media item's ``url``,
+    ``data_uri`` or ``raw_bytes`` becomes the ``length`` and ``sha256`` of
+    its bytes (UTF-8 for a URL). It is written on the caller's thread before
+    the request is sent. Unset, nothing is written.
 
     Returns:
         The file written, or None.
 
     Raises:
-        OSError: The file cannot be written.
+        OSError: The file cannot be written; no partial file is left.
+        json_format.Error: The request has a value JSON cannot hold, such as
+            a non-finite number in a ``Struct``.
     """
     directory = os.environ.get(SERVE_REQUEST_DUMP_DIR_ENV)
     if not directory:
@@ -227,16 +232,23 @@ def dump_generate_request(message: generation_pb2.GenerateRequest) -> Path | Non
         **_digest(json.dumps(token_ids, separators=(",", ":")).encode()),
     }
     for item, media in zip(record.get("media", ()), message.media):
-        if media.HasField("raw_bytes"):
-            item["raw_bytes"] = _digest(media.raw_bytes)
+        source = media.WhichOneof("source")
+        if source == "raw_bytes":
+            item[source] = _digest(media.raw_bytes)
+        elif source in ("url", "data_uri"):
+            item[source] = _digest(getattr(media, source).encode())
     name = message.request_id
     if not _DUMP_NAME.fullmatch(name) or name.startswith("."):
         name = hashlib.sha256(name.encode()).hexdigest()
     path = Path(directory) / f"{name}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     partial = path.with_name(f".{path.name}.partial")
-    partial.write_text(json.dumps(record, indent=1, sort_keys=True))
-    os.replace(partial, path)
+    try:
+        partial.write_text(json.dumps(record, indent=1, sort_keys=True))
+        os.replace(partial, path)
+    except OSError:
+        partial.unlink(missing_ok=True)
+        raise
     return path
 
 
@@ -496,7 +508,7 @@ class OpenEngineEngineClient:
         message = to_generate_request(request)
         try:
             dump_generate_request(message)
-        except OSError as error:
+        except (OSError, json_format.Error) as error:
             # A debugging aid: the request is sent whether or not it could be written.
             logger.warning(f"Could not write GenerateRequest {message.request_id}: {error}")
         stream = self._client.generate(message, metadata=dict(request.metadata))

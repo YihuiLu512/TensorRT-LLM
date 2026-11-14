@@ -568,8 +568,8 @@ def check_min_tokens(
 
     An engine that reports :data:`CONVENTIONS_VERSION` declares with
     ``trtllm.stopping.min_tokens`` that it holds back EOS and stop tokens
-    until ``min_tokens`` is reached; one on an earlier version, or that
-    reports none, is sent ``min_tokens`` as before that key.
+    until ``min_tokens`` is reached; one that reports an earlier version, or
+    none, is sent ``min_tokens`` unchecked.
 
     Raises:
         ValueError: ``min_tokens`` is at least 1 and the engine reports

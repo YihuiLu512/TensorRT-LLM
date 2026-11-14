@@ -171,7 +171,8 @@ def test_a_restarted_engine_without_kv_transfer_is_lost(tmp_path):
 def test_worker_role_frontend_refuses_an_engine_without_kv_connector(tmp_path):
     """NT-172 (EP-01): ``trtllm-serve --server_role`` exits naming the engine and the declaration."""
     model = make_model_dir(tmp_path / "model")
-    with running_in_thread(FakeEngine(_profile(model, enabled=False))) as fake:
+    profile = _profile(model, enabled=False)
+    with running_in_thread(FakeEngine(profile)) as fake:
         result = subprocess.run(  # nosec B603
             [
                 *_serve_command(),
@@ -199,4 +200,7 @@ def test_worker_role_frontend_refuses_an_engine_without_kv_connector(tmp_path):
     output = result.stdout + result.stderr
     assert result.returncode != 0, output[-4000:]
     assert "step 'kv_connector'" in output, output[-4000:]
-    assert "does not declare kv_connector.enabled; a CONTEXT worker needs KV transfer" in output
+    assert (
+        f"engine {profile.engine_name!r} does not declare kv_connector.enabled; "
+        "a CONTEXT worker needs KV transfer"
+    ) in output, output[-4000:]

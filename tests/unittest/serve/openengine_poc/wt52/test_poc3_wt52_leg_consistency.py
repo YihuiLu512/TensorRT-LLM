@@ -152,6 +152,10 @@ def _request(request_id: str, media: bytes | None = None) -> generation_pb2.Gene
     return message
 
 
+def _digest(data: bytes) -> dict:
+    return {"length": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+
 def test_nothing_is_written_without_the_variable(tmp_path, monkeypatch):
     monkeypatch.delenv(SERVE_REQUEST_DUMP_DIR_ENV, raising=False)
     monkeypatch.chdir(tmp_path)
@@ -170,11 +174,41 @@ def test_a_dump_hides_the_prompt_and_raw_media(tmp_path, monkeypatch):
     dump = json.loads(path.read_text())
     assert dump["token_ids"]["count"] == 3
     assert "3, 1, 4" not in path.read_text() and "[3,1,4]" not in path.read_text()
-    assert dump["media"][0]["raw_bytes"] == {
-        "length": 4,
-        "sha256": hashlib.sha256(b"\x89PNG").hexdigest(),
-    }
+    assert dump["media"][0]["raw_bytes"] == _digest(b"\x89PNG")
     assert sorted(p.name for p in directory.iterdir()) == ["r-1.a.json"]
+
+
+def test_a_dump_hides_media_given_by_url_or_data_uri(tmp_path, monkeypatch):
+    monkeypatch.setenv(SERVE_REQUEST_DUMP_DIR_ENV, str(tmp_path))
+    message = _request("r2")
+    url = "https://example.invalid/a.png?signature=secret"
+    data_uri = "data:image/png;base64,iVBORw0KGgo="
+    message.media.add(modality=generation_pb2.MODALITY_IMAGE, url=url)
+    message.media.add(modality=generation_pb2.MODALITY_IMAGE, data_uri=data_uri)
+    path = dump_generate_request(message)
+    text = path.read_text()
+    assert "secret" not in text and "iVBORw0KGgo" not in text
+    media = json.loads(text)["media"]
+    assert media[0]["url"] == _digest(url.encode())
+    assert media[1]["data_uri"] == _digest(data_uri.encode())
+
+
+def test_a_dump_that_fails_leaves_no_partial_file(tmp_path, monkeypatch):
+    monkeypatch.setenv(SERVE_REQUEST_DUMP_DIR_ENV, str(tmp_path))
+    # A directory where the file goes makes the final rename fail.
+    (tmp_path / "r3.json").mkdir()
+    with pytest.raises(OSError):
+        dump_generate_request(_request("r3"))
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["r3.json"]
+
+
+def test_a_request_json_cannot_hold_is_not_dumped(tmp_path, monkeypatch):
+    monkeypatch.setenv(SERVE_REQUEST_DUMP_DIR_ENV, str(tmp_path))
+    message = _request("r4")
+    message.kv.session.attributes_struct.update({"first_gen_log_probs": [float("-inf")]})
+    with pytest.raises(json_format.Error):
+        dump_generate_request(message)
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize("request_id", ["../escape", "a/b", ".hidden", "x" * 200, ""])

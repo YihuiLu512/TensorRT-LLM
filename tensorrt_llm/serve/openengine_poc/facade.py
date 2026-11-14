@@ -438,9 +438,11 @@ def _on_leg(error: Exception, leg: str | None) -> Exception:
 
 
 def _names_the_leg(method: Callable[..., Any]) -> Callable[..., Any]:
-    """Name the leg in the ``ValueError`` that refuses a leg of a disaggregated request.
+    """Name the leg in the error ``method`` raises for a leg of a disaggregated request.
 
-    The leg is read from the call's ``disaggregated_params`` argument.
+    A ``ValueError`` or :class:`OpenEngineServeError` gets the prefix
+    :func:`_on_leg` gives it. The leg is read from the call's
+    ``disaggregated_params`` argument.
     """
     signature = inspect.signature(method)
 
@@ -455,7 +457,7 @@ def _names_the_leg(method: Callable[..., Any]) -> Callable[..., Any]:
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             return method(*args, **kwargs)
-        except ValueError as error:
+        except (ValueError, OpenEngineServeError) as error:
             named = _on_leg(error, leg(args, kwargs))
             try:
                 if named is error:
@@ -711,7 +713,8 @@ class OpenEngineLLM:
         """Connect to and check the engine, then start watching its health.
 
         The checks: the schema revision, the capabilities the engine declares,
-        the conventions version, token-id input and the tokenizer fingerprint.
+        the conventions version, token-id input, the tokenizer fingerprint and,
+        for a worker started with a role, the engine's KV transfer and role.
         With a counter directory, it also publishes the Generate count.
 
         Raises:
@@ -1269,11 +1272,11 @@ class OpenEngineLLM:
         info: EngineInfo,
         caps: ModelCapabilities,
     ) -> None:
-        """Refuse what the engine, or a leg of a disaggregated request, cannot serve (SV-DSG-8).
+        """Refuse ``min_tokens`` the engine does not take, and what a leg cannot carry (SV-DSG-8).
 
         ``min_tokens`` passes :func:`.mapping.check_min_tokens`. A
-        ``context_only`` or ``generation_only`` request has one output, whose
-        handoff the orchestrator passes on, and no media.
+        ``context_only`` or ``generation_only`` request has one output and no
+        media.
 
         Raises:
             ValueError: The request cannot be served; reported as HTTP 400.
@@ -1311,10 +1314,11 @@ class OpenEngineLLM:
         of the engine's KV connector.
 
         Raises:
-            ValueError: The request cannot be mapped; ``handoff_attributes`` is
-                given to a request that is not ``generation_only``, or a
-                ``context_only`` or ``generation_only`` request is sent to an
-                engine without KV transfer.
+            ValueError: The request cannot be mapped: :meth:`_check_request`
+                refuses it, ``handoff_attributes`` is given to a request that
+                is not ``generation_only``, or a ``context_only`` or
+                ``generation_only`` request is sent to an engine without KV
+                transfer.
         """
         client = self.client
         caps = client.model_info()

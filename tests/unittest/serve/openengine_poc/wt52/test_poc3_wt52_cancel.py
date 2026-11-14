@@ -4,12 +4,13 @@
 
 NT-009 (DG-38, DG-39c): a client that disconnects while its leg runs gets
 that leg's Generate call cancelled on that leg's engine: the context leg
-before its handoff, the generation leg while it decodes, and, through the
-orchestrator, a streamed request's generation leg. A context leg that has
-handed off is not cancelled. A non-streamed request whose client leaves is
-not cancelled: the orchestrator does not notice (DG-39). A worker frontend
-whose engine stays unreachable stops itself, and its ``/health`` answers 503
-meanwhile (DG-87).
+after its first token and before its handoff, the generation leg while it
+decodes, and, through the orchestrator, a streamed request's generation
+leg. A context leg that has handed off is not cancelled. A non-streamed request whose client leaves is
+not cancelled: the orchestrator does not notice (DG-39). A facade whose
+engine stays unreachable reports itself lost and unhealthy, and fails a
+request with 503 (DG-87). The fake engine has no queue, so a call cancelled
+while queued is left to the GPU tests.
 """
 
 from __future__ import annotations
@@ -200,11 +201,13 @@ def test_a_request_left_at_the_orchestrator_unstreamed_runs_to_its_end(chain, sl
     assert not set(ctx.cancelled) & {r.request_id for r in ctx.requests[-1:]}
 
 
-def test_a_worker_frontend_whose_engine_is_lost_stops_itself(tmp_path):
-    """DG-87 (SV-DSG-10): a lost engine makes the frontend unhealthy, stopping, and answer 503.
+def test_a_facade_whose_engine_is_lost_reports_it(tmp_path):
+    """DG-87 (SV-DSG-10): a lost engine makes the facade call ``on_engine_lost`` and fail requests.
 
     The engine stops answering; once ``engine_lost_timeout`` has passed the
-    facade is lost, and a request it is given fails with 503.
+    facade calls ``on_engine_lost`` (which stops the server process when
+    ``trtllm-serve`` starts it), ``check_health`` is false, and a request it is
+    given fails with 503.
     """
     model = make_model_dir(tmp_path / "model")
     profile = _chain_profile(disagg_profile("trtllm-like"), _fingerprint(model))

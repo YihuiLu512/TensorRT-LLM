@@ -9,8 +9,9 @@ message names the leg. NT-025 (EG-05b): ``trtllm_decode_preparation`` in a
 generation leg's ``openengine_handoff_attributes`` is refused. NT-026 (EG-06)
 and NT-027 (EG-19): a worker frontend does not start with ``max_beam_width >
 1`` or with the remote tail. NT-028 (EG-07): ``n > 1`` with a disaggregated
-request is refused. The ``min_tokens`` capability gate (DQ-48) and the leg
-named in an engine's own refusal are tested on a facade started in-process.
+request is refused. The ``min_tokens`` capability gate (DQ-48), media on a
+leg, and the leg named in a refusal from tokenization are tested on a facade
+started in-process.
 """
 
 from __future__ import annotations
@@ -148,8 +149,8 @@ def test_n_above_one_through_the_orchestrator_is_refused(chain):
     after = chain.snapshot()
     for role in ("context", "generation"):
         assert _delta(before, after, role, SERVE_COUNTER_GENERATE_SENT) == 0
-    # The orchestrator may resend a context leg it got an error for (its max_retries).
-    assert _delta(before, after, "context", SERVE_COUNTER_HTTP_REJECTED) >= 1
+    # The orchestrator resends a context leg it got an error for once (max_retries=1).
+    assert 1 <= _delta(before, after, "context", SERVE_COUNTER_HTTP_REJECTED) <= 2
     assert _delta(before, after, "generation", SERVE_COUNTER_HTTP_REJECTED) == 0
 
 
@@ -252,14 +253,15 @@ def _capabilities(min_tokens: bool) -> dict:
             {**_capabilities(min_tokens=False), "server_info_extra": {CONVENTIONS_VERSION_KEY: 3}},
             "engine",
         ),
+        ({**_capabilities(min_tokens=False), "follows_conventions": False}, "engine"),
     ],
-    ids=["v4-without-key", "v4-with-key", "v3"],
+    ids=["v4-without-key", "v4-with-key", "v3", "no-version"],
 )
 def test_min_tokens_needs_the_capability_on_version_4(tmp_path, changes, refused_by):
     """DQ-48: the facade refuses ``min_tokens >= 1`` only for an engine on version 4 that does not declare it.
 
-    An engine on version 3 is sent the field as before, and refuses it itself
-    when it does not support it.
+    An engine that reports version 3, or no version, is sent the field, and
+    refuses it itself when it does not support it.
     """
 
     async def check(facade, fake) -> None:
@@ -306,11 +308,34 @@ def test_a_disaggregated_request_with_media_is_refused(tmp_path):
     _with_facade(tmp_path, {}, check)
 
 
+def test_a_refusal_from_tokenizing_a_leg_names_the_leg(tmp_path):
+    """SV-DSG-8: ``preprocess`` (the chat path's tokenization) names the leg it refuses."""
+    from tensorrt_llm.serve.openai_protocol import DisaggregatedParams, to_llm_disaggregated_params
+
+    params = to_llm_disaggregated_params(
+        DisaggregatedParams(request_type="context_only", disagg_request_id=DISAGG_REQUEST_ID_MIN)
+    )
+    prompt = {"prompt_token_ids": [5, 6], "multi_modal_data": {"image": [object()]}}
+    sampling_params = SamplingParams(max_tokens=2, truncate_prompt_tokens=1)
+    truncation = "truncate_prompt_tokens is not supported for a prompt with media"
+
+    async def check(facade, fake) -> None:
+        with pytest.raises(ValueError) as error:
+            facade.preprocess(prompt, sampling_params, disaggregated_params=params)
+        assert str(error.value).startswith(f"{CTX_LEG}: {truncation}")
+        with pytest.raises(ValueError) as error:
+            facade.preprocess(prompt, sampling_params)
+        assert str(error.value).startswith(truncation)
+        assert not fake.requests
+
+    _with_facade(tmp_path, {}, check)
+
+
 # -- Startup refusals of a worker frontend ---------------------------------------------------------
 
 
-def _start_worker(tmp_path: Path, config: dict) -> subprocess.CompletedProcess:
-    """Run ``trtllm-serve --server_role generation`` with ``config`` in its YAML until it exits."""
+def _start_worker(tmp_path: Path, config: dict, role: ServerRole) -> subprocess.CompletedProcess:
+    """Run ``trtllm-serve --server_role <role>`` with ``config`` in its YAML until it exits."""
     model = make_model_dir(tmp_path / "model")
     config_path = tmp_path / "worker.yaml"
     config_path.write_text(yaml.safe_dump(config))
@@ -333,7 +358,7 @@ def _start_worker(tmp_path: Path, config: dict) -> subprocess.CompletedProcess:
                 "--openengine-ready-timeout",
                 "60",
                 "--server_role",
-                ServerRole.GENERATION.name.lower(),
+                role.name.lower(),
                 "--config",
                 str(config_path),
             ],
@@ -344,9 +369,12 @@ def _start_worker(tmp_path: Path, config: dict) -> subprocess.CompletedProcess:
         )
 
 
-def test_worker_role_frontend_refuses_beam_width_above_one(tmp_path):
-    """NT-026 (EG-06, F-25): ``max_beam_width > 1`` stops a worker frontend at startup."""
-    result = _start_worker(tmp_path, {"max_beam_width": 2})
+@pytest.mark.parametrize(
+    "role", [ServerRole.CONTEXT, ServerRole.GENERATION], ids=["context", "generation"]
+)
+def test_worker_role_frontend_refuses_beam_width_above_one(tmp_path, role):
+    """NT-026 (EG-06, F-25): ``max_beam_width > 1`` stops a worker frontend of either role at startup."""
+    result = _start_worker(tmp_path, {"max_beam_width": 2}, role)
     output = result.stdout + result.stderr
     assert result.returncode != 0, output[-4000:]
     assert "max_beam_width > 1 is not supported" in output, output[-4000:]
@@ -354,7 +382,7 @@ def test_worker_role_frontend_refuses_beam_width_above_one(tmp_path):
 
 def test_worker_role_frontend_refuses_remote_tail_config(tmp_path):
     """NT-027 (EG-19): the remote tail (``bounded_replay_on_generation``) stops a worker frontend."""
-    result = _start_worker(tmp_path, {"bounded_replay_on_generation": True})
+    result = _start_worker(tmp_path, {"bounded_replay_on_generation": True}, ServerRole.GENERATION)
     output = result.stdout + result.stderr
     assert result.returncode != 0, output[-4000:]
     assert "bounded_replay_on_generation is not supported" in output, output[-4000:]
