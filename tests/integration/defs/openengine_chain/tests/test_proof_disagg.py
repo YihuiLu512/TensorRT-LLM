@@ -709,8 +709,13 @@ def leaving(request, legs):
 def _register_and_leave(leaving):
     ctx, gen, outside = leaving
     # The disaggregated server lists the workers once they register during the test.
+    reads = STATE["reads"]
     STATE["members"] = {"ctx": ("localhost:8005",), "gen": ("localhost:8006", *outside)}
-    time.sleep(0.5)  # the watch reads the lists while they name the workers
+    # The watch reads the lists while they name the workers: the second read from now on
+    # started after the change.
+    deadline = time.monotonic() + 30
+    while STATE["reads"] < reads + 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
     ctx.take(1)
     gen.take(1)
     # It drops them from its lists, as when they stop before it.
@@ -746,16 +751,19 @@ def run_disagg(pytester, monkeypatch, tmp_path):
         "counts": dict.fromkeys(_orchestrator().counts, 0),
         "members": {CTX: (), GEN: ()},
         "inprocess": [],
+        "reads": 0,
     }
     monkeypatch.setattr(P, "_disagg_test_state", state, raising=False)
     monkeypatch.setattr(
         P, "find_orchestrators", lambda root: [P.Orchestrator(1, "http://o:1", "c")]
     )
-    monkeypatch.setattr(
-        P,
-        "read_orchestrator",
-        lambda o: P.OrchestratorReading(dict(state["counts"]), dict(state["members"])),
-    )
+
+    def read_orchestrator(orchestrator):
+        reading = P.OrchestratorReading(dict(state["counts"]), dict(state["members"]))
+        state["reads"] += 1
+        return reading
+
+    monkeypatch.setattr(P, "read_orchestrator", read_orchestrator)
     monkeypatch.setattr(P, "inprocess_workers", lambda root: list(state["inprocess"]))
     monkeypatch.setattr(P, "engine_info", lambda h: h.info)
     table = [
