@@ -310,19 +310,52 @@ def _cross_node(gen_takes=2, gen_listed_as="node1"):
 
 
 def test_a_cross_node_test_is_proven_over_both_nodes():
-    status, details = P.judge_cross_node(_cross_node())
-    assert status == P.OK, details
+    result = P.judge_cross_node(_cross_node())
+    assert result.status == P.OK, result.details()
+    props = P.disagg_props(result.counts, result.roles)
+    assert (props["handoffs"], props["orphan_handoffs"], props["engine_calls_gen"]) == (
+        "2",
+        "0",
+        "2",
+    )
     # The disaggregated server may list a worker by any name of its node.
-    assert P.judge_cross_node(_cross_node(gen_listed_as="10.0.0.2"))[0] == P.OK
+    assert P.judge_cross_node(_cross_node(gen_listed_as="10.0.0.2")).status == P.OK
 
 
 def test_a_cross_node_mismatch_or_a_missing_node_is_not_proven():
-    status, details = P.judge_cross_node(_cross_node(gen_takes=3))
-    assert status == P.FAIL and any(d.startswith("CH-4: fail") for d in details), details
+    result = P.judge_cross_node(_cross_node(gen_takes=3))
+    assert result.status == P.FAIL
+    assert any(d.startswith("CH-4: fail") for d in result.details()), result.details()
     node0, node1 = _cross_node(gen_listed_as="10.0.0.9")
-    assert P.judge_cross_node([node0, node1])[0] == P.FAIL
-    assert P.judge_cross_node([node0, None])[0] == P.INCOMPLETE
-    assert P.judge_cross_node([node0])[0] == P.INCOMPLETE
+    assert P.judge_cross_node([node0, node1]).status == P.FAIL
+    assert P.judge_cross_node([node0, None]).status == P.INCOMPLETE
+    assert P.judge_cross_node([node0]).status == P.INCOMPLETE
+
+
+def test_a_cross_node_test_keeps_its_expectations():
+    """Orphan hand-offs of a test that cancels calls are allowed after the merge too."""
+    ctx, gen = Worker(CTX, 8001, host="node0"), Worker(GEN, 8002, host="node1")
+    ctx.take(3)
+    gen.take(2)
+    members = {CTX: ("node0:8001",), GEN: ("node1:8002",)}
+    counts = {f"{r}.{n}": 0 for r in P.ROLES for n in P.ORCH_METRICS}
+    counts.update({"ctx.total_requests": 3, "gen.total_requests": 2})
+    nodes = []
+    for workers, orchestrator, names in (
+        ([ctx], P.OrchestratorReading(counts, members), ["node0"]),
+        ([gen], None, ["node1"]),
+    ):
+        rule = P.LegRule(leg=ex.CROSS_NODE, cancels_calls=True)
+        result = _judge(workers, orchestrator, rule=rule)
+        node = json.loads(json.dumps(result.counts))
+        node["node_names"] = names
+        nodes.append(node)
+        props = P.disagg_props(result.counts, result.roles, partial=True)
+        assert props["orphan_handoffs"] == P.NOT_HERE
+    assert P.judge_cross_node(nodes).status == P.OK
+    for node in nodes:
+        node["rule"]["cancels_calls"] = False
+    assert P.judge_cross_node(nodes).status == P.FAIL
 
 
 def _junit(path, name, outcome, counts):
@@ -366,6 +399,13 @@ def test_the_runner_merges_the_nodes_of_a_cross_node_test(tmp_path, gen_takes, o
     assert sorted(r["file"].split("/")[0] for r in rows if r["file"] != "cross-node") == sorted(
         ["node-0"] + (["node-1"] if outcome1 else [])
     )
+    # The test counts once, and a failed merge fails the summary run.
+    counts = (tmp_path / "summary.md").read_text().splitlines()[2]
+    assert counts == f"Counts: {expected} 1", counts
+    rc = runner.main(["--chain", "trtllm", "--out", str(tmp_path), "--summarize-only"])
+    assert rc == (1 if expected == "failed" else 0)
+    if expected == "passed":
+        assert (merged[0]["handoffs"], merged[0]["orphan_handoffs"]) == ("2", "0"), merged
 
 
 @pytest.mark.parametrize(
@@ -501,6 +541,8 @@ def test_a_worker_s_counters_are_read_from_its_engine_and_front_end(tmp_path, mo
 
 
 GENERATED = """
+import time
+
 import pytest
 from openengine_chain import proof as P
 from plugin_support import FakeHandle
@@ -577,6 +619,24 @@ def test_worker_outside(legs):
     STATE["inprocess"] = ["pid 7 (trtllm-serve m --server_role generation) holds a GPU"]
     legs[0].take(1)
     legs[1].take(1)
+
+
+@pytest.fixture
+def pair(legs):
+    ctx, gen = Worker("ctx", 8003), Worker("gen", 8004)
+    STATE["members"] = {
+        "ctx": ("localhost:8001", "localhost:8003"),
+        "gen": ("localhost:8002", "localhost:8004"),
+    }
+    yield ctx, gen
+    ctx.end()
+    gen.end()
+
+
+def test_killed_gen(pair):
+    time.sleep(0.5)  # the watch takes the workers' topology while they run
+    pair[0].take(1)
+    pair[1].topology = P.Check(P.INCOMPLETE, "the front end has exited")
 """
 
 AGG = """
@@ -614,8 +674,20 @@ def run_disagg(pytester, monkeypatch, tmp_path):
     table = [
         ex.Expectation(
             "WT-38", "test_disagg.py::test_gen_zero_ok", ex.LEG_EXPECT, "r", leg=ex.GEN_ZERO_OK
-        )
+        ),
+        ex.Expectation(
+            "WT-38",
+            "test_disagg.py::test_killed_gen",
+            ex.LEG_EXPECT,
+            "r",
+            leg=ex.KILLED,
+            killed=(GEN,),
+        ),
     ]
+    from openengine_chain import pytest_plugin as plugin
+
+    monkeypatch.setattr(plugin, "_WATCH_INTERVAL_S", 0.05)
+    monkeypatch.setattr(plugin, "_GPU_CHECK_INTERVAL_S", 0.0)
     monkeypatch.setattr(ex, "load", lambda directory=None: list(table))
     monkeypatch.setenv(cv.ENV_CHAIN, "trtllm")
     monkeypatch.delenv(cv.ENV_RESULTS_DIR, raising=False)
@@ -671,7 +743,7 @@ def test_the_plugin_proves_each_leg(run_disagg):
         "orch_requests_gen": "2",
         "chain_proof_ctx": "ok",
         "chain_proof_gen": "ok",
-        "leg_expectation": "两腿:met",
+        "leg_expectation": "two_legs:met",
     }
     assert json.loads(props["chain_leg_counts"])["node_names"] == P.node_names()
     assert cases["test_gen_zero_ok"][0] == "passed"
@@ -682,10 +754,18 @@ def test_the_plugin_proves_each_leg(run_disagg):
         "fail",
         "ok",
     )
-    assert props["leg_expectation"] == "两腿:not met"
+    assert props["leg_expectation"] == "two_legs:not met"
     outcome, props = cases["test_worker_outside"]
     assert outcome == "failure" and "CH-6: fail" in props["chain_proof_detail"], props
-    assert cases["test_agg"][1]["chain_topology"] == "agg"
+    outcome, props = cases["test_killed_gen"]
+    assert (outcome, props["chain_proof"], props["chain_proof_gen"]) == (
+        "passed",
+        "ok",
+        P.KILLED_INCOMPLETE,
+    ), props
+    # An aggregated server next to a disaggregated one is not proven.
+    outcome, props = cases["test_agg"]
+    assert (props["chain_topology"], props["chain_proof"]) == ("agg", "incomplete"), props
 
 
 def test_orphan_handoffs_are_counted(run_disagg):
@@ -754,7 +834,7 @@ def test_the_negative_control_starts_the_first_worker_of_its_role_outside_the_ch
     monkeypatch.setattr(launch, "_HANDLES", [])
     monkeypatch.setattr(launch, "launch_serve_command", lambda cmd, **kw: started.append(cmd))
     sleeper = [sys.executable, "-c", "import time; time.sleep(60)"]
-    patches = plugin._start_one_worker_outside_the_chain(GEN)
+    undo = plugin._start_one_worker_outside_the_chain(GEN)
     try:
         context = launch.launch_serve_command(sleeper + ["--server_role", "CONTEXT"])
         outside = launch.launch_serve_command(
@@ -769,5 +849,106 @@ def test_the_negative_control_starts_the_first_worker_of_its_role_outside_the_ch
             outside.frontend.kill()
             outside.frontend.wait()
     finally:
-        for module, name, original in reversed(patches):
-            setattr(module, name, original)
+        undo()
+    assert launch.launch_serve_command is not None and len(started) == 2
+    wrapper_after_undo = plugin._start_one_worker_outside_the_chain(GEN)
+    held = launch.launch_serve_command
+    wrapper_after_undo()
+    # A module that took the replacement keeps it, but it no longer replaces anything.
+    assert held(sleeper + ["--server_role", "GENERATION"]) is None and len(started) == 3
+
+
+def test_a_test_that_cancels_calls_is_held_to_equal_counts_until_the_last_read():
+    ctx, gen = _two_legs()
+    gen.take(1, reach=False)
+    rule = P.LegRule(cancels_calls=True)
+    legs = [ctx.leg(), gen.leg()]
+    orchestrator = _orchestrator(2, 3, workers=[ctx, gen])
+    early = P.judge_disagg(legs, orchestrator, (), rule, last=False)
+    assert ("CH-2", GEN) in _failed(early)
+    assert ("CH-2", GEN) not in _failed(P.judge_disagg(legs, orchestrator, (), rule, last=True))
+
+
+def test_a_split_request_does_not_hide_extra_calls_of_another_bucket():
+    ctx, gen = Worker(CTX, 8001), Worker(GEN, 8002)
+    gen.take(2, P.BUCKET_AGGREGATED)
+    gen.serve[HTTP[P.BUCKET_AGGREGATED]] -= 1
+    gen.take(1, reach=False)
+    gen.serve[HTTP[P.BUCKET_GENERATION_ONLY]] -= 1
+    rule = P.LegRule(leg=ex.DIRECT_WORKER)
+    assert ("CH-5", GEN) in _failed(_judge([ctx, gen], None, rule=rule))
+
+
+def test_direct_worker_without_a_registered_count_needs_a_call_per_request():
+    ctx, gen = Worker(CTX, 8001), Worker(GEN, 8002)
+    gen.take(2, P.BUCKET_AGGREGATED)
+    gen.serve[HTTP[P.BUCKET_AGGREGATED]] += 1
+    rule = P.LegRule(leg=ex.DIRECT_WORKER)
+    assert ("CH-3", GEN) in _failed(_judge([ctx, gen], None, rule=rule))
+
+
+def test_single_side_without_a_disaggregated_server_judges_each_worker_alone():
+    ctx = Worker(CTX, 8001)
+    ctx.take(2, P.BUCKET_AGGREGATED)
+    result = _judge([ctx], None, rule=P.LegRule(leg=ex.SINGLE_SIDE))
+    assert result.status == P.OK, result.details()
+    gen = Worker(GEN, 8002)
+    gen.take(2, P.BUCKET_AGGREGATED)
+    gen_only = _judge([gen], None, rule=P.LegRule(leg=ex.SINGLE_SIDE))
+    assert ("CH-3", GEN) in _failed(gen_only), gen_only.details()
+
+
+def test_a_worker_of_unknown_address_leaves_ch6_incomplete():
+    ctx, gen = _two_legs()
+    gen.address = None
+    orchestrator = _orchestrator(2, 2, workers=[ctx], extra=["node0:8002"])
+    statuses = {(n, r): c.status for n, r, c in _judge([ctx, gen], orchestrator).checks}
+    assert statuses[("CH-6", None)] == P.INCOMPLETE
+
+
+def test_the_listening_ports_of_a_process_are_found():
+    import socket
+
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+        port = listener.getsockname()[1]
+        assert port in P.listening_ports({os.getpid()})
+    assert port not in P.listening_ports({os.getpid()})
+
+
+def test_gpu_use_that_no_process_of_the_test_shows_is_not_checked():
+    table = {10: (1, 0, 0), 30: (2, 0, 0)}
+    found = P.inprocess_workers(
+        1,
+        gpu_pid_reader=lambda: {30},
+        table_reader=lambda: table,
+        cmdline_reader=lambda pid: ["trtllm-serve", "m"],
+    )
+    assert found is None
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {"leg": ex.KILLED, "killed": ["gen"]},
+        {"leg": ex.KILLED},
+        {"leg": ex.GEN_ZERO_OK, "killed": ("gen",)},
+        {"leg": "other"},
+        {"leg": ex.DIRECT_WORKER, "orphans": 1},
+        {"leg": ex.DIRECT_CTX_LEG, "orphans": -1},
+        {},
+    ],
+)
+def test_a_wrong_leg_expectation_is_refused(fields):
+    with pytest.raises(ValueError):
+        ex.Expectation("WT-38", "t.py::t", ex.LEG_EXPECT, "r", **fields)
+
+
+def test_only_one_leg_expectation_applies_to_a_test():
+    table = [
+        ex.Expectation("WT-38", "t.py::t*", ex.LEG_EXPECT, "r", leg=ex.GEN_ZERO_OK),
+        ex.Expectation("WT-51", "t.py::test", ex.LEG_EXPECT, "r", leg=ex.CTX_ZERO_OK),
+    ]
+    with pytest.raises(ValueError, match="conflicting"):
+        ex.applicable(table, "a/t.py::test", "trtllm")

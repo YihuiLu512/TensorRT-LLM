@@ -15,6 +15,7 @@ version 4, the disaggregated server's metrics and its worker list.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import json
 import os
 import re
@@ -30,7 +31,7 @@ from dataclasses import dataclass
 import yaml
 
 from . import conventions as cv
-from .launch import _descendants, _live_processes, live_descendants, live_process_tree
+from .launch import _descendants, _live_processes, _sockets_of, live_descendants, live_process_tree
 
 OK = "ok"
 FAIL = "fail"
@@ -552,7 +553,8 @@ def check_topology(handle, *, gpu_pid_reader=gpu_pids, tree_reader=live_process_
 # Prometheus counters of the disaggregated server's client for each role
 # (tensorrt_llm/serve/perf_metrics.py: "<ctx|gen>_<name>", exposed with "_total").
 # total_requests counts each request once, when it is first sent; retry_requests
-# counts each further attempt; requests forwarded by the control plane count in neither.
+# counts the further attempts after a failure (not the resend of a request a worker's
+# affinity port refused); requests forwarded by the control plane count in neither.
 ORCH_METRICS = ("total_requests", "retry_requests", "error_requests", "completed_requests")
 _ORCH_METRIC_LINE = re.compile(
     r"^(ctx|gen)_(" + "|".join(ORCH_METRICS) + r")_total(?:\{[^}]*\})?\s+(\S+)\s*$", re.MULTILINE
@@ -622,6 +624,11 @@ def find_orchestrators(root: int, *, cmdline_reader=None) -> list[Orchestrator]:
         path = _option(args, "-c", "--config_file")
         if not path:
             continue
+        if not os.path.isabs(path):
+            try:
+                path = os.path.join(os.readlink(f"/proc/{pid}/cwd"), path)
+            except OSError:
+                continue
         try:
             with open(path, encoding="utf-8") as f:
                 config = yaml.safe_load(f) or {}
@@ -683,7 +690,9 @@ def inprocess_workers(root: int, *, gpu_pid_reader=None, table_reader=None, cmdl
     (:func:`_serve_program`) at or above it in the process tree that is below
     ``root`` is the server it belongs to; that server must have been started
     with ``--grpc``. Returns a description of each server that was not, or
-    ``None`` if ``nvidia-smi`` cannot be run.
+    ``None`` if ``nvidia-smi`` cannot be run or lists no process below ``root``
+    (then it cannot see this test's processes, for example from another PID
+    namespace).
     """
     on_gpu = (gpu_pid_reader or gpu_pids)()
     if on_gpu is None:
@@ -691,6 +700,8 @@ def inprocess_workers(root: int, *, gpu_pid_reader=None, table_reader=None, cmdl
     table = (table_reader or _live_processes)()
     cmdline_reader = cmdline_reader or _cmdline
     below = set(_descendants(root, table))
+    if not on_gpu & below:
+        return None
     found = {}
     for pid in sorted(on_gpu):
         current = pid
@@ -704,7 +715,8 @@ def inprocess_workers(root: int, *, gpu_pid_reader=None, table_reader=None, cmdl
     return [found[p] for p in sorted(found)]
 
 
-def _local_names() -> tuple[str, set[str]]:
+@functools.lru_cache(maxsize=1)
+def _local_names() -> tuple[str, frozenset[str]]:
     """This host's short name, and every name and address that means this host."""
     short = socket.gethostname().lower().split(".")[0]
     names = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "::", short, socket.getfqdn().lower()}
@@ -713,7 +725,25 @@ def _local_names() -> tuple[str, set[str]]:
         names |= {a.lower() for a in aliases} | set(addresses)
     except OSError:
         pass
-    return short, names
+    return short, frozenset(names)
+
+
+def listening_ports(pids: Iterable[int]) -> set[int]:
+    """The TCP ports the processes ``pids`` listen on (those whose sockets this process can read)."""
+    held = _sockets_of(set(pids))
+    ports = set()
+    for name in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            with open(name, encoding="ascii") as f:
+                lines = f.read().splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            fields = line.split()
+            # fields: sl, local address, remote address, state (0A = LISTEN), ..., inode.
+            if len(fields) > 9 and fields[3] == "0A" and int(fields[9]) in held:
+                ports.add(int(fields[1].rsplit(":", 1)[1], 16))
+    return ports
 
 
 def node_names() -> list[str]:
@@ -846,14 +876,23 @@ def role_sums(legs: Sequence[Leg]) -> dict:
         sums[role] = {
             "legs": len(mine),
             "addresses": sorted(leg.address for leg in legs if leg.role == role and leg.address),
+            "unaddressed": sum(1 for leg in legs if leg.role == role and not leg.address),
             "counts": totals,
         }
     return sums
 
 
 def _role_buckets(role: str, rule: LegRule) -> tuple[str, ...]:
-    """The engine buckets a ``role`` worker may take calls in under ``rule``."""
-    if rule.leg in ("direct_worker", "single_side") or (role == GEN and rule.leg == "ctx_zero_ok"):
+    """The engine buckets a ``role`` worker may take calls in under ``rule``.
+
+    A directly addressed worker may take aggregated calls; so may the generation
+    workers under ``ctx_zero_ok`` and the context side of a ``single_side``
+    (``ctx_only``) benchmark, which is judged as aggregated.
+    """
+    if rule.leg == "direct_worker" or (role, rule.leg) in (
+        (GEN, "ctx_zero_ok"),
+        (CTX, "single_side"),
+    ):
         return (ROLE_BUCKET[role], BUCKET_AGGREGATED)
     return (ROLE_BUCKET[role],)
 
@@ -872,7 +911,10 @@ def _needed_roles(rule: LegRule, present: set[str]) -> tuple[str, ...]:
 
 
 def _judged_legs(legs: Sequence[Leg], rule: LegRule) -> list[Leg]:
-    """The legs whose own checks (CH-1, CH-2, a leg's CH-3, CH-5's second half) are made."""
+    """The legs whose own checks are made.
+
+    They are CH-1, CH-2, a leg's CH-3, a context leg's CH-4 and CH-5's second half.
+    """
     if rule.leg == "direct_ctx_leg":
         return [leg for leg in legs if leg.role == CTX]
     if rule.leg == "direct_worker":
@@ -890,6 +932,7 @@ def judge_disagg(
     orchestrator: OrchestratorReading | None,
     inprocess: Sequence[str] | None,
     rule: LegRule,
+    last: bool = True,
 ) -> DisaggProof:
     """CH-1 to CH-6 for the workers of a disaggregated server during one test.
 
@@ -897,7 +940,9 @@ def judge_disagg(
     during the test with their worker lists (``None`` if none was found);
     ``inprocess`` is :func:`inprocess_workers` (``None`` if not checked). With
     ``rule.leg == "cross_node"`` the checks that need both nodes are left to
-    :func:`judge_cross_node`.
+    :func:`judge_cross_node`. A test that cancels calls is held to equal
+    Generate counts (CH-2) until the ``last`` read, so that an engine count
+    arriving during the re-reads is still this test's.
     """
     checks: list[tuple[str, str | None, Check]] = []
 
@@ -946,7 +991,7 @@ def judge_disagg(
         sent, received = deltas["sent"], deltas["received"]
         if sent is None or received is None:
             add("CH-2", leg.role, INCOMPLETE, f"{where}: a side reports no Generate counter")
-        elif sent == received or (rule.cancels_calls and sent > received):
+        elif sent == received or (rule.cancels_calls and last and sent > received):
             add("CH-2", leg.role, OK, f"{where}: front end sent {sent}, engine received {received}")
         else:
             add(
@@ -996,6 +1041,8 @@ def judge_disagg(
     roles = {role: worst(c.status for _, r, c in checks if r in (role, None)) for role in ROLES}
     counts = {
         "roles": sums,
+        # What judge_cross_node needs of the test's expectations.
+        "rule": {"cancels_calls": rule.cancels_calls, "no_engine_traffic": rule.no_engine_traffic},
         "orchestrator": None
         if orchestrator is None
         else {
@@ -1032,9 +1079,23 @@ def _check_leg_buckets(add, leg: Leg, deltas: Mapping[str, int | None], rule: Le
         )
         return
     if rule.leg == "direct_worker":
+        # The aggregated calls the test's requests became: as registered, else as the front end
+        # sent them, provided each request it received became a call or a refusal.
         expected = rule.direct_requests
         if expected is None:
-            expected = deltas[SERVE_SENT_BUCKETS[BUCKET_AGGREGATED]]
+            sent_agg = deltas[SERVE_SENT_BUCKETS[BUCKET_AGGREGATED]]
+            http_agg = deltas[SERVE_HTTP_RECEIVED[BUCKET_AGGREGATED]]
+            rejected = deltas[SERVE_HTTP_REJECTED]
+            if None not in (sent_agg, http_agg, rejected) and sent_agg < http_agg - rejected:
+                add(
+                    "CH-3",
+                    leg.role,
+                    FAIL,
+                    f"{where}: the front end received {http_agg} aggregated requests, refused "
+                    f"{rejected} and sent {sent_agg} aggregated calls",
+                )
+                return
+            expected = sent_agg
         if expected is None:
             add(
                 "CH-3",
@@ -1069,23 +1130,27 @@ def _check_frontend_requests(
         add("CH-5", leg.role, INCOMPLETE, f"{where}: the front end reports no per-bucket counter")
         return
     received = sum(deltas[k] for k in SERVE_HTTP_RECEIVED.values())
-    handled = deltas["sent"] + deltas[SERVE_HTTP_REJECTED]
+    rejected = deltas[SERVE_HTTP_REJECTED]
+    handled = deltas["sent"] + rejected
     sides = (
         f"{where}: {received} HTTP requests received, {deltas['sent']} calls sent, "
-        f"{deltas[SERVE_HTTP_REJECTED]} refused"
+        f"{rejected} refused"
     )
-    # An aggregated request may be split into one call per sequence (UV-52).
-    split = (
-        deltas[SERVE_SENT_BUCKETS[BUCKET_AGGREGATED]]
-        > deltas[SERVE_HTTP_RECEIVED[BUCKET_AGGREGATED]]
-    )
+    # An aggregated request may be split into one call per sequence (UV-52): then the other
+    # buckets must still balance, each of their requests one call or one refusal, and each
+    # aggregated request at least one call unless refused.
+    http_agg = deltas[SERVE_HTTP_RECEIVED[BUCKET_AGGREGATED]]
+    sent_agg = deltas[SERVE_SENT_BUCKETS[BUCKET_AGGREGATED]]
+    split = sent_agg > http_agg
     if split and rule.cancels_calls:
         add("CH-5", leg.role, INCOMPLETE, f"{sides}; split requests and cancelled calls together")
-    elif (
-        received == handled
-        or (split and received < handled)
-        or (rule.cancels_calls and received > handled)
-    ):
+        return
+    if split:
+        refused_other = (received - http_agg) - (deltas["sent"] - sent_agg)
+        ok = 0 <= refused_other <= rejected and sent_agg >= http_agg - (rejected - refused_other)
+    else:
+        ok = received == handled or (rule.cancels_calls and received > handled)
+    if ok:
         add("CH-5", leg.role, OK, sides + ("; aggregated requests were split" if split else ""))
     else:
         add("CH-5", leg.role, FAIL, sides)
@@ -1168,7 +1233,14 @@ def judge_roles(sums: Mapping, orchestrator: OrchestratorReading | None, rule: L
             buckets = (ROLE_BUCKET[role],) + ((BUCKET_AGGREGATED,) if role == GEN else ())
             got = [sums[role]["counts"][SERVE_HTTP_RECEIVED[b]] for b in buckets]
             if orchestrator is None:
-                add("CH-5", role, INCOMPLETE, "no disaggregated server was found to compare with")
+                if rule.leg != "single_side":
+                    # A ctx_only benchmark has no disaggregated server: only the second half holds.
+                    add(
+                        "CH-5",
+                        role,
+                        INCOMPLETE,
+                        "no disaggregated server was found to compare with",
+                    )
                 continue
             if None in got:
                 add("CH-5", role, INCOMPLETE, f"a {role} front end reports no per-bucket counter")
@@ -1196,12 +1268,23 @@ def judge_roles(sums: Mapping, orchestrator: OrchestratorReading | None, rule: L
     if not direct and rule.leg != "single_side":
         if orchestrator is None or orchestrator.members is None:
             add("CH-6", None, INCOMPLETE, "the disaggregated server's worker list was not read")
+        elif not any(orchestrator.members[r] for r in ROLES):
+            add("CH-6", None, INCOMPLETE, "the disaggregated server lists no worker")
         else:
             chain = {a for r in ROLES for a in sums[r]["addresses"]}
             outside = sorted(
                 {normalize_address(a) for r in ROLES for a in orchestrator.members[r]} - chain
             )
-            if outside:
+            unaddressed = sum(sums[r].get("unaddressed", 0) for r in ROLES)
+            if outside and unaddressed:
+                add(
+                    "CH-6",
+                    None,
+                    INCOMPLETE,
+                    f"the disaggregated server routes to {outside}; the address of {unaddressed} "
+                    "chain worker(s) is unknown",
+                )
+            elif outside:
                 add(
                     "CH-6",
                     None,
@@ -1218,16 +1301,19 @@ def judge_roles(sums: Mapping, orchestrator: OrchestratorReading | None, rule: L
     return checks
 
 
-def judge_cross_node(nodes: Sequence[Mapping | None], rule: LegRule = LegRule(leg="cross_node")):
+def judge_cross_node(nodes: Sequence[Mapping | None]) -> DisaggProof:
     """The cross_node checks over the per-node ``DisaggProof.counts`` of one test.
 
     Each node's counts carry ``node_names`` (:func:`node_names`), so that a
     worker address the disaggregated server lists by any of them is that
-    node's worker. A missing node (``None``) leaves the result ``incomplete``.
-    Returns ``(status, details)``.
+    node's worker, and the test's ``rule``. A missing node (``None``) leaves the
+    result ``incomplete``. The result's ``counts`` holds the merged per-role sums.
     """
     if len(nodes) < 2 or any(n is None for n in nodes):
-        return INCOMPLETE, ["the readings of a node are missing"]
+        missing = Check(INCOMPLETE, "the readings of a node are missing")
+        return DisaggProof(
+            INCOMPLETE, dict.fromkeys(ROLES, INCOMPLETE), [("cross_node", None, missing)], {}
+        )
     sums = {}
     for role in ROLES:
         parts = [n["roles"][role] for n in nodes]
@@ -1244,6 +1330,7 @@ def judge_cross_node(nodes: Sequence[Mapping | None], rule: LegRule = LegRule(le
         sums[role] = {
             "legs": sum(p["legs"] for p in parts),
             "addresses": sorted(addresses),
+            "unaddressed": sum(p.get("unaddressed", 0) for p in parts),
             "counts": counts,
         }
     readings = [n["orchestrator"] for n in nodes if n.get("orchestrator") is not None]
@@ -1259,8 +1346,56 @@ def judge_cross_node(nodes: Sequence[Mapping | None], rule: LegRule = LegRule(le
             )
             for r in readings
         )
-    checks = judge_roles(sums, orchestrator, dataclasses.replace(rule, leg=None))
+    rules = [n.get("rule") or {} for n in nodes]
+    rule = LegRule(
+        cancels_calls=any(r.get("cancels_calls", False) for r in rules),
+        no_engine_traffic=all(r.get("no_engine_traffic", False) for r in rules),
+    )
+    checks = judge_roles(sums, orchestrator, rule)
+    roles = {role: worst(c.status for _, r, c in checks if r in (role, None)) for role in ROLES}
     status = worst(c.status for _, _, c in checks)
-    return _settled(status), [
-        f"{n}{'' if r is None else ' ' + r}: {c.status}: {c.detail}" for n, r, c in checks
-    ]
+    merged = {
+        "roles": sums,
+        "orchestrator": None if orchestrator is None else {"counts": dict(orchestrator.counts)},
+    }
+    return DisaggProof(_settled(status), roles, checks, merged)
+
+
+NOT_HERE = "n/a"
+
+
+def disagg_props(
+    counts: Mapping, roles: Mapping[str, str], partial: bool = False
+) -> dict[str, str]:
+    """The per-role junit properties of a disaggregated test from ``DisaggProof.counts``.
+
+    ``partial``: the counts are one node's of a cross_node test; a value that needs
+    a role this node does not run is ``n/a``.
+    """
+    sums = counts["roles"]
+    present = {r for r in ROLES if sums[r]["legs"]}
+    orch = counts.get("orchestrator")
+
+    def text(value) -> str:
+        return INCOMPLETE if value is None else str(value)
+
+    def of(needed: set[str], value) -> str:
+        return NOT_HERE if partial and not needed <= present else text(value)
+
+    handed = sums[CTX]["counts"][ENGINE_PREFILL_READY_SENT]
+    taken = sums[GEN]["counts"][ENGINE_ACCEPTED_BUCKETS[BUCKET_GENERATION_ONLY]]
+    props = {
+        "chain_topology": "disagg",
+        "chain_roles": ",".join(f"{r}:{sums[r]['legs']}" for r in ROLES),
+        "handoffs": of({CTX}, handed),
+        "orphan_handoffs": of(set(ROLES), _sub(handed, taken)),
+    }
+    for role in ROLES:
+        props[f"engine_calls_{role}"] = of({role}, sums[role]["counts"]["received"])
+        props[f"orch_requests_{role}"] = (
+            NOT_HERE
+            if partial and orch is None
+            else text(orch and orch["counts"].get(f"{role}.total_requests"))
+        )
+        props[f"chain_proof_{role}"] = NOT_HERE if partial and role not in present else roles[role]
+    return props

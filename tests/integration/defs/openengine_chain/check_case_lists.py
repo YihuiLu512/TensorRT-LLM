@@ -57,7 +57,8 @@ class Entry:
     nodeid: str
 
 
-def read_list(path: str) -> list[Entry]:
+def read_list(path: str, problems: list[str] | None = None) -> list[Entry]:
+    """The entries of one list; a malformed line goes to ``problems`` (raises without it)."""
     entries = []
     with open(path, encoding="utf-8") as f:
         for number, raw in enumerate(f, 1):
@@ -70,20 +71,23 @@ def read_list(path: str) -> list[Entry]:
             elif len(parts) == 1:
                 entries.append(Entry(path, number, None, parts[0]))
             else:
-                raise ValueError(
-                    f"{path}:{number}: expected '<id> <node id>' or a node id: {text!r}"
-                )
+                problem = f"{path}:{number}: expected '<id> <node id>' or a node id: {text!r}"
+                if problems is None:
+                    raise ValueError(problem)
+                problems.append(problem)
     return entries
 
 
 def read_lists(directory: str) -> tuple[list[Entry], list[str]]:
-    """The entries of every work item's list in ``directory``, and the problems with file names."""
+    """The entries of every work item's list in ``directory``, and the problems found reading them."""
     entries, problems = [], []
     for path in sorted(glob.glob(os.path.join(directory, "*.txt"))):
         if not _LIST_NAME.match(os.path.basename(path)):
-            problems.append(f"{path}: a list is named after its work item, WT-<nn>[-fix<n>].txt")
+            problems.append(
+                f"{path}: a list is named after its work item, WT-<nn>[-fix<n> | -R<n>].txt"
+            )
             continue
-        entries.extend(read_list(path))
+        entries.extend(read_list(path, problems))
     return entries, problems
 
 
@@ -113,11 +117,9 @@ def _covers(planned: str, nodeid: str) -> bool:
     """Whether the plan's ``planned`` entry covers a listed node id.
 
     An entry ``<file>::<test>`` covers that test and its parameters; an entry
-    ``<file>`` covers every test in the file.
+    ``<file>`` or ``<file>::<class>`` covers every test in it.
     """
-    if "::" not in planned:
-        return nodeid.startswith(planned + "::")
-    return nodeid == planned or nodeid.startswith(planned + "[")
+    return nodeid == planned or nodeid.startswith((planned + "[", planned + "::"))
 
 
 def check(doc_text: str, root: str = _HERE, complete: bool = False) -> list[str]:

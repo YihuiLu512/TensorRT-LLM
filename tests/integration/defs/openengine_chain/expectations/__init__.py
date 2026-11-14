@@ -130,8 +130,14 @@ class Expectation:
             raise ValueError(f"{where}: unknown leg {self.leg!r}; one of {LEG_VALUES}")
         if (self.leg == KILLED) != bool(self.killed):
             raise ValueError(f"{where}: killed is required for, and only for, leg {KILLED}")
-        if not set(self.killed) <= set(ROLES) or len(set(self.killed)) != len(self.killed):
-            raise ValueError(f"{where}: killed {self.killed!r} must name distinct roles {ROLES}")
+        if (
+            not isinstance(self.killed, tuple)
+            or not set(self.killed) <= set(ROLES)
+            or len(set(self.killed)) != len(self.killed)
+        ):
+            raise ValueError(
+                f"{where}: killed {self.killed!r} must be a tuple of distinct roles {ROLES}"
+            )
         for name, value, leg in (
             ("orphans", self.orphans, DIRECT_CTX_LEG),
             ("direct_requests", self.direct_requests, DIRECT_WORKER),

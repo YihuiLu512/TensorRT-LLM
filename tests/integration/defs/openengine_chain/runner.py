@@ -59,6 +59,8 @@ _PROPS = (
 )
 # Results of a run on several nodes go to one directory per node.
 _NODE_DIR = "node-{}"
+# The file column of the row merging a cross_node test's nodes.
+CROSS_NODE_FILE = "cross-node"
 
 
 def read_entries(paths: list[str]) -> list[str]:
@@ -254,7 +256,8 @@ def merge_nodes(per_node: list[list[dict]]) -> list[dict]:
                 counts.append(json.loads(row["chain_leg_counts"]) if row else None)
             except ValueError:
                 counts.append(None)
-        status, details = proof.judge_cross_node(counts)
+        result = proof.judge_cross_node(counts)
+        status = result.status
         outcomes = [row["outcome"] if row else "missing" for row in rows]
         if any(o in ("failed", "error") for o in outcomes) or status == proof.FAIL:
             outcome = "failed"
@@ -263,14 +266,16 @@ def merge_nodes(per_node: list[list[dict]]) -> list[dict]:
         else:
             outcome = "incomplete"
         row = {key: "" for key in _PROPS}
+        if result.counts:
+            row.update(proof.disagg_props(result.counts, result.roles))
         row.update(
-            file="cross-node",
+            file=CROSS_NODE_FILE,
             name=name,
             outcome=outcome,
             time="",
             chain_proof=status,
             leg_expectation=f"cross_node:{'met' if status == proof.OK else status}",
-            message="; ".join([f"node outcomes {outcomes}"] + details)[:2000],
+            message="; ".join([f"node outcomes {outcomes}"] + result.details())[:2000],
         )
         merged.append(row)
     return merged
@@ -292,7 +297,11 @@ def summarize(out: str) -> list[dict]:
     with open(os.path.join(out, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(rows, f, indent=1)
     counts: dict[str, int] = {}
+    merged = {row["name"] for row in rows if row["file"] == CROSS_NODE_FILE}
     for row in rows:
+        # A cross_node test counts once, by its merged row.
+        if row["file"] != CROSS_NODE_FILE and row["name"] in merged:
+            continue
         counts[row["outcome"]] = counts.get(row["outcome"], 0) + 1
     cols = ["file", "name", "outcome", "time", *_PROPS, "message"]
     lines = [
@@ -335,8 +344,11 @@ def main(argv: list[str] | None = None) -> int:
     # On several nodes each node runs into its own directory; --summarize-only on --out merges them.
     out = node_dir(os.path.abspath(args.out))
     if args.summarize_only:
-        summarize(os.path.abspath(args.out))
-        return 0
+        rows = summarize(os.path.abspath(args.out))
+        # The merged rows of cross_node tests exist only here: report a failed one.
+        return (
+            1 if any(r["file"] == CROSS_NODE_FILE and r["outcome"] == "failed" for r in rows) else 0
+        )
     lists = args.list + (smoke_lists() if args.smoke else [])
     entries = read_entries(lists)
     if not entries:

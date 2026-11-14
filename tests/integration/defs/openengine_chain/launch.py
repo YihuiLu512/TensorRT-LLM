@@ -518,10 +518,13 @@ class ServeHandle:
         workdir: str | None,
         counter_dir: str | None,
         role: str | None = None,
+        role_index: int | None = None,
     ) -> None:
         self.chain = chain
         # The worker role of a disaggregated server, when the caller knows it; see role.
         self._role = role
+        # The worker's position among the workers of its role, when the caller numbers them.
+        self.role_index = role_index
         self.model = model
         self.host = host
         self.port = port
@@ -574,24 +577,28 @@ class ServeHandle:
     # trtllm-serve's --server_role values (ServerRole names, any case) of the two worker roles.
     _ROLES = {"context": "ctx", "generation": "gen"}
 
-    @property
-    def role(self) -> str | None:
-        """``"ctx"`` or ``"gen"`` for a worker of a disaggregated server, else ``None``.
-
-        The role given when the handle was made; otherwise, for a chain, the one
-        the front end's last ``--server_role`` option names. A chain front end
-        without that option, or with another role, serves aggregated requests.
-        """
-        if self._role is not None or self.chain == cv.CHAIN_NONE or self.frontend is None:
-            return self._role
-        args = self.frontend.args
+    @classmethod
+    def role_in(cls, args) -> str | None:
+        """The worker role the last ``--server_role`` option of a command line names, if any."""
         args = shlex.split(args) if isinstance(args, str) else [str(a) for a in args]
         value = None
         for i, token in enumerate(args):
             name, eq, rest = token.partition("=")
             if name == "--server_role":
                 value = rest if eq else (args[i + 1] if i + 1 < len(args) else None)
-        return self._ROLES.get((value or "").lower())
+        return cls._ROLES.get((value or "").lower())
+
+    @property
+    def role(self) -> str | None:
+        """``"ctx"`` or ``"gen"`` for a worker of a disaggregated server, else ``None``.
+
+        The role given when the handle was made; otherwise, for a chain, the one
+        the front end's command line names (:meth:`role_in`). A chain handle
+        without a role is not known to be a worker.
+        """
+        if self._role is not None or self.chain == cv.CHAIN_NONE or self.frontend is None:
+            return self._role
+        return self.role_in(self.frontend.args)
 
     def poll(self) -> int | None:
         """The front end's exit code; if only the engine has exited, its code, or 1 for 0."""

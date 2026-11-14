@@ -130,10 +130,12 @@ def test_a_list_not_named_after_a_work_item_fails(tmp_path):
     assert len(problems) == 1 and "named after its work item" in problems[0]
 
 
-def test_a_malformed_line_raises(tmp_path):
+def test_a_malformed_line_is_a_problem(tmp_path):
     _write(tmp_path, cc.NEW_DIR, "WT-38.txt", f"NT-024 {_CPU} extra")
+    problems = cc.check(_PLAN, root=str(tmp_path))
+    assert any("WT-38.txt:2: expected '<id> <node id>'" in p for p in problems), problems
     with pytest.raises(ValueError, match="WT-38.txt:2"):
-        cc.check(_PLAN, root=str(tmp_path))
+        cc.read_list(str(tmp_path / cc.NEW_DIR / "WT-38.txt"))
 
 
 def test_main_reports_pass_and_fail(tmp_path, capsys):
@@ -143,17 +145,20 @@ def test_main_reports_pass_and_fail(tmp_path, capsys):
     assert capsys.readouterr().out.splitlines()[-1] == "FAIL"
 
 
-def test_the_checked_in_lists_agree_with_the_plan_rows_they_name():
-    """Every list in this checkout names a test of a plan holding exactly its rows."""
-    rows = []
-    for directory, marker in ((cc.NEW_DIR, "new"), (cc.MIGRATED_DIR, "migrated")):
-        entries, problems = cc.read_lists(os.path.join(os.path.dirname(cc.__file__), directory))
+def test_the_checked_in_lists_are_well_formed():
+    """The lists in this checkout read without a problem.
+
+    Their contents are checked against the plan by the merge gate, which has the plan.
+    """
+    entries = []
+    for directory in (cc.NEW_DIR, cc.MIGRATED_DIR):
+        found, problems = cc.read_lists(os.path.join(os.path.dirname(cc.__file__), directory))
         assert problems == []
-        for entry in entries:
-            if marker == "new":
-                rows.append(f"| {entry.case_id or 'NT-999'} | CPU-fake链 | `{entry.nodeid}` | x |")
-            else:
-                rows.append(f"**【搬迁】** {entry.case_id or 'T1'} `{entry.nodeid}`")
-    assert rows, "the WT-38 list itself is checked in"
-    plan = "\n".join(rows) + "\n**【搬迁】** T1 `x.py::y`\n"
-    assert cc.check(plan) == []
+        entries += found
+    assert any(e.nodeid.endswith("::test_orphan_handoffs_are_counted") for e in entries)
+
+
+def test_a_class_in_the_plan_covers_its_tests(tmp_path):
+    plan = _PLAN + "| F-09 | **【搬迁】** XD-705 `unittest/a.py::TestA`，搬自 agg |\n"
+    _write(tmp_path, cc.MIGRATED_DIR, "WT-40.txt", "unittest/a.py::TestA::test_b[x]")
+    assert cc.check(plan, root=str(tmp_path)) == []
