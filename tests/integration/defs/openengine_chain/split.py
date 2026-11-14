@@ -46,6 +46,7 @@ OPTIONS: Mapping[str, Option] = {
     # The engine prunes video tokens (EVS) when it preprocesses the media.
     "--video_pruning_rate": Option(Side.BOTH),
     "--tokenizer": Option(Side.BOTH),
+    "--custom_tokenizer": Option(Side.BOTH),
     "--trust_remote_code": Option(Side.BOTH, takes_value=False),
     "--reasoning_parser": Option(Side.BOTH),
     "--config": Option(Side.BOTH),

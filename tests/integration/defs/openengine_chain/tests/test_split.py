@@ -27,6 +27,14 @@ def test_every_table_option_goes_to_its_side(name):
     assert result.engine == expected_engine
 
 
+def test_custom_tokenizer_goes_to_both_processes():
+    result = sp.split_args(
+        ["--custom_tokenizer", "deepseek_v41", "--tp_size", "8"], rewrite_yaml=lambda p: p
+    )
+    assert result.frontend == ("--custom_tokenizer", "deepseek_v41")
+    assert result.engine == ("--custom_tokenizer", "deepseek_v41", "--tp_size", "8")
+
+
 def test_host_and_port_go_to_neither_process():
     result = sp.split_args(["--host", "0.0.0.0", "--port=8123"], rewrite_yaml=lambda p: p)
     assert (result.engine, result.frontend) == ((), ())

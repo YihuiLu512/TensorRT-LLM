@@ -101,7 +101,7 @@ class EnginePortTaken(ChainStartupError):
 
 
 def resolve_chain() -> str:
-    """Return ``"none"``, ``"trtllm"`` or ``"glm"`` from ``TRTLLM_TEST_OPENENGINE_CHAIN``."""
+    """Return ``"none"``, ``"trtllm"``, ``"glm"`` or ``"ds"`` from ``TRTLLM_TEST_OPENENGINE_CHAIN``."""
     value = os.environ.get(cv.ENV_CHAIN, "")
     if value == "":
         return cv.CHAIN_NONE
