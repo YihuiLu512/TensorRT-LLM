@@ -12,7 +12,9 @@ capjobs.remote (ssh, allow-listed commands).
 """
 
 import argparse
+import contextlib
 import glob
+import io
 import json
 import os
 import re
@@ -388,6 +390,50 @@ def check_plan_scenarios(plan, workdir, register_doc):
                               % (ln["launch_seq"], rel, sha, regd, ln["arm"]))
 
 
+# Stand-ins for what capjobs.launches fills in on the node; they only have to parse the way the
+# real values do (JOB_ID and RESTART_COUNT are integers there too).
+EXAMPLE_PLACEHOLDER_VALUES = {"PY": "/example/python", "SNAP": "/example/snap",
+                              "JOB_DIR": "/example/job", "SHM_ROOT": "/example/shm",
+                              "LOCAL_ROOT": "/example/local", "JOB_ID": "1", "RESTART_COUNT": "0"}
+
+
+def check_plan_argv(plan):
+    """Parse each launch's caplaunch arguments with caplaunch's own parser (build_parser) the way
+    the job will run them: the argv capjobs.launches builds (launch_argv: placeholders
+    substituted, here with example values; identity, --run-dir, --pin-table and the other
+    appended arguments added), from after `-m caplaunch`. A missing required flag, an
+    abbreviation, an unknown flag or a value of the wrong type is refused here; in the job it
+    would make caplaunch exit 2 before starting any role."""
+    from caplaunch.__main__ import build_parser  # noqa: PLC0415
+
+    from .launches import launch_argv  # noqa: PLC0415
+
+    def refuse(message):
+        raise SubmitError(message)
+
+    for ln in plan["launches"]:
+        argv = launch_argv(plan, ln, EXAMPLE_PLACEHOLDER_VALUES,
+                           EXAMPLE_PLACEHOLDER_VALUES["JOB_ID"], 0, "/example/run",
+                           "/example/overlay_manifest.json", "/example/nvidia-smi",
+                           "/example/env", "/example/pin_table.json")
+        start = next((i + 2 for i in range(1, len(argv) - 1)
+                      if argv[i:i + 2] == ["-m", "caplaunch"]), None)
+        if start is None:
+            raise SubmitError("launch %d: argv must run <python> -m caplaunch"
+                              % ln["launch_seq"])
+        parser = build_parser()
+        parser.error = refuse
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                parser.parse_args(argv[start:])
+        except SubmitError as e:
+            raise SubmitError("launch %d: caplaunch would refuse its argv: %s"
+                              % (ln["launch_seq"], e)) from None
+        except SystemExit:
+            raise SubmitError("launch %d: caplaunch would refuse its argv: it exited while "
+                              "parsing (e.g. -h)" % ln["launch_seq"]) from None
+
+
 def workdir_inputs(workdir, reg, plan):
     """The files in <W> the job reads for this plan: the register and every files.* entry of
     each launch's arm (check_coverage also checks each one's realpath, so a symlink out of <W>
@@ -475,6 +521,7 @@ def prepare_submit(a, code_state_fn):
         if launchplan.flag_value(ln["argv"], "--capkit-sha") != head:
             raise SubmitError("launch %d: --capkit-sha must be the code HEAD %s"
                               % (ln["launch_seq"], head))
+    check_plan_argv(plan)
     for rel, sha, size in snapshot.overlay_entries(overlay):
         src = os.path.join(code_root, rel)
         if os.path.getsize(src) != size or sha256_file(src) != sha:

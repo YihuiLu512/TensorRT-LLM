@@ -25,9 +25,10 @@ append STATE. Status of that STATE line:
   otherwise the launcher's own last STATE line in the tree (by "caplaunch") when it wrote one and
   its exit code agrees (0 or 5 for VALID) -> that status; disagreement -> VOID;
   no launcher STATE: a control/stop.json reason in NOT_RUN_STOPS with exit 5 -> NOT_RUN;
-  exit 3 and no raw/launch.json (a config error before any role could start) -> NOT_RUN, with the
-  last line of the launcher's stderr as the reason, marked config_refused (main then exits 3 unless
-  a copy-back failure or ENV_INVALID decides the exit code); exit 0 -> VALID;
+  a non-zero exit with no raw/launch.json (caplaunch stopped before any role could start: a
+  ConfigError 3, an argparse usage error 2, an uncaught exception 1, ...) -> NOT_RUN, with the
+  exit code and the last line of the launcher's stderr as the reason, marked config_refused (main
+  then exits 3 unless a copy-back failure or ENV_INVALID decides the exit code); exit 0 -> VALID;
   exit 6 -> ENV_INVALID; any other exit -> VOID.
 Process tree: the launcher's descendants are recorded while it runs (and this process is a child
 subreaper when run as main, so orphans re-parent here); after the launcher is gone, every recorded
@@ -317,10 +318,12 @@ NOT_RUN_STOPS = ("not_ready_before_origin", "overlay_manifest_missing", "job_env
 
 
 def prestart_config_refusal(rc, timed_out, terminated, recorded, early_config_error):
-    """caplaunch exited 3 and the tree has no raw/launch.json (early_config_error is then the
-    launcher's last stderr line, else None) and no launcher STATE line: it refused its
-    configuration before starting any role (roles start after launch.json is written)."""
-    return (not timed_out and not terminated and recorded is None and rc == CONFIG
+    """caplaunch exited non-zero on its own (not killed for its budget or the job's SIGTERM),
+    the tree has no raw/launch.json (early_config_error is then the launcher's last stderr line,
+    else None) and no launcher STATE line: it stopped before starting any role (roles start only
+    after launch.json is written), whatever the exit code (3 ConfigError, 2 argparse usage
+    error, 1 uncaught exception, ...)."""
+    return (not timed_out and not terminated and recorded is None and rc != OK
             and early_config_error is not None)
 
 
@@ -329,9 +332,9 @@ def classify(rc, timed_out, stop, recorded=None, terminated=False, early_config_
     killed for overrunning its budget or the exit code contradicts it. A launch stopped because
     the job got SIGTERM did not finish measuring: NOT_RUN. A budget kill or SIGTERM only makes the
     launcher's own record worse (runtree.worst_state), never better. early_config_error (the
-    launcher's last stderr line, given only when the tree has no raw/launch.json): exit 3 there
-    means caplaunch refused its configuration before starting any role (roles start after
-    launch.json is written), so nothing was measured: NOT_RUN."""
+    launcher's last stderr line, given only when the tree has no raw/launch.json): any non-zero
+    exit there means caplaunch stopped before starting any role (roles start after launch.json
+    is written), so nothing was measured: NOT_RUN (prestart_config_refusal)."""
     if timed_out or terminated:
         mine = "VOID" if timed_out else "NOT_RUN"
         why = ("launcher exceeded its budget and was killed (rc=%r)" % rc if timed_out else
@@ -348,8 +351,8 @@ def classify(rc, timed_out, stop, recorded=None, terminated=False, early_config_
     if stop in NOT_RUN_STOPS and rc == STOPPED_EARLY:
         return "NOT_RUN", "launcher stopped: %s (rc=%r)" % (stop, rc)
     if prestart_config_refusal(rc, timed_out, terminated, recorded, early_config_error):
-        return "NOT_RUN", "launcher refused its configuration before starting any role (rc=3): " \
-            "%s" % early_config_error
+        return "NOT_RUN", "launcher exited before starting any role (rc=%r): %s" % (
+            rc, early_config_error)
     if rc == OK:
         return "VALID", "launcher exit 0"
     if rc == ENV_INVALID:

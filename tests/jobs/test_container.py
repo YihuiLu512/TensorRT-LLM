@@ -308,6 +308,10 @@ a = ap.parse_args()
 if a.mode == "config":  # caplaunch refusing its inputs before it writes anything
     print("caplaunch: scenario x does not match register entry", file=sys.stderr)
     sys.exit(3)
+if a.mode == "usage":  # caplaunch's argparse refusing the argv (exit 2), nothing written
+    ap.error("the following arguments are required: --housekeeping-ms")
+if a.mode == "crash":  # an uncaught OSError while reading inputs (exit 1), nothing written
+    open(os.path.join(a.workdir, "missing-register.json"))
 os.makedirs(os.path.join(a.run_dir, "raw", "tiers", "000_w"), exist_ok=True)
 with open(os.path.join(a.run_dir, "raw", "launch.json"), "w") as f:
     json.dump({"arm": a.arm, "seq": a.launch_seq, "role": a.role, "snap": a.snap,
@@ -490,6 +494,74 @@ def test_config_error_before_launch_json_is_not_run(tmp_path, monkeypatch):
                           "--deadline-epoch", "1e12"]) == 3  # CONFIG, not a copy-back failure
     doc = json.load(open(out))
     assert doc["config_refused"] == 1 and doc["statuses"]["NOT_RUN"] == 1
+
+
+@pytest.mark.parametrize("mode,rc,last", [
+    ("config", 3, "does not match register entry"),
+    ("usage", 2, "the following arguments are required: --housekeeping-ms"),
+    ("crash", 1, "FileNotFoundError"),
+])
+def test_every_exit_before_launch_json_is_a_refused_configuration(tmp_path, monkeypatch, mode,
+                                                                  rc, last):
+    """RS22: caplaunch starts roles only after it writes raw/launch.json, so any non-zero exit
+    with no launch.json and no launcher STATE line (argparse usage error 2, uncaught exception 1,
+    ConfigError 3) measured nothing: NOT_RUN, config_refused, the launcher's last stderr line
+    and exit code as the reason, and capjobs.launches exits CONFIG (3), not RUNTIME (4)."""
+    monkeypatch.setattr(launches, "become_subreaper", lambda: False)  # not on pytest itself
+    b, plan, manifest = launch_env(tmp_path, [mode, "fail"])
+    pp, mp = tmp_path / "plan.json", tmp_path / "manifest.json"
+    pp.write_text(json.dumps(plan))
+    mp.write_text(json.dumps(manifest))
+    out = os.path.join(b.job_dir, "launches.json")
+    assert launches.main(["--plan", str(pp), "--overlay-manifest", str(mp), "--nvidia-smi",
+                          b.nvidia_smi, "--snap", b.snap, "--hw-profile", b.hw_profile,
+                          "--job-dir", b.job_dir, "--local-root", b.local_root, "--shm-root",
+                          b.shm_root, "--run-root", b.run_root, "--job-id", "9", "--python",
+                          b.python, "--out", out, "--restart-count", "0",
+                          "--deadline-epoch", "1e12"]) == 3
+    doc = json.load(open(out))
+    assert doc["config_refused"] == 1
+    r0, r1 = doc["launches"]
+    assert (r0["status"], r0["rc"], r0["config_refused"]) == ("NOT_RUN", rc, True), r0["reason"]
+    assert "(rc=%d)" % rc in r0["reason"] and last in r0["reason"]
+    assert "nothing to copy back" in r0["reason"]
+    assert "copy-back not verified" not in r0["reason"]
+    # exit 4 after launch.json was written (roles may have started): still VOID, not refused
+    assert (r1["status"], r1["config_refused"]) == ("VOID", False), r1["reason"]
+
+
+def test_prestart_refusal_needs_no_launch_json_no_state_and_a_failed_exit():
+    """The pre-start criterion keys on what the tree shows, not on the exit code."""
+    st = ("", "NOT_RUN", "caplaunch", "x")
+    for rc in (1, 2, 3, 4, -9):
+        assert launches.prestart_config_refusal(rc, False, False, None, "err")
+        assert launches.classify(rc, False, None, None, False, "err")[0] == "NOT_RUN"
+        assert not launches.prestart_config_refusal(rc, False, False, None, None)  # launch.json
+        assert launches.classify(rc, False, None, None, False, None)[0] == "VOID"
+        assert not launches.prestart_config_refusal(rc, False, False, st, "err")  # its STATE
+        assert not launches.prestart_config_refusal(rc, True, False, None, "err")  # budget kill
+        assert not launches.prestart_config_refusal(rc, False, True, None, "err")  # job SIGTERM
+    assert not launches.prestart_config_refusal(0, False, False, None, "err")
+
+
+def test_config_refused_and_status_come_from_one_criterion():
+    """RS15: run_all's config_refused (what makes main exit 3) and classify's status/reason use
+    the same prestart_config_refusal, so the two always agree."""
+    recs = (None, ("", "NOT_RUN", "caplaunch", "x"), ("", "VALID", "caplaunch", "x"))
+    for rc in (0, 1, 2, 3, 4, 5, 6, -9):
+        for timed_out in (False, True):
+            for terminated in (False, True):
+                for rec in recs:
+                    for early in (None, "err"):
+                        refused = launches.prestart_config_refusal(rc, timed_out, terminated,
+                                                                   rec, early)
+                        status, why = launches.classify(rc, timed_out, None, rec, terminated,
+                                                        early)
+                        assert refused == why.startswith(
+                            "launcher exited before starting any role"), (rc, timed_out,
+                                                                          terminated, rec, early)
+                        if refused:
+                            assert status == "NOT_RUN"
 
 
 @pytest.mark.parametrize("kinds,want", [

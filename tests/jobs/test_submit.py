@@ -60,8 +60,16 @@ class Env:
                      "kill_grace_s": 60,
                      "launches": [{"launch_seq": i, "arm": arm, "budget_s": 600,
                                    "argv": ["{PY}", "-m", "caplaunch", "--workdir", self.w,
+                                            "--register", "02_e0/E0/register/register.json",
                                             "--scenario", self.scen_rel,
-                                            "--kill-after-s", "2", "--capkit-sha", HEAD]}
+                                            "--shm-dir", "{SHM_ROOT}/snap",
+                                            "--snapshot-interval-ms", "50",
+                                            "--origin-lead-ms", "6000", "--housekeeping-ms", "50",
+                                            "--kill-after-s", "2", "--capkit-sha", HEAD,
+                                            "--probe-tree-sha", "none", "--baseline-sha", "none",
+                                            "--snapshot-dir", "{SNAP}",
+                                            "--image-path", "/img.sqsh", "--image-sha256", "none",
+                                            "--hw-profile-sha", "none"]}
                                   for i, arm in enumerate(["nullsse-a", "sfe-a"])]}
         self.plan_path = self.write_json("plan.json", self.plan)
 
@@ -451,6 +459,74 @@ def test_forbidden_inputs_refused(env, stub_runner, capsys):
     # positive control: the same environment accepts the unmodified arguments
     r = stub_runner({"sbatch": (0, "1\n", "")})
     assert run(env.submit_args(), r) == 0
+
+
+def _edit_argv(argv, drop=(), rename=None, add=()):
+    """argv without each flag in drop (and its value), flag rename {old: new}, add appended."""
+    out, skip = [], False
+    for x in argv:
+        if skip:
+            skip = False
+        elif x in drop:
+            skip = True
+        else:
+            out.append((rename or {}).get(x, x))
+    return out + list(add)
+
+
+@pytest.mark.parametrize("edit,reason", [
+    ({"drop": ["--housekeeping-ms"]},
+     "the following arguments are required: --housekeeping-ms"),
+    ({"rename": {"--housekeeping-ms": "--housekeeping"}}, "--housekeeping-ms"),
+    ({"add": ["--par", "a=1"]}, "unrecognized arguments: --par a=1"),
+    ({"add": ["--bogus", "1"]}, "unrecognized arguments: --bogus 1"),
+    ({"add": ["--snapshot-interval-ms", "{JOB_DIR}"]}, "invalid int value"),
+    ({"add": ["-h"]}, "exited while parsing"),
+])
+def test_plan_argv_is_parsed_with_caplaunchs_parser(env, stub_runner, capsys, edit, reason):
+    """RS22/RS15: each launch's argv, with placeholders replaced and the arguments
+    capjobs.launches appends, goes through caplaunch's own parser (build_parser) at submit: a
+    missing required flag, an abbreviation or an unknown flag is refused before anything is
+    written or submitted, instead of caplaunch exiting 2 in the job."""
+    plan = dict(env.plan, launches=[dict(ln, argv=_edit_argv(ln["argv"], **edit))
+                                    for ln in env.plan["launches"]])
+    r = stub_runner({"sbatch": (0, "1\n", "")})
+    assert run(env.submit_args(**{"--launch-plan": env.write_json("pa.json", plan)}), r) == 3
+    out = capsys.readouterr()
+    assert "launch 0: caplaunch would refuse its argv" in out.err and reason in out.err, out.err
+    assert "usage:" not in out.out and "usage:" not in out.err
+    assert r.calls == [] and not os.path.exists(os.path.join(env.w, "submissions.tsv"))
+    assert not os.path.exists(os.path.join(env.w, "snapshots"))
+
+
+def test_plan_argv_check_parses_what_the_job_runs(monkeypatch):
+    """The pre-parse covers the argv capjobs.launches builds: every placeholder substituted,
+    the appended identity/--run-dir/--pin-table/... arguments present (launches.launch_argv)."""
+    seen = []
+    from caplaunch import __main__ as caplaunch_main
+    real = caplaunch_main.build_parser
+
+    def spy():
+        p = real()
+        orig = p.parse_args
+        p.parse_args = lambda args: seen.append(list(args)) or orig(args)
+        return p
+    monkeypatch.setattr(caplaunch_main, "build_parser", spy)
+    argv = ["{PY}", "-m", "caplaunch", "--workdir", "/w", "--register", "r.json",
+            "--scenario", "s.json", "--shm-dir", "{SHM_ROOT}/snap", "--snapshot-interval-ms",
+            "50", "--origin-lead-ms", "6000", "--housekeeping-ms", "50", "--kill-after-s", "2",
+            "--capkit-sha", HEAD, "--probe-tree-sha", "none", "--baseline-sha", "none",
+            "--snapshot-dir", "{SNAP}", "--image-path", "/i", "--image-sha256", "none",
+            "--hw-profile-sha", "none"]
+    plan = {"experiment": "E0", "register_sha": "b" * 64,
+            "launches": [{"launch_seq": 0, "arm": "nullsse-a", "argv": argv}]}
+    submit.check_plan_argv(plan)
+    assert len(seen) == 1 and not any("{" in x for x in seen[0])
+    for flag in launchplan.RESERVED_FLAGS:
+        assert flag in seen[0], flag
+    with pytest.raises(submit.SubmitError, match="must run .* -m caplaunch"):
+        submit.check_plan_argv(dict(plan, launches=[dict(plan["launches"][0],
+                                                         argv=["{PY}", "x.py"] + argv[3:])]))
 
 
 def _mount_list(env, *paths, extra=()):
