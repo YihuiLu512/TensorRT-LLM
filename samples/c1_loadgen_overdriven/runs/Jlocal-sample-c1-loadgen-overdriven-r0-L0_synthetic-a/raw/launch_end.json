@@ -1,0 +1,37 @@
+{
+ "ended_mono_ns": 1021000000000,
+ "exit_codes": {
+  "capload": 0,
+  "nullsse": 0
+ },
+ "gate_outcomes": [],
+ "identity": {
+  "arm": "synthetic-a",
+  "experiment": "E0",
+  "job_id": "local-sample-c1-loadgen-overdriven",
+  "launch_seq": 0,
+  "pid": null,
+  "register_sha": "2a09620b16ad69a777a5a150bb7cab6b519706544238cd3cde013d4f2b7b0177",
+  "restart_count": 0,
+  "role": "launch",
+  "tier_label": null,
+  "tier_seq": null,
+  "worker": 0
+ },
+ "leftovers": {
+  "after": [],
+  "before": [],
+  "marker_scan": "synthetic"
+ },
+ "ready_at_rel_ns": {
+  "capload": -1000000000,
+  "nullsse": -2000000000
+ },
+ "reason": "completed all tiers",
+ "schema": "capkit.launch_end/1",
+ "state": "VALID",
+ "stop": null,
+ "tiers_completed": 5,
+ "written_mono_ns": 9852505269726689,
+ "written_wall": "2026-11-14T17:08:01.350Z"
+}

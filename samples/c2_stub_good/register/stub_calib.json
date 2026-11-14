@@ -1,0 +1,47 @@
+{
+ "environment": {
+  "baseline_sha": "2f22a98d6e",
+  "capkit_sha": "cccccccccccccccccccccccccccccccccccccccc",
+  "hw_profile_sha": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "image_sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+ },
+ "experiment": "E2a",
+ "in_domain": null,
+ "inputs": [],
+ "out_of_domain": {
+  "nullsse-r": {
+   "bands": {
+    "T3:loop_lag_p99_ns": {
+     "max": 2000000,
+     "min": 0,
+     "n": 6,
+     "source_tiers": [],
+     "unit": "synthetic"
+    },
+    "T3:thread_cpu_cores": {
+     "max": 0.5,
+     "min": 0.0,
+     "n": 6,
+     "source_tiers": [],
+     "unit": "synthetic"
+    }
+   },
+   "match": {
+    "streams_c": [
+     null
+    ],
+    "tokens_per_msg": [
+     1
+    ]
+   },
+   "per_process_max": {
+    "censored": false,
+    "load_key": "rate_rps",
+    "n_launches": 3,
+    "value": 100.0
+   }
+  }
+ },
+ "schema": "capkit.stub_calib/1",
+ "synthetic": true
+}

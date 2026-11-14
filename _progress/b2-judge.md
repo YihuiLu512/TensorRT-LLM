@@ -1,0 +1,89 @@
+# b2-judge（第二批 2A+2E：标定文件、判定器阶段 2 检查、定位 I、干预 V、等级与 E1 分析）进度
+
+- 子批：b2-judge（RUNBOOK-stage2-draft.md §2.1 子批表第 1 行「2A 标定格式与构建器 + 判定器阶段 2 检查」与第 2 行「2E 定位 I + 干预 V + 等级（核心）+ E1 分析」，按 §2.2 第 3 条两者都在 capjudge 里，合在一个分支叠着写）。
+- WT = `_local/wt-b2-judge`（分支 capkit-b2-judge，起点 1176861dd1d8233b8de1063c2e620fe9aee21e3f）；C（01_code main）只读；探针树 C/probe-tree 只读。
+- 范围（2A）：+ `tools/capjudge/calib.py`（loadgen_band、stub_calib 域外段、near_boundary_noise 的构建与 schema 校验）；+ `analysis/calib_build.py`（薄 CLI，同 `pilot_build.py`）；~ `capjudge/checks.py`（C2 域外桩部分、C4、C12）；~ `capjudge/inputs.py`（C2/C4/C12 移出 `BATCH2_CHECKS`；C1 改读 loadgen_band）；~ `capjudge/thresholds.py`（按档位 regime 选带：近边界档优先取 near_boundary_noise，同一个键允许两份来源各管一个 regime）；~ `samples/make_samples.py`（每项一个造坏样本）；+ `tests/judge/test_calib.py`。
+- 范围（2E）：+ `capjudge/localize.py`（I1 按 GIL 域求和，以每核 `/proc/stat` 为准；I3 按积压所在一侧判）；+ `capjudge/intervene.py`（跨启动剂量–反应：先核心跳计数，再看单调下移是否超出噪声带，做反向注入）；+ `capjudge/grade.py`（P+X+I+V ⇒ 等级）；~ `symptoms.py`（接 I/V 钩子；`reclassify_failure` 认负载器的连接类失败）；~ `judge.py`；+ `analysis/boundary.py`（每启动 T4、包络、T5）；+ `analysis/scaling.py`（T6、对侧翻倍归因）；+ `analysis/e1_report.py`（斜率对账、字节 / accepts 相等、空汇健康）；每个产物写 `.cmd.txt`。
+- 契约：WT/INTERFACES.md 末尾新增勘误节「Batch 2A+2E: calibration files, stage-2 judge checks, localization, intervention, grading and E1 analysis」，被覆盖的正文句子加指引注；涉及 §9.6–9.8、§10.2–10.4、新增 §14「分析脚本输入输出」。
+- 验证：判定器全量测试、样本自测（含「读者慢 / 服务端慢」一对、`sat_spin_thread_same_process` 判出「域到顶」）；e2e：E0 第一轮真树上重判（C12 为 PASS 或 NOT_RUN，不报错），E0(b) s1～s4 真树跑 localize（s3 在辅助线程侧判出）；均为本地读树，不占集群。
+
+## 进度日志
+- 2026-11-14 20:15:11 开工：建 worktree（capkit-b2-judge @ 1176861dd1d8233b8de1063c2e620fe9aee21e3f），写本进度日志头。
+- 2026-11-14 20:24:46 2A-calib-checks 开工：已读设计 §2.6/§2.7/E1/E2、INTERFACES §9/§10/勘误、capjudge 全部相关代码；方案：按档 regime 选带（登记表 judge.near_boundary_tiers）、loadgen_band/stub_calib 用 shapes + 登记表 bind、C1 改读 loadgen_band、C2 域外、C4、C12。先写 thresholds/calib/inputs/checks，再样本与测试（预计 2–3 h）。
+- 2026-11-14 20:36:44 代码写完（thresholds regime、calib.py 校验/统计/构建、inputs bind/regime、checks C1 改读 loadgen_band + C2/C4/C12、样本 +8 个共 33）；新建样本自测 33/33 过（_local/b2-judge/st1）。下一步写 tests/judge/test_calib.py、改旧测试、重生成提交的样本（约 1 h）。
+- 2026-11-14 20:39:39 e2e：拷 E0 第一轮两棵树（e0a J5935100-L1、e0b J5935100-L0）到 _local/b2-judge/e2e 并建最小 wd，用修改后的判定器重判（约 10 分钟）
+- 2026-11-14 20:42:30 文档（INTERFACES §9.6–9.8 + 勘误 B2-2A、两份 README）写完；跑 tests/judge 全量 + 提交样本自测（约 6 分钟）
+- 2026-11-14 20:46:58 变异检查 M1–M10（_local/b2-judge/mut，每个跑 test_calib.py，约 5 分钟）
+- 2026-11-14 20:50:09 变异 M11/M12（样本自测层，约 6 分钟）
+- 2026-11-14 20:59:14 2A-calib-checks 验证完成（MEASURED）：tests/judge 157 passed（_local/b2-judge/logs/j2.log）；提交样本自测 33/33 EXIT=0（logs/st3.log）；变异 M1–M12 全部 KILLED（mut/summary.txt；M10 首轮存活后补了按时间表份额的 C1 测试再杀死）；e2e：E0 第一轮 e0a J5935100-L1、e0b J5935100-L0 拷贝重判，CLI 退出 11，checks.tsv 前六列除 e0a 档 4 C7（SM-14 修复）外不变；进程内加 C2/C4/C12：C2 NOT_RUN（无 stub_calib）、C4 PASS、C12 PASS/NOT_RUN（e0a 档 4 nullsse worker 1 本档 0 请求 ⇒ NOT_RUN），无报错；fakebin.log 0 行。提交。
+- 2026-11-14 21:09:06 2E-localize-intervene-grade 开工：已读设计 §2.6/§2.7、DATA §4/§6、INTERFACES §5/§7/§10/勘误、capjudge 现有代码。方案：judge.mode 新增 P+X+I+V；localize.py（I1 单核=核空闲、多核=GIL 域求和+运行队列、非 GIL 线程单列，阈值 pilot.i1_calibration + T2 带；I3 按登记的 judge.localize 读数的接收/发送方判积压所在一侧）；intervene.py（逐档心跳 + 跨启动剂量–反应 CLI）；grade.py（逐启动等级 + 合并 V 的最终等级）；reclassify_failure 认负载器连接类失败；样本 +3（i_server_slow、i_reader_slow、i_conflict），sat_spin 改 P+X+I+V 判出域到顶。先写代码（约 1.5 h），再测试与样本。
+- 2026-11-14 21:19:47 2E 代码与新测试写完（localize/intervene/grade、symptoms 钩子、inputs 模式与 localize 校验、pilot i1_calibration；样本 +3 共 36，sat_spin 改 P+X+I+V）；新测试 test_localize 16、test_intervene 47 过。跑 tests/judge 全量（约 5 分钟）
+- 2026-11-14 21:25:27 tests/judge 220 passed（j3 一处测试替身缺 roles 已补，j4 复跑过）；样本自测 36/36（st5）；tests/capcommon 190 passed。开始变异 N1–N13（mut/run2.py，约 10 分钟）
+- 2026-11-14 21:32:56 e2e：E0(b) J5933747 L1–L4（s1–s4）raw 拷到 _local/b2-judge/e2e/trees2，进程内以 P+X+I+V 跑 localize（诊断用阈值 0.90，非登记值；约 5 分钟）
+- 2026-11-14 21:38:31 改 I1：统计量不论 pilot 有无门槛 / D14 都记录（单核分不含 / 含软中断两键，按 D14 取其一），样本重生成；复跑 tests/judge 全量（约 5 分钟）
+- 2026-11-14 21:47:27 2E-localize-intervene-grade 验证完成（MEASURED）：tests/judge 220 passed（logs/j5.log）；样本自测 36/36（logs/st6.log）；tests/capcommon 190 passed（logs/cc1.log）；变异 N1–N14 全部 KILLED（mut/summary2.txt）；e2e：E0(b) J5933747 L1–L4 进程内 P+X+I+V（诊断门槛 0.90，非登记值）：s1/s2/s3 档 6 relay1 I1 成立（核忙碌 0.996–0.998），s3 线程份额 capkit-inject-aux-relay.msg 0.915 核、MainThread 0.046 核；s2 relay2 不成立；s4（sleep）各档 I1 不成立；X 因 E0 第一轮无带为 NOT_RUN；fakebin.log 不存在（0 次调用）。提交。
+- 2026-11-14 21:57:14 2E-analysis 开工：已读设计 §2.6 T4–T6、E1 卡、E0(b)、DATA §4/§6、INTERFACES §10/勘误 B2-2E、stats/intervene/grade。注意 STATUS 21:42 用户要求 1 小时内暂停（b2-judge 到点冻结 diff），本步按优先级：boundary.py → scaling.py → §14/勘误 → sm9.md → e1_report.py，到点前提交完整一致的部分。
+- 2026-11-14 21:59:53 跑 tests/judge/test_analysis.py（约 2 分钟）
+- 2026-11-14 22:00:12 e2e：E0(b) J5933747 L1–L4 进程内 localize 复跑（loc4，诊断门槛 0.90，后台串行约 5 分钟），供 sm9.md
+- 2026-11-14 22:01:13 e2e：capjudge.boundary 对 E0 第一轮 15 棵已判真树（W 只读，产物写 _local/b2-judge/e2e/an）
+- 2026-11-14 22:03:30 boundary/scaling/cmdrec + §14.1/14.2 + 勘误 B2-2E-A 1–6 写完；test_analysis 18 passed；变异 M1–M7 全杀（mut/summary3.txt，M6 首轮存活后补测试）；E0(b) 12 棵真树 boundary e2e EXIT=0；sm9.md 写完。先提交，再写 e1_report。
+- 2026-11-14 22:05:18 e2e：e0a 3 棵已判真树跑 boundary + e1_report（字节 / accepts 对账，W 只读）
+- 2026-11-14 22:07:53 e2e：E1-0 15 棵已判真树（W 只读）按轴分两组跑 boundary + e1_report
+- 2026-11-14 22:08:07 跑 tests/judge 全量（约 5 分钟）
+- 2026-11-14 22:11:53 跑 tests/capload（sink.py 抽出 response_head，约 3 分钟）
+- 2026-11-14 22:13:18 样本自测 36 个（st7，约 3 分钟）
+- 2026-11-14 22:13:58 2E-analysis 验证完成（MEASURED）：tests/judge 247 passed（logs/j6.log）；tests/capload 33 passed（logs/cl1.log）；样本自测 36/36（logs/st7.log）；变异 M1–M7（summary3）、E1–E6（summary4）全部 KILLED；e2e（W 只读，产物 e2e/an/）：E0(b) 12 树 boundary EXIT=0；e0a 3 树、E1-0 15 树 boundary+e1_report EXIT=0，字节对账全部 PASS（HTTP 重建头后相等、gRPC 直接相等），HTTP accepts 全部 PASS，gRPC accepts NOT_RUN，T4 全为 none、斜率 NOT_RUN（判定时无带、无剂量）；localize 复跑 loc4 与 loc3 去 pid 后逐行相同；SM-9 判读写在 _local/b2-judge/sm9.md；fakebin.log 不存在（0 次调用）。提交。
+- 2026-11-14 22:15:22 补：counts 要求两侧每个档目录每个 worker 都有摘要（缺 ⇒ NOT_RUN），测试 28 passed（an4），变异 E7 KILLED（summary5）；E1-0 与 e0a e2e 复跑（*.r3.json）结论不变。提交。
+- 2026-11-14 22:18:02 全量验证 v1 开工（HEAD d3ff38e002c40540af823b058b083d20e16e3a08）：脚本 _local/b2-judge/fullv.sh（改自 fix-sm1718/fullv.sh），10+ 个测试目录逐个串行跑 + selftest 36 + patchcheck + py_compile + bash -n，约 15–20 分钟；建测试用软链 WT/probe-tree -> ../../probe-tree（被 git 忽略，结束后移到 _local/b2-judge/probe-tree.link）
+- 2026-11-14 23:09:48 重启（暂停后）：v1 全量验证中断作废（停在 tests/judge），从头重做为 v2；fullv.sh 的 TMPDIR/basetemp 改到短路径 /home/scratch.yihlu_coreai/tmp/20261114-capkit-sm1718/b2-judge/<轮次>（原件留 fullv.sh.v1）；软链 probe-tree 恢复到 WT 根（未入库）。顺序：v2 全量验证（约 15–20 分钟）→ E0 第一轮 J5933747-r0-L0..L4 拷贝重判 + boundary + localize → e0a-nullsse 作业路径 e2e。
+- 2026-11-14 23:14:59 v2：tests/judge（约 5 分钟）
+- 2026-11-14 23:20:07 v2 作废：tests/judge 1 failed（test_counts_need_every_per_tier_summary）。根因（MEASURED）：PYTHONPYCACHEPREFIX 目录 _local/b2-judge/pyc 里的 e1report.cpython-311.pyc（22:14:38）是变异 E7（mut/run5.py，'if short:'→'if False:' 等长替换、同一秒内写回）编译出的，源码大小与秒级 mtime 都与还原后的源码一致，Python 当作有效缓存读入；不带缓存前缀直接调用 counts 得 NOT_RUN（正确）。代码无缺陷。处理：pyc 目录改名为 pyc.stale-v2，新建空 pyc 目录，全量验证从头重做为 v3（前面 v2 各步也可能读到其他变异的陈旧 pyc，一并作废）。
+- 2026-11-14 23:34:00 v3：样本自测（fullv.sh 的 selftest 步骤缺 --tools/--tmp，已补；约 3 分钟）
+- 2026-11-14 23:34:53 e2e 重判：E0 第一轮 J5933747-r0-L0..L4 拷到 _local/b2-judge/trees，共享沙箱 rjwd（REGISTRY/submissions/register 副本、自有 JUDGED.tsv），新判定器逐棵重判（rejudge.sh，约 5–10 分钟）
+- 2026-11-14 23:37:44 e2e 重判后续：rjpost/run.sh（进程内加 C2/C4/C12；base 1176861 工具对照逐行；进程内 P+X+I+V 定位；然后 boundary），约 5–10 分钟
+- 2026-11-14 23:40:26 e2e 发现：CLI 重判 5 棵树全部 JUDGED（无崩溃、无 INPUT_INVALID）；进程内加 C2/C4/C12 后 E0(b) 4 棵树的 C12（角色都是 1 worker）与 C1（无 load_source）应检 0 ⇒ NOT_RUN 但明细为空，不满足「NOT_RUN 须写明原因」。修复：C1/C2/C4/C12 应检为 0 时写原因（checks.py），test_calib 补 4 处断言（61 passed），INTERFACES 勘误 B2-2A 第 12 条。提交后全量验证从头重做为 v4。
+- 2026-11-14 23:40:37 e2e 重判 r2（HEAD afbe218；r1 产物改名 trees.r1/rjwd.r1/rj.r1/rjpost/r1）
+- 2026-11-14 23:44:27 作业路径 e2e：e0a-nullsse（J8520001，e2e/jobpath/run.sh，TMPDIR 改短路径；约 3–5 分钟）
+- 2026-11-14 23:45:25 e2e r2 完成（MEASURED，HEAD afbe218）：① CLI 重判 J5933747-r0-L0..L4 拷贝（_local/b2-judge/trees，沙箱 rjwd）：5 棵全部 attempt=JUDGED、退出码 11（NOT_RUN）、无崩溃、无 INPUT_INVALID；checks.tsv 前六列对原判（judge.orig）只有 L0 档 4 C7 RED→PASS 一行不同，进程内用 base 1176861 工具判同一棵树逐行与 HEAD 相同（rjpost/*.rows-{base,new}.out）⇒ 来自 base 已有的 SM-14 修复，不是本子批；原判 L0 退出码 10（VOID）→ 11 同因。② 进程内加 C2/C4/C12（rjpost/*.inproc.out）：C4 全 PASS（23 档）；C2 全 NOT_RUN「no registered stub_calib calibration」；C12：L0 档 4 PASS、档 2/6 NOT_RUN「['w1']/['w0'] carried no traffic」，E0(b) 20 档 NOT_RUN「no role on a tier-scope requests hop has two or more units」；C1 NOT_RUN 原因齐全；无 RED。③ 进程内 P+X+I+V 定位（诊断门槛 0.90，非登记值；rjpost/*.loc.out）：s1/s2/s3 档 6 relay1 I1 成立、s4 不成立，与 loc4 去 pid 后逐行相同。④ analysis/boundary.py：E0(b) 4 树（--compare e0b-s1-single,e0b-s4-sleep）、e0a 1 树 EXIT=0，0 剔除，T4 全 none（无带），T5 indistinguishable（包络开口）；产物 rjpost/an/。⑤ 作业路径 e2e e0a-nullsse J8520001：build submit_rc=0、launches rc=0、STATE VALID、judge rc=11、0 RED、无 INPUT_INVALID、快照/树内 0 个 pyc，与 R5b 终版同形。
+- 2026-11-14 23:45:25 全量验证 v4 开工（HEAD 为本行提交，代码同 afbe218），约 15–20 分钟
+- 2026-11-14 23:59:24 全量验证 v4 完成（MEASURED，HEAD c75e44b，代码同 afbe218；_local/b2-judge/logs/v4/summary.txt）：capcommon 190、capload 33、capprobe 159、envgate 71、jobs 198、nullsse 4、sidecar 5、judge 249、grpc 36、launch 189，全部 passed、0 failed；样本自测 --expect-samples 36 EXIT=0（ran 36、errors []）；patchcheck --rev HEAD PASS（7/7 位点、8/8 位置、0 违例）；py_compile 204 ok / 0 bad；bash -n 3 ok / 0 bad。fakebin.log 1 行 = 作业路径 e2e 里 gate 的 `scontrol show job 8520001`（替身退出 97，gate rc=6 在模拟中按设计忽略），无真实集群调用。软链 probe-tree 移回 _local/b2-judge。注：v4 期间另一会话（code-review/self-review-compare/capkit-fixsm1718-J17871）在跑 tests/grpc，非本子批进程。
+- 2026-11-15 00:48:05 R1 修复开工（slug capkit-b2judge-J17871，被审 head 06922f9875）：F1–F22 一次改完，然后全量验证 + e2e
+- 2026-11-15 00:58:48 R1 修复：代码改动 F1–F17、F19 初稿写完（localize/stats/intervene/boundary/scaling/e1report/calib/checks/thresholds/inputs/grade），开始写测试与样本
+- 2026-11-15 01:03:54 R1 修复：tests/judge 新增与改写的测试写完（localize/intervene/analysis/stats/calib），开始改样本生成器（真实形状样本 + c12_idle_worker）
+- 2026-11-15 01:06:24 R1 修复：样本生成器加 real_pins（父进程登记 + 角色核组共享）两个新样本、c12_idle_worker 改为未发出；全量生成到 _local/b2-judge/st8 并跑样本自测（约 3 分钟）
+- 2026-11-15 01:10:00 R1 修复：新测试对被审 head 06922f9 的工具跑一遍（git archive 到 /home/scratch.yihlu_coreai/tmp/20261114-capkit-sm1718/b2-judge/old，确认修复前失败）
+- 2026-11-15 01:11:27 R1 修复：变异检查（mut/run6.py，在副本 /home/scratch.yihlu_coreai/tmp/20261114-capkit-sm1718/b2-judge/mut6 上改，不动 worktree；约 5 分钟）
+- 2026-11-15 01:16:59 R1 修复：INTERFACES 正文 §9.6/§9.8/§14 与勘误 B2-2A/B2-2E/B2-2E-A 逐句改写，新增 B2-R1 小节
+- 2026-11-15 01:20:14 R1 修复：提交前先跑 tests/judge 全量（约 5 分钟）
+- 2026-11-15 01:24:14 R1 修复：tests/judge 275 passed（logs/r1f-j.log）；变异 23 个全杀（mut/summary6.txt + summary6b.txt，F5 首轮存活后补断言）；新测试对被审 head 工具 32 failed（logs/oldfail.log）；样本 38/38（st8b）。提交。
+- 2026-11-15 01:25:01 全量验证 v5 开工（HEAD be6bc24442，fullv_all38.sh：10 个测试目录逐个串行 + selftest 38 + patchcheck + py_compile + bash -n，约 15–20 分钟；软链 probe-tree 恢复到 WT 根，未入库；fakebin.log 开工前 1 行）
+- 2026-11-15 01:28:59 e2e（MEASURED）：30 棵真树（E1-0 15、E0(a) 3、E0(b) 12）roles.json 拷贝（_local/b2-judge/e2e/roles-r1fix）跑 core_groups：每个候选角色恰好一个核组、shared_with 全为空（e2e/coregroups.out）——父进程与 worker 合成一组（E1-0 sink 5 进程核 0–3、ld 2 进程核 4；e0a nullsse/capload 各 3 进程），I1 不再因同角色共享核 NOT_RUN
+- 2026-11-15 01:37:28 全量验证 v5（MEASURED，HEAD be6bc24442，logs/v5/summary.txt）：capcommon 190 / capload 33 / capprobe 159 / envgate 71 / grpc 36 / jobs 198 / judge 275 / launch 189 / nullsse 4 / sidecar 5 全 passed；selftest ran=38 errors=0；patchcheck PASS（7 site / 8 location，violations []）；py_compile 204/0；bash -n 3/0；fakebin.log 仍 1 行（v5 前既有）。下一步：rejudge J5933747-r0-L0..L4（~5×1–2 min）
+- 2026-11-15 01:38:42 rejudge 5 棵完成（EXIT=11 全部，无 INPUT_INVALID/traceback，checks 前六列与 r2 逐行相同、对原判仅 L0 档 4 C7 RED→PASS 既有差异）；下一步 rjpost inproc/base/loc2
+- 2026-11-15 01:41:06 rjpost 完成：inproc 与 r2 逐字节相同、base-vs-new 行 0 差、loc2 档级结论与 r2 相同（多核组按进程出单元、pids=整组）；rjpost/an boundary e0a/e0b EXIT=0，e0b T5 由 indistinguishable→NOT_RUN（全开包络，F2）。下一步 E1-0 boundary+e1report → e2e/an3
+- 2026-11-15 01:43:11 E1-0（MEASURED）：e2e/an3 boundary e1c-R（9 launch/3 arm）/e1c-M（6/2）EXIT=0；e1c-R T5 indistinguishable→NOT_RUN（全开包络），e1c-M T5 NOT_RUN（无共同 block，同前）；e1report 15 棵 bytes 全 PASS（新增 difference=0）、accepts http PASS / grpc NOT_RUN（nullgrpc 不计 accept），状态与 r3 相同；slope NOT_RUN（mode None 全排除，同前）。E1-0 两棵拷贝（e2e/e1loc，沙箱 wd 补 pilot.json）inproc_i2：ld/gld 单核组 core_group、sink 多核组按 5 进程出单元、gsink 单核，I1 无 NOT_RUN。下一步 jobpath e0a-nullsse 8520002（预计 3–6 min，后台）
+- 2026-11-15 01:44:11 jobpath e0a-nullsse 8520002（MEASURED）：build/inner/launches rc=0、STATE VALID、judge rc=11（NOT_RUN）、code_sha=be6bc24442、RED 0、INPUT_INVALID 0、pyc 0，非 PASS 集合与 8520001 逐行相同；fakebin.log 新增 1 行（scontrol show job 8520002，被拦截，同 8520001 模式）。WT/probe-tree 软链已改名移回 _local/b2-judge/probe-tree.symlink；pgrep 无残留（fullv/pytest/capjudge/caplaunch/capload/nullsse/inner.sh）。R1 修复与全量验证、e2e 全部完成，待开 R2。
+- 2026-11-15 02:30:40 R2 修复开工（被审 head fbeb292d87，slug capkit-b2judge-J17871）：F1–F19 一次改完，然后全量验证 + e2e
+- 2026-11-15 02:40:33 R2 修复：代码改动 F1–F13 初稿写完（intervene/checks/judge/boundary/scaling/e1report/calib/localize/grade），开始改测试
+- 2026-11-15 02:45:29 R2 修复：pyc 缓存目录改名 pyc.pre-r2fix、新建空 pyc；跑 tests/judge 的 test_intervene/test_localize/test_analysis（约 3 分钟）
+- 2026-11-15 02:47:47 R2 修复：样本重生成到 _local/b2-judge/st9 并与库内 samples 比对（约 2 分钟）
+- 2026-11-15 02:48:39 R2 修复：样本自测（38 个，约 3 分钟）
+- 2026-11-15 02:50:30 R2 修复：变异检查（mut/run7.py，副本 /home/scratch.yihlu_coreai/tmp/20261114-capkit-sm1718/b2-judge/mut7，26 个变异，约 5 分钟）
+- 2026-11-15 02:53:45 R2 修复：变异 26 个全杀（mut/summary7.txt）；新测试对被审 head 工具 33 failed（logs/r2-oldfail.log）；样本自测 38 EXIT=0（logs/r2-selftest.log）。下一步 e2e：E0(b) s1～s4 拷贝上进程内跑心跳
+- 2026-11-15 02:54:08 R2 e2e：上一轮产物改名 trees.r1fix/rjwd.r1fix/rj.r1fix、rjpost/r1fix、rjpost/an.r1fix；重判 J5933747-r0-L0..L4 拷贝（rejudge.sh，约 5 分钟）
+- 2026-11-15 02:54:58 R2 e2e：rjpost/run.sh hb（新增 e2e/hb2.py：进程内 P+X+I+V 判定，打印逐档心跳）+ inproc + base + loc2（约 5–10 分钟）
+- 2026-11-15 02:55:47 R2 e2e 发现（MEASURED，rjpost/*.hb.out）：s1/s2/s4 全部负载档心跳 PASS（s1 档 6 = 24741 + 14259 = 39000）；s3（aux_thread）档 6 FAIL：applied 在负载档 25616 ≠ expected 38860、清空档 13384 ≠ 140，两档合计 39000 = 39000——辅助线程的施加跨档滞后，与经过次数同一窗口问题（b2judge-RS29）。修法：applied/expected/applied_ns 也按「本档 + 其后清空档」逐 worker 求和后核（偏离分诊 F1「两份摘要分别核」的字面，理由即此实测）
+- 2026-11-15 02:57:48 R2 e2e：心跳复跑（窗口求和后）s1～s4 全部负载档 PASS（rjpost/*.hb.out；旧版 *.hb-v1.out）；STATE 追加 VOID 的拷贝 e2e/void-r2：intervene、boundary 都剔除。下一步 rjpost inproc/base/loc2
+- 2026-11-15 02:58:50 R2 e2e：boundary（E0 拷贝 rjpost/an；E1-0 e2e/an4）与 e1report（E1-0），约 2 分钟
+- 2026-11-15 03:08:23 R2 修复：扫同类（RS32）新增单行线程 ⇒ GIL 域 / C2 线程 CPU 无值（20 棵真树实测 0 例，r2fix/single_row_threads.out）、混合拓扑对照 ⇒ 最终等级 NOT_RUN；INTERFACES 正文 §9.6/§9.7/§14.2/§14.3 与勘误 B2-2A-4/5/8/10、B2-2E-2/7/8/10、B2-2E-A-7 改写，新增 B2-R2；跑 tests/judge 全量（约 5 分钟）
+- 2026-11-15 03:12:51 R2 修复：变异复跑（mut/run7.py，新副本 mut7b，29 个，约 5 分钟）
+- 2026-11-15 03:17:10 R2 修复：tests/judge 295 passed（logs/r2f-j.log）；变异 29 个全杀（mut/summary7b.txt；summary7.txt 是窗口求和前的 26 个）。提交。
+- 2026-11-15 follow-up（R2 自审 C3，交主会话与用户）：`capjudge.pilot` 不产出 `i1_calibration` ⇒ 真实启动 I 一律 NOT_RUN ⇒ 等级 NOT_LOCALIZED（`I_status: NOT_RUN`）⇒ V 无已定位对照、标定上限一律 censored ⇒ E1「已确认」要等 3B1-rest。RUNBOOK §2.1 第 2 行（本子批交付 E1「已确认」）与第 8 行（3B1-rest 补 `i1_calibration`）的先后由用户定；本子批不改 RUNBOOK。备选 (c)（缺 `i1_calibration` 时对称地把 I1 移出组合、只用 I3）写在勘误 B2-2E-10①。
+- 2026-11-15 R2 修复与分诊字面的两处差别（理由已写进勘误）：① F1 分诊写「applied/expected、applied_ns 两份摘要分别核」，实测 s3（aux_thread）档 6 分别核会把健康注入判 FAIL（施加跨档滞后），改为按 worker 两档相加后核（同 b2judge-RS29）；② F4 分诊括号写「没有任何区组两端都可算 ⇒ NOT_RUN 保持」，按「保持」取原有条件（没有一个共同区组的下端比值算得出 ⇒ NOT_RUN），否则已有的「加倍臂上端开口、下端已足够 ⇒ grows」会被改成 NOT_RUN。
+- 2026-11-15 03:17:41 全量验证 v6 开工（HEAD 0bde8aa2f42f573e1323d55e4a2fbfd5035cc534，fullv_all38.sh v6：10 个测试目录逐个串行 + selftest 38 + patchcheck + py_compile + bash -n，约 15–20 分钟；软链 probe-tree 恢复到 WT 根，未入库；fakebin.log 开工前 2 行）
+- 2026-11-15 03:18:00 R2 e2e 在提交后的 HEAD 上从头重做（提交前的一遍改名 trees.r2pre/rjwd.r2pre/rj.r2pre、rjpost/r2pre、rjpost/an.r2pre）：重判 5 棵 + rjpost 全部模式 + boundary（约 10 分钟，与全量验证 v6 并行，非 pytest）
+- 2026-11-15 03:20:22 R2 e2e（HEAD 0bde8aa2）：重判 5 棵 EXIT=11 全部、无 INPUT_INVALID/traceback、checks 前六列对 r1fix 0 差、对原判仅 L0 档 4 C7 既有差异；rjpost inproc/loc2 与 r1fix 逐字节相同、rows new==base、hb 与提交前相同（s1～s4 全 PASS）；boundary/e1report 产物对 R1 修复轮 0 差；void-r2b：intervene/boundary 都剔除 VOID 拷贝。下一步 jobpath e0a-nullsse 8520003（约 3–6 分钟）
+- 2026-11-15 03:21:07 jobpath e0a-nullsse 8520003（MEASURED，HEAD 0bde8aa2）：build/inner/launches rc=0、STATE VALID、judge rc=11、code_sha=0bde8aa2、RED 0、INPUT_INVALID 0、pyc 0；非 PASS 集合与 8520002 逐行相同；fakebin.log 新增 1 行（scontrol show job 8520003，被拦截）
+- 2026-11-15 全量验证 v6 完成（MEASURED，HEAD 0bde8aa2，logs/v6/summary.txt；dirty=2 是本日志与未入库的 probe-tree 软链）：capcommon 190 / capload 33 / capprobe 159 / envgate 71 / grpc 36 / jobs 198 / judge 295 / launch 189 / nullsse 4 / sidecar 5 全 passed、0 failed；selftest ran=38 errors=[]；patchcheck PASS（7 site / 8 location，violations []）；py_compile 204/0；bash -n 3/0；fakebin.log 3 行（前 2 行是 8520001/8520002，第 3 行是本轮 jobpath 的 scontrol show job 8520003，均被拦截）。
+- 2026-11-15 RS12 复核后补改两句勘误（B2-2E-7 的 `applied > 0` 窗口口径、B2-2E-2 不记的是 GIL 域两个偏移）与 `intervene._one_site` docstring 一句；代码对 0bde8aa2 去掉 docstring 后 AST 相同（只改文字），另行提交，提交后跑 tests/judge/test_intervene.py 与 py_compile。
+- 2026-11-15 03:31:02 R2 修复收尾：HEAD ce822bbe（文字提交）后 tests/judge/test_intervene.py 63 passed、py_compile ok；软链 probe-tree 移回 _local/b2-judge/probe-tree.symlink；pgrep 无残留。待开 R3（上限轮）。

@@ -1,0 +1,19 @@
+{
+ "exit_code": 0,
+ "grade": {
+  "I_status": "UNDETERMINED",
+  "grade": "UNDETERMINED"
+ },
+ "red_checks": [],
+ "synthetic": true,
+ "tier_localisation": {
+  "4": {
+   "status": "UNDETERMINED"
+  }
+ },
+ "tier_verdicts": {
+  "2": "STABLE",
+  "4": "UNDETERMINED"
+ },
+ "tree": "runs/Jlocal-sample-i-conflict-r0-L0_synthetic-a"
+}

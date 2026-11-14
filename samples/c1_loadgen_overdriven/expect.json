@@ -1,0 +1,12 @@
+{
+ "exit_code": 10,
+ "red_checks": [
+  "C1"
+ ],
+ "synthetic": true,
+ "tier_verdicts": {
+  "2": "STABLE",
+  "4": "VOID"
+ },
+ "tree": "runs/Jlocal-sample-c1-loadgen-overdriven-r0-L0_synthetic-a"
+}

@@ -11,7 +11,7 @@
   "job_id": "local-sample-sat-spin-thread-same-process",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013",
+  "register_sha": "67c5cafd07719815fff5a1de882382d154efa72bc9b235ee4b82772cc519ef36",
   "restart_count": 0,
   "role": "launch",
   "tier_label": null,
@@ -32,6 +32,6 @@
  "state": "VALID",
  "stop": null,
  "tiers_completed": 5,
- "written_mono_ns": 9758840288111516,
- "written_wall": "2026-11-13T15:06:56.368Z"
+ "written_mono_ns": 9852503948342873,
+ "written_wall": "2026-11-14T17:08:00.028Z"
 }

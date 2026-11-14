@@ -11,7 +11,7 @@
   "job_id": "local-sample-upstream-void",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013",
+  "register_sha": "fafcd6d3122ea924b1dc14283a7c718dfb9e75b290caa87f4edfb86c3ab104ff",
   "restart_count": 0,
   "role": "launch",
   "tier_label": null,
@@ -32,6 +32,6 @@
  "state": "VALID",
  "stop": null,
  "tiers_completed": 5,
- "written_mono_ns": 9758835973772959,
- "written_wall": "2026-11-13T15:06:52.054Z"
+ "written_mono_ns": 9852499597780563,
+ "written_wall": "2026-11-14T17:07:55.678Z"
 }

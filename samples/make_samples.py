@@ -44,11 +44,14 @@ IMAGE_SHA = "e" * 64
 REG_TS0 = "2026-11-13T00:00:00.%03dZ"
 SUBMITTED_AT = "2026-11-13T00:00:10.000Z"
 CAPLOAD_PIDS = (1001, 1002)
+# real_pins samples: caplaunch registers capload's parent too, and pins the parent and both
+# workers to the role's whole core set (roles.json of every cluster launch, e.g. E1-0)
+CAPLOAD_PARENT = 1000
 NULLSSE_PID = 2001
 SPIN_TID = 2003
 CLK = 100
 GPU_EVERY_NS = 2 * S  # sidecar --gpu-every-s 2: GPU-IDLE must read the period from meta.json
-STATUS = {"timeout_registered": 1, "conn_refused": 2}
+STATUS = {"timeout_registered": 1, "conn_refused": 2, "short_output": 6}
 GATE = {"mode": "enforce", "rule": "abs_max",
         "readings": [
             {"name": "loadgen_inflight", "terms": [{"role": "capload", "slot": "backlog.inflight",
@@ -65,12 +68,49 @@ BANDS = {
     "T1:inflight_derived:capload": (-3, 3),
     "T1:backlog.inflight:capload": (-3, 3),
     "T1:backlog.active_streams:nullsse": (-3, 3),
-    "T1:send_lag_p50_ns:capload": (-20 * US, 20 * US),
-    "T3:send_lag_p99_ns:capload": (0, 100 * US),
-    "T3:fionread_nonzero_frac:capload": (0.0, 0.05),
-    "T3:loop_lag_p99_ns:capload": (0, 2 * MS),
     "T3:foreign_busy_frac:nullsse": (-0.05, 0.05),
+    # localisation I (judge mode P+X+I+V, errata B2-2E): I1 single-core offsets, I3 readings
+    "T2:core_busy_frac_softirq:nullsse": (-0.05, 0.05),
+    "T2:core_busy_frac_softirq:capload": (-0.05, 0.05),
+    # several cores per group (real_pins: capload's parent and workers on cores 2-3)
+    "T2:gil_domain_cores:capload": (-0.05, 0.05),
+    "T2:gil_run_delay_frac:capload": (-0.05, 0.05),
+    "T2:nongil_thread_cores:capload": (-0.05, 0.05),
+    "T1:backlog.pending_msgs:nullsse": (-3, 3),
+    "T1:i3_backlog:sink_pending": (-3, 3),
+    "T2:i3_backlog:sink_pending": (-3, 3),
+    "T1:i3_backlog:sse_in_flight": (-3, 3),
+    "T2:i3_backlog:sse_in_flight": (-3, 3),
 }
+I1_NEAR_ONE = 0.95
+# judge.localize readings of the slow-reader / slow-server samples: the sink's own pending queue
+# (entry side of nullsse) and the in-flight messages between nullsse and capload (exit side of
+# nullsse, entry side of capload)
+LOCALIZE = {"readings": [
+    {"name": "sink_pending", "terms": [{"role": "nullsse", "slot": "backlog.pending_msgs",
+                                        "sign": 1, "agg": "sum"}],
+     "receiver": "nullsse", "sender": None},
+    {"name": "sse_in_flight", "terms": [{"role": "nullsse", "slot": "backlog.yielded",
+                                         "sign": 1, "agg": "sum"},
+                                        {"role": "capload", "slot": "backlog.read",
+                                         "sign": -1, "agg": "sum"}],
+     "receiver": "capload", "sender": "nullsse"}]}
+# loadgen_band shape bound to capload (C1, INTERFACES 9.6) and stub_calib shape bound to nullsse
+# when it is an out-of-domain stub (C2, INTERFACES 9.7). Per-worker planned load: tier 2 = 10,
+# tier 4 = 20 req/s (two capload workers); nullsse has one worker (20, 40 req/s).
+LOADGEN_BANDS = {"T1:send_lag_p50_ns": (-20 * US, 20 * US), "T3:send_lag_p99_ns": (0, 100 * US),
+                 "T3:fionread_nonzero_frac": (0.0, 0.05), "T3:loop_lag_p99_ns": (0, 2 * MS)}
+STUB_BANDS = {"T3:loop_lag_p99_ns": (0, 2 * MS), "T3:thread_cpu_cores": (0.0, 0.5)}
+ENV = {"hw_profile_sha": HW_SHA, "image_sha": IMAGE_SHA, "capkit_sha": CODE_SHA,
+       "baseline_sha": "2f22a98d6e"}
+
+
+def shape_doc(bands, max_key, max_value):
+    return {"match": {"tokens_per_msg": [1], "streams_c": [None]},
+            max_key: {"load_key": "rate_rps", "value": max_value, "censored": False,
+                      "n_launches": 3},
+            "bands": {k: {"min": lo, "max": hi, "n": 6, "unit": "synthetic", "source_tiers": []}
+                      for k, (lo, hi) in bands.items()}}
 
 
 def tier(seq, label, kind, start, ramp, window, tail, rate, baseline=False):
@@ -108,8 +148,11 @@ class Sim:
         for rid, ts in enumerate(tseq):
             by_tier.setdefault(ts, []).append(rid)
         timeouts = set(by_tier[4][-5:]) if opts.get("overload") else set()
+        if opts.get("c12"):  # every request of capload worker 1 in tier 4 times out
+            timeouts = {rid for rid in by_tier[4] if rid % 2 == 1}
+        self.short = by_tier[4][0] if opts.get("c4") else None
         refused = set(by_tier[4][:2]) if opts.get("c3") else set()
-        grow = opts.get("overload") or opts.get("spin")
+        grow = opts.get("overload") or opts.get("spin") or opts.get("slow")
         self.reqs = []
         for rid, (p, ts) in enumerate(zip(planned, tseq)):
             t = tt.tiers[ts]
@@ -191,7 +234,21 @@ RECONCILE = {"schema": "capkit.reconcile/1", "chains": [
     {"name": "probe-msgs", "kind": "messages", "gate": "product", "include_usage": None,
      "hops": [{"role": "nullsse", "source": "slot:count.F2.msgs", "scope": "tier"}],
      "corrections": []}]}
-CHECKS = ["C1", "C3", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C13", "GPU-IDLE"]
+CHECKS = ["C1", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12", "C13",
+          "GPU-IDLE"]
+# nullsse as an out-of-domain stub: C2 instead of C13 (no role under test)
+CHECKS_STUB = ["C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12",
+               "GPU-IDLE"]
+
+
+def roles_for(opts):
+    roles = ROLES
+    if opts.get("real_pins"):
+        roles = [dict(r, expected_procs=3) if r["role"] == "capload" else r for r in roles]
+    if not opts.get("stub_ood"):
+        return roles
+    return [dict(r, measure_class="stub_out_of_domain") if r["role"] == "nullsse" else r
+            for r in roles]
 
 
 class Builder:
@@ -226,7 +283,8 @@ class Builder:
             "sets": {"tok8": {"kind": "token_ids", "items": [[1, 2, 3, 4, 5, 6, 7, 8]]}}})
         sn_rel = "register/scenario.json"
         self.scenario = {"schema": "capkit.scenario/1", "synthetic": True,
-                         "roles": [{k: v for k, v in r.items() if k != "cpus"} for r in ROLES],
+                         "roles": [{k: v for k, v in r.items() if k != "cpus"}
+                                   for r in roles_for(self.opts)],
                          "tier_table": tt_rel, "schedule": sc_rel, "prompts": pr_rel,
                          "probe_tier": "P2", "stop_order": ["capload", "nullsse"],
                          "reconcile": RECONCILE}
@@ -234,8 +292,7 @@ class Builder:
         pi_rel = "register/pilot.json"
         write_plain(os.path.join(W, pi_rel), {
             "schema": "capkit.pilot/1", "experiment": "E0", "synthetic": True,
-            "environment": {"hw_profile_sha": HW_SHA, "image_sha": IMAGE_SHA,
-                            "capkit_sha": CODE_SHA, "baseline_sha": "2f22a98d6e"},
+            "environment": ENV,
             "inputs": [], "noise_bands": {k: {"regime": "subsat", "min": lo, "max": hi, "n": 6,
                                               "unit": "synthetic", "source_tiers": []}
                                           for k, (lo, hi) in BANDS.items()},
@@ -247,22 +304,65 @@ class Builder:
             "d14_softirq": {"rule": None, "rule_file": None, "readings": {},
                             "n_trees_complete": 0, "irq_softirq_is_experiment": True,
                             "conclusion_reason": "synthetic"},
+            "i1_calibration": {"near_one_core_min": I1_NEAR_ONE, "source_tiers": [], "n": 1},
             "core_budget": None, "drain_max_wait_ns": None, "canary_band": None})
         self.files = {"tier_table": self.register_file(tt_rel, "tier_table"),
                       "schedule": self.register_file(sc_rel, "schedule"),
                       "prompts": self.register_file(pr_rel, "prompts"),
                       "scenario": self.register_file(sn_rel, "scenario")}
         pilot = self.register_file(pi_rel, "pilot")
+        calibration = [{"kind": "pilot", "relpath": pilot["relpath"],
+                        "sha256": pilot["sha256"]}] + self.build_stage2_calibration()
+        judge = {"mode": "P+X+I+V" if self.opts.get("ixv") else "P+X",
+                 "checks": CHECKS_STUB if self.opts.get("stub_ood") else CHECKS}
+        if self.opts.get("slow"):
+            judge["localize"] = LOCALIZE
+        if self.opts.get("regime_nb") is not None:
+            judge["near_boundary_tiers"] = {"synthetic-a": ["up-r40"]}
         rg_rel = "register/register.json"
         write_plain(os.path.join(W, rg_rel), {
             "schema": "capkit.register/1", "experiment": "E0", "synthetic": True,
-            "arms": ["synthetic-a"], "files": self.files,
-            "calibration": [{"kind": "pilot", "relpath": pilot["relpath"],
-                             "sha256": pilot["sha256"]}],
-            "expected": {"launches_per_arm": 1, "job_budget": 0},
-            "judge": {"mode": "P+X", "checks": CHECKS}})
+            "arms": ["synthetic-a"], "files": self.files, "calibration": calibration,
+            "expected": {"launches_per_arm": 1, "job_budget": 0}, "judge": judge})
         late = "2026-11-13T00:00:20.000Z" if self.opts.get("register_late") else None
         self.register = self.register_file(rg_rel, "register", registered_at=late)
+
+    def build_stage2_calibration(self):
+        """loadgen_band (always; C1), stub_calib (stub_ood samples; C2) and near_boundary_noise
+        (regime_nb samples), each registered."""
+        W, out = self.W, []
+        lg = shape_doc(LOADGEN_BANDS, "per_worker_max",
+                       15.0 if self.opts.get("c1_overdriven") else 30.0)
+        if self.opts.get("calib_invalid"):
+            lg["bands"]["T3:send_lag_p99_ns"].update(min=2, max=1)
+        docs = [("loadgen_band", {"schema": "capkit.loadgen_band/1", "experiment": "E1",
+                                  "synthetic": True, "environment": ENV, "inputs": [],
+                                  "shapes": {"capload-r": lg}}, {"capload": "capload-r"})]
+        if self.opts.get("stub_ood"):
+            docs.append(("stub_calib", {
+                "schema": "capkit.stub_calib/1", "experiment": "E2a", "synthetic": True,
+                "environment": ENV, "inputs": [], "in_domain": None,
+                "out_of_domain": {"nullsse-r": shape_doc(STUB_BANDS, "per_process_max",
+                                                         100.0)}}, {"nullsse": "nullsse-r"}))
+        if self.opts.get("regime_nb") is not None:
+            # "good": every pilot band again, tagged near_boundary; "missing": only C13's band,
+            # so tier 4's X has no near-boundary band at all
+            keep = BANDS if self.opts["regime_nb"] == "good" else {
+                k: v for k, v in BANDS.items() if k.startswith("T3:foreign_busy_frac:")}
+            docs.append(("near_boundary_noise", {
+                "schema": "capkit.near_boundary_noise/1", "experiment": "E0", "synthetic": True,
+                "regime": "near_boundary", "environment": ENV, "inputs": [],
+                "noise_bands": {k: {"regime": "near_boundary", "min": lo, "max": hi, "n": 6,
+                                    "unit": "synthetic", "source_tiers": []}
+                                for k, (lo, hi) in keep.items()}}, None))
+        for kind, doc, bind in docs:
+            rel = "register/%s.json" % kind
+            write_plain(os.path.join(W, rel), doc)
+            entry = dict(self.register_file(rel, kind), kind=kind)
+            if bind is not None:
+                entry["bind"] = bind
+            out.append(entry)
+        return out
 
     def build_ledgers(self):
         sub = os.path.join(self.W, "submissions.tsv")
@@ -292,20 +392,89 @@ class Builder:
     def threads_of(self):
         """{pid: [(tid, comm, identified_as, ticks_per_s)]}."""
         th = {pid: [(pid, "python", "event_loop", 30)] for pid in CAPLOAD_PIDS}
-        main = [(NULLSSE_PID, "python", "event_loop", 20),
+        if self.opts.get("real_pins"):
+            th[CAPLOAD_PARENT] = [(CAPLOAD_PARENT, "python", "event_loop", 1)]
+        main = [(NULLSSE_PID, "python", "event_loop", 10 if self.opts.get("spin") else 20),
                 (NULLSSE_PID + 1, "capkit-snap", "snapshot_writer", 1)]
         if self.opts.get("spin"):
             main.append((SPIN_TID, "python", "spin_thread", 70))
         th[NULLSSE_PID] = main
         return th
 
+    def rate_at(self, pid, tid, rate, t):
+        """CPU ticks per second of one thread in the second [t, t + 1 s): the base rate, except
+        in tier 4 ([12 s, 18 s)) of the samples that saturate a process there. spin: the
+        event loop of nullsse rises from 10 to 27 ticks/s next to the 70-tick spin thread
+        (core 99 % busy, baseline 82 %); slow=server / conflict: nullsse's loop at 96; slow=
+        reader: every capload worker at 97."""
+        hot = 12 * S <= t < 18 * S
+        slow = self.opts.get("slow")
+        if self.opts.get("spin") and tid == NULLSSE_PID:
+            return 27 if hot else 10
+        if hot and slow in ("server", "conflict") and tid == NULLSSE_PID:
+            return 96
+        if hot and slow == "reader" and pid in CAPLOAD_PIDS:
+            return 97
+        return rate
+
+    def ticks_at(self, pid, tid, rate, t):
+        """Cumulative ticks at the sidecar row time t (rows every 1 s from -1 s)."""
+        return sum(self.rate_at(pid, tid, rate, j * S) for j in range(-1, t // S))
+
+    def pending_at(self, t):
+        """nullsse's pending queue (slow samples): grows by 5 per second in tier 4."""
+        return 5 * (t - 12 * S) // S if 12 * S <= t < 18 * S else 0
+
+    def in_flight_at(self, t):
+        """nullsse -> capload in-flight messages: held at 64 (flow-control plateau) in tier 4
+        when the reader is slow, 2 otherwise."""
+        return 64 if (self.opts.get("slow") in ("reader", "conflict")
+                      and 12 * S <= t < 18 * S) else 2
+
+    def i3_slots(self, role, k, t, pid=None):
+        """{slot: value} of the I3 readings at time t (slow samples only)."""
+        if not self.opts.get("slow"):
+            return {}
+        if pid == CAPLOAD_PARENT:  # registered, writes the slot, reads nothing itself
+            return {"backlog.read": 0}
+        yielded = 1000 + 10 * (t // (100 * MS))
+        if role == "nullsse":
+            return {"backlog.pending_msgs": self.pending_at(t), "backlog.yielded": yielded}
+        read = yielded - self.in_flight_at(t)
+        return {"backlog.read": read // 2 if k == 0 else read - read // 2}
+
     def pid_role(self):
         d = {pid: ("capload", k) for k, pid in enumerate(CAPLOAD_PIDS)}
+        if self.opts.get("real_pins"):
+            d[CAPLOAD_PARENT] = ("capload", 0)  # caplaunch gives the parent worker 0 too
         d[NULLSSE_PID] = ("nullsse", 0)
         return d
 
+    def cpus_of(self, pid):
+        if self.opts.get("real_pins") and pid in (CAPLOAD_PARENT,) + CAPLOAD_PIDS:
+            return [2, 3]
+        return [{1001: 2, 1002: 3, NULLSSE_PID: 4}[pid]]
+
     def cpu_of(self, pid):
-        return {1001: 2, 1002: 3, NULLSSE_PID: 4}[pid]
+        """The core a process last ran on (sidecar last_cpu)."""
+        return self.cpus_of(pid)[0] if pid != 1002 else self.cpus_of(pid)[-1]
+
+    def allowed_of(self, pid):
+        c = self.cpus_of(pid)
+        return str(c[0]) if len(c) == 1 else "%d-%d" % (c[0], c[-1])
+
+    def core_ticks(self, cpu, t):
+        """Busy ticks of `cpu` at row time t: each thread's ticks split evenly over its
+        process's cores (the remainder on the first)."""
+        n = 0
+        for pid, ths in self.threads_of().items():
+            cs = self.cpus_of(pid)
+            if cpu not in cs:
+                continue
+            for tid, _c, _i, rate in ths:
+                v = self.ticks_at(pid, tid, rate, t)
+                n += v // len(cs) + (v % len(cs) if cpu == cs[0] else 0)
+        return n
 
     def build_tree(self):
         self.tree_rel = os.path.join("runs", tree_dir_name(self.job_id, 0, 0, "synthetic-a"))
@@ -314,7 +483,7 @@ class Builder:
         from capcommon.capbin import read_capbin
         _h, cols = read_capbin(sc)
         self.sim = Sim(self.tt, list(cols["planned_rel_ns"]), list(cols["tier_seq"]), self.opts)
-        roles = [dict(r, args=["--synthetic"]) for r in ROLES]
+        roles = [dict(r, args=["--synthetic"]) for r in roles_for(self.opts)]
         L = self.ident("launch")
         write_json_stamped(self.T.launch_json, "capkit.launch/1", L, {
             "synthetic": True, "origin_ns": ORIGIN, "origin_lead_ns": 5 * S,
@@ -330,8 +499,10 @@ class Builder:
             "submission": {"job_id": self.job_id, "restart_count": 0,
                            "submitted_at": SUBMITTED_AT}})
         procs = [{"pid": pid, "starttime_ticks": 5000 + pid, "role": role, "worker": k,
-                  "parent_pid": 900, "cmdline": ["python", "-m", role], "cpus":
-                  [self.cpu_of(pid)], "discovered_via": "ready.children",
+                  "parent_pid": CAPLOAD_PARENT if (self.opts.get("real_pins") and pid in
+                                                   CAPLOAD_PIDS) else 900,
+                  "cmdline": ["python", "-m", role], "cpus": self.cpus_of(pid),
+                  "discovered_via": "ready.children",
                   "registered_mono_ns": ORIGIN - 4 * S}
                  for pid, (role, k) in sorted(self.pid_role().items())]
         self.procs = procs
@@ -450,12 +621,16 @@ class Builder:
         role, k = self.pid_role()[pid]
         reg = SlotRegistry()
         if role == "capload":
-            reg.values[reg.gauge("backlog.inflight")] = self.sim.inflight(k, t_rel)
+            reg.values[reg.gauge("backlog.inflight")] = (
+                0 if pid == CAPLOAD_PARENT else self.sim.inflight(k, t_rel))
             reg.gauge("backlog.unread_bytes")
         else:
             reg.values[reg.gauge("backlog.active_streams")] = self.sim.active_streams(t_rel)
             reg.values[reg.counter("count.F2.msgs")] = self.sim.msgs_sent(
                 t_rel if count_at is None else count_at)
+        for slot, v in self.i3_slots(role, k, t_rel, pid).items():
+            kind = reg.gauge if slot == "backlog.pending_msgs" else reg.counter
+            reg.values[kind(slot)] = v
         meta = {"schema": SNAP_SCHEMA, "pid": pid, "ppid": 900, "starttime_ticks": 5000 + pid,
                 "argv": ["synthetic"], "interval_ns": 100 * MS, "slots": reg.slots,
                 "identity": self.ident(role, k, pid).to_dict(), "role_hint": role,
@@ -466,7 +641,7 @@ class Builder:
 
     def threads_at(self):
         return {str(pid): [{"tid": tid, "comm": comm, "py_name": None, "class": "python",
-                            "identified_as": ia, "cpus_allowed": str(self.cpu_of(pid))}
+                            "identified_as": ia, "cpus_allowed": self.allowed_of(pid)}
                            for tid, comm, ia, _r in ths]
                 for pid, ths in self.threads_of().items()}
 
@@ -529,12 +704,16 @@ class Builder:
         d = self.T.tier_dir(t.seq, t.label)
         for w, pid in enumerate(CAPLOAD_PIDS):
             mine = [r for r in reqs if r["worker"] == w]
+            for r in mine:
+                if r["rid"] == self.sim.short:  # the stub sent one token less (C4)
+                    r.update(status=STATUS["short_output"], fail="short_output")
             ok = [r for r in mine if r["status"] == 0]
             fails = {}
             for r in mine:
                 if r["fail"]:
                     fails[r["fail"]] = fails.get(r["fail"], 0) + 1
-            hint = {"timeout_registered": "overload", "conn_refused": "non_overload"}
+            hint = {"timeout_registered": "overload", "conn_refused": "non_overload",
+                    "short_output": "non_overload"}
             I = self.ident("capload", w, pid, t)
             cols = {k: array.array(tc) for k, tc in (
                 ("req_id", "q"), ("planned_rel_ns", "q"), ("sent_rel_ns", "q"),
@@ -554,7 +733,7 @@ class Builder:
                 for col, v in (("req_id", r["rid"]), ("planned_rel_ns", r["planned"]),
                                ("sent_rel_ns", r["sent"]), ("first_rel_ns", r["first"]),
                                ("done_rel_ns", r["done"]), ("frames", len(chunks)),
-                               ("bytes", 100 * len(chunks)), ("tokens", 3 if chunks else 0),
+                               ("bytes", 100 * len(chunks)), ("tokens", self.tokens_of(r)),
                                ("status", r["status"]), ("conn_id", w), ("new_conn", 0),
                                ("tier_seq", t.seq)):
                     cols[col].append(v)
@@ -575,6 +754,8 @@ class Builder:
             n_ok = len(ok)
             sent = len(mine) - (1 if (self.opts.get("p_sent") and t.seq == 4 and w == 1)
                                 else 0)
+            if self.opts.get("c12_unsent") and t.seq == 4 and w == 1:
+                sent = 0
             write_json_stamped(self.T.tier_file(t.seq, t.label, "capload", w, "summary",
                                                 "json"), "capkit.tier_summary/1", I, {
                 "tool": "capload", "n_workers": 2, "schedule_sha256":
@@ -596,6 +777,12 @@ class Builder:
                 "overflow": {"requests": 0, "chunks": 0, "fionread": 0}, "stop": None})
         self.write_server(t, reqs)
 
+    def tokens_of(self, r):
+        """capload's `tokens` column: the usage frame's completion_tokens, -1 without one."""
+        if r["rid"] == self.sim.short:
+            return 2
+        return 3 if r["status"] == 0 else -1
+
     def write_server(self, t, reqs):
         served = [r for r in reqs if r.get("stream")]
         I = self.ident("nullsse", 0, NULLSSE_PID, t)
@@ -606,18 +793,23 @@ class Builder:
             st = r["stream"]
             for col, v in (("req_id", r["rid"]), ("accept_rel_ns", st["accept"]),
                            ("first_step", st["first_step"]), ("n_msgs", len(st["send"])),
-                           ("tokens", 3), ("tier_seq", t.seq)):
+                           ("tokens", 2 if r["rid"] == self.sim.short else 3),
+                           ("tier_seq", t.seq)):
                 cols[col].append(v)
         write_capbin(self.T.tier_file(t.seq, t.label, "nullsse", 0, "streams", "capbin"),
                      "server.streams", I, list(cols.items()), {"overflow": 0})
         n = len(served) - (1 if (self.opts.get("c5") and t.seq == 4) else 0)
         frames = sum(len(r["stream"]["send"]) + 1 for r in served)
+        lag = hist.new_counts()
+        lag[hist.bucket_index(50 * MS if (self.opts.get("c2_loop_lag") and t.seq == 4)
+                              else 50 * US)] = 100
         write_json_stamped(self.T.tier_file(t.seq, t.label, "nullsse", 0, "summary", "json"),
                            "capkit.tier_summary/1", I, {
             "tool": "nullsse", "n_workers": 1, "schedule_sha256": None,
             "tier_table_sha256": self.tt.sha256,
             "counts": {"requests": n, "frames_sent": frames, "bytes_sent": 100 * frames,
                        "accepts": len(served), "idle_closed": 0},
+            "loop_lag_ns": {"hist": {"bins": "loghist/1", "counts": lag}, "n": 100},
             "inject": [], "overflow": {"streams": 0}, "stop": None})
 
     def gate_record(self, t):
@@ -635,6 +827,8 @@ class Builder:
                                     "t_mono_ns": ORIGIN + snap_t,
                                     "starttime_ticks": 5000 + pid, "launch_key": key}
             infl = [self.sim.inflight(k, actual - 20 * MS) for k in range(2)]
+            if self.opts.get("real_pins"):
+                infl.append(0)  # the parent's slot
             act = self.sim.active_streams(actual - 20 * MS)
             for name, role, slot, vlist in (("loadgen_inflight", "capload", "backlog.inflight",
                                              infl),
@@ -666,7 +860,7 @@ class Builder:
         pc = {"ok": True, "gpu_count": 1, "rc": 0, "reason": None,
               "cmd": ["nvidia-smi", "--query-gpu=index", "--format=csv,noheader"]}
         rows = {"threads": len(times) * sum(len(v) for v in self.threads_of().values()),
-                "cpus": len(times) * 3, "procs": 0, "snapshots": len(times) * 3,
+                "cpus": len(times) * 3, "procs": 0, "snapshots": len(times) * len(self.pid_role()),
                 "gpu": len(gpu_times), "logs": 0, "tids": 0}
         write_json_stamped(sc("meta.json"), "capkit.sidecar.meta/1", self.ident("sidecar"), {
             "clk_tck": CLK, "page_kb": 4, "interval_ns": 1000 * MS, "origin_ns": ORIGIN,
@@ -685,10 +879,10 @@ class Builder:
                 for pid, ths in sorted(self.threads_of().items()):
                     cpu = self.cpu_of(pid)
                     for tid, comm, _ia, rate in ths:
-                        allowed = str(cpu)
+                        allowed = self.allowed_of(pid)
                         if self.opts.get("c9") and pid == 1001 and t == 14 * S:
                             allowed = "2-4"
-                        ticks = (t + S) // S * rate
+                        ticks = self.ticks_at(pid, tid, rate, t)
                         w.write_row([t, pid, tid, comm, ticks, 0, 0, 0, 0, cpu, allowed])
         with JsonlWriter(sc("cpus.jsonl"), "capkit.sidecar.cpus/1", self.ident("sidecar"),
                          ["t_rel_ns", "cpu", "user", "nice", "system", "idle", "iowait", "irq",
@@ -696,8 +890,7 @@ class Builder:
             for t in times:
                 n = (t + S) // S
                 for cpu in (2, 3, 4):
-                    user = sum(rate for pid, ths in self.threads_of().items()
-                               if self.cpu_of(pid) == cpu for _t, _c, _i, rate in ths) * n
+                    user = self.core_ticks(cpu, t)
                     if self.opts.get("c13_foreign") and cpu == 4:
                         user += 30 * n
                     w.write_row([t, cpu, user, 0, 0, max(0, 100 * n - user - n), 0, 0, n, 0,
@@ -725,13 +918,14 @@ class Builder:
                 snap_t = t - 30 * MS
                 for pid, (role, k) in sorted(self.pid_role().items()):
                     if role == "capload":
-                        v = self.sim.inflight(k, snap_t)
+                        v = 0 if pid == CAPLOAD_PARENT else self.sim.inflight(k, snap_t)
                         if self.opts.get("x_contradiction") and 13 * S <= snap_t < 17 * S:
                             v += 10 * ((snap_t - 13 * S) // S + 1)
                         c = {"backlog.inflight": v, "backlog.unread_bytes": 0}
                     else:
                         c = {"backlog.active_streams": self.sim.active_streams(snap_t),
                              "count.F2.msgs": self.sim.msgs_sent(snap_t)}
+                    c.update(self.i3_slots(role, k, snap_t, pid))
                     w.write_row([t, pid, snap_t // (100 * MS) + 1, snap_t, c, {}])
 
 
@@ -793,8 +987,67 @@ SAMPLES = {
         "2": "STABLE", "4": "VOID"}, "red_checks": []}),
     "sat_overloaded_tier": ({"overload": True}, {"exit_code": 0, "tier_verdicts": {
         "2": "STABLE", "4": "UNSTABLE"}, "red_checks": []}),
-    "sat_spin_thread_same_process": ({"spin": True}, {"exit_code": 0, "tier_verdicts": {
-        "2": "STABLE", "4": "UNSTABLE"}, "red_checks": []}),
+    # judged in mode P+X+I+V (errata B2-2E): the GIL domain (event loop + spin thread on one
+    # core) is localised as saturated - "domain saturated", not VOID
+    "sat_spin_thread_same_process": ({"spin": True, "ixv": True}, {
+        "exit_code": 0, "tier_verdicts": {"2": "STABLE", "4": "UNSTABLE"}, "red_checks": [],
+        "tier_localisation": {"4": {"status": "LOCALIZED", "role": "nullsse", "via": ["I1"],
+                                    "finding": "domain_saturated"}},
+        "grade": {"grade": "LOCALIZED", "role": "nullsse", "finding": "domain_saturated",
+                  "I_status": "LOCALIZED"}}),
+    # I3 known-answer pair (design 2.6 I3 table: E3's slow server / slow reader). Server slow:
+    # its pending queue grows, the in-flight to the reader stays flat -> nullsse (I1 and I3).
+    "i_server_slow": ({"slow": "server", "ixv": True}, {
+        "exit_code": 0, "tier_verdicts": {"2": "STABLE", "4": "UNSTABLE"}, "red_checks": [],
+        "tier_localisation": {"4": {"status": "LOCALIZED", "role": "nullsse",
+                                    "via": ["I1", "I3"], "finding": "domain_saturated"}},
+        "grade": {"grade": "LOCALIZED", "role": "nullsse", "I_status": "LOCALIZED"}}),
+    # Reader slow: the in-flight is held at a plateau, so the server's exit side is blocked ->
+    # capload, the load source: the tool saturated first, a lower bound
+    "i_reader_slow": ({"slow": "reader", "ixv": True}, {
+        "exit_code": 0, "tier_verdicts": {"2": "STABLE", "4": "UNSTABLE"}, "red_checks": [],
+        "tier_localisation": {"4": {"status": "LOCALIZED", "role": "capload",
+                                    "via": ["I1", "I3"]}},
+        "grade": {"grade": "LOWER_BOUND", "role": "capload", "I_status": "LOCALIZED"}}),
+    # The same on the topology caplaunch writes on the cluster: capload's parent is registered
+    # and the parent and both workers are pinned to the role's cores 2-3. I1 reads cores 2-3 as
+    # one group (several cores: per process GIL domain) and lists all three pids.
+    "i_reader_slow_real_pins": ({"slow": "reader", "ixv": True, "real_pins": True}, {
+        "exit_code": 0, "tier_verdicts": {"2": "STABLE", "4": "UNSTABLE"}, "red_checks": [],
+        "tier_localisation": {"4": {"status": "LOCALIZED", "role": "capload",
+                                    "via": ["I1", "I3"], "finding": "domain_saturated",
+                                    "pids": [CAPLOAD_PARENT] + list(CAPLOAD_PIDS),
+                                    "granularity": "process"}},
+        "grade": {"grade": "LOWER_BOUND", "role": "capload", "I_status": "LOCALIZED"}}),
+    # every check on that topology, P + X only: the same verdicts as "good"
+    "good_real_pins": ({"real_pins": True}, {"exit_code": 0, "tier_verdicts": GOOD_V,
+                                             "red_checks": [], "state_last": "VALID"}),
+    # I1 points at nullsse, I3 at capload: the cause is undetermined, no boundary from tier 4
+    "i_conflict": ({"slow": "conflict", "ixv": True}, {
+        "exit_code": 0, "tier_verdicts": {"2": "STABLE", "4": "UNDETERMINED"},
+        "red_checks": [], "tier_localisation": {"4": {"status": "UNDETERMINED"}},
+        "grade": {"grade": "UNDETERMINED", "I_status": "UNDETERMINED"}}),
+    # stage 2 (INTERFACES errata B2-2A): one broken sample per new item, plus the passing forms
+    "c1_loadgen_overdriven": ({"c1_overdriven": True}, {
+        "exit_code": 10, "tier_verdicts": {"2": "STABLE", "4": "VOID"}, "red_checks": ["C1"]}),
+    "c2_stub_good": ({"stub_ood": True}, {"exit_code": 0, "tier_verdicts": {
+        "2": "STABLE", "4": "STABLE"}, "red_checks": []}),
+    "c2_stub_loop_lag": ({"stub_ood": True, "c2_loop_lag": True}, {
+        "exit_code": 10, "tier_verdicts": {"2": "STABLE", "4": "VOID"}, "red_checks": ["C2"]}),
+    "c4_short_output": ({"c4": True}, {"exit_code": 10, "tier_verdicts": {"2": "STABLE",
+                                                                          "4": "VOID"},
+                                       "red_checks": ["C4", "C3"]}),
+    # capload worker 1 sent none of its tier-4 requests (they timed out unsent): the doubled
+    # worker carried no traffic
+    "c12_idle_worker": ({"c12": True, "c12_unsent": True}, {"exit_code": 11, "tier_verdicts": {
+        "2": "STABLE", "4": "NOT_RUN"}, "red_checks": [], "not_run_checks": ["C12"]}),
+    # tier 4 registered near-boundary: without near-boundary bands it is NOT_RUN (no fallback
+    # to the sub-saturation bands); with them it is judged
+    "regime_nb_missing": ({"regime_nb": "missing"}, {"exit_code": 11, "tier_verdicts": {
+        "2": "STABLE", "4": "NOT_RUN"}, "red_checks": []}),
+    "regime_nb_good": ({"regime_nb": "good"}, {"exit_code": 0, "tier_verdicts": {
+        "2": "STABLE", "4": "STABLE"}, "red_checks": []}),
+    "input_calib_invalid": ({"calib_invalid": True}, {"exit_code": 13}),
     "input_registered_late": ({"register_late": True}, {"exit_code": 13}),
     "input_identity_mismatch": ({"identity_mismatch": True}, {"exit_code": 13}),
 }

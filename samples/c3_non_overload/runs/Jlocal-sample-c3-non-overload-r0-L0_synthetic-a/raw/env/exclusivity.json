@@ -6,7 +6,7 @@
   "job_id": "local-sample-c3-non-overload",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013",
+  "register_sha": "fafcd6d3122ea924b1dc14283a7c718dfb9e75b290caa87f4edfb86c3ab104ff",
   "restart_count": 0,
   "role": "gate",
   "tier_label": null,
@@ -64,6 +64,6 @@
  "schema": "capkit.exclusivity/1",
  "slurm_view_error": null,
  "slurm_view_file": "synthetic",
- "written_mono_ns": 9758836592957843,
- "written_wall": "2026-11-13T15:06:52.673Z"
+ "written_mono_ns": 9852500220929324,
+ "written_wall": "2026-11-14T17:07:56.301Z"
 }

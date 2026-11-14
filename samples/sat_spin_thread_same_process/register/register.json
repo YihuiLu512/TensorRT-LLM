@@ -6,7 +6,15 @@
   {
    "kind": "pilot",
    "relpath": "register/pilot.json",
-   "sha256": "e45774a5f61362ef4856b6c7bab2371889f4b26b456dc3a9433bd896ecdd4986"
+   "sha256": "4ef14ba54ddb27c603a0ed07218ebdc9319ba7f030c29dd52f87741bc6d853fa"
+  },
+  {
+   "bind": {
+    "capload": "capload-r"
+   },
+   "kind": "loadgen_band",
+   "relpath": "register/loadgen_band.json",
+   "sha256": "858ae51d62b92718523cf8e913d44680346be2eddd23c9c5027b074b362de001"
   }
  ],
  "expected": {
@@ -36,6 +44,7 @@
   "checks": [
    "C1",
    "C3",
+   "C4",
    "C5",
    "C6",
    "C7",
@@ -43,10 +52,11 @@
    "C9",
    "C10",
    "C11",
+   "C12",
    "C13",
    "GPU-IDLE"
   ],
-  "mode": "P+X"
+  "mode": "P+X+I+V"
  },
  "schema": "capkit.register/1",
  "synthetic": true

@@ -25,7 +25,7 @@
   "job_id": "local-sample-sat-overloaded-tier",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013",
+  "register_sha": "fafcd6d3122ea924b1dc14283a7c718dfb9e75b290caa87f4edfb86c3ab104ff",
   "restart_count": 0,
   "role": "sidecar",
   "tier_label": null,
@@ -58,6 +58,6 @@
  "stop": null,
  "unreadable": {},
  "unregistered_snapshot_pids": [],
- "written_mono_ns": 9758840189982098,
- "written_wall": "2026-11-13T15:06:56.270Z"
+ "written_mono_ns": 9852503853014198,
+ "written_wall": "2026-11-14T17:07:59.933Z"
 }

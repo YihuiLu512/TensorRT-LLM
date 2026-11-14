@@ -1,0 +1,36 @@
+{
+ "identity": {
+  "arm": "synthetic-a",
+  "experiment": "E0",
+  "job_id": "local-sample-i-reader-slow-real-pins",
+  "launch_seq": 0,
+  "pid": 1000,
+  "register_sha": "40711a063baf8d9cc4510edaab4d030da8f906285506d31b53a4ca7ea5041ed9",
+  "restart_count": 0,
+  "role": "capload",
+  "tier_label": null,
+  "tier_seq": null,
+  "worker": 0
+ },
+ "schema": "capkit.version_record/1",
+ "source": "ready_file",
+ "versions": {
+  "capkit_code_sha": "cccccccccccccccccccccccccccccccccccccccc",
+  "env": {},
+  "executable": "/usr/bin/python3",
+  "gc_enabled": true,
+  "grpc": null,
+  "implementation": "cpython",
+  "loop_impl": "asyncio.unix_events._UnixSelectorEventLoop",
+  "pid": 1000,
+  "probe_groups": [],
+  "probe_patch_sha": null,
+  "probe_tier": null,
+  "protobuf": null,
+  "protobuf_impl": null,
+  "python": "3.12.3 synthetic",
+  "switchinterval_s": 0.005
+ },
+ "written_mono_ns": 9852504576090638,
+ "written_wall": "2026-11-14T17:08:00.656Z"
+}

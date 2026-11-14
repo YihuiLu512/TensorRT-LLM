@@ -157,9 +157,11 @@ def t5_compare(blocks):
     disjoint and the direction is the same; otherwise "indistinguishable" with the width of the
     union of both envelopes as the smallest difference this run could resolve.
 
-    An envelope with a missing end cannot be shown disjoint, so the result is indistinguishable.
-    With 3 launches per arm, complete separation has probability 1/20 (direction specified) or
-    1/10 (unspecified) under no difference; it is the only conclusion 3 launches support.
+    An envelope with a missing end cannot be shown disjoint, so that block counts against
+    "different"; when no block has both envelopes closed the comparison cannot tell a
+    difference from none, and the result is NOT_RUN (not "indistinguishable"). With 3
+    launches per arm, complete separation has probability 1/20 (direction specified) or 1/10
+    (unspecified) under no difference; it is the only conclusion 3 launches support.
     """
     if not blocks:
         return None
@@ -189,11 +191,19 @@ def t5_compare(blocks):
             directions.add(d)
         per_block.append({"block": b["block"], "disjoint": d is not None, "direction": d,
                           "union_width": union[1] - union[0]})
+    if not min_resolvable:
+        return {"result": "NOT_RUN", "min_resolvable_diff": None, "blocks": per_block,
+                "why": "no block has both envelopes closed"}
     if all_disjoint and len(directions) == 1:
         return {"result": "different", "direction": directions.pop(), "blocks": per_block}
     return {"result": "indistinguishable",
             "min_resolvable_diff": max(min_resolvable) if min_resolvable else None,
             "blocks": per_block}
+
+
+def ratio(a, b):
+    """a / b, or None when a is None or b is None / 0."""
+    return None if a is None or b in (None, 0) else a / b
 
 
 # ---- T6 ratio --------------------------------------------------------------------------------

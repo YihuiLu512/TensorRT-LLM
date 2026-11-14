@@ -28,7 +28,7 @@
   "job_id": "local-sample-sat-spin-thread-same-process",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013",
+  "register_sha": "67c5cafd07719815fff5a1de882382d154efa72bc9b235ee4b82772cc519ef36",
   "restart_count": 0,
   "role": "jobs",
   "tier_label": null,
@@ -73,6 +73,6 @@
  "schema": "capkit.gpu_idle/1",
  "status": "PASS",
  "visible_gpus": 1,
- "written_mono_ns": 9758840273720561,
- "written_wall": "2026-11-13T15:06:56.354Z"
+ "written_mono_ns": 9852503934434321,
+ "written_wall": "2026-11-14T17:08:00.014Z"
 }

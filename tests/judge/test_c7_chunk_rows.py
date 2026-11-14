@@ -51,7 +51,7 @@ class TD:
 
 
 def ctx():
-    return SimpleNamespace(launch={"reconcile": {"chains": [CHAIN]}},
+    return SimpleNamespace(launch={"reconcile": {"chains": [CHAIN]}}, roles={},
                            schedule_tier=list(SCHEDULE_TIER),
                            schedule_meta={"per_tier": {"2": 4, "4": 6}})
 
