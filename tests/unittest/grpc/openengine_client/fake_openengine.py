@@ -30,6 +30,20 @@ Built-in profiles (:data:`PROFILES`):
 ``glm-like``
     The glm-5.3-flash OpenEngine server following the conventions. It accepts
     the penalties only at the values that leave sampling unchanged.
+``ds-like``
+    The DeepSeek-V4.1-Flash OpenEngine server (``dsv4_serve``): token-id input,
+    one sequence, no logprobs, the penalties only at their no-effect values.
+
+Disaggregated serving: ``trtllm-like`` and ``ds-like`` take the two calls of a
+disaggregated request once the profile declares a :class:`FakeKvConnector`
+that is enabled and supports remote prefill (see :func:`disagg_profile`);
+otherwise they refuse them with ``FAILED_PRECONDITION``. A prefill call
+(``extra.request_type = "context_only"``) gets its first token, then (unless,
+on ``ds-like``, that token stops it) a ``prefill_ready`` event whose
+``kv_session`` has the shape of that engine's handoff; a decode call (with
+``kv.session``) starts its output with the handoff's ``first_gen_tokens``.
+:class:`DisaggFaults` makes the prefill call misbehave on purpose. ``glm-like``
+refuses ``kv.session`` and ignores ``request_type``.
 
 Run as a script to serve a profile from its own process::
 
@@ -45,6 +59,7 @@ import dataclasses
 import json
 import math
 import os
+import secrets
 import signal
 import struct
 import threading
@@ -59,6 +74,11 @@ import grpc
 from google.protobuf import json_format, struct_pb2
 from grpc_health.v1 import health_pb2, health_pb2_grpc
 
+from tensorrt_llm.grpc.openengine.affinity import (
+    AFFINITY_AUTH_HEADER,
+    AFFINITY_ID_HEADER,
+    validate_parent_affinity,
+)
 from tensorrt_llm.grpc.openengine.bindings import (
     MINIMUM_CLIENT_REVISION,
     SCHEMA_RELEASE,
@@ -80,19 +100,32 @@ from tensorrt_llm.grpc.openengine_conventions import (
     ACCEPT_VALUES,
     ANY_VALUE,
     BOOL_CAPABILITY_KEYS,
+    BUCKET_AGGREGATED,
+    BUCKET_CONTEXT_ONLY,
+    CAP_DISAGG_GENERATION_FIRST,
+    CAP_DISAGG_ORIG_ELAPSED_S,
     CAP_FREQUENCY_PENALTY,
     CAP_MIN_P,
     CAP_PRESENCE_PENALTY,
     CAP_REPETITION_PENALTY,
+    CAP_REQ_DISAGG_REQUEST_ID,
     CAP_SEED_SCOPE,
     CAP_STOP_TEXT,
+    CAP_STOPPING_MIN_TOKENS,
     CONVENTIONS_VERSION,
     COUNTER_GENERATE_ACCEPTED,
+    COUNTER_GENERATE_ACCEPTED_BUCKETS,
     COUNTER_GENERATE_RECEIVED,
+    COUNTER_PREFILL_READY_SENT,
+    DISAGG_REQUEST_ID_LIMIT,
+    DISAGG_REQUEST_ID_MIN,
+    DISAGG_REQUEST_KEY_CAPABILITY,
     FP_BOS_TOKEN_ID,
     FP_EOS_TOKEN_IDS,
     FP_FILES_SHA256,
     FP_VOCAB_SIZE,
+    HANDOFF_MAPPED_ATTRIBUTES,
+    HANDOFF_REGISTERED_PASSTHROUGH_ATTRIBUTES,
     LOGIT_BIAS_MAX,
     LOGIT_BIAS_MIN,
     NO_VALUE,
@@ -101,14 +134,26 @@ from tensorrt_llm.grpc.openengine_conventions import (
     REQ_BEST_OF,
     REQ_CONVERSATION_ID,
     REQ_DETOKENIZE,
+    REQ_DISAGG_REQUEST_ID,
     REQ_KV_HINTS,
     REQ_LOGIT_BIAS,
+    REQ_REQUEST_TYPE,
+    REQ_SCHEDULE_STYLE,
     REQ_SCHEDULING,
     REQ_THINKING_TOKEN_BUDGET,
     REQUEST_KEY_CAPABILITY,
+    REQUEST_TYPE_CONTEXT_AND_GENERATION,
+    REQUEST_TYPE_CONTEXT_ONLY,
+    REQUEST_TYPE_GENERATION_ONLY,
     SAMPLING_FIELD_CAPABILITY,
     SAMPLING_PARAM_NAMES,
+    SCHEDULE_STYLE_CONTEXT_FIRST,
+    SCHEDULE_STYLE_GENERATION_FIRST,
+    VERSION_4_CAPABILITY_KEYS,
+    VERSION_4_ENGINE_COUNTERS,
     AcceptedValues,
+    parse_disagg_request_id,
+    request_bucket,
 )
 from tensorrt_llm.grpc.openengine_conventions import CAP_REQ_BEST_OF as CAP_BEST_OF
 from tensorrt_llm.grpc.openengine_conventions import CAP_REQ_CONVERSATION_ID as CAP_CONVERSATION_ID
@@ -137,21 +182,28 @@ __all__ = [
     "Admitted",
     "CAP_BEST_OF",
     "CAP_CONVERSATION_ID",
+    "CAP_DISAGG_GENERATION_FIRST",
+    "CAP_DISAGG_ORIG_ELAPSED_S",
     "CAP_FREQUENCY_PENALTY",
     "CAP_KV_HINTS",
     "CAP_LOGIT_BIAS",
     "CAP_MIN_P",
     "CAP_PRESENCE_PENALTY",
     "CAP_REPETITION_PENALTY",
+    "CAP_REQ_DISAGG_REQUEST_ID",
     "CAP_SCHEDULING",
     "CAP_SEED_SCOPE",
     "CAP_STOP_TEXT",
+    "CAP_STOPPING_MIN_TOKENS",
     "CAP_THINKING_TOKEN_BUDGET",
     "CONVENTIONS_VERSION",
     "COUNTER_GENERATE_ACCEPTED",
+    "COUNTER_GENERATE_ACCEPTED_BUCKETS",
     "COUNTER_GENERATE_RECEIVED",
+    "COUNTER_PREFILL_READY_SENT",
     "DP_RANK_TARGETING",
     "Delay",
+    "DisaggFaults",
     "Disconnect",
     "FP_BOS_TOKEN_ID",
     "FP_EOS_TOKEN_IDS",
@@ -159,8 +211,11 @@ __all__ = [
     "FP_VOCAB_SIZE",
     "Fail",
     "FakeEngine",
+    "FakeKvConnector",
     "FakeProfile",
+    "HANDOFF_SHAPES",
     "Hang",
+    "INSTANCE_ROLES",
     "KEY_CONVENTIONS_VERSION",
     "KV_HINTS_TEXT_MAX_BYTES",
     "MAX_LOGIT_BIAS_ENTRIES",
@@ -179,11 +234,13 @@ __all__ = [
     "REQ_THINKING_TOKEN_BUDGET",
     "ReceivedRequest",
     "Rejection",
+    "SUBAGENT_AFFINITY",
     "SUPPORTED_MODALITIES",
     "ScriptSource",
     "Step",
     "admit",
     "default_detokenizer",
+    "disagg_profile",
     "main",
     "resolve_profile",
     "running_in_thread",
@@ -232,6 +289,59 @@ _MODALITY_NAME = {
 
 # -- Profiles --------------------------------------------------------------------
 
+HANDOFF_SHAPES = ("trtllm", "ds")
+INSTANCE_ROLES = ("context", "generation")
+# ServerInfo.engine_role of a ds instance by its role.
+_DS_ENGINE_ROLE = {
+    "context": server_pb2.ENGINE_ROLE_PREFILL,
+    "generation": server_pb2.ENGINE_ROLE_DECODE,
+}
+# ServerInfo.extra key of the TensorRT-LLM server: whether it checks the
+# subagent affinity metadata.
+SUBAGENT_AFFINITY = "trtllm_supports_subagent_affinity"
+
+
+@dataclass(frozen=True)
+class FakeKvConnector:
+    """What an engine reports in ``ServerInfo.kv_connector``.
+
+    Attributes:
+        enabled: KV transfer is on; without it the engine refuses both calls
+            of a disaggregated request with ``FAILED_PRECONDITION``.
+        transfer_backend: Reported, and written into each handoff's ``transfer_backend``.
+        supports_remote_prefill: Reported; the engine also needs it to take the two calls.
+        supports_abort_cleanup: Reported; ``Abort`` by ``kv_session`` stays
+            ``UNIMPLEMENTED`` either way, so keep it False to report truthfully.
+        local_endpoints: Reported as ``(host, port, protocol)`` triples.
+        ctx_info_endpoint: ``(host, port)`` the handoff names as the context
+            engine's KV endpoint; None for the engine's own gRPC host and port.
+            Nothing listens for KV there: a fake engine moves no KV cache.
+    """
+
+    enabled: bool = True
+    transfer_backend: str = "DEFAULT"
+    supports_remote_prefill: bool = True
+    supports_abort_cleanup: bool = False
+    local_endpoints: tuple[tuple[str, int, str], ...] = ()
+    ctx_info_endpoint: tuple[str, int] | None = None
+
+    def to_proto(self) -> kv_pb2.KvConnectorInfo:
+        info = kv_pb2.KvConnectorInfo(
+            enabled=self.enabled,
+            transfer_backend=self.transfer_backend,
+            supports_remote_prefill=self.supports_remote_prefill,
+            supports_decode_pull=False,
+            supports_abort_cleanup=self.supports_abort_cleanup,
+            schema_version=SCHEMA_REVISION,
+        )
+        for host, port, protocol in self.local_endpoints:
+            info.local_endpoints.add(host=host, port=port, protocol=protocol)
+        return info
+
+    @property
+    def takes_disaggregated_calls(self) -> bool:
+        return self.enabled and self.supports_remote_prefill
+
 
 @dataclass(frozen=True)
 class FakeProfile:
@@ -272,7 +382,35 @@ class FakeProfile:
             included, as the TensorRT-LLM server's registry counts them
             against its fixed limit; ``None`` sets no limit. Unlike the
             server, the fake does not check that ``source_path`` exists.
-        reject_kv_session: Reject ``kv.session``; otherwise it is ignored.
+        reject_kv_session: Reject ``kv.session`` with ``UNIMPLEMENTED``, as
+            glm does. Only for a profile without ``handoff_shape``, which
+            otherwise ignores ``kv.session`` and ``extra.request_type``.
+        handoff_shape: Whose disaggregated serving the engine follows, or
+            None for none. ``"trtllm"``: the TensorRT-LLM server, which takes
+            both calls on any instance and carries ``first_gen_log_probs`` in
+            the handoff when output logprobs are requested. ``"ds"``: the ds
+            server, whose handoff never carries ``first_gen_log_probs``, whose
+            prefill call ends without a handoff when its first token is an
+            EOS or stop token, and whose decode call needs
+            ``ctx_info_endpoint`` and ``first_gen_tokens`` and refuses handoff
+            attributes the conventions do not name. A profile with a
+            shape that follows the conventions reports the version 4
+            capability keys; one with ``kv_connector`` also reports the
+            version 4 counters.
+        kv_connector: ``ServerInfo.kv_connector``; None reports none. The
+            engine takes the two calls of a disaggregated request only when
+            it is enabled with ``supports_remote_prefill``.
+        instance_role: For a ds profile with a ``kv_connector``, ``"context"``
+            or ``"generation"``: the one call of a disaggregated request it
+            takes, as a ds instance started with that role does. The fake does
+            not model a ds instance in both roles. None for the trtllm shape,
+            which takes both calls. Every engine takes aggregated calls.
+        subagent_affinity_key: The key that signs the subagent affinity
+            metadata. With a shape, the engine checks that metadata with the
+            TensorRT-LLM server's check, and reports
+            ``trtllm_supports_subagent_affinity`` true when the key is set;
+            the server also needs conversation-aware attention DP for that,
+            which the fake does not model.
         eos_token_ids: Tokens that end an output unless ``ignore_eos`` is set;
             the one sampled is reported in ``stop_match.eos_token_id``.
         fingerprint: Tokenizer fingerprint reported in ``ModelInfo.extra``.
@@ -317,6 +455,10 @@ class FakeProfile:
     )
     float32_sampling: bool = False
     reject_kv_session: bool = False
+    handoff_shape: str | None = None
+    kv_connector: FakeKvConnector | None = None
+    instance_role: str | None = None
+    subagent_affinity_key: str | None = field(default=None, repr=False)
     eos_token_ids: tuple[int, ...] = (2,)
     bos_token_id: int | None = 1
     fingerprint: Mapping[str, Any] | None = field(default=None, hash=False)
@@ -339,6 +481,36 @@ class FakeProfile:
             if value is not None:
                 object.__setattr__(self, name, MappingProxyType(dict(value)))
         object.__setattr__(self, "kv_event_sources", tuple(self.kv_event_sources))
+        if self.handoff_shape not in (None, *HANDOFF_SHAPES):
+            raise ValueError(f"handoff_shape must be one of {HANDOFF_SHAPES} or None")
+        if self.instance_role not in (None, *INSTANCE_ROLES):
+            raise ValueError(f"instance_role must be one of {INSTANCE_ROLES} or None")
+        if self.handoff_shape is None and (
+            self.kv_connector is not None
+            or self.instance_role is not None
+            or self.subagent_affinity_key is not None
+        ):
+            raise ValueError(
+                "kv_connector, instance_role and subagent_affinity_key need a handoff_shape"
+            )
+        if self.handoff_shape is not None and self.reject_kv_session:
+            raise ValueError("reject_kv_session is only for a profile without a handoff_shape")
+        if self.handoff_shape == "trtllm" and self.instance_role is not None:
+            raise ValueError("a trtllm-shaped engine takes both calls; it has no instance_role")
+        if self.handoff_shape == "ds" and self.kv_connector is not None:
+            if self.instance_role is None:
+                raise ValueError(
+                    "a ds-shaped engine with a kv_connector needs an instance_role: "
+                    "the fake does not model a ds instance in both roles"
+                )
+        if (
+            self.instance_role is not None
+            and self.engine_role != _DS_ENGINE_ROLE[self.instance_role]
+        ):
+            raise ValueError(
+                f"a {self.instance_role} instance reports engine_role "
+                f"{server_pb2.EngineRole.Name(_DS_ENGINE_ROLE[self.instance_role])}"
+            )
 
     def replace(self, **changes: Any) -> FakeProfile:
         """A copy with ``changes`` applied; ``capabilities`` and ``params`` entries are merged."""
@@ -399,9 +571,13 @@ class FakeProfile:
         info.capacity.max_running_requests = self.max_running_requests
         if self.max_loras is not None:
             info.capacity.max_loras = self.max_loras
+        if self.kv_connector is not None:
+            info.kv_connector.CopyFrom(self.kv_connector.to_proto())
         extra: dict[str, Any] = {DP_RANK_TARGETING: self.dp_rank_targeting}
         if self.follows_conventions:
             extra[KEY_CONVENTIONS_VERSION] = CONVENTIONS_VERSION
+        if self.handoff_shape is not None:
+            extra[SUBAGENT_AFFINITY] = self.subagent_affinity_key is not None
         extra.update(self.server_info_extra)
         info.extra.update(extra)
         for name, value in self.server_info.items():
@@ -445,6 +621,8 @@ class FakeProfile:
         extra: dict[str, Any] = {SUPPORTED_MODALITIES: sorted(self.modalities)}
         if self.follows_conventions:
             extra.update({key: self.capability(key) for key in _BOOLEAN_CAPABILITIES})
+            if self.handoff_shape is not None:
+                extra.update({key: self.capability(key) for key in VERSION_4_CAPABILITY_KEYS})
             extra[PARAMS_KEY] = {
                 name: self.accepted(name).to_extra() for name in SAMPLING_PARAM_NAMES
             }
@@ -513,9 +691,13 @@ _TRTLLM_CAPABILITIES: dict[str, bool | str] = {
     CAP_KV_HINTS: True,
     CAP_SCHEDULING: True,
     CAP_BEST_OF: False,
+    # The version 4 keys, all true except generation-first, which the fake
+    # does not serve.
+    CAP_REQ_DISAGG_REQUEST_ID: True,
+    CAP_DISAGG_GENERATION_FIRST: False,
+    CAP_DISAGG_ORIG_ELAPSED_S: True,
+    CAP_STOPPING_MIN_TOKENS: True,
 }
-
-_TRTLLM_SERVER_INFO_EXTRA = {"trtllm_supports_subagent_affinity": False}
 
 PROFILES: dict[str, FakeProfile] = {
     "trtllm-like": FakeProfile(
@@ -523,7 +705,7 @@ PROFILES: dict[str, FakeProfile] = {
         engine_name="tensorrt_llm",
         capabilities=_TRTLLM_CAPABILITIES,
         params=_TRTLLM_PARAMS,
-        server_info_extra=_TRTLLM_SERVER_INFO_EXTRA,
+        handoff_shape="trtllm",
     ),
     "glm-like": FakeProfile(
         name="glm-like",
@@ -550,7 +732,75 @@ PROFILES: dict[str, FakeProfile] = {
             CAP_BEST_OF: False,
         },
     ),
+    "ds-like": FakeProfile(
+        name="ds-like",
+        engine_name="dsv4_serve",
+        engine_role=server_pb2.ENGINE_ROLE_AGGREGATED,
+        supports_text_input=False,
+        output_logprobs_max_top_n=None,
+        prompt_logprobs_max_top_n=None,
+        guided_modes=frozenset(),
+        max_num_sequences=1,
+        supports_cache_salt=False,
+        dp_rank_targeting=False,
+        params=_GLM_PARAMS,
+        float32_sampling=True,
+        handoff_shape="ds",
+        capabilities={
+            CAP_SEED_SCOPE: "batch_dependent",
+            CAP_STOP_TEXT: True,
+            CAP_CONVERSATION_ID: True,
+            CAP_THINKING_TOKEN_BUDGET: False,
+            CAP_LOGIT_BIAS: False,
+            CAP_KV_HINTS: False,
+            CAP_SCHEDULING: False,
+            CAP_BEST_OF: False,
+            CAP_REQ_DISAGG_REQUEST_ID: True,
+            CAP_DISAGG_GENERATION_FIRST: False,
+            CAP_DISAGG_ORIG_ELAPSED_S: False,
+            CAP_STOPPING_MIN_TOKENS: False,
+        },
+    ),
 }
+
+
+def disagg_profile(
+    profile: str | FakeProfile = "trtllm-like",
+    role: str | None = None,
+    *,
+    kv_connector: FakeKvConnector | None = None,
+    **changes: Any,
+) -> FakeProfile:
+    """``profile`` serving disaggregated requests, with ``changes`` applied.
+
+    It declares ``kv_connector``: by default the one ``profile`` already
+    declares, else an enabled one with the ``DEFAULT`` backend. A ``"ds"``
+    profile needs ``role`` (by default the one ``profile`` already has),
+    which sets ``instance_role`` and ``engine_role`` as a ds instance with
+    that role reports them. The TensorRT-LLM server has no roles, so a
+    ``"trtllm"`` profile refuses one. ``changes`` may not set what the
+    arguments set.
+    """
+    base = resolve_profile(profile)
+    if base.handoff_shape is None:
+        raise ValueError(f"profile {base.name!r} does not serve disaggregated requests")
+    set_here = {"kv_connector"}
+    if base.handoff_shape == "ds":
+        set_here |= {"instance_role", "engine_role"}
+    clashing = sorted(set(changes) & set_here)
+    if clashing:
+        raise ValueError(f"disagg_profile sets {clashing} from its arguments")
+    fields: dict[str, Any] = {
+        "kv_connector": kv_connector or base.kv_connector or FakeKvConnector()
+    }
+    if base.handoff_shape == "ds":
+        role = role or base.instance_role
+        if role not in INSTANCE_ROLES:
+            raise ValueError(f"a ds-shaped engine needs a role, one of {INSTANCE_ROLES}")
+        fields.update(instance_role=role, engine_role=_DS_ENGINE_ROLE[role])
+    elif role is not None:
+        raise ValueError("a trtllm-shaped engine takes both calls; it has no role")
+    return base.replace(**fields, **changes)
 
 
 def resolve_profile(profile: str | FakeProfile) -> FakeProfile:
@@ -598,6 +848,11 @@ class Admitted:
     prompt_top_n: int | None
     priority: int | None = None
     target_dp_rank: int | None = None
+    bucket: str = BUCKET_AGGREGATED
+    disagg_request_id: int | None = None
+    kv_session: kv_pb2.KvSessionRef | None = None
+    first_gen_tokens: tuple[int, ...] = ()
+    subagent_affinity_id: str | None = None
 
 
 def _top_n(selection: generation_pb2.CandidateTokenSelection, name: str, limit: int) -> int:
@@ -999,6 +1254,177 @@ def _admit_options(
             )
 
 
+@dataclass
+class _DisaggCall:
+    """The fields of :class:`Admitted` that :func:`_admit_disagg` decides."""
+
+    bucket: str
+    disagg_request_id: int | None = None
+    kv_session: kv_pb2.KvSessionRef | None = None
+    first_gen_tokens: tuple[int, ...] = ()
+    subagent_affinity_id: str | None = None
+
+
+def _check_leg(key: str, leg: str, is_prefill: bool, is_decode: bool) -> None:
+    if (leg == "prefill" and not is_prefill) or (leg == "decode" and not is_decode):
+        raise _invalid(f"extra.{key} belongs only on the {leg} call of a disaggregated request")
+
+
+def _admit_disagg_keys(
+    fields: Mapping[str, struct_pb2.Value], profile: FakeProfile, is_prefill: bool, is_decode: bool
+) -> int | None:
+    """Check the disaggregated request keys; return ``disagg_request_id`` if sent."""
+    disagg_request_id = None
+    for key, capability in DISAGG_REQUEST_KEY_CAPABILITY.items():
+        value = fields.get(key)
+        if value is None:
+            continue
+        if not profile.capability(capability):
+            raise _unimplemented(f"extra.{key} is not supported by this engine")
+        kind = value.WhichOneof("kind")
+        if key == REQ_DISAGG_REQUEST_ID:
+            _check_leg(key, "prefill", is_prefill, is_decode)
+            disagg_request_id = parse_disagg_request_id(
+                value.string_value if kind == "string_value" else None
+            )
+            if disagg_request_id is None:
+                raise _invalid(
+                    f"extra.{key} must be a decimal string in "
+                    f"[{DISAGG_REQUEST_ID_MIN}, {DISAGG_REQUEST_ID_LIMIT})"
+                )
+        elif key == REQ_SCHEDULE_STYLE:
+            _check_leg(key, "prefill", is_prefill, is_decode)
+            if not _is_int(value) or value.number_value not in (
+                SCHEDULE_STYLE_CONTEXT_FIRST,
+                SCHEDULE_STYLE_GENERATION_FIRST,
+            ):
+                raise _invalid(
+                    f"extra.{key} must be {SCHEDULE_STYLE_CONTEXT_FIRST} "
+                    f"or {SCHEDULE_STYLE_GENERATION_FIRST}"
+                )
+        else:
+            _check_leg(key, "decode", is_prefill, is_decode)
+            if (
+                kind != "number_value"
+                or not math.isfinite(value.number_value)
+                or value.number_value < 0
+            ):
+                raise _invalid(f"extra.{key} must be a non-negative number")
+    return disagg_request_id
+
+
+def _admit_handoff(
+    request: generation_pb2.GenerateRequest, profile: FakeProfile
+) -> tuple[int, ...]:
+    """Check the ``kv.session`` of ``request`` as the engine of ``profile`` does.
+
+    Returns the handoff's first tokens. It reads the handoff with the
+    TensorRT-LLM server's mapping, whose ``ValueError`` the server also
+    answers with ``INVALID_ARGUMENT``. Unlike the server, it answers the
+    mapping's other failures (a value of the wrong type or out of range)
+    that way too, and
+    refuses first tokens outside the vocabulary.
+    """
+    # Imported here: only a decode call needs the server's handoff mapping and
+    # its dependencies.
+    from tensorrt_llm.grpc.openengine.disagg import disaggregated_params_from_request
+
+    try:
+        params = disaggregated_params_from_request(request)
+    except (ValueError, TypeError, AttributeError, OverflowError) as error:
+        raise _invalid(str(error)) from None
+    first_gen_tokens = tuple(params.first_gen_tokens or ())
+    if profile.handoff_shape == "ds":
+        if not params.ctx_info_endpoint:
+            raise _invalid("kv.session has no ctx_info_endpoint")
+        if not first_gen_tokens:
+            raise _invalid("kv.session has no first_gen_tokens")
+        known = set(HANDOFF_MAPPED_ATTRIBUTES) | set(HANDOFF_REGISTERED_PASSTHROUGH_ATTRIBUTES)
+        unknown = sorted(set(request.kv.session.attributes_struct.fields) - known)
+        if unknown:
+            raise _invalid(f"kv.session has attributes the conventions do not name: {unknown}")
+    if any(token >= profile.vocab_size or token < 0 for token in first_gen_tokens):
+        raise _invalid("kv.session first_gen_tokens are outside the vocabulary")
+    return first_gen_tokens
+
+
+def _affinity_headers(metadata: Sequence[tuple[str, str]]) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for key, value in metadata:
+        if key in (AFFINITY_ID_HEADER, AFFINITY_AUTH_HEADER):
+            if key in headers:
+                raise _invalid(f"gRPC metadata key '{key}' must not be repeated")
+            headers[key] = value
+    return headers
+
+
+def _admit_disagg(
+    request: generation_pb2.GenerateRequest,
+    metadata: Sequence[tuple[str, str]],
+    profile: FakeProfile,
+    num_sequences: int,
+) -> _DisaggCall:
+    """Admit the disaggregated-serving parts of a call to a profile with a ``handoff_shape``.
+
+    Checks the request type and ``kv.session`` first, as the TensorRT-LLM
+    server does, then the engine's KV connector, which only the fake checks
+    here, then the rest.
+    """
+    fields = request.extra.fields
+    is_decode = request.kv.HasField("session")
+    # As on the server, kv.session alone makes a decode call: request_type is not read.
+    request_type_value = None if is_decode else fields.get(REQ_REQUEST_TYPE)
+    request_type = None
+    if request_type_value is not None:
+        if request_type_value.WhichOneof("kind") != "string_value" or (
+            request_type_value.string_value
+            not in (REQUEST_TYPE_CONTEXT_ONLY, REQUEST_TYPE_CONTEXT_AND_GENERATION)
+        ):
+            if request_type_value.string_value == REQUEST_TYPE_GENERATION_ONLY:
+                raise _invalid(
+                    "a generation_only request carries its handoff in kv.session; "
+                    f"extra.{REQ_REQUEST_TYPE} alone cannot address one"
+                )
+            raise _invalid(
+                f"extra.{REQ_REQUEST_TYPE} must be "
+                f"'{REQUEST_TYPE_CONTEXT_ONLY}' or '{REQUEST_TYPE_CONTEXT_AND_GENERATION}'"
+            )
+        request_type = request_type_value.string_value
+    is_prefill = not is_decode and request_type == REQUEST_TYPE_CONTEXT_ONLY
+    call = _DisaggCall(bucket=request_bucket(has_kv_session=is_decode, request_type=request_type))
+    if is_decode:
+        call.first_gen_tokens = _admit_handoff(request, profile)
+        call.kv_session = request.kv.session
+    if is_prefill or is_decode:
+        connector = profile.kv_connector
+        if connector is None or not connector.takes_disaggregated_calls:
+            raise Rejection(
+                grpc.StatusCode.FAILED_PRECONDITION,
+                "this engine has no KV transfer enabled, so it serves no disaggregated call",
+            )
+        if num_sequences > 1:
+            raise _invalid("a disaggregated call has one output sequence")
+        wanted = "context" if is_prefill else "generation"
+        if profile.instance_role not in (None, wanted):
+            raise _invalid(
+                f"this {profile.instance_role} instance does not take {call.bucket} calls"
+            )
+    call.disagg_request_id = _admit_disagg_keys(fields, profile, is_prefill, is_decode)
+    headers = _affinity_headers(metadata)
+    conversation_id = fields.get(REQ_CONVERSATION_ID)
+    try:
+        call.subagent_affinity_id = validate_parent_affinity(
+            profile.subagent_affinity_key,
+            request,
+            conversation_id.string_value if conversation_id is not None else None,
+            REQUEST_TYPE_GENERATION_ONLY if is_decode else request_type,
+            headers,
+        )
+    except ValueError as error:
+        raise _invalid(str(error)) from None
+    return call
+
+
 def admit(
     request: generation_pb2.GenerateRequest,
     metadata: Sequence[tuple[str, str]],
@@ -1021,6 +1447,18 @@ def admit(
     output_top_n, prompt_top_n = _admit_response(request, profile)
     _admit_options(request, profile, loras or {})
     _admit_extra(request, profile, num_sequences)
+    disagg = (
+        _DisaggCall(bucket=BUCKET_AGGREGATED)
+        if profile.handoff_shape is None
+        else _admit_disagg(request, metadata, profile, num_sequences)
+    )
+    # INVALID_ARGUMENT, not UNIMPLEMENTED, as ds answers: a known exception to CAP-GEN-3.
+    if (
+        profile.handoff_shape is not None
+        and min_tokens >= 1
+        and not profile.capability(CAP_STOPPING_MIN_TOKENS)
+    ):
+        raise _invalid("stopping.min_tokens is not supported")
     priority, target_dp_rank = _admit_metadata(metadata, profile)
     if target_dp_rank is not None and num_sequences > 1:
         raise _invalid(f"{METADATA_TARGET_DP_RANK} does not support multiple output sequences")
@@ -1037,6 +1475,11 @@ def admit(
         prompt_top_n=prompt_top_n,
         priority=priority,
         target_dp_rank=target_dp_rank,
+        bucket=disagg.bucket,
+        disagg_request_id=disagg.disagg_request_id,
+        kv_session=disagg.kv_session,
+        first_gen_tokens=disagg.first_gen_tokens,
+        subagent_affinity_id=disagg.subagent_affinity_id,
     )
 
 
@@ -1088,6 +1531,31 @@ def _checked_steps(steps: Iterable[Step]) -> list[Step]:
                 "a Delay, Fail, Disconnect or Hang from this module"
             )
     return steps
+
+
+@dataclass
+class DisaggFaults:
+    """Disaggregated-serving misbehaviour a :class:`FakeEngine` shows on purpose.
+
+    Everything is off by default. Only calls answered by the built-in
+    generator misbehave; a scripted call does what its script says.
+
+    Attributes:
+        finish_prefill_early: A prefill call ends as if its first token were
+            EOS: ``finished`` with ``STOP`` and usage, and no ``prefill_ready``.
+        extra_attributes: Added to the ``attributes_struct`` of every handoff,
+            over the engine's own keys.
+        close_before_terminal: Request buckets (``BUCKET_*``) whose calls end
+            with status OK right after their first ``token`` event, without
+            a terminal event.
+        prefill_ready_on_any_call: Every call, not only a prefill call, gets
+            its first token and then ``prefill_ready``.
+    """
+
+    finish_prefill_early: bool = False
+    extra_attributes: Mapping[str, Any] = field(default_factory=dict)
+    close_before_terminal: frozenset[str] = frozenset()
+    prefill_ready_on_any_call: bool = False
 
 
 def default_detokenizer(token_ids: Sequence[int]) -> str:
@@ -1155,6 +1623,16 @@ class _Generator:
         self._hold_back = bool(admitted.stop_texts) and not admitted.include_stop
 
     def _next_token(self, output: _Output) -> int:
+        token_id = self._walk(output)
+        # A decode call starts with the tokens its handoff carries. Each takes
+        # the place of one step of the walk, which still moves the cursor as
+        # it would have, so the rest of the output is the aggregated call's.
+        forced = self.admitted.first_gen_tokens
+        if output.index == 0 and output.sampled < len(forced):
+            return forced[output.sampled]
+        return token_id
+
+    def _walk(self, output: _Output) -> int:
         prompt = self.admitted.prompt_token_ids
         suppressing = output.sampled < self.admitted.min_tokens
         for _ in range(len(prompt)):
@@ -1221,19 +1699,23 @@ class _Generator:
                 return max(output.sent, self._tokens_within(output.tokens, start))
         return len(output.tokens)
 
-    def _deliver(self, output: _Output) -> list[generation_pb2.GenerateResponse]:
+    def token_info(self, token_id: int) -> generation_pb2.TokenInfo:
+        """``token_id`` as it is sent, with logprobs when they were requested."""
         top_n = self.admitted.output_top_n
-        sendable = self._sendable(output)
-        tokens = [
-            _token_info(
-                token_id,
-                logprob=None if top_n is None else _SAMPLED_LOGPROB,
-                top_n=top_n or 0,
-                vocab_size=self.profile.vocab_size,
-                detokenizer=self.detokenizer,
-            )
-            for token_id in output.tokens[output.sent : sendable]
-        ]
+        return _token_info(
+            token_id,
+            logprob=None if top_n is None else _SAMPLED_LOGPROB,
+            top_n=top_n or 0,
+            vocab_size=self.profile.vocab_size,
+            detokenizer=self.detokenizer,
+        )
+
+    def _deliver(
+        self, output: _Output, sendable: int | None = None
+    ) -> list[generation_pb2.GenerateResponse]:
+        if sendable is None:
+            sendable = self._sendable(output)
+        tokens = [self.token_info(token_id) for token_id in output.tokens[output.sent : sendable]]
         output.sent = max(output.sent, sendable)
         responses = []
         if tokens:
@@ -1276,6 +1758,36 @@ class _Generator:
                     break
             responses.extend(self._deliver(output))
         return responses
+
+    def first_token(self, *, stops: bool) -> list[generation_pb2.GenerateResponse]:
+        """Sample the first token of output 0, the one token of a prefill call, and send it.
+
+        With ``stops``, an EOS or stop token ends the output with ``STOP`` as
+        in :meth:`step`. Otherwise no stopping condition and not
+        ``max_tokens`` end it: the token is sent, whatever it is.
+        """
+        output = self.outputs[0]
+        token_id = self._next_token(output)
+        output.sampled += 1
+        if stops and token_id in self._eos:
+            self._finish(output, generation_pb2.FINISH_REASON_STOP, eos_token_id=token_id)
+        elif stops and token_id in self.admitted.stop_token_ids:
+            if self.admitted.include_stop:
+                output.tokens.append(token_id)
+            self._finish(output, generation_pb2.FINISH_REASON_STOP, stop_token_id=token_id)
+        else:
+            output.tokens.append(token_id)
+        return self._deliver(output, sendable=len(output.tokens))
+
+    def finish_on_eos(self) -> list[generation_pb2.GenerateResponse]:
+        """End output 0 with ``STOP`` as if it had sampled EOS first."""
+        output = self.outputs[0]
+        output.sampled += 1
+        stop_match = (
+            {"eos_token_id": self.profile.eos_token_ids[0]} if self.profile.eos_token_ids else {}
+        )
+        self._finish(output, generation_pb2.FINISH_REASON_STOP, **stop_match)
+        return self._deliver(output)
 
     def cancel(self) -> list[generation_pb2.GenerateResponse]:
         """End every unfinished output with ``CANCELLED``, sending what it held back."""
@@ -1392,13 +1904,18 @@ class _Inference(openengine_pb2_grpc.InferenceServicer):
             return
         record.admitted = admitted
         engine._counters[COUNTER_GENERATE_ACCEPTED] += 1
+        engine._counters[COUNTER_GENERATE_ACCEPTED_BUCKETS[admitted.bucket]] += 1
         call = engine._active[request_id] = _Call()
         try:
-            responses = (
-                self._generated(request_id, admitted, call)
-                if steps is None
-                else self._scripted(request_id, admitted, steps, call, context)
-            )
+            if steps is not None:
+                responses = self._scripted(request_id, admitted, steps, call, context)
+            elif (
+                admitted.bucket == BUCKET_CONTEXT_ONLY
+                or engine.disagg_faults.prefill_ready_on_any_call
+            ):
+                responses = self._prefilled(request_id, admitted, call)
+            else:
+                responses = self._generated(request_id, admitted, call)
             async for response in responses:
                 yield response
         except asyncio.CancelledError:
@@ -1415,6 +1932,7 @@ class _Inference(openengine_pb2_grpc.InferenceServicer):
         self, request_id: str, admitted: Admitted, call: _Call
     ) -> AsyncIterator[generation_pb2.GenerateResponse]:
         engine = self._engine
+        close_early = admitted.bucket in engine.disagg_faults.close_before_terminal
         generator = _Generator(admitted, engine.profile, engine.detokenizer)
         prompt = generator.prompt_event()
         if prompt is not None:
@@ -1424,6 +1942,13 @@ class _Inference(openengine_pb2_grpc.InferenceServicer):
                 batch = generator.cancel()
             else:
                 batch = generator.step(engine.tokens_per_step)
+            if close_early and any(response.HasField("token") for response in batch):
+                call.finished = True
+                for response in batch:
+                    if response.HasField("token"):
+                        response.request_id = request_id
+                        yield response
+                return
             if generator.done:
                 batch[-1].usage.CopyFrom(generator.usage(engine.cached_prompt_tokens))
                 call.finished = True
@@ -1432,6 +1957,40 @@ class _Inference(openengine_pb2_grpc.InferenceServicer):
                 yield response
             if not generator.done:
                 await call.pause(engine.step_delay)
+
+    async def _prefilled(
+        self, request_id: str, admitted: Admitted, call: _Call
+    ) -> AsyncIterator[generation_pb2.GenerateResponse]:
+        """A prefill call: the first token, then ``prefill_ready`` with the handoff."""
+        engine = self._engine
+        faults = engine.disagg_faults
+        generator = _Generator(admitted, engine.profile, engine.detokenizer)
+        prompt = generator.prompt_event()
+        if prompt is not None:
+            yield generation_pb2.GenerateResponse(request_id=request_id, prompt=prompt)
+        if faults.finish_prefill_early:
+            batch = generator.finish_on_eos()
+        else:
+            # Only the ds shape lets the first token stop a prefill call (see FakeEngine).
+            batch = generator.first_token(stops=engine.profile.handoff_shape == "ds")
+        if not generator.done:
+            for response in batch:
+                response.request_id = request_id
+                yield response
+            if admitted.bucket in faults.close_before_terminal:
+                call.finished = True
+                return
+            await call.pause(engine.step_delay)
+            if not call.aborted.is_set():
+                call.finished = True
+                yield engine._prefill_ready(request_id, admitted, generator)
+                return
+            batch = generator.cancel()
+        batch[-1].usage.CopyFrom(generator.usage(engine.cached_prompt_tokens))
+        call.finished = True
+        for response in batch:
+            response.request_id = request_id
+            yield response
 
     async def _scripted(
         self,
@@ -1464,7 +2023,9 @@ class _Inference(openengine_pb2_grpc.InferenceServicer):
                     completion_tokens += len(response.token.tokens)
                 elif event == "finished":
                     finished.add(response.finished.output_index)
-                terminal = event == "error" or (
+                elif event == "prefill_ready":
+                    self._engine._counters[COUNTER_PREFILL_READY_SENT] += 1
+                terminal = event in ("error", "prefill_ready") or (
                     event == "finished" and len(finished) >= admitted.num_sequences
                 )
                 call.finished = terminal
@@ -1501,8 +2062,7 @@ class _Control(openengine_pb2_grpc.ControlServicer):
         self, request: server_pb2.GetServerInfoRequest, context: grpc.aio.ServicerContext
     ) -> server_pb2.ServerInfo:
         self._record("GetServerInfo", request)
-        engine = self._engine
-        return engine.profile.build_server_info(engine.instance_id)
+        return self._engine.server_info()
 
     async def GetModelInfo(
         self, request: model_pb2.GetModelInfoRequest, context: grpc.aio.ServicerContext
@@ -1530,7 +2090,7 @@ class _Control(openengine_pb2_grpc.ControlServicer):
         self._record("Health", request)
         engine = self._engine
         state = engine.health_state
-        return lifecycle_pb2.HealthResponse(
+        response = lifecycle_pb2.HealthResponse(
             state=state,
             checks=[
                 lifecycle_pb2.HealthCheck(
@@ -1539,6 +2099,14 @@ class _Control(openengine_pb2_grpc.ControlServicer):
                 lifecycle_pb2.HealthCheck(name="model", state=state, message=engine.profile.model),
             ],
         )
+        connector = engine.profile.kv_connector
+        if connector is not None and connector.enabled:
+            response.checks.add(
+                name="kv_connector",
+                state=lifecycle_pb2.HEALTH_STATE_READY,
+                message=connector.transfer_backend,
+            )
+        return response
 
     async def Abort(
         self, request: lifecycle_pb2.AbortRequest, context: grpc.aio.ServicerContext
@@ -1745,8 +2313,33 @@ class FakeEngine:
       output is not counted; ``cached_prompt_tokens`` is the attribute of the same
       name.
 
+    For a profile with a ``handoff_shape`` and an enabled ``kv_connector``:
+
+    * A prefill call (``extra.request_type = "context_only"``) gets its prompt
+      event if prompt logprobs were requested, then its first token, then
+      after ``step_delay`` a ``prefill_ready`` event as its terminal event,
+      carrying the handoff (:meth:`_handoff`) and usage counting the one
+      token. With the ``"trtllm"`` shape nothing ends it earlier: the
+      TensorRT-LLM server hands off a first token that is a stop token, and
+      under ``max_tokens`` or ``ignore_eos``, and the fake does the same for
+      EOS and stop strings. With the ``"ds"`` shape an EOS or stop token
+      ends it as in an aggregated call, with ``finished`` and usage and no
+      ``prefill_ready``. Each handoff sent is recorded in :attr:`handoffs`
+      when ``record`` is on.
+    * A decode call (with ``kv.session``) starts its output with the
+      handoff's ``first_gen_tokens``, each counted as a sampled token, then
+      continues as the generator would after them. Given a handoff from a
+      fake engine, it returns the tokens an aggregated call with the same
+      prompt and settings returns.
+    * :attr:`disagg_faults` (:class:`DisaggFaults`) makes calls misbehave.
+
+    A scripted ``prefill_ready`` event ends the call too. Each one sent, by
+    script or generator, counts in ``prefill_ready_sent`` when it is handed
+    to gRPC.
+
     ``Abort`` (or :meth:`abort`) ends the unfinished outputs of a running call
-    with ``CANCELLED`` after sending the tokens they held back. ``Generate``
+    with ``CANCELLED`` after sending the tokens they held back; a prefill call
+    aborted before its ``prefill_ready`` ends that way too. ``Generate``
     is refused with ``UNAVAILABLE`` unless :attr:`health_state` is ``READY``.
 
     :attr:`cancel_seen` is an ``asyncio.Event`` set when a client cancels a
@@ -1803,12 +2396,17 @@ class FakeEngine:
         # The path each LoRA id was first loaded from. Never shrinks: like the
         # TensorRT-LLM server, the engine keeps serving an id's first weights.
         self.lora_paths: dict[int, str] = {}
+        self.disagg_faults = DisaggFaults()
+        self.handoffs: list[tuple[str, kv_pb2.KvSessionRef]] = []
         self._scripts: list[Sequence[Step]] = []
         self._active: dict[str, _Call] = {}
-        self._counters = {COUNTER_GENERATE_RECEIVED: 0, COUNTER_GENERATE_ACCEPTED: 0}
+        self._counters = dict.fromkeys(
+            (COUNTER_GENERATE_RECEIVED, COUNTER_GENERATE_ACCEPTED, *VERSION_4_ENGINE_COUNTERS), 0
+        )
         self._server: grpc.aio.Server | None = None
         self._stopping = False
         self._loop: asyncio.AbstractEventLoop | None = None
+        self.host = "127.0.0.1"
         self.port = 0
 
     # -- Inspection ------------------------------------------------------------
@@ -1826,9 +2424,48 @@ class FakeEngine:
     def counters(self) -> dict[str, int]:
         """The ``trtllm.counters.*`` values.
 
-        ``GetLoad`` reports them when the profile follows the conventions.
+        ``GetLoad`` reports them when the profile follows the conventions;
+        the version 4 ones only when the profile has a ``kv_connector``.
         """
-        return dict(self._counters)
+        if self.profile.kv_connector is not None:
+            return dict(self._counters)
+        return {
+            key: value
+            for key, value in self._counters.items()
+            if key not in VERSION_4_ENGINE_COUNTERS
+        }
+
+    @property
+    def ctx_info_endpoint(self) -> tuple[str, int]:
+        """``(host, port)`` this engine names in its handoffs as its KV endpoint.
+
+        The profile's, else the address it serves on, with a wildcard host
+        replaced by the loopback address of its family.
+        """
+        connector = self.profile.kv_connector
+        if connector is not None and connector.ctx_info_endpoint is not None:
+            return connector.ctx_info_endpoint
+        host = self.host.removeprefix("[").removesuffix("]")
+        host = {"": "127.0.0.1", "0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
+        return host, self.port
+
+    def server_info(self) -> server_pb2.ServerInfo:
+        """What ``GetServerInfo`` returns.
+
+        A ds context instance also reports its KV endpoint in
+        ``kv_connector.local_endpoints`` unless the profile lists some.
+        """
+        info = self.profile.build_server_info(self.instance_id)
+        connector = self.profile.kv_connector
+        if (
+            connector is not None
+            and self.profile.handoff_shape == "ds"
+            and self.profile.instance_role == "context"
+            and not connector.local_endpoints
+        ):
+            host, port = self.ctx_info_endpoint
+            info.kv_connector.local_endpoints.add(host=host, port=port, protocol="tcp")
+        return info
 
     @property
     def running_request_ids(self) -> list[str]:
@@ -1880,6 +2517,62 @@ class FakeEngine:
             aborted += 1
         return aborted
 
+    def _handoff(self, admitted: Admitted, generator: _Generator) -> kv_pb2.KvSessionRef:
+        """The ``kv_session`` of a prefill call, in the shape of the profile's engine.
+
+        ``session_id`` and the ``disagg_request_id`` attribute are the call's
+        ``extra.disagg_request_id``, or a new id in the same range without it.
+        Numbers in ``attributes_struct`` are floats, as on the wire.
+        """
+        profile = self.profile
+        connector = profile.kv_connector
+        disagg_request_id = admitted.disagg_request_id
+        if disagg_request_id is None:
+            disagg_request_id = DISAGG_REQUEST_ID_MIN + secrets.randbelow(
+                DISAGG_REQUEST_ID_LIMIT - DISAGG_REQUEST_ID_MIN
+            )
+        host, port = self.ctx_info_endpoint
+        url_host = f"[{host}]" if ":" in host else host
+        session = kv_pb2.KvSessionRef(
+            session_id=str(disagg_request_id),
+            transfer_backend=connector.transfer_backend if connector is not None else "",
+        )
+        session.endpoints.add(host=host, port=port, protocol="tcp")
+        attributes: dict[str, Any] = {
+            "ctx_info_endpoint": f"tcp://{url_host}:{port}",
+            "first_gen_tokens": list(generator.outputs[0].tokens),
+            "disagg_request_id": str(disagg_request_id),
+            "ctx_dp_rank": 0,
+        }
+        if profile.handoff_shape == "trtllm" and admitted.output_top_n is not None:
+            # The server's verbose form: per position, [token_id, logprob, rank]
+            # for each candidate.
+            attributes["first_gen_log_probs"] = [
+                [
+                    [candidate.token_id, candidate.logprob, candidate.rank]
+                    for candidate in (info.candidates or [info])
+                ]
+                for info in map(generator.token_info, generator.outputs[0].tokens)
+            ]
+        attributes.update(self.disagg_faults.extra_attributes)
+        session.attributes_struct.update(attributes)
+        return session
+
+    def _prefill_ready(
+        self, request_id: str, admitted: Admitted, generator: _Generator
+    ) -> generation_pb2.GenerateResponse:
+        session = self._handoff(admitted, generator)
+        self._counters[COUNTER_PREFILL_READY_SENT] += 1
+        if self.record:
+            recorded = kv_pb2.KvSessionRef()
+            recorded.CopyFrom(session)
+            self.handoffs.append((request_id, recorded))
+        return generation_pb2.GenerateResponse(
+            request_id=request_id,
+            prefill_ready=generation_pb2.PrefillReady(kv_session=session),
+            usage=generator.usage(self.cached_prompt_tokens),
+        )
+
     def _script_for(self, request: generation_pb2.GenerateRequest) -> list[Step] | None:
         if self._scripts:
             steps: Iterable[Step] | None = self._scripts.pop(0)
@@ -1900,6 +2593,7 @@ class FakeEngine:
             ("grpc.max_send_message_length", MAX_MESSAGE_BYTES),
         ]
         self._loop = asyncio.get_running_loop()
+        self.host = host
         self._stopping = False
         self._server = grpc.aio.server(options=options)
         openengine_pb2_grpc.add_InferenceServicer_to_server(_Inference(self), self._server)
@@ -2006,6 +2700,13 @@ def _profile_from_args(args: argparse.Namespace) -> FakeProfile:
                 name: AcceptedValues.from_extra(name, described)
                 for name, described in overrides["params"].items()
             }
+        connector = overrides.get("kv_connector")
+        if connector is not None:
+            if "local_endpoints" in connector:
+                connector["local_endpoints"] = tuple(map(tuple, connector["local_endpoints"]))
+            if connector.get("ctx_info_endpoint") is not None:
+                connector["ctx_info_endpoint"] = tuple(connector["ctx_info_endpoint"])
+            overrides["kv_connector"] = FakeKvConnector(**connector)
         if "kv_event_sources" in overrides:
             overrides["kv_event_sources"] = tuple(
                 json_format.ParseDict(source, kv_pb2.KvEventSource())
