@@ -9,7 +9,7 @@
   "job_id": "local-sample-input-calib-invalid",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "71ff942226c2e25ccd312d8af3f487c545018d0eb9b05539b62c0022758f2de7",
+  "register_sha": "ec89d5c4c5718965d22d16fb867c2ece8256e04ba30279a23dd891cfc18939f3",
   "restart_count": 0,
   "role": "launch",
   "tier_label": "drain-02",
@@ -194,6 +194,6 @@
   "tokens_per_msg": 1,
   "window_ns": 2000000000
  },
- "written_mono_ns": 9836376286375318,
- "written_wall": "2026-11-14T12:39:12.366Z"
+ "written_mono_ns": 9839918788725397,
+ "written_wall": "2026-11-14T13:38:14.869Z"
 }

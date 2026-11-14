@@ -8,6 +8,7 @@ attempt directory and exits 13. Nothing here relaxes a rule for synthetic or loc
 
 import json
 import os
+import re
 
 from capcommon import expect, ledger
 from capcommon.capbin import CapbinError, read_capbin
@@ -36,6 +37,10 @@ ROLE_KEYS = ("role", "workers", "expected_procs", "measure_class", "asyncio", "u
 MANDATORY_CHECKS = ("C3", "C10", "C11", "GPU-IDLE")
 KNOWN_CHECKS = ("C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12",
                 "C13", "GPU-IDLE")
+# "P+X": preconditions and external symptom only. "P+X+I+V": also internal localisation I,
+# the per-tier intervention heartbeat and the launch grade (INTERFACES errata B2-2E).
+JUDGE_MODES = ("P+X", "P+X+I+V")
+READING_NAME = re.compile(r"^[a-z0-9_.-]{1,48}$")
 # Calibration kinds whose register entry binds this experiment's roles to the file's shapes.
 BIND_KINDS = tuple(calib.SHAPE_KINDS)
 CALIB_ENTRY_KEYS = ("kind", "relpath", "sha256")
@@ -67,6 +72,7 @@ class Ctx:
         self.calib_docs = {}  # kind -> validated calibration document
         self.calib_bind = {}  # kind in BIND_KINDS -> {role: shape}
         self.tier_regime = {}  # tier seq -> "subsat" / "near_boundary" (load tiers)
+        self.mode = None  # register.json judge.mode
         self.checks_applied = []
         self.submission = None
         self.identity_scan = None
@@ -191,9 +197,10 @@ def _load_register(ctx):
     if "register_md" in doc:
         _registered_file(ctx, doc["register_md"], "register.register_md", kinds=("register_md",))
     judge = doc.get("judge")
-    if not isinstance(judge, dict) or judge.get("mode") != "P+X" \
+    if not isinstance(judge, dict) or judge.get("mode") not in JUDGE_MODES \
             or not isinstance(judge.get("checks"), list):
-        raise InputInvalid("register.json", "judge must be {mode: 'P+X', checks: [...]}")
+        raise InputInvalid("register.json", "judge must be {mode: one of %s, checks: [...]}"
+                           % (JUDGE_MODES,))
     unknown = [c for c in judge["checks"] if c not in KNOWN_CHECKS]
     if unknown:
         raise InputInvalid("register.json", "unknown checks %s" % unknown)
@@ -206,6 +213,9 @@ def _load_register(ctx):
                                             "`arms` to lists of distinct tier labels")
     ctx.checks_applied = sorted(set(MANDATORY_CHECKS) | set(judge["checks"]),
                                 key=lambda c: (len(c), c))
+    if "localize" in judge and judge["mode"] != "P+X+I+V":
+        raise InputInvalid("register.json", "judge.localize needs mode 'P+X+I+V'")
+    ctx.mode = judge["mode"]
     ctx.register = doc
     ctx.register_files = files
 
@@ -276,6 +286,43 @@ def _check_env(ctx, doc, item):
         raise InputInvalid(item, "calibration environment (hw %r, image %r) != launch (hw %r, "
                                  "image %r)" % (env.get("hw_profile_sha"), env.get("image_sha"),
                                                 want_hw, want_img))
+
+
+def _load_localize(ctx):
+    """register.json judge.localize (mode P+X+I+V, optional): {"readings": [{"name", "terms":
+    [{"role", "slot", "sign", "agg"}], "receiver", "sender"}]}. Terms as in a drain-gate
+    reading (INTERFACES 8.1: backlog.* slots of launch roles); receiver / sender are launch
+    roles or null, not both null and not equal."""
+    loc = ctx.register["judge"].get("localize")
+    if loc is None:
+        return
+    item = "register.json judge.localize"
+    if not isinstance(loc, dict) or set(loc) != {"readings"} \
+            or not isinstance(loc["readings"], list):
+        raise InputInvalid(item, "must be {readings: [...]}")
+    names = set()
+    for i, r in enumerate(loc["readings"]):
+        where = "%s.readings[%d]" % (item, i)
+        if not isinstance(r, dict) or set(r) != {"name", "terms", "receiver", "sender"}:
+            raise InputInvalid(where, "keys must be name, terms, receiver, sender")
+        if not isinstance(r["name"], str) or not READING_NAME.match(r["name"]) \
+                or r["name"] in names:
+            raise InputInvalid(where, "name must match %s and be unique" % READING_NAME.pattern)
+        names.add(r["name"])
+        ends = [r["receiver"], r["sender"]]
+        if all(e is None for e in ends) or r["receiver"] == r["sender"] or any(
+                e is not None and e not in ctx.roles for e in ends):
+            raise InputInvalid(where, "receiver / sender must be distinct launch roles or null"
+                                      " (not both null)")
+        if not isinstance(r["terms"], list) or not r["terms"]:
+            raise InputInvalid(where, "terms must be a non-empty list")
+        for t in r["terms"]:
+            if not isinstance(t, dict) or set(t) != {"role", "slot", "sign", "agg"} \
+                    or t["role"] not in ctx.roles or not isinstance(t["slot"], str) \
+                    or not t["slot"].startswith("backlog.") or t["sign"] not in (1, -1) \
+                    or isinstance(t["sign"], bool) or t["agg"] not in ("sum", "max"):
+                raise InputInvalid(where, "term %r: {role: launch role, slot: backlog.*, "
+                                          "sign: 1 | -1, agg: sum | max}" % (t,))
 
 
 def _load_tier_regimes(ctx):
@@ -436,6 +483,7 @@ def verify(workdir, tree_root):
     _load_calibration(ctx)
     _load_tier_table_and_schedule(ctx)
     _load_tier_regimes(ctx)
+    _load_localize(ctx)
     _check_reconcile_and_scenario(ctx)
     _scan_identities(ctx)
     _load_upstream(ctx)

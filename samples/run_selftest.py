@@ -78,6 +78,7 @@ def compare(name, exp, rc, tree, errs):
             if got.get(seq) != want:
                 errs.append("%s: tier %s verdict %r != expected %r" % (name, seq, got.get(seq),
                                                                        want))
+    _compare_localisation(name, exp, tree, errs)
     if "state_last" in exp:
         got = last_state(tree)
         if got != exp["state_last"]:
@@ -88,6 +89,32 @@ def compare(name, exp, rc, tree, errs):
         for cid in exp.get(key) or []:
             if not any(r["check_id"] == cid and r["status"] == status for r in rows):
                 errs.append("%s: check %s never %s" % (name, cid, status))
+
+
+def _compare_localisation(name, exp, tree, errs):
+    """tier_localisation: {seq: {key: want}} against verdicts tiers[].X.I (lists compare as
+    sets); grade: {key: want} against verdicts.json `grade` (judge mode P+X+I+V)."""
+    if not exp.get("tier_localisation") and not exp.get("grade"):
+        return
+    v = read_json(os.path.join(tree, "judge", "verdicts.json"))
+    if not isinstance(v, dict):
+        errs.append("%s: no verdicts.json" % name)
+        return
+    by_seq = {str(t["tier_seq"]): ((t.get("X") or {}).get("I") or {}) for t in v["tiers"]}
+    checks = [("tier %s I" % seq, by_seq.get(seq, {}), want)
+              for seq, want in (exp.get("tier_localisation") or {}).items()]
+    if exp.get("grade"):
+        checks.append(("grade", v.get("grade") if isinstance(v.get("grade"), dict) else {},
+                       exp["grade"]))
+    for what, got, want in checks:
+        for k, w in want.items():
+            g = got.get(k)
+            if isinstance(w, list):
+                ok = isinstance(g, list) and sorted(g) == sorted(w)
+            else:
+                ok = g == w
+            if not ok:
+                errs.append("%s: %s %s=%r != expected %r" % (name, what, k, g, w))
 
 
 def copy_sample(src, tmp, name):

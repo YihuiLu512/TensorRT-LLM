@@ -12,7 +12,7 @@
   "job_id": "local-sample-c2-stub-loop-lag",
   "launch_seq": 0,
   "pid": 2001,
-  "register_sha": "94f2cdb637d04c898a1086379fba4d56235ca7c508e82b32ad2f06876d91a4bc",
+  "register_sha": "c7edbef80e67381dfee13b98985631a939ed0896860d16d6d3423d42e36f5880",
   "restart_count": 0,
   "role": "nullsse",
   "tier_label": "warmup",
@@ -231,6 +231,6 @@
  "stop": null,
  "tier_table_sha256": "9ec2e9504387d851b23a6054f90df5b2f04de7e8eb81493c87e89591cb70e2a9",
  "tool": "nullsse",
- "written_mono_ns": 9836375059545975,
- "written_wall": "2026-11-14T12:39:11.140Z"
+ "written_mono_ns": 9839917516972576,
+ "written_wall": "2026-11-14T13:38:13.597Z"
 }

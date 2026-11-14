@@ -103,6 +103,20 @@ def _check_shapes(doc, kind, where):
                                  % (w, k))
 
 
+def _check_i1(i1, where):
+    """pilot.json `i1_calibration` (optional; errata B2-2E): {"near_one_core_min": number in
+    (0, 1], "source_tiers": [...], "n": int >= 1}: the I1 "near one core" threshold read from
+    the known-answer saturated tiers. Absent or null -> I1 is NOT_RUN."""
+    if i1 is None:
+        return
+    if not isinstance(i1, dict) or set(i1) != {"near_one_core_min", "source_tiers", "n"} \
+            or not _is_num(i1["near_one_core_min"]) or not 0 < i1["near_one_core_min"] <= 1 \
+            or not isinstance(i1["source_tiers"], list) or not isinstance(i1["n"], int) \
+            or isinstance(i1["n"], bool) or i1["n"] < 1:
+        raise CalibError("%s: i1_calibration must be {near_one_core_min: (0, 1], source_tiers:"
+                         " [...], n: int >= 1}" % where)
+
+
 def validate(kind, doc, where):
     """Raise CalibError unless `doc` is a well-formed calibration file of `kind` (INTERFACES
     9.4, 9.6-9.8). Returns the regime of a near-boundary file (None for other kinds)."""
@@ -113,6 +127,7 @@ def validate(kind, doc, where):
         if schema != PILOT_SCHEMA:
             raise CalibError("%s: pilot schema must be %s" % (where, PILOT_SCHEMA))
         _check_env(doc, where)
+        _check_i1(doc.get("i1_calibration"), where)
         return None
     if kind == "near_boundary_noise":
         if schema == PILOT_SCHEMA:

@@ -30,7 +30,7 @@
   "job_id": "local-sample-regime-nb-good",
   "launch_seq": 0,
   "pid": 1001,
-  "register_sha": "e7634e9e20afa6725a2d800ae67b4b79af4eeaa6c4e90ea379ac3dda13f7349a",
+  "register_sha": "d7dd44cd397bf6f89b2b4eee3d1f351b2576ae02c294fe0f6f92519a3cf3baea",
   "restart_count": 0,
   "role": "capload",
   "tier_label": "warmup",
@@ -455,6 +455,6 @@
  "stop": null,
  "tier_table_sha256": "9ec2e9504387d851b23a6054f90df5b2f04de7e8eb81493c87e89591cb70e2a9",
  "tool": "capload",
- "written_mono_ns": 9836375972328260,
- "written_wall": "2026-11-14T12:39:12.052Z"
+ "written_mono_ns": 9839918465447215,
+ "written_wall": "2026-11-14T13:38:14.546Z"
 }

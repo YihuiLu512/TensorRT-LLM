@@ -5,7 +5,7 @@
   "job_id": "local-sample-sat-spin-thread-same-process",
   "launch_seq": 0,
   "pid": 2001,
-  "register_sha": "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f",
+  "register_sha": "d051ad6dc42259a2317bd4a031f121c22a051370327b1fbeb5afc6999684d8f7",
   "restart_count": 0,
   "role": "nullsse",
   "tier_label": null,
@@ -33,6 +33,6 @@
   "python": "3.12.3 synthetic",
   "switchinterval_s": 0.005
  },
- "written_mono_ns": 9836374348774779,
- "written_wall": "2026-11-14T12:39:10.429Z"
+ "written_mono_ns": 9839915978371993,
+ "written_wall": "2026-11-14T13:38:12.058Z"
 }

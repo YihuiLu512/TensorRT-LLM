@@ -31,8 +31,9 @@ from capcommon.jsonio import atomic_write_bytes, dumps, read_json, write_json_st
 from capcommon.runtree import append_state, read_state, worst_state
 
 from . import checks as C
+from . import grade as G
 from . import inputs as I
-from . import stats
+from . import intervene, localize, stats
 from .symptoms import evaluate_x
 from .treedata import LaunchData, TierData
 
@@ -44,6 +45,7 @@ CHECK_COLUMNS = ("tier_seq", "check_id", "expected_count", "checked_count", "red
                  "status", "source_of_expected", "detail")
 GLOB_CHARS = "*?["
 STATE_OF = {"VALID": "VALID", "VOID": "VOID", "NOT_RUN": "NOT_RUN"}
+NOT_REQUESTED = "NOT_REQUESTED"
 
 
 class Log:
@@ -375,6 +377,7 @@ def judge_tree(ctx, log, code_ok=True, code_note=""):
                                                        r.checked, r.red, r.detail[:3]))
     # ---- per tier ---------------------------------------------------------------------------
     tier_out = []
+    i_cache = {}  # (tier seq, pid) -> I1 readings, shared so the baseline is read once
     for t in tt.tiers:
         entry = {"tier_seq": t.seq, "tier_label": t.label, "kind": t.kind,
                  "load_value": t.load_value, "judged": t.kind in ("up", "down")}
@@ -414,7 +417,8 @@ def judge_tree(ctx, log, code_ok=True, code_note=""):
             elif cid == "C13":
                 res.append(C.check_c13_tier(ctx, ld, td, record))
         base_td = tds.get(base) if base is not None else None
-        x = evaluate_x(ctx, ld, td, base_td, record)
+        x = evaluate_x(ctx, ld, td, base_td, record, hooks=_hooks(ctx, ld, td, base_td, record,
+                                                                 i_cache))
         p = _fold(res)
         reasons = list(launch_notes)
         if t.seq > completed:
@@ -438,14 +442,18 @@ def judge_tree(ctx, log, code_ok=True, code_note=""):
         else:
             verdict = "UNSTABLE" if x["holds"] else "STABLE"
             reasons += x["reasons"]
+            if verdict == "UNSTABLE" and x["I"].get("status") == localize.UNDETERMINED:
+                verdict = "UNDETERMINED"  # design 2.6: signals disagree -> no boundary here
+                reasons += ["I: %s" % r for r in x["I"]["reasons"]]
         entry.update({"verdict": verdict, "reasons": reasons, "regime": ctx.tier_regime[t.seq],
                       "checks": {r.check_id: r.status for r in res},
                       "P": p, "X": x, "stats": record,
                       "order_key": tt.load_order_key(t.seq)})
         for r in res:
             rows.append(r.as_row())
-        log("tier %d %s: %s (P=%s X2=%s holds=%s) %s" % (t.seq, t.label, verdict, p,
-                                                         x["X2_status"], x["holds"], reasons))
+        log("tier %d %s: %s (P=%s X2=%s holds=%s I=%s) %s" % (
+            t.seq, t.label, verdict, p, x["X2_status"], x["holds"], x["I"].get("status"),
+            reasons))
         tier_out.append(entry)
     return {"verdicts": _launch_verdict(ctx, tier_out, launch_res, launch_p, gpu_void),
             "rows": rows}
@@ -466,9 +474,34 @@ def _launch_verdict(ctx, tier_out, launch_res, launch_p, gpu_void):
     boundary = stats.t4_boundary([{"seq": e["tier_seq"], "order_key": e.get("order_key"),
                                    "load_value": e["load_value"], "verdict": e["verdict"]}
                                   for e in judged])
-    return {"launch_verdict": lv, "exit_code": code, "tiers": tier_out,
-            "upstream": up, "state_line": {"status": state, "reason": reason, "by": "capjudge"},
-            "launch_checks": {r.check_id: r.status for r in launch_res},
-            "axis": ctx.tt.axis, "boundary_T4": boundary,
-            "localisation_I": "NOT_IMPLEMENTED_BATCH2", "intervention_V": "NOT_IMPLEMENTED_BATCH2",
-            "batch": 1}
+    boundary["undetermined_seqs"] = [e["tier_seq"] for e in judged
+                                     if e["verdict"] == "UNDETERMINED"]
+    out = {"launch_verdict": lv, "exit_code": code, "tiers": tier_out,
+           "upstream": up, "state_line": {"status": state, "reason": reason, "by": "capjudge"},
+           "launch_checks": {r.check_id: r.status for r in launch_res},
+           "axis": ctx.tt.axis, "boundary_T4": boundary, "mode": ctx.mode, "batch": 2}
+    if ctx.mode != "P+X+I+V":
+        out.update(localisation_I=NOT_REQUESTED, intervention_V=NOT_REQUESTED,
+                   grade=NOT_REQUESTED)
+        return out
+    g = G.launch_grade(tier_out, boundary)
+    at = next((e for e in judged if e["tier_seq"] == g.get("tier_seq")), None)
+    out["grade"] = g
+    i = {} if at is None else at["X"]["I"]
+    out["localisation_I"] = dict({k: i.get(k) for k in ("status", "role", "via", "finding",
+                                                        "measure_class", "pids", "holding")},
+                                 tier_seq=g.get("tier_seq"),
+                                 detail="tiers[].X.I of that tier")
+    out["intervention_V"] = {
+        "doses": intervene.launch_doses(ctx), "heartbeat": intervene.launch_heartbeat(judged),
+        "measure_class": {r: d["measure_class"] for r, d in sorted(ctx.roles.items())},
+        "dose_response": "NOT_RUN: across launches, python3 -m capjudge.intervene"}
+    return out
+
+
+def _hooks(ctx, ld, td, base_td, record, cache):
+    """symptoms.evaluate_x hooks for I and the per-tier V heartbeat (mode P+X+I+V only)."""
+    if ctx.mode != "P+X+I+V":
+        return None
+    return {"I": lambda x: localize.localize_tier(ctx, ld, td, base_td, x, record, cache),
+            "V": lambda: intervene.tier_heartbeat(ctx, td)}

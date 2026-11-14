@@ -23,7 +23,7 @@
   "job_id": "local-sample-input-calib-invalid",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "71ff942226c2e25ccd312d8af3f487c545018d0eb9b05539b62c0022758f2de7",
+  "register_sha": "ec89d5c4c5718965d22d16fb867c2ece8256e04ba30279a23dd891cfc18939f3",
   "restart_count": 0,
   "role": "launch",
   "tier_label": null,
@@ -85,6 +85,6 @@
  ],
  "schema": "capkit.roles/1",
  "unattributed": [],
- "written_mono_ns": 9836376163551161,
- "written_wall": "2026-11-14T12:39:12.244Z"
+ "written_mono_ns": 9839918680324913,
+ "written_wall": "2026-11-14T13:38:14.760Z"
 }

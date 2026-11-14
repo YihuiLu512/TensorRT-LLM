@@ -3,7 +3,9 @@
 """External symptom X (design 2.6): X2 planned-time lag trend is the one piece of evidence;
 X1 delivery ratio (normalised by the same launch's baseline tier) and X3 backlog trend only
 reconcile the counters. Overload-type failures make X hold. Internal localisation I and the
-intervention test V are batch 2: their hooks are here and report NOT_IMPLEMENTED_BATCH2.
+per-tier part of the intervention test V enter through the `hooks` of evaluate_x (judge mode
+"P+X+I+V": capjudge.localize and capjudge.intervene); without hooks (mode "P+X") they are
+NOT_REQUESTED.
 
 Statistic keys ("<T>:<quantity>:<role>") are listed in README.md; each tier's computed values
 are written to verdicts.json `stats` so the pilot builder can turn sub-saturation tiers into
@@ -20,7 +22,11 @@ from .thresholds import band_key
 from .treedata import NS, per_second
 
 TRUE, FALSE, NOT_RUN = "TRUE", "FALSE", "NOT_RUN"
-NOT_IMPLEMENTED = "NOT_IMPLEMENTED_BATCH2"
+NOT_REQUESTED = "NOT_REQUESTED"
+# Load-generator failure reasons that are connection failures (INTERFACES 5.4.1): never
+# overload-type, whatever the hint (design 2.6: a refused connection is non-overload; a failed
+# or reset connection is not a registered overload outcome either).
+LOADGEN_CONNECTION_REASONS = ("conn_refused", "conn_fail", "conn_reset")
 X3_EXCLUDED_GAUGES = ("backlog.unread_bytes",)  # INTERFACES 8.2: record only
 
 
@@ -158,27 +164,41 @@ def gauge_series(ld, td, role):
     return out
 
 
-def failures_by_class(td):
-    """Sum the per-worker `failures` of every summary in the tier, by class. Batch 1 trusts only
-    the load generator's class_hint == 'overload' (registered timeout); every other failure,
-    including 'unclassified', counts as non-overload (design 2.6: unknown -> non-overload).
-    Reclassification from server logs / probe counters is batch 2 (reclassify_failure)."""
-    out = {"overload": 0, "non_overload": 0, "by_reason": {}}
+def failures_by_class(td, roles=None):
+    """Sum the per-worker `failures` of every summary in the tier, by class and by category
+    (reclassify_failure). `roles` is launch.json's {role: {measure_class...}} (None: unknown)."""
+    out = {"overload": 0, "non_overload": 0, "by_reason": {}, "by_category": {}}
     for role, per_worker in td.summaries.items():
+        mc = ((roles or {}).get(role) or {}).get("measure_class")
         for doc in per_worker.values():
             for f in doc.get("failures") or []:
-                cls = reclassify_failure(role, f)
+                cls, cat = reclassify_failure(role, f, mc)
                 n = int(f.get("count", 0))
                 out["overload" if cls == "overload" else "non_overload"] += n
                 key = "%s:%s" % (role, f.get("reason"))
                 out["by_reason"][key] = out["by_reason"].get(key, 0) + n
+                out["by_category"][cat] = out["by_category"].get(cat, 0) + n
     return out
 
 
-def reclassify_failure(role, failure):
-    """Batch-2 hook: combine server-side reason strings and probe counters. Batch 1 keeps the
-    generator's hint and maps anything not 'overload' to non-overload."""
-    return "overload" if failure.get("class_hint") == "overload" else "non_overload"
+def reclassify_failure(role, failure, measure_class=None):
+    """(class, category) of one failure entry (design 2.6: the class comes from the reason, not
+    the status code; unknown -> non-overload).
+
+    * a connection failure of a load generator (reason in LOADGEN_CONNECTION_REASONS, reported
+      by a load_source / under_test client role or a role of unknown class) ->
+      ("non_overload", "loadgen_connection"), even with an 'overload' hint;
+    * class_hint 'overload' (the registered timeout) -> ("overload", "registered_overload");
+    * anything else, including 'unclassified' -> ("non_overload", "unclassified" or the hint).
+    Server-log reasons (503 at the per-request backlog cap, watchdog aborts) are not read: no
+    capkit tool writes them yet, so they stay non-overload."""
+    reason, hint = failure.get("reason"), failure.get("class_hint")
+    if reason in LOADGEN_CONNECTION_REASONS and measure_class in (None, "load_source",
+                                                                  "under_test"):
+        return "non_overload", "loadgen_connection"
+    if hint == "overload":
+        return "overload", "registered_overload"
+    return "non_overload", hint if hint == "non_overload" else "unclassified"
 
 
 def _trend(series, key, bands, record):
@@ -203,18 +223,18 @@ def _trend(series, key, bands, record):
     return d, entry
 
 
-def evaluate_x(ctx, ld, td, base_td, record):
+def evaluate_x(ctx, ld, td, base_td, record, hooks=None):
     """X for one load tier. `record` collects every computed statistic (key -> [values]).
 
     Returns a dict: X2/X1/X3 entries, overload_failures, holds (True/False/None=NOT_RUN),
-    contradiction (bool), reasons, I and V placeholders."""
+    contradiction (list), reasons, and I / V: hooks["I"](x) and hooks["V"]() when given (judge
+    mode P+X+I+V), else {"status": NOT_REQUESTED}."""
     tier = td.tier
     beat = BeatSchedule(ctx.tt)
     bands = ctx.bands.view(ctx.tier_regime[tier.seq])
-    out = {"X2": [], "X1": [], "X3": [], "reasons": [],
-           "I": {"status": NOT_IMPLEMENTED, "signals": {"I1": None, "I2": None, "I3": None}},
-           "V": {"status": NOT_IMPLEMENTED, "dose_response": None, "reverse": None}}
-    fails = failures_by_class(td)
+    out = {"X2": [], "X1": [], "X3": [], "reasons": []}
+    fails = failures_by_class(td, getattr(ctx, "roles", None))
+    out["failures_by_category"] = fails["by_category"]
     out["overload_failures"] = fails["overload"]
     load_roles = td.roles_with("loadgen.requests")
     x2_dirs = []
@@ -277,7 +297,11 @@ def evaluate_x(ctx, ld, td, base_td, record):
             d, e = _trend(series, band_key("T1", slot, role), bands, record)
             out["X3"].append(e)
             x3_dirs.append(d)
-    return _combine(out, x2_dirs, x1_dirs, x3_dirs)
+    out = _combine(out, x2_dirs, x1_dirs, x3_dirs)
+    hooks = hooks or {}
+    out["I"] = hooks["I"](out) if "I" in hooks else {"status": NOT_REQUESTED}
+    out["V"] = hooks["V"]() if "V" in hooks else {"status": NOT_REQUESTED}
+    return out
 
 
 def _combine(out, x2_dirs, x1_dirs, x3_dirs):

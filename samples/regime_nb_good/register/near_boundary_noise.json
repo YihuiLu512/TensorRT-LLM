@@ -24,6 +24,30 @@
    "source_tiers": [],
    "unit": "synthetic"
   },
+  "T1:backlog.pending_msgs:nullsse": {
+   "max": 3,
+   "min": -3,
+   "n": 6,
+   "regime": "near_boundary",
+   "source_tiers": [],
+   "unit": "synthetic"
+  },
+  "T1:i3_backlog:sink_pending": {
+   "max": 3,
+   "min": -3,
+   "n": 6,
+   "regime": "near_boundary",
+   "source_tiers": [],
+   "unit": "synthetic"
+  },
+  "T1:i3_backlog:sse_in_flight": {
+   "max": 3,
+   "min": -3,
+   "n": 6,
+   "regime": "near_boundary",
+   "source_tiers": [],
+   "unit": "synthetic"
+  },
   "T1:inflight_derived:capload": {
    "max": 3,
    "min": -3,
@@ -48,9 +72,41 @@
    "source_tiers": [],
    "unit": "synthetic"
   },
+  "T2:core_busy_frac_softirq:capload": {
+   "max": 0.05,
+   "min": -0.05,
+   "n": 6,
+   "regime": "near_boundary",
+   "source_tiers": [],
+   "unit": "synthetic"
+  },
+  "T2:core_busy_frac_softirq:nullsse": {
+   "max": 0.05,
+   "min": -0.05,
+   "n": 6,
+   "regime": "near_boundary",
+   "source_tiers": [],
+   "unit": "synthetic"
+  },
   "T2:delivery_ratio_norm:capload": {
    "max": 1.1,
    "min": 0.9,
+   "n": 6,
+   "regime": "near_boundary",
+   "source_tiers": [],
+   "unit": "synthetic"
+  },
+  "T2:i3_backlog:sink_pending": {
+   "max": 3,
+   "min": -3,
+   "n": 6,
+   "regime": "near_boundary",
+   "source_tiers": [],
+   "unit": "synthetic"
+  },
+  "T2:i3_backlog:sse_in_flight": {
+   "max": 3,
+   "min": -3,
    "n": 6,
    "regime": "near_boundary",
    "source_tiers": [],

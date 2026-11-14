@@ -18,6 +18,11 @@
   "image_sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
  },
  "experiment": "E0",
+ "i1_calibration": {
+  "n": 1,
+  "near_one_core_min": 0.95,
+  "source_tiers": []
+ },
  "i2_calibration": {
   "enters_criteria": false,
   "per_loop_impl": {}
@@ -35,6 +40,30 @@
    "unit": "synthetic"
   },
   "T1:backlog.inflight:capload": {
+   "max": 3,
+   "min": -3,
+   "n": 6,
+   "regime": "subsat",
+   "source_tiers": [],
+   "unit": "synthetic"
+  },
+  "T1:backlog.pending_msgs:nullsse": {
+   "max": 3,
+   "min": -3,
+   "n": 6,
+   "regime": "subsat",
+   "source_tiers": [],
+   "unit": "synthetic"
+  },
+  "T1:i3_backlog:sink_pending": {
+   "max": 3,
+   "min": -3,
+   "n": 6,
+   "regime": "subsat",
+   "source_tiers": [],
+   "unit": "synthetic"
+  },
+  "T1:i3_backlog:sse_in_flight": {
    "max": 3,
    "min": -3,
    "n": 6,
@@ -66,9 +95,41 @@
    "source_tiers": [],
    "unit": "synthetic"
   },
+  "T2:core_busy_frac_softirq:capload": {
+   "max": 0.05,
+   "min": -0.05,
+   "n": 6,
+   "regime": "subsat",
+   "source_tiers": [],
+   "unit": "synthetic"
+  },
+  "T2:core_busy_frac_softirq:nullsse": {
+   "max": 0.05,
+   "min": -0.05,
+   "n": 6,
+   "regime": "subsat",
+   "source_tiers": [],
+   "unit": "synthetic"
+  },
   "T2:delivery_ratio_norm:capload": {
    "max": 1.1,
    "min": 0.9,
+   "n": 6,
+   "regime": "subsat",
+   "source_tiers": [],
+   "unit": "synthetic"
+  },
+  "T2:i3_backlog:sink_pending": {
+   "max": 3,
+   "min": -3,
+   "n": 6,
+   "regime": "subsat",
+   "source_tiers": [],
+   "unit": "synthetic"
+  },
+  "T2:i3_backlog:sse_in_flight": {
+   "max": 3,
+   "min": -3,
    "n": 6,
    "regime": "subsat",
    "source_tiers": [],

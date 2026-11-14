@@ -195,10 +195,10 @@ def check_c3(ctx, td):
         for doc in td.summaries.get(role["role"], {}).values():
             c = doc.get("counts") or {}
             r.checked += int(c.get("ok", 0)) + int(c.get("failed", 0))
-    f = failures_by_class(td)
+    f = failures_by_class(td, ctx.roles)
     r.red = f["non_overload"]
-    r.detail.append("non_overload=%d overload=%d by_reason=%s" % (f["non_overload"],
-                                                                 f["overload"], f["by_reason"]))
+    r.detail.append("non_overload=%d overload=%d by_reason=%s by_category=%s"
+                    % (f["non_overload"], f["overload"], f["by_reason"], f["by_category"]))
     if r.checked < r.expected:
         r.not_run.append("%d of %d planned requests have an outcome (ok + failed)"
                          % (r.checked, r.expected))
@@ -374,7 +374,7 @@ def check_chains(ctx, ld, td, next_drain, kind):
     r = Result(cid, td.tier.seq, "launch.json reconcile + schedule meta.per_tier")
     t = td.tier
     n = int(ctx.schedule_meta["per_tier"].get(str(t.seq), 0))
-    ovl = failures_by_class(td)["overload"]
+    ovl = failures_by_class(td, ctx.roles)["overload"]
     for chain in ctx.launch["reconcile"]["chains"]:
         if chain["kind"] != kind:
             continue

@@ -5,7 +5,7 @@
   "job_id": "local-sample-input-calib-invalid",
   "launch_seq": 0,
   "pid": 2001,
-  "register_sha": "71ff942226c2e25ccd312d8af3f487c545018d0eb9b05539b62c0022758f2de7",
+  "register_sha": "ec89d5c4c5718965d22d16fb867c2ece8256e04ba30279a23dd891cfc18939f3",
   "restart_count": 0,
   "role": "nullsse",
   "tier_label": null,
@@ -33,6 +33,6 @@
   "python": "3.12.3 synthetic",
   "switchinterval_s": 0.005
  },
- "written_mono_ns": 9836376177422777,
- "written_wall": "2026-11-14T12:39:12.257Z"
+ "written_mono_ns": 9839918694381417,
+ "written_wall": "2026-11-14T13:38:14.774Z"
 }

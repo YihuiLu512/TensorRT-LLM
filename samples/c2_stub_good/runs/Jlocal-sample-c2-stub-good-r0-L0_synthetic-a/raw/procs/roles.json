@@ -23,7 +23,7 @@
   "job_id": "local-sample-c2-stub-good",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "94f2cdb637d04c898a1086379fba4d56235ca7c508e82b32ad2f06876d91a4bc",
+  "register_sha": "c7edbef80e67381dfee13b98985631a939ed0896860d16d6d3423d42e36f5880",
   "restart_count": 0,
   "role": "launch",
   "tier_label": null,
@@ -85,6 +85,6 @@
  ],
  "schema": "capkit.roles/1",
  "unattributed": [],
- "written_mono_ns": 9836374802933098,
- "written_wall": "2026-11-14T12:39:10.883Z"
+ "written_mono_ns": 9839917199157816,
+ "written_wall": "2026-11-14T13:38:13.279Z"
 }

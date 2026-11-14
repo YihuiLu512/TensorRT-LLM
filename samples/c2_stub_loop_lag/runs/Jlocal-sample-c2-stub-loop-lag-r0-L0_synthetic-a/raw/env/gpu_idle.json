@@ -28,7 +28,7 @@
   "job_id": "local-sample-c2-stub-loop-lag",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "94f2cdb637d04c898a1086379fba4d56235ca7c508e82b32ad2f06876d91a4bc",
+  "register_sha": "c7edbef80e67381dfee13b98985631a939ed0896860d16d6d3423d42e36f5880",
   "restart_count": 0,
   "role": "jobs",
   "tier_label": null,
@@ -73,6 +73,6 @@
  "schema": "capkit.gpu_idle/1",
  "status": "PASS",
  "visible_gpus": 1,
- "written_mono_ns": 9836375027948114,
- "written_wall": "2026-11-14T12:39:11.108Z"
+ "written_mono_ns": 9839917473205698,
+ "written_wall": "2026-11-14T13:38:13.553Z"
 }

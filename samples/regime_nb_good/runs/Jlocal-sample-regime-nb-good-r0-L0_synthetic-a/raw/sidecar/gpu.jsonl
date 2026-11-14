@@ -1,4 +1,4 @@
-{"_header": true, "columns": ["t_rel_ns", "gpu_index", "util_pct", "mem_used_mib", "compute_pids", "query_rc"], "gpu_count": 1, "identity": {"arm": "synthetic-a", "experiment": "E0", "job_id": "local-sample-regime-nb-good", "launch_seq": 0, "pid": null, "register_sha": "e7634e9e20afa6725a2d800ae67b4b79af4eeaa6c4e90ea379ac3dda13f7349a", "restart_count": 0, "role": "sidecar", "tier_label": null, "tier_seq": null, "worker": 0}, "positive_control_ok": true, "schema": "capkit.sidecar.gpu/1", "written_wall": "2026-11-14T12:39:12.169Z"}
+{"_header": true, "columns": ["t_rel_ns", "gpu_index", "util_pct", "mem_used_mib", "compute_pids", "query_rc"], "gpu_count": 1, "identity": {"arm": "synthetic-a", "experiment": "E0", "job_id": "local-sample-regime-nb-good", "launch_seq": 0, "pid": null, "register_sha": "d7dd44cd397bf6f89b2b4eee3d1f351b2576ae02c294fe0f6f92519a3cf3baea", "restart_count": 0, "role": "sidecar", "tier_label": null, "tier_seq": null, "worker": 0}, "positive_control_ok": true, "schema": "capkit.sidecar.gpu/1", "written_wall": "2026-11-14T13:38:14.685Z"}
 [-2000000000,0,0,0,[],0]
 [0,0,0,0,[],0]
 [2000000000,0,0,0,[],0]

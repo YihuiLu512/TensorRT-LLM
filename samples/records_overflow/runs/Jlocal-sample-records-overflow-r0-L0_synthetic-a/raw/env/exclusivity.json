@@ -6,7 +6,7 @@
   "job_id": "local-sample-records-overflow",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f",
+  "register_sha": "85b1ee634bb766370552bad15a3bc3037091e3d2568ebafeb4a048949495009b",
   "restart_count": 0,
   "role": "gate",
   "tier_label": null,
@@ -64,6 +64,6 @@
  "schema": "capkit.exclusivity/1",
  "slurm_view_error": null,
  "slurm_view_file": "synthetic",
- "written_mono_ns": 9836373436762360,
- "written_wall": "2026-11-14T12:39:09.517Z"
+ "written_mono_ns": 9839915099794081,
+ "written_wall": "2026-11-14T13:38:11.180Z"
 }

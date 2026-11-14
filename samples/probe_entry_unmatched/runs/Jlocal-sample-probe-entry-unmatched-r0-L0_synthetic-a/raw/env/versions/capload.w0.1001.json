@@ -5,7 +5,7 @@
   "job_id": "local-sample-probe-entry-unmatched",
   "launch_seq": 0,
   "pid": 1001,
-  "register_sha": "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f",
+  "register_sha": "85b1ee634bb766370552bad15a3bc3037091e3d2568ebafeb4a048949495009b",
   "restart_count": 0,
   "role": "capload",
   "tier_label": null,
@@ -31,6 +31,6 @@
   "python": "3.12.3 synthetic",
   "switchinterval_s": 0.005
  },
- "written_mono_ns": 9836370029454593,
- "written_wall": "2026-11-14T12:39:06.110Z"
+ "written_mono_ns": 9839911589175318,
+ "written_wall": "2026-11-14T13:38:07.669Z"
 }
