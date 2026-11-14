@@ -34,6 +34,7 @@ from google.protobuf import struct_pb2
 from tensorrt_llm.executor.utils import context_length_exceeded_message
 from tensorrt_llm.grpc.openengine.bindings import generation_pb2, model_pb2
 from tensorrt_llm.grpc.openengine_conventions import (
+    CAP_DISAGG_ORIG_ELAPSED_S,
     CAP_REQ_BEST_OF,
     CAP_REQ_CONVERSATION_ID,
     CAP_REQ_DISAGG_REQUEST_ID,
@@ -53,6 +54,7 @@ from tensorrt_llm.grpc.openengine_conventions import (
     REQ_DISAGG_REQUEST_ID,
     REQ_KV_HINTS,
     REQ_LOGIT_BIAS,
+    REQ_ORIG_ELAPSED_S,
     REQ_SCHEDULING,
     REQ_THINKING_TOKEN_BUDGET,
     REQUEST_TYPE_CONTEXT_AND_GENERATION,
@@ -427,13 +429,30 @@ def _logit_bias(
     return out
 
 
-def _scheduling(scheduling_params: Any, engine_name: str) -> dict[str, Any] | None:
-    """EX-REQ-6: the parts of ``scheduling_params`` other than ``attention_dp_rank``."""
+def _scheduling(
+    scheduling_params: Any, disaggregated_params: Any, engine_name: str
+) -> dict[str, Any] | None:
+    """EX-REQ-6: the parts of ``scheduling_params`` other than ``attention_dp_rank``.
+
+    ``subagent_affinity_id`` is not part of it: the facade decides the
+    metadata of a ``context_only`` call from it and drops it from a
+    ``generation_only`` one (SV-DSG-14); any other request with it is
+    rejected, as the engine checks it on context requests only.
+    """
     if scheduling_params is None:
         return None
     affinity = getattr(scheduling_params, "subagent_affinity_id", None)
-    if affinity is not None:
-        raise _not_supported("scheduling_params.subagent_affinity_id", affinity, engine_name)
+    request_type = getattr(disaggregated_params, "request_type", None)
+    if affinity is not None and request_type not in (
+        REQUEST_TYPE_CONTEXT_ONLY,
+        REQUEST_TYPE_GENERATION_ONLY,
+    ):
+        raise _not_supported(
+            "scheduling_params.subagent_affinity_id",
+            affinity,
+            engine_name,
+            "it is served on the two legs of a disaggregated request only",
+        )
     payload: dict[str, Any] = {}
     if getattr(scheduling_params, "attention_dp_relax", True) is False:
         payload["attention_dp_relax"] = False
@@ -481,7 +500,7 @@ def _extra(
         # A routing and cache-retention hint, also taken from gateway headers,
         # that does not change the output: not sent to an engine without it.
         extra[REQ_CONVERSATION_ID] = options.conversation_params.conversation_id
-    scheduling = _scheduling(options.scheduling_params, engine_name)
+    scheduling = _scheduling(options.scheduling_params, options.disaggregated_params, engine_name)
     if scheduling is not None:
         if not capabilities.supports(CAP_REQ_SCHEDULING):
             # Name a field the request set, not the payload built from it.
@@ -513,6 +532,28 @@ def _check_options(
         raise _not_supported("cache_salt", options.cache_salt, engine_name)
 
 
+def _orig_elapsed_s(params: Any, capabilities: ModelCapabilities) -> dict[str, Any]:
+    """The ``extra`` entry of a ``generation_only`` request's ``orig_elapsed_s`` (EX-DSG-3).
+
+    The orchestrator stamps it on the generation request only. It is checked
+    whatever the engine; an engine that does not declare it (ds-engine) is not
+    sent it, and orders its admission without it.
+    """
+    value = getattr(params, "orig_elapsed_s", None)
+    if value is None:
+        return {}
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"disaggregated_params.orig_elapsed_s must be a number, got {value!r}")
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(
+            f"disaggregated_params.orig_elapsed_s must be a finite number >= 0, got {value}"
+        )
+    if not capabilities.supports(CAP_DISAGG_ORIG_ELAPSED_S):
+        logger.debug(f"{CAP_DISAGG_ORIG_ELAPSED_S} is not declared; orig_elapsed_s is not sent")
+        return {}
+    return {REQ_ORIG_ELAPSED_S: float(value)}
+
+
 def _disaggregation(
     params: Any, capabilities: ModelCapabilities, engine_name: str
 ) -> tuple[str | None, dict[str, Any]]:
@@ -522,21 +563,25 @@ def _disaggregation(
     and the caller's ``disagg_request_id``; a ``context_and_generation``
     request sends its ``request_type``; a ``generation_only`` request (the
     decode call) sends neither: its handoff goes in ``kv_session``, which the
-    facade sets. A ``context_only`` request must ask for context-first
-    scheduling (the default); a ``generation_only`` one is mapped whatever its
+    facade sets. A ``generation_only`` request sends its ``orig_elapsed_s``
+    when the engine declares it (EX-DSG-3), and leaves it out otherwise. A
+    ``context_only`` request must ask for context-first scheduling (the
+    default); a ``generation_only`` one is mapped whatever its
     ``schedule_style``, which travels in the handoff for the engine to judge.
 
     Raises:
         ValueError: The request type is unknown; or, for a ``context_only``
             request, it asks for generation-first scheduling, or its
             ``disagg_request_id`` is outside the range the conventions give
-            it or the engine does not declare ``disagg_request_id``.
+            it or the engine does not declare ``disagg_request_id``; or, for
+            a ``generation_only`` request, its ``orig_elapsed_s`` is not a
+            finite number of seconds >= 0.
     """
     if params is None:
         return None, {}
     request_type = params.request_type
     if request_type == REQUEST_TYPE_GENERATION_ONLY:
-        return None, {}
+        return None, _orig_elapsed_s(params, capabilities)
     if request_type == REQUEST_TYPE_CONTEXT_AND_GENERATION:
         return request_type, {}
     if request_type != REQUEST_TYPE_CONTEXT_ONLY:

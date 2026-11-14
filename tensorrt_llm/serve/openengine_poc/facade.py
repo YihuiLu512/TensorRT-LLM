@@ -20,8 +20,9 @@ polls the engine's health. It records a fatal error and stops the frontend
 when the engine stays unreachable or not ready longer than
 ``engine_lost_timeout``, when a restarted engine fails the startup checks, and
 when the health watcher itself fails. :func:`adapt_server` adds the ``engine``
-block to ``/server_info`` and answers the endpoints this path does not support
-with 501.
+block to ``/server_info``, takes its ``max_batch_size`` and
+``kv_cache_hash_algo`` from the engine, and answers the endpoints this path does
+not support with 501.
 """
 
 from __future__ import annotations
@@ -31,6 +32,9 @@ import collections
 import concurrent.futures
 import contextvars
 import dataclasses
+import functools
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -44,6 +48,7 @@ from typing import Any
 import grpc
 import msgspec
 
+from tensorrt_llm.grpc.openengine.affinity import AFFINITY_AUTH_HEADER, AFFINITY_ID_HEADER
 from tensorrt_llm.grpc.openengine.bindings import error_pb2
 from tensorrt_llm.grpc.openengine_client import (
     OpenEngineClientError,
@@ -61,6 +66,7 @@ from tensorrt_llm.grpc.openengine_conventions import (
     META_TARGET_DP_RANK,
     META_TRACEPARENT,
     META_TRACESTATE,
+    REQ_CONVERSATION_ID,
     REQUEST_TYPE_CONTEXT_ONLY,
     REQUEST_TYPE_GENERATION_ONLY,
     SERVE_COUNTER_DIR_ENV,
@@ -84,6 +90,7 @@ from .engine_client import (
     EngineInfo,
     EngineLoad,
     EngineRequest,
+    KvEndpoint,
     ModelCapabilities,
     OutputFinished,
     PrefillReady,
@@ -119,6 +126,34 @@ _MAPPED_MEDIA_KEY = "openengine_media"
 # The conventions version before the disaggregated keys: an engine on it serves
 # aggregated requests only.
 _AGGREGATED_ONLY_VERSION = 3
+# ServerInfo.extra key of an engine that checks the subagent affinity metadata (OE-DSG-9).
+_SUBAGENT_AFFINITY_KEY = "trtllm_supports_subagent_affinity"
+# ServerInfo.extra key naming the hash algorithm of the engine's KV-cache events;
+# the metrics module, which may be left out, reads it too.
+_KV_EVENT_HASH_ALGO_KEY = "trtllm_kv_event_hash_algo"
+
+
+@functools.cache
+def _affinity_not_sent(engine_name: str) -> None:
+    """Log, once per engine, that subagent affinity hints are not sent to it."""
+    logger.warning(
+        f"The OpenEngine engine {engine_name!r} does not declare {_SUBAGENT_AFFINITY_KEY}: "
+        "subagent affinity hints are not sent to it"
+    )
+
+
+def _endpoint_text(endpoint: KvEndpoint, transfer_backend: str) -> str:
+    """A ``ctx_info_endpoint`` string from a KV connector's endpoint.
+
+    The engine names the protocol by the endpoint's URL scheme, or, for an
+    endpoint without one, by its transfer backend (``tensorrt_llm.grpc.openengine.disagg``):
+    the scheme comes back unless it is the backend's name.
+    """
+    host = f"[{endpoint.host}]" if ":" in endpoint.host else endpoint.host
+    address = f"{host}:{endpoint.port}"
+    if endpoint.protocol and endpoint.protocol != transfer_backend:
+        return f"{endpoint.protocol}://{address}"
+    return address
 
 
 class _MappedMedia(list):
@@ -471,12 +506,14 @@ class OpenEngineLLM:
             )
         self.args = args
         self._server_role = server_role
+        # The orchestrator's key, which signs the subagent affinity metadata;
+        # adapt_server sets it from the OpenAIServer's internal_disagg_auth_key.
+        self._subagent_affinity_key: str | None = None
         self.tokenizer = tokenizer
         self.input_processor = input_processor
         self._hf_model_dir = hf_model_dir
         self._tokenizer_dir = tokenizer_dir or hf_model_dir
         self._executor = _FacadeExecutor()
-        self.disaggregated_params = None
         self._endpoint = endpoint
         self._ready_timeout = ready_timeout
         self._control_timeout = control_timeout
@@ -930,6 +967,44 @@ class OpenEngineLLM:
         except OSError as error:
             logger.warning(f"Could not write the OpenEngine generate_sent count: {error}")
 
+    @property
+    def disaggregated_params(self) -> dict[str, Any] | None:
+        """The ``disaggregated_params`` of ``/server_info``, as ``LLM`` gives them (SV-DSG-11).
+
+        Where a generation-first request finds this context engine: the first of
+        the ``local_endpoints`` of the engine's KV connector, as a one-string
+        ``ctx_info_endpoint`` list; the engine reports no DP rank, so
+        ``ctx_dp_rank`` is None. It is read from the ``ServerInfo`` the facade
+        read at start (or after an engine restart): None when that names no
+        endpoint, or before :meth:`start`.
+        """
+        if self._client is None:
+            return None
+        connector = self._client.server_info().kv_connector
+        if connector is None or not connector.local_endpoints:
+            return None
+        endpoint = _endpoint_text(connector.local_endpoints[0], connector.transfer_backend)
+        return {"ctx_dp_rank": None, "ctx_info_endpoint": [endpoint]}
+
+    def engine_server_info(self) -> dict[str, Any]:
+        """The ``/server_info`` fields the engine's ``ServerInfo`` gives (SV-DSG-11).
+
+        They replace the values this frontend's configuration gives:
+        ``max_batch_size`` is the engine's ``max_running_requests``, and
+        ``kv_cache_hash_algo`` the algorithm of the engine's KV-cache events,
+        which a KV-cache-aware router hashes blocks with. A field the engine
+        does not report is not returned, so ``/server_info`` keeps the
+        frontend's own value for it.
+        """
+        info = self.client.server_info()
+        fields: dict[str, Any] = {}
+        if info.max_running_requests:
+            fields["max_batch_size"] = info.max_running_requests
+        hash_algo = info.extra.get(_KV_EVENT_HASH_ALGO_KEY)
+        if isinstance(hash_algo, str) and hash_algo:
+            fields["kv_cache_hash_algo"] = hash_algo
+        return fields
+
     def engine_block(self) -> dict[str, Any]:
         """The ``engine`` block of ``/server_info``."""
         info = self.client.server_info()
@@ -1138,12 +1213,80 @@ class OpenEngineLLM:
                 handoff_attributes,
                 "" if connector is None else connector.transfer_backend,
             )
+        affinity = getattr(options.scheduling_params, "subagent_affinity_id", None)
         for request in requests:
             # What the mapping set wins over the facade's defaults.
             request.metadata = {**metadata, **request.metadata}
             if kv_session is not None:
                 request.kv_session = kv_session
+            # Signed for the context engine; the generation engine is not sent it (SV-DSG-14).
+            if affinity is not None and request.request_type == REQUEST_TYPE_CONTEXT_ONLY:
+                request.metadata.update(self._affinity_metadata(request, affinity, info))
         return requests
+
+    def _affinity_metadata(
+        self, request: EngineRequest, parent_id: str, info: EngineInfo
+    ) -> dict[str, str]:
+        """The subagent affinity metadata of a ``context_only`` call (OE-DSG-9).
+
+        ``OpenAIServer`` has checked the orchestrator's signature, which binds
+        the ``disagg_request_id``; the engine checks one that binds the call's
+        ``request_id``, so the parent id is signed again with the same key.
+
+        No metadata is returned, and the engine serves the call without the
+        hint, as an in-process worker without conversation-aware attention DP
+        does, when the engine does not declare
+        ``trtllm_supports_subagent_affinity``, when the call carries no
+        conversation id (the engine requires one), or when the parent id is
+        not printable ASCII (gRPC metadata cannot carry it).
+
+        Raises:
+            ValueError: The frontend has no key.
+        """
+        key = self._subagent_affinity_key
+        if not key:
+            raise ValueError("Subagent affinity requires internal_request_auth_key")
+        if info.extra.get(_SUBAGENT_AFFINITY_KEY) is not True:
+            _affinity_not_sent(info.engine_name)
+            return {}
+        conversation_id = request.extra.get(REQ_CONVERSATION_ID)
+        if not isinstance(conversation_id, str) or not conversation_id.strip():
+            logger.debug(f"Request {request.request_id}: no conversation id; affinity not sent")
+            return {}
+        if not (parent_id.isascii() and parent_id.isprintable()):
+            logger.debug(f"Request {request.request_id}: parent id not ASCII; affinity not sent")
+            return {}
+        payload = {
+            "purpose": AFFINITY_ID_HEADER,
+            "model": request.model,
+            "request_id": request.request_id,
+            "conversation_id": conversation_id,
+            "subagent_affinity_id": parent_id,
+            "request_type": REQUEST_TYPE_CONTEXT_ONLY,
+        }
+        encoded = json.dumps(
+            payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
+        signature = hmac.new(key.encode("utf-8"), encoded, hashlib.sha256).hexdigest()
+        return {AFFINITY_ID_HEADER: parent_id, AFFINITY_AUTH_HEADER: f"sha256={signature}"}
+
+    def _with_request_id(self, request: EngineRequest, request_id: str) -> EngineRequest:
+        """``request`` under another ``request_id``.
+
+        Its subagent affinity metadata binds the ``request_id``: it is replaced
+        by metadata signed for the new one, or dropped if none can be sent now.
+        """
+        renamed = dataclasses.replace(request, request_id=request_id)
+        parent_id = request.metadata.get(AFFINITY_ID_HEADER)
+        if parent_id is not None:
+            kept = {
+                name: value
+                for name, value in request.metadata.items()
+                if name not in (AFFINITY_ID_HEADER, AFFINITY_AUTH_HEADER)
+            }
+            info = self.client.server_info()
+            renamed.metadata = {**kept, **self._affinity_metadata(renamed, parent_id, info)}
+        return renamed
 
     def generate_async(
         self,
@@ -1583,7 +1726,7 @@ class OpenEngineRequestOutput:
             if not self._requests:
                 raise _no_calls(self._engine_name)
             # As on the other path, the request is known by its first call's id.
-            self._requests[0] = dataclasses.replace(self._requests[0], request_id=self.request_id)
+            self._requests[0] = self._facade._with_request_id(self._requests[0], self.request_id)
             self._calls_known(self._requests)
         if not self._requests:
             raise _no_calls(self._engine_name)
@@ -2112,7 +2255,10 @@ def check_frontend_options(args: Any) -> None:
 def adapt_server(server: Any, facade: OpenEngineLLM) -> None:
     """Adapt an ``OpenAIServer`` built on ``facade`` to the OpenEngine path.
 
-    - ``/server_info`` gains the ``engine`` block;
+    - ``/server_info`` gains the ``engine`` block, and takes the fields of
+      :meth:`OpenEngineLLM.engine_server_info` from the engine;
+    - the facade signs the subagent affinity metadata with the server's
+      internal disaggregated-serving key;
     - the endpoints in :data:`UNSUPPORTED_ENDPOINTS` answer 501, as does a
       request whose handler lets ``OpenEngineUnsupportedError`` propagate;
     - when a handler reports an :class:`OpenEngineServeError` as a 400 error
@@ -2136,6 +2282,7 @@ def adapt_server(server: Any, facade: OpenEngineLLM) -> None:
     from fastapi.responses import JSONResponse
     from fastapi.routing import APIRoute
 
+    facade._subagent_affinity_key = getattr(server, "_internal_disagg_auth_key", None) or None
     app = server.app
     lifespan = app.router.lifespan_context
 
@@ -2188,6 +2335,7 @@ def adapt_server(server: Any, facade: OpenEngineLLM) -> None:
         if response.status_code != HTTPStatus.OK:
             return response
         content = json.loads(response.body)
+        content.update(facade.engine_server_info())
         content["engine"] = facade.engine_block()
         return JSONResponse(content=content, status_code=response.status_code)
 
