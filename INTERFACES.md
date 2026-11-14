@@ -1045,6 +1045,29 @@ python3 -m capjudge.scaling --boundary <boundary.json> --pair <基准臂>,<加�
 - 判断用不利端（设计稿 §2.6 T6）：最小比值 ≥ `grows-min` ⇒ `grows`；最大比值 ≤ `flat-max` ⇒ `flat`；否则 `unresolved`；没有可用区组（基准臂包络不闭合，或加倍臂没有下端）⇒ `NOT_RUN`。`grows` ⇒ `limit_side` 为加倍的那一侧；`flat` ⇒ 另一侧。
 - `attribution`（E1 卡「隔离」：两种情形各出现一次才知道谁是谁）：同时有 server 侧加倍为 `flat`、client 侧加倍为 `grows` ⇒ `client`（限制在负载器）；镜像情形 ⇒ `server`（限制在空汇）。两侧都有已判的对，但组合不是这两种，或同一侧的几对结论不一致 ⇒ `UNDETERMINED`；缺一侧的已判对 ⇒ `NOT_RUN`。
 
+### 14.3 `capjudge.e1report`（E1 的斜率对账、字节与 accepts 对账、空汇健康；`schema: capkit.e1_report/1`）
+
+```
+python3 -m capjudge.e1report --boundary <boundary.json> --workdir <W> --out <新文件> [--sink-bands <标定文件>]
+```
+
+封装是 `analysis/e1_report.py`。三部分：
+
+- **`slope`（E1 卡「已知答案」：1/边界对 δ 的斜率为 1）**：
+  - 只用 `P+X+I+V` 模式判过的启动。不带剂量的是 δ = 0。带剂量的启动必须只给一个角色、一个位点加剂量，各启动相同，心跳为 PASS；不满足的列进 `excluded`。
+  - δ 按每次经过的注入时长算（`delta_ns ÷ every_n`，秒）。每个 δ 一个包络。
+  - 单位换算：W = 加剂量角色的 `workers`；p = 每单位 `load_value` 的经过次数，由构造给出：用该启动的对账链（位点的单位，`intervene.SITE_UNIT`）和档位参数，经 `capcommon.expect` 算出。`rate_rps` 轴 p = 每请求的经过次数；`nominal_msgs_per_s` 轴再乘 `rate_rps ÷ load_value`。各负载档的 p 必须相同，档位表的 sha 必须与 `launch.json` 登记的一致，否则 NOT_RUN。
+  - 对每一对 δ_a < δ_b，归一斜率落在 [(1/b.upper − 1/a.lower), (1/b.lower − 1/a.upper)] ÷ (δ_b − δ_a) × W ÷ p 内。
+  - 判定：每一对都闭合且包含 1 ⇒ PASS；某一对已知的一端把 1 排除在外 ⇒ FAIL；其余 ⇒ INCONCLUSIVE；少于 3 个 δ，或轴不是 `asc` ⇒ NOT_RUN。
+- **`counts`（E1 卡「计数真实性」，逐启动，启动范围求和）**：两个工具按计划档或事件档归档，口径不同，所以按全部档目录求和后再比。
+  - 拓扑必须是 E1 形：恰好一个 `kind: client` 角色，恰好一个 `kind: server` 角色，且它是 `stub_out_of_domain`；否则 NOT_RUN。
+  - 字节：HTTP 时，空汇的 `counts.bytes_sent` 包括每个响应的头，capload 的 `frames.bytes` 不包括。所以按空汇逐流记录（`streams.capbin` 的 `req_id`）用 `capload.sink.response_head` 重建头的字节数，要求空汇字节 − 头字节 = capload 字节。有外来请求、流记录溢出，或流记录条数 ≠ `counts.requests` ⇒ NOT_RUN。gRPC 时两侧都是消息负载字节，直接比。
+  - accepts：capload 的 `conn_pool.new_conns` 之和 = 空汇的 `counts.accepts` 之和。nullgrpc 不计 accepts ⇒ NOT_RUN。
+- **`sink_health`（E1 卡「隔离」：空汇的线程 CPU 与事件循环延迟留在空载带内）**：
+  - 只在给了 `--sink-bands` 时算。该文件的 sha 必须在 `<W>/REGISTRY.tsv` 里，否则退出码 3。只用其 `noise_bands` 里 `regime` 为 `subsat` 的有效带。
+  - 每个负载档、每个 `stub_out_of_domain` worker，用判定器 C2 的同一实现（`capjudge.calib.stub_worker_stats`）算 `T3:loop_lag_p99_ns` 与 `T3:thread_cpu_cores`，与 `<统计量>:<空汇角色>` 的带比。高于带 ⇒ OUTSIDE；没有值或没有带 ⇒ NOT_RUN。
+  - 读原始数据前，先用 `capjudge.inputs.verify` 把树重新核对一遍。
+
 ## 勘误与补充
 
 - **2026-11-13，r2（原地修订，不是追加勘误）**：按审阅意见（24 条，逐条见下方「审阅记录」）修订 §0、§2.2、§2.5、§3、§4.4、新增 §4.5、§5.1～§5.6、新增 §5.5.2、§5.5.3、§5.8、§5.9、§6.2、§6.5、§6.6、§7.3、§8、§9.3、§9.5、§10、§11、§11.1、§12。原地修订而不是逐条追加，是因为写本约定时还没有任何组件按 r1 写出代码或数据（`_progress/` 下只有本约定与评审两份进度），追加 24 条勘误只会让组件作者读两遍。schema 名的版本号没有升：没有任何文件以 r1 的格式写出过。capcommon 同步新增 `expect`、`wire`、`hwprofile`、`policy`、`scratchpath` 五个模块，并改了 `clock`（毫秒）、`ledger`、`tiers`、`inject`、`gate`、`versions`、`snapshot`、`runtree`。r1 没有提交进 git，原文不另保留；r1 → r2 改了什么以本条与下方「审阅记录」为准。
@@ -1304,7 +1327,20 @@ E0 第一轮的 pilot（`02_e0/E0/analysis/pilot.json`）定不出 `window_ns` /
 3. **区组 = 作业号**（设计稿 §2.6 T5「同区组」、RUNBOOK §1.3「3 个作业 = 3 个区组」）。同一作业里同一臂有几次启动时，它们进同一个区组的包络。
 4. **T6 用区间算比值**：设计稿 T6 的分子分母是数，这里两臂的边界都是区间，所以逐区组给比值的上下界，判断取不利端（§14.2）。只用下端、只用上端的两个 T6 区间并列给出，作对照。`grows-min`、`flat-max` 的取值设计稿没有给，要在实验登记表里事先登记，运行时显式传入。
 5. **对侧翻倍按 `kind` 分侧**：client 侧是负载器，server 侧是空汇 / 桩，aux 角色不参与。E1 卡「只加 Z 不加 W 时不再增长 ⇒ 限制在负载器；只加 W 不加 Z 时不再增长 ⇒ 限制在空汇」写成：加倍的一侧 `grows` ⇒ 限制在这一侧，`flat` ⇒ 限制在另一侧；两侧的结论吻合才给出 `client` / `server`。
-6. **验证**：`tests/judge/test_analysis.py`；E0(b) 12 棵已判真树（W 只读）跑 `analysis/boundary.py`，产物在 `_local/b2-judge/e2e/an/`；SM-9 的离线判读写在 `_local/b2-judge/sm9.md`。
+6. **`capjudge.e1report`（§14.3）**：为了让字节对账不复写空汇的头格式，`capload.sink` 抽出了 `response_head(rid, foreign)`，空汇与分析共用。空汇的写法与字节数不变。
+7. **空汇健康的带从哪来**：E1-0 的 `e1_noise` 里没有空汇的 `T3:loop_lag_p99_ns`、`T3:thread_cpu_cores`。这两个统计量只有判定器跑 C2 时才写进 `stats`（没有 `stub_calib` 时 C2 是 NOT_RUN，但仍会记录），而 E1-0 的检查清单没有 C2。所以对现有 E1 树，`sink_health` 是 NOT_RUN。要用它，标定树的 `judge.checks` 要加 C2，再用 `calib_build.py near-boundary --regime subsat` 建带并登记。另外，「线程 CPU 留在空载带内」按字面实现：空汇的 CPU 随负载线性上升，高负载档可能因此 OUTSIDE。这条判据是否应改成「离 1 核足够远」，**挑战设计，待裁决**。
+8. **斜率对账只用 `P+X+I+V` 判过的启动**，因为剂量与心跳只在这种模式下写进 `verdicts.json`。p 由构造给出，不从心跳计数反推。
+9. **已知缺口**：
+   - `scaling` 的两个界没有登记表的机器可读入口，只靠命令行加 `.cmd.txt` 记录；`slope` 没有另设容差，「斜率为 1」只看区间是否包含 1，区间宽度由档距决定；
+   - `boundary` 的筛选不读 `launch_end.json`（判定器的 `upstream` 已包括它）；
+   - gRPC 的 accepts 没有计数方；
+   - `slope` 不检验截距。
+10. **验证**：
+    - **测试**：`tests/judge/test_analysis.py`，覆盖区间截断、T4 重算核对、T5 区组、对侧翻倍的分侧与归因、斜率 PASS / FAIL / INCONCLUSIVE / NOT_RUN、字节与 accepts、拓扑、空汇健康的登记核对与带比较、`.cmd.txt`、不覆盖。变异 M1～M7、E1～E6 全部杀死（`_local/b2-judge/mut/summary3.txt`、`summary4.txt`）。
+    - **e2e**：全部在 W 只读下进行，产物在 `_local/b2-judge/e2e/an/`：
+      - E0(b) 12 棵已判真树跑 `boundary`；
+      - e0a 3 棵树、E1-0 15 棵树（按 R、M 两条轴分组）跑 `boundary` 与 `e1report`：字节对账全部 PASS（HTTP 重建头后相等，gRPC 直接相等）；HTTP 的 accepts 全部 PASS（new-per-request 臂 30200 = 30200）；gRPC 的 accepts 是 NOT_RUN；这些树判定时还没有噪声带，T4 都是 `none`，斜率都是 NOT_RUN。
+    - SM-9 的离线判读写在 `_local/b2-judge/sm9.md`。
 
 ## 审阅记录（r2，2026-11-13）
 

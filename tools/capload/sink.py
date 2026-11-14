@@ -50,6 +50,14 @@ def chunk(data):
     return b"%x\r\n" % len(data) + data + b"\r\n"
 
 
+def response_head(rid, foreign):
+    """HTTP head of one completion response; its bytes count in `bytes_sent`, while capload's
+    `frames.bytes` counts only what follows the head (capjudge.e1_report reconciles the two)."""
+    return (b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache"
+            b"\r\nconnection: keep-alive\r\ntransfer-encoding: chunked\r\n"
+            + (b"" if foreign else b"x-capload-id: %d\r\n" % rid) + b"\r\n")
+
+
 def min_chunk_bytes():
     """Smallest --chunk-bytes that fits every request id of a launch (int64 ids)."""
     return len(wire.content_frame(-(2 ** 63), ""))
@@ -373,10 +381,7 @@ class Sink:
         v = self.vals
         v[self.i_active] += 1
         v[self.i_pend] += st.m
-        head = (b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncache-control: no-cache"
-                b"\r\nconnection: keep-alive\r\ntransfer-encoding: chunked\r\n"
-                + (b"" if foreign else b"x-capload-id: %d\r\n" % rid) + b"\r\n")
-        self._write(st, head)
+        self._write(st, response_head(rid, foreign))
         if self.pacing_beat:
             fs = self.beat.step_at_or_after(rel)
             if fs is not None:

@@ -248,3 +248,164 @@ def test_scaling_cli_and_wrapper(tmp_path):
     p = _run("capjudge.scaling", "--boundary", bf, "--pair", "w1z4,w2z4", "--grows-min",
              "1.0", "--flat-max", "1.25", "--out", str(tmp_path / "s2.json"))
     assert p.returncode == 3 and "flat-max" in p.stderr
+
+
+# ---- E1 report: slope reconciliation ----------------------------------------------------------
+
+E = judge_mod("e1report")
+
+
+def _slope_launch(arm, block, lo, hi, delta_ns=None, hb="PASS", mode="P+X+I+V"):
+    doses = {} if delta_ns is None else {"ld": [{"site": "recv.chunk", "mode": "busy",
+                                                 "delta_ns": delta_ns, "every_n": 1,
+                                                 "phase": 0, "where": "inline"}]}
+    return {"tree": "/t/%s-%s" % (arm, block), "identity": {"arm": arm}, "block": block,
+            "mode": mode, "interval": {"lower": lo, "upper": hi}, "doses": doses,
+            "heartbeat": hb if doses else "NONE", "roles": _roles(1, 4)}
+
+
+def _slope_doc(points, **kw):
+    """points: [(delta_ns or None, lo, hi)]; capacity per worker = 1 / (t0 + delta)."""
+    doc = {"axis": {"order": "asc"}, "launches": []}
+    for i, (d, lo, hi) in enumerate(points):
+        doc["launches"].append(_slope_launch("a%s" % d, str(i), lo, hi, d, **kw))
+    return doc
+
+
+def _known(t0, deltas, slope=1.0, rel=0.02, p=2.0):
+    """Intervals of +-rel around the boundary implied by passes p per request and slope."""
+    out = []
+    for d in deltas:
+        cap = 1.0 / (p * (t0 + slope * (d or 0) / 1e9))
+        out.append((d, cap * (1 - rel), cap * (1 + rel)))
+    return out
+
+
+@pytest.fixture
+def two_passes(monkeypatch):
+    monkeypatch.setattr(E, "passes_per_unit", lambda tree, W, role, site: (2.0, None))
+
+
+def test_slope_pass_when_one_over_boundary_rises_with_unit_slope(two_passes):
+    s = E.slope(_slope_doc(_known(100e-6, [None, 100000, 200000, 400000])), "/W")
+    assert s["status"] == "PASS", s
+    assert [lv["delta_s"] for lv in s["levels"]] == [0.0, 1e-4, 2e-4, 4e-4]
+    assert all(p["slope_min"] < 1 < p["slope_max"] for p in s["pairs"])
+
+
+def test_slope_fail_when_the_slope_is_not_one(two_passes):
+    s = E.slope(_slope_doc(_known(100e-6, [None, 100000, 200000, 400000], slope=2.0)), "/W")
+    assert s["status"] == "FAIL"
+
+
+def test_slope_not_run_and_exclusions(two_passes):
+    s = E.slope(_slope_doc(_known(100e-6, [None, 100000])), "/W")
+    assert s["status"] == "NOT_RUN" and "at least 3" in s["reasons"][0]
+    doc = _slope_doc(_known(100e-6, [None, 100000, 200000, 400000]))
+    doc["launches"][1]["heartbeat"] = "FAIL"
+    doc["launches"].append(_slope_launch("x", "9", 1, 2, mode="P+X"))
+    s = E.slope(doc, "/W")
+    assert s["status"] == "PASS" and len(s["levels"]) == 3
+    assert {x["why"] for x in s["excluded"]} == {"heartbeat FAIL", "mode P+X"}
+    doc = _slope_doc(_known(100e-6, [None, 100000, 200000]))
+    doc["launches"][-1]["interval"]["upper"] = None
+    assert E.slope(doc, "/W")["status"] == "INCONCLUSIVE"
+
+
+# ---- E1 report: bytes and accepts -------------------------------------------------------------
+
+def _sink_tree(tmp_path, client_bytes, rids, accepts=(3, 3), foreign=0):
+    from array import array
+    from capcommon.capbin import write_capbin
+    from capload.sink import response_head
+    tree = tmp_path / "tree"
+    td = tree / "raw" / "tiers" / "002_up"
+    td.mkdir(parents=True)
+    roles = [{"role": "ld", "kind": "client", "module": "capload",
+              "measure_class": "under_test", "workers": 1},
+             {"role": "sink", "kind": "server", "module": "capload.nullsse",
+              "measure_class": "stub_out_of_domain", "workers": 1}]
+    json.dump({"roles": roles}, open(str(tree / "raw" / "launch.json"), "w"))
+    heads = sum(len(response_head(r, False)) for r in rids)
+    json.dump({"frames": {"bytes": client_bytes}, "conn_pool": {"new_conns": accepts[0]}},
+              open(str(td / "ld.w0.summary.json"), "w"))
+    json.dump({"counts": {"bytes_sent": 1000 + heads, "requests": len(rids),
+                          "accepts": accepts[1], "foreign_requests": foreign},
+               "overflow": {"streams": 0}}, open(str(td / "sink.w0.summary.json"), "w"))
+    ident = {"experiment": "E1", "arm": "a", "launch_seq": 0, "job_id": "local-1",
+             "restart_count": 0, "register_sha": "0" * 64, "role": "sink", "worker": 0,
+             "pid": 1, "tier_seq": None, "tier_label": None}
+    write_capbin(str(td / "sink.w0.streams.capbin"), "streams", ident,
+                 [("req_id", array("q", rids))])
+    return str(tree)
+
+
+def test_counts_bytes_reconcile_with_rebuilt_heads(tmp_path):
+    c = E.counts(_sink_tree(tmp_path, 1000, [7, 12345, 99]))
+    assert c["bytes"]["status"] == "PASS" and c["accepts"]["status"] == "PASS"
+    assert c["bytes"]["server_bytes"] - c["bytes"]["head_bytes"] == 1000
+
+
+@pytest.mark.parametrize("kw, part, status", [
+    ({"client_bytes": 999}, "bytes", "FAIL"),
+    ({"accepts": (3, 2)}, "accepts", "FAIL"),
+    ({"foreign": 1}, "bytes", "NOT_RUN"),
+])
+def test_counts_mismatches(tmp_path, kw, part, status):
+    args = {"client_bytes": 1000, "rids": [7, 12345, 99]}
+    args.update(kw)
+    c = E.counts(_sink_tree(tmp_path, **args))
+    assert c[part]["status"] == status, c
+
+
+def test_counts_need_the_e1_topology(tmp_path):
+    tree = _sink_tree(tmp_path, 1000, [1])
+    lj = os.path.join(tree, "raw", "launch.json")
+    d = json.load(open(lj))
+    d["roles"].append({"role": "relay", "kind": "server", "module": "capselfcheck.relay",
+                       "measure_class": "under_test", "workers": 1})
+    json.dump(d, open(lj, "w"))
+    c = E.counts(tree)
+    assert c["bytes"]["status"] == "NOT_RUN" and "exactly one" in c["bytes"]["why"]
+
+
+# ---- E1 report CLI on a judged sample: counts and sink health ---------------------------------
+
+def _e1_cli(tmp_path, W, bdoc_path, out, *extra):
+    return _run("capjudge.e1report", "--boundary", bdoc_path, "--workdir", W, "--out", out,
+                *extra)
+
+
+def test_e1_report_cli_sink_health_against_registered_bands(tmp_path):
+    from capcommon import ledger
+    from capcommon.hashing import sha256_file
+    W, tree = _judged(tmp_path, "c2_stub_good")
+    lst = tmp_path / "trees.txt"
+    lst.write_text(tree + "\n")
+    bf = str(tmp_path / "b.json")
+    assert _run("capjudge.boundary", "--inputs", str(lst), "--workdir", W,
+                "--out", bf).returncode == 0
+    sink = next(r["role"] for r in json.load(open(os.path.join(tree, "raw", "launch.json")))
+                ["roles"] if r["measure_class"] == "stub_out_of_domain")
+    p = _e1_cli(tmp_path, W, bf, str(tmp_path / "r0.json"))
+    assert p.returncode == 0, p.stderr
+    assert json.load(open(str(tmp_path / "r0.json")))["sink_health"]["status"] == "NOT_RUN"
+    for name, hi in (("wide", 1e12), ("tight", 0.0)):
+        bands = {"schema": "capkit.near_boundary_noise/1", "regime": "subsat", "noise_bands": {
+            "T3:loop_lag_p99_ns:%s" % sink: {"min": 0, "max": hi, "n": 3, "regime": "subsat"}}}
+        path = os.path.join(W, "%s.json" % name)
+        json.dump(bands, open(path, "w"))
+        out = str(tmp_path / ("r-%s.json" % name))
+        p = _e1_cli(tmp_path, W, bf, out, "--sink-bands", path)
+        assert p.returncode == 3 and "not registered" in p.stderr
+        ledger.registry_append(os.path.join(W, "REGISTRY.tsv"), "E0", "%s.json" % name,
+                               sha256_file(path), "kind=near_boundary_noise")
+        p = _e1_cli(tmp_path, W, bf, out, "--sink-bands", path)
+        assert p.returncode == 0, p.stderr
+        (h,) = json.load(open(out))["sink_health"]
+        lag = [r["items"]["T3:loop_lag_p99_ns"]["status"] for r in h["tiers"]]
+        assert lag and set(lag) == ({"INSIDE"} if name == "wide" else {"OUTSIDE"}), h
+        assert all(r["items"]["T3:thread_cpu_cores"]["status"] == "NOT_RUN"
+                   for r in h["tiers"])  # no band for it
+        assert h["status"] == ("NOT_RUN" if name == "wide" else "OUTSIDE")
+        assert "input\t%s\t" % path in open(out[:-5] + ".cmd.txt").read()

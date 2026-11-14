@@ -27,3 +27,9 @@
 - 2026-11-14 22:00:12 e2e：E0(b) J5933747 L1–L4 进程内 localize 复跑（loc4，诊断门槛 0.90，后台串行约 5 分钟），供 sm9.md
 - 2026-11-14 22:01:13 e2e：capjudge.boundary 对 E0 第一轮 15 棵已判真树（W 只读，产物写 _local/b2-judge/e2e/an）
 - 2026-11-14 22:03:30 boundary/scaling/cmdrec + §14.1/14.2 + 勘误 B2-2E-A 1–6 写完；test_analysis 18 passed；变异 M1–M7 全杀（mut/summary3.txt，M6 首轮存活后补测试）；E0(b) 12 棵真树 boundary e2e EXIT=0；sm9.md 写完。先提交，再写 e1_report。
+- 2026-11-14 22:05:18 e2e：e0a 3 棵已判真树跑 boundary + e1_report（字节 / accepts 对账，W 只读）
+- 2026-11-14 22:07:53 e2e：E1-0 15 棵已判真树（W 只读）按轴分两组跑 boundary + e1_report
+- 2026-11-14 22:08:07 跑 tests/judge 全量（约 5 分钟）
+- 2026-11-14 22:11:53 跑 tests/capload（sink.py 抽出 response_head，约 3 分钟）
+- 2026-11-14 22:13:18 样本自测 36 个（st7，约 3 分钟）
+- 2026-11-14 22:13:58 2E-analysis 验证完成（MEASURED）：tests/judge 247 passed（logs/j6.log）；tests/capload 33 passed（logs/cl1.log）；样本自测 36/36（logs/st7.log）；变异 M1–M7（summary3）、E1–E6（summary4）全部 KILLED；e2e（W 只读，产物 e2e/an/）：E0(b) 12 树 boundary EXIT=0；e0a 3 树、E1-0 15 树 boundary+e1_report EXIT=0，字节对账全部 PASS（HTTP 重建头后相等、gRPC 直接相等），HTTP accepts 全部 PASS，gRPC accepts NOT_RUN，T4 全为 none、斜率 NOT_RUN（判定时无带、无剂量）；localize 复跑 loc4 与 loc3 去 pid 后逐行相同；SM-9 判读写在 _local/b2-judge/sm9.md；fakebin.log 不存在（0 次调用）。提交。

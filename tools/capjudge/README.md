@@ -13,11 +13,12 @@
 | `PYTHONPATH=<C>/tools python3.11 -m capjudge.pilot --inputs <列表> --workdir <W> --d14-rule <规则> --out <pilot.json>`，或 `python3.11 <C>/analysis/pilot_build.py …`（同一实现） | 从已判过的亚饱和档构建 E0 的 `pilot.json`（INTERFACES §9.4） |
 | `PYTHONPATH=<C>/tools python3.11 -m capjudge.boundary --inputs <列表> --workdir <W> --out <文件> [--compare A,B …]`，或 `python3.11 <C>/analysis/boundary.py …` | 每启动 T4、每臂包络、T5（INTERFACES §14.1）；旁边写 `.cmd.txt` |
 | `PYTHONPATH=<C>/tools python3.11 -m capjudge.scaling --boundary <boundary.json> --pair 基准,加倍 … --grows-min R --flat-max R --out <文件>`，或 `python3.11 <C>/analysis/scaling.py …` | T6 与对侧翻倍归因（INTERFACES §14.2）；旁边写 `.cmd.txt` |
+| `PYTHONPATH=<C>/tools python3.11 -m capjudge.e1report --boundary <boundary.json> --workdir <W> --out <文件> [--sink-bands <已登记的标定文件>]`，或 `python3.11 <C>/analysis/e1_report.py …` | E1 的斜率对账、字节与 accepts 对账、空汇健康（INTERFACES §14.3）；旁边写 `.cmd.txt` |
 | `PYTHONPATH=<C>/tools python3.11 -m capjudge.intervene --inputs <列表> --workdir <W> --out <文件>` | 跨启动的剂量–反应（V）与最终结论等级：列表每行一棵已按 `P+X+I+V` 判过的树（INTERFACES 勘误 B2-2E-7、B2-2E-8）；不覆盖已有输出，出错 → 3 |
 | `python3.11 <C>/samples/make_samples.py --out <目录>` | 生成自测样本（合成，`launch.json` 带 `"synthetic": true`） |
 | `python3.11 <C>/samples/run_selftest.py --tools <C>/tools --package capjudge --tmp <已存在的临时目录> --expect-samples <样本数>` | 跑全部样本并逐条断言；`--expect-samples` 必填，由调用方给出（当前样本数见 `samples/README.md`） |
 
-退出码按 INTERFACES §10.3：0 / 1 / 2 / 10 / 11 / 12 / 13（`UNDETERMINED` 与 `UNSTABLE` 一样不算失败）。空目录（没有 `raw/launch.json`）→ 11，不写任何文件。`pilot`、`intervene`、`boundary`、`scaling` 出错 → 3。
+退出码按 INTERFACES §10.3：0 / 1 / 2 / 10 / 11 / 12 / 13（`UNDETERMINED` 与 `UNSTABLE` 一样不算失败）。空目录（没有 `raw/launch.json`）→ 11，不写任何文件。`pilot`、`intervene`、`boundary`、`scaling`、`e1report` 出错 → 3。
 
 ## 判定流程（一棵树）
 
