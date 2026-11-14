@@ -1,0 +1,13 @@
+{
+ "exit_code": 11,
+ "not_run_checks": [
+  "C12"
+ ],
+ "red_checks": [],
+ "synthetic": true,
+ "tier_verdicts": {
+  "2": "STABLE",
+  "4": "NOT_RUN"
+ },
+ "tree": "runs/Jlocal-sample-c12-idle-worker-r0-L0_synthetic-a"
+}

@@ -12,9 +12,9 @@ def test_lookup_records_found_and_missing():
     b = T.Bands()
     b.add_source("pilot", "p.json", "a" * 64,
                  {"noise_bands": {"T1:x_ns:capload": {"min": -1, "max": 1, "n": 3}}})
-    assert b.get("T1:x_ns:capload")["max"] == 1
-    assert b.get("T1:y_ns:capload") is None
-    assert b.lookups == {"T1:x_ns:capload": "found", "T1:y_ns:capload": "missing"}
+    assert b.get("T1:x_ns:capload", "subsat")["max"] == 1
+    assert b.get("T1:y_ns:capload", "subsat") is None
+    assert b.lookups == {"subsat|T1:x_ns:capload": "found", "subsat|T1:y_ns:capload": "missing"}
 
 
 def test_duplicate_key_across_sources_is_an_error():

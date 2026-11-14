@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Common checks of batch 1 (design 2.7; INTERFACES 10.2) and the other preconditions P.
+"""Common checks (design 2.7; INTERFACES 10.2) and the other preconditions P.
 
 Every check carries expected_count taken from the configuration (schedule meta.per_tier,
 launch.json roles[].workers / expected_procs, reconcile, chunk_sample_mod, overlay sites, window
@@ -9,15 +9,15 @@ any red evidence is RED even when nothing else could be checked; otherwise expec
 or checked_count == 0 -> NOT_RUN; never PASS.
 """
 
-from capcommon import expect, hist
+from capcommon import expect
 from capcommon.cli import parse_cpu_list
 from capcommon.exitcodes import ConfigError
 from capcommon.gate import check_snapshot, planned_polls
 from capcommon.schedule import per_worker_tier_counts
 from capcommon.versions import check_versions
 
-from . import stats
-from .symptoms import failures_by_class, request_lag_series
+from . import calib, stats
+from .symptoms import failures_by_class
 from .thresholds import band_key
 from .treedata import NS, cpu_tick_deltas, first_last_in_window, role_cpus, summary_value
 
@@ -60,19 +60,6 @@ class Result:
                 .replace("\n", " ")[:2000]}
 
 
-def not_implemented(check_id, tier_seq):
-    r = Result(check_id, tier_seq, "n/a")
-    r.not_run.append(NOT_IMPLEMENTED)
-    return r.finish(NOT_RUN)
-
-
-def _p99(values):
-    if not values:
-        return None
-    v = sorted(values)
-    return v[max(0, -(-99 * len(v) // 100) - 1)]
-
-
 def _roles_of(ctx, measure_class):
     return [r for r in ctx.roles.values() if r["measure_class"] == measure_class]
 
@@ -85,59 +72,113 @@ def client_roles(ctx):
     return [r for r in ctx.roles.values() if r["kind"] == "client"]
 
 
-def _worker_capbin(td, kind, role, worker):
-    for ident, header, cols in td.capbins.get(kind, []):
-        if ident.get("role") == role and ident.get("worker") == worker:
-            return header, cols
-    return None, None
+# ---- C1 load source health, C2 out-of-domain stub health (calibrated shapes) ----------------
+
+def _shape_for(ctx, kind, role):
+    """(shape, None) for the shape register.json binds to `role` in the `kind` file, or
+    (None, why)."""
+    bind = ctx.calib_bind.get(kind)
+    if bind is None:
+        return None, "no registered %s calibration" % kind
+    if role not in bind:
+        return None, "the %s entry binds no shape to role %s" % (kind, role)
+    return calib.shapes_of(kind, ctx.calib_docs[kind])[bind[role]], None
 
 
-# ---- C1 load source health -------------------------------------------------------------------
+def _shape_items(r, ctx, kind, shape, tier, role, worker, st, why, split):
+    """Compare one worker with its calibrated shape: planned load against the healthy maximum
+    (only on tiers the shape's match covers) and every statistic of the kind against the
+    shape's band. Above -> RED. Returns True when every item was evaluated."""
+    names = calib.SHAPE_KINDS[kind][3]
+    w = "%s.w%d" % (role, worker)
+    ok = True
+    mx = calib.max_of(kind, shape)
+    if not calib.shape_matches(shape, tier):
+        r.not_run.append("%s: tier (tokens_per_msg %s, streams_c %s) outside the calibrated "
+                         "match %s" % (w, tier.tokens_per_msg, tier.streams_c, shape["match"]))
+        ok = False
+    elif mx["value"] is None:
+        r.not_run.append("%s: the shape has no healthy maximum" % w)
+        ok = False
+    else:
+        load = calib.worker_load(ctx, tier, role, worker, split, mx["load_key"])
+        if load is None:
+            r.not_run.append("%s: planned load in %s not computable for this tier"
+                             % (w, mx["load_key"]))
+            ok = False
+        elif load > mx["value"]:
+            r.red += 1
+            r.detail.append("%s planned %.6g %s above the calibrated healthy maximum %.6g"
+                            % (w, load, mx["load_key"], mx["value"]))
+    for name in names:
+        val, band = st.get(name), shape["bands"].get(name)
+        if val is None or band is None:
+            r.not_run.append("%s %s: %s" % (w, name, why.get(name, "no value") if val is None
+                                            else "no band in the calibrated shape"))
+            ok = False
+        elif stats.compare_to_band(val, band) == "above":
+            r.red += 1
+            r.detail.append("%s %s=%s above band max %s" % (w, name, val, band["max"]))
+    return ok
+
 
 def check_c1(ctx, td, record):
-    """Per load_source worker: send-lag trend (T1), send-lag p99 and FIONREAD non-zero fraction
-    and event-loop lag p99 (T3 level bands). Any value above its band -> RED."""
+    """Per load_source worker against the loadgen_band shape its role is bound to (INTERFACES
+    9.6): planned load vs the healthy maximum, and the four health statistics
+    (calib.LOADGEN_STATS: send-lag trend T1, send-lag p99, FIONREAD non-zero fraction,
+    event-loop lag p99) vs the shape's bands. Above -> RED; no binding, statistic or band ->
+    NOT_RUN. A worker without summary or request records -> RED."""
     r = Result("C1", td.tier.seq, "launch.json roles[measure_class=load_source].workers")
-    ws, we = td.tier.window_start_ns, td.tier.window_end_ns
     for role in _roles_of(ctx, "load_source"):
         name = role["role"]
         r.expected += role["workers"]
+        shape, why = _shape_for(ctx, "loadgen_band", name)
         for k in range(role["workers"]):
-            doc = td.summaries.get(name, {}).get(k)
-            header, cols = _worker_capbin(td, "loadgen.requests", name, k)
-            if doc is None or cols is None:
+            st = calib.loadgen_worker_stats(td, name, k)
+            if st is None:
                 r.red += 1
                 r.detail.append("%s.w%d: summary or requests missing" % (name, k))
                 continue
-            series, _ = request_lag_series(cols, td.tier, "send")
-            t1 = stats.t1_trend(series)
-            in_win = [s - p for p, s in zip(cols["planned_rel_ns"], cols["sent_rel_ns"])
-                      if ws <= p < we and s >= 0]
-            fr = doc.get("fionread") or {}
-            frac = (fr["nonzero"] / fr["samples"]) if fr.get("samples") else None
-            lag_hist = summary_value(doc, "loop_lag_ns.hist.counts")
-            loop_p99 = hist.quantile(lag_hist, 0.99) if isinstance(lag_hist, list) and \
-                len(lag_hist) == hist.NBINS else None
-            metrics = [(band_key("T1", "send_lag_p50_ns", name), None if t1 is None else t1[0]),
-                       (band_key("T3", "send_lag_p99_ns", name), _p99(in_win)),
-                       (band_key("T3", "fionread_nonzero_frac", name), frac),
-                       (band_key("T3", "loop_lag_p99_ns", name), loop_p99)]
-            ok = True
-            for key, val in metrics:
+            for stat, val in st.items():
                 if val is not None:
-                    record.setdefault(key, []).append(val)
-                band = ctx.bands.get(key)
-                if val is None or band is None:
-                    r.not_run.append("%s.w%d %s: %s" % (name, k, key, "no value" if val is None
-                                                        else "no registered band"))
-                    ok = False
-                    continue
-                if stats.compare_to_band(val, band) == "above":
-                    r.red += 1
-                    r.detail.append("%s.w%d %s=%s above band max %s" % (name, k, key, val,
-                                                                        band["max"]))
-            if ok:
+                    record.setdefault("%s:%s" % (stat, name), []).append(val)
+            if shape is None:
+                r.not_run.append("%s.w%d: %s" % (name, k, why))
+                continue
+            if _shape_items(r, ctx, "loadgen_band", shape, td.tier, name, k, st, {},
+                            "schedule"):
                 r.checked += 1
+    return r.finish()
+
+
+def check_c2(ctx, ld, td, record):
+    """Out-of-domain stub health (design 2.6 / 2.7 C2; INTERFACES 9.7): per worker of every
+    stub_out_of_domain role, against the stub_calib out_of_domain shape its role is bound to:
+    planned load (an even split over the workers) vs the healthy maximum, event-loop lag p99
+    and thread CPU (cores) vs the shape's bands. stub_in_domain roles are not a precondition
+    (design 2.6) and are only listed."""
+    r = Result("C2", td.tier.seq, "launch.json roles[measure_class=stub_out_of_domain].workers")
+    for role in _roles_of(ctx, "stub_out_of_domain"):
+        name = role["role"]
+        r.expected += role["workers"]
+        shape, why = _shape_for(ctx, "stub_calib", name)
+        for k in range(role["workers"]):
+            st, whys = calib.stub_worker_stats(ld, td, name, k)
+            if st is None:
+                r.red += 1
+                r.detail.append("%s.w%d: %s" % (name, k, whys))
+                continue
+            for stat, val in st.items():
+                if val is not None:
+                    record.setdefault("%s:%s" % (stat, name), []).append(val)
+            if shape is None:
+                r.not_run.append("%s.w%d: %s" % (name, k, why))
+                continue
+            if _shape_items(r, ctx, "stub_calib", shape, td.tier, name, k, st, whys, "even"):
+                r.checked += 1
+    ind = sorted(x["role"] for x in _roles_of(ctx, "stub_in_domain"))
+    if ind:
+        r.detail.append("stub_in_domain %s: own demand is not a precondition, not checked" % ind)
     return r.finish()
 
 
@@ -263,18 +304,18 @@ def check_records(td):
 CHAIN_CHECK = {"requests": "C5", "messages": "C6", "chunks": "C7"}
 
 
-def slot_delta(ld, role, slot, t_from, t_to, min_to=None):
-    """Counter delta of `slot` summed over the role's registered processes, from
+def slot_deltas(ld, role, slot, t_from, t_to, min_to=None):
+    """Counter delta of `slot` for each of the role's registered processes, from
     sidecar/snapshots.jsonl: last row with snap_t_rel_ns <= t_from to last row with
     snap_t_rel_ns <= t_to (that row must also be >= min_to, e.g. the drain gate's pass time).
-    Returns (delta, reason) with delta None when any process lacks a usable pair."""
+    Returns ({pid: delta}, None), or (None, reason) when any process lacks a usable pair."""
     sc = ld.sidecar("snapshots")
     if sc is None:
         return None, "sidecar/snapshots.jsonl missing"
     pids = [p["pid"] for p in ld.procs_of_role(role)]
     if not pids:
         return None, "no registered process for role %s" % role
-    total = 0
+    out = {}
     for pid in pids:
         a = b = None
         for row in sc[1]:
@@ -289,11 +330,14 @@ def slot_delta(ld, role, slot, t_from, t_to, min_to=None):
             return None, "pid %d: no snapshot row with %s around the interval" % (pid, slot)
         if min_to is not None and b[0] < min_to:
             return None, "pid %d: last snapshot before the end precedes the drain pass" % pid
-        total += b[1] - a[1]
-    return total, None
+        out[pid] = b[1] - a[1]
+    return out, None
 
 
-def _hop_value(ctx, ld, td, hop, next_drain):
+def _hop_parts(ctx, ld, td, hop, next_drain):
+    """One reconcile hop's count in this tier, per unit: ({"w<k>": value} for a summary source,
+    {"pid <pid>": delta} for a snapshot slot, from the tier start to the end of the following
+    drain tier, after its gate passed), None, False; or (None, why, is_red)."""
     src = hop["source"]
     if src.startswith("summary."):
         role = ctx.roles[hop["role"]]
@@ -304,16 +348,21 @@ def _hop_value(ctx, ld, td, hop, next_drain):
         vals = [summary_value(docs[k], src[len("summary."):]) for k in range(role["workers"])]
         if any(not isinstance(v, int) or isinstance(v, bool) for v in vals):
             return None, "%s not an integer in every worker summary" % src, True
-        return sum(vals), None, False
+        return {"w%d" % k: v for k, v in enumerate(vals)}, None, False
     slot = src[len("slot:"):]
     if next_drain is None or next_drain.drain_gate is None:
         return None, "no following drain gate record", False
     tpass = next_drain.drain_gate.get("t_pass_rel_ns")
     if not next_drain.drain_gate.get("passed") or tpass is None:
         return None, "following drain gate did not pass", False
-    v, why = slot_delta(ld, hop["role"], slot, td.tier.start_ns, next_drain.tier.end_ns,
-                        min_to=tpass)
-    return v, why, False
+    per, why = slot_deltas(ld, hop["role"], slot, td.tier.start_ns, next_drain.tier.end_ns,
+                           min_to=tpass)
+    return (None if per is None else {"pid %d" % p: v for p, v in per.items()}), why, False
+
+
+def _hop_value(ctx, ld, td, hop, next_drain):
+    parts, why, is_red = _hop_parts(ctx, ld, td, hop, next_drain)
+    return (None if parts is None else sum(parts.values())), why, is_red
 
 
 def check_chains(ctx, ld, td, next_drain, kind):
@@ -419,6 +468,96 @@ def _chunk_rows(ctx, td, r, next_drain=None):
             r.red += bad + len(stray)
             r.detail.append("chunks of %s: %d sampled requests with != %d rows, %d stray ids"
                             % (role, bad, per, len(stray)))
+
+
+# ---- C4 output length, C12 doubled processes carry traffic -----------------------------------
+
+def check_c4(ctx, td):
+    """Every request planned in this tier that got a response carries exactly the tier's
+    max_tokens output tokens (design 2.7 C4). The count of a request is the load generator's
+    `tokens` column, or, where the generator does not count (-1: capgrpc.load), the `tokens`
+    of the server.streams row with the same req_id in this tier. Expected = schedule
+    meta.per_tier x client roles (each client role runs the whole schedule). A count other
+    than max_tokens -> RED whatever the request's status; a failed request (status != 0)
+    without a count is checked (C3 / X account for it); an OK request without a count, or a
+    planned request without a record -> NOT_RUN."""
+    r = Result("C4", td.tier.seq, "schedule meta.per_tier x launch.json roles[kind=client]")
+    clients = client_roles(ctx)
+    if clients is None:
+        r.not_run.append("launch.json roles lack `kind`; cannot tell load generators")
+        return r.finish(NOT_RUN)
+    seq, want = td.tier.seq, td.tier.max_tokens
+    r.expected = int(ctx.schedule_meta["per_tier"].get(str(seq), 0)) * len(clients)
+    server = {}
+    for _ident, _h, cols in td.capbins.get("server.streams", []):
+        for rid, tok, ts in zip(cols["req_id"], cols["tokens"], cols["tier_seq"]):
+            if ts == seq:
+                server.setdefault(rid, set()).add(tok)
+    bad, uncounted = [], 0
+    names = {x["role"] for x in clients}
+    for ident, _h, cols in td.capbins.get("loadgen.requests", []):
+        if ident.get("role") not in names:
+            continue
+        for rid, st, tok, ts in zip(cols["req_id"], cols["status"], cols["tokens"],
+                                    cols["tier_seq"]):
+            if ts != seq:
+                continue
+            got = {tok} if tok >= 0 else server.get(rid, set())
+            if got:
+                r.checked += 1
+                if got != {want}:
+                    r.red += 1
+                    bad.append((ident.get("role"), rid, sorted(got)))
+            elif st != 0:
+                r.checked += 1
+            else:
+                uncounted += 1
+    if bad:
+        r.detail.append("%d request(s) with output tokens != max_tokens %d, first: %s"
+                        % (len(bad), want, bad[:5]))
+    if uncounted:
+        r.not_run.append("%d OK request(s) without a token count on either side" % uncounted)
+    if r.checked + uncounted < r.expected:
+        r.not_run.append("%d of %d planned requests have a record"
+                         % (r.checked + uncounted, r.expected))
+    return r.finish()
+
+
+def check_c12(ctx, ld, td, next_drain):
+    """Doubled processes carry traffic (design 2.7 C12). Objects: every role on a tier-scope
+    hop of a `requests` reconcile chain that has more than one unit: workers >= 2 for a
+    summary source (one unit per worker summary), expected_procs >= 2 for a snapshot slot
+    (one unit per registered process). Expected = the units' count from launch.json. Every
+    unit's count of that hop in this tier must be > 0; a unit with 0 means the doubling did
+    not take effect -> NOT_RUN, never PASS (design 2.7 positive control). A role on several
+    request chains is checked once (its first hop)."""
+    r = Result("C12", td.tier.seq,
+               "launch.json reconcile requests hops x roles[].workers / expected_procs")
+    seen = set()
+    for chain in ctx.launch["reconcile"]["chains"]:
+        if chain["kind"] != "requests":
+            continue
+        for hop in chain["hops"]:
+            role = ctx.roles[hop["role"]]
+            summary = hop["source"].startswith("summary.")
+            n = role["workers"] if summary else role["expected_procs"]
+            if hop["scope"] != "tier" or n < 2 or hop["role"] in seen:
+                continue
+            seen.add(hop["role"])
+            r.expected += n
+            parts, why, is_red = _hop_parts(ctx, ld, td, hop, next_drain)
+            if parts is None:
+                r.not_run.append("%s %s: %s" % (hop["role"], hop["source"], why))
+                continue
+            r.checked += len(parts)
+            idle = sorted(u for u, v in parts.items() if v <= 0)
+            if idle:
+                r.not_run.append("%s %s: %s carried no traffic in this tier"
+                                 % (hop["role"], hop["source"], idle))
+            if len(parts) < n:
+                r.not_run.append("%s: %d of %d units have a count" % (hop["role"],
+                                                                     len(parts), n))
+    return r.finish()
 
 
 # ---- C8 probe attached -----------------------------------------------------------------------
@@ -920,7 +1059,7 @@ def check_c13_tier(ctx, ld, td, record):
             r.not_run.append("%s: %s" % (role, why))
             continue
         record.setdefault(key, []).append(frac)
-        band = ctx.bands.get(key)
+        band = ctx.bands.get(key, ctx.tier_regime[td.tier.seq])
         if band is None:
             r.not_run.append("no registered band %s" % key)
         elif stats.compare_to_band(frac, band) == "above":

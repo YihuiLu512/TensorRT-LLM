@@ -66,14 +66,6 @@
    "source_tiers": [],
    "unit": "synthetic"
   },
-  "T1:send_lag_p50_ns:capload": {
-   "max": 20000,
-   "min": -20000,
-   "n": 6,
-   "regime": "subsat",
-   "source_tiers": [],
-   "unit": "synthetic"
-  },
   "T2:delivery_ratio_norm:capload": {
    "max": 1.1,
    "min": 0.9,
@@ -82,33 +74,9 @@
    "source_tiers": [],
    "unit": "synthetic"
   },
-  "T3:fionread_nonzero_frac:capload": {
-   "max": 0.05,
-   "min": 0.0,
-   "n": 6,
-   "regime": "subsat",
-   "source_tiers": [],
-   "unit": "synthetic"
-  },
   "T3:foreign_busy_frac:nullsse": {
    "max": 0.05,
    "min": -0.05,
-   "n": 6,
-   "regime": "subsat",
-   "source_tiers": [],
-   "unit": "synthetic"
-  },
-  "T3:loop_lag_p99_ns:capload": {
-   "max": 2000000,
-   "min": 0,
-   "n": 6,
-   "regime": "subsat",
-   "source_tiers": [],
-   "unit": "synthetic"
-  },
-  "T3:send_lag_p99_ns:capload": {
-   "max": 100000,
-   "min": 0,
    "n": 6,
    "regime": "subsat",
    "source_tiers": [],

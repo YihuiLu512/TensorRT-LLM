@@ -6,7 +6,7 @@
   "job_id": "local-sample-c13-foreign-busy",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013",
+  "register_sha": "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f",
   "restart_count": 0,
   "role": "gate",
   "tier_label": null,
@@ -64,6 +64,6 @@
  "schema": "capkit.exclusivity/1",
  "slurm_view_error": null,
  "slurm_view_file": "synthetic",
- "written_mono_ns": 9758838520384210,
- "written_wall": "2026-11-13T15:06:54.600Z"
+ "written_mono_ns": 9836372492952290,
+ "written_wall": "2026-11-14T12:39:08.573Z"
 }

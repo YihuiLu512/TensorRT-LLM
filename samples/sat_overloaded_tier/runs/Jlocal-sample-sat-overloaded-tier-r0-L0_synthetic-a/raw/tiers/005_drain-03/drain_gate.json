@@ -41,7 +41,7 @@
   "job_id": "local-sample-sat-overloaded-tier",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013",
+  "register_sha": "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f",
   "restart_count": 0,
   "role": "launch",
   "tier_label": "drain-03",
@@ -88,7 +88,7 @@
       0,
       "local-sample-sat-overloaded-tier",
       0,
-      "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013"
+      "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f"
      ],
      "pid": 1001,
      "seq": 180,
@@ -102,7 +102,7 @@
       0,
       "local-sample-sat-overloaded-tier",
       0,
-      "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013"
+      "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f"
      ],
      "pid": 1002,
      "seq": 180,
@@ -116,7 +116,7 @@
       0,
       "local-sample-sat-overloaded-tier",
       0,
-      "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013"
+      "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f"
      ],
      "pid": 2001,
      "seq": 180,
@@ -166,7 +166,7 @@
       0,
       "local-sample-sat-overloaded-tier",
       0,
-      "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013"
+      "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f"
      ],
      "pid": 1001,
      "seq": 182,
@@ -180,7 +180,7 @@
       0,
       "local-sample-sat-overloaded-tier",
       0,
-      "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013"
+      "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f"
      ],
      "pid": 1002,
      "seq": 182,
@@ -194,7 +194,7 @@
       0,
       "local-sample-sat-overloaded-tier",
       0,
-      "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013"
+      "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f"
      ],
      "pid": 2001,
      "seq": 182,
@@ -244,7 +244,7 @@
       0,
       "local-sample-sat-overloaded-tier",
       0,
-      "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013"
+      "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f"
      ],
      "pid": 1001,
      "seq": 184,
@@ -258,7 +258,7 @@
       0,
       "local-sample-sat-overloaded-tier",
       0,
-      "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013"
+      "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f"
      ],
      "pid": 1002,
      "seq": 184,
@@ -272,7 +272,7 @@
       0,
       "local-sample-sat-overloaded-tier",
       0,
-      "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013"
+      "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f"
      ],
      "pid": 2001,
      "seq": 184,
@@ -322,7 +322,7 @@
       0,
       "local-sample-sat-overloaded-tier",
       0,
-      "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013"
+      "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f"
      ],
      "pid": 1001,
      "seq": 186,
@@ -336,7 +336,7 @@
       0,
       "local-sample-sat-overloaded-tier",
       0,
-      "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013"
+      "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f"
      ],
      "pid": 1002,
      "seq": 186,
@@ -350,7 +350,7 @@
       0,
       "local-sample-sat-overloaded-tier",
       0,
-      "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013"
+      "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f"
      ],
      "pid": 2001,
      "seq": 186,
@@ -400,7 +400,7 @@
       0,
       "local-sample-sat-overloaded-tier",
       0,
-      "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013"
+      "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f"
      ],
      "pid": 1001,
      "seq": 188,
@@ -414,7 +414,7 @@
       0,
       "local-sample-sat-overloaded-tier",
       0,
-      "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013"
+      "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f"
      ],
      "pid": 1002,
      "seq": 188,
@@ -428,7 +428,7 @@
       0,
       "local-sample-sat-overloaded-tier",
       0,
-      "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013"
+      "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f"
      ],
      "pid": 2001,
      "seq": 188,
@@ -478,7 +478,7 @@
       0,
       "local-sample-sat-overloaded-tier",
       0,
-      "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013"
+      "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f"
      ],
      "pid": 1001,
      "seq": 190,
@@ -492,7 +492,7 @@
       0,
       "local-sample-sat-overloaded-tier",
       0,
-      "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013"
+      "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f"
      ],
      "pid": 1002,
      "seq": 190,
@@ -506,7 +506,7 @@
       0,
       "local-sample-sat-overloaded-tier",
       0,
-      "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013"
+      "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f"
      ],
      "pid": 2001,
      "seq": 190,
@@ -556,7 +556,7 @@
       0,
       "local-sample-sat-overloaded-tier",
       0,
-      "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013"
+      "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f"
      ],
      "pid": 1001,
      "seq": 192,
@@ -570,7 +570,7 @@
       0,
       "local-sample-sat-overloaded-tier",
       0,
-      "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013"
+      "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f"
      ],
      "pid": 1002,
      "seq": 192,
@@ -584,7 +584,7 @@
       0,
       "local-sample-sat-overloaded-tier",
       0,
-      "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013"
+      "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f"
      ],
      "pid": 2001,
      "seq": 192,
@@ -601,6 +601,6 @@
  "schema": "capkit.drain_gate/1",
  "source": "default",
  "t_pass_rel_ns": 19200000000,
- "written_mono_ns": 9758840185647090,
- "written_wall": "2026-11-13T15:06:56.266Z"
+ "written_mono_ns": 9836374248199216,
+ "written_wall": "2026-11-14T12:39:10.328Z"
 }

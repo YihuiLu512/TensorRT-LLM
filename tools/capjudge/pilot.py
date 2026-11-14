@@ -106,6 +106,48 @@ def _inflight_from(rows, start, k):
             - bisect.bisect_right(done, start + i * NS + NS // 2) for i in range(k)]
 
 
+def select_tiers(tree, seqs, W, drop_verdicts=("VOID",)):
+    """Verify one judged tree and choose which of the listed tiers enter a calibration file
+    (shared by the pilot and capjudge.calib). Returns {"ctx", "rec", "by_seq", "verdicts",
+    "vpath"}; rec = {"tree", "judge_verdicts_sha256", "tiers_used", "tiers_excluded"} plus
+    "tree_excluded" when the launch-level conclusion recorded before the judge is not VALID.
+    A listed tier with any RED check or a verdict in `drop_verdicts` is excluded and listed."""
+    tree = os.path.abspath(tree)
+    vpath = os.path.join(tree, "judge", "verdicts.json")
+    if not os.path.isfile(vpath):
+        raise PilotError("%s has not been judged (no judge/verdicts.json)" % tree)
+    try:
+        ctx = I.verify(W, tree)
+    except I.InputInvalid as e:
+        raise PilotError("%s: input invalid: %s" % (tree, e))
+    verdicts = read_json(vpath)
+    by_seq = {t["tier_seq"]: t for t in verdicts["tiers"]}
+    rec = {"tree": os.path.relpath(tree, W), "judge_verdicts_sha256": sha256_file(vpath),
+           "tiers_used": [], "tiers_excluded": {}}
+    out = {"ctx": ctx, "rec": rec, "by_seq": by_seq, "verdicts": verdicts, "vpath": vpath}
+    launch_state = (verdicts.get("launch_checks") or {}).get("LAUNCH-STATE")
+    if launch_state is None:
+        raise PilotError("%s: verdicts.json has no LAUNCH-STATE check (judged by an older "
+                         "capjudge): cannot tell the launch-level conclusion" % tree)
+    if launch_state != "PASS" or ctx.upstream["status"] != "VALID":
+        rec["tree_excluded"] = "launch-level conclusion before the judge: %s (judged %s)" % (
+            "; ".join("%s %s: %s" % (x["source"], x["status"], x["reason"])
+                      for x in ctx.upstream["sources"] if x["status"] != "VALID")
+            or ctx.upstream["status"], launch_state)
+        rec["tiers_excluded"] = {str(q): "tree excluded" for q in seqs}
+        return out
+    for seq in seqs:
+        t = by_seq.get(seq)
+        if t is None or not t.get("judged"):
+            raise PilotError("%s: tier %d is not a judged load tier" % (tree, seq))
+        bad = sorted(c for c, st in (t.get("checks") or {}).items() if st == "RED")
+        if bad or t["verdict"] in drop_verdicts:
+            rec["tiers_excluded"][str(seq)] = "%s / RED checks %s" % (t["verdict"], bad)
+            continue
+        rec["tiers_used"].append(seq)
+    return out
+
+
 def build(list_path, W, d14_rule_path):
     W = os.path.abspath(W)
     entries = read_list(list_path)
@@ -118,45 +160,19 @@ def build(list_path, W, d14_rule_path):
     drain_waits, switch = [], set()
     d14_trees, d14_submitted = [], {}
     for tree, seqs in entries:
-        tree = os.path.abspath(tree)
-        vpath = os.path.join(tree, "judge", "verdicts.json")
-        if not os.path.isfile(vpath):
-            raise PilotError("%s has not been judged (no judge/verdicts.json)" % tree)
-        try:
-            ctx = I.verify(W, tree)
-        except I.InputInvalid as e:
-            raise PilotError("%s: input invalid: %s" % (tree, e))
+        sel = select_tiers(tree, seqs, W)
+        ctx, rec, by_seq = sel["ctx"], sel["rec"], sel["by_seq"]
         e = _env_of(ctx)
         if env is None:
             env, experiment = e, ctx.ident.experiment
         elif e != env:
             raise PilotError("%s: environment %s differs from %s (one pilot per environment)"
                              % (tree, e, env))
-        verdicts = read_json(vpath)
-        by_seq = {t["tier_seq"]: t for t in verdicts["tiers"]}
-        rec = {"tree": os.path.relpath(tree, W), "judge_verdicts_sha256": sha256_file(vpath),
-               "tiers_used": [], "tiers_excluded": {}}
-        launch_state = (verdicts.get("launch_checks") or {}).get("LAUNCH-STATE")
-        if launch_state is None:
-            raise PilotError("%s: verdicts.json has no LAUNCH-STATE check (judged by an older "
-                             "capjudge): cannot tell the launch-level conclusion" % tree)
-        if launch_state != "PASS" or ctx.upstream["status"] != "VALID":
-            rec["tree_excluded"] = "launch-level conclusion before the judge: %s (judged %s)" % (
-                "; ".join("%s %s: %s" % (x["source"], x["status"], x["reason"])
-                          for x in ctx.upstream["sources"] if x["status"] != "VALID")
-                or ctx.upstream["status"], launch_state)
-            rec["tiers_excluded"] = {str(q): "tree excluded" for q in seqs}
+        if "tree_excluded" in rec:
             inputs.append(rec)
             continue
-        for seq in seqs:
-            t = by_seq.get(seq)
-            if t is None or not t.get("judged"):
-                raise PilotError("%s: tier %d is not a judged load tier" % (tree, seq))
-            bad = sorted(c for c, st in (t.get("checks") or {}).items() if st == "RED")
-            if bad or t["verdict"] == "VOID":
-                rec["tiers_excluded"][str(seq)] = "VOID / RED checks %s" % bad
-                continue
-            rec["tiers_used"].append(seq)
+        for seq in rec["tiers_used"]:
+            t = by_seq[seq]
             for key, vals in (t.get("stats") or {}).items():
                 for v in vals:
                     values.setdefault(key, []).append(v)

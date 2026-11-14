@@ -210,6 +210,7 @@ def evaluate_x(ctx, ld, td, base_td, record):
     contradiction (bool), reasons, I and V placeholders."""
     tier = td.tier
     beat = BeatSchedule(ctx.tt)
+    bands = ctx.bands.view(ctx.tier_regime[tier.seq])
     out = {"X2": [], "X1": [], "X3": [], "reasons": [],
            "I": {"status": NOT_IMPLEMENTED, "signals": {"I1": None, "I2": None, "I3": None}},
            "V": {"status": NOT_IMPLEMENTED, "dose_response": None, "reverse": None}}
@@ -220,19 +221,19 @@ def evaluate_x(ctx, ld, td, base_td, record):
     for role in load_roles:
         rows, _ = td.rows("loadgen.requests", role)
         series, _ = request_lag_series(rows, tier, "first")
-        d, e = _trend(series, band_key("T1", "req_first_lag_p50_ns", role), ctx.bands, record)
+        d, e = _trend(series, band_key("T1", "req_first_lag_p50_ns", role), bands, record)
         e["layer"] = "request"
         out["X2"].append(e)
         x2_dirs.append(d)
         if ctx.roles.get(role, {}).get("measure_class") == "under_test":
             series, _ = request_lag_series(rows, tier, "send")
-            d, e = _trend(series, band_key("T1", "send_lag_p50_ns", role), ctx.bands, record)
+            d, e = _trend(series, band_key("T1", "send_lag_p50_ns", role), bands, record)
             e["layer"] = "send"
             out["X2"].append(e)
             x2_dirs.append(d)
         if tier.beat_ns > 0 and td.rows("loadgen.chunks", role)[0].get("req_id"):
             series, n, why = msg_lag_from_chunks(td, ctx, role, beat)
-            d, e = _trend(series, band_key("T1", "msg_lag_p50_ns", role), ctx.bands, record)
+            d, e = _trend(series, band_key("T1", "msg_lag_p50_ns", role), bands, record)
             e.update({"layer": "message", "n_msgs": n})
             if why:
                 e.update({"status": NOT_RUN, "reason": why})
@@ -241,7 +242,7 @@ def evaluate_x(ctx, ld, td, base_td, record):
             x2_dirs.append(d)
     for role in td.roles_with("drain.msgs"):
         series, n, why = msg_lag_from_msgs(td, role)
-        d, e = _trend(series, band_key("T1", "msg_lag_p50_ns", role), ctx.bands, record)
+        d, e = _trend(series, band_key("T1", "msg_lag_p50_ns", role), bands, record)
         e.update({"layer": "message", "n_msgs": n})
         out["X2"].append(e)
         x2_dirs.append(d)
@@ -257,7 +258,7 @@ def evaluate_x(ctx, ld, td, base_td, record):
         if norm is not None and base_td is not td:
             # the baseline tier's own normalised ratio is 1 by construction, not a sample
             record.setdefault(key, []).append(norm)
-        band = ctx.bands.get(key)
+        band = bands.get(key)
         e = {"key": key, "ratio": r, "baseline_ratio": b, "normalised": norm, "band": band}
         if norm is None or band is None:
             e["status"] = NOT_RUN
@@ -268,12 +269,12 @@ def evaluate_x(ctx, ld, td, base_td, record):
             x1_dirs.append(e["status"])
         out["X1"].append(e)
         d, e = _trend(inflight_series(rows, tier), band_key("T1", "inflight_derived", role),
-                      ctx.bands, record)
+                      bands, record)
         out["X3"].append(e)
         x3_dirs.append(d)
     for role in sorted(ctx.roles):
         for slot, series in gauge_series(ld, td, role).items():
-            d, e = _trend(series, band_key("T1", slot, role), ctx.bands, record)
+            d, e = _trend(series, band_key("T1", slot, role), bands, record)
             out["X3"].append(e)
             x3_dirs.append(d)
     return _combine(out, x2_dirs, x1_dirs, x3_dirs)

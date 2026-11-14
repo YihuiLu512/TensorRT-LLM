@@ -19,11 +19,11 @@ from capcommon.runtree import STATE_VALUES, RunTree, read_state, worst_state
 from capcommon.snapshot import SnapshotError, read_snapshot_file
 from capcommon.tiers import TierTable, TierTableError
 
+from . import calib
 from .thresholds import BandError, Bands
 
 LAUNCH_SCHEMA = "capkit.launch/1"
 REGISTER_SCHEMA = "capkit.register/1"
-PILOT_SCHEMA = "capkit.pilot/1"
 REGISTER_FILE_KEYS = ("tier_table", "schedule", "prompts", "scenario")
 CALIB_KINDS = ("pilot", "loadgen_band", "stub_calib", "near_boundary_noise")
 MEASURE_CLASSES = ("load_source", "stub_out_of_domain", "stub_in_domain", "under_test",
@@ -34,8 +34,11 @@ ROLE_KEYS = ("role", "workers", "expected_procs", "measure_class", "asyncio", "u
 # C3 non-overload failures, GPU-IDLE = CONSTRAINTS 2.4). The register can add checks, not remove
 # these.
 MANDATORY_CHECKS = ("C3", "C10", "C11", "GPU-IDLE")
-BATCH1_CHECKS = ("C1", "C3", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C13", "GPU-IDLE")
-BATCH2_CHECKS = ("C2", "C4", "C12")
+KNOWN_CHECKS = ("C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9", "C10", "C11", "C12",
+                "C13", "GPU-IDLE")
+# Calibration kinds whose register entry binds this experiment's roles to the file's shapes.
+BIND_KINDS = tuple(calib.SHAPE_KINDS)
+CALIB_ENTRY_KEYS = ("kind", "relpath", "sha256")
 
 
 class InputInvalid(Exception):
@@ -61,6 +64,9 @@ class Ctx:
         self.schedule_tier = None  # array('h'): planned tier of every req_id
         self.roles = {}  # role -> launch.json roles[] entry
         self.bands = Bands()
+        self.calib_docs = {}  # kind -> validated calibration document
+        self.calib_bind = {}  # kind in BIND_KINDS -> {role: shape}
+        self.tier_regime = {}  # tier seq -> "subsat" / "near_boundary" (load tiers)
         self.checks_applied = []
         self.submission = None
         self.identity_scan = None
@@ -188,9 +194,16 @@ def _load_register(ctx):
     if not isinstance(judge, dict) or judge.get("mode") != "P+X" \
             or not isinstance(judge.get("checks"), list):
         raise InputInvalid("register.json", "judge must be {mode: 'P+X', checks: [...]}")
-    unknown = [c for c in judge["checks"] if c not in BATCH1_CHECKS + BATCH2_CHECKS]
+    unknown = [c for c in judge["checks"] if c not in KNOWN_CHECKS]
     if unknown:
         raise InputInvalid("register.json", "unknown checks %s" % unknown)
+    nbt = judge.get("near_boundary_tiers", {})
+    if not isinstance(nbt, dict) or any(
+            a not in (doc.get("arms") or []) or not isinstance(v, list)
+            or not all(isinstance(x, str) and x for x in v) or len(set(v)) != len(v)
+            for a, v in nbt.items()):
+        raise InputInvalid("register.json", "judge.near_boundary_tiers must map arms of "
+                                            "`arms` to lists of distinct tier labels")
     ctx.checks_applied = sorted(set(MANDATORY_CHECKS) | set(judge["checks"]),
                                 key=lambda c: (len(c), c))
     ctx.register = doc
@@ -205,17 +218,27 @@ def _load_calibration(ctx):
         item = "register.calibration[%d]" % i
         if not isinstance(c, dict) or c.get("kind") not in CALIB_KINDS:
             raise InputInvalid(item, "kind must be one of %s" % (CALIB_KINDS,))
+        allowed = CALIB_ENTRY_KEYS + (("bind",) if c["kind"] in BIND_KINDS else ())
+        extra = sorted(set(c) - set(allowed))
+        if extra:
+            raise InputInvalid(item, "unknown keys %s for kind %s" % (extra, c["kind"]))
         p = _registered_file(ctx, c, item, kinds=(c["kind"],))
         try:
             doc = read_json(p)
         except (OSError, ValueError) as e:
             raise InputInvalid(item, str(e))
-        if c["kind"] == "pilot":
-            _check_pilot_env(ctx, doc, item)
+        try:
+            calib.validate(c["kind"], doc, item)
+        except calib.CalibError as e:
+            raise InputInvalid(item, str(e))
+        _check_env(ctx, doc, item)
+        if c["kind"] in BIND_KINDS:
+            _load_bind(ctx, c, doc, item)
         try:
             ctx.bands.add_source(c["kind"], c["relpath"], c["sha256"], doc)
         except BandError as e:
             raise InputInvalid(item, str(e))
+        ctx.calib_docs[c["kind"]] = doc
     inline = ctx.register.get("inline_thresholds")
     if inline:
         if ctx.ident.experiment != "E0":
@@ -227,17 +250,46 @@ def _load_calibration(ctx):
             raise InputInvalid("register.inline_thresholds", str(e))
 
 
-def _check_pilot_env(ctx, doc, item):
-    if not isinstance(doc, dict) or doc.get("schema") != PILOT_SCHEMA:
-        raise InputInvalid(item, "pilot schema must be %s" % PILOT_SCHEMA)
+def _load_bind(ctx, entry, doc, item):
+    """register.calibration[] `bind` of a loadgen_band / stub_calib entry: {role: shape}. Every
+    named shape must exist in the file; roles of other arms may be named. A role of this launch
+    left unbound has no calibration (its C1 / C2 items are NOT_RUN)."""
+    bind = entry.get("bind")
+    shapes = calib.shapes_of(entry["kind"], doc)
+    if not isinstance(bind, dict) or not bind or not all(
+            isinstance(r, str) and r and isinstance(sh, str) for r, sh in bind.items()):
+        raise InputInvalid(item, "bind must be a non-empty {role: shape} object")
+    missing = sorted(sh for sh in bind.values() if sh not in shapes)
+    if missing:
+        raise InputInvalid(item, "bind names shapes %s not in the file (has %s)"
+                           % (missing, sorted(shapes)))
+    ctx.calib_bind[entry["kind"]] = dict(bind)
+
+
+def _check_env(ctx, doc, item):
     env = doc.get("environment") or {}
     want_hw = ctx.launch.get("hw_profile_sha")
     want_img = (ctx.launch.get("image") or {}).get("sha256")
     if env.get("hw_profile_sha") != want_hw or env.get("image_sha") != want_img:
-        # Registered comparability (DATA-AND-ANALYSIS 8.1) is not read in batch 1: a pilot from a
-        # different hardware profile or image is rejected outright.
-        raise InputInvalid(item, "pilot environment (hw %r, image %r) != launch (hw %r, image %r)"
-                           % (env.get("hw_profile_sha"), env.get("image_sha"), want_hw, want_img))
+        # Registered comparability (DATA-AND-ANALYSIS 8.1) is not read: a calibration file from
+        # a different hardware profile or image is rejected outright.
+        raise InputInvalid(item, "calibration environment (hw %r, image %r) != launch (hw %r, "
+                                 "image %r)" % (env.get("hw_profile_sha"), env.get("image_sha"),
+                                                want_hw, want_img))
+
+
+def _load_tier_regimes(ctx):
+    """ctx.tier_regime for every load tier: near_boundary for the labels register.json
+    judge.near_boundary_tiers lists for this arm, subsat otherwise. A listed label must be an
+    up / down tier of this launch's tier table."""
+    labels = (ctx.register["judge"].get("near_boundary_tiers") or {}).get(ctx.ident.arm, [])
+    by_label = {t.label: t for t in ctx.tt.tiers}
+    bad = [x for x in labels if x not in by_label or by_label[x].kind not in ("up", "down")]
+    if bad:
+        raise InputInvalid("register.json", "judge.near_boundary_tiers[%s]: %s are not load "
+                                            "tiers of the tier table" % (ctx.ident.arm, bad))
+    ctx.tier_regime = {t.seq: "near_boundary" if t.label in labels else "subsat"
+                       for t in ctx.tt.tiers if t.kind in ("up", "down")}
 
 
 def _load_tier_table_and_schedule(ctx):
@@ -383,6 +435,7 @@ def verify(workdir, tree_root):
     _load_register(ctx)
     _load_calibration(ctx)
     _load_tier_table_and_schedule(ctx)
+    _load_tier_regimes(ctx)
     _check_reconcile_and_scenario(ctx)
     _scan_identities(ctx)
     _load_upstream(ctx)

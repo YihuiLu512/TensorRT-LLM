@@ -392,10 +392,14 @@ def judge_tree(ctx, log, code_ok=True, code_note=""):
         nxt = tds.get(t.seq + 1)
         next_drain = nxt if nxt is not None and nxt.tier.kind == "drain" else None
         for cid in ctx.checks_applied:
-            if cid in I.BATCH2_CHECKS:
-                res.append(C.not_implemented(cid, t.seq))
-            elif cid == "C1":
+            if cid == "C1":
                 res.append(C.check_c1(ctx, td, record))
+            elif cid == "C2":
+                res.append(C.check_c2(ctx, ld, td, record))
+            elif cid == "C4":
+                res.append(C.check_c4(ctx, td))
+            elif cid == "C12":
+                res.append(C.check_c12(ctx, ld, td, next_drain))
             elif cid == "C3":
                 res.append(C.check_c3(ctx, td))
             elif cid in ("C5", "C6", "C7"):
@@ -434,7 +438,7 @@ def judge_tree(ctx, log, code_ok=True, code_note=""):
         else:
             verdict = "UNSTABLE" if x["holds"] else "STABLE"
             reasons += x["reasons"]
-        entry.update({"verdict": verdict, "reasons": reasons,
+        entry.update({"verdict": verdict, "reasons": reasons, "regime": ctx.tier_regime[t.seq],
                       "checks": {r.check_id: r.status for r in res},
                       "P": p, "X": x, "stats": record,
                       "order_key": tt.load_order_key(t.seq)})

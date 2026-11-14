@@ -1,0 +1,13 @@
+{
+ "exit_code": 10,
+ "red_checks": [
+  "C4",
+  "C3"
+ ],
+ "synthetic": true,
+ "tier_verdicts": {
+  "2": "STABLE",
+  "4": "VOID"
+ },
+ "tree": "runs/Jlocal-sample-c4-short-output-r0-L0_synthetic-a"
+}

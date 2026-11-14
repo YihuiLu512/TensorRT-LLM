@@ -9,3 +9,10 @@
 
 ## 进度日志
 - 2026-11-14 20:15:11 开工：建 worktree（capkit-b2-judge @ 1176861dd1d8233b8de1063c2e620fe9aee21e3f），写本进度日志头。
+- 2026-11-14 20:24:46 2A-calib-checks 开工：已读设计 §2.6/§2.7/E1/E2、INTERFACES §9/§10/勘误、capjudge 全部相关代码；方案：按档 regime 选带（登记表 judge.near_boundary_tiers）、loadgen_band/stub_calib 用 shapes + 登记表 bind、C1 改读 loadgen_band、C2 域外、C4、C12。先写 thresholds/calib/inputs/checks，再样本与测试（预计 2–3 h）。
+- 2026-11-14 20:36:44 代码写完（thresholds regime、calib.py 校验/统计/构建、inputs bind/regime、checks C1 改读 loadgen_band + C2/C4/C12、样本 +8 个共 33）；新建样本自测 33/33 过（_local/b2-judge/st1）。下一步写 tests/judge/test_calib.py、改旧测试、重生成提交的样本（约 1 h）。
+- 2026-11-14 20:39:39 e2e：拷 E0 第一轮两棵树（e0a J5935100-L1、e0b J5935100-L0）到 _local/b2-judge/e2e 并建最小 wd，用修改后的判定器重判（约 10 分钟）
+- 2026-11-14 20:42:30 文档（INTERFACES §9.6–9.8 + 勘误 B2-2A、两份 README）写完；跑 tests/judge 全量 + 提交样本自测（约 6 分钟）
+- 2026-11-14 20:46:58 变异检查 M1–M10（_local/b2-judge/mut，每个跑 test_calib.py，约 5 分钟）
+- 2026-11-14 20:50:09 变异 M11/M12（样本自测层，约 6 分钟）
+- 2026-11-14 20:59:14 2A-calib-checks 验证完成（MEASURED）：tests/judge 157 passed（_local/b2-judge/logs/j2.log）；提交样本自测 33/33 EXIT=0（logs/st3.log）；变异 M1–M12 全部 KILLED（mut/summary.txt；M10 首轮存活后补了按时间表份额的 C1 测试再杀死）；e2e：E0 第一轮 e0a J5935100-L1、e0b J5935100-L0 拷贝重判，CLI 退出 11，checks.tsv 前六列除 e0a 档 4 C7（SM-14 修复）外不变；进程内加 C2/C4/C12：C2 NOT_RUN（无 stub_calib）、C4 PASS、C12 PASS/NOT_RUN（e0a 档 4 nullsse worker 1 本档 0 请求 ⇒ NOT_RUN），无报错；fakebin.log 0 行。提交。

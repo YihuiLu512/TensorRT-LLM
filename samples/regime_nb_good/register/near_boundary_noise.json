@@ -1,0 +1,71 @@
+{
+ "environment": {
+  "baseline_sha": "2f22a98d6e",
+  "capkit_sha": "cccccccccccccccccccccccccccccccccccccccc",
+  "hw_profile_sha": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "image_sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+ },
+ "experiment": "E0",
+ "inputs": [],
+ "noise_bands": {
+  "T1:backlog.active_streams:nullsse": {
+   "max": 3,
+   "min": -3,
+   "n": 6,
+   "regime": "near_boundary",
+   "source_tiers": [],
+   "unit": "synthetic"
+  },
+  "T1:backlog.inflight:capload": {
+   "max": 3,
+   "min": -3,
+   "n": 6,
+   "regime": "near_boundary",
+   "source_tiers": [],
+   "unit": "synthetic"
+  },
+  "T1:inflight_derived:capload": {
+   "max": 3,
+   "min": -3,
+   "n": 6,
+   "regime": "near_boundary",
+   "source_tiers": [],
+   "unit": "synthetic"
+  },
+  "T1:msg_lag_p50_ns:capload": {
+   "max": 50000,
+   "min": -50000,
+   "n": 6,
+   "regime": "near_boundary",
+   "source_tiers": [],
+   "unit": "synthetic"
+  },
+  "T1:req_first_lag_p50_ns:capload": {
+   "max": 50000,
+   "min": -50000,
+   "n": 6,
+   "regime": "near_boundary",
+   "source_tiers": [],
+   "unit": "synthetic"
+  },
+  "T2:delivery_ratio_norm:capload": {
+   "max": 1.1,
+   "min": 0.9,
+   "n": 6,
+   "regime": "near_boundary",
+   "source_tiers": [],
+   "unit": "synthetic"
+  },
+  "T3:foreign_busy_frac:nullsse": {
+   "max": 0.05,
+   "min": -0.05,
+   "n": 6,
+   "regime": "near_boundary",
+   "source_tiers": [],
+   "unit": "synthetic"
+  }
+ },
+ "regime": "near_boundary",
+ "schema": "capkit.near_boundary_noise/1",
+ "synthetic": true
+}

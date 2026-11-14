@@ -1,0 +1,10 @@
+{
+ "exit_code": 11,
+ "red_checks": [],
+ "synthetic": true,
+ "tier_verdicts": {
+  "2": "STABLE",
+  "4": "NOT_RUN"
+ },
+ "tree": "runs/Jlocal-sample-regime-nb-missing-r0-L0_synthetic-a"
+}

@@ -9,7 +9,7 @@
   "job_id": "local-sample-c13-unknown-thread",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013",
+  "register_sha": "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f",
   "restart_count": 0,
   "role": "launch",
   "tier_label": "up-r40",
@@ -249,6 +249,6 @@
   "tokens_per_msg": 1,
   "window_ns": 4000000000
  },
- "written_mono_ns": 9758838424826222,
- "written_wall": "2026-11-13T15:06:54.505Z"
+ "written_mono_ns": 9836372396365345,
+ "written_wall": "2026-11-14T12:39:08.476Z"
 }

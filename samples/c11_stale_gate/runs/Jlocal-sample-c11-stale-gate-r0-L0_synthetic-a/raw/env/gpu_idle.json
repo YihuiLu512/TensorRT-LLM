@@ -28,7 +28,7 @@
   "job_id": "local-sample-c11-stale-gate",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "ce28e18d9bdb95357eaad518ad162e97bc6cf04b70cb00ceb705da5ee5073013",
+  "register_sha": "5d4232164d3c96e37ac4f02fb7c4565ec891a3abd01bb199508d9498d08e975f",
   "restart_count": 0,
   "role": "jobs",
   "tier_label": null,
@@ -73,6 +73,6 @@
  "schema": "capkit.gpu_idle/1",
  "status": "PASS",
  "visible_gpus": 1,
- "written_mono_ns": 9758838070683929,
- "written_wall": "2026-11-13T15:06:54.151Z"
+ "written_mono_ns": 9836372051152816,
+ "written_wall": "2026-11-14T12:39:08.131Z"
 }
