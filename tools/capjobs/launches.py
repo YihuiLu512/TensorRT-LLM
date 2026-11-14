@@ -13,7 +13,8 @@ budget_s + kill_grace_s + margin_s + launchplan.in_job_bound_s (pin table + job 
 earlier launch ended ENV_INVALID or left processes that survived SIGKILL; generate its pin table
 on this node (pin_table(); a failure, or a scenario that cannot be read, skips the launch as
 NOT_RUN, marked pin_table_failed: main then exits 3 as for config_refused); generate the job
-inputs its scenario declares (capjobs.jobinputs into <job dir>/job_inputs/<tree>/; a failure
+inputs its scenario declares (capjobs.jobinputs into <job dir>/job_inputs/<tree>/; a failure,
+or a job_inputs section or scenario key that fails capcommon.jobinputs.check_scenario,
 skips the launch as NOT_RUN, marked job_input_failed, exit 3 likewise); the job's SIGTERM while
 either helper runs kills it (run_helper) and skips the launch as NOT_RUN, neither flag set;
 otherwise run the plan's argv with
@@ -51,6 +52,7 @@ import subprocess
 import sys
 import time
 
+from capcommon import jobinputs as JI
 from capcommon.clock import wall_iso
 from capcommon.exitcodes import CONFIG, ENV_INVALID, OK, RUNTIME, STOPPED_EARLY, CapkitError
 from capcommon.identity import Identity
@@ -186,9 +188,12 @@ def pin_table(a, plan, ln, env, out_path):
 def job_inputs(a, ln, values, env, out_dir):
     """Generate the job inputs of one launch's scenario (capjobs.jobinputs.generate) with this
     launch's --param values and the job's environment, each generator through run_helper.
-    Returns ({kind: path}, records, None) or (None, records, why); raises JobTerminated."""
+    Returns ({kind: path}, records, None) ({}, [], None without a job_inputs key: the --param
+    values are then not parsed here) or (None, records, why); raises JobTerminated."""
     try:
         doc = launchplan.load_scenario(ln)
+        if not JI.declares(doc):
+            return {}, [], None
         wd, _rel = launchplan.scenario_path(ln)
         params = jobinputs.params_from_argv([launchplan.substitute(x, values)
                                              for x in ln["argv"]])
@@ -197,7 +202,7 @@ def job_inputs(a, ln, values, env, out_dir):
                                          run=run_helper)
     except jobinputs.JobInputError as e:
         return None, e.records, "job inputs: %s" % e
-    except (CapkitError, OSError, ValueError) as e:
+    except (CapkitError, OSError, ValueError, KeyError, TypeError) as e:
         return None, [], "job inputs: %s: %s" % (type(e).__name__, e)
     return paths, recs, None
 

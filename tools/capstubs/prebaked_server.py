@@ -36,6 +36,7 @@ from capcommon.capbin import RecordArray
 from capcommon.cli import add_common_args, common_from_args
 from capcommon.clock import now_ns
 from capcommon.exitcodes import OK, CapkitError, ConfigError
+from capcommon.hashing import sha256_file
 from capcommon.lifecycle import StopController, write_port_file
 from capcommon.schedule import BeatSchedule, count_schedule_rows, load_schedule
 from capcommon.tiers import POST_SEQ, TierTable
@@ -173,7 +174,7 @@ def plan_streams(tt, prebaked, specs):
 def load_sfe_module(path):
     """Run fake_openengine.py from `path` as a module under a private name; return (module,
     sha256). The file is read once: the bytes hashed are the bytes executed. Any exception
-    while compiling or running it is a ConfigError (exit 3) and leaves no module behind."""
+    while compiling or running it is a ConfigError (exit 3)."""
     try:
         with open(path, "rb") as f:
             data = f.read()
@@ -193,6 +194,27 @@ def load_sfe_module(path):
         raise ConfigError("--sfe-module %s cannot be imported here: %s: %s"
                           % (path, type(e).__name__, e))
     return mod, sha
+
+
+def frontend_control(args):
+    """Frontend mode: load the --sfe-module file and build what S-PB serves from it. Returns
+    (sha256, S-FE argv, [(add_*_to_server, servicer)]). Its parser exiting is a rejection of
+    the S-FE options; any other exception from taking its entry points to taking the
+    registration functions is a ConfigError too (exit 3)."""
+    mod, sha = load_sfe_module(args.sfe_module)
+    sargv = sfe_argv(args)
+    try:
+        profile = mod._profile_from_args(mod._parse_args(sargv))
+        engine = mod.FakeEngine(profile, tokens_per_step=1, step_delay=0.0, record=False)
+        services = [(mod.openengine_pb2_grpc.add_ControlServicer_to_server, mod._Control(engine)),
+                    (mod.health_pb2_grpc.add_HealthServicer_to_server, mod._Health(engine))]
+    except SystemExit as e:
+        raise ConfigError("S-FE options %s rejected by %s (exit %s)"
+                          % (sargv, args.sfe_module, e.code))
+    except Exception as e:  # noqa: BLE001 - whatever the S-FE setup raises, exit 3
+        raise ConfigError("--sfe-module %s: S-FE setup with options %s failed: %s: %s"
+                          % (args.sfe_module, sargv, type(e).__name__, e))
+    return sha, sargv, services
 
 
 class _Stream:
@@ -221,11 +243,12 @@ class _MethodHandler(grpc.GenericRpcHandler):
 
 
 class PrebakedServer:
-    def __init__(self, args, rt, prebaked, ks, sched_tiers, control):
+    def __init__(self, args, rt, prebaked, ks, sched_tiers, sched_sha256, control):
         self.args, self.rt, self.pb = args, rt, prebaked
         self.k, self.s = ks
         self.sched = sched_tiers  # array: req_id -> planned tier, or None
-        self.control = control  # (module, sha256, S-FE argv, FakeProfile) or None
+        self.sched_sha256 = sched_sha256  # of the --schedule file read, or None
+        self.control = control  # frontend_control(args) or None
         self.tt = rt.tt
         self.origin = rt.origin_ns
         nt = len(self.tt)
@@ -463,10 +486,11 @@ class PrebakedServer:
                 "tokens_per_msg": self.k, "stream_interval": self.s,
                 "tier_attribution": "schedule" if self.sched is not None else "event",
                 "schedule": os.path.abspath(a.schedule) if a.schedule else None,
+                "schedule_sha256": self.sched_sha256,
                 "stream_capacity": self.stream_rec.capacity, "beat_steps": self.bs.n_steps,
                 "control": None if self.control is None else {
-                    "sfe_module": os.path.abspath(a.sfe_module), "sha256": self.control[1],
-                    "sfe_argv": self.control[2]},
+                    "sfe_module": os.path.abspath(a.sfe_module), "sha256": self.control[0],
+                    "sfe_argv": self.control[1]},
                 "serializers": "identity (request_deserializer=None, response_serializer=None)"}
 
     async def run(self, loop):
@@ -477,11 +501,8 @@ class PrebakedServer:
         stopper.on_stop(self.on_stop)
         server = make_server(reuseport=False)
         server.add_generic_rpc_handlers([_MethodHandler(self.pb.method, self.generate)])
-        if self.control is not None:
-            mod, _sha, _argv, profile = self.control
-            engine = mod.FakeEngine(profile, tokens_per_step=1, step_delay=0.0, record=False)
-            mod.openengine_pb2_grpc.add_ControlServicer_to_server(mod._Control(engine), server)
-            mod.health_pb2_grpc.add_HealthServicer_to_server(mod._Health(engine), server)
+        for add, servicer in (self.control[2] if self.control is not None else []):
+            add(servicer, server)
         port = bind_server(server, args.host, args.port)
         await server.start()
         info = self.info(port)
@@ -515,7 +536,7 @@ class PrebakedServer:
             a, b = rt.start_marks[seq], rt.end_marks[seq]
             payload = rt.tier_common(seq)
             payload.update({
-                "schedule_sha256": None, "pacing": "beat", "gate": "product",
+                "schedule_sha256": self.sched_sha256, "pacing": "beat", "gate": "product",
                 "method": info["method"], "prebaked": info["prebaked"],
                 "tokens_per_msg": self.k, "stream_interval": self.s,
                 "tier_attribution": info["tier_attribution"], "control": info["control"],
@@ -555,12 +576,14 @@ class _Reject(Exception):
 # ---- entry point --------------------------------------------------------------------------------
 
 def _schedule_tiers(path, tt):
-    """req_id -> planned tier_seq of the schedule (generated from this tier table)."""
+    """(req_id -> planned tier_seq, sha256 of the file) of the schedule (generated from this
+    tier table); the sha is taken as capgrpc.load takes it (sha256_file)."""
     try:
         _ids, _planned, tiers, _meta = load_schedule(path, 0, 1, tier_table_sha=tt.sha256)
+        sha = sha256_file(path)
     except OSError as e:
         raise ConfigError("cannot read --schedule %s: %s" % (path, e))
-    return tiers
+    return tiers, sha
 
 
 def main(argv=None):
@@ -574,23 +597,11 @@ def main(argv=None):
         check_inject_specs(specs)
         prebaked = load_prebaked(args.prebaked)
         ks = plan_streams(tt, prebaked, specs)
-        sched = _schedule_tiers(args.schedule, tt) if args.schedule else None
-        control = None
-        if args.sfe_module:
-            mod, sha = load_sfe_module(args.sfe_module)
-            sargv = sfe_argv(args)
-            try:
-                profile = mod._profile_from_args(mod._parse_args(sargv))
-            except SystemExit as e:
-                raise ConfigError("S-FE options %s rejected by %s (exit %s)"
-                                  % (sargv, args.sfe_module, e.code))
-            except (ValueError, TypeError, KeyError) as e:
-                raise ConfigError("S-FE options %s rejected by %s: %s"
-                                  % (sargv, args.sfe_module, e))
-            control = (mod, sha, sargv, profile)
+        sched, sched_sha = _schedule_tiers(args.schedule, tt) if args.schedule else (None, None)
+        control = frontend_control(args) if args.sfe_module else None
         rt = ToolRuntime(common, TOOL, SLOTS, SITES, 0, 1, [common.cpus[0]],
                          args.lag_period_us, args.lag_records_capacity)
-        srv = PrebakedServer(args, rt, prebaked, ks, sched, control)
+        srv = PrebakedServer(args, rt, prebaked, ks, sched, sched_sha, control)
         return aio_run(srv.run, common.loop)
     except CapkitError as e:
         print("%s: %s" % (TOOL, e), file=sys.stderr)

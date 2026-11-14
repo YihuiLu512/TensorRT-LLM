@@ -137,6 +137,9 @@ def test_reader_end_to_end_with_schedule(launch):
             "streams_completed"] == planned[seq]
         assert sp[seq][0]["counts"]["tokens_sent"] == planned[seq] * n
         assert sp[seq][0]["tier_attribution"] == "schedule"
+        # RS15: the schedule S-PB read is the one it reports
+        assert sp[seq][0]["schedule_sha256"] == hashlib.sha256(
+            open(launch.sched_path, "rb").read()).hexdigest()
         assert sp[seq][0]["prebaked"]["sha256"] == hashlib.sha256(
             open(pb_path, "rb").read()).hexdigest()
     streams, heads = launch.records("spb", "streams")
@@ -148,6 +151,8 @@ def test_reader_end_to_end_with_schedule(launch):
         assert seq == by_rid[rid] and fs >= 0 and tok == n_of[seq]
         assert nm == expect.msgs_per_request(n_of[seq], 2, 1, "product") + 1
     assert heads[0]["meta"]["tier_seq"] == "schedule"
+    assert ready_info(launch, "spb")["schedule_sha256"] == hashlib.sha256(
+        open(launch.sched_path, "rb").read()).hexdigest()
     steps, _ = launch.records("spb", "steps")
     assert sum(steps["msgs"]) == total(sp, "counts.msgs_sent") == total(sp, "beat.enqueued")
     # injection heartbeats: send.msg once per message, beat.step once per step
@@ -389,6 +394,9 @@ def test_frontend_mode_registers_control_and_health(launch):
     assert ctl["sfe_argv"] == ["--model", "m1", "--vocab-size", "151", "--eos-token-ids", "1",
                                "2", "--profile-json", profile_json]
     assert launch.summaries("spb")[0][0]["control"]["sha256"] == sha
+    # no --schedule: no schedule read, none reported
+    assert ready_info(launch, "spb")["schedule_sha256"] is None
+    assert launch.summaries("spb")[0][0]["schedule_sha256"] is None
     # the judge's C10 S-PB item reads this real frontend-mode ready file
     front_args = spb_args(pb_path, "--sfe-module", str(mod))
     assert judge_stub_item(launch, front_args, sha) == {"expected": 1, "checked": 1,
@@ -443,3 +451,34 @@ def test_frontend_mode_refuses_options_the_sfe_parser_rejects(launch):
     launch.server("spb", MOD, spb_args(pb_path, "--sfe-module", str(mod), "--vocab-size", "x"))
     assert launch.wait_exit("spb", 30) == 3, launch.stderr("spb")
     assert "rejected by" in launch.stderr("spb")
+
+
+@pytest.mark.parametrize("case,exc", [("no_entry_points", "AttributeError"),
+                                      ("profile_raises", "ParseError"),
+                                      ("engine_raises", "RuntimeError")])
+def test_frontend_setup_failures_are_config_errors(launch, case, exc):
+    """RS31: after the S-FE module is imported, taking its entry points, building the profile,
+    FakeEngine, _Control and _Health and taking the registration functions are one boundary:
+    any exception there is exit 3 naming the module and the exception type."""
+    if case == "no_entry_points":
+        body = "X = 1\n"
+    elif case == "profile_raises":
+        body = STANDIN.replace("def _profile_from_args(args):\n",
+                               "class ParseError(Exception):\n    pass\n\n\n"
+                               "def _profile_from_args(args):\n"
+                               "    raise ParseError('bad kv source')\n")
+    else:
+        body = STANDIN.replace("        self.profile, self.knobs =",
+                               "        raise RuntimeError('engine ctor')\n"
+                               "        self.profile, self.knobs =")
+    assert body != STANDIN
+    launch.write_table(table_doc([("warmup", 300, 10.0, {"n": 5}), ("drain", 300, 0.0, {})]))
+    pb_path, _doc = write_prebaked(launch)
+    mod = launch.tmp / "fake_openengine.py"
+    mod.write_text(body)
+    launch.set_origin(5.0)
+    launch.server("spb", MOD, spb_args(pb_path, "--sfe-module", str(mod), "--vocab-size", "7"))
+    assert launch.wait_exit("spb", 30) == 3, launch.stderr("spb")
+    err = launch.stderr("spb")
+    assert str(mod) in err and exc in err and "Traceback" not in err, err
+    assert not os.path.exists(launch.tree.port_file("spb"))

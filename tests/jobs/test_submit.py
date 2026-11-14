@@ -503,8 +503,10 @@ def test_plan_argv_check_parses_what_the_job_runs(monkeypatch, tmp_path):
     """The pre-parse covers the argv capjobs.launches builds: every placeholder substituted,
     the appended identity/--run-dir/--pin-table/... arguments present (launches.launch_argv),
     with one --job-input per kind the launch's scenario declares."""
-    (tmp_path / "s.json").write_text(json.dumps(
-        {"job_inputs": {"fingerprint": {"args": []}, "prebaked": {"args": []}}}))
+    scen = {"tier_table": "t.json", "schedule": "s.capbin", "prompts": "p.json",
+            "params_required": [],
+            "job_inputs": {"fingerprint": {"args": []}, "prebaked": {"args": []}}}
+    (tmp_path / "s.json").write_text(json.dumps(scen))
     seen = []
     from caplaunch import __main__ as caplaunch_main
     real = caplaunch_main.build_parser
@@ -532,6 +534,14 @@ def test_plan_argv_check_parses_what_the_job_runs(monkeypatch, tmp_path):
     with pytest.raises(submit.SubmitError, match="must run .* -m caplaunch"):
         submit.check_plan_argv(dict(plan, launches=[dict(plan["launches"][0],
                                                          argv=["{PY}", "x.py"] + argv[3:])]))
+    # RS32: a job_inputs section caplaunch would refuse is refused here, before the allocation
+    for bad in ({"prebake": {"args": []}}, {}):
+        (tmp_path / "s.json").write_text(json.dumps(dict(scen, job_inputs=bad)))
+        with pytest.raises(submit.SubmitError, match="launch 0: .*job_inputs"):
+            submit.check_plan_argv(plan)
+    (tmp_path / "s.json").write_text(json.dumps(dict(scen, prompts=5)))
+    with pytest.raises(submit.SubmitError, match="launch 0: .*prompts"):
+        submit.check_plan_argv(plan)
 
 
 def _mount_list(env, *paths, extra=()):

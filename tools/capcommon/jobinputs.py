@@ -45,6 +45,28 @@ def kinds_of(doc):
     return [k for k in KINDS if k in sec]
 
 
+def declares(doc):
+    """The scenario document has a job_inputs key (whatever its value)."""
+    return isinstance(doc, dict) and SECTION in doc
+
+
+def check_scenario(doc):
+    """What capjobs reads of a scenario with a job_inputs key, before caplaunch's
+    validate_scenario runs (capjobs.submit, capjobs.jobinputs): the section passes
+    validate_section, params_required is a list of names and tier_table, schedule and prompts
+    are relpaths inside <W>, by the rules validate_scenario applies to the same keys. Returns
+    kinds_of(doc); raises ConfigError."""
+    params = doc.get("params_required")
+    if not isinstance(params, list) or any(not isinstance(p, str) for p in params):
+        raise ConfigError("scenario with job_inputs: params_required must be a list of names")
+    for k in REGISTERED_INPUTS:
+        v = doc.get(k)
+        if not isinstance(v, str) or not v or v.startswith("/") or ".." in v.split("/"):
+            raise ConfigError("scenario with job_inputs: %s must be a relpath inside <W>" % k)
+    validate_section(doc[SECTION], set(params))
+    return kinds_of(doc)
+
+
 def validate_section(sec, params_required):
     """Structure check of a scenario's job_inputs section; raises ConfigError."""
     if not isinstance(sec, dict) or not sec:

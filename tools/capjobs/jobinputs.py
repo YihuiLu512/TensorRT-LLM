@@ -10,7 +10,8 @@ files and records the job would make):
         --out-dir DIR [--param KEY=VALUE]... [--timeout-s S]
 
 Prints one `--job-input KIND=PATH` pair per kind (the caplaunch arguments). Exit 0, or 3 when a
-generator fails or the scenario declares none.
+generator fails, the scenario has no job_inputs key or fails
+capcommon.jobinputs.check_scenario.
 """
 
 import argparse
@@ -49,14 +50,14 @@ def params_from_argv(argv):
 
 
 def generate(doc, workdir, params, python, out_dir, env, timeout_s, run=subprocess.run):
-    """Run every generator the scenario declares. Returns ({kind: path}, records); raises
-    ConfigError for a bad section, JobInputError naming the first kind that failed (its log and
-    record stay in out_dir). run: called as subprocess.run (capjobs.launches passes its
+    """Run every generator the scenario declares. Returns ({kind: path}, records), ({}, []) when
+    it has no job_inputs key; raises ConfigError for a bad section or scenario key it reads
+    (capcommon.jobinputs.check_scenario), JobInputError naming the first kind that failed (its
+    log and record stay in out_dir). run: called as subprocess.run (capjobs.launches passes its
     SIGTERM-aware run_helper; whatever else it raises propagates)."""
-    kinds = JI.kinds_of(doc)
-    if not kinds:
+    if not JI.declares(doc):
         return {}, []
-    JI.validate_section(doc[JI.SECTION], set(doc.get("params_required") or []))
+    kinds = JI.check_scenario(doc)
     inputs = {k: os.path.join(workdir, doc[k]) for k in JI.REGISTERED_INPUTS}
     os.makedirs(out_dir, exist_ok=True)
     paths, records = {}, []
@@ -129,11 +130,11 @@ def main(argv=None):
         params = params_from_argv(["--param=%s" % p for p in a.param])
         with open(os.path.join(a.workdir, a.scenario), "r", encoding="utf-8") as f:
             doc = json.load(f)
-        if not JI.kinds_of(doc):
+        if not JI.declares(doc):
             raise ConfigError("scenario %s declares no job_inputs" % a.scenario)
         paths, _recs = generate(doc, os.path.realpath(a.workdir), params, a.python, a.out_dir,
                                 dict(os.environ), a.timeout_s)
-    except (ConfigError, OSError, ValueError) as e:
+    except (ConfigError, OSError, ValueError, KeyError, TypeError) as e:
         print("capjobs.jobinputs: %s" % e, file=sys.stderr)
         return CONFIG
     print(" ".join(caplaunch_args(paths)))

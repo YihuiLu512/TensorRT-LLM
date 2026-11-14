@@ -337,6 +337,100 @@ def test_in_job_bound_counts_each_declared_kind(tmp_path):
         launchplan.PINS_TIMEOUT_S + 2 * launchplan.JOB_INPUT_TIMEOUT_S) in res[0]["reason"]
 
 
+def _bad_scenario(doc, bad):
+    """A scenario with a job_inputs key that capjobs reads before caplaunch's validate_scenario
+    does: a key missing or of the wrong type, a misspelt or no kind."""
+    if bad == "missing_prompts":
+        del doc["prompts"]
+    elif bad == "prompts_int":
+        doc["prompts"] = 5
+    elif bad == "params_required_int":
+        doc["params_required"] = 5
+    elif bad == "typo_kind":
+        doc["job_inputs"] = {"prebake": {"args": []}}
+    else:
+        doc["job_inputs"] = {}
+    return doc
+
+
+BAD_SCENARIOS = {"missing_prompts": "prompts must be", "prompts_int": "prompts must be",
+                 "params_required_int": "params_required must be",
+                 "typo_kind": "unknown kinds", "empty_section": "non-empty object"}
+
+
+@pytest.mark.parametrize("bad", sorted(BAD_SCENARIOS))
+def test_generate_checks_what_it_reads_of_the_scenario(tmp_path, bad):
+    """RS32: with a job_inputs key, generate checks the section and the scenario keys it reads
+    (params_required, tier_table, schedule, prompts) as caplaunch's validate_scenario does: a
+    ConfigError before anything is generated, never a KeyError or TypeError."""
+    w = str(tmp_path)
+    doc = _bad_scenario(scen_doc(w), bad)
+    with pytest.raises(ConfigError, match="scenario .*%s" % BAD_SCENARIOS[bad]):
+        jobinputs.generate(doc, w, {"tok": "/t", "ids": "1"}, fake_python(tmp_path),
+                           str(tmp_path / "out"), dict(os.environ), 60)
+    assert not os.path.exists(str(tmp_path / "out"))
+
+
+@pytest.mark.parametrize("bad", sorted(BAD_SCENARIOS))
+def test_bad_job_inputs_scenario_fails_only_its_launch(tmp_path, monkeypatch, bad):
+    """RS32/RS22: such a scenario fails its own launch (NOT_RUN, job_input_failed);
+    launches.json is written, the next launch runs, and capjobs.launches exits 3."""
+    monkeypatch.setattr(launches, "become_subreaper", lambda: False)  # not on pytest itself
+    a, plan, manifest = jobinput_env(tmp_path, ("ok", "ok"))
+    w = os.path.join(str(tmp_path), "W")
+    doc = _bad_scenario(json.load(open(os.path.join(w, "scen.json"))), bad)
+    with open(os.path.join(w, "bad.json"), "w") as f:
+        json.dump(doc, f)
+    argv = plan["launches"][0]["argv"]
+    argv[argv.index("--scenario") + 1] = "bad.json"
+    pp, mp = tmp_path / "plan.json", tmp_path / "manifest.json"
+    pp.write_text(json.dumps(plan))
+    mp.write_text(json.dumps(manifest))
+    out = os.path.join(a.job_dir, "launches.json")
+    assert launches.main(["--plan", str(pp), "--overlay-manifest", str(mp), "--nvidia-smi",
+                          a.nvidia_smi, "--snap", a.snap, "--hw-profile", a.hw_profile,
+                          "--job-dir", a.job_dir, "--local-root", a.local_root, "--shm-root",
+                          a.shm_root, "--run-root", a.run_root, "--job-id", "9", "--python",
+                          a.python, "--out", out, "--restart-count", "0",
+                          "--deadline-epoch", "1e12"]) == 3
+    res = json.load(open(out))
+    r0, r1 = res["launches"]
+    assert r0["status"] == "NOT_RUN" and r0["ran"] is False and r0["job_input_failed"], r0
+    assert r0["reason"].startswith("skipped: job inputs: ConfigError: scenario"), r0["reason"]
+    assert r1["status"] == "VALID" and not r1.get("job_input_failed"), r1
+    assert res["job_input_failed"] == 1
+
+
+@pytest.mark.parametrize("exc", [KeyError, TypeError])
+def test_unexpected_generate_error_fails_only_its_launch(tmp_path, monkeypatch, capsys, exc):
+    """RS32 backstop: a KeyError or TypeError left in generation still fails only its launch
+    (job_input_failed, the exception type in the reason); the command line exits 3."""
+    def boom(*_a, **_k):
+        raise exc("leftover")
+    a, plan, manifest = jobinput_env(tmp_path, ("ok", "ok"))
+    monkeypatch.setattr(jobinputs, "generate", boom)
+    res = launches.run_all(a, plan, manifest)
+    for r in res:
+        assert r["status"] == "NOT_RUN" and r["job_input_failed"], r
+        assert r["reason"].startswith("skipped: job inputs: %s" % exc.__name__), r["reason"]
+    w = os.path.join(str(tmp_path), "W")
+    assert jobinputs.main(["--workdir", w, "--scenario", "scen.json", "--python", "py",
+                           "--out-dir", str(tmp_path / "o")]) == 3
+    assert "leftover" in capsys.readouterr().err
+
+
+def test_scenario_without_job_inputs_does_not_parse_params(tmp_path):
+    """RS24: a scenario with no job_inputs key needs no job inputs, so its --param values are
+    not parsed here; a repeated --param is caplaunch's own refusal, not a job-input failure."""
+    a, plan, _manifest = launch_env(tmp_path, ["ok"])
+    ln = plan["launches"][0]
+    ln["argv"] += ["--param", "a=1", "--param", "a=2"]
+    values = {"PY": a.python, "SNAP": a.snap, "JOB_DIR": a.job_dir, "SHM_ROOT": a.shm_root,
+              "LOCAL_ROOT": a.local_root, "JOB_ID": a.job_id, "RESTART_COUNT": a.restart_count}
+    assert launches.job_inputs(a, ln, values, {}, str(tmp_path / "ji")) == ({}, [], None)
+    assert not os.path.exists(str(tmp_path / "ji"))
+
+
 def test_reserved_job_input_flag_in_plan_argv_is_refused():
     plan = {"schema": launchplan.SCHEMA, "experiment": "E0", "register_sha": "b" * 64,
             "job_arm": "job", "margin_s": 1, "kill_grace_s": 1,

@@ -404,7 +404,8 @@ def check_plan_argv(plan):
     appended arguments added, one --job-input per kind the launch's scenario declares), from
     after `-m caplaunch`. A missing required flag, an abbreviation, an unknown flag or a value of
     the wrong type is refused here; in the job it would make caplaunch exit 2 before starting
-    any role."""
+    any role. A scenario with a job_inputs key must pass capcommon.jobinputs.check_scenario
+    (in the job its launch would not run)."""
     from caplaunch.__main__ import build_parser  # noqa: PLC0415
 
     from .launches import launch_argv  # noqa: PLC0415
@@ -413,7 +414,13 @@ def check_plan_argv(plan):
         raise SubmitError(message)
 
     for ln in plan["launches"]:
-        kinds = jobinputs.kinds_of(launchplan.load_scenario(ln))
+        doc = launchplan.load_scenario(ln)
+        kinds = []
+        if jobinputs.declares(doc):
+            try:
+                kinds = jobinputs.check_scenario(doc)
+            except ConfigError as e:
+                raise SubmitError("launch %d: %s" % (ln["launch_seq"], e)) from None
         argv = launch_argv(plan, ln, EXAMPLE_PLACEHOLDER_VALUES,
                            EXAMPLE_PLACEHOLDER_VALUES["JOB_ID"], 0, "/example/run",
                            "/example/overlay_manifest.json", "/example/nvidia-smi",

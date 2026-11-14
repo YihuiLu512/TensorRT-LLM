@@ -15,7 +15,7 @@
 ## e0s-spb-frontend 的要点
 
 - **作业输入**(INTERFACES 勘误 B2B-9):`fingerprint`(与 `configs/e0` 的 S-FE 相同：只有 `tokenizer_dir` 一个参数，`--trust-remote-code false --tokenizer-mode auto` 写死，取前端角色 argv 隐含的设置)与 `prebaked`(`--pb2-module tensorrt_llm.grpc.openengine._generated.generation_pb2 --tier-table {input:tier_table} --token-ids {param:spb_token_ids} --prompt-tokens {param:spb_prompt_tokens}`),由 `capjobs.launches` 在门禁之后生成。
-- **S-FE 模块**(D16,勘误 B2B-11):覆盖清单要带 `--stub-module sfe=tests/unittest/grpc/openengine_client/fake_openengine.py`;计划写 `--param sfe_module={SNAP}/<清单里 stub_modules 的 src>`。S-PB 只自报它读到的字节的 sha,是否等于清单由判定器 C10 的 S-PB 一项判；本场景的 C10 因 `importprobe`、`httpprobe` 没有版本记录本来就是 NOT_RUN(见「判读」),所以要看 C10 的 NOT_RUN 原因里有没有 `role spb:` 开头的一项，没有才算核过。`--sfe-module` 指向另一个存在的 Python 文件时 S-PB 照样能起，只有这一项会报出来。
+- **S-FE 模块**(D16,勘误 B2B-11):覆盖清单要带 `--stub-module sfe=tests/unittest/grpc/openengine_client/fake_openengine.py`;计划写 `--param sfe_module={SNAP}/<清单里 stub_modules 的 src>`。S-PB 只自报它读到的字节的 sha,是否等于清单由判定器 C10 的 S-PB 一项判；本场景的 C10 因 `importprobe`、`httpprobe` 没有版本记录本来就是 NOT_RUN(见「判读」),所以要看 C10 的 NOT_RUN 原因里有没有 `role spb:` 开头的一项，没有才算核过。`--sfe-module` 指向另一个带同样入口的 S-FE 文件时 S-PB 照样能起，只有这一项会报出来(缺入口的文件以退出码 3 拒绝)。
 - **档位表**:`max_tokens` 固定为 16,等于 `configs/e0/e0c-httpprobe.requests.json` 两个请求的 `max_tokens`(S-PB 拒绝没有预制流的 `max_tokens`);`beat_ns` 必须 > 0(S-PB 没有 asap)。S-PB 不给 `--schedule`,流按接纳时刻归档。
 - **`spb_max_stream_records`**(S-PB 的 `--max-stream-records`):不小于时间表行数 + httpprobe 的请求数(2)。不给时 S-PB 的缺省容量只按档位表算时间表行数，httpprobe 的请求不在时间表里，会溢出(判定器报 rows dropped)。
 - `httpprobe` 的请求文件用 `--param httpprobe_requests_json=…/e0c-httpprobe.requests.json`(`model` 换成登记的 served model name 后的副本)。
