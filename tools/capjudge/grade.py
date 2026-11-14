@@ -38,31 +38,54 @@ def _red_checks(entry):
     return sorted(c for c, s in (entry.get("checks") or {}).items() if s == "RED")
 
 
+def _tool_void(entry):
+    red = _red_checks(entry)
+    return entry["verdict"] == "VOID" and bool(red) and set(red) <= set(TOOL_CHECKS)
+
+
+def first_non_stable(tiers):
+    """The walk launch_grade makes over verdicts.json `tiers`: the judged load tiers in load
+    order; VOID / NOT_RUN tiers whose RED checks are not only C1 / C2 are passed over (listed in
+    `skipped`). Returns {"judged", "first", "last_stable", "skipped"}: `first` is the first
+    tier that decides the grade (UNSTABLE, UNDETERMINED, or VOID with only C1 / C2 RED; None
+    when there is none) and `last_stable` the highest STABLE tier below it (the highest STABLE
+    tier overall when `first` is None) -- the grade's interval lower end, which the shape
+    builders (capjudge.calib) also take as a launch's healthy maximum."""
+    judged = [e for e in tiers if e.get("judged") and e.get("order_key") is not None]
+    judged.sort(key=lambda e: (e["order_key"], e["tier_seq"]))
+    last_stable, skipped = None, []
+    for e in judged:
+        v = e["verdict"]
+        if v == "STABLE":
+            last_stable = e
+            continue
+        if v in ("VOID", "NOT_RUN") and not _tool_void(e):
+            skipped.append({"tier_seq": e["tier_seq"], "verdict": v, "red": _red_checks(e)})
+            continue
+        return {"judged": judged, "first": e, "last_stable": last_stable, "skipped": skipped}
+    return {"judged": judged, "first": None, "last_stable": last_stable, "skipped": skipped}
+
+
 def launch_grade(tiers, boundary):
     """Grade of one judged launch from verdicts.json `tiers` (load tiers carry verdict, checks,
     order_key, X with X.I) and its T4 boundary (a non-monotone boundary is noted)."""
     out = {"grade": "NOT_RUN", "reasons": [], "skipped_tiers": [], "V": "NOT_RUN: across "
            "launches, capjudge.intervene", "granularity": "process", "I_status": None}
     if (boundary or {}).get("non_monotone"):
-        out["reasons"].append("T4: a stable tier lies above the lowest unstable tier")
-    judged = [e for e in tiers if e.get("judged") and e.get("order_key") is not None]
-    judged.sort(key=lambda e: (e["order_key"], e["tier_seq"]))
+        out["reasons"].append("T4: a stable tier lies above the lowest unstable or "
+                              "undetermined tier")
+    w = first_non_stable(tiers)
+    judged = w["judged"]
     if not any(e["verdict"] in ("STABLE", "UNSTABLE", "UNDETERMINED") for e in judged):
         out["reasons"].append("no load tier passed P")
         return out
-    last_stable = None
-    for e in judged:
+    last_stable, e = w["last_stable"], w["first"]
+    out["skipped_tiers"] = w["skipped"]
+    if e is not None:
         v = e["verdict"]
-        if v == "STABLE":
-            last_stable = e
-            continue
-        if v in ("VOID", "NOT_RUN"):
-            red = _red_checks(e)
-            if v == "VOID" and red and set(red) <= set(TOOL_CHECKS):
-                return _lower(out, last_stable, "tier %d: %s RED (a tool left its healthy "
-                              "band first)" % (e["tier_seq"], red))
-            out["skipped_tiers"].append({"tier_seq": e["tier_seq"], "verdict": v, "red": red})
-            continue
+        if v == "VOID":
+            return _lower(out, last_stable, "tier %d: %s RED (a tool left its healthy "
+                          "band first)" % (e["tier_seq"], _red_checks(e)))
         if v == "UNDETERMINED":
             out.update(grade="UNDETERMINED", tier_seq=e["tier_seq"], I_status="UNDETERMINED")
             out["reasons"].append("tier %d: I signals disagree" % e["tier_seq"])

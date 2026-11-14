@@ -684,10 +684,12 @@ def test_shape_builder_never_leaves_a_launch_out_of_the_maximum(tmp_path, monkey
 
     def no_lower(*a):
         sel = real(*a)
-        sel["verdicts"]["boundary_T4"] = dict(sel["verdicts"]["boundary_T4"], lower_seq=None)
+        for t in sel["verdicts"]["tiers"]:
+            if t.get("verdict") == "STABLE":
+                t["verdict"] = "UNSTABLE"
         return sel
     monkeypatch.setattr(K, "_select", no_lower)
-    with pytest.raises(K.CalibError, match="T4 has no lower end") as e:
+    with pytest.raises(K.CalibError, match="no stable tier below the first non-stable") as e:
         K.build_shapes("loadgen_band", str(lst), str(W))
     assert str(tree) in str(e.value)
     monkeypatch.setattr(K, "_select", real)
@@ -702,3 +704,119 @@ def test_shape_builders_reject_bad_lists(tmp_path, line):
     W, tree = _judged(tmp_path, "good")
     p, o = _build(tmp_path, W, "loadgen-band", [line.format(t=tree)])
     assert p.returncode == 3 and not o.exists()
+
+
+# ---- b2-judge FU-3 / FU-4 (calib-v2 DESIGN-r7a 3.5 test 41; errata calib-v2-A1) -------------
+# The cases of code-review/self-review-compare/capkit-b2judge-J17871/R3/_compare/repro_b2.py.
+
+from capjudge import boundary as BD  # noqa: E402
+from capjudge import grade as G  # noqa: E402
+from capjudge import stats as ST  # noqa: E402
+
+LD_LOC = {"status": "LOCALIZED", "role": "ld", "measure_class": "load_source"}
+
+
+def _rt(seq, load, v, i=None):
+    e = {"tier_seq": seq, "order_key": load, "load_value": load, "verdict": v,
+         "judged": True, "checks": {}}
+    if i:
+        e["X"] = {"I": i}
+    return e
+
+
+def _judge_like(tiers):
+    """boundary_T4 and grade as capjudge.judge writes them for these tiers (P+X+I+V)."""
+    t4 = ST.t4_boundary([{"seq": e["tier_seq"], "order_key": e["order_key"],
+                          "load_value": e["load_value"], "verdict": e["verdict"]}
+                         for e in tiers])
+    t4["undetermined_seqs"] = [e["tier_seq"] for e in tiers if e["verdict"] == "UNDETERMINED"]
+    return {"tiers": tiers, "boundary_T4": t4, "grade": G.launch_grade(tiers, t4),
+            "mode": "P+X+I+V"}
+
+
+HINT = "T4: a stable tier lies above the lowest unstable or undetermined tier"
+
+
+def test_fu3_non_monotone_max_tier_is_the_grade_lower_end():
+    v = _judge_like([_rt(1, 10, "STABLE"), _rt(2, 20, "UNSTABLE", LD_LOC),
+                     _rt(3, 30, "STABLE")])
+    assert v["boundary_T4"]["lower_seq"] == 3 and v["boundary_T4"]["non_monotone"] is True
+    assert v["grade"]["interval"]["lower_seq"] == 1 and HINT in v["grade"]["reasons"]
+    assert K._healthy_max_tier(v, "/t") == (1, 2)
+    assert K.max_attribution(v, "ld")[0] is True      # the same tier the attribution names
+
+
+def test_fu4_undetermined_below_a_stable_tier_is_non_monotone():
+    v = _judge_like([_rt(1, 10, "STABLE"), _rt(2, 20, "UNDETERMINED"), _rt(3, 30, "STABLE")])
+    t4 = v["boundary_T4"]
+    assert t4["non_monotone"] is True
+    # the interval itself is unchanged: only STABLE / UNSTABLE make it
+    assert (t4["lower_seq"], t4["upper_seq"], t4["kind"]) == (3, None, "lower_bound_only")
+    assert v["grade"]["grade"] == "UNDETERMINED" and HINT in v["grade"]["reasons"]
+    assert K._healthy_max_tier(v, "/t") == (1, 2)
+    # UNDETERMINED above the highest stable tier: monotone, no hint
+    v2 = _judge_like([_rt(1, 10, "STABLE"), _rt(2, 20, "UNDETERMINED")])
+    assert v2["boundary_T4"]["non_monotone"] is False and HINT not in v2["grade"]["reasons"]
+    # the analysis scripts' T4 recheck compares lower / upper / seqs / kind only
+    assert BD.launch_interval(v)[0]["lower_seq"] == 3
+
+
+def test_fu3_fu4_monotone_launch_is_unchanged():
+    v = _judge_like([_rt(1, 10, "STABLE"), _rt(2, 20, "STABLE"), _rt(3, 30, "UNSTABLE", LD_LOC)])
+    t4 = v["boundary_T4"]
+    assert (t4["lower_seq"], t4["upper_seq"], t4["kind"], t4["non_monotone"]) == \
+        (2, 3, "interval", False)
+    assert K._healthy_max_tier(v, "/t") == (2, 3) and HINT not in v["grade"]["reasons"]
+    # the load source saturated first: LOWER_BOUND, the interval has no upper end
+    assert v["grade"]["grade"] == "LOWER_BOUND"
+    assert v["grade"]["interval"] == {"lower_seq": 2, "lower": 20, "upper_seq": None,
+                                      "upper": None}
+
+
+def test_max_tier_skips_other_void_tiers_as_the_grade_does():
+    tiers = [_rt(1, 10, "STABLE"), dict(_rt(2, 20, "VOID"), checks={"C5": "RED"}),
+             _rt(3, 30, "STABLE"), dict(_rt(4, 40, "VOID"), checks={"C1": "RED"}),
+             _rt(5, 50, "STABLE")]
+    v = _judge_like(tiers)
+    assert K._healthy_max_tier(v, "/t") == (3, 4) and v["grade"]["interval"]["lower_seq"] == 3
+    assert v["boundary_T4"]["lower_seq"] == 5
+
+
+def test_max_tier_refuses_a_grade_that_names_another_tier():
+    v = _judge_like([_rt(1, 10, "STABLE"), _rt(2, 20, "UNSTABLE", LD_LOC)])
+    v["grade"]["interval"]["lower_seq"] = 7
+    with pytest.raises(K.CalibError, match="interval lower end is tier 7"):
+        K._healthy_max_tier(v, "/t")
+    with pytest.raises(K.CalibError, match="no stable tier below"):
+        K._healthy_max_tier(_judge_like([_rt(1, 10, "UNSTABLE", LD_LOC),
+                                         _rt(2, 20, "STABLE")]), "/t")
+
+
+def test_shape_builder_takes_the_tier_below_the_first_non_stable(tmp_path, monkeypatch):
+    # the good sample re-labelled S U S on its three rate tiers (warm-up 10, 20, 40 req/s):
+    # the maximum comes from tier 0, inputs[] records tier 0, the first non-stable tier 2 and
+    # the T4 lower end 4; the launch is uncensored (the grade localised tier 2 to capload)
+    W, tree = _judged(tmp_path, "good")
+    lst = tmp_path / "l.tsv"
+    lst.write_text("%s\t2,4\tcapload\tld-r\n" % tree)
+    real, asked = K._select, []
+    loc = dict(LD_LOC, role="capload")
+
+    def relabel(*a):
+        sel = real(*a)
+        tiers = [_rt(0, 10.0, "STABLE"), _rt(2, 20.0, "UNSTABLE", loc), _rt(4, 40.0, "STABLE")]
+        sel["verdicts"].update(_judge_like(tiers))
+        return sel
+
+    def spy(ctx, t, role, k, split, lk):
+        asked.append(t.seq)
+        return real_load(ctx, t, role, k, split, lk)
+    real_load = K.worker_load
+    monkeypatch.setattr(K, "_select", relabel)
+    monkeypatch.setattr(K, "worker_load", spy)
+    d = K.build_shapes("loadgen_band", str(lst), str(W))
+    assert set(asked) == {0}
+    assert d["inputs"][0]["max_tier"] == {"tier_seq": 0, "first_non_stable_seq": 2,
+                                          "t4_lower_seq": 4}
+    mx = d["shapes"]["ld-r"]["per_worker_max"]
+    assert mx["censored"] is False and mx["value"] != 20.0

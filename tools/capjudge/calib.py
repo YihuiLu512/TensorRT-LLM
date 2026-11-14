@@ -418,14 +418,39 @@ def max_attribution(verdicts, role):
     return False, att
 
 
+def _healthy_max_tier(verdicts, tree):
+    """(tier seq of a launch's healthy maximum, seq of its first non-stable tier or None): the
+    highest STABLE judged load tier below the tier that decides the grade, found by the walk
+    capjudge.grade makes (first_non_stable: VOID / NOT_RUN tiers with RED checks other than
+    C1 / C2 are passed over), so the maximum is the grade's interval lower end and
+    max_attribution's attribution is about that deciding tier. A launch with a grade
+    whose interval names another lower tier, or without a stable tier there, is an error
+    naming the tree."""
+    from . import grade as G
+    w = G.first_non_stable(verdicts.get("tiers") or [])
+    top = w["last_stable"]
+    first_seq = None if w["first"] is None else w["first"]["tier_seq"]
+    if top is None:
+        raise CalibError("%s: no stable tier below the first non-stable one: its healthy "
+                         "maximum is unknown; take the tree out of the list" % tree)
+    g = verdicts.get("grade")
+    iv = g.get("interval") if isinstance(g, dict) else None
+    if isinstance(iv, dict) and iv.get("lower_seq") != top["tier_seq"]:
+        raise CalibError("%s: the grade's interval lower end is tier %s but its tiers give "
+                         "tier %d" % (tree, iv.get("lower_seq"), top["tier_seq"]))
+    return top["tier_seq"], first_seq
+
+
 def build_shapes(kind, list_path, W):
     """loadgen_band (E1) or the out-of-domain part of stub_calib (E2a). For each shape: the
     health bands are T3 [min, max] of the per-worker statistics (loadgen_worker_stats /
     stub_worker_stats) over the listed STABLE tiers; the healthy maximum is, per launch, the
-    busiest worker's planned load in the highest STABLE tier (verdicts.json boundary_T4
-    lower end), and over launches the smallest of those (the lower end of the T4 envelope); a
-    listed launch without that lower end, or whose planned load there cannot be computed, is
-    an error (CalibError naming the tree), never left out of the minimum.
+    busiest worker's planned load in the highest STABLE tier below the first non-stable tier
+    (_healthy_max_tier: the grade's interval lower end; it lies below the T4 lower end whenever
+    a STABLE tier lies above that first non-stable tier), and over launches the smallest of
+    those; a listed launch without that tier, or whose planned load there cannot be computed,
+    is an error (CalibError naming the tree), never left out of the minimum. Each input
+    records `max_tier` (the tier taken, the first non-stable tier, the T4 lower end).
     It is `censored` (only "at least this") unless every contributing launch's grade
     localised its first non-stable tier to the bound role (max_attribution; each input
     records its attribution): a launch whose limit was reached elsewhere, or never, says
@@ -477,11 +502,10 @@ def build_shapes(kind, list_path, W):
         b = sel["verdicts"].get("boundary_T4") or {}
         rec["boundary_T4"] = b
         measured, rec["attribution"] = max_attribution(sel["verdicts"], role)
-        if b.get("lower_seq") is None:
-            raise CalibError("%s: T4 has no lower end (no stable tier below the first "
-                             "non-stable one): its healthy maximum is unknown; take the tree "
-                             "out of the list" % tree)
-        t = ctx.tt.tiers[b["lower_seq"]]
+        top_seq, first_seq = _healthy_max_tier(sel["verdicts"], tree)
+        rec["max_tier"] = {"tier_seq": top_seq, "first_non_stable_seq": first_seq,
+                           "t4_lower_seq": b.get("lower_seq")}
+        t = ctx.tt.tiers[top_seq]
         loads = [worker_load(ctx, t, role, k, split, lk) for k in range(workers)]
         bad = sorted({why for v, why in loads if v is None})
         if bad:
@@ -490,7 +514,7 @@ def build_shapes(kind, list_path, W):
         S["maxes"].append(max(v for v, _w in loads))
         S["tk"].add(t.tokens_per_msg)
         S["sc"].add(t.streams_c)
-        if b.get("kind") == "lower_bound_only" or not measured:
+        if first_seq is None or not measured:
             S["censored"] = True
     shapes = {}
     for shape, S in sorted(acc.items()):
