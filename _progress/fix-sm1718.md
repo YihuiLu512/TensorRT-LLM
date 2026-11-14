@@ -78,3 +78,8 @@
 ### 说明
 - 本机同时有其他会话的 pytest 在跑（b2-judge 树、J17912），不是本子批次的进程；本子批次的 pytest 始终一次一个。
 - fakebin.log：v2 的 10 个测试目录与 selftest 期间无新增行；e2e 每个作业 3 行（simgate 的 scontrol show job/node、squeue，均为 exit 97 替身，与往轮同形）；SM-17 复现的 ssh 调用走 repro/sm17-v2/bin/ssh（不连网）。
+- 2026-11-15 00:30:38 开始 R1 修复（slug capkit-fixsm1718-J17871，base head 4cb310a1cb）：F1–F9，先读码
+- 2026-11-15 00:34:42 R1 修复：跑新用例 test_unrequested 的 resolve/queue-length 部分（约 1 分钟）
+- 2026-11-15 00:35:48 R1 修复变异 M9（make_server 不设排队条数上限）/M10（第 2 项失败仍查第 3 项）/M11（不留之前各次 stderr），约 2 分钟
+- 2026-11-15 00:37:33 R1 修复：代码与测试已改（F1–F4、F7），变异 M9/M10/M11 均被抓到；排队条数复现 repro/r1-pending 重跑；下一步改 INTERFACES 勘误与 README
+- 2026-11-15 00:40:22 R1 修复：勘误第 1–3 条重写、§5.5.2 指引注、jobs/README 已同步；累计规则 RS1–RS27 全量核对后再收紧 2 处措辞（测试 docstring 不写内核缺省值、勘误变异数写明一次运行）；提交

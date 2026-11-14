@@ -1,20 +1,26 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""grpc.server_max_unrequested_time_in_server on every capkit gRPC server.
+"""The limits on every capkit gRPC server's queue of calls the application has not picked up yet.
 
-gRPC core cancels a call that waits longer than this in the server's queue of calls the
-application has not picked up yet (grpcio default 30 s). A server whose event loop falls behind
+gRPC core ends a call in that queue when it has waited longer than
+grpc.server_max_unrequested_time_in_server (grpcio default 30 s) or when the queue is longer than
+grpc.server.max_pending_requests (soft) / _hard_limit. A server whose event loop falls behind
 under overload then cancels streams that the load generator would have counted against its
-registered timeout. The local reproduction blocks the server's event loop with a sleep injection
-while the load generator keeps opening streams.
+registered timeout. The local reproductions block the server's event loop while clients keep
+opening streams.
 """
 
+import asyncio
 import json
+import os
+import sys
+import time
 import types
 
 import pytest
 
-from capgrpc.common import (GRPC_INT_MAX, UNREQUESTED_OPTION, make_server,
+from capgrpc.common import (GRPC_INT_MAX, PENDING_HARD_OPTION, PENDING_OPTION,
+                            UNREQUESTED_OPTION, AnyMethodHandler, bind_server, make_server,
                             resolve_max_unrequested)
 from capcommon.exitcodes import ConfigError
 
@@ -47,7 +53,8 @@ def test_default_without_a_registered_timeout_is_the_table_length():
 
 def test_explicit_value_at_or_above_the_timeout_is_used():
     got = resolve_max_unrequested(60, _tt(60 * S, 900 * S))
-    assert got == {UNREQUESTED_OPTION: 60, "source": "--max-unrequested-s"}
+    assert got == {UNREQUESTED_OPTION: 60, PENDING_OPTION: GRPC_INT_MAX,
+                   PENDING_HARD_OPTION: GRPC_INT_MAX, "source": "--max-unrequested-s"}
     assert resolve_max_unrequested(1, _tt(None, 900 * S))[UNREQUESTED_OPTION] == 1
     assert resolve_max_unrequested(GRPC_INT_MAX, _tt(None, S))[UNREQUESTED_OPTION] == GRPC_INT_MAX
 
@@ -112,13 +119,14 @@ def _counts(launch, role, key):
 
 
 def _recorded_option(launch, role):
-    """The value written to the role's ready file and to every tier summary (one value)."""
+    """The time limit written to the role's ready file and to every tier summary (one value);
+    every record also carries the queue length limits make_server sets."""
     with open(launch.tree.ready_file(role)) as f:
         ready = json.load(f)
-    vals = {w["info"]["grpc_server_options"][UNREQUESTED_OPTION]
-            for w in ready["info"]["workers"]}
-    vals |= {d["grpc_server_options"][UNREQUESTED_OPTION]
-             for docs in launch.summaries(role).values() for d in docs}
+    recs = [w["info"]["grpc_server_options"] for w in ready["info"]["workers"]]
+    recs += [d["grpc_server_options"] for docs in launch.summaries(role).values() for d in docs]
+    assert {(r[PENDING_OPTION], r[PENDING_HARD_OPTION]) for r in recs} == {(GRPC_INT_MAX,) * 2}
+    vals = {r[UNREQUESTED_OPTION] for r in recs}
     assert len(vals) == 1, vals
     return vals.pop()
 
@@ -142,7 +150,8 @@ def _sink_stall(launch, value_s):
 
 
 def test_short_value_cancels_streams_queued_behind_a_stalled_loop(launch):
-    """The option reaches gRPC core: with 1 s, streams queued ~2.3-2.8 s are cancelled."""
+    """The option reaches gRPC core: with 1 s, at least one stream queued behind the 3 s stall
+    is cancelled, and every stream is either cancelled or completed."""
     fails = _sink_stall(launch, 1)
     assert fails.get("grpc_CANCELLED", 0) >= 1, fails
     assert _counts(launch, "load", "ok") + fails["grpc_CANCELLED"] == 4
@@ -157,9 +166,10 @@ def test_long_value_keeps_streams_queued_behind_a_stalled_loop(launch):
 
 def test_relay_default_outlasts_the_grpc_30s_default(launch):
     """SEAMS SM-18 reproduction: the relay's loop is blocked 32 s while 3 more streams arrive;
-    with gRPC's own 30 s limit they are cancelled (grpc_CANCELLED at the load generator, missing
-    from the relay's streams_accepted). The relay's default (no --max-unrequested-s) is the
-    longer of the registered timeout (45 s) and the table length, so they complete. ~45 s."""
+    with gRPC's own 30 s limit, streams queued longer than 30 s are cancelled (grpc_CANCELLED at
+    the load generator, missing from the relay's streams_accepted). The relay's default (no
+    --max-unrequested-s) is the longer of the registered timeout (45 s) and the table length, so
+    all of them complete. ~45 s."""
     launch.write_table(table_doc([("warmup", 1000, 4.0, {"n": 1}), ("drain", 36000, 0.0, {})],
                                  timeout_ns=45 * S))
     launch.set_origin(4.0)
@@ -181,3 +191,92 @@ def test_relay_default_outlasts_the_grpc_30s_default(launch):
     assert _counts(launch, "load", "ok") == 4
     assert _counts(launch, "relay1", "streams_accepted") == 4
     assert _counts(launch, "relay1", "streams_completed") == 4
+
+
+# ---- queue length limit ------------------------------------------------------------------------
+
+PENDING_CLIENT = r"""
+import asyncio, collections, json, os, sys, time
+import grpc
+
+port, n, stalled, go = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3], sys.argv[4]
+
+
+def wait_file(path, limit_s):
+    end = time.monotonic() + limit_s
+    while not os.path.exists(path):
+        if time.monotonic() > end:
+            raise SystemExit("no %s within %s s" % (path, limit_s))
+        time.sleep(0.02)
+
+
+async def main():
+    ch = grpc.aio.insecure_channel("127.0.0.1:%d" % port,
+                                   options=[("grpc.use_local_subchannel_pool", 1)])
+    call = ch.unary_stream("/capkit.Test/Pending", request_serializer=None,
+                           response_deserializer=None)
+
+    async def one(body):
+        try:
+            async for _ in call(body, timeout=90):
+                pass
+            return "OK"
+        except grpc.aio.AioRpcError as e:
+            return e.code().name
+
+    await asyncio.wait_for(ch.channel_ready(), 30)
+    first = asyncio.ensure_future(one(b"stall"))
+    await asyncio.get_running_loop().run_in_executor(None, wait_file, stalled, 30)
+    rest = [asyncio.ensure_future(one(b"go")) for _ in range(n)]
+    await asyncio.sleep(1.5)  # time for the n calls to reach the blocked server's queue
+    open(go, "w").close()
+    got = await asyncio.gather(*rest)
+    print(json.dumps({"first": await first, "rest": dict(collections.Counter(got))}))
+    await ch.close()
+
+
+asyncio.run(main())
+"""
+
+
+def test_queue_length_limit_drops_no_call_behind_a_stalled_loop(tmp_path):
+    """make_server's queue length limits: 2500 calls queue while the server's loop is blocked
+    (without these limits gRPC core cancels some of them); all complete. The client is another
+    process because the block stops this process's event loop."""
+    n = 2500
+    stalled, go = str(tmp_path / "stalled"), str(tmp_path / "go")
+
+    def factory(_method):
+        async def behavior(request, _context):
+            if request == b"stall":
+                open(stalled, "w").close()
+                end = time.monotonic() + 60
+                while not os.path.exists(go) and time.monotonic() < end:
+                    time.sleep(0.02)  # blocks the event loop on purpose
+            yield b"x"
+
+        return behavior
+
+    async def main():
+        server = make_server(reuseport=False, max_unrequested_s=60)
+        server.add_generic_rpc_handlers([AnyMethodHandler(factory)])
+        port = bind_server(server, "127.0.0.1", 0)
+        await server.start()
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, "-B", "-c", PENDING_CLIENT, str(port), str(n), stalled, go,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            try:
+                out, err = await asyncio.wait_for(proc.communicate(), 150)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                raise
+        finally:
+            await server.stop(0)
+        return proc.returncode, out.decode(), err.decode()
+
+    rc, out, err = asyncio.run(main())
+    assert rc == 0, err
+    assert os.path.exists(go), "the client never released the stall"
+    assert json.loads(out) == {"first": "OK", "rest": {"OK": n}}, out

@@ -805,16 +805,15 @@ def cmd_slurm_view(a, runner):
     if not JOB_ID_RE.match(a.job_id) or not a.job_id.isdigit():
         raise SubmitError("--job-id must be a numeric cluster job id")
     job_dir = os.path.abspath(a.job_dir)
-    if not os.path.isdir(job_dir):
-        raise FileNotFoundError("job dir %s does not exist (the job creates it)" % job_dir)
+    slurmview.check_job_dir(job_dir)
     doc = slurmview.collect(get_runner(a, runner), a.login_host, a.job_id, a.attempts,
                             a.retry_wait_s)
     out = {"node": doc["node"], "rcs": [i["rc"] for i in doc["items"]],
            "attempts": [i["attempts"] for i in doc["items"]]}
     failed = slurmview.failed_items(doc)
     if failed:
-        out.update(path=None, failed=[{k: it[k] for k in ("id", "cmd", "rc", "retried_rcs",
-                                                           "stderr")} for it in failed])
+        keys = ("id", "cmd", "rc", "stderr", "retried_rcs", "retried_stderr")
+        out.update(path=None, failed=[{k: it[k] for k in keys} for it in failed])
         emit(out)
         print("capjobs.submit: slurm-view: item(s) %s still failed after %d attempt(s); "
               "slurm_view.json not written" % ([it["id"] for it in failed], a.attempts),
