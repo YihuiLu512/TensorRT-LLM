@@ -400,13 +400,24 @@ def test_job_env_dir_missing_is_not_run(tmp_path):
     _no_leftovers(T)
 
 
-def test_tool_runtime_helper_is_attributed_not_unattributed(tmp_path):
+@pytest.mark.parametrize("extra_env", [
+    {},
+    {"PYTHONDONTWRITEBYTECODE": "1"},  # what jobs/capkit_inner.sh exports
+    {"PYTHONDONTWRITEBYTECODE": "1", "PYTHONOPTIMIZE": "1", "PYTHONNOUSERSITE": "1"},
+], ids=["plain", "job-env", "more-flags"])
+def test_tool_runtime_helper_is_attributed_not_unattributed(tmp_path, extra_env):
     """multiprocessing's resource tracker started by a tool role (here a stub) is an aux_helper
-    of that role; a non-whitelisted child of the same role stays unattributed."""
+    of that role, also when interpreter flags from the environment put options in front of its
+    `-c` (errata R5-1); a non-whitelisted child of the same role stays unattributed."""
     roles = cf.default_roles(server_args=["--drain-delay-ms", "150", "--mp-helper",
                                           "--plain-child"],
                              client_args=["--drain-delay-ms", "100"], with_observers=False)
-    r, T = _launch(tmp_path, roles)
+    wd = cf.make_workdir(tmp_path, cf.tier_doc(_gate()), roles)
+    T = os.path.join(str(tmp_path), "T")
+    env = cf._env()
+    env.update(extra_env)
+    r = cf.subprocess.run(cf.launch_argv(wd, T, os.path.join(str(tmp_path), "shm")), env=env,
+                          capture_output=True, text=True, timeout=120)
     assert r.returncode == 0, r.stderr
     rj = _j(T, "raw", "procs", "roles.json")
     aux = rj["aux_helpers"]
@@ -416,6 +427,8 @@ def test_tool_runtime_helper_is_attributed_not_unattributed(tmp_path):
     assert aux[0]["role"] == "nullsse" and aux[0]["rule"] == "mp_resource_tracker"
     assert aux[0]["category"] == "aux_helper" and aux[0]["ppid"] == nullsse0
     assert "multiprocessing.resource_tracker" in aux[0]["cmdline"][-1]
+    if extra_env:
+        assert "-B" in aux[0]["cmdline"][1:-2], aux[0]["cmdline"]
     un = rj["unattributed"]
     assert [u["argv"] for u in un] == [["sleep", "600"]], un
     hp = aux[0]["pid"]
@@ -448,6 +461,33 @@ def test_outer_capprobe_tier_conflict_fails_before_anything_starts(tmp_path, key
                           capture_output=True, text=True, timeout=120)
     assert r.returncode == 3 and key in r.stderr, (r.returncode, r.stderr)
     assert not os.path.exists(os.path.join(T, "raw", "launch.json"))
+
+
+@pytest.mark.parametrize("lag", ["\u00b2", "\u0661", "0", "-1", "1e3", ""],
+                         ids=["superscript-2", "arabic-1", "zero", "negative", "float", "empty"])
+def test_lag_period_param_must_be_an_ascii_integer(tmp_path, lag):
+    """U6: --param lag_period_us is a positive ASCII integer; anything else (including digits
+    str.isdigit() accepts but int() rejects, like '\u00b2') is a config error, exit 3, before the
+    tree is written."""
+    roles = cf.default_roles(with_observers=False)
+    wd = cf.make_workdir(tmp_path, cf.tier_doc(_gate()), roles, params_required=["lag_period_us"])
+    T = os.path.join(str(tmp_path), "T")
+    r = cf.run_launch(cf.launch_argv(wd, T, os.path.join(str(tmp_path), "shm"),
+                                     params=["lag_period_us=%s" % lag]))
+    assert r.returncode == 3 and "lag_period_us must be an integer > 0" in r.stderr, (
+        r.returncode, r.stderr[-2000:])
+    assert not os.path.exists(os.path.join(T, "raw", "launch.json"))
+
+
+def test_lag_period_param_ascii_integer_is_accepted(tmp_path):
+    """Positive control of the test above: the same launch with lag_period_us=1000 runs."""
+    roles = cf.default_roles(with_observers=False)
+    wd = cf.make_workdir(tmp_path, cf.tier_doc(_gate()), roles, params_required=["lag_period_us"])
+    T = os.path.join(str(tmp_path), "T")
+    r = cf.run_launch(cf.launch_argv(wd, T, os.path.join(str(tmp_path), "shm"),
+                                     params=["lag_period_us=1000"]))
+    assert r.returncode == 0, r.stderr[-2000:]
+    assert read_state(T)[-1][1] == "VALID"
 
 
 def test_tree_with_a_state_line_is_refused(tmp_path):

@@ -287,9 +287,15 @@ class Collector:
             if not cls.strip().lower().startswith("0x02") or \
                     os.path.lexists(os.path.join(d, "physfn")):
                 continue
-            ven, _ = procfs.try_read_text(os.path.join(d, "vendor"))
-            dev, _ = procfs.try_read_text(os.path.join(d, "device"))
-            model = "%s:%s" % ((ven or "?").strip(), (dev or "?").strip())
+            ids = []
+            for name in ("vendor", "device"):
+                v, err = procfs.try_read_text(os.path.join(d, name))
+                if v is None or not v.strip():
+                    # a guessed model would be a different identity value, not an unreadable one
+                    self.put("nics", unreadable("%s/%s: %s" % (a, name, err or "empty")), None)
+                    return
+                ids.append(v.strip())
+            model = "%s:%s" % tuple(ids)
             counts[model] = counts.get(model, 0) + 1
         self.put("nics", [{"model": m, "count": n} for m, n in sorted(counts.items())],
                  "container:/sys/bus/pci")

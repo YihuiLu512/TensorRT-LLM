@@ -378,10 +378,10 @@ def fake_snap(tmp_path, extra=None):
            "CAPJOBS_IMAGE_SHA256": "0" * 64, "CAPJOBS_IMAGE_SIZE": "3",
            "CAPJOBS_IMAGE_MTIME_NS": "1",
            "CAPJOBS_MOUNTS": "%s:%s" % (tmp_path, tmp_path), "CAPJOBS_SRUN_MPI": "none",
-           "CAPJOBS_TIME_LIMIT_S": "3600"}
+           "CAPJOBS_TIME_LIMIT_S": "3600", "CAPJOBS_WORKDIR": str(tmp_path / "W")}
     env.update(extra or {})
     (snap / "job.env").write_text("".join("export %s='%s'\n" % kv for kv in env.items()))
-    for d in ("runs", "local", "shm"):
+    for d in ("runs", "local", "shm", "W"):
         (tmp_path / d).mkdir()
     return str(snap)
 
@@ -566,6 +566,12 @@ def test_inner_run_wires_registered_limits_into_profile_gate_and_launches(tmp_pa
     gpu = [ln.split(" ") for ln in calls.read_text().splitlines()
            if ln.startswith("-m capjobs.envfiles gpu-idle")][0]
     assert flag(gpu, "--max-alloc-gpus") == "1" and flag(gpu, "--nvidia-smi") == str(smi)
+    # U2: <W> (the registered inputs the launches read) is checked readable in the container
+    mnt = [ln.split(" ") for ln in calls.read_text().splitlines()
+           if ln.startswith("-m capjobs.envfiles mounts")]
+    assert len(mnt) == 1
+    must = [mnt[0][i + 1] for i, x in enumerate(mnt[0]) if x == "--must-read"]
+    assert must == [snap, str(jd), str(tmp_path / "W")], must
     lau = call_of(calls, "capjobs.launches")
     assert flag(lau, "--nvidia-smi") == str(smi)
     assert flag(lau, "--overlay-manifest") == snap + "/overlay_manifest.json"
@@ -579,6 +585,19 @@ def test_inner_run_wires_registered_limits_into_profile_gate_and_launches(tmp_pa
     assert real_hwprofile.main(prof) == 0
     doc = json.load(open(jd / "env" / "hw_profile.json"))
     assert doc["profile"]["gpu_count"] == 1 and doc["profile"]["chassis_model"] == "DGXB200"
+
+
+def test_inner_without_workdir_is_env_invalid(tmp_path):
+    snap, calls, _ = run_snap(tmp_path, CAPJOBS_WORKDIR="")
+    jd = tmp_path / "runs" / "J4242-r0"
+    jd.mkdir()
+    slurm_view_doc(jd)
+    r = subprocess.run(["bash", INNER, snap, str(jd), "run"], capture_output=True, text=True,
+                       env=slurm_env(tmp_path))
+    assert r.returncode == 6
+    assert "CAPJOBS_WORKDIR" in read_state(str(jd))[-1][3]
+    assert "capjobs.envfiles mounts" not in calls.read_text()
+    assert "capjobs.launches" not in calls.read_text()
 
 
 def test_inner_without_base_commit_is_env_invalid(tmp_path):

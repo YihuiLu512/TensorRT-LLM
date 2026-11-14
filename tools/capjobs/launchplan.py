@@ -32,6 +32,9 @@ from capcommon.exitcodes import ConfigError
 from capcommon.identity import ARM_RE, EXPERIMENT_RE, SHA256_RE
 
 SCHEMA = "capkit.launch_plan/1"
+# Upper bound of one launch's pin-table generation in the job (capjobs.launches.pin_table): part
+# of every in-allocation time check (capjobs.launches before each launch, capjobs.submit's budget).
+PINS_TIMEOUT_S = 120
 PLACEHOLDERS = ("PY", "SNAP", "JOB_DIR", "SHM_ROOT", "LOCAL_ROOT", "JOB_ID", "RESTART_COUNT")
 RESERVED_FLAGS = ("--experiment", "--arm", "--launch-seq", "--job-id", "--restart-count",
                   "--register-sha", "--role", "--run-dir", "--overlay-manifest", "--nvidia-smi",

@@ -11,7 +11,8 @@ Items (RESOURCES.md 3, "in-job exclusivity"), each with the command, rc, stdout 
   1 scontrol show job $JOB    rc 0; OverSubscribe=NO; requested GPUs (ReqTRES; without it the
     allocation, TRES / AllocTRES) <= --max-alloc-gpus. On a whole-node allocation Slurm puts
     every GPU of the node into AllocTRES although one was requested; that number is recorded
-    (alloc_gpus), and what the job can use is checked by item 5 (visible GPUs == requested)
+    (alloc_gpus), the request in req_gpus (null without ReqTRES), the number compared in
+    gpus_checked; what the job can use is checked by item 5 (visible GPUs == requested)
   2 scontrol show node $NODE  rc 0; CPUAlloc == CPUTot
   3 squeue -h -w $NODE -o '%i %u %T'   rc 0; own job listed (positive control); only that line
   4 /proc/self/status Cpus_allowed_list covers every online cpu
@@ -75,7 +76,7 @@ def _gpus_in_tres(tres):
     total, typed = None, 0
     for part in (tres or "").split(","):
         k, _, v = part.partition("=")
-        if not v.isdigit():
+        if not (v.isascii() and v.isdigit()):
             continue
         if k == "gres/gpu":
             total = int(v)
@@ -138,12 +139,15 @@ def item1(src, job_id, max_gpus):
                                   "TRES", "ReqTRES", "AllocTRES", "TresPerNode", "Partition")}
     alloc = kv.get("TRES") or kv.get("AllocTRES")
     rec["alloc_gpus"] = _gpus_in_tres(alloc) if alloc else None
-    # the requested count; an output without ReqTRES is checked on the allocation (never less)
-    rec["gpus_checked_from"] = "ReqTRES" if kv.get("ReqTRES") else (
+    # req_gpus only from ReqTRES (None without it); the checked count is the request, or on an
+    # output without ReqTRES the allocation (never less), recorded in gpus_checked
+    req = kv.get("ReqTRES")
+    rec["req_gpus"] = _gpus_in_tres(req) if req else None
+    rec["gpus_checked_from"] = "ReqTRES" if req else (
         "TRES" if kv.get("TRES") else "AllocTRES")
     tres = kv.get(rec["gpus_checked_from"])
     gpus = _gpus_in_tres(tres)
-    rec["req_gpus"] = gpus if tres else None
+    rec["gpus_checked"] = gpus if tres else None
     bad = []
     if not tres:  # no TRES at all is an unreadable allocation, not "0 GPUs"
         bad.append("no ReqTRES / TRES / AllocTRES in the scontrol output: GPU request "

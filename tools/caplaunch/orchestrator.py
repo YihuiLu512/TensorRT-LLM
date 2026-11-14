@@ -50,22 +50,60 @@ MONITOR_CLASSES = ("load_source", "observer")
 assert set(MONITOR_CLASSES) < set(sc.MEASURE_CLASSES)
 # Helper processes a capkit tool's runtime starts on its own (category aux_helper): attributed to
 # the tool's role in roles.json "aux_helpers" and tier.json scans, never unattributed and never
-# part of the compared pid set. Matched on the exact command line; anything else a tool role
-# starts that is not registered stays unattributed.
+# part of the compared pid set. Matched on the command line `python [interpreter options] -c
+# <code>` with <code> matching a rule exactly; anything else a tool role starts that is not
+# registered stays unattributed.
 AUX_HELPER_RULES = (
     ("mp_resource_tracker", re.compile(r"from multiprocessing\.resource_tracker import main;"
                                        r"main\(\d+\)")),
     ("mp_forkserver", re.compile(r"from multiprocessing\.forkserver import main; "
                                  r"main\(.*\)")),
 )
+# CPython interpreter options multiprocessing copies in front of `-c` from the parent's flags and
+# environment (subprocess._args_from_interpreter_flags, e.g. `-B` under PYTHONDONTWRITEBYTECODE=1,
+# `-OO`, `-I`, `-W <arg>`, `-X dev`), plus `-u`. Options without an argument may be grouped
+# (`-BE`); `-W` and `-X` take their argument in the same token or the next one.
+AUX_HELPER_NOARG_OPTS = frozenset("bBdEIOPqsSuv")
+AUX_HELPER_ARG_OPTS = frozenset("WX")
+
+
+def _interpreter_options_end(args):
+    """Index of `-c` in args (argv after the executable) when everything before it is CPython
+    interpreter options (AUX_HELPER_NOARG_OPTS / AUX_HELPER_ARG_OPTS), else None."""
+    i = 0
+    while i < len(args):
+        tok = args[i]
+        if tok == "-c":
+            return i
+        if len(tok) < 2 or tok[0] != "-" or tok[1] == "-":
+            return None
+        j = 1
+        while j < len(tok):
+            ch = tok[j]
+            if ch in AUX_HELPER_NOARG_OPTS:
+                j += 1
+                continue
+            if ch not in AUX_HELPER_ARG_OPTS:
+                return None
+            if j + 1 == len(tok):  # the argument is the next token
+                i += 1
+                if i >= len(args):
+                    return None
+            break
+        i += 1
+    return None
 
 
 def aux_helper_rule(argv):
-    """Name of the AUX_HELPER_RULES entry matching `python -c <code>` argv, else None."""
-    if not argv or len(argv) != 3 or argv[1] != "-c":
+    """Name of the AUX_HELPER_RULES entry matching `python [interpreter options] -c <code>` argv
+    (<code> last, nothing after it), else None."""
+    if not argv or len(argv) < 3:
+        return None
+    k = _interpreter_options_end(argv[1:])
+    if k is None or k + 3 != len(argv):
         return None
     for name, rx in AUX_HELPER_RULES:
-        if rx.fullmatch(argv[2]):
+        if rx.fullmatch(argv[-1]):
             return name
     return None
 
@@ -312,7 +350,8 @@ class Launch:
             raise ConfigError("--param keys %s != scenario params_required %s"
                               % (sorted(self.params), sorted(req)))
         lag = self.params.get(sc.LAG_PARAM)
-        if sc.LAG_PARAM in req and not (lag.isdigit() and int(lag) > 0):
+        # ASCII digits only: str.isdigit() also accepts e.g. '²', which int() rejects
+        if sc.LAG_PARAM in req and not (lag.isascii() and lag.isdigit() and int(lag) > 0):
             raise ConfigError("--param %s must be an integer > 0, got %r" % (sc.LAG_PARAM, lag))
         self.rt = {n: RoleRT(d, self.cpus_of[n]) for n, d in self.roles.items()}
         self.order = sc.start_order(self.roles)

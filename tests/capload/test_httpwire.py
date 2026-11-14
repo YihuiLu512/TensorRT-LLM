@@ -95,3 +95,28 @@ def test_request_builder_headers_and_body(tmp_path):
 
 def test_min_chunk_bytes_fits_any_id():
     assert len(wire.padded_content_frame(2 ** 63 - 1, min_chunk_bytes())) == min_chunk_bytes()
+
+
+@pytest.mark.parametrize("target,ok", [("h:8000", True), ("h:\u00b2", False),
+                                       ("h:\u0661\u0662", False), ("h:0", False)])
+def test_target_port_is_ascii_digits(target, ok):
+    """--target HOST:PORT: the port is ASCII digits in (0, 65536); '\u00b2' (str.isdigit() but
+    not int()) is a ConfigError (exit 3), never an uncaught ValueError."""
+    import types
+    from capcommon.exitcodes import ConfigError
+    from capload.main import config_from_args
+    args = types.SimpleNamespace(workers=1, chunk_sample_mod=1, fionread_every_ms=1,
+                                 lag_period_us=1, max_records_per_worker=0,
+                                 slow_read_pause_us=0, wave_gap_ns=0, host_header=None,
+                                 target=target)
+    common = types.SimpleNamespace(cpus=None)
+    if ok:
+        try:
+            config_from_args(args, common)
+        except ConfigError as e:
+            assert "--target" not in str(e)
+        except AttributeError:
+            pass  # past the target check (the namespace has only what precedes it)
+    else:
+        with pytest.raises(ConfigError, match="--target must be HOST:PORT"):
+            config_from_args(args, common)

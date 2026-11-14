@@ -132,3 +132,15 @@ def _ident_dict():
     return {"experiment": "E0", "arm": "unit-a", "launch_seq": 1, "job_id": "local-grpctest",
             "restart_count": 0, "register_sha": SHA, "role": "launch", "worker": 0, "pid": None,
             "tier_seq": None, "tier_label": None}
+
+
+@pytest.mark.parametrize("target,ok", [("h:50051", True), ("h:\u00b2", False),
+                                       ("h:\u0661", False), ("h:", False)])
+def test_resolve_target_port_is_ascii_digits(target, ok):
+    from capcommon.exitcodes import ConfigError
+    from capgrpc.common import resolve_target
+    if ok:
+        assert resolve_target(target, None) == target
+    else:
+        with pytest.raises(ConfigError, match="HOST:PORT"):
+            resolve_target(target, None)

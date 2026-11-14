@@ -66,6 +66,24 @@ def test_invalid_scenarios_rejected(mutate, needle):
     assert needle in str(e.value)
 
 
+@pytest.mark.parametrize("role_i", [0, 1, 2], ids=["nullsse", "product", "capload"])
+@pytest.mark.parametrize("key", ["CAPPROBE_INJECT", "CAPPROBE_TIER", "CAPPROBE_GROUPS",
+                                 "CAPPROBE_LAG_PERIOD_US", "CAPPROBE_ENTRY", "CAPPROBE_X"])
+def test_role_env_may_not_set_capprobe_switches(role_i, key):
+    """U4 (errata R5-4): a role's env never carries a CAPPROBE_* switch (it would reach the
+    process past the orchestrator's checks, e.g. INJECT into a P1 product role); other keys pass."""
+    for tier in ("P0", "P1"):
+        d = _doc()
+        d["probe_tier"] = tier
+        d["roles"][1].update(probe_tier=tier)
+        d["roles"][role_i]["env"] = {"OTHER": "1", key: "site=F2,mode=busy,delta_ns=1,every_n=1"}
+        with pytest.raises(ConfigError) as e:
+            sc.validate_scenario(d)
+        assert "capprobe switches ['%s']" % key in str(e.value)
+        d["roles"][role_i]["env"] = {"OTHER": "1", "XCAPPROBE_INJECT": "1"}
+        sc.validate_scenario(d)
+
+
 @pytest.mark.parametrize("tier,scope,ok", [
     ("P0", "none", True), ("P0", "all", True),
     ("P1", "none", True), ("P1", "all", True), ("P1", "workers", True),

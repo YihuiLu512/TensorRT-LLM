@@ -11,7 +11,7 @@ from conftest import CODE_ROOT, DATA, SAVED_CDB, external_input
 
 from capcommon import ledger, policy
 from capcommon.hashing import sha256_bytes, sha256_file
-from capjobs import snapshot, submit
+from capjobs import launchplan, snapshot, submit
 
 HEAD = "c" * 40
 REG_ENV = {"gpus": 1, "idle_window_s": 30, "idle_busy_max_frac": 0.02, "slurm_view_wait_s": 300,
@@ -194,7 +194,8 @@ def test_submit_end_to_end(env, stub_runner, capsys):
                         capture_output=True, text=True, check=True)
     assert sh.stdout.split("|") == ["1", "30", "0.02", "300", "slurm_view", env.image_sha,
                                     str(os.stat(env.image).st_mtime_ns)]
-    assert out["time_budget"]["total_s"] == 2 * (600 + 60 + 60) + 30 + 300
+    assert out["time_budget"]["total_s"] == 2 * (600 + 60 + 60 + 120) + 30 + 300
+    assert out["time_budget"]["parts"]["pin_tables_s"] == 2 * launchplan.PINS_TIMEOUT_S
 
 
 def test_submit_failure_records_ended(env, stub_runner):
@@ -452,6 +453,68 @@ def test_forbidden_inputs_refused(env, stub_runner, capsys):
     assert run(env.submit_args(), r) == 0
 
 
+def _mount_list(env, *paths, extra=()):
+    return ["%s:%s" % (q, q) for q in paths] + list(extra) + [SEC]
+
+
+def test_workdir_must_be_mounted(env, stub_runner, capsys):
+    """<W> is read in the job (register, scenario, tier table, schedule, prompts): mounts that
+    cover the run, snapshot, local, shm and tokenizer paths but not <W> are refused at submit
+    (errata R5-2); a ro mount of <W> is enough."""
+    for d in ("runs", "snapshots"):
+        os.makedirs(os.path.join(env.w, d), exist_ok=True)
+    each = [os.path.join(env.w, "runs"), os.path.join(env.w, "snapshots"),
+            os.path.join(env.root, "local"), os.path.join(env.root, "shm"), env.tok]
+    for q in each:
+        os.makedirs(q, exist_ok=True)
+    r = stub_runner({"sbatch": (0, "1\n", "")})
+    assert run(env.submit_args(**{"--mount": _mount_list(env, *each)}), r) == 3
+    err = capsys.readouterr().err
+    assert "path %s is not under an identity ro/rw mount" % env.w in err, err
+    assert r.calls == [] and not os.path.exists(os.path.join(env.w, "submissions.tsv"))
+    r = stub_runner({"sbatch": (0, "1\n", "")})
+    mounts = _mount_list(env, *each, extra=["%s:%s:ro" % (env.w, env.w)])
+    assert run(env.submit_args(**{"--mount": mounts}), r) == 0, capsys.readouterr().err
+    job_env = os.path.join(env.ledger_rows()[0]["snapshot_dir"], "job.env")
+    sh = subprocess.run(["bash", "-c", 'source "$1"; printf %s "$CAPJOBS_WORKDIR"', "x",
+                         job_env], capture_output=True, text=True, check=True)
+    assert sh.stdout == env.w
+
+
+def test_registered_input_symlinked_out_of_the_mounts_is_refused(env, stub_runner, capsys):
+    """Each registered file the job reads in <W> is checked by its realpath too: a tier table
+    that is a symlink to an unmounted directory is refused even though <W> is mounted."""
+    outside = os.path.join(env.root, "outside")
+    os.makedirs(outside)
+    with open(os.path.join(outside, "tiers.json"), "w") as f:
+        f.write("{}")
+    tt_rel = "02_e0/E0/register/tiers.json"
+    os.symlink(os.path.join(outside, "tiers.json"), os.path.join(env.w, tt_rel))
+    rel = "02_e0/E0/register/with-tiers.json"
+    doc = {"schema": "capkit.register/1", "experiment": "E0", "arms": ["nullsse-a"],
+           "environment": REG_ENV,
+           "files": {"scenario": {"relpath": env.scen_rel,
+                                  "sha256": sha256_file(os.path.join(env.w, env.scen_rel))},
+                     "tier_table": {"relpath": tt_rel,
+                                    "sha256": sha256_file(os.path.join(env.w, tt_rel))}}}
+    with open(os.path.join(env.w, rel), "w") as f:
+        json.dump(doc, f)
+    sha = sha256_file(os.path.join(env.w, rel))
+    ledger.registry_append(os.path.join(env.w, "REGISTRY.tsv"), "E0", rel, sha, "kind=register;")
+    each = [env.w, os.path.join(env.root, "local"), os.path.join(env.root, "shm"), env.tok]
+    for q in each:
+        os.makedirs(q, exist_ok=True)
+    over = {"--register-sha": sha, "--launch-plan": env.plan_for("plan-tiers.json", sha)}
+    r = stub_runner({"sbatch": (0, "1\n", "")})
+    assert run(env.submit_args(**{"--mount": _mount_list(env, *each)}, **over), r) == 3
+    err = capsys.readouterr().err
+    assert "path %s is not under an identity ro/rw mount" % os.path.join(
+        os.path.realpath(outside), "tiers.json") in err, err
+    r = stub_runner({"sbatch": (0, "1\n", "")})
+    mounts = _mount_list(env, *each, extra=["%s:%s:ro" % (outside, outside)])
+    assert run(env.submit_args(**{"--mount": mounts}, **over), r) == 0, capsys.readouterr().err
+
+
 def test_dirty_tree_refused_only_for_real_submit(env, stub_runner, capsys):
     dirty = lambda _r, _p: (HEAD, [" M tools/capcommon/policy.py"])  # noqa: E731
     r = stub_runner({"sbatch": (0, "1\n", "")})
@@ -556,6 +619,20 @@ def test_jobstate_and_slurm_view_cmds(env, stub_runner, capsys):
     r = stub_runner({"scontrol": (0, "JobId=5 NodeList=n1\n", ""), "squeue": (0, "5 u R\n", "")})
     assert run(["slurm-view", "--job-dir", jd] + base, r) == 0
     assert json.load(open(os.path.join(jd, "env", "slurm_view.json")))["node"] == "n1"
+
+
+@pytest.mark.parametrize("jid", ["\u00b2", "\u0661"])
+def test_job_ids_are_ascii_digits(env, stub_runner, capsys, jid):
+    """Cluster job ids are ASCII digits only: in sbatch --parsable output and in --job-id."""
+    assert submit.parse_parsable("5601234\n") == "5601234"
+    assert submit.parse_parsable("%s\n" % jid) is None
+    plan_id, _snap = _unknown_plan(env, stub_runner)
+    capsys.readouterr()
+    r = stub_runner({"scontrol": (0, "JobId=5 NodeList=n1\n", "")})
+    rec = ["reconcile-submit", "--workdir", env.w, "--plan-id", plan_id, "--login-host", "fe",
+           "--ssh-timeout-s", "60", "--reason", "x", "--job-id", jid]
+    assert run(rec, r) == 3
+    assert "numeric cluster job id" in capsys.readouterr().err and r.calls == []
 
 
 MODEL_DIR = "/home/scratch.trt_llm_data_ci/llm-models/GLM-5.3-Flash"

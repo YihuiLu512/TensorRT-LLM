@@ -9,9 +9,10 @@ the job's STATE line to each launch tree, after the launcher's own (INTERFACES.m
         --deadline-epoch E --out <job dir>/launches.json
 
 Per launch: skip (NOT_RUN, recorded) when the remaining allocation time is below
-budget_s + kill_grace_s + margin_s, or an earlier launch ended ENV_INVALID or left processes that
-survived SIGKILL; generate its pin table on this node (pin_table(); a failure skips the launch as
-NOT_RUN); otherwise run the plan's argv with --overlay-manifest, --nvidia-smi,
+budget_s + kill_grace_s + margin_s + launchplan.PINS_TIMEOUT_S, or an earlier launch ended
+ENV_INVALID or left processes that survived SIGKILL; generate its pin table on this node
+(pin_table(); a failure skips the launch as NOT_RUN, marked pin_table_failed: main then exits 3
+as for config_refused); otherwise run the plan's argv with --overlay-manifest, --nvidia-smi,
 --job-env-dir <job dir>/env, --pin-table and the identity arguments appended, under a budget_s
 timeout; kill
 whatever the launch left behind; copy <L>/runs/<tree> to <R>/<tree>; verify; chmod a-w raw/;
@@ -25,7 +26,8 @@ append STATE. Status of that STATE line:
   its exit code agrees (0 or 5 for VALID) -> that status; disagreement -> VOID;
   no launcher STATE: a control/stop.json reason in NOT_RUN_STOPS with exit 5 -> NOT_RUN;
   exit 3 and no raw/launch.json (a config error before any role could start) -> NOT_RUN, with the
-  last line of the launcher's stderr as the reason; exit 0 -> VALID;
+  last line of the launcher's stderr as the reason, marked config_refused (main then exits 3 unless
+  a copy-back failure or ENV_INVALID decides the exit code); exit 0 -> VALID;
   exit 6 -> ENV_INVALID; any other exit -> VOID.
 Process tree: the launcher's descendants are recorded while it runs (and this process is a child
 subreaper when run as main, so orphans re-parent here); after the launcher is gone, every recorded
@@ -104,9 +106,6 @@ def launch_argv(plan, ln, values, job_id, restart_count, run_dir, overlay_manife
                    "--role", "launch", "--run-dir", run_dir]
 
 
-PINS_TIMEOUT_S = 120
-
-
 def pin_table(a, plan, ln, env, out_path):
     """Generate one launch's pin table on this node with capenv.pins generate (INTERFACES.md
     5.5.1; plan RESOURCES 5 item 5): demand = the launch scenario's roles
@@ -122,8 +121,11 @@ def pin_table(a, plan, ln, env, out_path):
     except (CapkitError, OSError, ValueError, KeyError, TypeError) as e:
         return "pin table: %s: %s" % (type(e).__name__, e)
     dpath = out_path + ".demand.json"
-    with open(dpath, "w", encoding="utf-8") as f:
-        json.dump(demand, f)
+    try:
+        with open(dpath, "w", encoding="utf-8") as f:
+            json.dump(demand, f)
+    except OSError as e:
+        return "pin table: cannot write %s: %s" % (dpath, e)
     argv = [a.python, "-m", "capenv.pins", "generate", "--experiment", plan["experiment"],
             "--arm", ln["arm"], "--launch-seq", str(ln["launch_seq"]), "--job-id", str(a.job_id),
             "--restart-count", str(a.restart_count), "--register-sha", plan["register_sha"],
@@ -132,7 +134,7 @@ def pin_table(a, plan, ln, env, out_path):
     try:
         with open(out_path + ".log", "wb") as log:
             rc = subprocess.run(argv, env=env, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
-                                timeout=PINS_TIMEOUT_S).returncode
+                                timeout=launchplan.PINS_TIMEOUT_S).returncode
     except (OSError, subprocess.TimeoutExpired) as e:
         return "pin table: %s" % e
     if rc != 0 or not os.path.isfile(out_path):
@@ -314,6 +316,14 @@ NOT_RUN_STOPS = ("not_ready_before_origin", "overlay_manifest_missing", "job_env
                  "orchestrator_signalled")
 
 
+def prestart_config_refusal(rc, timed_out, terminated, recorded, early_config_error):
+    """caplaunch exited 3 and the tree has no raw/launch.json (early_config_error is then the
+    launcher's last stderr line, else None) and no launcher STATE line: it refused its
+    configuration before starting any role (roles start after launch.json is written)."""
+    return (not timed_out and not terminated and recorded is None and rc == CONFIG
+            and early_config_error is not None)
+
+
 def classify(rc, timed_out, stop, recorded=None, terminated=False, early_config_error=None):
     """The launcher's recorded STATE is the more specific record and wins unless the launch was
     killed for overrunning its budget or the exit code contradicts it. A launch stopped because
@@ -337,7 +347,7 @@ def classify(rc, timed_out, stop, recorded=None, terminated=False, early_config_
         return "VOID", "launcher STATE VALID but exit %r: %s" % (rc, why)
     if stop in NOT_RUN_STOPS and rc == STOPPED_EARLY:
         return "NOT_RUN", "launcher stopped: %s (rc=%r)" % (stop, rc)
-    if rc == CONFIG and early_config_error is not None:
+    if prestart_config_refusal(rc, timed_out, terminated, recorded, early_config_error):
         return "NOT_RUN", "launcher refused its configuration before starting any role (rc=3): " \
             "%s" % early_config_error
     if rc == OK:
@@ -367,15 +377,16 @@ def run_all(a, plan, manifest_doc, now_fn=time.time):
             r.update(ran=False, status="NOT_RUN", reason="skipped: " + halted)
             continue
         grace = plan["kill_grace_s"]
-        if left < ln["budget_s"] + grace + plan["margin_s"]:
+        if left < ln["budget_s"] + grace + plan["margin_s"] + launchplan.PINS_TIMEOUT_S:
             r.update(ran=False, status="NOT_RUN", reason="skipped: %.0f s left < budget %d s + "
-                     "kill grace %d s + margin %d s" % (left, ln["budget_s"], grace,
-                                                        plan["margin_s"]))
+                     "kill grace %d s + margin %d s + pin table %d s"
+                     % (left, ln["budget_s"], grace, plan["margin_s"],
+                        launchplan.PINS_TIMEOUT_S))
             continue
         pins = os.path.join(pins_dir, name + ".pin_table.json")
         why = pin_table(a, plan, ln, env, pins)
         if why is not None:
-            r.update(ran=False, status="NOT_RUN", reason="skipped: " + why)
+            r.update(ran=False, status="NOT_RUN", reason="skipped: " + why, pin_table_failed=True)
             continue
         local = os.path.join(a.local_root, "runs", name)
         private_mkdir(local)
@@ -386,10 +397,13 @@ def run_all(a, plan, manifest_doc, now_fn=time.time):
         logs = os.path.join(a.local_root, "logs", name)
         rc, timed_out, terminated, leftovers = run_with_budget(
             argv, env, ln["budget_s"], grace, logs + ".launcher.out", logs + ".launcher.err")
+        recorded = launcher_state(local)
+        early = early_config_error(local, logs + ".launcher.err")
         r.update(ran=True, rc=rc, timed_out=timed_out, terminated=terminated,
-                 ended_wall=wall_iso(), leftovers=leftovers)
-        status, reason = classify(rc, timed_out, stop_reason(local), launcher_state(local),
-                                  terminated, early_config_error(local, logs + ".launcher.err"))
+                 ended_wall=wall_iso(), leftovers=leftovers,
+                 config_refused=prestart_config_refusal(rc, timed_out, terminated, recorded,
+                                                        early))
+        status, reason = classify(rc, timed_out, stop_reason(local), recorded, terminated, early)
         survived = [x["pid"] for x in leftovers if x["survived_sigkill"]]
         if leftovers:
             reason = "%s; %d leftover process(es) killed after the launcher exited" % (
@@ -449,6 +463,8 @@ def main(argv=None):
     write_json_stamped(a.out, SCHEMA, ident, {
         "planned": planned, "ran": sum(1 for r in results if r.get("ran")),
         "child_subreaper": subreaper,
+        "config_refused": sum(1 for r in results if r.get("config_refused")),
+        "pin_table_failed": sum(1 for r in results if r.get("pin_table_failed")),
         "statuses": {s: sum(1 for r in results if r.get("status") == s)
                      for s in ("VALID", "VOID", "NOT_RUN", "ENV_INVALID")},
         "launches": results})
@@ -461,6 +477,9 @@ def main(argv=None):
         return RUNTIME
     if any(r.get("status") == "ENV_INVALID" for r in results):
         return ENV_INVALID
+    if any(r.get("config_refused") or r.get("pin_table_failed") for r in results):
+        # recorded NOT_RUN (nothing was measured), but the job must not look like a success
+        return CONFIG
     return OK
 
 

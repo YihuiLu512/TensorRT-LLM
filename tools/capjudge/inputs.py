@@ -270,9 +270,10 @@ def _check_reconcile_and_scenario(ctx):
         raise InputInvalid("launch.json reconcile", str(e))
 
 
-# Job-level files (written once per job, e.g. the gate results and the pin table) are copied
-# verbatim into every launch tree's raw/env/ (INTERFACES 5.1); they carry the job's arm and
-# launch_seq 0, so only the job key is compared for files directly in raw/env/.
+# Files directly in raw/env/ are copied in verbatim (INTERFACES 5.1): job-level files written
+# once per job (e.g. the gate results) carry the job's arm and launch_seq 0, and the pin table
+# (generated per launch in the job, errata R4-6) this launch's arm and launch_seq; only the job
+# key, common to both, is compared for files directly in raw/env/.
 JOB_KEY_FIELDS = ("experiment", "job_id", "restart_count", "register_sha")
 
 

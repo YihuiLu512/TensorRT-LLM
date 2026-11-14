@@ -68,7 +68,8 @@ def config_from_args(args, common):
     host_header = args.host_header
     if args.target:
         host, sep, port = args.target.rpartition(":")
-        if not sep or not host or not port.isdigit() or not 0 < int(port) < 65536:
+        if not sep or not host or not (port.isascii() and port.isdigit()) \
+                or not 0 < int(port) < 65536:
             raise ConfigError("--target must be HOST:PORT, got %r" % args.target)
         host_header = host_header or args.target
     delays = None

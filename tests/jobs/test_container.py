@@ -451,7 +451,7 @@ def test_launch_without_pin_table_is_not_run(tmp_path):
     os.remove(a.hw_profile)
     res = launches.run_all(a, plan, manifest)
     assert res[0]["status"] == "NOT_RUN" and res[0]["ran"] is False
-    assert "pin table" in res[0]["reason"]
+    assert "pin table" in res[0]["reason"] and res[0]["pin_table_failed"] is True
     (tmp_path / "big").mkdir()
     a, plan, manifest = launch_env(tmp_path / "big", ["ok"])
     with open(os.path.join(str(tmp_path / "big" / "W"), "scen.json"), "w") as f:
@@ -459,16 +459,19 @@ def test_launch_without_pin_table_is_not_run(tmp_path):
                    "roles": [{"pin_role": "role", "cpus_needed": 100000, "numa": None}]}, f)
     res = launches.run_all(a, plan, manifest)
     assert res[0]["status"] == "NOT_RUN" and "capenv.pins generate exit 3" in res[0]["reason"]
+    assert res[0]["pin_table_failed"] is True
 
 
 def test_config_error_before_launch_json_is_not_run(tmp_path, monkeypatch):
     """SM-5: caplaunch exit 3 before it wrote raw/launch.json (no role can have started) is
     NOT_RUN with the launcher's last stderr line, and its empty tree is not a copy-back failure;
-    exit 3 once launch.json exists stays VOID."""
+    exit 3 once launch.json exists stays VOID. R5-3: such a refusal is marked config_refused and
+    makes capjobs.launches exit 3 (CONFIG), so the job does not end as a success."""
     monkeypatch.setattr(launches, "become_subreaper", lambda: False)  # not on pytest itself
     a, plan, manifest = launch_env(tmp_path, ["config", "config_late"])
     res = launches.run_all(a, plan, manifest)
     assert [r["status"] for r in res] == ["NOT_RUN", "VOID"], [r["reason"] for r in res]
+    assert [r["config_refused"] for r in res] == [True, False]
     assert "does not match register entry" in res[0]["reason"]
     assert "copy-back not verified" not in res[0]["reason"]
     assert "nothing to copy back" in res[0]["reason"]
@@ -484,7 +487,37 @@ def test_config_error_before_launch_json_is_not_run(tmp_path, monkeypatch):
                           "--job-dir", b.job_dir, "--local-root", b.local_root, "--shm-root",
                           b.shm_root, "--run-root", b.run_root, "--job-id", "9", "--python",
                           b.python, "--out", out, "--restart-count", "0",
-                          "--deadline-epoch", "1e12"]) == 0  # not a copy-back failure
+                          "--deadline-epoch", "1e12"]) == 3  # CONFIG, not a copy-back failure
+    doc = json.load(open(out))
+    assert doc["config_refused"] == 1 and doc["statuses"]["NOT_RUN"] == 1
+
+
+@pytest.mark.parametrize("kinds,want", [
+    (["ok", "config"], 3),       # one refused launch among measured ones still exits CONFIG
+    (["ok"], 0),
+    (["nopins"], 3),             # RS22: a pin table that cannot be generated, the same way
+])
+def test_launches_exit_code_with_config_refusals(tmp_path, monkeypatch, kinds, want):
+    monkeypatch.setattr(launches, "become_subreaper", lambda: False)  # not on pytest itself
+    nopins = kinds == ["nopins"]
+    b, plan, manifest = launch_env(tmp_path, ["ok"] if nopins else kinds)
+    if nopins:
+        os.remove(b.hw_profile)
+    pp, mp = tmp_path / "plan.json", tmp_path / "manifest.json"
+    pp.write_text(json.dumps(plan))
+    mp.write_text(json.dumps(manifest))
+    out = os.path.join(b.job_dir, "launches.json")
+    assert launches.main(["--plan", str(pp), "--overlay-manifest", str(mp), "--nvidia-smi",
+                          b.nvidia_smi, "--snap", b.snap, "--hw-profile", b.hw_profile,
+                          "--job-dir", b.job_dir, "--local-root", b.local_root, "--shm-root",
+                          b.shm_root, "--run-root", b.run_root, "--job-id", "9", "--python",
+                          b.python, "--out", out, "--restart-count", "0",
+                          "--deadline-epoch", "1e12"]) == want
+    doc = json.load(open(out))
+    assert doc["config_refused"] == kinds.count("config")
+    assert doc["pin_table_failed"] == kinds.count("nopins")
+    if not nopins:
+        assert [r["config_refused"] for r in doc["launches"]] == [k == "config" for k in kinds]
 
 
 def test_launch_trees_are_private_under_umask_002(tmp_path, monkeypatch):
@@ -507,11 +540,44 @@ def test_launch_trees_are_private_under_umask_002(tmp_path, monkeypatch):
 
 def test_launches_deadline_and_timeout(tmp_path):
     a, plan, manifest = launch_env(tmp_path, ["sleep", "ok"], budgets={0: 1, 1: 100}, margin=5)
-    res = launches.run_all(a, plan, manifest, now_fn=lambda: a.deadline_epoch - 50)
+    left = 1 + plan["kill_grace_s"] + 5 + launchplan.PINS_TIMEOUT_S + 20
+    res = launches.run_all(a, plan, manifest, now_fn=lambda: a.deadline_epoch - left)
     assert [r["status"] for r in res] == ["VOID", "NOT_RUN"]
     assert res[0]["timed_out"] is True and "budget" in res[0]["reason"]
     assert res[0]["terminated"] is False
     assert "left < budget" in res[1]["reason"]
+
+
+@pytest.mark.parametrize("short", [1, 0])
+def test_remaining_time_check_counts_the_pin_table_bound(tmp_path, short):
+    """U10 / RS7: the remaining-time check before a launch includes the pin-table generation
+    bound (launchplan.PINS_TIMEOUT_S), which runs inside the allocation before the launch."""
+    a, plan, manifest = launch_env(tmp_path, ["ok"], budgets={0: 30}, margin=5)
+    need = 30 + plan["kill_grace_s"] + 5 + launchplan.PINS_TIMEOUT_S
+    res = launches.run_all(a, plan, manifest, now_fn=lambda: a.deadline_epoch - need + short)
+    if short:
+        assert res[0]["status"] == "NOT_RUN" and res[0]["ran"] is False
+        assert "+ pin table %d s" % launchplan.PINS_TIMEOUT_S in res[0]["reason"]
+    else:
+        assert res[0]["ran"] is True and res[0]["status"] == "VALID", res[0]["reason"]
+
+
+def test_unwritable_demand_file_is_not_run(tmp_path, monkeypatch):
+    """U5: an OSError writing the pin-table demand file skips that launch as NOT_RUN instead of
+    escaping run_all (which lost launches.json for the whole job)."""
+    a, plan, manifest = launch_env(tmp_path, ["ok", "ok"])
+    real_open = open
+
+    def fake_open(path, *args, **kw):
+        if str(path).endswith(".demand.json") and "L0_" in str(path):
+            raise OSError(28, "No space left on device")
+        return real_open(path, *args, **kw)
+    monkeypatch.setattr("builtins.open", fake_open)
+    res = launches.run_all(a, plan, manifest)
+    monkeypatch.undo()
+    assert res[0]["status"] == "NOT_RUN" and res[0]["ran"] is False
+    assert "cannot write" in res[0]["reason"] and "No space left" in res[0]["reason"]
+    assert res[1]["status"] == "VALID", res[1]["reason"]
 
 
 def _gone(pid, timeout_s=10):

@@ -128,7 +128,7 @@ def resolve_target(target, port_file):
         raise ConfigError("give exactly one of the target and the target port file")
     if target is not None:
         host, sep, port = target.rpartition(":")
-        if not sep or not host or not port.isdigit():
+        if not sep or not host or not (port.isascii() and port.isdigit()):
             raise ConfigError("target must be HOST:PORT, got %r" % target)
         return target
     try:

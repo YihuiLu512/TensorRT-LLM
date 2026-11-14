@@ -431,3 +431,21 @@ def test_nic_identity_is_the_pci_device_list_not_the_netdevs(tmp_path):
                               sys_root=str(tmp_path / "none"))
     col.nics()
     assert "unreadable" in col.prof["nics"]
+
+
+@pytest.mark.parametrize("missing", ["vendor", "device", "vendor-empty"])
+def test_nic_with_unreadable_vendor_or_device_is_unreadable_identity(tmp_path, missing):
+    """U9: a network controller whose vendor or device id cannot be read makes the identity field
+    "nics" unreadable (listed in unreadable_identity_fields), never a '?' model."""
+    root = str(tmp_path / "sys")
+    _pci(root, "0000:01:00.0", "0x020700", "0x15b3", "0x1021")
+    _pci(root, "0000:02:00.0", "0x020700", "0x15b3", "0x1021")
+    f = os.path.join(root, "bus", "pci", "devices", "0000:02:00.0", missing.split("-")[0])
+    if missing.endswith("-empty"):
+        open(f, "w").close()
+    else:
+        os.remove(f)
+    col = hwprofile.Collector(str(tmp_path), "dmi", runner=fake_runner({}), sys_root=root)
+    col.nics()
+    assert "unreadable" in col.prof["nics"], col.prof["nics"]
+    assert "0000:02:00.0/%s" % missing.split("-")[0] in str(col.prof["nics"])

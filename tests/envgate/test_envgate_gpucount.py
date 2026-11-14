@@ -267,3 +267,31 @@ def test_item1_checks_the_requested_gpus_on_a_whole_node(jobdir, req, status):
     assert out["items"]["1"] == status, out["reasons"]
     it1 = read_json(os.path.join(d, "env", "exclusivity.json"))["items"][0]["detail"]
     assert (it1["req_gpus"], it1["alloc_gpus"], it1["gpus_checked_from"]) == (req, 8, "ReqTRES")
+    assert it1["gpus_checked"] == req
+
+
+ALLOC_ONLY = ("JobId=4242 OverSubscribe=NO NodeList=node-a "
+              "AllocTRES=cpu=224,mem=1900G,node=1,billing=8,gres/gpu=%d Partition=p1")
+
+
+@pytest.mark.parametrize("alloc,status", [(1, "PASS"), (8, "RED")])
+def test_item1_without_reqtres_records_no_request(jobdir, alloc, status):
+    """U8: without ReqTRES item 1 compares the allocation, but req_gpus stays null (only a real
+    request count is recorded there); the compared number is in gpus_checked."""
+    d, prof = jobdir
+    out = _gate(d, prof, good_table(scontrol=lambda a: (0, ALLOC_ONLY % alloc)
+                                    if a[2] == "job" else (0, NODE_OK)))
+    assert out["items"]["1"] == status, out["reasons"]
+    it1 = read_json(os.path.join(d, "env", "exclusivity.json"))["items"][0]["detail"]
+    assert (it1["req_gpus"], it1["alloc_gpus"], it1["gpus_checked_from"], it1["gpus_checked"]) \
+        == (None, alloc, "AllocTRES", alloc)
+
+
+@pytest.mark.parametrize("v", ["\u00b2", "\u0661", "x"])
+def test_tres_gpu_count_reads_ascii_digits_only(v):
+    """A gres/gpu value that is not ASCII digits counts as absent (str.isdigit() accepts '\u00b2',
+    which int() rejects)."""
+    from capenv import gate
+    assert gate._gpus_in_tres("cpu=1,gres/gpu=%s" % v) == 0
+    assert gate._gpus_in_tres("cpu=1,gres/gpu=%s,gres/gpu:b200=2" % v) == 2
+    assert gate._gpus_in_tres("cpu=1,gres/gpu=3") == 3

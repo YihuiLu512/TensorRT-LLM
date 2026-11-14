@@ -82,8 +82,9 @@ LAG_PARAM = "lag_period_us"
 
 def product_writes_snapshots(r):
     """Whether a role's processes write snapshots through capprobe: a product role with probe
-    tier P2 (a probe group on). P0 / P1 turn no group on, and the orchestrator refuses an outer
-    CAPPROBE_INJECT (the other switch that makes capprobe write), so their processes never write a
+    tier P2 (a probe group on). P0 / P1 turn no group on, and CAPPROBE_INJECT (the other switch
+    that makes capprobe write) reaches no product process: the orchestrator refuses an outer one
+    and validate_role refuses CAPPROBE_* in a role's env, so their processes never write a
     snapshot whatever the role's snapshots scope says."""
     return r["launcher"] == "product" and r["probe_tier"] == "P2"
 LOOPS = ("asyncio", "uvloop")
@@ -221,6 +222,13 @@ def validate_role(r, role_names, params):
     if not isinstance(r["env"], dict) or any(not isinstance(k, str) or not isinstance(v, str)
                                              for k, v in r["env"].items()):
         _err(where, "env must map str -> str")
+    # the capprobe switches (CAPPROBE_*) are set by the orchestrator alone (_role_env), from
+    # registered scenario fields: a role env entry would bypass that (e.g. CAPPROBE_INJECT making a
+    # P0/P1 product process write snapshots nobody expects)
+    probe_keys = sorted(k for k in r["env"] if k.startswith("CAPPROBE_"))
+    if probe_keys:
+        _err(where, "env must not set capprobe switches %s (the orchestrator sets them)"
+             % probe_keys)
     # proc_kinds: the capprobe process kinds (capprobe SITES proc_kind) this role runs; the judge
     # decides from them which overlay sites C8 expects, so an unknown name (a typo) would only
     # drop sites from C8. Only product roles run probed code.

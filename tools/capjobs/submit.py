@@ -206,7 +206,7 @@ def parse_parsable(stdout):
     if not lines:
         return None
     jid = lines[-1].split(";")[0]
-    return jid if jid.isdigit() else None
+    return jid if jid.isascii() and jid.isdigit() else None
 
 
 def _read_bytes(path):
@@ -359,27 +359,45 @@ def register_environment(workdir, row, register_sha, experiment):
     return {"path": path, "sha256": sha, "environment": dict(env), "doc": doc}
 
 
+def arm_files(register_doc, arm):
+    """register.json files for one arm (files, or files_by_arm[arm]) as caplaunch reads them;
+    None when the arm has none."""
+    has_f = "files" in register_doc
+    if has_f == ("files_by_arm" in register_doc):
+        raise SubmitError("register needs exactly one of files / files_by_arm")
+    files = register_doc["files"] if has_f else (register_doc["files_by_arm"] or {}).get(arm)
+    return files if isinstance(files, dict) else None
+
+
 def check_plan_scenarios(plan, workdir, register_doc):
     """Each launch's --workdir is --workdir and its --scenario is the file register.json lists
     as files.scenario for that launch's arm (same relpath, same sha256): the check caplaunch
     makes in the job, made before anything is submitted."""
-    has_f = "files" in register_doc
-    if has_f == ("files_by_arm" in register_doc):
-        raise SubmitError("register needs exactly one of files / files_by_arm")
     root = os.path.realpath(workdir)
     for ln in plan["launches"]:
         wd, rel = launchplan.scenario_path(ln)
         if os.path.realpath(wd) != root:
             raise SubmitError("launch %d: --workdir %s is not --workdir %s"
                               % (ln["launch_seq"], wd, workdir))
-        files = register_doc["files"] if has_f else \
-            (register_doc["files_by_arm"] or {}).get(ln["arm"])
-        regd = files.get("scenario") if isinstance(files, dict) else None
+        files = arm_files(register_doc, ln["arm"])
+        regd = files.get("scenario") if files is not None else None
         sha = sha256_file(os.path.join(root, rel))
         if not isinstance(regd, dict) or regd.get("relpath") != rel or regd.get("sha256") != sha:
             raise SubmitError("launch %d: scenario %s (sha %s) is not the register's "
                               "files.scenario %r for arm %s"
                               % (ln["launch_seq"], rel, sha, regd, ln["arm"]))
+
+
+def workdir_inputs(workdir, reg, plan):
+    """The files in <W> the job reads for this plan: the register and every files.* entry of
+    each launch's arm (check_coverage also checks each one's realpath, so a symlink out of <W>
+    needs its own mount)."""
+    out = [reg["path"]]
+    for ln in plan["launches"]:
+        for e in (arm_files(reg["doc"], ln["arm"]) or {}).values():
+            if isinstance(e, dict) and isinstance(e.get("relpath"), str):
+                out.append(os.path.join(workdir, e["relpath"]))
+    return sorted(set(out))
 
 
 def _plan_identity(a, plan):
@@ -411,9 +429,11 @@ def prepare_submit(a, code_state_fn):
     res = resources_from_args(a)
     paths = {k: check_path(os.path.abspath(getattr(a, k)), "--" + k.replace("_", "-"))
              for k in ("snapshot_root", "run_root", "local_base", "shm_base", "image")}
+    # <W> is read in the job (capjobs.launches and caplaunch read the registered scenario,
+    # register, tier table, schedule and prompts there): ro coverage is enough
     coverage = job_mounts(
         mounts, [paths["run_root"], paths["local_base"], paths["shm_base"]],
-        [paths["snapshot_root"]] + ([tok] if tok else []))
+        [paths["snapshot_root"], workdir] + ([tok] if tok else []))
     reg = register_environment(workdir, _check_registry(workdir, a.register_sha),
                                a.register_sha, a.experiment)
     renv = reg["environment"]
@@ -448,6 +468,7 @@ def prepare_submit(a, code_state_fn):
     file_plan = snapshot.plan_files(code_root, includes, overlay)
     launchplan.check_kill_grace(plan)
     check_plan_scenarios(plan, workdir, reg["doc"])
+    coverage += check_coverage(mounts, [], workdir_inputs(workdir, reg, plan))
     for ln in plan["launches"]:
         # caplaunch sets CAPKIT_CODE_SHA = --capkit-sha and refuses a different outer value; in the
         # job the outer value is the overlay manifest's capkit_code_sha, i.e. this HEAD
@@ -468,9 +489,11 @@ def prepare_submit(a, code_state_fn):
 
 def time_budget(plan, renv):
     """Every in-allocation wait that has a registered or planned bound: per launch budget_s +
-    kill_grace_s + margin_s, plus the gate's idle window and the longest slurm_view wait."""
+    kill_grace_s + margin_s and the pin-table generation bound, plus the gate's idle window and
+    the longest slurm_view wait."""
     parts = {"launches": sum(ln["budget_s"] + plan["kill_grace_s"] + plan["margin_s"]
                              for ln in plan["launches"]),
+             "pin_tables_s": launchplan.PINS_TIMEOUT_S * len(plan["launches"]),
              "gate_idle_window_s": renv["idle_window_s"],
              "slurm_view_wait_s": renv["slurm_view_wait_s"]}
     return {"parts": parts, "total_s": sum(parts.values())}
@@ -501,7 +524,8 @@ def _job_env(a, prep, plan_id, snap_dir):
     renv = prep["register"]["environment"]
     return {
         "CAPJOBS_PLAN_ID": plan_id, "CAPJOBS_SNAP": snap_dir,
-        "CAPJOBS_EXPERIMENT": a.experiment, "CAPJOBS_REGISTER_SHA": a.register_sha,
+        "CAPJOBS_WORKDIR": prep["workdir"], "CAPJOBS_EXPERIMENT": a.experiment,
+        "CAPJOBS_REGISTER_SHA": a.register_sha,
         "CAPJOBS_JOB_ARM": prep["plan"]["job_arm"], "CAPJOBS_RUN_ROOT": p["run_root"],
         "CAPJOBS_LOCAL_BASE": p["local_base"], "CAPJOBS_SHM_BASE": p["shm_base"],
         "CAPJOBS_MIN_LOCAL_FREE_BYTES": a.min_local_free_bytes,
@@ -667,7 +691,7 @@ def cmd_reconcile_submit(a, runner):
     common = {"plan_id": a.plan_id, "experiment": cur["experiment"]}
     run = get_runner(a, runner)
     if a.job_id is not None:
-        if not a.job_id.isdigit():
+        if not (a.job_id.isascii() and a.job_id.isdigit()):
             raise SubmitError("--job-id must be a numeric cluster job id")
         sc = remote.run_remote(run, a.login_host, ["scontrol", "show", "job", a.job_id])
         by_scontrol = sc["rc"] == 0 and ("Command=" + script) in (sc["stdout"] or "").split()

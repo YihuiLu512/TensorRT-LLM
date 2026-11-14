@@ -10,7 +10,11 @@ from capcommon.exitcodes import CapkitError
 
 
 def build_parser():
-    p = argparse.ArgumentParser(prog="python -m caplaunch", description=__doc__)
+    # allow_abbrev=False: capjobs checks the launch plan's argv by exact flag spellings
+    # (launchplan.RESERVED_FLAGS, flag_value for --workdir/--scenario/--kill-after-s/
+    # --capkit-sha); an abbreviation such as --scen would otherwise bypass those checks
+    p = argparse.ArgumentParser(prog="python -m caplaunch", description=__doc__,
+                                allow_abbrev=False)
     add_identity_args(p)
     g = p.add_argument_group("launch (all required; provenance values may be 'none')")
     g.add_argument("--run-dir", required=True, help="launch tree <T> on the node-local disk")

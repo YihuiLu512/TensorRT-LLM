@@ -344,3 +344,31 @@ def test_check_mounts_resolves_symlinks(tmp_path):
         policy.check_mounts([{"src": str(up), "dst": "/h"}])
     # positive control: the same call accepts a plain directory
     policy.check_mounts(["%s:/data:ro" % tmp_path])
+
+
+def _caplaunch_full_argv():
+    from caplaunch.__main__ import build_parser  # noqa: PLC0415
+    p = build_parser()
+    argv = []
+    for act in p._actions:
+        if act.required:
+            argv += [act.option_strings[0], "1"]
+    return p, argv
+
+
+def test_caplaunch_refuses_abbreviated_flags():
+    """U7: capjobs checks the plan argv by exact flag spellings (RESERVED_FLAGS, flag_value), so
+    caplaunch must not accept an abbreviation of any of its long options (`--scen x`,
+    `--scen=x`): it would reach the same option while bypassing those checks."""
+    p, argv = _caplaunch_full_argv()
+    p.parse_args(argv)  # positive control: the full spellings parse
+    longs = [o for act in p._actions for o in act.option_strings if o.startswith("--")
+             and o != "--help"]
+    inspected = set(launchplan.RESERVED_FLAGS) | {"--workdir", "--scenario", "--kill-after-s",
+                                                  "--capkit-sha"}
+    assert inspected <= set(longs)
+    for opt in longs:
+        for abbrev in (opt[:-1], opt[:-1] + "=1"):
+            with pytest.raises(SystemExit) as e:
+                p.parse_args(argv + [abbrev] + ([] if "=" in abbrev else ["1"]))
+            assert e.value.code == 2, (opt, abbrev)
