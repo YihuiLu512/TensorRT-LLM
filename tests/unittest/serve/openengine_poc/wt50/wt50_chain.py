@@ -36,7 +36,7 @@ _CLIENT_TESTS = Path(__file__).resolve().parents[3] / "grpc" / "openengine_clien
 if str(_CLIENT_TESTS) not in sys.path:
     sys.path.insert(0, str(_CLIENT_TESTS))
 
-from fake_openengine import PROFILES, FakeEngine, running_in_thread  # noqa: E402
+from fake_openengine import PROFILES, FakeEngine, disagg_profile, running_in_thread  # noqa: E402
 
 MODEL = "stub-model"
 VOCAB = {"<unk>": 0, "</s>": 1, "He": 2, "llo": 3, " world": 4, "!": 5, " again": 6}
@@ -96,13 +96,16 @@ def model_dir(path: Path) -> Path:
 
 
 def engine(model_path: Path, **profile_changes: Any) -> FakeEngine:
-    """A ``trtllm-like`` fake engine serving the tokenizer in ``model_path``."""
+    """A ``trtllm-like`` fake engine with KV transfer, serving the tokenizer in ``model_path``.
+
+    A worker frontend started with a role refuses an engine without KV transfer.
+    """
     from tensorrt_llm.grpc.openengine_conventions import compute_tokenizer_fingerprint
     from tensorrt_llm.llmapi.llm_utils import ModelLoader
 
     tokenizer = ModelLoader.load_hf_tokenizer(str(model_path))
     fingerprint = compute_tokenizer_fingerprint(tokenizer, model_path)
-    profile = PROFILES["trtllm-like"].replace(
+    profile = disagg_profile(PROFILES["trtllm-like"]).replace(
         model=MODEL,
         max_context_length=64,
         vocab_size=len(VOCAB),
