@@ -14,6 +14,7 @@ import re
 from capcommon.exitcodes import ConfigError
 from capcommon.expect import validate_reconcile
 from capcommon.identity import EXPERIMENT_RE, ROLE_RE
+from capcommon.runtree import RunTree
 
 SCHEMA = "capkit.scenario/1"
 
@@ -41,6 +42,7 @@ def probe_proc_kinds():
 #   snapshot: --shm-dir + --snapshot-interval-ms; shm_only: --shm-dir; ready: --ready-file;
 #   port: --port-file (capkit JSON port file); workers: --workers W;
 #   sidecar / canary: orchestrator-filled observer arguments.
+#   pin_table: --pin-table <launch tree>/raw/env/pin_table.json (the orchestrator's copy).
 TOOL_TABLE = {
     "capload": {"loop": True, "tiers": True, "snapshot": True, "ready": True, "port": False,
                 "workers": True},
@@ -55,6 +57,9 @@ TOOL_TABLE = {
     # --ready-file: INTERFACES 2.2 ("all long-lived processes"); optional in B4's parsers.
     "capenv.sidecar": {"origin": True, "shm_only": True, "sidecar": True, "ready": True},
     "capenv.canary": {"origin": True, "canary": True, "ready": True},
+    # C13 positive control / V1-c/d load (INTERFACES errata SB-B1): an aux role, measure_class
+    # observer (its spin processes stay unregistered monitor children).
+    "capenv.spinners": {"origin": True, "ready": True, "pin_table": True},
     # E0(c) HTTP smoke client (this package); identity/--run-dir/--cpus only, no ready file.
     "caplaunch.httpprobe": {},
 }
@@ -63,7 +68,7 @@ MANAGED_FLAGS = ("--experiment", "--arm", "--launch-seq", "--job-id", "--restart
                  "--register-sha", "--role", "--worker", "--run-dir", "--stop-grace-s", "--cpus",
                  "--loop", "--tier-table", "--origin-ns", "--shm-dir", "--snapshot-interval-ms",
                  "--ready-file", "--port-file", "--workers", "--roles-file", "--out-dir",
-                 "--logs-dir", "--cpus-watch", "--out")
+                 "--logs-dir", "--cpus-watch", "--out", "--pin-table")
 
 ROLE_KEYS_REQUIRED = ("role", "launcher", "kind", "start_after", "pin_role", "cpus_needed",
                       "numa", "workers", "expected_procs", "measure_class", "asyncio",
@@ -528,4 +533,6 @@ def build_argv(r, ctx, cpus, python_exe, runtime=True):
                  "--logs-dir", s["logs_dir"], "--cpus-watch", s["cpus_watch"]]
     if tool.get("canary"):
         argv += ["--out", ctx.canary["out"]]
+    if tool.get("pin_table"):
+        argv += ["--pin-table", RunTree(ctx.run_dir).env("pin_table.json")]
     return argv + _items(r["args"], name, ctx, runtime)

@@ -503,3 +503,59 @@ def test_tree_with_a_state_line_is_refused(tmp_path):
     assert r.returncode == 3 and "STATE" in r.stderr, (r.returncode, r.stderr)
     assert [s[1] for s in read_state(T)] == ["VOID"]
     assert not os.path.exists(os.path.join(T, "raw", "launch.json"))
+
+
+def _spin_role(mclass="observer"):
+    return cf.role("spin", "capkit", "aux", asyncio=False, mclass=mclass,
+                   module="capenv.spinners", snapshots="none", args=["--target-role", "product"])
+
+
+def test_spinners_aux_role_spins_on_the_target_roles_first_core(tmp_path):
+    """SB-B1 / #26 end to end with the real capenv.spinners: the orchestrator passes the launch
+    tree's pin table, one spinner runs on the role's own core and one on the product role's first
+    core; the spinners are monitor children (not registered, not unattributed), the started
+    process has a version record, nothing is left behind."""
+    roles = cf.default_roles(server_args=["--drain-delay-ms", "150"],
+                             client_args=["--drain-delay-ms", "100"]) + [_spin_role()]
+    r, T = _launch(tmp_path, roles)
+    assert r.returncode == 0, r.stderr
+    assert [s[1] for s in read_state(T)] == ["VALID"]
+    pin_path = os.path.join(T, "raw", "env", "pin_table.json")
+    spin = [x for x in _j(T, "raw", "launch.json")["roles"] if x["role"] == "spin"][0]
+    assert spin["args"][spin["args"].index("--pin-table") + 1] == pin_path
+    pins = _j(T, "raw", "env", "pin_table.json")["roles"]
+    out = _j(T, "raw", "spinners", "spin.json")
+    assert out["problems"] == [] and out["ready"] is True and out["pin_table"]["path"] == pin_path
+    assert out["target_role"] == "product" and out["target_cpu"] == pins["product"]["cpus"][0]
+    assert [(x["cpu"], x["purpose"], x["affinity"], x["reported"]) for x in out["spinners"]] == [
+        (pins["spin"]["cpus"][0], "own", pins["spin"]["cpus"], True),
+        (pins["product"]["cpus"][0], "target", [pins["product"]["cpus"][0]], True)]
+    assert out["stop"]["reason"] == "completed"
+    rj = _j(T, "raw", "procs", "roles.json")
+    me = [p for p in rj["procs"] if p["role"] == "spin"]
+    assert [p["discovered_via"] for p in me] == ["launched"]
+    assert rj["unattributed"] == []
+    kids = {k["pid"] for k in _j(T, "raw", "procs", "monitor_children.json")["children"]
+            if k["role"] == "spin" and k["ppid"] == me[0]["pid"]}
+    assert kids == {x["pid"] for x in out["spinners"]}
+    assert os.path.isfile(os.path.join(T, "raw", "env", "versions",
+                                       "spin.w0.%d.json" % me[0]["pid"]))
+    assert _j(T, "raw", "launch_end.json")["exit_codes"]["spin"] == 0
+    for d in TIER_FILES:
+        assert _j(T, "raw", "tiers", d, "tier.json")["pids_stable"] is True
+    _no_leftovers(T)
+
+
+def test_spinners_role_outside_monitor_classes_leaves_unattributed_children(tmp_path):
+    """The spinners are unregistered children: below a role outside MONITOR_CLASSES the
+    orchestrator lists them as unattributed (C13 RED), so the role must be an observer."""
+    roles = cf.default_roles(server_args=["--drain-delay-ms", "150"],
+                             client_args=["--drain-delay-ms", "100"]) \
+        + [_spin_role(mclass="stub_out_of_domain")]
+    r, T = _launch(tmp_path, roles)
+    assert r.returncode == 0, r.stderr
+    out = _j(T, "raw", "spinners", "spin.json")
+    un = rj_unattributed(T)
+    assert {u["pid"] for u in un} == {x["pid"] for x in out["spinners"]}
+    assert {u["seen_via"] for u in un} == {"proc.children"}
+    _no_leftovers(T)
