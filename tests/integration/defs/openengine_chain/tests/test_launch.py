@@ -1362,6 +1362,68 @@ def test_worker_whose_front_end_was_killed_stops_its_engine(fake, tmp_path, monk
     assert not worker.handle.alive
 
 
+@pytest.mark.parametrize(
+    "given, added",
+    [
+        ([], True),
+        (["--num_serve_frontends", "2"], False),
+        (["--set", "num_serve_frontends=2"], False),
+        ("config", False),
+    ],
+)
+def test_disagg_worker_on_port_0_gets_a_port_its_handle_keeps(fake, tmp_path, given, added):
+    fake.env["FAKE_ENGINE_SAY"] = launch.TRANSCEIVER_STARTED_LINE
+    config = {"cache_transceiver_config": {"backend": "DEFAULT"}}
+    if given == "config":
+        config["num_serve_frontends"] = 2
+        given = []
+    args = _worker(fake, tmp_path, config)
+    args[args.index("--port") + 1] = "0"
+    handle = _start(fake, args + given, chain="trtllm")
+    frontend = _record(fake.records, "frontend-start")["argv"]
+    assert handle.port and int(_option(frontend, "--port")) == handle.port
+    check = _record(fake.records, "frontend-check-start")["argv"]
+    assert int(_option(check, "--port")) != handle.port
+    # trtllm-serve runs one front end on port 0 unless a count is given.
+    assert frontend.count("--num_serve_frontends") == int(added or "--num_serve_frontends" in given)
+    if added:
+        assert _option(frontend, "--num_serve_frontends") == "1"
+    _wait_healthy(handle)
+    handle.terminate(grace=1)
+
+
+def test_disagg_worker_on_a_given_port_keeps_it(fake, tmp_path):
+    fake.env["FAKE_ENGINE_SAY"] = launch.TRANSCEIVER_STARTED_LINE
+    args = _worker(fake, tmp_path, {"cache_transceiver_config": {"backend": "DEFAULT"}})
+    port = int(args[args.index("--port") + 1])
+    handle = _start(fake, args, chain="trtllm")
+    frontend = _record(fake.records, "frontend-start")["argv"]
+    assert handle.port == port == int(_option(frontend, "--port"))
+    assert "--num_serve_frontends" not in frontend
+    handle.terminate(grace=1)
+
+
+def test_killing_a_worker_kills_its_front_end_and_lets_its_engine_exit(fake, tmp_path, monkeypatch):
+    monkeypatch.setenv(cv.ENV_CHAIN, "trtllm")
+    fake.env["FAKE_ENGINE_SAY"] = launch.TRANSCEIVER_STARTED_LINE
+    config = {"cache_transceiver_config": {"backend": "DEFAULT"}}
+    worker = launch.launch_worker(
+        [fake.exe, "/model"] + _worker(fake, tmp_path, config), env=fake.env
+    )
+    fake.handles.append(worker.handle)
+    _record(fake.records, "frontend-start")
+    engine = worker.handle.engine
+    worker.kill()
+    assert worker.poll() == -signal.SIGKILL
+    # The front end got no SIGTERM; the engine got one and exited on it.
+    assert not (fake.records / "frontend-term.json").exists()
+    assert _record(fake.records, "engine-term")
+    assert engine.poll() == 0
+    assert not worker.handle.alive
+    assert not worker.handle.teardown_errors
+    assert worker.wait(timeout=10) == -signal.SIGKILL
+
+
 def test_disagg_engine_gets_a_kv_event_publisher(fake, tmp_path):
     fake.env["FAKE_ENGINE_SAY"] = launch.TRANSCEIVER_STARTED_LINE
     config = {

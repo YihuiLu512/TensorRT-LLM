@@ -1278,6 +1278,23 @@ class ServeStart:
             engine_args = list(split.engine)
         self._split = split
         self._engine_args = engine_args
+        self._disagg = disagg
+        # A disaggregated worker's front end gets a port picked here for --port 0 (see
+        # step()); trtllm-serve runs one front end for --port 0 unless a count is given,
+        # so the picked port keeps that count.
+        self._frontend_extra: list[str] = []
+        if (
+            disagg
+            and _as_port(split.port) == 0
+            and setting(
+                load_config(last_config_file(command.args)),
+                command.args,
+                ("num_serve_frontends",),
+                "--num_serve_frontends",
+            )
+            is None
+        ):
+            self._frontend_extra = ["--num_serve_frontends", "1"]
         engine_env = disagg_engine_env(env, command.args) if disagg else env
         self._engine_env = {k: v for k, v in engine_env.items() if k != cv.ENV_COUNTER_DIR}
         engine_flags = []
@@ -1324,7 +1341,7 @@ class ServeStart:
             cmd += ["--host", self._split.host]
         if frontend_port is not None:
             cmd += ["--port", frontend_port]
-        return cmd + list(self._split.frontend)
+        return cmd + list(self._split.frontend) + self._frontend_extra
 
     def _start_attempt(self) -> None:
         """Start the engine on a new gRPC port, as a new server."""
@@ -1460,9 +1477,19 @@ class ServeStart:
                 )
 
             handle._start_frontend = start_frontend
+            frontend_port = self._split.port
+            if self._disagg and _as_port(frontend_port) == 0:
+                # The handle keeps the worker's address after the worker has stopped,
+                # which the chain proof needs; a front end on port 0 would have none.
+                # The port can still be taken before the front end binds it.
+                port = _free_port_other_than(
+                    self._given_metrics_port, self._check_port, self._engine_port
+                )
+                handle.port = port
+                frontend_port = str(port)
             with handle.stop_on_error():
                 os.makedirs(self._counter_dir, exist_ok=True)
-                handle._frontend = start_frontend(self._split.port)
+                handle._frontend = start_frontend(frontend_port)
             self._finish()
             return handle
         except BaseException:
@@ -1861,6 +1888,19 @@ class WorkerProcess(ChainProcess):
             grace = max(0.0, min(grace, timeout - (time.monotonic() - started)))
         self.handle.terminate(grace=grace)
         return rc
+
+    def kill(self) -> None:
+        """SIGKILL the front end, which stands for the worker, then stop the rest as :meth:`terminate`.
+
+        The worker's peers see it die at once, as with a ``subprocess.Popen``
+        killed; the engine gets SIGTERM and ``TERMINATE_GRACE_S`` to exit, as an
+        engine holding GPUs can take longer than ``SURVIVOR_WAIT_S`` to exit
+        after SIGKILL.
+        """
+        frontend = self.handle.frontend
+        if frontend is not None and frontend.poll() is None:
+            frontend.kill()
+        self.handle.terminate()
 
 
 def launch_worker(
