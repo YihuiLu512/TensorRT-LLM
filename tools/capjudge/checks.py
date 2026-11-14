@@ -148,6 +148,8 @@ def check_c1(ctx, td, record):
             if _shape_items(r, ctx, "loadgen_band", shape, td.tier, name, k, st, {},
                             "schedule"):
                 r.checked += 1
+    if r.expected == 0:
+        r.not_run.append("no load_source role in this launch")
     return r.finish()
 
 
@@ -176,6 +178,8 @@ def check_c2(ctx, ld, td, record):
                 continue
             if _shape_items(r, ctx, "stub_calib", shape, td.tier, name, k, st, whys, "even"):
                 r.checked += 1
+    if r.expected == 0:
+        r.not_run.append("no stub_out_of_domain role in this launch")
     ind = sorted(x["role"] for x in _roles_of(ctx, "stub_in_domain"))
     if ind:
         r.detail.append("stub_in_domain %s: own demand is not a precondition, not checked" % ind)
@@ -520,6 +524,8 @@ def check_c4(ctx, td):
     if r.checked + uncounted < r.expected:
         r.not_run.append("%d of %d planned requests have a record"
                          % (r.checked + uncounted, r.expected))
+    if r.expected == 0:
+        r.not_run.append("no request planned in this tier for %d client role(s)" % len(clients))
     return r.finish()
 
 
@@ -557,6 +563,8 @@ def check_c12(ctx, ld, td, next_drain):
             if len(parts) < n:
                 r.not_run.append("%s: %d of %d units have a count" % (hop["role"],
                                                                      len(parts), n))
+    if r.expected == 0:
+        r.not_run.append("no role on a tier-scope requests hop has two or more units")
     return r.finish()
 
 

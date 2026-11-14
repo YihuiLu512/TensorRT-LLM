@@ -36,3 +36,9 @@
 - 2026-11-14 22:15:22 补：counts 要求两侧每个档目录每个 worker 都有摘要（缺 ⇒ NOT_RUN），测试 28 passed（an4），变异 E7 KILLED（summary5）；E1-0 与 e0a e2e 复跑（*.r3.json）结论不变。提交。
 - 2026-11-14 22:18:02 全量验证 v1 开工（HEAD d3ff38e002c40540af823b058b083d20e16e3a08）：脚本 _local/b2-judge/fullv.sh（改自 fix-sm1718/fullv.sh），10+ 个测试目录逐个串行跑 + selftest 36 + patchcheck + py_compile + bash -n，约 15–20 分钟；建测试用软链 WT/probe-tree -> ../../probe-tree（被 git 忽略，结束后移到 _local/b2-judge/probe-tree.link）
 - 2026-11-14 23:09:48 重启（暂停后）：v1 全量验证中断作废（停在 tests/judge），从头重做为 v2；fullv.sh 的 TMPDIR/basetemp 改到短路径 /home/scratch.yihlu_coreai/tmp/20261114-capkit-sm1718/b2-judge/<轮次>（原件留 fullv.sh.v1）；软链 probe-tree 恢复到 WT 根（未入库）。顺序：v2 全量验证（约 15–20 分钟）→ E0 第一轮 J5933747-r0-L0..L4 拷贝重判 + boundary + localize → e0a-nullsse 作业路径 e2e。
+- 2026-11-14 23:14:59 v2：tests/judge（约 5 分钟）
+- 2026-11-14 23:20:07 v2 作废：tests/judge 1 failed（test_counts_need_every_per_tier_summary）。根因（MEASURED）：PYTHONPYCACHEPREFIX 目录 _local/b2-judge/pyc 里的 e1report.cpython-311.pyc（22:14:38）是变异 E7（mut/run5.py，'if short:'→'if False:' 等长替换、同一秒内写回）编译出的，源码大小与秒级 mtime 都与还原后的源码一致，Python 当作有效缓存读入；不带缓存前缀直接调用 counts 得 NOT_RUN（正确）。代码无缺陷。处理：pyc 目录改名为 pyc.stale-v2，新建空 pyc 目录，全量验证从头重做为 v3（前面 v2 各步也可能读到其他变异的陈旧 pyc，一并作废）。
+- 2026-11-14 23:34:00 v3：样本自测（fullv.sh 的 selftest 步骤缺 --tools/--tmp，已补；约 3 分钟）
+- 2026-11-14 23:34:53 e2e 重判：E0 第一轮 J5933747-r0-L0..L4 拷到 _local/b2-judge/trees，共享沙箱 rjwd（REGISTRY/submissions/register 副本、自有 JUDGED.tsv），新判定器逐棵重判（rejudge.sh，约 5–10 分钟）
+- 2026-11-14 23:37:44 e2e 重判后续：rjpost/run.sh（进程内加 C2/C4/C12；base 1176861 工具对照逐行；进程内 P+X+I+V 定位；然后 boundary），约 5–10 分钟
+- 2026-11-14 23:40:26 e2e 发现：CLI 重判 5 棵树全部 JUDGED（无崩溃、无 INPUT_INVALID）；进程内加 C2/C4/C12 后 E0(b) 4 棵树的 C12（角色都是 1 worker）与 C1（无 load_source）应检 0 ⇒ NOT_RUN 但明细为空，不满足「NOT_RUN 须写明原因」。修复：C1/C2/C4/C12 应检为 0 时写原因（checks.py），test_calib 补 4 处断言（61 passed），INTERFACES 勘误 B2-2A 第 12 条。提交后全量验证从头重做为 v4。

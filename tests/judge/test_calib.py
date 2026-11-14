@@ -281,6 +281,9 @@ def test_c1_uses_each_workers_schedule_share(monkeypatch):
     ctx.calib_bind = {}
     r = CH.check_c1(ctx, NS(tier=_tier()), {})
     assert r.status == "NOT_RUN" and "no registered loadgen_band" in r.not_run[0]
+    ctx.roles = {}
+    r = CH.check_c1(ctx, NS(tier=_tier()), {})
+    assert (r.status, r.not_run) == ("NOT_RUN", ["no load_source role in this launch"])
 
 
 def test_nominal_msgs_load_needs_streams_and_a_beat():
@@ -331,7 +334,8 @@ def test_c2_pass_red_and_not_run():
     td.summaries = {}
     assert CH.check_c2(ctx, ld, td, {}).status == "RED"  # a stub worker without its summary
     ctx.roles = {}
-    assert CH.check_c2(ctx, ld, td, {}).status == "NOT_RUN"  # no out-of-domain stub
+    r = CH.check_c2(ctx, ld, td, {})  # no out-of-domain stub
+    assert (r.status, r.not_run) == ("NOT_RUN", ["no stub_out_of_domain role in this launch"])
 
 
 # ---- C4 output length ------------------------------------------------------------------------
@@ -373,6 +377,12 @@ def test_c4_missing_records_not_run():
     assert r.status == "NOT_RUN" and "2 of 3 planned" in r.not_run[0]
 
 
+def test_c4_nothing_planned_states_why():
+    r = _c4([], planned=0)
+    assert r.status == "NOT_RUN" and r.not_run == ["no request planned in this tier for 1 client "
+                                                    "role(s)"]
+
+
 # ---- C12 doubled processes carry traffic -----------------------------------------------------
 
 def _c12(workers=2, vals=(5, 7), slot=False, procs=(), slot_rows=()):
@@ -404,7 +414,9 @@ def test_c12_idle_worker_is_not_run_never_pass():
 
 
 def test_c12_without_doubled_roles_has_nothing_to_check():
-    assert _c12(workers=1, vals=(9,)).status == "NOT_RUN"
+    r = _c12(workers=1, vals=(9,))
+    assert (r.status, r.not_run) == ("NOT_RUN", ["no role on a tier-scope requests hop has two "
+                                                 "or more units"])
 
 
 def _snap(pid, t, v):

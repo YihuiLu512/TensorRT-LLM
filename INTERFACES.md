@@ -1216,6 +1216,7 @@ E0 第一轮的 pilot（`02_e0/E0/analysis/pilot.json`）定不出 `window_ns` /
 9. **§10.4 样本**：新增 8 个，共 33 个（`samples/README.md`）：`c1_loadgen_overdriven`、`c2_stub_good`、`c2_stub_loop_lag`、`c4_short_output`、`c12_idle_worker`、`regime_nb_missing`、`regime_nb_good`、`input_calib_invalid`。全部样本都登记一份合成的 `loadgen_band`（形态 `capload-r` 绑给 capload）；`good` 等样本的检查清单加了 C4、C12；合成的 capload 记录对没有 usage 帧的失败请求写 `tokens = -1`（与 capload 一致）；合成的 nullsse 摘要加了 `loop_lag_ns` 直方图（真实 nullsse 有）。
 10. **已知缺口（§12 追加）**：① C2 没有「积压所在的一侧」与弱读者检验（第 4 条）。② 桩的计划负载按 worker 均分；E0 第一轮重判（本地拷贝，C12 加入后在进程内判）实测 e0a（J5935100 L1）档 4 的 nullsse worker 1 本档请求数为 0（2 个长连接都落在 worker 0），所以「均分」在 `SO_REUSEPORT` 下不一定成立；C12 会把这样的档记 NOT_RUN，C2 的负载项在这种档上偏松。③ `match` 只做精确匹配，不外推。④ 两侧都不计 token 的拓扑（读者与桩都不写 `tokens`）C4 恒为 NOT_RUN。⑤ `stub_calib.in_domain`（域内桩自身需求）未定义。⑥ E1-0 的 `e1_noise` 若用 `capjudge.pilot` 构建，其带是 `subsat`，只用于亚饱和档（第 2 条）；要给近边界档用，须另用 `calib_build.py near-boundary --regime near_boundary` 从近边界档构建并登记。
 11. **验证**：`tests/judge/test_calib.py`（格式校验正反例、regime 选带、`bind` 与 regime 的输入核对、C1 / C2 形态项、C4、C12、三个构建器）；样本自测 33 个；E0 第一轮两棵树（e0a J5935100 L1、e0b J5935100 L0）拷到 `_local/b2-judge/e2e` 重判：CLI 重判 `checks.tsv` 前六列除 e0a 档 4 C7（SM-14 修复，原判早于它）外逐行相同，C1 只是 NOT_RUN 原因的措辞变了；在进程内加上 C2、C4、C12 再判：C2 NOT_RUN（没有 stub_calib）、C4 PASS、C12 为 PASS 或 NOT_RUN（见第 10 条②），没有报错。记录在 `_progress/b2-judge.md`。
+12. **NOT_RUN 的原因**：C1、C2、C4、C12 应检为 0 时（本次启动没有 `load_source` 角色、没有 `stub_out_of_domain` 角色、本档没有计划请求、没有加倍的角色），`checks.tsv` 的明细写明是哪一种，不留空。
 
 #### B2-2E：定位 I、干预 V、结论等级（2026-11-14）
 
