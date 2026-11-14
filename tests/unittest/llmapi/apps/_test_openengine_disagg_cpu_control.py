@@ -34,10 +34,13 @@ def test_worker_frontend_models_version_health(tmp_path):
         port = chain.free_port()
         url = f"http://127.0.0.1:{port}"
         cluster = chain.cluster_config(url)
-        orchestrator = chain.start_orchestrator(tmp_path, port, cluster=cluster)
         config = {"disagg_cluster": cluster, "cache_transceiver_config": {"backend": "DEFAULT"}}
-        ctx = chain.start_worker(tmp_path, "ctx", model, ctx_engine, role="context", config=config)
-        with chain.stopping(orchestrator, ctx):
+        orchestrator = chain.start_orchestrator(tmp_path, port, cluster=cluster)
+        with chain.stopping(orchestrator) as running:
+            ctx = chain.start_worker(
+                tmp_path, "ctx", model, ctx_engine, role="context", config=config
+            )
+            running.append(ctx)
             ctx_workers = chain.wait(
                 lambda: chain.registered(url)[0],
                 "the ctx worker frontend to register",

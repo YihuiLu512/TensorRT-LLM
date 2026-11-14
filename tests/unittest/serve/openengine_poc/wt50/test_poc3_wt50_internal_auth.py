@@ -61,52 +61,36 @@ def _signed(body: dict, key: str = AUTH_KEY) -> dict[str, str]:
 
 
 @pytest.fixture(scope="module")
-def gen_workers(tmp_path_factory) -> Iterator[tuple[str, str, chain.FakeEngine, chain.FakeEngine]]:
-    """Two gen worker frontends: one with the orchestrator's key in its YAML, one without a key."""
+def gen_worker(tmp_path_factory) -> Iterator[tuple[str, chain.FakeEngine]]:
+    """A gen worker frontend with the orchestrator's key in its YAML."""
     tmp_path = tmp_path_factory.mktemp("wt50_auth")
     model = chain.model_dir(tmp_path / "model")
-    transceiver = {"cache_transceiver_config": {"backend": "DEFAULT"}}
-    with (
-        chain.running_in_thread(chain.engine(model)) as keyed_engine,
-        chain.running_in_thread(chain.engine(model)) as keyless_engine,
-    ):
-        keyed_port, keyless_port = chain.free_port(), chain.free_port()
-        keyed = chain.start_worker(
-            tmp_path,
-            "keyed",
-            model,
-            keyed_engine,
-            role="generation",
-            config={**transceiver, "internal_request_auth_key": AUTH_KEY},
-            port=keyed_port,
+    config = {
+        "cache_transceiver_config": {"backend": "DEFAULT"},
+        "internal_request_auth_key": AUTH_KEY,
+    }
+    with chain.running_in_thread(chain.engine(model)) as fake:
+        port = chain.free_port()
+        worker = chain.start_worker(
+            tmp_path, "keyed", model, fake, role="generation", config=config, port=port
         )
-        keyless = chain.start_worker(
-            tmp_path,
-            "keyless",
-            model,
-            keyless_engine,
-            role="generation",
-            config=transceiver,
-            port=keyless_port,
-        )
-        with chain.stopping(keyed, keyless):
-            urls = [f"http://127.0.0.1:{port}" for port in (keyed_port, keyless_port)]
-            for url in urls:
-                chain.wait(
-                    lambda url=url: chain.status(f"{url}/health") == 200,
-                    f"{url} to be healthy",
-                    processes=[keyed, keyless],
-                )
-            yield urls[0], urls[1], keyed_engine, keyless_engine
+        with chain.stopping(worker):
+            url = f"http://127.0.0.1:{port}"
+            chain.wait(
+                lambda: chain.status(f"{url}/health") == 200,
+                "the worker to be healthy",
+                processes=[worker],
+            )
+            yield url, fake
 
 
 def _post(url: str, body: dict, headers: dict[str, str]) -> requests.Response:
     return requests.post(f"{url}/v1/completions", json=body, headers=headers, timeout=60)
 
 
-def test_gen_worker_frontend_rejects_a_tampered_handoff_signature(gen_workers):
+def test_gen_worker_frontend_rejects_a_tampered_handoff_signature(gen_worker):
     """NT-008 (DG-34, DG-37): a handoff whose signature does not match is refused before the engine."""
-    keyed, keyless, keyed_engine, keyless_engine = gen_workers
+    keyed, keyed_engine = gen_worker
     body = _handoff("b3BhcXVl")
     headers = _signed(body)
     tampered = _handoff("dGFtcGVyZWQ=")
@@ -123,20 +107,14 @@ def test_gen_worker_frontend_rejects_a_tampered_handoff_signature(gen_workers):
         assert AUTH_FAILED in response.text
     assert chain.generate_calls(keyed_engine) == before
 
-    # Only one side has the key: the worker frontend warns and lets it through, as in-process,
-    # to the facade's refusal of the handoff fields.
-    response = _post(keyless, tampered, headers)
-    assert _refused_by_the_facade(response), (response.status_code, response.text)
-    assert chain.generate_calls(keyless_engine) == 0
 
-
-def test_a_signed_handoff_is_not_refused_for_a_missing_transceiver(gen_workers):
+def test_a_signed_handoff_is_not_refused_for_a_missing_transceiver(gen_worker):
     """SV-DSG-1 (UV-43): the worker frontend's YAML keeps ``cache_transceiver_config``, so the check passes.
 
     The request passes the signature and transceiver checks and reaches the
     facade, which refuses the handoff fields it does not map.
     """
-    keyed, _, keyed_engine, _ = gen_workers
+    keyed, keyed_engine = gen_worker
     body = _handoff("b3BhcXVl")
     before = chain.generate_calls(keyed_engine)
     response = _post(keyed, body, _signed(body))

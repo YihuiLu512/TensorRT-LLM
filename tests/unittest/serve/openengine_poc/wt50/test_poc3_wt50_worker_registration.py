@@ -61,9 +61,17 @@ def test_worker_frontend_registers_over_http_storage(tmp_path):
         chain.running_in_thread(chain.engine(model)) as gen_engine,
     ):
         orchestrator, url, cluster = _started_orchestrator(tmp_path, auth_key=auth_key)
-        config = _worker_config(cluster, auth_key)
-        ctx = chain.start_worker(tmp_path, "ctx", model, ctx_engine, role="context", config=config)
-        with chain.stopping(orchestrator, ctx):
+        with chain.stopping(orchestrator) as running:
+            # The ctx worker frontend reads the cluster from its YAML.
+            ctx = chain.start_worker(
+                tmp_path,
+                "ctx",
+                model,
+                ctx_engine,
+                role="context",
+                config=_worker_config(cluster, auth_key),
+            )
+            running.append(ctx)
             ctx_workers = chain.wait(
                 lambda: chain.registered(url)[0],
                 "the ctx worker frontend to register",
@@ -85,29 +93,45 @@ def test_worker_frontend_registers_over_http_storage(tmp_path):
             # The registration outlives the inactive timeout without a gap: the heartbeat renews it.
             keys = _role_keys(url, "CONTEXT")
             assert len(keys) == 1 and f":{ctx_port}-" in keys[0]
+            samples = 0
             deadline = time.monotonic() + chain.INACTIVE_SECONDS * 2
             while time.monotonic() < deadline:
-                assert _role_keys(url, "CONTEXT") == keys
-                assert len(chain.registered(url)[0]) == 1 and len(chain.listed(url)[0]) == 1
                 time.sleep(0.2)
+                info = chain.cluster_info(url)
+                stored = chain.get(f"{url}/get_prefix?key_prefix=&keys_only=true")
+                if not info or stored is None or stored.status_code != 200:
+                    continue  # A request that failed says nothing about the registration.
+                samples += 1
+                assert [key for key in stored.json()["result"] if "/CONTEXT-" in key] == keys
+                assert len(info["current_workers"]["context_servers"]) == 1
+                assert len(info["server_lists"]["context"]) == 1
+            assert samples >= chain.INACTIVE_SECONDS, samples
 
+            # The gen worker frontend takes the cluster's URI from --disagg_cluster_uri.
+            gen_cluster = {key: value for key, value in cluster.items() if key != "cluster_uri"}
             gen = chain.start_worker(
-                tmp_path, "gen", model, gen_engine, role="generation", config=config
+                tmp_path,
+                "gen",
+                model,
+                gen_engine,
+                role="generation",
+                config=_worker_config(gen_cluster, auth_key),
+                args=["--disagg_cluster_uri", url],
             )
-            with chain.stopping(gen):
-                chain.wait(
-                    lambda: chain.status(f"{url}/health") == 200,
-                    "the orchestrator to be ready with both roles",
-                    processes=[orchestrator, ctx, gen],
-                )
-                ctx_workers, gen_workers = chain.registered(url)
-                assert len(ctx_workers) == 1 and len(gen_workers) == 1
-                assert chain.cluster_info(url)["is_ready"] is True
-                assert len(_role_keys(url, "GENERATION")) == 1
-                # LIM-23: only the worker frontends register, never an engine.
-                for key in chain.storage_keys(url):
-                    for fake in (ctx_engine, gen_engine):
-                        assert f":{fake.port}-" not in key, key
+            running.append(gen)
+            chain.wait(
+                lambda: chain.status(f"{url}/health") == 200,
+                "the orchestrator to be ready with both roles",
+                processes=[orchestrator, ctx, gen],
+            )
+            ctx_workers, gen_workers = chain.registered(url)
+            assert len(ctx_workers) == 1 and len(gen_workers) == 1
+            assert chain.cluster_info(url)["is_ready"] is True
+            assert len(_role_keys(url, "GENERATION")) == 1
+            # LIM-23: only the worker frontends register, never an engine.
+            for key in chain.storage_keys(url):
+                for fake in (ctx_engine, gen_engine):
+                    assert f":{fake.port}-" not in key, key
         # Registration sends no Generate.
         assert chain.generate_calls(ctx_engine) == chain.generate_calls(gen_engine) == 0
 
@@ -158,13 +182,15 @@ def test_worker_frontend_registers_over_etcd(tmp_path):
             cluster = chain.cluster_config(f"etcd://127.0.0.1:{etcd_port}")
             orchestrator, url, _ = _started_orchestrator(tmp_path, cluster=cluster)
             config = _worker_config(cluster)
-            ctx = chain.start_worker(
-                tmp_path, "ctx", model, ctx_engine, role="context", config=config
-            )
-            gen = chain.start_worker(
-                tmp_path, "gen", model, gen_engine, role="generation", config=config
-            )
-            with chain.stopping(orchestrator, ctx, gen):
+            with chain.stopping(orchestrator) as running:
+                ctx = chain.start_worker(
+                    tmp_path, "ctx", model, ctx_engine, role="context", config=config
+                )
+                running.append(ctx)
+                gen = chain.start_worker(
+                    tmp_path, "gen", model, gen_engine, role="generation", config=config
+                )
+                running.append(gen)
                 chain.wait(
                     lambda: chain.status(f"{url}/health") == 200,
                     "the orchestrator to be ready with both roles",
@@ -187,18 +213,22 @@ def test_new_worker_is_listed_after_clock_sync_and_server_info(tmp_path):
     ):
         orchestrator, url, cluster = _started_orchestrator(tmp_path)
         config = _worker_config(cluster)
-        ctx = chain.start_worker(tmp_path, "ctx", model, ctx_engine, role="context", config=config)
-        gen = chain.start_worker(
-            tmp_path,
-            "gen",
-            model,
-            gen_engine,
-            role="generation",
-            config=config,
-            # The middleware added last runs first: record the request before it fails.
-            middleware=("wt50_chain.fail_server_info", "wt50_chain.record_requests"),
-        )
-        with chain.stopping(orchestrator, ctx, gen):
+        with chain.stopping(orchestrator) as running:
+            ctx = chain.start_worker(
+                tmp_path, "ctx", model, ctx_engine, role="context", config=config
+            )
+            running.append(ctx)
+            gen = chain.start_worker(
+                tmp_path,
+                "gen",
+                model,
+                gen_engine,
+                role="generation",
+                config=config,
+                # The middleware added last runs first: record the request before it fails.
+                middleware=("wt50_chain.fail_server_info", "wt50_chain.record_requests"),
+            )
+            running.append(gen)
             chain.wait(
                 lambda: chain.listed(url)[0],
                 "the ctx worker frontend to be listed",
@@ -228,18 +258,19 @@ def test_only_the_launcher_frontend_registers(tmp_path):
     try:
         with chain.running_in_thread(chain.engine(model)) as ctx_engine:
             orchestrator, url, cluster = _started_orchestrator(tmp_path)
-            ctx = chain.start_worker(
-                tmp_path,
-                "ctx",
-                model,
-                ctx_engine,
-                role="context",
-                config=_worker_config(cluster),
-                port=chain.free_port(),
-                frontends=2,
-                env={"TMPDIR": tmpdir},
-            )
-            with chain.stopping(orchestrator, ctx):
+            with chain.stopping(orchestrator) as running:
+                ctx = chain.start_worker(
+                    tmp_path,
+                    "ctx",
+                    model,
+                    ctx_engine,
+                    role="context",
+                    config=_worker_config(cluster),
+                    port=chain.free_port(),
+                    frontends=2,
+                    env={"TMPDIR": tmpdir},
+                )
+                running.append(ctx)
                 chain.wait(
                     lambda: chain.registered(url)[0],
                     "the ctx worker frontend to register",
@@ -270,10 +301,11 @@ def test_a_worker_frontend_that_fails_its_startup_checks_never_registers(tmp_pat
     fake = chain.engine(model, server_info_extra={CONVENTIONS_VERSION_KEY: 3})
     with chain.running_in_thread(fake) as ctx_engine:
         orchestrator, url, cluster = _started_orchestrator(tmp_path)
-        ctx = chain.start_worker(
-            tmp_path, "ctx", model, ctx_engine, role="context", config=_worker_config(cluster)
-        )
-        with chain.stopping(orchestrator, ctx):
+        with chain.stopping(orchestrator) as running:
+            ctx = chain.start_worker(
+                tmp_path, "ctx", model, ctx_engine, role="context", config=_worker_config(cluster)
+            )
+            running.append(ctx)
             ctx.proc.wait(timeout=chain.STARTUP_SECONDS)
             assert ctx.proc.returncode != 0
             assert "conventions version" in ctx.log()

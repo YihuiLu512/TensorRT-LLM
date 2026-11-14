@@ -119,10 +119,16 @@ def test_one_worker_frontend_gets_the_worker_options(field, value):
 
 def test_launch_gives_the_worker_options_to_the_server_and_the_facade(tmp_path, monkeypatch):
     built = {}
+    order = []
+    bind = launch_module._bind
+
+    def recording_bind(host, port):
+        order.append("bind")
+        return bind(host, port)
 
     class Facade:
         async def start(self):
-            pass
+            order.append("engine")
 
         async def aclose(self):
             pass
@@ -143,6 +149,7 @@ def test_launch_gives_the_worker_options_to_the_server_and_the_facade(tmp_path, 
     monkeypatch.setattr(launch_module, "adapt_server", lambda server, facade: None)
     monkeypatch.setattr("tensorrt_llm.serve.openai_server.OpenAIServer", Server)
     monkeypatch.setattr(launch_module.uvloop, "run", asyncio.run)
+    monkeypatch.setattr(launch_module, "_bind", recording_bind)
 
     # Port 0 with a cluster: bound before the engine is awaited, no report address needed.
     launch_module.launch_openengine_server(
@@ -162,6 +169,7 @@ def test_launch_gives_the_worker_options_to_the_server_and_the_facade(tmp_path, 
     assert server["metadata_server_cfg"] is None
     port, bound = built["serve"]
     assert port > 0 and bound == [port]
+    assert order == ["bind", "engine"]
 
 
 @pytest.mark.parametrize("cluster", [None, {}], ids=["no-cluster", "empty-cluster"])

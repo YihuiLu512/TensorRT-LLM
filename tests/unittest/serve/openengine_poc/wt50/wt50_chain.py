@@ -147,13 +147,17 @@ class Process:
         # A launcher's socket in the test's environment would make this an attached frontend.
         full_env.pop(LAUNCHER_UDS_ENV, None)
         self._log = log_path.open("w")
-        self.proc = subprocess.Popen(  # nosec B603
-            self.cmd,
-            env=full_env,
-            stdout=self._log,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
+        try:
+            self.proc = subprocess.Popen(  # nosec B603
+                self.cmd,
+                env=full_env,
+                stdout=self._log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        except BaseException:
+            self._log.close()
+            raise
 
     def alive(self) -> bool:
         return self.proc.poll() is None
@@ -331,14 +335,19 @@ def storage_keys(orchestrator: str) -> list[str]:
 
 
 @contextlib.contextmanager
-def stopping(*processes: Process) -> Iterator[None]:
-    """Stop ``processes`` on the way out, printing their logs when the block failed."""
+def stopping(*processes: Process) -> Iterator[list[Process]]:
+    """Stop ``processes`` on the way out, printing their logs when the block failed.
+
+    Yields the list of processes to stop: append each process started inside
+    the block, so that it is stopped on every path too.
+    """
+    running = list(processes)
     try:
-        yield
+        yield running
     except BaseException:
-        for process in processes:
+        for process in running:
             print(f"----- {process.log_path.name} -----\n{process.log()[-6000:]}")
         raise
     finally:
-        for process in processes:
+        for process in reversed(running):
             process.stop()
