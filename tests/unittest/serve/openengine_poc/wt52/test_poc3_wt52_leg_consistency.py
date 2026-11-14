@@ -29,6 +29,7 @@ from tensorrt_llm.grpc.openengine_conventions import (
     SERVE_REQUEST_DUMP_DIR_ENV,
 )
 from tensorrt_llm.sampling_params import SamplingParams
+from tensorrt_llm.serve.openengine_poc import engine_client_impl
 from tensorrt_llm.serve.openengine_poc.engine_client_impl import dump_generate_request
 from tensorrt_llm.serve.openengine_poc.facade import OpenEngineLLM
 
@@ -166,7 +167,7 @@ def test_nothing_is_written_without_the_variable(tmp_path, monkeypatch):
     assert list(tmp_path.iterdir()) == []
 
 
-def test_a_dump_hides_the_prompt_and_raw_media(tmp_path, monkeypatch):
+def test_a_dump_hashes_the_prompt_token_ids_and_raw_media(tmp_path, monkeypatch):
     directory = tmp_path / "dumps"
     monkeypatch.setenv(SERVE_REQUEST_DUMP_DIR_ENV, str(directory))
     path = dump_generate_request(_request("r-1.a", media=b"\x89PNG"))
@@ -246,3 +247,36 @@ def test_a_dump_that_cannot_be_written_does_not_stop_the_request(tmp_path, monke
 
     asyncio.run(main())
     assert blocker.read_text() == ""
+
+
+@pytest.mark.parametrize(
+    "error",
+    [OSError("disk full"), json_format.SerializeToJsonError("not JSON")],
+    ids=["os-error", "json-error"],
+)
+def test_the_request_is_sent_whatever_the_dump_raises(tmp_path, monkeypatch, error):
+    """A dump that cannot be written, or that JSON cannot hold, does not stop the request."""
+
+    def failing_dump(message):
+        raise error
+
+    monkeypatch.setattr(engine_client_impl, "dump_generate_request", failing_dump)
+    model = make_model_dir(tmp_path / "model")
+    profile = _chain_profile(disagg_profile("trtllm-like"), _fingerprint(model))
+
+    async def main() -> None:
+        async with FakeEngine(profile) as fake:
+            facade = OpenEngineLLM.from_llm_args(
+                {"model": str(model)}, fake.target, ready_timeout=30
+            )
+            await facade.start()
+            try:
+                output = await facade.generate_async(
+                    {"prompt_token_ids": [2, 3]}, SamplingParams(max_tokens=2)
+                )
+            finally:
+                await facade.aclose()
+        assert output.outputs[0].finish_reason is not None
+        assert len(fake.requests) == 1
+
+    asyncio.run(main())

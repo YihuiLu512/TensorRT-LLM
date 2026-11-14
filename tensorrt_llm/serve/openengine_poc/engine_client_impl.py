@@ -211,8 +211,10 @@ def dump_generate_request(message: generation_pb2.GenerateRequest) -> Path | Non
     ids become their ``count`` and the ``length`` and ``sha256`` of their
     compact JSON text (``[1,2,3]``), and each media item's ``url``,
     ``data_uri`` or ``raw_bytes`` becomes the ``length`` and ``sha256`` of
-    its bytes (UTF-8 for a URL). It is written on the caller's thread before
-    the request is sent. Unset, nothing is written.
+    its bytes (UTF-8 for a URL); everything else is written as sent. It is
+    written synchronously, on the thread that sends the request (the
+    server's event loop), before the request is sent. Unset, nothing is
+    written.
 
     Returns:
         The file written, or None.

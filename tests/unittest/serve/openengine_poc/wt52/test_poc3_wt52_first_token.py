@@ -99,7 +99,7 @@ def test_first_token_is_emitted_exactly_once(chain, path, max_tokens):
 
 
 def test_the_context_leg_holds_back_its_tokens(chain):
-    """SV-DSG-5: the context leg's response carries the handoff and no text, streamed or not."""
+    """SV-DSG-5: the context leg's (non-streamed) response carries the handoff and no text."""
     body = {
         "prompt": PROMPT,
         "max_tokens": 4,

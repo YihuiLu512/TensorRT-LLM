@@ -434,6 +434,8 @@ def _on_leg(error: Exception, leg: str | None) -> Exception:
     else:
         return error
     named.names_leg = True
+    # Raised without ``from`` at some call sites: keep the original as the cause.
+    named.__cause__ = error
     return named
 
 
@@ -766,8 +768,8 @@ class OpenEngineLLM:
         """Check the engine's conventions version, capabilities and tokenizer fingerprint.
 
         The engine must take token ids; for a frontend started with
-        ``--server_role`` it must also declare ``trtllm.request.disagg_request_id``
-        and pass :meth:`_check_worker_engine`.
+        ``--server_role`` it must also declare ``trtllm.request.disagg_request_id``,
+        and with the context or generation role pass :meth:`_check_worker_engine`.
         """
         version = conventions_version(info.extra)
         reported = info.extra.get(CONVENTIONS_VERSION_KEY)
@@ -809,7 +811,7 @@ class OpenEngineLLM:
                 f"engine {info.engine_name!r} does not declare {CAP_REQ_DISAGG_REQUEST_ID}; "
                 f"a {role.name} worker needs it",
             )
-        if role is not None:
+        if role is not None and role.name in _WORKER_ENGINE_ROLES:
             self._check_worker_engine(info, role)
         engine_fingerprint = caps.tokenizer_fingerprint
         if engine_fingerprint is None:
@@ -1272,7 +1274,7 @@ class OpenEngineLLM:
         info: EngineInfo,
         caps: ModelCapabilities,
     ) -> None:
-        """Refuse ``min_tokens`` the engine does not take, and what a leg cannot carry (SV-DSG-8).
+        """Apply the ``min_tokens`` capability gate, and refuse what a leg cannot carry (SV-DSG-8).
 
         ``min_tokens`` passes :func:`.mapping.check_min_tokens`. A
         ``context_only`` or ``generation_only`` request has one output and no
@@ -1314,11 +1316,11 @@ class OpenEngineLLM:
         of the engine's KV connector.
 
         Raises:
-            ValueError: The request cannot be mapped: :meth:`_check_request`
-                refuses it, ``handoff_attributes`` is given to a request that
-                is not ``generation_only``, or a ``context_only`` or
-                ``generation_only`` request is sent to an engine without KV
-                transfer.
+            ValueError: The request cannot be mapped. Among the reasons:
+                :meth:`_check_request` refuses it, ``handoff_attributes`` is
+                given to a request that is not ``generation_only``, or a
+                ``context_only`` or ``generation_only`` request is sent to an
+                engine without KV transfer.
         """
         client = self.client
         caps = client.model_info()

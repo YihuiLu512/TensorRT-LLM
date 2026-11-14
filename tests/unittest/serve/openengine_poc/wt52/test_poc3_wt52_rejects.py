@@ -9,7 +9,7 @@ message names the leg. NT-025 (EG-05b): ``trtllm_decode_preparation`` in a
 generation leg's ``openengine_handoff_attributes`` is refused. NT-026 (EG-06)
 and NT-027 (EG-19): a worker frontend does not start with ``max_beam_width >
 1`` or with the remote tail. NT-028 (EG-07): ``n > 1`` with a disaggregated
-request is refused. The ``min_tokens`` capability gate (DQ-48), media on a
+request is refused. The ``min_tokens`` capability gate, media on a
 leg, and the leg named in a refusal from tokenization are tested on a facade
 started in-process.
 """
@@ -17,6 +17,7 @@ started in-process.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import subprocess  # nosec B404
 from pathlib import Path
@@ -36,7 +37,13 @@ from tensorrt_llm.grpc.openengine_conventions import (
 from tensorrt_llm.llmapi.disagg_utils import ServerRole
 from tensorrt_llm.sampling_params import SamplingParams
 from tensorrt_llm.serve.openengine_poc.engine_client import MediaSpec
-from tensorrt_llm.serve.openengine_poc.facade import _MAPPED_MEDIA_KEY, OpenEngineLLM, _MappedMedia
+from tensorrt_llm.serve.openengine_poc.facade import (
+    _MAPPED_MEDIA_KEY,
+    OpenEngineLLM,
+    OpenEngineServeError,
+    _MappedMedia,
+    _names_the_leg,
+)
 
 __extra_import_path__ = ["..", "~/tests/unittest/grpc/openengine_client"]
 from cpu_disagg_chain import (  # noqa: E402
@@ -55,6 +62,8 @@ pytestmark = [pytest.mark.cpu_only, pytest.mark.threadleak(enabled=False)]
 CTX_LEG = "the context leg (context_only) of a disaggregated request"
 GEN_LEG = "the generation leg (generation_only) of a disaggregated request"
 PROMPT = "He llo"
+# Each context leg gets its own disagg_request_id, whatever the test order.
+_DISAGG_REQUEST_IDS = itertools.count(DISAGG_REQUEST_ID_MIN + 1)
 
 
 @pytest.fixture(scope="module")
@@ -131,12 +140,12 @@ def test_two_phase_request_with_n_above_one_is_rejected(chain, fields, named):
         "max_tokens": 4,
         "disaggregated_params": {
             "request_type": "context_only",
-            "disagg_request_id": DISAGG_REQUEST_ID_MIN + 11,
+            "disagg_request_id": next(_DISAGG_REQUEST_IDS),
         },
         **fields,
     }
     _refused(chain, "context", ctx_body, CTX_LEG, *named)
-    ctx = _context_leg(chain, DISAGG_REQUEST_ID_MIN + 12)
+    ctx = _context_leg(chain, next(_DISAGG_REQUEST_IDS))
     _refused(chain, "generation", _generation_leg_body(ctx, **fields), GEN_LEG, *named)
 
 
@@ -173,13 +182,13 @@ def test_n_above_one_through_the_orchestrator_is_refused(chain):
 )
 def test_two_leg_rejections_name_the_leg(chain, params, named):
     """NT-023 (DG-88): what a handoff cannot carry is refused, naming the generation leg."""
-    ctx = _context_leg(chain, DISAGG_REQUEST_ID_MIN + 21)
+    ctx = _context_leg(chain, next(_DISAGG_REQUEST_IDS))
     _refused(chain, "generation", _generation_leg_body(ctx, params), GEN_LEG, *named)
 
 
 def test_decode_preparation_attribute_is_not_silently_used(chain):
     """NT-025 (EG-05b): ``trtllm_decode_preparation`` is refused; another attribute reaches the engine."""
-    ctx = _context_leg(chain, DISAGG_REQUEST_ID_MIN + 31)
+    ctx = _context_leg(chain, next(_DISAGG_REQUEST_IDS))
     preparation = {HANDOFF_DECODE_PREPARATION: {"mrope": [1, 2]}}
     body = _generation_leg_body(ctx, {"openengine_handoff_attributes": json.dumps(preparation)})
     _refused(chain, "generation", body, GEN_LEG, HANDOFF_DECODE_PREPARATION)
@@ -197,7 +206,7 @@ def test_decode_preparation_attribute_is_not_silently_used(chain):
 )
 def test_an_engine_error_names_the_leg(chain, code, status):
     """SV-DSG-8: the engine's own refusal or failure of a leg names the leg, the engine and its message."""
-    ctx = _context_leg(chain, DISAGG_REQUEST_ID_MIN + 41)
+    ctx = _context_leg(chain, next(_DISAGG_REQUEST_IDS))
     chain.gen.engine.push_script(Fail(code, "scripted leg failure"))
     response = chain.post("/v1/completions", _generation_leg_body(ctx), url=chain.gen.url)
     assert response.status_code == status, response.text
@@ -258,7 +267,7 @@ def _capabilities(min_tokens: bool) -> dict:
     ids=["v4-without-key", "v4-with-key", "v3", "no-version"],
 )
 def test_min_tokens_needs_the_capability_on_version_4(tmp_path, changes, refused_by):
-    """DQ-48: the facade refuses ``min_tokens >= 1`` only for an engine on version 4 that does not declare it.
+    """The facade refuses ``min_tokens >= 1`` only for an engine on version 4 that does not declare it.
 
     An engine that reports version 3, or no version, is sent the field, and
     refuses it itself when it does not support it.
@@ -306,6 +315,34 @@ def test_a_disaggregated_request_with_media_is_refused(tmp_path):
         assert not fake.requests
 
     _with_facade(tmp_path, {}, check)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [ValueError("refused"), OpenEngineServeError("the pool is closed", 503)],
+    ids=["value-error", "serve-error"],
+)
+def test_an_error_raised_starting_a_leg_names_the_leg(error):
+    """SV-DSG-8: a refusal or a serving error raised synchronously for a leg names it."""
+    from tensorrt_llm.serve.openai_protocol import DisaggregatedParams, to_llm_disaggregated_params
+
+    @_names_the_leg
+    def generate_async(inputs, disaggregated_params=None):
+        raise error
+
+    params = to_llm_disaggregated_params(
+        DisaggregatedParams(request_type="generation_only", ctx_request_id=1, disagg_request_id=2)
+    )
+    with pytest.raises(type(error)) as raised:
+        generate_async([1], disaggregated_params=params)
+    assert str(raised.value) == f"{GEN_LEG}: {error}"
+    assert raised.value.__cause__ is error
+    if isinstance(error, OpenEngineServeError):
+        assert raised.value.status_code == 503
+    # Not a leg: the error itself.
+    with pytest.raises(type(error)) as raised:
+        generate_async([1])
+    assert raised.value is error
 
 
 def test_a_refusal_from_tokenizing_a_leg_names_the_leg(tmp_path):

@@ -5,12 +5,13 @@
 NT-009 (DG-38, DG-39c): a client that disconnects while its leg runs gets
 that leg's Generate call cancelled on that leg's engine: the context leg
 after its first token and before its handoff, the generation leg while it
-decodes, and, through the orchestrator, a streamed request's generation
-leg. A context leg that has handed off is not cancelled. A non-streamed request whose client leaves is
-not cancelled: the orchestrator does not notice (DG-39). A facade whose
-engine stays unreachable reports itself lost and unhealthy, and fails a
-request with 503 (DG-87). The fake engine has no queue, so a call cancelled
-while queued is left to the GPU tests.
+decodes (streamed or not, sent to the worker directly), and, through the
+orchestrator, a streamed request's generation leg. A context leg that has
+handed off is not cancelled. A non-streamed request sent through the
+orchestrator is not cancelled when its client leaves: the orchestrator does
+not notice (DG-39). A facade whose engine stays unreachable reports itself
+lost and unhealthy, and fails a request with 503 (DG-87). The fake engine
+has no queue, so a call cancelled while queued is left to the GPU tests.
 """
 
 from __future__ import annotations
