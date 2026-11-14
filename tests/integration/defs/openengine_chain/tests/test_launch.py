@@ -1739,12 +1739,20 @@ def test_harness_port_blocks_stay_below_the_tests_port_window(monkeypatch):
 
 def test_harness_port_draws_leave_out_the_ci_port_range(monkeypatch):
     monkeypatch.setattr(launch, "_ephemeral_low", lambda: 32768)
-    monkeypatch.setenv("CONTAINER_PORT_START", "20000")
+    monkeypatch.setenv("CONTAINER_PORT_START", "20005")
     monkeypatch.setenv("CONTAINER_PORT_NUM", "5")
-    draws = iter([20002, 20004, 20010] + [20010] * 97)
+    draws = iter([20003, 20008, 20012] + [20012] * 97)
     monkeypatch.setattr(launch._PORT_RANDOM, "randrange", lambda start, stop: next(draws))
-    # 20002..20004 and 20004..20006 overlap 20000..20004.
-    assert next(launch._below_ephemeral(3)) == 20010
+    # 20003..20005 ends in 20005..20009 and 20008..20010 starts in it.
+    assert next(launch._below_ephemeral(3)) == 20012
+
+
+def test_harness_port_window_matches_common():
+    """The window size is the one tests/integration/defs/common.py hands ports from."""
+    text = (pathlib.Path(launch.__file__).resolve().parents[1] / "common.py").read_text()
+    sizes = re.findall(r"^STATIC_PORT_RANGE_SIZE = (\d+)$", text, re.MULTILINE)
+    assert sizes == [str(launch._TEST_PORT_WINDOW)]
+    assert "high - STATIC_PORT_RANGE_SIZE + 1" in text, "common.py's window changed shape"
 
 
 def test_harness_port_draws_ignore_the_tests_random_seed(monkeypatch):

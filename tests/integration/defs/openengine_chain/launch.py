@@ -1740,7 +1740,8 @@ def _free_port_other_than(*taken: int | None) -> int:
 _LISTEN_PORT_FLOOR = 20000
 _EPHEMERAL_RANGE_FILE = "/proc/sys/net/ipv4/ip_local_port_range"
 # The ports just below the kernel's ephemeral range from which get_free_port_in_ci
-# (tests/integration/defs/common.py) takes a test's ports when no CI port range is set.
+# (tests/integration/defs/common.py) takes a test's ports when no CI port range is set or
+# every port in it is taken; test_launch.py checks it matches STATIC_PORT_RANGE_SIZE there.
 _TEST_PORT_WINDOW = 4096
 # Not seeded by the tests' random.seed, so harness processes on one node draw differently.
 _PORT_RANDOM = random.SystemRandom()
