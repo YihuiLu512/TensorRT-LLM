@@ -47,7 +47,7 @@
 │   ├── capenv/            B4：sidecar_v4、金丝雀、环境门禁、硬件画像、绑核表、D14 小程序
 │   ├── capjudge/          B5：判定器、统计量 T1～T6、试点构建（pilot.json）
 │   ├── caplaunch/         B7：编排器 capkit-launch
-│   ├── capstubs/          B7（本批只有 fingerprint）；第二批的桩也放这里
+│   ├── capstubs/          B7（本批只有 fingerprint）；第二批的桩也放这里（S-PB 见勘误 B2B-1）
 │   └── capjobs/           B6：submit.py 的 Python 部分（在 VM 上跑）
 ├── tests/<包名>/          各包的 pytest；每个目录自带 conftest.py 把 <C>/tools 放进 sys.path
 ├── jobs/                  B6：sbatch、容器内脚本（*.sh）、tokenizer 拷贝作业；占 GPU 的模板只以 .draft 存在
@@ -65,7 +65,7 @@
 - **在仓库里跑**：`PYTHONPATH=<C>/tools python -m capload …`（测试由 `tests/<包>/conftest.py` 插 `sys.path`）。
 - **在容器里跑**：作业的内层脚本把 `tools/` 下本次要用的包整目录拷进容器的 `dist-packages`（覆盖清单里逐文件列出 sha256，§6.6），并 `unset PYTHONPATH`；之后 `python -m capload …` 原样可用。
 - 理由：(1) 同一条命令在仓库与容器里都成立，不靠路径拼接；(2) `capprobe` 必须能被产品代码按名字 import——包括 MPI 拉起的 worker、`spawn` 的池子进程、被重新执行的附属前端，它们不继承 `PYTHONPATH`（设计稿 §2.4），拷进 `dist-packages` 是唯一对它们都成立的做法，其余包随它用同一方式部署，免得两套规则；(3) 包内用相对 import，模块之间不靠 `sys.path` 技巧；(4) `multiprocessing` 的 `spawn` 子进程能按模块名重新导入入口。
-- 包之间的依赖只允许指向 `capcommon`（以及 `capjudge` 可以 import `capenv` 的纯解析函数、`caplaunch` 可以 import 其他包的「常量与解析函数」）；**`capprobe` 只允许 import `capcommon.snapshot`、`capcommon.hist`、`capcommon.inject`、`capcommon.clock`、`capcommon.versions`（以及它们依赖的 `capcommon.exitcodes`）**（被产品进程 import，导入面要小；这几个模块只依赖标准库）。
+- 包之间的依赖只允许指向 `capcommon`（以及 `capjudge` 可以 import `capenv` 的纯解析函数、`caplaunch` 可以 import 其他包的「常量与解析函数」；`capstubs`、`capselfcheck` → `capgrpc` 的例外见勘误 B2B-1）；**`capprobe` 只允许 import `capcommon.snapshot`、`capcommon.hist`、`capcommon.inject`、`capcommon.clock`、`capcommon.versions`（以及它们依赖的 `capcommon.exitcodes`）**（被产品进程 import，导入面要小；这几个模块只依赖标准库）。
 - 每个包有 `README.md`（中文）列出自己的入口与本文件之外新增的可选参数。可选参数不得改变本文件规定的任何输出格式与语义。
 
 ## 2. 通用命令行约定
@@ -307,7 +307,7 @@ JSON 头：
 
 ### 4.4 每请求的固定请求内容（负载器负责，判定器核对）
 
-**每请求参数只随请求本身传递**（`capcommon.wire`）：一个请求用的是它**计划时刻所在的档**（时间表的 `tier_seq` 列）的 `max_tokens`、`tokens_per_msg`（k）、`stream_interval`（s）。服务端（空汇、节拍源、中继、第二批的桩）**不得**按到达时刻查档位表——在负载档末尾计划、因发送滞后晚到的请求会落进清空档（那里 `max_tokens = 0`），按到达时刻查就会算错应有条数。
+**每请求参数只随请求本身传递**（`capcommon.wire`）：一个请求用的是它**计划时刻所在的档**（时间表的 `tier_seq` 列）的 `max_tokens`、`tokens_per_msg`（k）、`stream_interval`（s）。服务端（空汇、节拍源、中继、第二批的桩）**不得**按到达时刻查档位表（S-PB 不给 `--schedule` 时按接纳时刻归档，见勘误 B2B-4）——在负载档末尾计划、因发送滞后晚到的请求会落进清空档（那里 `max_tokens = 0`），按到达时刻查就会算错应有条数。
 
 - HTTP：请求体显式带 `max_tokens`（= 计划档的 `max_tokens`）、`ignore_eos: true`、`stream: true`、`stream_options: {"include_usage": true}`；不带 stop 字符串。请求头（`capcommon.wire.http_headers`）：`x-capload-id: <req_id 十进制>`、`x-capload-k: <k>`、`x-capload-s: <s>`、`x-capload-tier: <计划档 seq>`。`nullsse` 从请求体读 `max_tokens` 与 `stream_options.include_usage`，从请求头读另外三项；产品前端忽略这些头。
 - gRPC（`--request-format capkit`）：请求字节 = `capcommon.wire.GRPC_REQ`（`struct "<qiiii"`：`req_id`、`max_tokens`、`tokens_per_msg`、`stream_interval`、`tier_seq`）+ prompt 字节，启动时按（档、prompt）预先构造；`pack_grpc_request` / `unpack_grpc_request`。`openengine` 格式（第二批）的 `request_id` 字段写 `<req_id 十进制>`。
@@ -473,7 +473,7 @@ JSON 头：
 | `lag` | `loop.lag` | `planned_rel_ns q`、`late_ns q`、`tier_seq h`（只在开了逐样本记录时有，§6.4） |
 | `steps` | `beat.steps` | `step q`、`planned_rel_ns q`、`actual_rel_ns q`、`msgs i`、`tier_seq h`（节拍源每步一行） |
 | `msgs` | `drain.msgs` | `stream_id q`、`idx i`、`step q`（消息里盖的步号，§7.4）、`planned_rel_ns q`、`recv_rel_ns q`、`tier_seq h`（排空端；采样规则同 `chunks`） |
-| `streams` | `server.streams` | `req_id q`（HTTP 取自 `x-capload-id`，gRPC 取自请求头）、`accept_rel_ns q`、`first_step q`（`BeatSchedule.step_at_or_after(accept_rel_ns)`；`asap` 模式记 −1）、`n_msgs i`（实际发出的内容消息数）、`tokens i`、`tier_seq h`（**请求自带的计划档**，§4.4）。空汇、节拍源（第二批：桩）每接纳一个请求一行，按 `tier_seq` 归档；判定器用它与 `chunks` / `msgs` 按 `req_id` 连接，用 `first_step + expect.msg_step_offsets(…)[idx]` 得到每块对应的步（X2）|
+| `streams` | `server.streams` | `req_id q`（HTTP 取自 `x-capload-id`，gRPC 取自请求头）、`accept_rel_ns q`、`first_step q`（`BeatSchedule.step_at_or_after(accept_rel_ns)`；`asap` 模式记 −1）、`n_msgs i`（实际发出的内容消息数）、`tokens i`、`tier_seq h`（**请求自带的计划档**，§4.4）。空汇、节拍源（第二批：桩）每接纳一个请求一行，按 `tier_seq` 归档（S-PB 的 `req_id`、`n_msgs`、`tier_seq` 口径见勘误 B2B-4）；判定器用它与 `chunks` / `msgs` 按 `req_id` 连接，用 `first_step + expect.msg_step_offsets(…)[idx]` 得到每块对应的步（X2）|
 
 `meta.status_codes` 是 `{"1":"http_503",…}` 的映射。各工具可以在 `meta` 里加键，不能改列。
 
@@ -743,7 +743,7 @@ E0 已知答案链上的消息由 capkit 自己产生，不是产品 protobuf，
 | 负载器（`capload`、`capgrpc.load`） | `backlog.inflight` | 已发出、还没完成或失败的请求数 |
 | 负载器 | `backlog.unread_bytes` | 最近一次 FIONREAD 抽样的合计（只作记录，不进门：它可以在门过之后合法地非零一瞬） |
 | 空汇（`nullsse`、`nullgrpc`） | `backlog.active_streams` | 正在发的流数 |
-| 节拍源（`nullgrpc --pacing beat`） | `backlog.pending_msgs`、`backlog.active_streams`（gauge）；`backlog.yielded`（counter，已交给 grpc 的消息累计） | 待发队列里的消息数；活跃流数；与读者的 `backlog.read` 相减得 gRPC 在途数 |
+| 节拍源（`nullgrpc --pacing beat`） | `backlog.pending_msgs`、`backlog.active_streams`（gauge）；`backlog.yielded`（counter，已交给 grpc 的消息累计） | 待发队列里的消息数；活跃流数；与读者的 `backlog.read` 相减得 gRPC 在途数（S-PB 相同，见勘误 B2B-6） |
 | 中继 | `backlog.queue_msgs`、`backlog.active_streams` | 中继内部队列的消息数；活跃流数 |
 | 排空端（`capgrpc.load --stamped`） | `backlog.active_streams`（gauge）；`backlog.read`（counter，已读消息累计） | 还没收到末条消息的流数；见上一行 |
 | 探针（产品进程，第二批起） | 设计稿 §2.8 列的各项：前端每请求队列、gRPC 已 `yield` / 已读计数、IPC 已发 / 已收计数、worker 待取字典 | 由 B3 在 README 的槽清单里给出名字；两端计数之差用两个 `terms` 表达 |
@@ -899,7 +899,7 @@ python3 -m capjudge --tree <启动树的路径> --workdir <W>
 | `python -m capjudge`（B5） | §10.1 | — | §10.2 |
 | `python -m capjudge.pilot`（B5） | `--inputs FILE`（逐行列出启动树，不接受通配符）、`--workdir <W>`、`--out PATH` | — | §9.4 |
 | `python -m caplaunch`（B7；新必填参数见勘误 R1-1） | 身份参数（`--role launch`）、`--run-dir`、`--scenario PATH`、`--pin-table PATH`、快照（`--shm-dir` 给作业级根 `/dev/shm/<用户名>-<作业号>/snap`，编排器自己建本次启动的子目录）、`--origin-lead-ms INT`（**起第一个进程之前**选定 `origin = now + lead`；原点到达时还有角色没就绪 ⇒ 停止、`NOT_RUN`，§0；没有单独的就绪超时参数，就绪期限就是原点） | — | §5.2、§5.3、§5.4 的编排器部分、§8.3 |
-| `python -m capstubs.fingerprint`（B7） | `--tokenizer DIR`、`--out PATH` | — | 指纹 JSON 与生成的 S-FE 命令行 |
+| `python -m capstubs.fingerprint`（B7） | `--tokenizer DIR`、`--out PATH` | — | 指纹 JSON 与生成的 S-FE 命令行（S-PB 的两个入口见勘误 B2B-3） |
 | `python3.11 -m capjobs.submit`（B6） | 子命令 `probe`（只做 `--test-only`，过 `policy.check_test_only_argv`）、`submit`（写 `PLANNED` 前过 §9.5 的五项断言；挂载另有覆盖要求，见勘误 R2-9）、`slurm-view`（§5.5.2）、`--local-record`（本机运行的台账行）、`--dry-run`；资源参数全部显式 | — | `submissions.tsv`（§9.5）、快照目录、`env/slurm_view.json` |
 
 场景配置（`configs/<实验>/<场景>.json`，B7 定义，`schema: capkit.scenario/1`）至少有：`roles`（每个角色一个顶层进程：`module`、`args`（逐字的额外参数）、`kind`（`server` / `client` / `aux`，只管起停顺序）、`start_after`（依赖哪些角色的端口文件）、`cpus_needed`、`numa`，以及下面这些**必填**的声明）、`tier_table`、`schedule`、`prompts`（均为相对 `<W>` 的路径）、`probe_tier`、`stop_order`、`reconcile`（§5.8，必填）。
@@ -1083,6 +1083,28 @@ E0 作业 5933747 的 L0（`e0a-nullsse`）启动 VALID、数据完整，判定�
 1. **§5.4.2 / §10.2 C7 的逐请求块行跨档合计**（补 §5.4 的归档规则在判定器一侧的用法）：对计划在本档、`req_id % chunk_sample_mod == 0`、成功完成的请求，块行数 = 本档的 `chunks` 文件里它的行数 + **紧接其后的清空档**的 `chunks` 文件里它的行数（`checks._chunk_rows` 的 `next_drain`），仍要求恰好等于每请求帧数。按规则 3（§3.2）负载档后面一定是清空档，清空门要求在途数归零才算过，所以合法的块行只可能落在这两档；再往后的档里的行不计入（缺了照旧 RED），清空档文件里不属于本档抽样请求的行不计入、也不算 stray。stray id 的口径不变：本档自己的文件里、不是「计划在本档的抽样请求」的行，一行一个 RED。C7 的 `detail` 另记「N rows of M sampled requests counted from tier <清空档>」。
 2. **同一根因的扫描**（「按请求的计划档取请求 × 按档文件数逐事件行」）：C7 是判定器里唯一按请求数逐事件行的检查。C5、C6 的跳值来自逐档自报（capload 的 `frames`、nullsse 的 `requests` / `frames_sent`、节拍源的 `msgs_sent`、中继的 `msgs_received` / `msgs_forwarded`、排空端的 `summary.msgs.msgs` 都按计划档计）或快照槽从本档开始到下一个清空档结束的增量，不受影响。未改、只登记：① `symptoms.msg_lag_from_chunks`（X2 消息层，`pilot._lag_series` 同）按 `req_id` 把本档的块行与本档的 `server.streams` 连接，块行若来自更早计划档的请求会记「chunk rows without a server stream」⇒ X2 该项 NOT_RUN；按规则 3 本档前一档是没有请求的清空档，只有请求跨过整个清空档才会出现，不改。② `msg_lag_from_chunks` 与 `msg_lag_from_msgs` 按计划时刻取窗口内的消息、只读本档文件：计划在窗口内、接收晚于本档结束（滞后 > `tail_ns`）的消息不在本档文件里，不进 X2 的逐秒序列（滞后极大时序列被截尾）。这是 X2 的灵敏度问题，不是 P 的计数口径，另案处理。③ 原有缺口：清空档不判（§10.2），清空档文件里的块行从不做 stray 核对。
 3. **验证**：`tests/judge/test_c7_chunk_rows.py`；把拷出的 J5933747 L0 树重判，第 4 档 C7 PASS（见 `_progress/fix-SM14.md`）。
+
+### Batch 2B: S-PB prebaked stub, fingerprint seam and request-bytes input（2026-11-14）
+
+第二批子批次 2B（RUNBOOK-stage2-draft.md §2.1 第 3 行；设计稿 §2.3「S-PB 的规格」、E2 卡、§7 S-PB 一行、§12.7）。本节按实现步骤追加；本步（2B-1）只有 S-PB 的两个入口与测试：场景 `TOOL_TABLE`、`INPUT_KEYS` 的 `request_bytes`、作业内生成指纹与请求字节（SM-6）、判定器输入核对、补充冒烟场景属于本子批次的后续步骤，未做。正文里被本节覆盖或补充的句子各加了「见勘误 B2B-n」。新增文件格式 `capkit.prebaked/1`；已有格式的版本号与字段不变。
+
+1. **§1.1 / §1.2 包与依赖**：`capstubs` 新增 `capstubs.prebaked`（预制响应字节的生成与读取）与 `capstubs.prebaked_server`（S-PB）。`capstubs.prebaked_server` import `capgrpc` 的运行时（`capgrpc.common` 的 `ToolRuntime`、`bind_server`、`make_server`、`combine_launch_specs`、`write_inprocess_ready`，以及 `capgrpc.inject_slot_decls`），`capstubs.prebaked` 的命令行 import `capgrpc.reqbytes.import_pb2`。这是 §1.2「包之间的依赖只允许指向 `capcommon`」之外的又一个例外，与已有的 `capselfcheck.relay` → `capgrpc.common` 相同（那一处正文没有登记，这里一并登记）：S-PB 的节拍、待发队列、档界标记与 nullgrpc 是同一套运行时，另写一份会有两个实现。部署上的后果：起 S-PB 的启动，覆盖清单的 `--packages` 必须同时含 `capstubs`、`capgrpc`、`capcommon`。S-PB 的两个模块都不在模块导入时 import `tensorrt_llm`：生成器只在运行时按 `--pb2-module` 导入产品模块，桩只在给了 `--sfe-module` 时按路径导入 S-FE 模块。
+2. **§13.1 S-PB 契约（新增）**：
+   - **预制文件 `capkit.prebaked/1`**（`python -m capstubs.prebaked`，容器内运行）：`{"schema","method","gate":"product","token_ids","prompt_tokens","finish_reason":"FINISH_REASON_LENGTH","finish_reason_value","short_tokens","source","streams":[{"max_tokens","tokens_per_msg","stream_interval","messages":[{"tokens","sha256","b64"}…],"finished":{"sha256","b64"}}]}`。每个（N、k、s）一条整流：`messages` 是 `expect.msg_tokens(N, k, s, "product")` 各条消息的 `TokenOutput` 响应（`output_index` 0，`TokenInfo` 只有 `token_id`，不填 `text`；token 号沿整条流循环取 `token_ids`），`finished` 是 `GenerationFinished`（`output_index` 0，`LENGTH`）加 `usage`（`prompt_tokens` = 文件的 `prompt_tokens`，`completion_tokens` = N，`total_tokens` 为和）。所有响应都不带 `request_id`（产品客户端只在它非空时才核对，`openengine_client/stream.py` 的 `_validate`）。需要哪些（N、k、s）：档位表各负载档的 N，加上档位表里与 `--short-tokens` 给出的每个 `short.req` 量对应的缩短后的 N（`max(N − d, 1)`，与 nullsse 相同）。
+   - **桩读文件时的检查**（生成器写完也用同一套再读一遍）：sha256、消息条数与每条 token 数等于 `expect` 的 `product` 闸门、每条恰好一个事件且 `output_index` 有值、token 消息不带 `usage`、finished 的原因与 `usage` 三项、没有 `request_id`。生成器另用 `check_field_numbers` 核对产品模块的字段号与桩的线格式读取器（`capstubs.prebaked.FIELDS`）一致。
+   - **请求**：Generate 的方法路径取预制文件的 `method`，用恒等（反）序列化注册（勘误前的 U-1 是同一个前提）；请求字节只读 `request_id` 与 `stopping.max_tokens`（protobuf 合并语义：都取最后一次出现的值），不建 protobuf 对象。每请求的 N 取 `max_tokens`；k、s 不在请求里，取档位表各负载档共同的（k、s）——负载档的（k、s）不唯一 ⇒ 启动拒绝（退出码 3）；K 轴按 k 分启动。设计稿 §12.7 的「k 取 MTP 实测的 3 与 4 混合」本步不支持。
+   - **每请求的消息**：`expect.msgs_per_request(N, k, s, "product")` 条 token 消息 + 1 条 finished 消息。节拍同 nullgrpc `--pacing beat`：第 j 条 token 消息在步 `first_step + msg_step_offsets(N, k, s, "product")[j]` 入队，finished 与最后一条 token 消息同一步入队；`first_step = step_at_or_after(接纳时刻)`。没有 `asap` 模式，档位表必须有 `beat_ns > 0` 的档。
+   - **拒绝**（`INVALID_ARGUMENT`，`rejects` 与 `streams_rejected` 按事件档）：`not_bytes`、`malformed`、`no_max_tokens`（未设或为 0）、`no_prebaked_stream`、`request_id_not_in_schedule`。其他方法路径 ⇒ `UNIMPLEMENTED`。
+   - **前端模式**（`--sfe-module PATH`，D16：探针树基线里零改动的 `fake_openengine.py`）：按路径以私有名导入；本桩收到的 S-FE 选项（`--sfe-profile` 对应 S-FE 的 `--profile`；`--model`、`--max-context-length`、`--vocab-size`、`--eos-token-ids`、`--profile-json` 同名，指纹 JSON 的 `sfe_args` 可原样拼入）交给它自己的 `_parse_args` 与 `_profile_from_args`，建 `FakeEngine(profile, tokens_per_step=1, step_delay=0.0, record=False)`（不启动它），把它的 `_Control`、`_Health` 注册在同一个 server 上。给了 S-FE 选项而没给 `--sfe-module`、模块读不到或导入失败、它的解析器拒绝这些选项 ⇒ 退出码 3。模块 sha256 与传给它的 argv 写进就绪文件 `info.control` 与每档自报的 `control`（C10 的核对属本子批次后续步骤）。
+   - 与设计稿 §2.3 保真度表的对应：F3（字节数）由预制文件决定；F5 所有流回同一串 token；F7、F8 不实现；另有三处设计稿没列的差别：`usage.prompt_tokens` 是文件里的固定值，不随请求的 prompt 变；`TokenOutput.text` 不填（与 S-FE 相同）；没有 prompt 事件（S-FE 只在请求 prompt logprobs 时发）。
+3. **§11 新增两行**：
+   - `python -m capstubs.prebaked_server`（S-PB）：通用、快照、档位、`--loop`、`--ready-file`、`--port-file`、`--inject`（可选）；`--host`、`--port`、`--workers 1`（只能为 1；`expected_procs` = 1）、`--prebaked PATH`、`--lag-period-us INT`；可选 `--schedule PATH`、`--max-stream-records N`（缺省 `count_schedule_rows`）、`--lag-records-capacity N`、前端模式的 `--sfe-module` 与 S-FE 选项。位点 `send.msg`、`beat.step`、`short.req`；`backlog.pending_msgs`、`backlog.active_streams`、`backlog.yielded`（counter）。输出：每档 `summary.json`、`steps`、`streams`（§5.4.2）、`lag`。退出码 0 / 3 / 4（绑定失败）。解析器不接受缩写的长选项。
+   - `python -m capstubs.prebaked`：`--pb2-module M --tier-table T --token-ids LIST --prompt-tokens P --out PATH`，可选 `--short-tokens D`（可重复）、`--method`（缺省 `/openengine.v1.Inference/Generate`）。导入不了产品模块 ⇒ 退出码 3。
+4. **§4.4 / §5.4.2 S-PB 的 `streams`**：`req_id` = 十进制的 `request_id`（`capgrpc.load --request-format openengine` 写 `str(req_id)`），不是规范十进制（空、带符号、前导零、非 ASCII 数字、超过 18 位）时记 −1 并计 `request_id_not_decimal`。`n_msgs` = 实际发出的 gRPC 消息数，**含 finished 消息**；`tokens` = 这些消息的 token 数（finished 计 0）。`tier_seq`：给了 `--schedule`（必须由同一份档位表生成）时取该 `req_id` 在时间表里的计划档，`request_id` 不在时间表里 ⇒ 拒绝；不给时取**接纳时刻所在的档**（`meta.tier_seq` 与每档自报的 `tier_attribution` 写 `schedule` / `event`）。后者偏离 §4.4「请求自带的计划档」：OpenEngine 请求里没有档号，前端模式下请求号由前端生成，对不回时间表。应有消息数不受影响（N 来自请求，k、s 在一次启动内不变）。
+5. **§5.4.1 S-PB 的 `counts`**：`streams_accepted`、`streams_completed`、`streams_cancelled`、`streams_truncated`、`streams_rejected`、`first_step_bumped`、`msgs_sent`、`bytes_sent`、`finished_sent`、`tokens_sent`、`short_requests`、`request_id_not_decimal`；另有 `beat`、`yielded_event_time`、`rejects`、`method`、`prebaked`（路径与 sha256）、`tokens_per_msg`、`stream_interval`、`tier_attribution`、`control`。对账：S-PB 一跳的消息数 = `summary.counts.msgs_sent`，与 `capgrpc.load` 的 `summary.msgs.msgs` 同口径（都含 finished）；按 `expect` 写 `messages` 链（`gate: product`）时，finished 消息不在 `msgs_per_request` 里：S-PB 与读者两跳各加一条 `per_request: 1` 的修正（§5.8 的修正按跳加）。
+6. **§7 / §8.2 S-PB 的位点与积压槽**：位点 `send.msg`（每条消息交给 gRPC 之前，`busy` / `sleep`）、`beat.step`（每步，`busy` / `sleep`）、`short.req`（每个通过全部检查的请求一次，`short`）。与 nullgrpc 不同，S-PB 在启动时按位点核对模式（不支持的模式 ⇒ 退出码 3，而不是在第一次经过时抛错）。积压槽与节拍源相同（`backlog.pending_msgs`、`backlog.active_streams`、`backlog.yielded`），另有 `self.rejected`。
+7. **验证**：`tests/capstubs/`（`test_prebaked.py` 65 项、`test_prebaked_server.py` 17 项）：线格式读取器以真 protobuf 解析为准绳；预制文件用 pb2 测试替身与探针树里产品的 `_generated/generation_pb2.py`（按路径作私有包导入）各生成一次，后者按产品客户端的 `_validate` 规则逐条核对；本地 e2e 是 `capgrpc.load --request-format openengine`（弱读者形态）读 S-PB；前端模式用替身 S-FE 模块。变异 M1～M11 全部被测试抓到（`_local/b2-spb/mut/summary.txt`，不入库）。
+8. **§12 已知缺口与未核对（新增）**：① 真 `fake_openengine.py` 的 `_Control` / `_Health` 挂在未启动的 `FakeEngine` 上能否答真前端的启动检查、`Abort` 找不到 S-PB 的流（它们不在 `FakeEngine._active` 里）时前端怎样处理、真前端是否接受没有 prompt 事件与 `text` 的流——都只能在容器里验证，属 1.4 补充冒烟【未核对】。② 给了 `--schedule` 时，流若归到一个还没开始就被停掉的档，该档没有自报（`streams` 行仍在该档目录里）；按时间表发送的负载器不会出现这种情况。③ 不给 `--schedule`（前端模式）时按接纳时刻归档，档界附近的请求会落到下一档：经过 S-PB 的对账链在前端模式下用 `scope: launch`。④ `short.req` 的经过次数含「通过全部检查、但缩短后的 N 没有预制流」而被拒绝的请求；启动时已核对档位表的每个 N 都有缩短后的流，只有档位表之外的 N 才会这样。
 
 ## 审阅记录（r2，2026-11-13）
 
