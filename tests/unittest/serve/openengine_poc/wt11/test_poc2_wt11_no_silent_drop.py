@@ -577,17 +577,19 @@ def test_over_grpc_the_engine_receives_what_the_mapping_sends(profile, name, tmp
 
     async def check(engine, facade):
         caps = facade.client.model_info()
-        info = facade.client.server_info()
-        engine_name = info.engine_name
-        # The facade refuses min_tokens for an engine on the current conventions that does
-        # not declare it; map_request itself still sends it.
-        refused_min_tokens = (
-            name == "min_tokens"
-            and conv.conventions_version(info.extra) == conv.CONVENTIONS_VERSION
+        engine_name = facade.client.server_info().engine_name
+        if name == "min_tokens" and (
+            conv.conventions_version(facade.client.server_info().extra) == conv.CONVENTIONS_VERSION
             and not caps.supports(conv.CAP_STOPPING_MIN_TOKENS)
-        )
-        if refused_min_tokens or (not probe.supported(caps) and not probe.fallback):
-            with pytest.raises(ValueError, match="min_tokens" if refused_min_tokens else None):
+        ):
+            # DQ-48: the facade refuses min_tokens to an engine on the current
+            # conventions that does not declare it.
+            with pytest.raises(ValueError, match="min_tokens"):
+                await facade.generate_async(GRPC_PROMPT, _sampling(probe.params), **options)
+            assert engine.requests == []
+            return
+        if not probe.supported(caps) and not probe.fallback:
+            with pytest.raises(ValueError):
                 await facade.generate_async(GRPC_PROMPT, _sampling(probe.params), **options)
             assert engine.requests == []
             return

@@ -96,10 +96,7 @@ def model_dir(path: Path) -> Path:
 
 
 def engine(model_path: Path, **profile_changes: Any) -> FakeEngine:
-    """A ``trtllm-like`` fake engine with KV transfer, serving the tokenizer in ``model_path``.
-
-    A worker frontend started with a role refuses an engine without KV transfer.
-    """
+    """A ``trtllm-like`` fake engine with KV transfer, serving the tokenizer in ``model_path``."""
     from tensorrt_llm.grpc.openengine_conventions import compute_tokenizer_fingerprint
     from tensorrt_llm.llmapi.llm_utils import ModelLoader
 

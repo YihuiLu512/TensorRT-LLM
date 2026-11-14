@@ -90,7 +90,7 @@ def _post(url: str, body: dict, headers: dict[str, str]) -> requests.Response:
 
 
 def test_gen_worker_frontend_rejects_a_tampered_handoff_signature(gen_worker, keyless_gen_worker):
-    """NT-008 (DG-34, DG-37): a handoff whose signature does not match is refused before the engine."""
+    """NT-008 (DG-34, DG-37): a keyed worker refuses a handoff whose signature does not match."""
     keyed, keyed_engine = gen_worker
     keyless, keyless_engine = keyless_gen_worker
     body = _handoff("b3BhcXVl")
@@ -109,8 +109,8 @@ def test_gen_worker_frontend_rejects_a_tampered_handoff_signature(gen_worker, ke
         assert AUTH_FAILED in response.text
     assert chain.generate_calls(keyed_engine) == before
 
-    # Only one side has the key: the worker frontend warns and lets it through to the engine,
-    # as in-process.
+    # Only one side has the key: the worker frontend warns and lets it through, as in-process,
+    # to the engine.
     keyless_before = chain.generate_calls(keyless_engine)
     response = _post(keyless, tampered, headers)
     assert response.status_code == 200, response.text
@@ -120,8 +120,8 @@ def test_gen_worker_frontend_rejects_a_tampered_handoff_signature(gen_worker, ke
 def test_a_signed_handoff_is_not_refused_for_a_missing_transceiver(gen_worker):
     """SV-DSG-1 (UV-43): the worker frontend's YAML keeps ``cache_transceiver_config``, so the check passes.
 
-    The request passes the signature and transceiver checks, and the facade
-    sends its generation leg to the engine.
+    The request passes the signature and transceiver checks and reaches the
+    engine.
     """
     keyed, keyed_engine = gen_worker
     body = _handoff("b3BhcXVl")
