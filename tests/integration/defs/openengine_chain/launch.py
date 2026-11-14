@@ -1890,17 +1890,29 @@ class WorkerProcess(ChainProcess):
         return rc
 
     def kill(self) -> None:
-        """SIGKILL the front end, which stands for the worker, then stop the rest as :meth:`terminate`.
+        """SIGKILL the front end process, which stands for the worker, then stop the rest.
 
-        The worker's peers see it die at once, as with a ``subprocess.Popen``
-        killed; the engine gets SIGTERM and ``TERMINATE_GRACE_S`` to exit, as an
-        engine holding GPUs can take longer than ``SURVIVOR_WAIT_S`` to exit
-        after SIGKILL.
+        The counters, topology and engine name are read first, as
+        :meth:`ServeHandle.terminate` reads them, while the front end can still
+        answer. The front end process then gets SIGKILL, as a killed
+        ``subprocess.Popen`` would, and the rest is stopped as
+        :meth:`ServeHandle.terminate` stops it: the engine gets SIGTERM and
+        ``TERMINATE_GRACE_S`` to exit, as an engine holding GPUs can take longer
+        than ``SURVIVOR_WAIT_S`` to exit after SIGKILL.
         """
-        frontend = self.handle.frontend
+        handle = self.handle
+        if not handle.alive:
+            return
+        handle._read_before_shutdown()
+        frontend = handle.frontend
         if frontend is not None and frontend.poll() is None:
             frontend.kill()
-        self.handle.terminate()
+        # Read above: terminate() would ask the killed front end again.
+        handle._read_before_shutdown = lambda: None
+        try:
+            handle.terminate()
+        finally:
+            del handle._read_before_shutdown
 
 
 def launch_worker(

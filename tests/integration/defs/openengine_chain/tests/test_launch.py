@@ -1413,7 +1413,20 @@ def test_killing_a_worker_kills_its_front_end_and_lets_its_engine_exit(fake, tmp
     fake.handles.append(worker.handle)
     _record(fake.records, "frontend-start")
     engine = worker.handle.engine
+    events = []
+    read = launch.ServeHandle._read_before_shutdown
+
+    def record_read(handle):
+        events.append("read")
+        read(handle)
+
+    monkeypatch.setattr(launch.ServeHandle, "_read_before_shutdown", record_read)
+    frontend = worker.handle.frontend
+    kill = frontend.kill
+    monkeypatch.setattr(frontend, "kill", lambda: events.append("kill") or kill())
     worker.kill()
+    # Read once, before the front end got SIGKILL.
+    assert events == ["read", "kill"]
     assert worker.poll() == -signal.SIGKILL
     # The front end got no SIGTERM; the engine got one and exited on it.
     assert not (fake.records / "frontend-term.json").exists()
