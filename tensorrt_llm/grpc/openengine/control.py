@@ -37,6 +37,7 @@ from .bindings import (
     server_pb2,
 )
 from .capabilities import (
+    CAP_STOPPING_MIN_TOKENS,
     CONVENTIONS_VERSION,
     CONVENTIONS_VERSION_KEY,
     REQUEST_BEST_OF_KEY,
@@ -48,6 +49,7 @@ from .capabilities import (
     tokenizer_fingerprint,
 )
 from .coordinator import CoordinationError, FrontendClient, InvalidRequestIdError
+from .disagg import disagg_capabilities, kv_endpoint
 from .errors import AbortFailedError
 from .kv_events import data_parallel_size, events_config
 from .lora_registry import list_loras, load_lora, unload_lora
@@ -55,6 +57,7 @@ from .request_mapping import (
     conversation_affinity_enabled,
     max_num_sequences_for,
     token_ids_input_supported,
+    uses_one_model_speculation,
 )
 
 __all__ = ["OpenEngineControlServicer"]
@@ -88,6 +91,11 @@ _EXTRA_CAPABILITIES = {
 
 
 _INFERENCE_PROBE_TIMEOUT_SECONDS = 30.0
+# How long GetServerInfo waits for the worker to name its rendezvous address;
+# well under the 5 s Control deadline that clients use by default.
+_CONTEXT_ENDPOINT_LOOKUP_TIMEOUT_SECONDS = 1.0
+# How long an empty answer stands before the worker is asked again.
+_CONTEXT_ENDPOINT_RETRY_SECONDS = 30.0
 _LOAD_SNAPSHOT_CACHE_SECONDS = 0.1
 _MAX_ACTIVE_LOAD_AGE_SECONDS = 30.0
 
@@ -143,6 +151,9 @@ class OpenEngineControlServicer(openengine_pb2_grpc.ControlServicer):
         self._model = model
         self._inference = inference
         self._kv_transfer_backend = kv_transfer_backend
+        self._context_endpoints_cache: Optional[list[kv_pb2.KvEndpoint]] = None
+        self._context_endpoints_lookup: Optional[asyncio.Future] = None
+        self._context_endpoints_retry_at = 0.0
         self._probe: Optional[asyncio.Future] = None
         self._load_snapshot: dict = {}
         self._load_snapshot_deadline = 0.0
@@ -208,6 +219,60 @@ class OpenEngineControlServicer(openengine_pb2_grpc.ControlServicer):
 
     # -- Runtime metadata ---------------------------------------------------
 
+    def _read_disaggregated_params(self) -> Any:
+        """The worker's disaggregated params, read from the executor each time."""
+        executor = getattr(self._llm, "_executor", None)
+        getter = getattr(executor, "get_disaggregated_params", None)
+        return getter() if callable(getter) else {}
+
+    async def _context_endpoints(self) -> list[kv_pb2.KvEndpoint]:
+        """Where a generation engine reaches this engine as a context engine.
+
+        The same address the PrefillReady of a context_only request carries in
+        ``ctx_info_endpoint``. Empty when the worker names none: the C++
+        transceiver never does, and a lookup that fails or comes before the
+        transceiver exists gets nothing. An address, once found, is kept for the
+        life of the engine; an empty answer stands for
+        ``_CONTEXT_ENDPOINT_RETRY_SECONDS``. A lookup that outlasts
+        ``_CONTEXT_ENDPOINT_LOOKUP_TIMEOUT_SECONDS`` leaves this reply without the
+        address and keeps running for later replies.
+        """
+        if self._context_endpoints_cache is not None:
+            return self._context_endpoints_cache
+        if self._context_endpoints_lookup is None:
+            if time.monotonic() < self._context_endpoints_retry_at:
+                return []
+            self._context_endpoints_lookup = asyncio.ensure_future(
+                asyncio.to_thread(self._read_disaggregated_params)
+            )
+        lookup = self._context_endpoints_lookup
+        try:
+            params = await asyncio.wait_for(
+                asyncio.shield(lookup), _CONTEXT_ENDPOINT_LOOKUP_TIMEOUT_SECONDS
+            )
+        except asyncio.TimeoutError:
+            logger.warning("OpenEngine GetServerInfo: the worker has not named its KV address yet")
+            return []
+        except (RuntimeError, OSError, ValueError) as error:
+            logger.warning(f"OpenEngine GetServerInfo: looking up the KV address failed: {error}")
+            params = {}
+        finally:
+            if lookup.done():
+                self._context_endpoints_lookup = None
+        raw = params.get("ctx_info_endpoint") if isinstance(params, dict) else None
+        if isinstance(raw, str):
+            raw = [raw]
+        endpoints = []
+        for value in raw or ():
+            endpoint = kv_endpoint(str(value), self._kv_transfer_backend) if value else None
+            if endpoint is not None:
+                endpoints.append(endpoint)
+        if endpoints:
+            self._context_endpoints_cache = endpoints
+        else:
+            self._context_endpoints_retry_at = time.monotonic() + _CONTEXT_ENDPOINT_RETRY_SECONDS
+        return endpoints
+
     async def GetServerInfo(
         self,
         request: server_pb2.GetServerInfoRequest,
@@ -259,6 +324,7 @@ class OpenEngineControlServicer(openengine_pb2_grpc.ControlServicer):
                     schema_version=SCHEMA_REVISION,
                 )
             )
+            info.kv_connector.local_endpoints.extend(await self._context_endpoints())
 
         capacity = server_pb2.DeploymentCapacity()
         max_batch_size = _positive_int(self._llm.args.max_batch_size)
@@ -267,19 +333,26 @@ class OpenEngineControlServicer(openengine_pb2_grpc.ControlServicer):
         max_num_tokens = _positive_int(self._llm.args.max_num_tokens)
         if max_num_tokens is not None:
             capacity.max_batched_tokens = max_num_tokens
-        block_size = _positive_int(self._llm.args.kv_cache_config.tokens_per_block)
-        if block_size is not None:
-            capacity.kv_block_size = block_size
         max_loras = self._inference.request_capabilities.max_loras
         if max_loras is not None:
             capacity.max_loras = max_loras
         executor = getattr(self._llm, "_executor", None)
         capacity_getter = getattr(executor, "get_kv_cache_capacity", None)
-        if callable(capacity_getter):
-            kv_capacity = await asyncio.to_thread(capacity_getter)
+        kv_capacity = await asyncio.to_thread(capacity_getter) if callable(capacity_getter) else {}
+        kv_capacity = kv_capacity if isinstance(kv_capacity, dict) else {}
+        if kv_capacity:
             local_blocks = _positive_int(kv_capacity.get("maxNumBlocks"))
             if local_blocks is not None and data_parallel_size(self._llm) == 1:
                 capacity.total_kv_blocks = local_blocks
+        # The runtime may use another block size than configured (a kernel can
+        # force one), and KV-aware routing hashes blocks of the runtime size.
+        # Until the runtime reports it, or when its report fails, the configured
+        # size is all there is.
+        block_size = _positive_int(kv_capacity.get("tokensPerBlock")) or _positive_int(
+            self._llm.args.kv_cache_config.tokens_per_block
+        )
+        if block_size is not None:
+            capacity.kv_block_size = block_size
         discovery_getter = getattr(executor, "get_openengine_discovery", None)
         discovery = await asyncio.to_thread(discovery_getter) if callable(discovery_getter) else {}
         events = events_config(self._llm)
@@ -350,6 +423,10 @@ class OpenEngineControlServicer(openengine_pb2_grpc.ControlServicer):
         if supports_image_routing(self._llm, media_modalities):
             info.extra.update({"trtllm_image_routing_version": 1})
         info.extra.update(_EXTRA_CAPABILITIES)
+        # min_tokens holds back EOS and single-token stop words until it is reached;
+        # the one-model speculative sampler rejects requests that set it.
+        info.extra.update({CAP_STOPPING_MIN_TOKENS: not uses_one_model_speculation(self._llm.args)})
+        info.extra.update(disagg_capabilities(bool(self._kv_transfer_backend)))
         info.extra.update(self._inference.request_capabilities.extra_capabilities())
         info.extra.update(self._inference.request_capabilities.sampling_declaration())
         if getattr(self._llm, "tokenizer", None) is None:

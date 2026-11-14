@@ -15,6 +15,11 @@ from typing import Any
 import grpc
 
 from tensorrt_llm.executor.request import DEFAULT_REQUEST_PRIORITY
+from tensorrt_llm.executor.utils import EngineDeadError
+from tensorrt_llm.grpc.openengine_conventions import (
+    REQUEST_TYPE_CONTEXT_ONLY,
+    REQUEST_TYPE_GENERATION_ONLY,
+)
 from tensorrt_llm.inputs.media_io import BaseMediaIO
 from tensorrt_llm.llmapi.llm import LLM
 from tensorrt_llm.logger import logger
@@ -30,7 +35,7 @@ from .coordinator import (
     InvalidRequestIdError,
     Reservation,
 )
-from .disagg import disaggregated_params_from_request
+from .disagg import DisaggUnavailableError, accepted_bucket, disaggregated_params_from_request
 from .errors import AbortFailedError, MediaUnavailableError, UnsupportedFeatureError
 from .formatting import _engine_error_response, _stop_texts
 from .lora_registry import LORA_UNSUPPORTED_MESSAGE, LoraNotRegisteredError, LoraRegistry
@@ -55,6 +60,9 @@ from .streaming import (
     _format_result,
     _OpenEngineFormatState,
 )
+
+# The legs of a two-phase request; each must ask for one sequence.
+_TWO_LEG_REQUEST_TYPES = (REQUEST_TYPE_CONTEXT_ONLY, REQUEST_TYPE_GENERATION_ONLY)
 
 
 class _PreprocessingWork:
@@ -209,6 +217,23 @@ class OpenEngineInferenceServicer(openengine_pb2_grpc.InferenceServicer):
         """Cached media modalities."""
         return self._media_capabilities.modalities
 
+    def _engine_is_down(self) -> bool:
+        """Whether the executor is shutting down, has recorded a fatal error, or has seen a worker die.
+
+        The last is the executor's ``_engine_dead``, which a worker's death sets
+        before the error is recorded; ``server.py`` stops the server on it too.
+        Requests are then not cancelled on the engine: once a worker has died,
+        sending the cancellation can block this event loop on the request queue
+        of the dead worker.
+        """
+        executor = getattr(self._llm, "_executor", None)
+        if executor is None:
+            return False
+        is_shutdown = getattr(executor, "is_shutdown", None)
+        if callable(is_shutdown) and is_shutdown():
+            return True
+        return bool(getattr(executor, "_engine_dead", False))
+
     def active_request_count(self) -> int:
         """Requests accepted and not yet completed."""
         return len(self._active_requests)
@@ -229,6 +254,9 @@ class OpenEngineInferenceServicer(openengine_pb2_grpc.InferenceServicer):
     def abort_request_by_id(self, request_id: str) -> bool:
         """Abort one in-flight request. Returns False when it is not active.
 
+        On a down engine (see ``_engine_is_down``) an active request is reported
+        found and is not cancelled.
+
         Does not pop the id: the Generate stream's ``finally`` owns cleanup, and
         removing it here would let a duplicate request_id past the ALREADY_EXISTS
         check while the original stream is still draining.
@@ -240,6 +268,8 @@ class OpenEngineInferenceServicer(openengine_pb2_grpc.InferenceServicer):
         handle = self._active_requests.get(request_id)
         if handle is None:
             return False
+        if self._engine_is_down():
+            return True
         try:
             handle.abort()
         except Exception as error:
@@ -373,9 +403,22 @@ class OpenEngineInferenceServicer(openengine_pb2_grpc.InferenceServicer):
             target_dp_rank = metadata.target_dp_rank
             affinity_headers = metadata.affinity_headers
             conversation_params = conversation_params_from_request(request)
-            disaggregated_params = disaggregated_params_from_request(request)
+            disaggregated_params = disaggregated_params_from_request(
+                request, kv_transfer_enabled=bool(self._kv_transfer_backend)
+            )
             if request_metrics is not None:
                 request_metrics.begin(disaggregated_params)
+            if (
+                disaggregated_params is not None
+                and disaggregated_params.request_type in _TWO_LEG_REQUEST_TYPES
+                and sampling_params.n > 1
+            ):
+                # Each output of a context_only request would end in its own
+                # PrefillReady, and a caller resumes only one of them.
+                raise ValueError(
+                    "a context_only request or a request with a kv.session must ask for "
+                    f"one sequence; sampling.num_sequences is {sampling_params.n}"
+                )
             parent_affinity_id = validate_parent_affinity(
                 self.subagent_affinity_auth_key,
                 request,
@@ -538,7 +581,7 @@ class OpenEngineInferenceServicer(openengine_pb2_grpc.InferenceServicer):
         except UnsupportedFeatureError as error:
             await context.abort(grpc.StatusCode.UNIMPLEMENTED, str(error))
             return
-        except (MediaUnavailableError, LoraNotRegisteredError) as error:
+        except (MediaUnavailableError, LoraNotRegisteredError, DisaggUnavailableError) as error:
             await context.abort(grpc.StatusCode.FAILED_PRECONDITION, str(error))
             return
         except ValueError as error:
@@ -602,7 +645,7 @@ class OpenEngineInferenceServicer(openengine_pb2_grpc.InferenceServicer):
             return
 
         local_request.bind_engine(result_handle)
-        self.generate_counters.record_accepted()
+        self.generate_counters.record_accepted(accepted_bucket(disaggregated_params))
         if request_metrics is not None:
             request_metrics.accepted()
 
@@ -611,7 +654,7 @@ class OpenEngineInferenceServicer(openengine_pb2_grpc.InferenceServicer):
 
         def abort_request(reason: str) -> None:
             nonlocal abort_requested
-            if abort_requested or engine_terminal:
+            if abort_requested or engine_terminal or self._engine_is_down():
                 return
             abort_requested = True
             try:
@@ -666,6 +709,8 @@ class OpenEngineInferenceServicer(openengine_pb2_grpc.InferenceServicer):
                     watchdog.pending()
                     yield resp
                     watchdog.delivered()
+                    if resp.HasField("prefill_ready"):
+                        self.generate_counters.record_prefill_ready()
                     if watchdog.stalled:
                         engine_terminal = True
                         watchdog.pending()
@@ -711,7 +756,9 @@ class OpenEngineInferenceServicer(openengine_pb2_grpc.InferenceServicer):
             if request_metrics is not None:
                 request_metrics.engine_failed()
             logger.error(f"OpenEngine request {request_id} failed after acceptance: {error}")
-            abort_request("response processing failed")
+            # The executor may not have marked itself down yet; see _engine_is_down.
+            if not isinstance(error, EngineDeadError):
+                abort_request("response processing failed")
             engine_terminal = True
             watchdog.pending()
             yield _engine_error_response(request_id, str(error), result_handle)

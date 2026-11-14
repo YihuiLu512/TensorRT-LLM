@@ -1123,7 +1123,10 @@ def test_generate_preserves_child_identity_and_authenticates_parent_affinity() -
     llm.args.enable_attention_dp = True
     llm.args.attention_dp_config = SimpleNamespace(kv_cache_routing_conversation_affinity=True)
     servicer = OpenEngineInferenceServicer(
-        llm, model="test-model", subagent_affinity_auth_key="shared-secret"
+        llm,
+        model="test-model",
+        subagent_affinity_auth_key="shared-secret",
+        kv_transfer_backend="NIXL",
     )
     request = generation_pb2.GenerateRequest(
         request_id="child-request", model="test-model", prompt="hello"
@@ -1272,7 +1275,9 @@ def test_generate_context_only_ends_at_prefill_ready() -> None:
     metrics = SimpleNamespace(
         record_outcome=lambda *args: outcomes.append(args), record_result=lambda _: None
     )
-    servicer = OpenEngineInferenceServicer(_FakeLlm(results), model="test-model", metrics=metrics)
+    servicer = OpenEngineInferenceServicer(
+        _FakeLlm(results), model="test-model", metrics=metrics, kv_transfer_backend="NIXL"
+    )
     request = generation_pb2.GenerateRequest(
         request_id="request-ctx",
         model="test-model",

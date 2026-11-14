@@ -1,0 +1,11 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+unittest/grpc/openengine/test_disagg_servicer.py::test_context_only_uses_the_caller_disagg_request_id
+unittest/grpc/openengine/test_disagg_servicer.py::test_disagg_request_without_a_transceiver_is_failed_precondition
+unittest/grpc/openengine/test_disagg_servicer.py::test_two_leg_request_with_several_sequences_is_rejected
+unittest/grpc/openengine/test_disagg_control.py::test_load_info_reports_the_leg_counters
+unittest/grpc/openengine/test_disagg_servicer.py::test_two_phase_request_with_num_sequences_above_one_is_rejected
+unittest/grpc/openengine/test_disagg_servicer.py::test_orig_elapsed_s_extra_key_reaches_disaggregated_params
+unittest/grpc/openengine/test_disagg_servicer.py::test_gen_only_benchmark_session_needs_the_engine_env
+unittest/llmapi/apps/_test_openengine_disagg_direct.py::test_disagg_request_to_an_engine_without_a_transceiver_is_failed_precondition
+unittest/grpc/openengine/_test_direct_handoff.py::test_two_engines_complete_a_handoff

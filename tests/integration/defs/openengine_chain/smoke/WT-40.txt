@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Two engines complete a handoff over OpenEngine gRPC with the caller's disagg_request_id, without a
+# front end (both engines on one GPU, about 130 s with the two engine starts).
+unittest/grpc/openengine/_test_direct_handoff.py::test_two_engines_complete_a_handoff

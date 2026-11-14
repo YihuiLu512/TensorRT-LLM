@@ -21,6 +21,11 @@ __extra_import_path__ = ["../..", "~/tests/integration/defs"]
 from openengine_chain import direct_replay as dr
 from utils.llm_data import llm_models_root
 
+from tensorrt_llm.grpc.openengine_conventions import (
+    COUNTER_GENERATE_ACCEPTED_BUCKETS,
+    COUNTER_PREFILL_READY_SENT,
+)
+
 pytestmark = [pytest.mark.threadleak(enabled=False)]
 
 MODEL_SUBDIR = os.path.join("Qwen3", "Qwen3-0.6B")
@@ -30,6 +35,8 @@ MAX_TOKENS = 16
 ENGINE_READY_TIMEOUT_S = 1200
 REQUEST_TIMEOUT_S = 120
 KV_ROWS_WAIT_S = 30
+# The id the caller gives the context leg; both engines must use it for the transfer.
+CALLER_DISAGG_REQUEST_ID = 4_611_686_018_427_387_905
 # One GPU holds both engines, so each takes a small share of the free memory. Block
 # reuse is off so that no prefill reuses a cached prefix: a request that does can
 # pick a different greedy token at a near tie than one that prefills the whole
@@ -100,8 +107,13 @@ def _wait_kv_rows(directory: str, key: str) -> list[dict]:
         time.sleep(1)
 
 
+def _counters(endpoint: str) -> dict[str, float]:
+    return dr.get_load(endpoint).get("attributes", {})
+
+
 def test_two_engines_complete_a_handoff(engines):
     ctx_engine, gen_engine, kv_dirs = engines
+    ctx_before, gen_before = _counters(ctx_engine.endpoint), _counters(gen_engine.endpoint)
     handoff = dr.run_handoff(
         ctx_engine.endpoint,
         gen_engine.endpoint,
@@ -109,12 +121,44 @@ def test_two_engines_complete_a_handoff(engines):
         PROMPT,
         max_tokens=MAX_TOKENS,
         timeout=REQUEST_TIMEOUT_S,
+        ctx_options={"extra": {"disagg_request_id": str(CALLER_DISAGG_REQUEST_ID)}},
     )
+    ctx_after, gen_after = _counters(ctx_engine.endpoint), _counters(gen_engine.endpoint)
     result = handoff.to_json()
     assert handoff.ctx.status == "OK", result
     assert handoff.ctx.terminal() == "prefill_ready", result
     assert handoff.gen is not None and handoff.gen.status == "OK", result
     assert handoff.gen.terminal() == "finished", result
+
+    # The context engine used the caller's id, and the generation leg carried it.
+    caller_id = str(CALLER_DISAGG_REQUEST_ID)
+    assert dr.session_attributes(handoff.received)["disagg_request_id"] == caller_id, result
+    assert dr.session_attributes(handoff.sent)["disagg_request_id"] == caller_id, result
+
+    # Each engine counted its leg once, in its own bucket.
+    def delta(before: dict, after: dict, key: str) -> float:
+        return after.get(key, 0) - before.get(key, 0)
+
+    buckets = COUNTER_GENERATE_ACCEPTED_BUCKETS
+    assert {
+        "ctx.context_only": delta(ctx_before, ctx_after, buckets["context_only"]),
+        "ctx.generation_only": delta(ctx_before, ctx_after, buckets["generation_only"]),
+        "ctx.aggregated": delta(ctx_before, ctx_after, buckets["aggregated"]),
+        "ctx.prefill_ready_sent": delta(ctx_before, ctx_after, COUNTER_PREFILL_READY_SENT),
+        "gen.context_only": delta(gen_before, gen_after, buckets["context_only"]),
+        "gen.generation_only": delta(gen_before, gen_after, buckets["generation_only"]),
+        "gen.aggregated": delta(gen_before, gen_after, buckets["aggregated"]),
+        "gen.prefill_ready_sent": delta(gen_before, gen_after, COUNTER_PREFILL_READY_SENT),
+    } == {
+        "ctx.context_only": 1,
+        "ctx.generation_only": 0,
+        "ctx.aggregated": 0,
+        "ctx.prefill_ready_sent": 1,
+        "gen.context_only": 0,
+        "gen.generation_only": 1,
+        "gen.aggregated": 0,
+        "gen.prefill_ready_sent": 0,
+    }, (ctx_before, ctx_after, gen_before, gen_after)
 
     first = handoff.first_gen_tokens()
     assert len(first) == 1, result

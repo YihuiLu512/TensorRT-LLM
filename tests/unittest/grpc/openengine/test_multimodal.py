@@ -389,8 +389,9 @@ async def test_audio_text_prompt_survives_preparation_without_placeholders(
     llm = _ImageLlm(processor, config)
     llm.args.reasoning_parser = None
     llm.args.max_seq_len = 2048
-    inference = OpenEngineInferenceServicer(llm, "audio-model")
-    control = OpenEngineControlServicer(llm, "audio-model", inference)
+    backend = "NIXL" if context_only else ""
+    inference = OpenEngineInferenceServicer(llm, "audio-model", kv_transfer_backend=backend)
+    control = OpenEngineControlServicer(llm, "audio-model", inference, kv_transfer_backend=backend)
     info = await control.GetModelInfo(model_pb2.GetModelInfoRequest(), FakeServicerContext())
     assert info.supports_text_input is True
     assert info.supports_token_ids_input is False

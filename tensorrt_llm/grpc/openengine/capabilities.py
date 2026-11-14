@@ -8,6 +8,16 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any, Collection, Mapping
 
+from tensorrt_llm.grpc.openengine_conventions import (
+    BUCKET_AGGREGATED,
+    CAP_STOPPING_MIN_TOKENS,
+    CONVENTIONS_VERSION,
+    CONVENTIONS_VERSION_KEY,
+    COUNTER_GENERATE_ACCEPTED_BUCKETS,
+    COUNTER_PREFILL_READY_SENT,
+    compute_tokenizer_fingerprint,
+)
+
 # OpenEngine v1 has no fields for some capabilities, for a tokenizer
 # fingerprint, or for request counters. The `extra` conventions carry them as
 # `trtllm.*` keys in ServerInfo.extra, ModelInfo.extra and
@@ -24,11 +34,6 @@ from tensorrt_llm.grpc.openengine_conventions import (
 )
 from tensorrt_llm.grpc.openengine_conventions import CAP_SEED_SCOPE as SAMPLING_SEED_SCOPE_KEY
 from tensorrt_llm.grpc.openengine_conventions import CAP_STOP_TEXT as STOPPING_STOP_TEXT_KEY
-from tensorrt_llm.grpc.openengine_conventions import (
-    CONVENTIONS_VERSION,
-    CONVENTIONS_VERSION_KEY,
-    compute_tokenizer_fingerprint,
-)
 from tensorrt_llm.grpc.openengine_conventions import (
     COUNTER_GENERATE_ACCEPTED as COUNTER_GENERATE_ACCEPTED_KEY,
 )
@@ -181,7 +186,7 @@ def tokenizer_fingerprint(
 class GenerateCounters:
     """Counts of ``Generate`` calls handled by one inference servicer.
 
-    Both counts start at zero when the servicer is created and only increase.
+    Every count starts at zero when the servicer is created and only increases.
     They are updated on the gRPC event loop, which serializes the updates. Each
     OpenEngine frontend process has its own servicer, so with several frontends
     the counts are per frontend, not per engine.
@@ -192,24 +197,43 @@ class GenerateCounters:
         """int: Generate calls that reached the servicer, including ones it rejected."""
         self.accepted = 0
         """int: Generate calls whose request ``generate_async`` accepted."""
+        self.accepted_by_bucket = dict.fromkeys(COUNTER_GENERATE_ACCEPTED_BUCKETS, 0)
+        """dict[str, int]: ``accepted`` by request bucket (context_only, generation_only,
+        aggregated); the buckets sum to ``accepted``."""
+        self.prefill_ready_sent = 0
+        """int: PrefillReady events sent."""
 
     def record_received(self) -> None:
         """Count one Generate call as the servicer starts handling it, before validation."""
         self.received += 1
 
-    def record_accepted(self) -> None:
-        """Count one Generate call whose request ``generate_async`` accepted."""
+    def record_accepted(self, bucket: str = BUCKET_AGGREGATED) -> None:
+        """Count one Generate call whose request ``generate_async`` accepted.
+
+        Raises:
+            KeyError: ``bucket`` is not a request bucket.
+        """
+        self.accepted_by_bucket[bucket] += 1
         self.accepted += 1
+
+    def record_prefill_ready(self) -> None:
+        """Count one PrefillReady event sent."""
+        self.prefill_ready_sent += 1
 
     def attributes(self) -> dict[str, int]:
         """The counts as ``LoadInfo.attributes`` keys."""
-        return {
+        attributes = {
             COUNTER_GENERATE_RECEIVED_KEY: self.received,
             COUNTER_GENERATE_ACCEPTED_KEY: self.accepted,
+            COUNTER_PREFILL_READY_SENT: self.prefill_ready_sent,
         }
+        for bucket, count in self.accepted_by_bucket.items():
+            attributes[COUNTER_GENERATE_ACCEPTED_BUCKETS[bucket]] = count
+        return attributes
 
 
 __all__ = [
+    "CAP_STOPPING_MIN_TOKENS",
     "COUNTER_GENERATE_ACCEPTED_KEY",
     "COUNTER_GENERATE_RECEIVED_KEY",
     "CONVENTIONS_VERSION",

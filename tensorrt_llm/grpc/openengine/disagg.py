@@ -8,6 +8,8 @@ a generation worker resumes it by echoing that session back on its request.
 """
 
 import base64
+import math
+import os
 import secrets
 from collections.abc import Mapping, Sequence
 from typing import Any, Optional
@@ -18,15 +20,100 @@ from google.protobuf.json_format import MessageToDict
 
 from tensorrt_llm.disaggregated_params import DisaggregatedParams, DisaggScheduleStyle
 from tensorrt_llm.executor.result import Logprob
-from tensorrt_llm.llmapi.disagg_utils import MIN_GLOBAL_ID
+from tensorrt_llm.grpc.openengine_conventions import (
+    CAP_DISAGG_GENERATION_FIRST,
+    CAP_DISAGG_ORIG_ELAPSED_S,
+    CAP_REQ_DISAGG_REQUEST_ID,
+    DISAGG_REQUEST_ID_LIMIT,
+    DISAGG_REQUEST_ID_MIN,
+    DISAGG_REQUEST_KEY_CAPABILITY,
+    REQ_DISAGG_REQUEST_ID,
+    REQ_ORIG_ELAPSED_S,
+    REQ_REQUEST_TYPE,
+    REQUEST_TYPE_CONTEXT_ONLY,
+    REQUEST_TYPE_GENERATION_ONLY,
+    parse_disagg_request_id,
+    request_bucket,
+)
 
 from .bindings import generation_pb2, kv_pb2
+from .errors import UnsupportedFeatureError
 from .formatting import clamp_logprob
 
 # OpenEngine has no native request-type field, so the phase of a disaggregated
 # request is carried in the request's `extra` Struct under this key. A request
 # that carries a `kv.session` handle is always treated as generation_only.
-_REQUEST_TYPE_KEY = "request_type"
+_REQUEST_TYPE_KEY = REQ_REQUEST_TYPE
+
+# Set to "1" in the generation engine's environment, the engine serves a
+# kv.session without any context worker to fetch from (the KV is not
+# transferred); the same variable puts the executor in that mode.
+GEN_ONLY_BENCHMARK_ENV = "TRTLLM_DISAGG_BENCHMARK_GEN_ONLY"
+
+
+class DisaggUnavailableError(Exception):
+    """A disaggregated request reached a server that has no KV cache transceiver."""
+
+
+def disagg_capabilities(kv_transfer_enabled: bool) -> dict[str, bool]:
+    """The disaggregated-serving capability keys of conventions version 4, as this server reports them.
+
+    The request keys work only on a server with a KV cache transceiver. Generation-first
+    scheduling (``schedule_style``) is not supported.
+    """
+    return {
+        CAP_REQ_DISAGG_REQUEST_ID: kv_transfer_enabled,
+        CAP_DISAGG_GENERATION_FIRST: False,
+        CAP_DISAGG_ORIG_ELAPSED_S: kv_transfer_enabled,
+    }
+
+
+def is_disaggregated_request(request: generation_pb2.GenerateRequest) -> bool:
+    """Whether the request is one leg of a disaggregated request.
+
+    That is a request with a ``kv.session``, or one whose ``extra.request_type`` is
+    context_only or generation_only.
+    """
+    if request.HasField("kv") and request.kv.HasField("session"):
+        return True
+    if not request.HasField("extra"):
+        return False
+    value = request.extra.fields.get(_REQUEST_TYPE_KEY)
+    return value is not None and value.string_value in (
+        REQUEST_TYPE_CONTEXT_ONLY,
+        REQUEST_TYPE_GENERATION_ONLY,
+    )
+
+
+def accepted_bucket(params: Optional[DisaggregatedParams]) -> str:
+    """The ``generate_accepted.<bucket>`` counter a request with these params counts in."""
+    request_type = None if params is None else params.request_type
+    return request_bucket(
+        has_kv_session=request_type == REQUEST_TYPE_GENERATION_ONLY,
+        request_type=request_type,
+    )
+
+
+def _check_disagg_keys(extra: Mapping[str, Any], declared: Mapping[str, bool]) -> None:
+    """Reject a disaggregated-serving request key whose capability is not declared."""
+    for key, capability in DISAGG_REQUEST_KEY_CAPABILITY.items():
+        if key in extra and not declared.get(capability, False):
+            raise UnsupportedFeatureError(f"extra key '{key}' is not supported by this engine")
+
+
+def _reject_off_leg(extra: Mapping[str, Any], keys: Sequence[str], leg: str) -> None:
+    for key in keys:
+        if key in extra:
+            raise ValueError(f"extra.{key} is not accepted on {leg}")
+
+
+def _orig_elapsed_s(value: Any) -> float:
+    # Struct numbers arrive as float; a bool is a separate Struct kind and must not pass.
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"extra.{REQ_ORIG_ELAPSED_S} must be a number")
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"extra.{REQ_ORIG_ELAPSED_S} must be a finite number >= 0, got {value}")
+    return float(value)
 
 
 _DISAGG_REQUEST_TYPES = {"context_only", "generation_only", "context_and_generation"}
@@ -77,6 +164,18 @@ def _split_endpoint(value: str) -> Optional[tuple[str, int, str]]:
     return host, port, parts.scheme
 
 
+def kv_endpoint(endpoint: str, transfer_backend: str) -> Optional[kv_pb2.KvEndpoint]:
+    """The KvEndpoint of a context info endpoint, as a PrefillReady carries it.
+
+    None when the endpoint does not parse or has no host.
+    """
+    parts = _split_endpoint(endpoint)
+    if parts is None:
+        return None
+    host, port, scheme = parts
+    return kv_pb2.KvEndpoint(host=host, port=port, protocol=scheme or transfer_backend or "")
+
+
 def _serialize_first_gen_log_probs(first_gen_log_probs: Sequence[Any]) -> list[Any]:
     """Serialize first-gen logprobs into a Struct-storable form.
 
@@ -119,13 +218,18 @@ def _deserialize_first_gen_log_probs(positions: Sequence[Any]) -> list[Any]:
     return result
 
 
-def _validate_kv_session(session: Any, attrs: Mapping[str, Any]) -> None:
+def _validate_kv_session(
+    session: Any, attrs: Mapping[str, Any], gen_only_benchmark: bool = False
+) -> None:
     """Reject a session the generation worker cannot resolve.
 
     The engine consumes the handoff on its executor loop with no timeout and no
     guard: a session naming an unreachable context worker blocks that loop
     indefinitely, so every later request on this engine stalls too. Validating
     what we can here turns an engine-wide hang into one INVALID_ARGUMENT.
+
+    With ``gen_only_benchmark`` the session need not locate a context worker:
+    the engine then fetches nothing.
 
     ``attrs`` is the caller's already-converted attributes Struct: converting it
     twice would walk the whole handoff -- including first_gen_log_probs -- twice
@@ -136,7 +240,7 @@ def _validate_kv_session(session: Any, attrs: Mapping[str, Any]) -> None:
         parts = _split_endpoint(str(endpoint))
         if parts is None or not parts[1]:
             raise ValueError(f"kv.session ctx_info_endpoint '{endpoint}' is not a usable address")
-    elif not attrs.get("opaque_state"):
+    elif not attrs.get("opaque_state") and not gen_only_benchmark:
         # One or the other locates the context worker: an endpoint on builds that
         # fetch its info over ZMQ, opaque_state on builds that carry it inline.
         raise ValueError("kv.session carries neither a ctx_info_endpoint nor an opaque_state")
@@ -146,20 +250,53 @@ def _validate_kv_session(session: Any, attrs: Mapping[str, Any]) -> None:
 
 def disaggregated_params_from_request(
     request: generation_pb2.GenerateRequest,
+    *,
+    kv_transfer_enabled: bool = True,
+    gen_only_benchmark: Optional[bool] = None,
 ) -> Optional[DisaggregatedParams]:
     """Map an OpenEngine request to TensorRT-LLM disaggregated-serving params.
 
-    Returns None for a normal (aggregated) request. A ``kv.session`` handle marks
+    Returns None for a request that names no phase. A ``kv.session`` handle marks
     a generation_only request and is decoded back into the context handoff
     (``opaque_state`` / ``ctx_request_id`` / ``first_gen_tokens`` / endpoint /
     dp_rank). Otherwise the phase comes from ``extra["request_type"]``.
+
+    A context_only request takes its ``disagg_request_id`` from
+    ``extra["disagg_request_id"]`` when present, and a generation_only request
+    its ``orig_elapsed_s`` from ``extra["orig_elapsed_s"]``.
+
+    Args:
+        request: The Generate request.
+        kv_transfer_enabled: Whether the server has a KV cache transceiver. Without
+            one, a disaggregated request (:func:`is_disaggregated_request`) is refused.
+        gen_only_benchmark: Whether a kv.session may omit the context worker's
+            location; None reads :data:`GEN_ONLY_BENCHMARK_ENV`.
+
+    Raises:
+        DisaggUnavailableError: A disaggregated request and no KV cache transceiver.
+        UnsupportedFeatureError: A request key of an undeclared capability
+            (:func:`disagg_capabilities`).
+        ValueError: The request is malformed.
     """
+    if not kv_transfer_enabled and is_disaggregated_request(request):
+        raise DisaggUnavailableError(
+            "this engine has no KV cache transceiver (cache_transceiver_config is not set), "
+            "so it cannot serve either leg of a disaggregated request (context_only, "
+            "generation_only, or a request with a kv.session)"
+        )
+    extra = _struct_to_dict(request.extra) if request.HasField("extra") else {}
+    _check_disagg_keys(extra, disagg_capabilities(kv_transfer_enabled))
     has_session = request.HasField("kv") and request.kv.HasField("session")
     if has_session:
+        _reject_off_leg(extra, (REQ_DISAGG_REQUEST_ID,), "a request with a kv.session")
+        if gen_only_benchmark is None:
+            gen_only_benchmark = os.environ.get(GEN_ONLY_BENCHMARK_ENV) == "1"
         session = request.kv.session
         attrs = _struct_to_dict(session.attributes_struct)
-        _validate_kv_session(session, attrs)
+        _validate_kv_session(session, attrs, gen_only_benchmark)
         params = DisaggregatedParams(request_type="generation_only")
+        if REQ_ORIG_ELAPSED_S in extra:
+            params.orig_elapsed_s = _orig_elapsed_s(extra[REQ_ORIG_ELAPSED_S])
         if session.session_id:
             try:
                 params.ctx_request_id = int(session.session_id)
@@ -206,9 +343,9 @@ def disaggregated_params_from_request(
             params.first_gen_log_probs = _deserialize_first_gen_log_probs(first_gen_log_probs)
         return params
 
-    extra = _struct_to_dict(request.extra) if request.HasField("extra") else {}
     request_type = extra.get(_REQUEST_TYPE_KEY)
     if request_type is None:
+        _reject_off_leg(extra, (REQ_DISAGG_REQUEST_ID, REQ_ORIG_ELAPSED_S), "an aggregated request")
         return None
     if request_type == "generation_only":
         raise ValueError(
@@ -218,9 +355,27 @@ def disaggregated_params_from_request(
     if request_type not in _EXTRA_REQUEST_TYPES:
         raise ValueError(f"extra.{_REQUEST_TYPE_KEY} must be one of {sorted(_EXTRA_REQUEST_TYPES)}")
     params = DisaggregatedParams(request_type=request_type)
-    if request_type == "context_only":
+    if request_type != REQUEST_TYPE_CONTEXT_ONLY:
+        _reject_off_leg(extra, (REQ_DISAGG_REQUEST_ID, REQ_ORIG_ELAPSED_S), "an aggregated request")
+        return params
+    _reject_off_leg(extra, (REQ_ORIG_ELAPSED_S,), "a context_only request")
+    if REQ_DISAGG_REQUEST_ID in extra:
+        disagg_request_id = parse_disagg_request_id(extra[REQ_DISAGG_REQUEST_ID])
+        if disagg_request_id is None:
+            raise ValueError(
+                f"extra.{REQ_DISAGG_REQUEST_ID} must be a decimal string without sign or "
+                f"leading zeros in [{DISAGG_REQUEST_ID_MIN}, {DISAGG_REQUEST_ID_LIMIT})"
+            )
+        params.disagg_request_id = disagg_request_id
+    else:
         # Local context IDs can collide across independent prefill engines.
-        params.disagg_request_id = MIN_GLOBAL_ID + secrets.randbelow((1 << 63) - MIN_GLOBAL_ID)
+        params.disagg_request_id = DISAGG_REQUEST_ID_MIN + secrets.randbelow(
+            DISAGG_REQUEST_ID_LIMIT - DISAGG_REQUEST_ID_MIN
+        )
+    # This server schedules every prefill context-first, and says so explicitly as
+    # the HTTP orchestrator does: where the context side checks KV ownership, an
+    # unset style skips the checks that CONTEXT_FIRST runs.
+    params.schedule_style = DisaggScheduleStyle.CONTEXT_FIRST
     return params
 
 
@@ -259,10 +414,9 @@ def prefill_ready_response(
         # ZMQ socket straight to this string, so any lossy round trip through
         # the structured fields would hand it an unusable address.
         attributes["ctx_info_endpoint"] = endpoint
-        parts = _split_endpoint(endpoint)
-        if parts is not None:
-            host, port, scheme = parts
-            session.endpoints.add(host=host, port=port, protocol=scheme or transfer_backend or "")
+        located = kv_endpoint(endpoint, transfer_backend)
+        if located is not None:
+            session.endpoints.add().CopyFrom(located)
     opaque_state = disaggregated_params.opaque_state
     if opaque_state is not None:
         attributes["opaque_state"] = base64.b64encode(opaque_state).decode("utf-8")
@@ -299,6 +453,12 @@ def prefill_ready_response(
 
 
 __all__ = [
+    "DisaggUnavailableError",
+    "GEN_ONLY_BENCHMARK_ENV",
+    "accepted_bucket",
+    "disagg_capabilities",
     "disaggregated_params_from_request",
+    "is_disaggregated_request",
+    "kv_endpoint",
     "prefill_ready_response",
 ]

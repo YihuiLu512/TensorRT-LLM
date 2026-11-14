@@ -35,6 +35,10 @@ from tensorrt_llm.grpc.openengine.capabilities import (  # noqa: E402
 )
 from tensorrt_llm.grpc.openengine.control import OpenEngineControlServicer  # noqa: E402
 from tensorrt_llm.grpc.openengine.servicer import OpenEngineInferenceServicer  # noqa: E402
+from tensorrt_llm.grpc.openengine_conventions import (  # noqa: E402
+    COUNTER_GENERATE_ACCEPTED_BUCKETS,
+    VERSION_4_ENGINE_COUNTERS,
+)
 from tensorrt_llm.llmapi import KVEventsConfig  # noqa: E402
 from tensorrt_llm.llmapi.llm_args import (  # noqa: E402
     AutoDecodingConfig,
@@ -992,6 +996,11 @@ EXPECTED_EXTRA_CAPABILITIES = {
     # Neither attention DP nor an agent-tree reorder policy is configured.
     "trtllm.request.scheduling": False,
     "trtllm.request.best_of": False,
+    "trtllm.stopping.min_tokens": True,
+    # No KV cache transceiver is configured.
+    "trtllm.request.disagg_request_id": False,
+    "trtllm.disagg.generation_first": False,
+    "trtllm.disagg.orig_elapsed_s": False,
 }
 PARAMS_KEY = "trtllm.params"
 # Without speculation every sampling field accepts any value. Each default is
@@ -1095,7 +1104,7 @@ async def test_model_info_reports_exactly_the_convention_keys_with_their_types(m
 
 @pytest.mark.asyncio
 async def test_model_info_without_a_tokenizer_reports_capabilities_but_no_fingerprint():
-    info = await _servicer(_tokenizer=None).GetModelInfo(
+    info = await _servicer(kv_transfer_backend="", _tokenizer=None).GetModelInfo(
         model_pb2.GetModelInfoRequest(), FakeServicerContext()
     )
 
@@ -1147,14 +1156,17 @@ async def test_model_info_reports_only_no_effect_min_p_and_penalties_under_one_m
     make_config, supported
 ):
     # Built in the test so that a config that fails validation fails only its own case.
-    info = await _servicer(speculative_config=make_config()).GetModelInfo(
+    info = await _servicer(kv_transfer_backend="", speculative_config=make_config()).GetModelInfo(
         model_pb2.GetModelInfoRequest(), FakeServicerContext()
     )
 
     assert {key: info.extra[key] for key in SPECULATIVE_SAMPLING_KEYS} == dict.fromkeys(
         SPECULATIVE_SAMPLING_KEYS, supported
     )
+    # The one-model speculative sampler rejects min_tokens as well.
+    assert info.extra["trtllm.stopping.min_tokens"] == supported
     other_keys = set(EXPECTED_EXTRA_CAPABILITIES) - set(SPECULATIVE_SAMPLING_KEYS)
+    other_keys.discard("trtllm.stopping.min_tokens")
     assert {key: info.extra[key] for key in other_keys} == {
         key: EXPECTED_EXTRA_CAPABILITIES[key] for key in other_keys
     }
@@ -1256,13 +1268,15 @@ async def test_fingerprint_is_computed_once(model_dir, monkeypatch):
 
 def test_generate_counters_start_at_zero_and_only_increase():
     counters = GenerateCounters()
-    assert counters.attributes() == {RECEIVED: 0, ACCEPTED: 0}
+    zero = {key: 0 for key in VERSION_4_ENGINE_COUNTERS}
+    assert counters.attributes() == {RECEIVED: 0, ACCEPTED: 0, **zero}
 
     counters.record_received()
     counters.record_received()
     counters.record_accepted()
 
-    assert counters.attributes() == {RECEIVED: 2, ACCEPTED: 1}
+    aggregated = COUNTER_GENERATE_ACCEPTED_BUCKETS["aggregated"]
+    assert counters.attributes() == {RECEIVED: 2, ACCEPTED: 1, **zero, aggregated: 1}
 
 
 class _ResultHandle:
