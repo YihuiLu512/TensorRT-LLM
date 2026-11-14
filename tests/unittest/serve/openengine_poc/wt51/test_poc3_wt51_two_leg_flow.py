@@ -17,6 +17,7 @@ import json
 
 import pytest
 import requests
+import yaml
 from google.protobuf import json_format
 
 from tensorrt_llm.grpc.openengine_conventions import (
@@ -50,8 +51,14 @@ _OUTPUTS: dict[tuple[str, str], dict[tuple[str, int], object]] = {}
 @pytest.fixture(scope="module", params=CHAINS, ids=[f"{s}-pool{n}" for s, n in CHAINS])
 def chain(request, tmp_path_factory):
     shape, workers = request.param
-    args = ["--num_postprocess_workers", str(workers)] if workers else []
     directory = tmp_path_factory.mktemp(f"chain-{shape}-{workers}")
+    # SV-DSG-1: a worker frontend's YAML keeps cache_transceiver_config, without
+    # which OpenAIServer refuses the handoff fields of a generation leg.
+    config = directory / "frontend.yaml"
+    config.write_text(yaml.safe_dump({"cache_transceiver_config": {"backend": "DEFAULT"}}))
+    args = ["--config", str(config)]
+    if workers:
+        args += ["--num_postprocess_workers", str(workers)]
     with CpuDisaggChain(
         directory, shape, frontend_args={"context": args, "generation": args}
     ) as chain:
@@ -206,8 +213,21 @@ def test_the_context_response_carries_the_handoff_and_no_text(chain):
     )
 
 
-def test_the_disagg_request_id_and_the_handoff_reach_both_engines(chain):
-    # NT-017, and NT-018 end to end: the decode call carries the session the prefill call sent.
+def test_caller_disagg_request_id_reaches_both_engines(chain):
+    # NT-017: the id the orchestrator gives the request reaches both engines unchanged.
+    seen = len(chain.ctx.http_requests())
+    response = chain.complete(prompt=PROMPT, max_tokens=4)
+    assert response.status_code == 200, response.text
+    [leg] = [r for r in chain.ctx.http_requests()[seen:] if r["path"] == "/v1/completions"]
+    disagg_request_id = leg["body"]["disaggregated_params"]["disagg_request_id"]
+    assert disagg_request_id >= DISAGG_REQUEST_ID_MIN
+    assert chain.ctx.engine.requests[-1].extra[REQ_DISAGG_REQUEST_ID] == str(disagg_request_id)
+    session = chain.gen.engine.requests[-1].kv.session
+    assert session.attributes_struct["disagg_request_id"] == str(disagg_request_id)
+
+
+def test_the_decode_call_carries_the_session_the_prefill_call_sent(chain):
+    # NT-018 end to end, between two engines.
     disagg_request_id = DISAGG_REQUEST_ID_MIN + 202
     ctx = _context_leg(chain, disagg_request_id)
     prefill = chain.ctx.engine.requests[-1]
@@ -225,18 +245,28 @@ def test_the_disagg_request_id_and_the_handoff_reach_both_engines(chain):
     assert decode.kv.session.attributes_struct["disagg_request_id"] == str(disagg_request_id)
 
 
-def test_a_request_that_ends_on_the_context_engine_is_the_whole_answer(chain):
-    # NT-003: no generation leg, and the tokens held back are the answer.
+@pytest.mark.parametrize("stream", [False, True], ids=["whole", "streamed"])
+def test_ctx_finished_skips_the_gen_leg(chain, stream):
+    # NT-003: no generation leg; the context worker's whole response is the answer.
     engine = chain.ctx.engine
     before = chain.snapshot()
     engine.disagg_faults.finish_prefill_early = True
     try:
-        response = chain.complete(prompt=PROMPT, max_tokens=4)
+        if stream:
+            status, text = _post_stream(chain, "/v1/completions", _body("/v1/completions"))
+        else:
+            response = chain.complete(prompt=PROMPT, max_tokens=4)
+            status, text = response.status_code, response.text
     finally:
         engine.disagg_faults.finish_prefill_early = False
-    assert response.status_code == 200, response.text
-    choice = response.json()["choices"][0]
-    assert choice["text"] and choice["finish_reason"] == "stop"
+    assert status == 200, text
+    if not stream:
+        # The engine's only token is EOS, so the answer ends there, with no text.
+        choice = json.loads(text)["choices"][0]
+        assert choice["finish_reason"] == "stop"
+        assert "disaggregated_params" not in choice or (
+            "first_gen_tokens" not in (choice["disaggregated_params"] or {})
+        )
     after = chain.snapshot()
     for bucket in REQUEST_BUCKETS:
         key = SERVE_COUNTER_HTTP_RECEIVED_BUCKETS[bucket]
@@ -245,7 +275,8 @@ def test_a_request_that_ends_on_the_context_engine_is_the_whole_answer(chain):
     _check_counters(chain, before, after)
 
 
-def test_unregistered_attributes_are_passed_on_and_counted(chain):
+def test_unmapped_session_attribute_rides_the_new_field(chain):
+    # NT-019 end to end: an attribute without an HTTP field, not registered either.
     if chain.shape == "ds":
         pytest.skip("the ds engine refuses attributes the conventions do not name")
     engine = chain.ctx.engine

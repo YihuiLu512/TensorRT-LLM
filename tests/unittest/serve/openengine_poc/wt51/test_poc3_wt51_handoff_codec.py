@@ -57,7 +57,8 @@ def _trtllm_session(**extra) -> KvSessionSpec:
         # As the HTTP UsageInfo dumps it, which is what a generation worker sends on.
         "ctx_usage": CTX_USAGE,
         "first_gen_log_probs": [[[11, -0.25, 1], [3, -1.5, 2]]],
-        "trtllm_decode_preparation": {"kind": "none"},
+        # Not registered, so passed through as the registered ones are.
+        "vendor_state": {"kind": "none"},
         **extra,
     }
     return KvSessionSpec(
@@ -97,7 +98,7 @@ def _over_http(session: KvSessionSpec) -> tuple[DisaggregatedParams, str | None]
 
 
 @pytest.mark.parametrize("session", [_trtllm_session(), _ds_session()], ids=["trtllm", "ds"])
-def test_a_handoff_crosses_http_and_comes_back_unchanged(session):
+def test_handoff_fields_round_trip(session):
     received, attributes = _over_http(session)
     encoded = handoff.encode_kv_session(
         to_llm_disaggregated_params(received), attributes, session.transfer_backend
@@ -123,7 +124,7 @@ def test_mapped_attributes_are_restored_field_by_field():
     [position] = params.first_gen_log_probs
     assert position[11].logprob == -0.25 and position[11].rank == 1
     # Only the attribute without a field crosses in the new field.
-    assert json.loads(attributes) == {"trtllm_decode_preparation": {"kind": "none"}}
+    assert json.loads(attributes) == {"vendor_state": {"kind": "none"}}
 
 
 def test_encoded_opaque_state_is_the_engines_base64_text():
@@ -138,15 +139,23 @@ def test_a_handoff_without_pass_through_attributes_has_no_new_field():
     assert "openengine_handoff_attributes" not in http.model_dump()
 
 
-def test_unregistered_attributes_are_passed_on_and_named():
-    session = _trtllm_session(vendor_hint="x", vendor_level=2)
-    assert handoff.unregistered_attributes(session) == ["vendor_hint", "vendor_level"]
+def test_unmapped_session_attribute_rides_the_new_field():
+    session = _trtllm_session(trtllm_decode_preparation={"kind": "mm"}, vendor_level=2)
+    assert handoff.unregistered_attributes(session) == ["vendor_level", "vendor_state"]
     _, attributes = handoff.decode_kv_session(session)
     assert json.loads(attributes) == {
-        "trtllm_decode_preparation": {"kind": "none"},
-        "vendor_hint": "x",
+        "trtllm_decode_preparation": {"kind": "mm"},
         "vendor_level": 2.0,
+        "vendor_state": {"kind": "none"},
     }
+
+
+def test_a_generation_leg_with_a_decode_preparation_is_refused():
+    # Multimodal requests are not served disaggregated (SV-DSG-3 rule 13).
+    session = _trtllm_session(trtllm_decode_preparation={"kind": "mm"})
+    params, attributes = handoff.decode_kv_session(session)
+    with pytest.raises(ValueError, match="trtllm_decode_preparation"):
+        handoff.encode_kv_session(params, attributes, "")
 
 
 @pytest.mark.parametrize("name", ["first_gen_tokens", "ctx_info_endpoint", "disagg_request_id"])
