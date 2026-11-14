@@ -43,6 +43,8 @@ from tensorrt_llm.grpc.openengine_conventions import (
     CAP_REQ_SCHEDULING,
     CAP_REQ_THINKING_TOKEN_BUDGET,
     CAP_STOP_TEXT,
+    CAP_STOPPING_MIN_TOKENS,
+    CONVENTIONS_VERSION,
     DISAGG_REQUEST_ID_LIMIT,
     DISAGG_REQUEST_ID_MIN,
     LOGIT_BIAS_MAX,
@@ -76,6 +78,7 @@ from .field_classes import GENERATE_OPTIONS, SAMPLING_PARAMS, Kind
 
 __all__ = [
     "build_generate_request",
+    "check_min_tokens",
     "log_sequence_capability",
     "map_request",
 ]
@@ -552,6 +555,32 @@ def _orig_elapsed_s(params: Any, capabilities: ModelCapabilities) -> dict[str, A
         logger.debug(f"{CAP_DISAGG_ORIG_ELAPSED_S} is not declared; orig_elapsed_s is not sent")
         return {}
     return {REQ_ORIG_ELAPSED_S: float(value)}
+
+
+def check_min_tokens(
+    sampling_params: SamplingParams,
+    capabilities: ModelCapabilities,
+    conventions_version: int | None,
+    *,
+    engine_name: str,
+) -> None:
+    """Refuse ``min_tokens >= 1`` for an engine on the current conventions that does not declare it.
+
+    An engine that reports :data:`CONVENTIONS_VERSION` declares with
+    ``trtllm.stopping.min_tokens`` that it holds back EOS and stop tokens
+    until ``min_tokens`` is reached; one on an earlier version, or that
+    reports none, is sent ``min_tokens`` as before that key.
+
+    Raises:
+        ValueError: ``min_tokens`` is at least 1 and the engine reports
+            :data:`CONVENTIONS_VERSION` without declaring the key.
+    """
+    if (
+        (sampling_params.min_tokens or 0) >= 1
+        and conventions_version == CONVENTIONS_VERSION
+        and not capabilities.supports(CAP_STOPPING_MIN_TOKENS)
+    ):
+        raise _not_supported("min_tokens", sampling_params.min_tokens, engine_name)
 
 
 def _disaggregation(

@@ -14,8 +14,14 @@ when the engine ends an accepted request with an error, and
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+import re
+from pathlib import Path
+
 import grpc
-from google.protobuf import struct_pb2
+from google.protobuf import json_format, struct_pb2
 
 from tensorrt_llm.grpc.openengine.bindings import (
     generation_pb2,
@@ -34,9 +40,11 @@ from tensorrt_llm.grpc.openengine_client import (
 from tensorrt_llm.grpc.openengine_conventions import (
     REQ_REQUEST_TYPE,
     REQUEST_TYPE_CONTEXT_ONLY,
+    SERVE_REQUEST_DUMP_DIR_ENV,
     model_capabilities_from_proto,
     struct_to_dict,
 )
+from tensorrt_llm.logger import logger
 
 from .engine_client import (
     EngineEvent,
@@ -61,7 +69,12 @@ from .engine_client import (
     Usage,
 )
 
-__all__ = ["EngineEventStream", "OpenEngineEngineClient", "to_generate_request"]
+__all__ = [
+    "EngineEventStream",
+    "OpenEngineEngineClient",
+    "dump_generate_request",
+    "to_generate_request",
+]
 
 _SAMPLING_FIELDS = frozenset(
     {
@@ -178,6 +191,53 @@ def to_generate_request(request: EngineRequest) -> generation_pb2.GenerateReques
     if request.request_type is not None:
         message.extra.update({REQ_REQUEST_TYPE: request.request_type})
     return message
+
+
+# What may name a dump file; any other request id names it by its hash.
+_DUMP_NAME = re.compile(r"[A-Za-z0-9._-]{1,128}")
+
+
+def _digest(data: bytes) -> dict[str, object]:
+    return {"length": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+
+
+def dump_generate_request(message: generation_pb2.GenerateRequest) -> Path | None:
+    """Write ``message`` to the directory ``TRTLLM_OPENENGINE_REQUEST_DUMP_DIR`` names, if set.
+
+    A debugging aid for comparing the requests of the two legs of a
+    disaggregated request (SV-DSG-7). The file is
+    ``<request_id>.json`` (the SHA-256 of the id when the id is not a plain
+    file name): the request as protobuf JSON, with the prompt token ids and
+    any raw media bytes replaced by their length and SHA-256. Unset, nothing
+    is written.
+
+    Returns:
+        The file written, or None.
+
+    Raises:
+        OSError: The file cannot be written.
+    """
+    directory = os.environ.get(SERVE_REQUEST_DUMP_DIR_ENV)
+    if not directory:
+        return None
+    record = json_format.MessageToDict(message, preserving_proto_field_name=True)
+    token_ids = list(message.token_ids.ids)
+    record["token_ids"] = {
+        "count": len(token_ids),
+        **_digest(json.dumps(token_ids, separators=(",", ":")).encode()),
+    }
+    for item, media in zip(record.get("media", ()), message.media):
+        if media.HasField("raw_bytes"):
+            item["raw_bytes"] = _digest(media.raw_bytes)
+    name = message.request_id
+    if not _DUMP_NAME.fullmatch(name) or name.startswith("."):
+        name = hashlib.sha256(name.encode()).hexdigest()
+    path = Path(directory) / f"{name}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(f".{path.name}.partial")
+    partial.write_text(json.dumps(record, indent=1, sort_keys=True))
+    os.replace(partial, path)
+    return path
 
 
 def _kv_session_ref(session: KvSessionSpec) -> kv_pb2.KvSessionRef:
@@ -434,6 +494,11 @@ class OpenEngineEngineClient:
                 metadata is invalid.
         """
         message = to_generate_request(request)
+        try:
+            dump_generate_request(message)
+        except OSError as error:
+            # A debugging aid: the request is sent whether or not it could be written.
+            logger.warning(f"Could not write GenerateRequest {message.request_id}: {error}")
         stream = self._client.generate(message, metadata=dict(request.metadata))
         return EngineEventStream(
             stream,

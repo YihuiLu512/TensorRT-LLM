@@ -35,6 +35,7 @@ import dataclasses
 import functools
 import hashlib
 import hmac
+import inspect
 import json
 import os
 import re
@@ -97,6 +98,7 @@ from .engine_client import (
     TokenDelta,
 )
 from .engine_client_impl import EngineEventStream, OpenEngineEngineClient
+from .mapping import check_min_tokens
 
 __all__ = [
     "DEFAULT_CONTROL_TIMEOUT_S",
@@ -154,6 +156,10 @@ def _endpoint_text(endpoint: KvEndpoint, transfer_backend: str) -> str:
     if endpoint.protocol and endpoint.protocol != transfer_backend:
         return f"{endpoint.protocol}://{address}"
     return address
+
+
+# The engine_role an engine with a role of its own reports, by the worker role it serves.
+_WORKER_ENGINE_ROLES = {"CONTEXT": "prefill", "GENERATION": "decode"}
 
 
 class _MappedMedia(list):
@@ -397,6 +403,65 @@ def request_error(error: OpenEngineClientError, engine_name: str) -> Exception:
     return OpenEngineServeError(
         f"the call to OpenEngine engine {engine_name!r} failed", HTTPStatus.INTERNAL_SERVER_ERROR
     )
+
+
+# The leg of a disaggregated request each request type is, as its errors name it (SV-DSG-8).
+_LEG_NAMES = {
+    REQUEST_TYPE_CONTEXT_ONLY: "the context leg (context_only)",
+    REQUEST_TYPE_GENERATION_ONLY: "the generation leg (generation_only)",
+}
+
+
+def _leg(disaggregated_params: Any) -> str | None:
+    """The leg a request with ``disaggregated_params`` is; None for a request that is not a leg."""
+    return _LEG_NAMES.get(getattr(disaggregated_params, "request_type", None))
+
+
+def _on_leg(error: Exception, leg: str | None) -> Exception:
+    """``error`` with a message that names ``leg``.
+
+    ``error`` itself when ``leg`` is None, when ``error`` names its leg
+    already, or when it is neither a ``ValueError`` nor an
+    :class:`OpenEngineServeError`.
+    """
+    if leg is None or getattr(error, "names_leg", False):
+        return error
+    message = f"{leg} of a disaggregated request: {error}"
+    if isinstance(error, OpenEngineServeError):
+        named: Exception = OpenEngineServeError(message, error.status_code)
+    elif isinstance(error, ValueError):
+        named = ValueError(message)
+    else:
+        return error
+    named.names_leg = True
+    return named
+
+
+def _names_the_leg(method: Callable[..., Any]) -> Callable[..., Any]:
+    """Name the leg in the ``ValueError`` that refuses a leg of a disaggregated request.
+
+    The leg is read from the call's ``disaggregated_params`` argument.
+    """
+    signature = inspect.signature(method)
+
+    def leg(args: tuple[Any, ...], kwargs: dict[str, Any]) -> str | None:
+        try:
+            arguments = signature.bind_partial(*args, **kwargs).arguments
+        except TypeError:
+            return None
+        return _leg(arguments.get("disaggregated_params"))
+
+    @functools.wraps(method)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return method(*args, **kwargs)
+        except ValueError as error:
+            named = _on_leg(error, leg(args, kwargs))
+            if named is error:
+                raise
+            raise named from error
+
+    return wrapper
 
 
 class _FacadeExecutor:
@@ -693,7 +758,8 @@ class OpenEngineLLM:
         """Check the engine's conventions version, capabilities and tokenizer fingerprint.
 
         The engine must take token ids; for a frontend started with
-        ``--server_role`` it must also declare ``trtllm.request.disagg_request_id``.
+        ``--server_role`` it must also declare ``trtllm.request.disagg_request_id``
+        and pass :meth:`_check_worker_engine`.
         """
         version = conventions_version(info.extra)
         reported = info.extra.get(CONVENTIONS_VERSION_KEY)
@@ -735,6 +801,8 @@ class OpenEngineLLM:
                 f"engine {info.engine_name!r} does not declare {CAP_REQ_DISAGG_REQUEST_ID}; "
                 f"a {role.name} worker needs it",
             )
+        if role is not None:
+            self._check_worker_engine(info, role)
         engine_fingerprint = caps.tokenizer_fingerprint
         if engine_fingerprint is None:
             logger.warning(
@@ -756,6 +824,33 @@ class OpenEngineLLM:
         if mismatches:
             raise self._startup_error(
                 "tokenizer fingerprint", "; ".join(str(mismatch) for mismatch in mismatches)
+            )
+
+    def _check_worker_engine(self, info: EngineInfo, role: Any) -> None:
+        """Check that the engine can serve a disaggregated worker started with ``role`` (SV-DSG-9).
+
+        The engine must have KV transfer enabled and take remote prefill. An
+        engine that reports a ``prefill`` or ``decode`` role must report the
+        one ``role`` serves; any other role it reports is not checked.
+        """
+        connector = info.kv_connector
+        missing = [
+            f"kv_connector.{name}"
+            for name in ("enabled", "supports_remote_prefill")
+            if connector is None or not getattr(connector, name)
+        ]
+        if missing:
+            raise self._startup_error(
+                "kv_connector",
+                f"engine {info.engine_name!r} does not declare {' and '.join(missing)}; "
+                f"a {role.name} worker needs KV transfer",
+            )
+        expected = _WORKER_ENGINE_ROLES.get(role.name)
+        if info.engine_role in _WORKER_ENGINE_ROLES.values() and info.engine_role != expected:
+            raise self._startup_error(
+                "engine role",
+                f"engine {info.engine_name!r} reports engine_role {info.engine_role}; "
+                f"a {role.name} worker needs {expected}",
             )
 
     def _health_watch_ended(self, task: asyncio.Task[None]) -> None:
@@ -1102,6 +1197,7 @@ class OpenEngineLLM:
             )
         return list(prompt_token_ids)
 
+    @_names_the_leg
     def preprocess(
         self,
         inputs: Any,
@@ -1161,6 +1257,40 @@ class OpenEngineLLM:
             metadata[META_TARGET_DP_RANK] = str(dp_rank)
         return metadata
 
+    def _check_request(
+        self,
+        sampling_params: SamplingParams,
+        options: contracts.GenerateOptions,
+        info: EngineInfo,
+        caps: ModelCapabilities,
+    ) -> None:
+        """Refuse what the engine, or a leg of a disaggregated request, cannot serve (SV-DSG-8).
+
+        ``min_tokens`` passes :func:`.mapping.check_min_tokens`. A
+        ``context_only`` or ``generation_only`` request has one output, whose
+        handoff the orchestrator passes on, and no media.
+
+        Raises:
+            ValueError: The request cannot be served; reported as HTTP 400.
+        """
+        check_min_tokens(
+            sampling_params, caps, conventions_version(info.extra), engine_name=info.engine_name
+        )
+        if _leg(options.disaggregated_params) is None:
+            return
+        best_of = sampling_params.best_of
+        if sampling_params.n > 1 or (best_of is not None and best_of > 1):
+            raise ValueError(
+                f"n={sampling_params.n}, best_of={best_of} is not supported for a disaggregated "
+                f"request when serving through the OpenEngine engine {info.engine_name!r}: "
+                "a disaggregated request has one output"
+            )
+        if options.media:
+            raise ValueError(
+                "a disaggregated request with media is not supported when serving through the "
+                f"OpenEngine engine {info.engine_name!r}"
+            )
+
     def _map(
         self,
         prompt_token_ids: list[int],
@@ -1185,6 +1315,7 @@ class OpenEngineLLM:
         caps = client.model_info()
         info = client.server_info()
         params = options.disaggregated_params
+        self._check_request(sampling_params, options, info, caps)
         generation_only = params is not None and params.request_type == REQUEST_TYPE_GENERATION_ONLY
         if params is not None and params.request_type in (
             REQUEST_TYPE_CONTEXT_ONLY,
@@ -1288,6 +1419,7 @@ class OpenEngineLLM:
             renamed.metadata = {**kept, **self._affinity_metadata(renamed, parent_id, info)}
         return renamed
 
+    @_names_the_leg
     def generate_async(
         self,
         inputs: Any,
@@ -2051,7 +2183,7 @@ class OpenEngineRequestOutput:
         )
 
     def _fail(self, error: Exception) -> Exception:
-        error = self._stopping_error(error)
+        error = _on_leg(self._stopping_error(error), _leg(self._request_disaggregated_params))
         self.error = str(error)
         self.finished = True
         self._cancel_calls()
@@ -2185,7 +2317,8 @@ def _shifted(event: Any, offset: int) -> Any:
 def check_frontend_options(args: Any) -> None:
     """Refuse options this frontend cannot honour, instead of ignoring them.
 
-    Energy metrics, the resource governor and beam search are always refused.
+    Energy metrics, the resource governor, beam search and the bounded decoder
+    replay on the generation worker (remote tail) are always refused.
     An option that needs another component is accepted only when that
     component's slot has an implementation other than the default, and refused
     with the reason otherwise: ``post_processor_hook`` needs
@@ -2202,6 +2335,11 @@ def check_frontend_options(args: Any) -> None:
             problems.append(f"{name} is not supported: {reason}")
     if (getattr(args, "max_beam_width", 1) or 1) > 1:
         problems.append("max_beam_width > 1 is not supported: OpenEngine has no beam search")
+    if getattr(args, "bounded_replay_on_generation", False):
+        problems.append(
+            "bounded_replay_on_generation is not supported: an OpenEngine handoff does not "
+            "carry remote_tail_start"
+        )
     postproc_dispatch = contracts.resolve_slot("create_postproc_dispatch")[1] != "default"
     postproc_pool = contracts.resolve_slot("create_postproc_pool")[1] != "default"
     metrics = contracts.resolve_slot("create_metrics_recorder")[1] != "default"

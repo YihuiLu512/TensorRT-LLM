@@ -120,7 +120,11 @@ SAMPLING_PARAMS: dict[str, FieldClass] = {
     "top_p_decay": _rejected(_NO_CARRIER),
     "seed": _mapped("sampling.seed", "trtllm.params.seed"),
     "temperature": _mapped("sampling.temperature", "trtllm.params.temperature"),
-    "min_tokens": _mapped("stopping.min_tokens"),
+    "min_tokens": _mapped(
+        "stopping.min_tokens",
+        "trtllm.stopping.min_tokens",
+        fallback="sent as before when the engine reports an earlier conventions version, or none",
+    ),
     "beam_search_diversity_rate": _rejected(_BEAM),
     "repetition_penalty": _mapped(
         "sampling.repetition_penalty", "trtllm.params.repetition_penalty"
