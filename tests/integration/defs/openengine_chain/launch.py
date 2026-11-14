@@ -1894,7 +1894,8 @@ class WorkerProcess(ChainProcess):
 
         The counters, topology and engine name are read first, as
         :meth:`ServeHandle.terminate` reads them, while the front end can still
-        answer. The front end process then gets SIGKILL, as a killed
+        answer; an interrupt during the read is raised again once both
+        processes are stopped. The front end process then gets SIGKILL, as a killed
         ``subprocess.Popen`` would, and the rest is stopped as
         :meth:`ServeHandle.terminate` stops it: the engine gets SIGTERM and
         ``TERMINATE_GRACE_S`` to exit, as an engine holding GPUs can take longer
@@ -1903,7 +1904,12 @@ class WorkerProcess(ChainProcess):
         handle = self.handle
         if not handle.alive:
             return
-        handle._read_before_shutdown()
+        interrupted: BaseException | None = None
+        try:
+            handle._read_before_shutdown()
+        except BaseException as error:  # noqa: BLE001 - the processes must still stop
+            handle.teardown_notes.append(f"reading the chain before shutdown failed: {error!r}")
+            interrupted = error
         frontend = handle.frontend
         if frontend is not None and frontend.poll() is None:
             frontend.kill()
@@ -1913,6 +1919,8 @@ class WorkerProcess(ChainProcess):
             handle.terminate()
         finally:
             del handle._read_before_shutdown
+        if interrupted is not None:
+            raise interrupted
 
 
 def launch_worker(

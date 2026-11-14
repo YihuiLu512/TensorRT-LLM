@@ -1404,6 +1404,8 @@ def test_disagg_worker_on_a_given_port_keeps_it(fake, tmp_path):
 
 
 def test_killing_a_worker_kills_its_front_end_and_lets_its_engine_exit(fake, tmp_path, monkeypatch):
+    from openengine_chain import proof
+
     monkeypatch.setenv(cv.ENV_CHAIN, "trtllm")
     fake.env["FAKE_ENGINE_SAY"] = launch.TRANSCEIVER_STARTED_LINE
     config = {"cache_transceiver_config": {"backend": "DEFAULT"}}
@@ -1414,19 +1416,21 @@ def test_killing_a_worker_kills_its_front_end_and_lets_its_engine_exit(fake, tmp
     _record(fake.records, "frontend-start")
     engine = worker.handle.engine
     events = []
-    read = launch.ServeHandle._read_before_shutdown
 
-    def record_read(handle):
+    def read_counters(handle):
         events.append("read")
-        read(handle)
+        return proof.Counters(1, 1)
 
-    monkeypatch.setattr(launch.ServeHandle, "_read_before_shutdown", record_read)
+    monkeypatch.setattr(proof, "read_counters", read_counters)
+    monkeypatch.setattr(proof, "check_topology", lambda h: proof.Check(proof.OK, "ok"))
+    monkeypatch.setattr(proof, "read_engine_name", lambda h: "tensorrt_llm")
     frontend = worker.handle.frontend
     kill = frontend.kill
     monkeypatch.setattr(frontend, "kill", lambda: events.append("kill") or kill())
     worker.kill()
-    # Read once, before the front end got SIGKILL.
+    # Read once, before the front end got SIGKILL, and kept.
     assert events == ["read", "kill"]
+    assert worker.handle.final_counters == proof.Counters(1, 1)
     assert worker.poll() == -signal.SIGKILL
     # The front end got no SIGTERM; the engine got one and exited on it.
     assert not (fake.records / "frontend-term.json").exists()
@@ -1435,6 +1439,29 @@ def test_killing_a_worker_kills_its_front_end_and_lets_its_engine_exit(fake, tmp
     assert not worker.handle.alive
     assert not worker.handle.teardown_errors
     assert worker.wait(timeout=10) == -signal.SIGKILL
+
+
+def test_killing_a_worker_interrupted_while_reading_still_stops_it(fake, tmp_path, monkeypatch):
+    from openengine_chain import proof
+
+    monkeypatch.setenv(cv.ENV_CHAIN, "trtllm")
+    fake.env["FAKE_ENGINE_SAY"] = launch.TRANSCEIVER_STARTED_LINE
+    config = {"cache_transceiver_config": {"backend": "DEFAULT"}}
+    worker = launch.launch_worker(
+        [fake.exe, "/model"] + _worker(fake, tmp_path, config), env=fake.env
+    )
+    fake.handles.append(worker.handle)
+    _record(fake.records, "frontend-start")
+
+    def interrupt(handle):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(proof, "read_counters", interrupt)
+    engine = worker.handle.engine
+    with pytest.raises(KeyboardInterrupt):
+        worker.kill()
+    assert not worker.handle.alive
+    assert worker.handle.frontend.poll() is not None and engine.poll() is not None
 
 
 def test_disagg_engine_gets_a_kv_event_publisher(fake, tmp_path):
