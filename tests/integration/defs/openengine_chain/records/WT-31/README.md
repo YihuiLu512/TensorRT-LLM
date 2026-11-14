@@ -10,8 +10,9 @@ R10 ran the disaggregated-serving tests of the PoC plan (XD-001..XD-319, 149 pla
 - Source: `9b4022dd0dfe7581dd0580750d79f3261d7fc5be`, its Python files overlaid on the images
   `e17503-9fd3822a00-x86-sm100-cv2.ready.sqsh` (B200) and `e17503-9fd3822a00-x86-sm90-cv2.ready.sqsh`
   (Hopper), both built from `9fd3822a00`.
-- Drivers: `scripts/`. The reruns used them as committed here; the first run, including the
-  shards run again, used an earlier, unpushed version (frozen copy
+- Drivers: `scripts/`. The reruns used them as committed in `115ad0e039` (frozen copy
+  `/home/scratch.yihlu_coreai/tmp/20261113-wt31-r10/drivers/284da90b1b64d69390c75beec69add1b5dfa574a/`,
+  the same files); the first run, including the shards run again, used an earlier, unpushed version (frozen copy
   `/home/scratch.yihlu_coreai/tmp/20261113-wt31-r10/drivers/ed53945ee86f37c5f0d0e8de28723b3aa065b23b/`)
   that lacked the per-entry `timeout(1)`, `--src-rw`, `--clean-slurm-env` and some bookkeeping
   fixes.

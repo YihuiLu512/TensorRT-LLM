@@ -110,16 +110,23 @@ for index in range(actual):
 PYPROBE
 [[ $? == 0 ]] || fail 'CUDA probe failed'
 # Facts for the KV transfer path conclusion (DQ-24 / UV-08 / UV-75): topology, NICs, UCX transports.
+matching() { grep -E "$1" || echo '(no matching line)'; }
 {
     nvidia-smi topo -m
-    echo '--- /sys/class/net speed'
-    for n in /sys/class/net/*; do printf '%s %s\n' "${n##*/}" "$(cat "$n/speed" 2>/dev/null || echo na)"; done
+    echo '--- /sys/class/net speed operstate'
+    for n in /sys/class/net/*; do
+        printf '%s %s %s\n' "${n##*/}" "$(cat "$n/speed" 2>/dev/null || echo na)" "$(cat "$n/operstate" 2>/dev/null || echo na)"
+    done
     echo '--- ibstat'
-    command -v ibstat >/dev/null && ibstat 2>&1 | grep -E "^CA '|State:|Rate:|Link layer" || echo 'ibstat unavailable'
+    if command -v ibstat >/dev/null; then ibstat 2>&1 | matching "^CA '|State:|Rate:|Link layer"; else echo 'ibstat unavailable'; fi
+    echo '--- ibv_devinfo (ports)'
+    if command -v ibv_devinfo >/dev/null; then ibv_devinfo 2>&1 | matching 'hca_id:|port:|state:|link_layer:'
+    else echo 'ibv_devinfo unavailable'; fi
     echo '--- ucx_info -d (transports)'
-    command -v ucx_info >/dev/null && ucx_info -d 2>&1 | grep -E '^#\s+(Transport|Device):' || echo 'ucx_info unavailable'
-    echo '--- UCX/NIXL env'
-    env | grep -E '^(UCX_|NIXL_|TRTLLM_.*KV|TLLM_.*KV)' | sort
+    if command -v ucx_info >/dev/null; then ucx_info -d 2>&1 | matching '^#\s+(Transport|Device):'
+    else echo 'ucx_info unavailable'; fi
+    echo '--- UCX/NIXL/NCCL env and the Slurm cluster name (it selects the UCX rule of the tests)'
+    env | grep -E '^(UCX_|NIXL_|NCCL_|TRTLLM_.*KV|TLLM_.*KV|SLURM_CLUSTER_NAME=)' | sort
 } > "$NODE_DIR/transport-facts.txt" 2>&1
 if [[ $MODE == preflight ]]; then
     printf 'PREFLIGHT_COMPLETED %s; tests NOT RUN\n' "$(date -Is)"
