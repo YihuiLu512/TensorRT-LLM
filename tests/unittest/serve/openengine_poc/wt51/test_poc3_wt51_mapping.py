@@ -96,9 +96,10 @@ def test_a_generation_leg_sends_neither_its_type_nor_an_id():
             None,
             "disagg_request_id",
         ),
-        (DisaggregatedParams(request_type="prefill_please"), None, "request_type"),
+        # DisaggregatedParams refuses an unknown request_type itself.
+        (DisaggregatedParams(ctx_request_id=1), None, "request_type"),
     ],
-    ids=["generation-first", "undeclared-id", "id-out-of-range", "unknown-type"],
+    ids=["generation-first", "undeclared-id", "id-out-of-range", "no-type"],
 )
 def test_a_context_leg_the_engine_cannot_serve_is_refused(params, caps, match):
     with pytest.raises(ValueError, match=match):
