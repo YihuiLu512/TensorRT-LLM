@@ -16,6 +16,7 @@ if TOOLS not in sys.path:
 from capcommon import ledger  # noqa: E402
 from capcommon.hashing import sha256_file  # noqa: E402
 from capjudge import d14 as D14  # noqa: E402
+from capjudge import pilot as P  # noqa: E402
 
 ENV = dict(os.environ, PYTHONPATH=TOOLS, CAPKIT_CODE_SHA="b" * 40)
 
@@ -70,7 +71,15 @@ def test_pilot_from_good_sample(tmp_path):
     assert nb["T3:send_lag_p99_ns:capload"]["n"] == 4  # two workers x two tiers
     # the baseline tier's own normalised ratio is not a sample
     assert nb["T2:delivery_ratio_norm:capload"]["n"] == 1
-    assert d["window_ns"] is not None and d["inputs"][0]["tiers_used"] == [2, 4]
+    assert d["inputs"][0]["tiers_used"] == [2, 4]
+    # one arm, 4 s series: every lag statistic is inside its band only at L = 4 s, the full
+    # window, which is no finding (each full-window value is a band sample)
+    assert d["window_ns_by_arm"] == {"synthetic-a": None} and d["window_ns"] is None
+    assert d["window_search_by_arm"]["synthetic-a"] == {
+        "2": {"n_series": 4, "n_outside": 1}, "4": {"n_series": 4, "n_outside": 0},
+        "saturated_at_full_window": True}
+    assert d["warmup_ns_by_arm"] == {"synthetic-a": None} and d["warmup_ns"] is None
+    assert "window_search" not in d and "warmup_search" not in d
     # refuses to overwrite
     p2, _ = _pilot(tmp_path, W, ["%s\t2,4\n" % tree])
     assert p2.returncode == 3
@@ -251,3 +260,121 @@ def test_d14_trees_of_one_job_run_share_one_idle_reading():
     d = D14.conclude(rule, rec, two, {"t1": "2026-11-13T00:00:10.000Z",
                                       "t2": "2026-11-13T00:00:10.000Z"})
     assert d["irq_softirq_is_experiment"] is True and d["n_job_runs_complete"] == 2
+
+
+# ---- steady window and warm-up searched per arm (SM-16) ----------------------------------------
+
+NS = 10 ** 9
+BAND = {"min": -1, "max": 1, "n": 3}
+
+
+class _Ident:
+    def __init__(self, arm):
+        self.arm = arm
+
+
+class _Ctx:
+    def __init__(self, arm):
+        self.ident = _Ident(arm)
+
+
+class _Tier:
+    def __init__(self, seq, secs):
+        self.seq, self.start_ns, self.end_ns = seq, 0, secs * NS
+
+
+class _TD:
+    """A tier of one arm: its lag series (by key) and the warm-up threshold of its in-flight
+    series (seconds after which the series has no trend)."""
+
+    def __init__(self, seq, lag, secs=20, settle_s=0):
+        self.tier, self.lag, self.settle_s = _Tier(seq, secs), lag, settle_s
+
+    def roles_with(self, slot):
+        return ["r"] if slot == "loadgen.requests" else []
+
+    def rows(self, slot, role):
+        return {"td": self}, None
+
+
+def _used(monkeypatch, tiers):
+    """tiers: [(arm, _TD)]; _lag_series returns each tier's own series."""
+    monkeypatch.setattr(P, "_lag_series", lambda ctx, td: dict(td.lag))
+    for arm, td in tiers:
+        td.arm = arm
+    return [(_Ctx(arm), td) for arm, td in tiers]
+
+
+def _bands(*keys):
+    return {k: dict(BAND) for k in keys}
+
+
+Z6, Z10 = [0] * 6, [0] * 10
+SHORT_OUT_2_4 = [3, 0, 0, 0, 0, 0]  # T1 outside at L = 2, 4; inside at L = 6 (the full window)
+LONG_OUT_2_4 = [0, 4] + [0] * 8  # outside at L = 2, 4; inside from L = 6 on
+LONG_OUT_6 = [0, 0, 0, 0, 2, 2, 0, 0, 0, 0]  # outside at L = 6 only; inside at L = 8
+LONG_OUT_2 = [0, 4, 0, 4] + [0] * 6  # outside at L = 2; inside at L = 4
+
+
+def test_arms_of_different_lengths_are_searched_separately(monkeypatch):
+    # arm "short" (6 s) reaches zero only at its full window; arm "long" (10 s) at L = 8 s.
+    # Searched together, every series was cut to 6 s and no L reached zero (window None).
+    used = _used(monkeypatch, [
+        ("short", _TD(2, {"T1:q:x": SHORT_OUT_2_4})), ("short", _TD(4, {"T1:q:x": Z6})),
+        ("long", _TD(2, {"T1:q:x": LONG_OUT_2_4})), ("long", _TD(4, {"T1:q:x": LONG_OUT_6}))])
+    out = P.search_by_arm(used, _bands("T1:q:x"))
+    assert out["window_ns_by_arm"] == {"long": 8 * NS, "short": None}
+    assert out["window_search_by_arm"]["long"] == {
+        str(L): {"n_series": 2, "n_outside": 1} for L in (2, 4, 6)} | {
+        "8": {"n_series": 2, "n_outside": 0}}
+    assert out["window_search_by_arm"]["short"] == {
+        "2": {"n_series": 2, "n_outside": 1}, "4": {"n_series": 2, "n_outside": 1},
+        "6": {"n_series": 2, "n_outside": 0}, "saturated_at_full_window": True}
+    # an arm without a window has no warm-up either, and the top level needs every arm
+    assert out["warmup_ns_by_arm"]["short"] is None
+    assert out["warmup_search_by_arm"]["short"] == {}
+    assert out["window_ns"] is None and out["warmup_ns"] is None
+
+
+def test_one_arm_of_equal_lengths_keeps_the_old_search(monkeypatch):
+    used = _used(monkeypatch, [("a", _TD(2, {"T1:q:x": LONG_OUT_2})),
+                               ("a", _TD(4, {"T1:q:x": Z10}))])
+    bands = _bands("T1:q:x")
+    table = {"2": {"n_series": 2, "n_outside": 1}, "4": {"n_series": 2, "n_outside": 0}}
+    assert P._window_length(used, bands) == (4 * NS, table)
+    out = P.search_by_arm(used, bands)
+    assert out["window_ns"] == out["window_ns_by_arm"]["a"] == 4 * NS
+    assert out["window_search_by_arm"] == {"a": table}
+
+
+def test_series_of_unequal_lengths_in_one_arm_are_not_cut(monkeypatch):
+    used = _used(monkeypatch, [("a", _TD(2, {"T1:q:x": LONG_OUT_2})),
+                               ("a", _TD(4, {"T1:q:x": Z6}))])
+    out = P.search_by_arm(used, _bands("T1:q:x"))
+    assert out["window_ns_by_arm"] == {"a": None} and out["window_ns"] is None
+    assert out["window_search_by_arm"] == {"a": {"unequal_series_lengths": [6, 10]}}
+
+
+def test_warmup_uses_each_arms_own_window_and_the_top_level_takes_the_largest(monkeypatch):
+    calls = []
+
+    def inflight(rows, start, k):
+        td = rows["td"]
+        calls.append((td.arm, k))
+        if start >= td.settle_s * NS:
+            return [0] * k
+        return [0] * (k // 2) + [9] * (k - k // 2)
+
+    monkeypatch.setattr(P, "_inflight_from", inflight)
+    used = _used(monkeypatch, [
+        ("a", _TD(2, {"T1:q:x": LONG_OUT_2}, settle_s=1)),  # window 4 s
+        ("b", _TD(2, {"T1:q:x": LONG_OUT_2_4}, settle_s=2))])  # window 6 s
+    out = P.search_by_arm(used, _bands("T1:q:x", "T1:inflight_derived:r"))
+    assert out["window_ns_by_arm"] == {"a": 4 * NS, "b": 6 * NS}
+    assert {k for arm, k in calls if arm == "a"} == {4}
+    assert {k for arm, k in calls if arm == "b"} == {6}
+    assert out["warmup_ns_by_arm"] == {"a": 1 * NS, "b": 2 * NS}
+    assert out["warmup_search_by_arm"]["b"] == {
+        "0": {"n_series": 1, "n_outside": 1}, "1": {"n_series": 1, "n_outside": 1},
+        "2": {"n_series": 1, "n_outside": 0}}
+    assert out["window_ns"] == 6 * NS and out["warmup_ns"] == 2 * NS

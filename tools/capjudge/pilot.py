@@ -15,10 +15,9 @@ before the judge is VALID, both as the judge recorded it (verdicts.json launch_c
 LAUNCH-STATE PASS) and as STATE / launch_end.json read now: a launch that caplaunch or capjobs
 recorded VOID, ENV_INVALID or NOT_RUN never enters a noise band. The judge's own launch verdict
 is not required to be VALID (E0 trees are judged without noise bands, so it is NOT_RUN there).
-Raw data are re-read (via
-the same verified inputs) only for the steady-window and warm-up lengths and for the D14
-readings (capjudge.d14: idle window vs the used load tiers, decided by the registered rule
---d14-rule).
+Raw data are re-read (via the same verified inputs) only for the steady-window and warm-up
+lengths (searched per arm) and for the D14 readings (capjudge.d14: idle window vs the used load
+tiers, decided by the registered rule --d14-rule).
 """
 
 import argparse
@@ -182,11 +181,9 @@ def build(list_path, W, d14_rule_path):
         b = stats.t3_band(vals)
         if b is not None:
             bands[key] = dict(b, regime="subsat", unit=_unit(key), source_tiers=sources[key])
-    window_ns, window_table = _window_length(used, bands)
-    warmup_ns, warm_table = _warmup_length(used, bands, window_ns)
+    search = search_by_arm(used, bands)
     return {"schema": SCHEMA, "experiment": experiment, "environment": env, "inputs": inputs,
-            "noise_bands": bands, "window_ns": window_ns, "warmup_ns": warmup_ns,
-            "window_search": window_table, "warmup_search": warm_table,
+            "noise_bands": bands, **search,
             "drain_max_wait_ns": max(drain_waits) if drain_waits else None,
             "d13_switchinterval_s": {"values": sorted(v for v in switch if v is not None)}
             if switch else None,
@@ -199,17 +196,47 @@ def build(list_path, W, d14_rule_path):
                 "i2_calibration", "core_budget", "canary_band")}}
 
 
+def search_by_arm(used, bands):
+    """Steady-window and warm-up search done separately for each arm (the launch identity's
+    `arm`), so one arm's series are never cut to another arm's shorter window. The top-level
+    window_ns / warmup_ns are the largest per-arm value when every arm has one, else None."""
+    by_arm = {}
+    for ctx, td in used:
+        by_arm.setdefault(ctx.ident.arm, []).append((ctx, td))
+    out = {"window_ns_by_arm": {}, "warmup_ns_by_arm": {}, "window_search_by_arm": {},
+           "warmup_search_by_arm": {}}
+    for arm in sorted(by_arm):
+        win, win_table = _window_length(by_arm[arm], bands)
+        warm, warm_table = _warmup_length(by_arm[arm], bands, win)
+        out["window_ns_by_arm"][arm] = win
+        out["window_search_by_arm"][arm] = win_table
+        out["warmup_ns_by_arm"][arm] = warm
+        out["warmup_search_by_arm"][arm] = warm_table
+    for key in ("window_ns", "warmup_ns"):
+        vals = list(out[key + "_by_arm"].values())
+        out[key] = max(vals) if vals and None not in vals else None
+    return out
+
+
 def _window_length(used, bands):
     """Shortest whole-second steady window L (even, >= 2 s) for which the half-split difference
-    (T1) of every lag statistic of every included tier, computed on the first L seconds, lies in
-    that statistic's full-window noise band."""
+    (T1) of every lag statistic of every given tier (one arm), computed on the first L seconds,
+    lies in that statistic's full-window noise band.
+
+    The series must all have the same length (the arm's full window); otherwise there is no
+    common L and the result is None with `unequal_series_lengths` in the table. Reaching zero
+    only at L = the full window is no finding (each full-window value is itself a band sample):
+    None, with `saturated_at_full_window` in the table."""
     series = [(key, s) for ctx, td in used for key, s in _lag_series(ctx, td).items()
               if key in bands]
     if not series:
         return None, {}
-    longest = min(len(s) for _k, s in series)
+    lengths = sorted({len(s) for _k, s in series})
+    if len(lengths) != 1:
+        return None, {"unequal_series_lengths": lengths}
+    full = lengths[0]
     table = {}
-    for L in range(2, longest + 1, 2):
+    for L in range(2, full + 1, 2):
         outside = 0
         for key, s in series:
             res = stats.t1_trend(s[:L])
@@ -217,13 +244,17 @@ def _window_length(used, bands):
                 outside += 1
         table[str(L)] = {"n_series": len(series), "n_outside": outside}
         if outside == 0:
+            if L == full:
+                table["saturated_at_full_window"] = True
+                return None, table
             return L * NS, table
     return None, table
 
 
 def _warmup_length(used, bands, window_ns):
     """Smallest whole-second offset w from the tier start after which the derived in-flight
-    count shows no trend (T1 over [start + w, start + w + window) inside its band)."""
+    count of every given tier (one arm) shows no trend (T1 over [start + w, start + w + window)
+    inside its band), window being that arm's steady window."""
     if window_ns is None:
         return None, {}
     k = window_ns // NS

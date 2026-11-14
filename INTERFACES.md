@@ -812,6 +812,7 @@ E0 已知答案链上的消息由 capkit 自己产生，不是产品 protobuf，
 
 - 统计量键的写法：`<T 代号>:<量>:<对象>`，如 `T1:send_lag_p50_ns:capload`、`T2:loop_lag_p50_ns:relay1`。量与对象的完整清单由 B5 在 `capjudge` 的 README 里给出；判定器查不到某个键 → 对应检查 `NOT_RUN`（不是通过）。
 - `n` 是样本数；噪声带的名义误报率 1 ÷ (n + 1) 由读者算，不存。
+- `window_ns`、`warmup_ns` 按臂分别搜索，另有 `window_ns_by_arm`、`warmup_ns_by_arm`、`window_search_by_arm`、`warmup_search_by_arm`；顶层两项是各臂都有值时的最大值，否则 null（见勘误 SM-16）。
 - 「同一环境」：判定器核对 `environment.hw_profile_sha`、`image_sha` 与被判启动树的一致（不一致 → 该树 `INPUT_INVALID`，除非画像已按 DATA-AND-ANALYSIS §8.1 登记为可比，判定器在 `hw_gate.json` 里读这个登记）。
 
 ### 9.5 `<W>/submissions.tsv`（作业台账，B6 的 `capjobs.submit` 写）
@@ -1083,6 +1084,17 @@ E0 作业 5933747 的 L0（`e0a-nullsse`）启动 VALID、数据完整，判定�
 1. **§5.4.2 / §10.2 C7 的逐请求块行跨档合计**（补 §5.4 的归档规则在判定器一侧的用法）：对计划在本档、`req_id % chunk_sample_mod == 0`、成功完成的请求，块行数 = 本档的 `chunks` 文件里它的行数 + **紧接其后的清空档**的 `chunks` 文件里它的行数（`checks._chunk_rows` 的 `next_drain`），仍要求恰好等于每请求帧数。按规则 3（§3.2）负载档后面一定是清空档，清空门要求在途数归零才算过，所以合法的块行只可能落在这两档；再往后的档里的行不计入（缺了照旧 RED），清空档文件里不属于本档抽样请求的行不计入、也不算 stray。stray id 的口径不变：本档自己的文件里、不是「计划在本档的抽样请求」的行，一行一个 RED。C7 的 `detail` 另记「N rows of M sampled requests counted from tier <清空档>」。
 2. **同一根因的扫描**（「按请求的计划档取请求 × 按档文件数逐事件行」）：C7 是判定器里唯一按请求数逐事件行的检查。C5、C6 的跳值来自逐档自报（capload 的 `frames`、nullsse 的 `requests` / `frames_sent`、节拍源的 `msgs_sent`、中继的 `msgs_received` / `msgs_forwarded`、排空端的 `summary.msgs.msgs` 都按计划档计）或快照槽从本档开始到下一个清空档结束的增量，不受影响。未改、只登记：① `symptoms.msg_lag_from_chunks`（X2 消息层，`pilot._lag_series` 同）按 `req_id` 把本档的块行与本档的 `server.streams` 连接，块行若来自更早计划档的请求会记「chunk rows without a server stream」⇒ X2 该项 NOT_RUN；按规则 3 本档前一档是没有请求的清空档，只有请求跨过整个清空档才会出现，不改。② `msg_lag_from_chunks` 与 `msg_lag_from_msgs` 按计划时刻取窗口内的消息、只读本档文件：计划在窗口内、接收晚于本档结束（滞后 > `tail_ns`）的消息不在本档文件里，不进 X2 的逐秒序列（滞后极大时序列被截尾）。这是 X2 的灵敏度问题，不是 P 的计数口径，另案处理。③ 原有缺口：清空档不判（§10.2），清空档文件里的块行从不做 stray 核对。
 3. **验证**：`tests/judge/test_c7_chunk_rows.py`；把拷出的 J5933747 L0 树重判，第 4 档 C7 PASS（见 `_progress/fix-SM14.md`）。
+
+### SM-16 pilot 按臂搜索（2026-11-14）
+
+E0 第一轮的 pilot（`02_e0/E0/analysis/pilot.json`）定不出 `window_ns` / `warmup_ns`（`02_e0/SEAMS.md` SM-16）。原因：稳定窗口的搜索把全部臂的序列截到「全体最短」（e0b 各臂 20 s），e0a 的 30 s 序列在 L = 20 s 时仍是截断窗，有 3 条落在带外，没有任何 L 归零；预热依赖窗口，也随之为 null。按用户 2026-11-14 第三次值守前的答复（`00_plan/DECISIONS.md`「按臂搜索+补长窗口」），pilot 改为按臂分别搜索。噪声带的构成、T1 的算法、「落在带内」的判据都不变；格式版本号不变（`capkit.pilot/1`），字段有增删，见第 1、3 条。
+
+1. **§9.4 按臂搜索与新字段**：「臂」是启动身份里的 `arm`。每个臂只用本臂入选档的序列分别做稳定窗口搜索（`capjudge.pilot.search_by_arm`、`_window_length`）与预热搜索（`_warmup_length`，用本臂自己的窗口长度）。输出四个新字段，每臂一张表，表的格式与原 `window_search` / `warmup_search` 相同（`{"<L 或 w>": {"n_series", "n_outside"}}`）：`window_ns_by_arm`、`warmup_ns_by_arm`（`{arm: ns 或 null}`）、`window_search_by_arm`、`warmup_search_by_arm`（`{arm: 表}`）。原来全体一张的 `window_search` / `warmup_search` 不再输出。
+2. **同一臂内只在等长时比较**：同一臂的全部序列长度相同（本臂的全窗长度）才在同一 L 上比较；长度不一 ⇒ 该臂 `window_ns_by_arm[arm] = null`，表为 `{"unequal_series_lengths": [各长度]}`，不再截到臂内最短。不同长度的臂互不截断。
+3. **全窗归零不算找到**：某臂只在 L = 该臂全窗长度时才归零 ⇒ `window_ns_by_arm[arm] = null`，表里另加 `"saturated_at_full_window": true`。理由：噪声带就是各档全窗 T1 的 [min, max]，每条序列的全窗 T1 本身是带的一个样本，全窗归零是同义反复，不能当作找到了更短的稳态窗。窗口为 null 的臂预热也为 null（表为 `{}`）。搜索仍只取偶数秒 L；全窗长度为奇数秒时最大只搜到全窗减 1 秒，那一档归零照常算找到。
+4. **顶层 `window_ns` / `warmup_ns` 的口径**：所有臂的 `window_ns_by_arm`（或 `warmup_ns_by_arm`）都非 null 时取各臂的最大值，有任一臂为 null（或没有臂）就是 null。取最大值是让同一个窗口 / 预热长度对每个臂都够用；某臂没有结论时不拿其他臂的值代替。
+5. **行为变化**：判定器自测样本 `good`（单臂 `synthetic-a`，序列 4 s）原先在 L = 4 s 归零、得出 `window_ns = 4 s`、`warmup_ns = 0`；这正是第 3 条的全窗归零，现在两者都是 null（`saturated_at_full_window`）。单臂、等长、在短于全窗的 L 归零的情形，结果与原先逐字相同（`tests/judge/test_pilot.py::test_one_arm_of_equal_lengths_keeps_the_old_search`）。
+6. **验证**：`tests/judge/test_pilot.py` 新增 4 个测试（两臂不同长度：短臂全窗饱和、长臂在中间 L 归零；单臂等长回归；臂内不等长；预热用各臂自己的窗口、顶层取最大），修改 `test_pilot_from_good_sample`；变异与对 E0 正式输入的重跑见 `_progress/fix-SM16.md`。
 
 ## 审阅记录（r2，2026-11-13）
 
