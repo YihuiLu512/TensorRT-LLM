@@ -148,8 +148,9 @@ entries:
     result: failed
     chain_proof: incomplete
   # XD-014 ok, XD-059 ok, XD-208 failed
-  # XD-208: failed: the context engine runs out of GPU memory for the KV cache, as it also does
-  #   without the chain (openengine_chain/records/WT-31/r10_results.tsv)
+  # XD-208: failed: the context engine runs out of GPU memory for the KV cache; without the chain
+  #   the test also failed for lack of KV-cache memory, in the run recorded in
+  #   openengine_chain/records/WT-31/r10_results.tsv
   - row: F-34
     features:
     - F-34
@@ -213,10 +214,10 @@ entries:
     chain_proof: ok
   # XD-025 ok, XD-007 ok, XD-107 ok, XD-058 ok, XD-121 self-routed, XD-123 failed, XD-059 ok
   # XD-123: failed: no KV-cache event of the kind 'created' reaches the test, so it finds no block
-  #   pool size; the KV-event path through the chain is left to WT-53-fix2 (the test also fails
-  #   without the chain, at a later assertion: openengine_chain/records/WT-31/r10_results.tsv). Its
-  #   chain proof fails too: CH-3 finds one aggregated call to a generation engine as the only
-  #   engine call
+  #   pool size; the KV-event path through the chain is left to WT-53-fix2 (the test also failed
+  #   without the chain, at a later assertion, in the run recorded in
+  #   openengine_chain/records/WT-31/r10_results.tsv). Its chain proof fails too: CH-3 finds one
+  #   aggregated call to a generation engine as the only engine call
   - row: DG-19
     features:
     - DG-19
@@ -345,8 +346,8 @@ entries:
     chain_proof: incomplete
   # XD-055 ok, NT-009 cpu, XD-073 ok, XD-125 failed
   # XD-125: failed: the stress test's own harness cannot import its helper module
-  #   test_disaggregated; it does not run without the chain either
-  #   (openengine_chain/records/WT-31/r10_results.tsv)
+  #   test_disaggregated; it did not run without the chain either, in the run recorded in
+  #   openengine_chain/records/WT-31/r10_results.tsv
   - row: DG-38
     features:
     - DG-38
