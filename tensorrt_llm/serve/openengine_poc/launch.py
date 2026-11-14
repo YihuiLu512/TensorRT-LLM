@@ -65,6 +65,9 @@ def launch_openengine_server(
     control_timeout: float = DEFAULT_CONTROL_TIMEOUT_S,
     allow_newer_schema: bool = False,
     report_addr: str | None = None,
+    server_role: Any = None,
+    disagg_cluster_config: Any = None,
+    internal_disagg_auth_key: str | None = None,
 ) -> None:
     """Serve the OpenAI API from the engine at ``endpoint`` in this process.
 
@@ -73,7 +76,15 @@ def launch_openengine_server(
     engine; endpoints that need an in-process engine answer 501. With
     ``report_addr``, the socket is bound before the engine is awaited and the
     bound address is written to ``report_addr``, as the in-process server
-    does; ``port=0`` (the kernel picks the port) needs ``report_addr``.
+    does. ``port=0`` (the kernel picks the port) needs ``report_addr`` or
+    ``disagg_cluster_config``: the port is then bound before the engine is
+    awaited, and the frontend registers it with the disaggregated cluster.
+
+    ``server_role`` (a ``ServerRole``), ``disagg_cluster_config`` and
+    ``internal_disagg_auth_key`` make the frontend a disaggregated worker, as
+    for the in-process server: ``OpenAIServer`` registers with the cluster once
+    it serves, which is after the engine checks pass, and checks the
+    orchestrator's signatures with the key.
 
     Raises:
         click.UsageError: The configuration asks for something this frontend cannot do.
@@ -84,8 +95,10 @@ def launch_openengine_server(
     from tensorrt_llm.commands.serve import _apply_fastapi_middlewares, _publish_bound_address
     from tensorrt_llm.serve.openai_server import OpenAIServer
 
-    if port == 0 and not report_addr:
-        raise click.UsageError("--port 0 needs --report_addr to tell clients the port")
+    if port == 0 and not report_addr and disagg_cluster_config is None:
+        raise click.UsageError(
+            "--port 0 needs --report_addr or a disagg_cluster to tell clients the port"
+        )
     try:
         facade = OpenEngineLLM.from_llm_args(
             llm_args,
@@ -93,6 +106,7 @@ def launch_openengine_server(
             ready_timeout=ready_timeout,
             control_timeout=control_timeout,
             allow_newer_schema=allow_newer_schema,
+            server_role=server_role,
         )
     except ValueError as error:
         raise click.UsageError(str(error)) from error
@@ -101,23 +115,26 @@ def launch_openengine_server(
             generator=facade,
             model=served_model_name or llm_args["model"],
             tool_parser=tool_parser,
-            server_role=None,
+            server_role=server_role,
             metadata_server_cfg=None,
+            disagg_cluster_config=disagg_cluster_config,
             multimodal_server_config=multimodal_server_config,
             chat_template=chat_template,
             allow_request_chat_template=allow_request_chat_template,
             input_processor_workers=num_input_processor_workers,
             media_load_workers=num_media_load_workers,
+            internal_disagg_auth_key=internal_disagg_auth_key,
         )
         adapt_server(server, facade)
         _apply_fastapi_middlewares(server.app, middleware)
 
         sockets = None
-        if report_addr:
+        if report_addr or port == 0:
             sock = _bind(host, port)
             try:
                 port = sock.getsockname()[1]
-                _publish_bound_address(report_addr, host, port)
+                if report_addr:
+                    _publish_bound_address(report_addr, host, port)
             except BaseException:
                 sock.close()
                 raise

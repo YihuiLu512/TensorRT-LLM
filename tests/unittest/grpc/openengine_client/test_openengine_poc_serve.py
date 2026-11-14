@@ -1268,14 +1268,32 @@ def test_cli_launches_one_openengine_frontend_without_a_gpu(tmp_path) -> None:
     "args, name",
     [
         (["--grpc"], "--grpc"),
-        (["--server_role", "context"], "--server_role"),
-        (["--disagg_cluster_uri", "http://localhost:1"], "--disagg_cluster_uri"),
+        (["--metadata_server_config_file", "metadata.yaml"], "--metadata_server_config_file"),
         (["--enable_visual_gen"], "--enable_visual_gen"),
     ],
 )
 def test_cli_rejects_options_the_openengine_path_cannot_serve(tmp_path, args, name) -> None:
     with pytest.raises(click.UsageError, match=name):
         _run_cli(tmp_path, *args)
+
+
+@pytest.mark.parametrize(
+    "args, role, cluster_uri",
+    [
+        (["--server_role", "context"], "CONTEXT", None),
+        (
+            ["--server_role", "generation", "--disagg_cluster_uri", "http://localhost:1"],
+            "GENERATION",
+            "http://localhost:1",
+        ),
+    ],
+)
+def test_cli_accepts_the_disaggregated_worker_options(tmp_path, args, role, cluster_uri) -> None:
+    launch = _run_cli(tmp_path, *args)
+    kwargs = launch.call_args.kwargs
+    assert kwargs["server_role"].name == role
+    cluster = kwargs["disagg_cluster_config"]
+    assert (cluster and cluster.cluster_uri) == cluster_uri
 
 
 def test_cli_reports_the_sleep_mode_conflict_before_sleep_mode_checks(
@@ -1398,11 +1416,11 @@ def test_cli_rejects_a_diffusion_only_model(tmp_path) -> None:
         _run_cli(tmp_path, diffusion_only=True)
 
 
-def test_cli_rejects_a_disaggregated_cluster_in_the_config(tmp_path) -> None:
+def test_cli_accepts_a_disaggregated_cluster_in_the_config(tmp_path) -> None:
     config = tmp_path / "config.yaml"
     config.write_text("disagg_cluster:\n  cluster_uri: http://localhost:1\n")
-    with pytest.raises(click.UsageError, match="disagg_cluster"):
-        _run_cli(tmp_path, "--config", str(config))
+    launch = _run_cli(tmp_path, "--config", str(config), "--server_role", "context")
+    assert launch.call_args.kwargs["disagg_cluster_config"].cluster_uri == "http://localhost:1"
 
 
 # -- Facade: startup, engine loss, counting, metadata, endpoints ------------------

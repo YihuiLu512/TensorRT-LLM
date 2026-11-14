@@ -284,6 +284,7 @@ class OpenEngineLLM:
             stopping the process with SIGINT.
         postproc_workers: This frontend's share of ``num_postprocess_workers``,
             the size of its postprocessing pool; None for the whole of it.
+        server_role: The ``ServerRole`` the frontend serves as a disaggregated worker; None for none.
 
     Attributes:
         postproc_pool: The postprocessing pool, or None; set once, here, and
@@ -311,6 +312,7 @@ class OpenEngineLLM:
         health_poll_interval: float = HEALTH_POLL_SECONDS,
         on_engine_lost: Callable[[OpenEngineLLM], None] = _stop_frontend,
         postproc_workers: int | None = None,
+        server_role: Any = None,
     ) -> None:
         from tensorrt_llm.tokenizer import TransformersTokenizer
 
@@ -321,6 +323,7 @@ class OpenEngineLLM:
                 f"{type(tokenizer).__name__}"
             )
         self.args = args
+        self._server_role = server_role
         self.tokenizer = tokenizer
         self.input_processor = input_processor
         self._hf_model_dir = hf_model_dir
@@ -512,15 +515,20 @@ class OpenEngineLLM:
                 f"{CONVENTIONS_VERSION_KEY} is not an integer: serve={CONVENTIONS_VERSION} "
                 f"engine={reported!r}",
             )
-        if version is None:
+        # A disaggregated worker needs this version; without a role, an engine
+        # on version 3 (no disaggregated keys) still serves aggregated requests.
+        role = self._server_role
+        if version is None and role is None:
             logger.warning(
                 f"OpenEngine engine {info.engine_name!r} at {self._endpoint} reports no "
                 f"{CONVENTIONS_VERSION_KEY}; requests are checked against the capabilities it declares"
             )
-        elif version != CONVENTIONS_VERSION:
+        elif version != CONVENTIONS_VERSION and (role is not None or version != 3):
+            needed = "" if role is None else f"; a {role.name} worker needs {CONVENTIONS_VERSION}"
             raise self._startup_error(
                 "conventions version",
-                f"{CONVENTIONS_VERSION_KEY} differs: serve={CONVENTIONS_VERSION} engine={version}",
+                f"{CONVENTIONS_VERSION_KEY} differs: serve={CONVENTIONS_VERSION} "
+                f"engine={version}{needed}",
             )
         if not caps.supports_token_ids_input:
             raise self._startup_error(

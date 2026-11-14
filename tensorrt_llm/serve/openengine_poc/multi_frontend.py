@@ -91,7 +91,9 @@ def launch_frontends(config: FrontendLaunchConfig) -> None:
     """Start ``num_serve_frontends`` frontends for the engine and serve until they stop.
 
     A single frontend is served as by
-    :func:`~tensorrt_llm.serve.openengine_poc.contracts.default_launch_frontends`.
+    :func:`~tensorrt_llm.serve.openengine_poc.contracts.default_launch_frontends`,
+    or, as a disaggregated worker, by :func:`_serve_one_worker`. With several
+    frontends, only the launcher registers with the disaggregated cluster.
 
     Raises:
         click.UsageError: The configuration asks for something these frontends cannot do.
@@ -109,9 +111,59 @@ def launch_frontends(config: FrontendLaunchConfig) -> None:
     if launcher_uds is not None:
         _serve_attached(config, num_frontends, launcher_uds)
     elif num_frontends == 1:
-        contracts.default_launch_frontends(config)
+        if _is_worker(config):
+            _serve_one_worker(config)
+        else:
+            contracts.default_launch_frontends(config)
     else:
         _serve_launcher(config, num_frontends)
+
+
+def _is_worker(config: FrontendLaunchConfig) -> bool:
+    """Whether the frontend serves as a disaggregated worker."""
+    return any(
+        value is not None
+        for value in (
+            config.server_role,
+            config.disagg_cluster_config,
+            config.internal_disagg_auth_key,
+        )
+    )
+
+
+def _serve_one_worker(config: FrontendLaunchConfig) -> None:
+    """One frontend, in this process, as a disaggregated worker.
+
+    ``contracts.default_launch_frontends`` does not pass the worker fields on.
+    """
+    from . import launch
+
+    # Passed only when set, so the frontend's own defaults apply otherwise.
+    kwargs: dict[str, Any] = {}
+    if config.ready_timeout is not None:
+        kwargs["ready_timeout"] = config.ready_timeout
+    if config.control_timeout is not None:
+        kwargs["control_timeout"] = config.control_timeout
+    launch.launch_openengine_server(
+        config.host,
+        config.port,
+        config.llm_args,
+        config.endpoint,
+        tool_parser=config.tool_parser,
+        middleware=config.middleware,
+        chat_template=config.chat_template,
+        served_model_name=config.served_model_name,
+        allow_request_chat_template=config.allow_request_chat_template,
+        multimodal_server_config=config.multimodal_server_config,
+        num_input_processor_workers=config.num_input_processor_workers,
+        num_media_load_workers=config.num_media_load_workers,
+        report_addr=config.report_addr,
+        allow_newer_schema=config.allow_newer_schema,
+        server_role=config.server_role,
+        disagg_cluster_config=config.disagg_cluster_config,
+        internal_disagg_auth_key=config.internal_disagg_auth_key,
+        **kwargs,
+    )
 
 
 def _num_frontends(llm_args: dict[str, Any]) -> int:
@@ -367,6 +419,7 @@ def _build_frontend(
             ),
             allow_newer_schema=config.allow_newer_schema,
             postproc_workers=postproc_workers,
+            server_role=config.server_role,
         )
     except ValueError as error:
         raise click.UsageError(str(error)) from error
@@ -377,13 +430,16 @@ def _build_frontend(
             generator=facade,
             model=config.served_model_name or config.llm_args["model"],
             tool_parser=config.tool_parser,
-            server_role=None,
+            server_role=config.server_role,
             metadata_server_cfg=None,
+            # OpenAIServer registers only from the launcher.
+            disagg_cluster_config=config.disagg_cluster_config,
             multimodal_server_config=config.multimodal_server_config,
             chat_template=config.chat_template,
             allow_request_chat_template=config.allow_request_chat_template,
             input_processor_workers=config.num_input_processor_workers,
             media_load_workers=config.num_media_load_workers,
+            internal_disagg_auth_key=config.internal_disagg_auth_key,
             multi_frontend_serving=serving,
         )
         adapt_server(server, facade)

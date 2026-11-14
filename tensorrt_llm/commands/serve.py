@@ -1540,9 +1540,8 @@ def serve(
         conflicting = {
             "--grpc": grpc,
             "--enable_sleep_mode": enable_sleep_mode,
-            "--server_role": server_role,
+            # The frontend has no llm_id to register in the metadata server.
             "--metadata_server_config_file": metadata_server_config_file,
-            "--disagg_cluster_uri": disagg_cluster_uri,
             "--visual_gen_args": visual_gen_args,
             "--enable_visual_gen": enable_visual_gen,
             # The engine decodes the media; it has no carrier for these.
@@ -1778,16 +1777,6 @@ def serve(
         # Specify disagg_cluster_config in config file or through command line "--disagg_cluster_uri",
         # but disagg_cluster_uri takes precedence over cluster uri in config file
         disagg_cluster_config = llm_args.pop("disagg_cluster", None)
-        if openengine_endpoint is not None:
-            # The frontend refuses the options it cannot honour when it starts.
-            unsupported = {
-                "internal_request_auth_key": internal_disagg_auth_key,
-                "disagg_cluster": disagg_cluster_config,
-            }
-            used = [name for name, value in unsupported.items() if value]
-            if used:
-                raise click.UsageError(
-                    f"--openengine-endpoint does not support {', '.join(used)}")
         if disagg_cluster_config:
             disagg_cluster_config = extract_disagg_cluster_config(
                 disagg_cluster_config, disagg_cluster_uri)
@@ -1894,6 +1883,11 @@ def serve(
                         else openengine_metrics_port,
                         subagent_affinity_auth_key=internal_disagg_auth_key)
         elif openengine_endpoint is not None:
+            if server_role not in (None, ServerRole.CONTEXT,
+                                   ServerRole.GENERATION):
+                raise click.UsageError(
+                    "--openengine-endpoint serves --server_role CONTEXT or "
+                    f"GENERATION only, got {server_role.name}")
             try:
                 # Imported for its gRPC client dependencies, so a missing
                 # runtime fails here with the hint below.
@@ -1929,7 +1923,10 @@ def serve(
                     ready_timeout=openengine_ready_timeout,
                     report_addr=report_addr,
                     allow_newer_schema=openengine_allow_newer_schema,
-                    control_timeout=openengine_control_timeout))
+                    control_timeout=openengine_control_timeout,
+                    server_role=server_role,
+                    disagg_cluster_config=disagg_cluster_config,
+                    internal_disagg_auth_key=internal_disagg_auth_key))
         else:
             # Default: launch OpenAI HTTP server
             launch_server(
