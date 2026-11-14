@@ -1,0 +1,97 @@
+{
+ "arms": [
+  "e1c-http-ka",
+  "e1c-http-np",
+  "e1c-http-m"
+ ],
+ "calibration": [
+  {
+   "kind": "pilot",
+   "relpath": "02_e0/E0/analysis/pilot.json",
+   "sha256": "8e823f128a3c6104c3c6f4fdd8931c148f695ed9f2f8126bdc38b2b4464ea39a"
+  }
+ ],
+ "environment": {
+  "chassis_source": "slurm_view",
+  "gpus": 1,
+  "idle_busy_max_frac": 0.02,
+  "idle_window_s": 30,
+  "slurm_view_wait_s": 300
+ },
+ "expected": {
+  "job_budget": 5,
+  "launches_per_arm": 3
+ },
+ "experiment": "E1",
+ "files_by_arm": {
+  "e1c-http-ka": {
+   "prompts": {
+    "relpath": "03_calib/E1/register/e1c-http-ka.prompts.json",
+    "sha256": "7f0efb49efafb477c801b6a69bfc97e5baa32730e3d99e0488fd8bed81fa4678"
+   },
+   "scenario": {
+    "relpath": "03_calib/E1/register/e1c-http-ka.scenario.json",
+    "sha256": "64b9e6bb12695f25e255c8bfc0839e879e7fc6441c092781bf1f424c75fbeef4"
+   },
+   "schedule": {
+    "relpath": "03_calib/E1/register/e1c-http-ka.schedule.capbin",
+    "sha256": "27907b19b813caaeb0bbfaf41823f2470c80bcc54b1c93db3a7663e0aa1f4348"
+   },
+   "tier_table": {
+    "relpath": "03_calib/E1/register/e1c-http-ka.tiers.json",
+    "sha256": "af45bc70c10a1a11d1c1f2bcc08e607789676d7fb2f2b41ee4d30edd570d5b47"
+   }
+  },
+  "e1c-http-m": {
+   "prompts": {
+    "relpath": "03_calib/E1/register/e1c-http-m.prompts.json",
+    "sha256": "3aca6aa9cbbdffbcdeaf3ff2a1f31b35516b38763000592a95170d47acb218b1"
+   },
+   "scenario": {
+    "relpath": "03_calib/E1/register/e1c-http-m.scenario.json",
+    "sha256": "4f19395d8c6c4b0b6b54325d246d7e5f0c87c7a06f42be018f60b1754d667c07"
+   },
+   "schedule": {
+    "relpath": "03_calib/E1/register/e1c-http-m.schedule.capbin",
+    "sha256": "7f16398f32124fb92f075f4742a7295904207803cc76017ee46082485aaac64f"
+   },
+   "tier_table": {
+    "relpath": "03_calib/E1/register/e1c-http-m.tiers.json",
+    "sha256": "0d70854c6c8fbcb25b2a2f321156d000fb30b529076f822f1404919bb26c6a5a"
+   }
+  },
+  "e1c-http-np": {
+   "prompts": {
+    "relpath": "03_calib/E1/register/e1c-http-np.prompts.json",
+    "sha256": "7a1fee10c576828e9104b4be4eafbef798ec9a78ec1a9dfa103ba5f051c5cdd2"
+   },
+   "scenario": {
+    "relpath": "03_calib/E1/register/e1c-http-np.scenario.json",
+    "sha256": "538f3b7bda13fec51e9db198e80bc039f4f6224013771c796b37a9dc3680a311"
+   },
+   "schedule": {
+    "relpath": "03_calib/E1/register/e1c-http-np.schedule.capbin",
+    "sha256": "8aaad92503bf5ab75760570431e90b6c6fa2cfb8edfdae51e5ff97c0630138cb"
+   },
+   "tier_table": {
+    "relpath": "03_calib/E1/register/e1c-http-np.tiers.json",
+    "sha256": "25189383453681116030b8e1eded51f39e919f8555f46d77f3eb52f1d1bf8b48"
+   }
+  }
+ },
+ "inline_thresholds": {},
+ "judge": {
+  "checks": [
+   "C3",
+   "C5",
+   "C7",
+   "C9",
+   "C10",
+   "C11",
+   "C13"
+  ],
+  "mode": "P+X"
+ },
+ "purpose": "E1-0 (http): sub-saturation noise calibration for E1 roles ld/sink (stage-2 draft 1.2, D5/D21); one block (every arm once) per job, 3 jobs; noise bands built from these trees -> e1_noise.json (kind=near_boundary_noise); calibration = round-1 E0 pilot.json (D14, sidecar/canary bands); prompts synthetic token_ids (SM-7); chunk bytes per D7 (SSE 256 B, gRPC 64 B)",
+ "schema": "capkit.register/1"
+}

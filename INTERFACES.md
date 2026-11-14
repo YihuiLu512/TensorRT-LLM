@@ -779,7 +779,7 @@ E0 已知答案链上的消息由 capkit 自己产生，不是产品 protobuf，
 ```
 
 - `relpath` 一律相对 `<W>`。各臂的档位表 / 时间表不同时，不写 `files`，改写 `files_by_arm: {"<臂名>": {…与 files 同形…}}`；两个键恰好出现一个。
-- `calibration[].kind` ∈ `pilot`（E0 的 `pilot.json`）、`loadgen_band`（E1 的负载源健康带）、`stub_calib`（E2 的桩标定表）、`near_boundary_noise`（各实验第一步量的近边界噪声）。判定器**只**从这些文件与 `inline_thresholds`（仅 E0）读阈值，不接受命令行阈值（DATA-AND-ANALYSIS §4 第 6 条）。后三种的格式见 §9.6～§9.8；`loadgen_band`、`stub_calib` 的登记项另带必填的 `bind`，`judge` 段可另带 `near_boundary_tiers`（见勘误 B2-2A-1、B2-2A-2）。`judge.mode` 另有 `P+X+I+V`，该模式下可带 `localize`（见勘误 B2-2E-1、B2-2E-3）。
+- `calibration[].kind` ∈ `pilot`（E0 的 `pilot.json`）、`loadgen_band`（E1 的负载源健康带）、`stub_calib`（E2 的桩标定表）、`near_boundary_noise`（各实验第一步量的近边界噪声）。判定器**只**从这些文件与 `inline_thresholds`（仅 E0）读阈值（哪些文件仍是阈值源、`inline_thresholds` 的限制与新增的 `d14_result`、`arm_config`、`arm_threshold_config`、按臂 `ladder` 已改，见勘误 calib-v2-A2），不接受命令行阈值（DATA-AND-ANALYSIS §4 第 6 条）。后三种的格式见 §9.6～§9.8；`loadgen_band`、`stub_calib` 的登记项另带必填的 `bind`，`judge` 段可另带 `near_boundary_tiers`（见勘误 B2-2A-1、B2-2A-2）。`judge.mode` 另有 `P+X+I+V`，该模式下可带 `localize`（见勘误 B2-2E-1、B2-2E-3）。
 
 ### 9.3 `<W>/REGISTRY.tsv`（只追加）
 
@@ -791,13 +791,13 @@ E0 已知答案链上的消息由 capkit 自己产生，不是产品 protobuf，
 | `experiment` | 如 `E0` |
 | `relpath` | 相对 `<W>` |
 | `sha256` | 文件 sha |
-| `note` | 说明；以 `kind=<种类>;` 开头（`register`、`register_md`、`tier_table`、`schedule`、`prompts`、`scenario`、`pilot`、`loadgen_band`、`stub_calib`、`near_boundary_noise`、`prediction`、`hw_profile`；`d14_rule` 见勘误 R1b-4） |
+| `note` | 说明；以 `kind=<种类>;` 开头（`register`、`register_md`、`tier_table`、`schedule`、`prompts`、`scenario`、`pilot`、`loadgen_band`、`stub_calib`、`near_boundary_noise`、`prediction`、`hw_profile`；`d14_rule` 见勘误 R1b-4；calib-v2 新增的种类见勘误 calib-v2-A2 第 6 条） |
 
 用 `capcommon.ledger.registry_append(path, experiment, relpath, sha256, note)` 写（文件不存在则先写表头；同一 sha 已登记过则拒绝，提示用已有的那行；只用追加模式打开，从不重写）。查：`registry_lookup(path, sha256) -> 行 | None`。
 
 ### 9.4 `pilot.json`（E0 的试点产出，`schema: capkit.pilot/1`）
 
-由 B5 的 `capjudge.pilot` 从 E0 的亚饱和档构建；只从 `judge/` 输出与原始数据算，不手填。`d14_softirq` 的算法与形状见勘误 R1b-4。
+由 B5 的 `capjudge.pilot` 从 E0 的亚饱和档构建；只从 `judge/` 输出与原始数据算，不手填。（判定器已不把本格式当阈值源，登记了即 `INPUT_INVALID`，见勘误 calib-v2-A2 第 1 条。）`d14_softirq` 的算法与形状见勘误 R1b-4。
 
 ```json
 {"schema":"capkit.pilot/1","experiment":"E0",
@@ -869,8 +869,8 @@ E0 已知答案链上的消息由 capkit 自己产生，不是产品 protobuf，
 ```
 
 - 文件级 `regime` ∈ `subsat`、`near_boundary`，每个带的 `regime` 必须写出且与文件级相同。
-- 以 `capkit.pilot/1` 格式写的文件也接受登记为本类（RUNBOOK 阶段 2 的 D5：E1-0 的带由 `capjudge.pilot` 构建）：只读其 `noise_bands`，各带按自己的 `regime`（缺省 `subsat`）。
-- 本类可以登记多份（如一份 pilot 格式的 `subsat`、一份 `near_boundary`），每个 (键, regime) 仍只能有一个来源（勘误 B2-2A-1、B2-2A-2）。
+- 以 `capkit.pilot/1` 格式写的文件也接受登记为本类（RUNBOOK 阶段 2 的 D5：E1-0 的带由 `capjudge.pilot` 构建）：只读其 `noise_bands`，各带按自己的 `regime`（缺省 `subsat`）。（本类与本格式都已不是阈值源，登记了即 `INPUT_INVALID`，见勘误 calib-v2-A2 第 1 条；构建器照旧可用。）
+- 本类可以登记多份（如一份 pilot 格式的 `subsat`、一份 `near_boundary`），每个 (键, regime) 仍只能有一个来源（勘误 B2-2A-1、B2-2A-2）。（单份、多份都已不接受，见勘误 calib-v2-A2 第 1 条。）
 
 ## 10. 判定器的输入、输出与退出码
 
@@ -899,7 +899,7 @@ python3 -m capjudge --tree <启动树的路径> --workdir <W>
 - 几项检查的具体口径：
   - **C9**（绑核读回一致）：用 `sidecar/threads.jsonl` 窗口内的逐秒 `cpus_allowed` 与 `last_cpu`，与 `pin_table.json` 核对；应检条数 = 窗口秒数 × 登记线程数；任一行亲和集合与他角色的核相交、或越出本角色的核 ⇒ 红。
   - **C10**（版本自报）：`versions.check_versions`（§2.5）；不过 ⇒ 整次启动 `NOT_RUN`（不是红）。
-  - **C13**（线程清单与独占核集；辅助进程见勘误 R1-5）：前一半 = 启动时的线程清单与每档窗口始末的 `threads` 全部认出（§5.3）；后一半 = 对每个 `under_test` 角色的核集逐核算「`cpus.jsonl` 里窗口内的忙碌 tick（user+nice+system+irq+softirq+steal）− 绑在这些核上的已登记线程的 `utime + stime` 增量」，减去按 D14 结果（`pilot.json` 的 `d14_softirq`）认定属于本实验的软中断部分（只减 softirq，见勘误 R2-14），剩余超出噪声带 ⇒ 红；`pilot.json` 还没有 D14 结果时这一半记 `NOT_RUN`。
+  - **C13**（线程清单与独占核集；辅助进程见勘误 R1-5）：前一半 = 启动时的线程清单与每档窗口始末的 `threads` 全部认出（§5.3）；后一半 = 对每个 `under_test` 角色的核集逐核算「`cpus.jsonl` 里窗口内的忙碌 tick（user+nice+system+irq+softirq+steal）− 绑在这些核上的已登记线程的 `utime + stime` 增量」，减去按 D14 结果（`pilot.json` 的 `d14_softirq`）认定属于本实验的软中断部分（只减 softirq，见勘误 R2-14），剩余超出噪声带 ⇒ 红；`pilot.json` 还没有 D14 结果时这一半记 `NOT_RUN`。（D14 的来源已改为 `d14_result`，见勘误 calib-v2-A2 第 7 条。）
   - **GPU-IDLE**（启动级，CONSTRAINTS §2 第 4 条；检查号不用 `G1`，避免与设计稿的位点 G1 撞名）：应检条数 = 测量窗口秒数之和 × `gpu.jsonl` 头里的 `gpu_count`（已改，见勘误 R1-18）；`gpu_idle.json` 的阳性对照不过、`gpu_count` 为 0、或 `gpu.jsonl` 没有窗口内的行 ⇒ `NOT_RUN`；窗口内有任何 `query_rc ≠ 0` 的行也记 `NOT_RUN`；有任何 `util_pct > 0` 或非空的 `compute_pids` ⇒ 整次启动 `VOID`（`STATE` 写 VOID，并上报）（只算不属于本次启动的进程，见勘误 R2-15）。
 - 档的判定：前提 P 任一项 `RED` → `VOID`；任一项 `NOT_RUN` → `NOT_RUN`；P 全过时看 X：成立 → `UNSTABLE`，不成立 → `STABLE`；X 的主量与对账量方向矛盾 → `VOID`（设计稿 §2.6）。第一批只实现 P 与 X；I、V 是第二批，届时 `UNDETERMINED` 才会出现（已实现：模式 `P+X+I+V`，`UNDETERMINED` 的条件与新增输出见勘误 B2-2E-4）。清空档不判稳定性，只给 C11 的结果。
 - 判定器写完 `judge/` 之后在 `<tree>/STATE` 追加一行（`by = capjudge`，原因 = `launch_verdict` 与 `verdicts.json` 的 sha 前 12 位）。
@@ -1233,8 +1233,8 @@ E0 第一轮的 pilot（`02_e0/E0/analysis/pilot.json`）定不出 `window_ns` /
 
 新增三种标定文件格式（正文 §9.6～§9.8）与构建器；判定器的 C2、C4、C12 从「`NOT_IMPLEMENTED_BATCH2` ⇒ 该档 NOT_RUN」变为真正的检查。已有格式（档位表、时间表、登记表的其余段、`pilot.json`、判定器输出文件）版本号不变；登记表新增可选键，判定器输出新增字段，见各条。
 
-1. **§9.2 标定登记项与环境**：`calibration[]` 每项只许 `kind`、`relpath`、`sha256` 三个键，`loadgen_band`、`stub_calib` 另有**必填**的 `bind: {"<本实验的角色>": "<文件里的形态名>"}`（非空；形态名必须在文件里，否则 13；可以列别的臂的角色；本次启动没有被绑定的 `load_source` / `stub_out_of_domain` 角色，其 C1 / C2 项 NOT_RUN）。多余的键 ⇒ 13。每个标定文件按种类做格式校验（`capjudge.calib.validate`，§9.4、§9.6～§9.8）⇒ 不过即 13；**每一种**标定文件都核 `environment` 的 `hw_profile_sha`、`image_sha` 与本树一致（原先只核 `pilot`），不一致 ⇒ 13（CONSTRAINTS §4 第 2 条「只用于同一环境」）。`near_boundary_noise` 可以登记多份（同一 relpath 两次 ⇒ 13），其余种类仍只许一个文件。
-2. **§9.2 / §9.4 噪声带按档的 regime 选**（RUNBOOK §2.2 第 2 条；解决「同一个键不能有两份来源」）：每个噪声带属于一个 regime：`subsat`（亚饱和档上量的）或 `near_boundary`（近边界档上量的）；带上没有 `regime` 字段按 `subsat`。登记表的 `judge` 段新增可选的 `near_boundary_tiers: {"<臂>": ["<档标签>", …]}`（臂必须在 `arms` 里；标签必须是该臂档位表里的 `up` / `down` 档，否则 13）；列出的档是近边界档，其余负载档是亚饱和档。被判档只读**本 regime** 的带（X 的全部量、C13 第二半）：同一 (键, regime) 出现在两个文件里仍是 13；同一个键在两个文件里各属一个 regime 是允许的，所以 pilot、一份 `subsat` 的 `near_boundary_noise`（如 pilot 格式的 E1-0 `e1_noise`）与一份 `near_boundary` 的 `near_boundary_noise` 可以同时登记（RUNBOOK E1 正式臂、E2a）。**近边界档查不到近边界带时不退回亚饱和带，该项 NOT_RUN**：RUNBOOK 写的是「近边界档优先取 near_boundary_noise」，这里按 DATA-AND-ANALYSIS §4 第 6 条「近边界的档不沿用亚饱和档的噪声带」与设计稿 §2.6 T3 取严格读法（代价：近边界档要有覆盖其全部统计量的近边界带，否则判不了；样本 `regime_nb_missing`）。输出：`verdicts.json` 每个被判档加 `regime`；`inputs.json` 的 `band_lookups` 的键改为 `<regime>|<统计量键>`。
+1. **§9.2 标定登记项与环境**：`calibration[]` 每项只许 `kind`、`relpath`、`sha256` 三个键，`loadgen_band`、`stub_calib` 另有**必填**的 `bind: {"<本实验的角色>": "<文件里的形态名>"}`（非空；形态名必须在文件里，否则 13；可以列别的臂的角色；本次启动没有被绑定的 `load_source` / `stub_out_of_domain` 角色，其 C1 / C2 项 NOT_RUN）。多余的键 ⇒ 13。每个标定文件按种类做格式校验（`capjudge.calib.validate`，§9.4、§9.6～§9.8）⇒ 不过即 13；**每一种**标定文件都核 `environment` 的 `hw_profile_sha`、`image_sha` 与本树一致（原先只核 `pilot`），不一致 ⇒ 13（CONSTRAINTS §4 第 2 条「只用于同一环境」）。`near_boundary_noise` 可以登记多份（同一 relpath 两次 ⇒ 13），其余种类仍只许一个文件。（`near_boundary_noise` 已不接受，见勘误 calib-v2-A2 第 1 条。）
+2. **§9.2 / §9.4 噪声带按档的 regime 选**（RUNBOOK §2.2 第 2 条；解决「同一个键不能有两份来源」）：每个噪声带属于一个 regime：`subsat`（亚饱和档上量的）或 `near_boundary`（近边界档上量的）；带上没有 `regime` 字段按 `subsat`。登记表的 `judge` 段新增可选的 `near_boundary_tiers: {"<臂>": ["<档标签>", …]}`（臂必须在 `arms` 里；标签必须是该臂档位表里的 `up` / `down` 档，否则 13）；列出的档是近边界档，其余负载档是亚饱和档（带 `arm_config` 的登记表不许写本键，regime 改由该臂 `ladder.json` 的角色定，见勘误 calib-v2-A2 第 4 条）。被判档只读**本 regime** 的带（X 的全部量、C13 第二半）：同一 (键, regime) 出现在两个文件里仍是 13；同一个键在两个文件里各属一个 regime 是允许的，所以 pilot、一份 `subsat` 的 `near_boundary_noise`（如 pilot 格式的 E1-0 `e1_noise`）与一份 `near_boundary` 的 `near_boundary_noise` 可以同时登记（RUNBOOK E1 正式臂、E2a）。**近边界档查不到近边界带时不退回亚饱和带，该项 NOT_RUN**：RUNBOOK 写的是「近边界档优先取 near_boundary_noise」，这里按 DATA-AND-ANALYSIS §4 第 6 条「近边界的档不沿用亚饱和档的噪声带」与设计稿 §2.6 T3 取严格读法（代价：近边界档要有覆盖其全部统计量的近边界带，否则判不了；样本 `regime_nb_missing`）。输出：`verdicts.json` 每个被判档加 `regime`；`inputs.json` 的 `band_lookups` 的键改为 `<regime>|<统计量键>`。
 3. **§10.2 C1 改读 loadgen_band**：对每个 `load_source` 角色的每个 worker，按 `bind` 找到它的形态：① 被判档在形态的 `match` 里时，该 worker 的计划负载（档的总负载 × 时间表份额，单位取形态的 `load_key`）> `per_worker_max.value` ⇒ RED，但上界 `censored`（§9.6：只知道「不低于」）时超出它 ⇒ NOT_RUN（超出标定范围），不判 RED；不在 `match` 里、`value` 为 null、负载按该键算不出 ⇒ NOT_RUN；② 四个健康量（`T1:send_lag_p50_ns`、`T3:send_lag_p99_ns`、`T3:fionread_nonzero_frac`、`T3:loop_lag_p99_ns`，与原 C1 同一算法，`capjudge.calib.loadgen_worker_stats`）超出形态带的上界 ⇒ RED，值或带缺 ⇒ NOT_RUN。C1 **不再**读 `pilot.json` / `inline_thresholds` 里以 `T*:…:<负载器角色>` 为键的带（pilot 里这几个键仍会被写出，判定器不用）；没有登记 `loadgen_band` ⇒ C1 NOT_RUN（E0 第一轮重判时状态不变，只是原因措辞变了）。各档 `stats` 里记录的键不变。
 4. **§10.2 C2（域外桩部分）**：对每个 `stub_out_of_domain` 角色的每个 worker，按 `stub_calib` 的 `bind` 找形态：计划负载（档的总负载 ÷ worker 数，按 worker 均分；同一监听端口的实际分配不受计划控制；档的总负载当作桩的负载只在启动恰有一个 `kind: client` 角色时成立，否则或有角色缺 `kind` ⇒ 负载项 NOT_RUN，§9.7）对 `per_process_max`，`T3:loop_lag_p99_ns`（该 worker 摘要的 `loop_lag_ns` 直方图）与 `T3:thread_cpu_cores`（摘要 `identity.pid` 的全部线程，`capjudge.calib.stub_worker_stats`；有线程在窗口内只有一行 ⇒ 没有值）对形态的带，规则同第 3 条；worker 没有摘要 ⇒ RED。**C1、C2 的应检数按 `workers` 计**（每个 worker 一份摘要），不按 `expected_procs`（推翻 §10.2「应检进程数 = `expected_procs` 之和」：`expected_procs` 含不服务请求的父进程，如 e0a 的 nullsse 是 2 worker + 1 父进程，父进程没有摘要，按它计会让 C2 永远 NOT_RUN）。`stub_in_domain` 角色不进 P，只在明细里列出（自身需求表见 §9.7 `in_domain`，后续子批次）。设计稿 §2.6 / §2.7 C2 里的「积压所在的一侧」与「弱读者检验」**本条没有实现**：前者要读者侧在途数，归 2E 的 I3（`capjudge/localize.py`）；后者是 E2a 的实验步骤（RUNBOOK §1.5），见第 10 条。
 5. **§10.2 C4（每请求输出 token 数 = `max_tokens`）**：应检 = 时间表 `meta.per_tier` × `kind=client` 角色数（每个客户端角色跑整张时间表）。每个计划在本档的请求（`loadgen.requests` 的 `tier_seq` = 本档）的计数取负载器的 `tokens` 列（≥ 0 时不论请求状态都比：capload 把少出的请求记为 `short_output` 失败，C3 同时红）；负载器不计数（`-1`：`capgrpc.load` 一律写 -1，capload 没收到 usage 帧的失败请求写 -1）的**成功**请求（`status = 0`）取本档 `server.streams` 里同一 `req_id` 的 `tokens`。服务端记录只在 `req_id` 能唯一对应一条流时读：有请求需要回退，而启动的客户端角色多于一个（每个客户端角色跑整张时间表，`req_id` 会重复，别的客户端角色的同号流可能落在同一个服务端上，只有一个角色需要回退时也一样），或写流记录的服务端角色多于一个 ⇒ 这些请求不比、计 NOT_RUN。有计数且 ≠ `max_tokens` ⇒ RED；负载器不计数的失败请求只计为已检（由 C3 / X 处理），不读服务端记录：被取消或超时的流在服务端记的是中止前已发的 token 数，读它会把每个登记超时判成 RED；没有计数的成功请求、或有计划而没有记录的请求 ⇒ NOT_RUN。
@@ -1261,7 +1261,7 @@ E0 第一轮的 pilot（`02_e0/E0/analysis/pilot.json`）定不出 `window_ns` /
      - GIL 域的核数 ≥ `near_one_core_min`，偏移超过 `T2:gil_domain_cores:<角色>`，并且 GIL 线程的运行队列等待占比 `T2:gil_run_delay_frac:<角色>` 没有超出带上界；
      - 某一条非 GIL 线程（grpc_core / zmq_io / other）单独 ≥ `near_one_core_min`，且偏移超过 `T2:nongil_thread_cores:<角色>`。
    - **为什么同时要绝对门槛和相对基线的偏移**：设计稿要求「一律与亚饱和档比」。如果自旋线程在空载时就接近 1 核，只看绝对门槛会误判。
-   - **门槛来源**：`near_one_core_min` 来自 `pilot.json` 新增的可选键 `i1_calibration: {"near_one_core_min": (0, 1], "source_tiers": [...], "n": int ≥ 1}`，格式不对 ⇒ 13；缺这个键，或缺带、缺基线读数 ⇒ I1 NOT_RUN。
+   - **门槛来源**：`near_one_core_min` 来自 `pilot.json` 新增的可选键 `i1_calibration: {"near_one_core_min": (0, 1], "source_tiers": [...], "n": int ≥ 1}`，格式不对 ⇒ 13；缺这个键，或缺带、缺基线读数 ⇒ I1 NOT_RUN。（`pilot.json` 已不是阈值源，来源改为 pilot/2，见勘误 calib-v2-A2 第 7 条。）
    - **记录**：两种忙碌占比（每个单核核组一次）、GIL 域、运行队列、非 GIL 线程的偏移（每个多核核组里的每个进程一次）都逐档写进 `stats`，不论 pilot 有没有门槛或 D14 结论；这样 pilot 可以从它出现之前判过的树构建这些带。基线档本身的偏移按定义为 0，不记。
 3. **I3（积压在哪一侧）与 I2**：
    - **登记 I3 读数**：登记表 `judge.localize: {"readings": [{"name", "terms", "receiver", "sender"}]}`。`terms` 的写法与清空门读数相同（§8.1：只许 `backlog.*` 槽、本次启动的角色、`sign` 取 ±1、`agg` 取 sum / max）。`receiver`、`sender` 是本次启动的角色或 null，两者不能都为 null，也不能相同；`name` 必须唯一。两端计数之差（在途数）记作 receiver = 读者、sender = 发送方；一个角色自己的队列记作 receiver = 它、sender = null（设计稿 §2.4 的归因规则）。
@@ -1437,6 +1437,29 @@ R2 自审（slug `capkit-b2judge-J17871`）发现的问题已直接改进本子�
    - 第 8 条「与 `settle_r3.txt` 同种子的数一致」：存档只有 200 格的汇总，没有逐格结果；测试在同种子、同序列上逐格与 r3 的规则（Cornish-Fisher t95、TOL 0.6）比较 S_cell，6 种情形各 50 格全部相同。
    - 第 8 条的真实片段子窗部分属于 P2-12，本步没有做。
 5. **验证**：`tests/judge/test_stats_calibv2.py`（第 1、2、3、8（stats 部分）、11 条），`tests/judge/test_stats.py`、`tests/judge/test_calib.py`（第 41 条：`repro_b2.py` 的三例，外加跳过 VOID 档、等级区间不符、样本树上的构建器实跑）。变异与全量结果记在 `_progress/calibv2-a.md`。
+
+#### calib-v2-A2：阈值源（pilot/2 两种 stage、d14_result）、v1 标定与 inline_thresholds 拒收、arm_config / arm_threshold_config / ladder、按 ladder 角色定 regime、新 REGISTRY kinds（2026-11-15）
+
+1. **v1 标定文件不再是阈值源**（取代 §9.2「`calibration[].kind` ∈ … `near_boundary_noise`」中 v1 文件可作阈值源的部分、§9.4 作为阈值源的用法、§9.8 末两条、B2-2A-1「`near_boundary_noise` 可以登记多份」）：任何登记表（有没有 `arm_config` 都一样）的 `calibration[]` 里，kind `near_boundary_noise`（一份或多份；不读文件，先拒）或 kind `pilot` 而文件 schema 为 `capkit.pilot/1` ⇒ 13，`inputs.json` 的 `detail` 恰为 `v1 calibration is not a threshold source (calib-v2 erratum)`。
+   - 后果：引用 E0 第一轮 `pilot.json`（sha `8e823f12…`）的登记表（E1-0 两份）上的树，判定器、`pilot.select_tiers`、`e1report` 都得 13。E0 第一轮登记表 `calibration` 为空，照旧通过（`pilot2 d14` 取树要用它）。
+   - v1 构建器（`capjudge.pilot`、`capjudge.calib` 的三个子命令）照旧可用，`calib.validate` 照旧核对它们的输出；只是判定器不读。
+2. **阈值源 `capjudge.nullz`**（DESIGN-r7a P2-02、§3.2）：`calibration[].kind` 新增 `d14_result`；kind `pilot` 只接受 `capkit.pilot/2`。每种至多一份；格式不对 ⇒ 13；两种都核 `environment` 的 `hw_profile_sha`、`image_sha` 与本树一致（同 B2-2A-1，原因含 `calibration environment`），pilot/2 的 `environment` 另须有 `judge_sha`。
+   - `capkit.pilot/2` 共有：`stage` ∈ `thresholds`、`bootstrap`；`d14: {relpath, sha256}`；`c13_cap: {"T3:foreign_busy_frac": {window, launch_mean}}`（都 > 0）。同时登记了 `d14_result` 时，`d14.sha256` 必须等于它的 sha，否则 13。
+   - `stage: bootstrap`：`x_const: {lag: {z > 0, min_D_ns ≥ 0}, count: {z > 0}}`、`ratio_tol: {"T2:delivery_ratio_norm": {min_per_request: 整数 ≥ 1, tol ≥ 0}}`。其余字段（`rule`、`inputs`、`max_abs` 等）由 P2-09c 写，判定器不读。
+   - `stage: thresholds`：`window_ns`（整秒）；`null_z` 的键 `<T>:<量>:<角色>|<配置>|subsat 或 near|L=<秒>`（L 必须等于 `window_ns`），值 `family` ∈ `lag`、`count`，`uncalibrated` 为布尔，非 uncalibrated 时 `thr_lo ≤ thr_hi` 为数；`ratio` 的键 `T2:delivery_ratio_norm:<角色>|*|*`，值 `abs_tol ≥ 0`；`i1_calibration` 可选，格式同 B2-2E-2。
+   - `capkit.d14_result/1`：`rule: {relpath, sha256}`、`environment`（四个环境 sha）、`inputs` 列表、`d14_softirq` 带布尔 `irq_softirq_is_experiment`。
+   - 读法（供 P2-04、P2-05、P2-13 调用；本步没有调用方）：`get(统计量键, 配置, regime)`，regime 用判定器的 `subsat` / `near_boundary`（键里写作 `subsat` / `near`）。bootstrap 对任何配置与 regime 返回同一族值：滞后族 = T1 的 `req_first_lag_p50_ns`、`send_lag_p50_ns`、`msg_lag_p50_ns`；计数族 = T1 的 `inflight_derived` 与 `backlog.*`；比值 = `T2:delivery_ratio_norm`；其余键没有阈值。`compare(z, 项, D=…, planned_requests=…)`：`null_z` 与计数族、比值按严格 `>` / `<`；bootstrap 滞后族 `z ≥ z_lag 且 D ≥ min_D_ns` ⇒ above，不会 below；bootstrap 比值的容差 = max(`min_per_request` / 计划请求数, `tol`)；uncalibrated 键、没有项、没有值 ⇒ None（该项 NOT_RUN）。`cap(键)`、`d14()`、`i1_near()`（thresholds 的 `i1_calibration.near_one_core_min`）。
+   - 输出：`inputs.json` 新增 `thresholds`（每个源的 kind、relpath、sha256、schema、stage）与 `threshold_lookups`（`<键>|<配置>|<regime>` 或 `cap|<键>` → `found` / `missing` / `uncalibrated`）。
+   - 本步定下、设计稿没写死的两点：`null_z` 的 `family` 只认 `lag`、`count`，P2-14 给 I 键另定族名时要同时扩这里；thresholds 的比值容差不加 2/计划请求数的结构下限（设计稿只对 bootstrap 写了它）。
+3. **`arm_config` / `arm_threshold_config`**（DESIGN-r7a P2-03）：没有 `arm_config` 的登记表照 v1 读（不取配置、不读 ladder）；只有 `arm_threshold_config` ⇒ 13。有 `arm_config` 时它的键必须恰好是 `arms`（缺本臂、多出别的臂都 13），值是非空、不含 `|` 与 `*` 的配置名；`arm_threshold_config` 可选，缺省等于 `arm_config`，有则键集同样必须恰好是 `arms`。判定器取阈值只用 `arm_threshold_config[臂]`；`ladder.json` 的配置核对与 `verdicts.json` 用 `arm_config[臂]`。`verdicts.json` 顶层新增 `arm_config`、`arm_threshold_config`（本臂的两个配置名；v1 登记表为 null）。臂名不解析。
+   - **臂名的字符集**：`capcommon.identity.ARM_RE` 只许 `[A-Za-z0-9._-]`（首字符字母数字，≤ 64），DESIGN-r7a P2-03 的臂名约定 `<配置>@<block_id>.<slot>`、`<配置>@n<序号>` 含 `@`，照写的臂起不了树。生成臂名的一方（P2-07 / 各期登记表）要换成 `ARM_RE` 接受的写法；配置名不受此限（它不进树名与 identity）。
+4. **按臂的 `ladder.json` 与 regime**（取代 B2-2A-2 对 v2 登记表的用法）：有 `arm_config` 且用 `files_by_arm` 的登记表，`files_by_arm[臂]` 可多一个 `ladder`（kind `ladder`，与其余文件一样现算 sha、已登记且早于提交）；v1 登记表与 `files` 的键集不变。v2 登记表写 `judge.near_boundary_tiers`（即使为空）⇒ 13。
+   - `launch.json` 核对：caplaunch 既不读也不写 ladder（`launch.json` 没有这个键），所以它经登记表（identity 的 `register_sha`）绑定到启动，判定器另核它与本树档位表一致：schema `capkit.ladder/1`；`config` = `arm_config[臂]`；`levels[]` 的 `up_seq` 是 `up` 档、`down_seq` 是 `down` 档或 null；`near`、`cal`、`holds`、`slope` 是带整数 `seq` 的对象列表（键必须在，可为空）；`baseline_seq` 为整数或 null；每个被点名的档都是负载档、不被点名两次；每个负载档恰被一个角色点名。任一不符 ⇒ 13（`item` 为 `ladder.json`）。以后若要 caplaunch 把 ladder 记进 `launch.json`，届时再加逐字比较。
+   - regime：`levels`、`near` ⇒ `near_boundary`；`cal`、`baseline_seq` ⇒ `subsat`；`holds`、`slope` ⇒ `near_boundary`，且它们的 X 结论不进级合成与 b（由 P2-06 按 `ctx.tier_role` 处理，X 统计量照算，DESIGN-r7a §2.11.1 r7a 注）。`holds` / `slope` 取 `near_boundary` 是本步定的：§2.3 的 subsat 阈值只用于基线档与亚饱和档。v2 登记表的臂没有 ladder ⇒ 全部负载档 `subsat`。
+5. **`inline_thresholds`**：有 `arm_config` 的登记表 `inline_thresholds` 非空 ⇒ 13，`detail` 为 `inline thresholds are not a calibration file (CONSTRAINTS 4.2; calib-v2 r7)`；缺省或为空照常。v1 登记表照旧（仅 E0）。
+6. **REGISTRY 种类**（§9.3）新增 `errata`、`ladder`、`e0_params`、`e0_summary`、`d14_result`、`e0_list`、`job_plan`、`node_exclusions`、`node_list`。
+7. **过渡状态（SB-A 内）**：X（`symptoms`）、C13 第二半（`checks`）、I1（`localize`）仍读 `Bands` 与 pilot/1 的 `d14_softirq` / `i1_calibration`。pilot/1 被拒之后，只登记 v2 源的启动在 P2-04 / P2-05 之前 X 与 C13 第二半都 NOT_RUN；I1 的 `near_one_core_min` 与 D14 要到 P2-13（SB-C）改读 `nullz.i1_near()` / `d14()` 才回来。v1 登记表的 `inline_thresholds`（E0）照旧给 X 带。
+8. **样本与测试**：`samples/make_samples.py` 新增选项 `calib_v2`（d14_result + bootstrap 或 thresholds 的 pilot/2，代替 pilot/1）、`v2`（`arm_config`、`arm_threshold_config`、按臂 ladder、`near_boundary_tiers`）、`calibration_entries` / `calibration_files`（逐字照抄别的登记表的标定项与文件）、`arm`、`extra_arms`、`inline`、`near_boundary_tiers`；默认样本没有改，仍登记 pilot/1，所以自测样本与依赖它们的测试在本步得 13（第 7 条：要等 X 与 C13 改读 nullz 后才能把默认样本换成 v2 源；`input_calib_invalid`、`input_identity_mismatch` 的 13 现在先来自 pilot/1 被拒，换源后要复核它们原意的检查）。`samples/calibv2_real/` 放三份真实片段（E1-0 http 登记表、E0 第一轮 `pilot.json`、E0 第一轮登记表，来源与 sha 见其 `SOURCES.md`）。测试：`tests/judge/test_calibv2_sources.py`（第 17 条、第 25 条、第 34 条判定器一侧、第 22 条的 `inline_thresholds` 项、bootstrap 样本），`tests/judge/test_calib.py`（v1 接受改为拒收），`tests/capcommon/test_ledger_cli_runtree.py`（新种类）。实测与变异记录在 `_progress/calibv2-a.md`。
 
 ## 审阅记录（r2，2026-11-13）
 

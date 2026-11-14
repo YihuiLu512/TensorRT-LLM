@@ -20,3 +20,60 @@
   - 变异 r1（mut/r1/summary.txt）：未变异对照 128 passed；M01～M24 全部变红（FU-4 不计 UNDETERMINED、上限档改回 T4 下端、censored 改回 T4 kind、去掉等级区间核对、去掉非单调提示、tol_cell 常数 0.6 / r4 公式 / 去 Bonferroni、上界换点估计、任一候选通过、t 换正态、1.2533→1、n_eff→n_windows、rank→k、fold_rank 不缩放、补足乘数 1、q̂ 不截断、符号翻转 ≥→>、去计数下限、T5 门槛 7、ICC 上界不截 0、thr_hi 取小端、MAD=0 不回退 SD、kmax 放宽 γ）。
   - 与设计稿测试表的出入登记在 INTERFACES calib-v2-A1 第 4 条（L=20 的 z_d SD 1.08；TOL 0.1 时约 2/3 unconfirmed；(100 s, 20σ) 1/50 停在 300；r3 逐格比较代替汇总比较）。
   - 未做（NOT RUN）：第 8 条真实片段子窗部分（属 P2-12）；其余测试目录（本步只改 capjudge 与 tests/judge）。
+- 2026-11-15 06:17:51 SB-A-2 开工：读完 impl-steps 第 2 条、DESIGN-r7a §2.3、§2.11.1～2.11.3、§3.1 P2-02/P2-03、§3.2、§3.4、§3.5 第 17/22/25/34 条与 inputs/thresholds/calib/judge 现码。先写 capjudge/nullz.py，再改 inputs.py、ledger.py、judge.py。
+- 2026-11-15 06:20:57 nullz.py、inputs.py（arm_config / arm_threshold_config / ladder / v1 拒收 / inline 拒收）、ledger kinds、judge.py 记两种配置已写。跑一遍 tests/judge 看现有样本（全用 pilot/1）受影响面（约 6 分钟，后台）
+- 2026-11-15 06:34:21 测试写完（tests/judge/test_calibv2_sources.py 新文件；test_calib 改 v1 接受用例为拒收；ledger 新 kinds 测试；make_samples 加 v2 选项；samples/calibv2_real 三份真实片段）。单跑新测试文件（约 1～3 分钟）
+- 2026-11-15 06:38:18 新测试单跑 64 passed；test_calib+test_intervene 余 16 失败全是样本仍登记 pilot/1 ⇒ 判定器 INPUT_INVALID（预期）。后台跑变异 r2（22 项 + 未变异对照，逐个串行，约 15～20 分钟），期间写 INTERFACES 勘误
+- 2026-11-15 06:46:20 变异 r2：22 项中 21 项变红（对照见 r2b：judge 对照 11 failed 都是样本 pilot/1 的构建器用例；N01/N02 为 14，多出 3 条）；N19（ladder 登记成别的 kind 不报错）存活 ⇒ 补测试后 r2b 变红；N16 与 NONE 因两个测试目录 conftest 冲突收集出错，r2b 分目录重跑均变红 / 对照全过。改 thresholds.py docstring、capjudge README 加指引。跑全量 tests/judge（约 5 分钟，后台）
+- 2026-11-15 06:54:20 SB-A-2 收尾（P2-02 + P2-03），实测（MEASURED）：
+  - tests/judge：46 failed / 361 passed（logs/a2post，281 s）；改前（SB-A-1 收尾）343 passed。46 条逐条归因（脚本按回溯分类）：20 条回溯含「v1 calibration is not a threshold source」、17 条「has not been judged」（构建器 / 分析脚本读的样本树没判成）、3 条判定器退出 13、1 条 verdicts.json 不存在（test_pilot_refuses_verdicts_without_the_launch_state_check，同因）——全部是默认合成样本仍登记 capkit.pilot/1 ⇒ 判定器按 P2-02 拒收（INTERFACES calib-v2-A2 第 7、8 条）。名单：
+    - tests/judge/test_analysis.py::test_boundary_cli_writes_product_and_record
+    - tests/judge/test_analysis.py::test_boundary_keeps_the_judges_t4_next_to_the_cut_interval
+    - tests/judge/test_analysis.py::test_boundary_cli_excludes_a_launch_marked_void_after_judging
+    - tests/judge/test_analysis.py::test_boundary_cli_rejects_uncommitted_judgements
+    - tests/judge/test_analysis.py::test_e1_report_cli_sink_health_against_registered_bands
+    - tests/judge/test_calib.py::test_near_boundary_builder_tags_every_band_with_the_regime
+    - tests/judge/test_calib.py::test_near_boundary_builder_leaves_out_saturated_tiers[sat_overloaded_tier]
+    - tests/judge/test_calib.py::test_near_boundary_builder_leaves_out_saturated_tiers[i_conflict]
+    - tests/judge/test_calib.py::test_loadgen_band_builder
+    - tests/judge/test_calib.py::test_loadgen_band_builder_uses_stable_tiers_only
+    - tests/judge/test_calib.py::test_loadgen_band_maximum_is_measured_only_when_the_role_was_localised[i_reader_slow-False-capload]
+    - tests/judge/test_calib.py::test_loadgen_band_maximum_is_measured_only_when_the_role_was_localised[i_server_slow-True-nullsse]
+    - tests/judge/test_calib.py::test_shape_builder_leaves_out_undetermined_tiers
+    - tests/judge/test_calib.py::test_stub_calib_builder
+    - tests/judge/test_calib.py::test_shape_builder_never_leaves_a_launch_out_of_the_maximum
+    - tests/judge/test_calib.py::test_shape_builder_takes_the_tier_below_the_first_non_stable
+    - tests/judge/test_intervene.py::test_mode_p_x_writes_not_requested
+    - tests/judge/test_intervene.py::test_intervene_cli_on_a_judged_control_launch
+    - tests/judge/test_intervene.py::test_load_launch_uses_the_interval_cut_at_the_tool_limit
+    - tests/judge/test_intervene.py::test_intervene_excludes_launches_marked_void_after_judging
+    - tests/judge/test_intervene.py::test_intervene_cli_rejects_p_x_trees_and_globs
+    - tests/judge/test_judge_once.py::test_input_invalid_leaves_a_record_and_the_tree_stays_judgeable
+    - tests/judge/test_judge_once.py::test_second_judgement_is_refused_and_writes_nothing
+    - tests/judge/test_judge_once.py::test_exception_leaves_an_error_record_and_no_judge_dir
+    - tests/judge/test_judge_once.py::test_judge_dir_created_meanwhile_loses_the_race
+    - tests/judge/test_judge_once.py::test_ledger_row_added_meanwhile_loses_the_race
+    - tests/judge/test_judge_once.py::test_judge_never_improves_on_an_earlier_void
+    - tests/judge/test_judge_once.py::test_env_invalid_before_the_judge_stays_env_invalid
+    - tests/judge/test_judge_once.py::test_upstream_not_run_makes_every_tier_not_run
+    - tests/judge/test_judge_once.py::test_leftovers_in_launch_end_void_the_launch
+    - tests/judge/test_judge_once.py::test_no_state_line_before_the_judge_is_input_invalid
+    - tests/judge/test_judge_once.py::test_commit_interrupted_after_the_rename_is_completed_by_the_next_run[state]
+    - tests/judge/test_judge_once.py::test_commit_interrupted_after_the_rename_is_completed_by_the_next_run[ledger]
+    - tests/judge/test_judge_once.py::test_commit_of_a_live_writer_is_not_completed
+    - tests/judge/test_pilot.py::test_pilot_from_good_sample
+    - tests/judge/test_pilot.py::test_pilot_excludes_red_tier
+    - tests/judge/test_pilot.py::test_d14_true_from_idle_window_and_load_tiers
+    - tests/judge/test_pilot.py::test_d14_false_when_idle_softirq_is_not_close_to_zero
+    - tests/judge/test_pilot.py::test_d14_no_conclusion_without_the_idle_reading
+    - tests/judge/test_pilot.py::test_d14_rule_registered_after_the_data_gives_no_conclusion
+    - tests/judge/test_pilot.py::test_pilot_excludes_a_tree_recorded_void_before_the_judge
+    - tests/judge/test_pilot.py::test_pilot_excludes_a_tree_whose_state_turned_void_after_judging
+    - tests/judge/test_pilot.py::test_pilot_refuses_verdicts_without_the_launch_state_check
+    - tests/judge/test_pilot.py::test_d14_offline_core_makes_the_tier_reading_incomplete_not_a_crash
+    - tests/judge/test_selftest.py::test_generated_samples_pass
+    - tests/judge/test_selftest.py::test_committed_samples_pass
+  - 新测试 tests/judge/test_calibv2_sources.py 65 passed；tests/capcommon 191 passed；tests/jobs 221 passed；py_compile 209/0；fakebin.log 0 行。
+  - capjudge 样本自测（n=38）：35 个样本得 13（期望各自的退出码），即上面同一原因；empty_tree 照旧；三个本就期望 13 的样本退出码仍对，但 input_calib_invalid、input_identity_mismatch 现在先因 pilot/1 被拒而得 13（calibration[0] 在前），原意的检查被遮住，换源时要复核。
+  - 变异 r2 + r2b（mut/r2、mut/r2b/summary.txt）：22 项全部变红（N19 补测试后变红；N16 分测试目录后两边都红）；对照：judge 两文件 11 failed（都是 test_calib 的样本构建器用例，同上原因）/ 132 passed，ledger 9 passed。
+  - 未做（NOT RUN）：把默认样本换成 v2 源并更新期望（要等 SB-A-3 的 X / C13 改读 nullz）；I 相关样本要等 P2-13（SB-C）；tests/launch 等其余目录（本步未改其代码）。

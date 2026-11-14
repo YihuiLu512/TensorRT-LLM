@@ -20,6 +20,7 @@ if TOOLS not in sys.path:
 from capjudge import calib as K  # noqa: E402
 from capjudge import checks as CH  # noqa: E402
 from capjudge import inputs as I  # noqa: E402
+from capjudge import nullz as Z  # noqa: E402
 from capjudge import thresholds as T  # noqa: E402
 
 ENV = {"hw_profile_sha": "d" * 64, "image_sha": "e" * 64, "capkit_sha": "c" * 40,
@@ -134,26 +135,27 @@ def test_same_key_and_regime_twice_is_an_error():
         b.add_source("near_boundary_noise", "n", "b" * 64, _nb())
 
 
-def test_pilot_subsat_and_near_boundary_noise_files_register_together(monkeypatch, tmp_path):
-    # RUNBOOK E1 / E2a: the pilot, a subsat near_boundary_noise file (pilot format, built by
-    # capjudge.pilot) and a near_boundary one, all in one register
+def test_v1_pilot_and_near_boundary_noise_files_are_not_threshold_sources(monkeypatch,
+                                                                          tmp_path):
+    # calib-v2 (DESIGN-r7a P2-02): the register that used to load the pilot, a subsat
+    # near_boundary_noise file (pilot format) and a near_boundary one is now INPUT_INVALID,
+    # whichever of them comes first; a near_boundary_noise file is rejected alone, once or twice
     pilot = {"schema": K.PILOT_SCHEMA, "environment": dict(ENV),
              "noise_bands": {"T1:p_ns:r": dict(BAND)}}
     subsat = {"schema": K.PILOT_SCHEMA, "environment": dict(ENV),
               "noise_bands": {"T1:x_ns:r": dict(BAND, max=5)}}
-    ctx = _load_cal(monkeypatch, tmp_path, [_entry("pilot", "p"),
-                                            _entry("near_boundary_noise", "e1_noise"),
-                                            _entry("near_boundary_noise", "nb")],
-                    [pilot, subsat, _nb()])
-    assert ctx.bands.get("T1:x_ns:r", "subsat")["max"] == 5
-    assert ctx.bands.get("T1:x_ns:r", "near_boundary")["regime"] == "near_boundary"
-    assert ctx.bands.extras["pilot"] is ctx.calib_docs["pilot"]
-    assert sorted(ctx.bands.extras["near_boundary_noise"]) == ["e1_noise", "nb"]
-    assert sorted(ctx.calib_docs["near_boundary_noise"]) == ["e1_noise", "nb"]
-    # still one source per (key, regime), and the other kinds at most once
-    with pytest.raises(I.InputInvalid, match="defined by both"):
-        _load_cal(monkeypatch, tmp_path, [_entry("near_boundary_noise", "a"),
-                                          _entry("near_boundary_noise", "b")], [_nb(), _nb()])
+    for entries, docs in (
+            ([_entry("pilot", "p"), _entry("near_boundary_noise", "e1_noise"),
+              _entry("near_boundary_noise", "nb")], [pilot, subsat, _nb()]),
+            ([_entry("pilot", "p")], [pilot]),
+            ([_entry("near_boundary_noise", "e1_noise")], [subsat]),
+            ([_entry("near_boundary_noise", "nb")], [_nb()]),
+            ([_entry("near_boundary_noise", "a"), _entry("near_boundary_noise", "b")],
+             [_nb(), _nb("subsat")])):
+        with pytest.raises(I.InputInvalid, match=r"v1 calibration is not a threshold source "
+                                                 r"\(calib-v2 erratum\)"):
+            _load_cal(monkeypatch, tmp_path, entries, docs)
+    # Bands (loadgen_band / stub_calib sources): still one file per kind
     for kind, doc in (("pilot", pilot), ("loadgen_band", _loadgen())):
         b = T.Bands()
         b.add_source(kind, "one", "a" * 64, doc)
@@ -183,7 +185,8 @@ def _ctx(**kw):
     c = NS(launch={"hw_profile_sha": ENV["hw_profile_sha"], "image": {"sha256": ENV["image_sha"]},
                    "register": {"relpath": "r.json"}},
            ident=NS(experiment="E2a", arm="a", register_sha="f" * 64), bands=T.Bands(),
-           calib_docs={}, calib_bind={}, tier_regime={})
+           thresholds=Z.Thresholds(), calib_docs={}, calib_bind={}, tier_regime={},
+           config=None, threshold_config=None, ladder_path=None, tier_role={})
     c.__dict__.update(kw)
     return c
 
@@ -223,7 +226,6 @@ def test_bind_loads_and_shapes_resolve(monkeypatch, tmp_path):
     (_entry("loadgen_band", "l", bind={"ld": "s"}, note="x"), _loadgen()),  # unknown key
     (_entry("loadgen_band", "l", bind={"ld": "s"}),
      _loadgen(environment=dict(ENV, image_sha="0" * 64))),  # other environment
-    (_entry("near_boundary_noise", "n"), _nb(environment=dict(ENV, hw_profile_sha="1" * 64))),
     (_entry("stub_calib", "s", bind={"sink": "s"}), _stub(in_domain={"x": 1})),
 ])
 def test_bad_calibration_entries_are_input_invalid(monkeypatch, tmp_path, entry, doc):

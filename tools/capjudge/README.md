@@ -87,7 +87,7 @@
 | `T1:i3_backlog:<读数名>`、`T2:i3_backlog:<读数名>` | 登记的 I3 积压读数（`judge.localize`）逐秒序列的 T1、相对基线档的 T2 | I3 |
 | `T2:loop_lag_p50_ns:<角色>` | 事件循环延迟 p50 相对基线档的偏移 | I2（只作旁证） |
 
-阈值只来自登记表 `calibration` 里的标定文件与 E0 的 `inline_thresholds`（形状 `{"noise_bands": {键: {"min","max","n"}}}`）。噪声带（`pilot`、`near_boundary_noise`、`inline_thresholds` 的 `noise_bands`）按档的 regime 选：登记表 `judge.near_boundary_tiers` 列出的档只读 `regime: near_boundary` 的带，其余负载档只读 `subsat` 的带（带上没写按 `subsat`），近边界档不退回亚饱和带；同一 (键, regime) 出现在两个来源 ⇒ 13。查不到 ⇒ 用它的检查 NOT_RUN。C1、C2 的带不在 `noise_bands` 里，而在 `loadgen_band` / `stub_calib` 的形态里（按登记项 `bind` 取）。每种标定文件都核 `environment` 与本树一致。
+阈值只来自登记表 `calibration` 里的标定文件与 E0 的 `inline_thresholds`（形状 `{"noise_bands": {键: {"min","max","n"}}}`）。（calib-v2 起 `pilot/1`、`near_boundary_noise` 与 v2 登记表的 `inline_thresholds` 都不再是阈值源，阈值源改为 `capjudge.nullz` 读的 pilot/2 与 `d14_result`，见 INTERFACES 勘误 calib-v2-A2。）噪声带（`pilot`、`near_boundary_noise`、`inline_thresholds` 的 `noise_bands`）按档的 regime 选：登记表 `judge.near_boundary_tiers` 列出的档只读 `regime: near_boundary` 的带，其余负载档只读 `subsat` 的带（带上没写按 `subsat`），近边界档不退回亚饱和带；同一 (键, regime) 出现在两个来源 ⇒ 13。查不到 ⇒ 用它的检查 NOT_RUN。C1、C2 的带不在 `noise_bands` 里，而在 `loadgen_band` / `stub_calib` 的形态里（按登记项 `bind` 取）。每种标定文件都核 `environment` 与本树一致。
 
 ## 本包对其他组件文件的读取约定（INTERFACES 没写死、本包按此读；对应组件请对齐或提出）
 

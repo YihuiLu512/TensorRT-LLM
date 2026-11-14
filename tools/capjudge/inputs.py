@@ -20,13 +20,27 @@ from capcommon.runtree import STATE_VALUES, RunTree, read_state, worst_state
 from capcommon.snapshot import SnapshotError, read_snapshot_file
 from capcommon.tiers import TierTable, TierTableError
 
-from . import calib
-from .thresholds import MULTI_KINDS, BandError, Bands
+from . import calib, nullz
+from .thresholds import BandError, Bands
 
 LAUNCH_SCHEMA = "capkit.launch/1"
 REGISTER_SCHEMA = "capkit.register/1"
 REGISTER_FILE_KEYS = ("tier_table", "schedule", "prompts", "scenario")
-CALIB_KINDS = ("pilot", "loadgen_band", "stub_calib", "near_boundary_noise")
+# files_by_arm[<arm>] of a v2 register (one with arm_config) may also name the arm's ladder.json
+LADDER_FILE_KEY = "ladder"
+LADDER_SCHEMA = "capkit.ladder/1"
+# ladder.json role lists -> the tier regime (calib-v2 DESIGN-r7a 2.11.1, P2-03). holds and
+# slope tiers are judged and their X statistics computed, but their X conclusion is not used
+# (DESIGN-r7a 2.11.1 r7a note): they read near-boundary thresholds like the levels.
+LADDER_ROLE_REGIME = {"levels": "near_boundary", "near": "near_boundary", "cal": "subsat",
+                      "baseline": "subsat", "holds": "near_boundary", "slope": "near_boundary"}
+LADDER_SEQ_LISTS = ("near", "cal", "holds", "slope")
+# near_boundary_noise is listed so that its rejection names the v1 rule (nullz.V1_REJECTED).
+CALIB_KINDS = ("pilot", "loadgen_band", "stub_calib", "near_boundary_noise", "d14_result")
+# kinds read by capjudge.nullz (calibration v2 threshold sources); the shape kinds keep their
+# v1 reading (calib.validate, Bands)
+NULLZ_KINDS = nullz.KINDS
+INLINE_V2_REJECTED = "inline thresholds are not a calibration file (CONSTRAINTS 4.2; calib-v2 r7)"
 MEASURE_CLASSES = ("load_source", "stub_out_of_domain", "stub_in_domain", "under_test",
                    "observer")
 ROLE_KEYS = ("role", "workers", "expected_procs", "measure_class", "asyncio", "uses_grpc",
@@ -68,12 +82,17 @@ class Ctx:
         self.schedule_meta = None
         self.schedule_tier = None  # array('h'): planned tier of every req_id
         self.roles = {}  # role -> launch.json roles[] entry
-        self.bands = Bands()
-        # kind -> validated calibration document; a kind in thresholds.MULTI_KINDS (registered
-        # possibly more than once) -> {relpath: document}
-        self.calib_docs = {}
+        self.bands = Bands()  # loadgen_band / stub_calib sources and a v1 register's inline
+        self.thresholds = nullz.Thresholds()  # pilot/2 and d14_result (calibration v2)
+        self.calib_docs = {}  # kind -> validated calibration document
         self.calib_bind = {}  # kind in BIND_KINDS -> {role: shape}
         self.tier_regime = {}  # tier seq -> "subsat" / "near_boundary" (load tiers)
+        # register.json arm_config / arm_threshold_config of this arm (None: a v1 register)
+        self.config = None
+        self.threshold_config = None
+        self.ladder_path = None
+        self.ladder = None  # ladder.json of this arm (v2 register with files_by_arm ladder)
+        self.tier_role = {}  # load tier seq -> its ladder.json role (empty without a ladder)
         self.mode = None  # register.json judge.mode
         self.checks_applied = []
         self.submission = None
@@ -187,9 +206,19 @@ def _load_register(ctx):
     has_files, has_by_arm = "files" in doc, "files_by_arm" in doc
     if has_files == has_by_arm:
         raise InputInvalid("register.json", "exactly one of files / files_by_arm")
+    _load_arm_config(ctx, doc)
     files = doc["files"] if has_files else (doc["files_by_arm"] or {}).get(ctx.ident.arm)
-    if not isinstance(files, dict) or set(files) != set(REGISTER_FILE_KEYS):
-        raise InputInvalid("register.json", "files must have exactly %s" % (REGISTER_FILE_KEYS,))
+    v2_ladder = ctx.config is not None and has_by_arm and isinstance(files, dict) \
+        and LADDER_FILE_KEY in files
+    want = set(REGISTER_FILE_KEYS) | ({LADDER_FILE_KEY} if v2_ladder else set())
+    if not isinstance(files, dict) or set(files) != want:
+        raise InputInvalid("register.json", "files must have exactly %s%s" % (
+            REGISTER_FILE_KEYS, " (+ ladder in files_by_arm of a register with arm_config)"
+            if ctx.config is not None else ""))
+    if v2_ladder:
+        ctx.ladder_path = _registered_file(ctx, files[LADDER_FILE_KEY],
+                                           "register.files_by_arm.%s.ladder" % ctx.ident.arm,
+                                           kinds=(LADDER_FILE_KEY,))
     for k in REGISTER_FILE_KEYS:
         _registered_file(ctx, files[k], "register.files.%s" % k, kinds=(k,))
         lk = ctx.launch[k]
@@ -206,6 +235,10 @@ def _load_register(ctx):
     unknown = [c for c in judge["checks"] if c not in KNOWN_CHECKS]
     if unknown:
         raise InputInvalid("register.json", "unknown checks %s" % unknown)
+    if ctx.config is not None and "near_boundary_tiers" in judge:
+        raise InputInvalid("register.json", "judge.near_boundary_tiers is not read for a "
+                                            "register with arm_config: the regime of a tier "
+                                            "comes from its arm's ladder.json roles")
     nbt = judge.get("near_boundary_tiers", {})
     if not isinstance(nbt, dict) or any(
             a not in (doc.get("arms") or []) or not isinstance(v, list)
@@ -222,6 +255,34 @@ def _load_register(ctx):
     ctx.register_files = files
 
 
+def _arm_map(doc, key, arms):
+    m = doc.get(key)
+    if not isinstance(m, dict) or set(m) != set(arms) or not all(
+            isinstance(v, str) and v and "|" not in v and "*" not in v for v in m.values()):
+        raise InputInvalid("register.json", "%s must map exactly the arms of `arms` %s to "
+                                            "configuration names (non-empty, no '|' or '*')"
+                           % (key, sorted(arms)))
+    return m
+
+
+def _load_arm_config(ctx, doc):
+    """register.json arm_config / arm_threshold_config (calib-v2 DESIGN-r7a P2-03). Without
+    arm_config the register is read with v1 semantics (no configuration, no ladder). With it,
+    ctx.config = arm_config[arm] (ladder check, verdicts.json, batching) and
+    ctx.threshold_config = arm_threshold_config[arm] (default arm_config[arm]): the only
+    configuration thresholds are read for. Arm names are never parsed."""
+    arms = doc.get("arms") or []
+    ctx.config = ctx.threshold_config = ctx.ladder_path = None
+    if "arm_config" not in doc:
+        if "arm_threshold_config" in doc:
+            raise InputInvalid("register.json", "arm_threshold_config needs arm_config")
+        return
+    ac = _arm_map(doc, "arm_config", arms)
+    atc = _arm_map(doc, "arm_threshold_config", arms) if "arm_threshold_config" in doc else ac
+    ctx.config = ac[ctx.ident.arm]
+    ctx.threshold_config = atc[ctx.ident.arm]
+
+
 def _load_calibration(ctx):
     cal = ctx.register.get("calibration", [])
     if not isinstance(cal, list):
@@ -230,6 +291,8 @@ def _load_calibration(ctx):
         item = "register.calibration[%d]" % i
         if not isinstance(c, dict) or c.get("kind") not in CALIB_KINDS:
             raise InputInvalid(item, "kind must be one of %s" % (CALIB_KINDS,))
+        if c["kind"] == "near_boundary_noise":
+            raise InputInvalid(item, nullz.V1_REJECTED)
         allowed = CALIB_ENTRY_KEYS + (("bind",) if c["kind"] in BIND_KINDS else ())
         extra = sorted(set(c) - set(allowed))
         if extra:
@@ -239,6 +302,15 @@ def _load_calibration(ctx):
             doc = read_json(p)
         except (OSError, ValueError) as e:
             raise InputInvalid(item, str(e))
+        if c["kind"] in NULLZ_KINDS:
+            # calibration v2, by schema (nullz.validate): capkit.pilot/1 -> nullz.V1_REJECTED
+            try:
+                ctx.thresholds.add_source(c["kind"], c["relpath"], c["sha256"], doc)
+            except nullz.ThresholdError as e:
+                raise InputInvalid(item, str(e))
+            _check_env(ctx, doc, item)
+            ctx.calib_docs[c["kind"]] = doc
+            continue
         try:
             calib.validate(c["kind"], doc, item)
         except calib.CalibError as e:
@@ -250,11 +322,10 @@ def _load_calibration(ctx):
             ctx.bands.add_source(c["kind"], c["relpath"], c["sha256"], doc)
         except BandError as e:
             raise InputInvalid(item, str(e))
-        if c["kind"] in MULTI_KINDS:
-            ctx.calib_docs.setdefault(c["kind"], {})[c["relpath"]] = doc
-        else:
-            ctx.calib_docs[c["kind"]] = doc
+        ctx.calib_docs[c["kind"]] = doc
     inline = ctx.register.get("inline_thresholds")
+    if inline and ctx.config is not None:
+        raise InputInvalid("register.inline_thresholds", INLINE_V2_REJECTED)
     if inline:
         if ctx.ident.experiment != "E0":
             raise InputInvalid("register.inline_thresholds", "only E0 may use inline thresholds")
@@ -331,9 +402,20 @@ def _load_localize(ctx):
 
 
 def _load_tier_regimes(ctx):
-    """ctx.tier_regime for every load tier: near_boundary for the labels register.json
+    """ctx.tier_regime for every load tier.
+
+    v1 register (no arm_config): near_boundary for the labels register.json
     judge.near_boundary_tiers lists for this arm, subsat otherwise. A listed label must be an
-    up / down tier of this launch's tier table."""
+    up / down tier of this launch's tier table.
+    v2 register: from the roles of the arm's ladder.json (LADDER_ROLE_REGIME; ctx.tier_role
+    records each load tier's role); an arm without a ladder has every load tier subsat."""
+    if ctx.config is not None:
+        load = {t.seq: "subsat" for t in ctx.tt.tiers if t.kind in ("up", "down")}
+        if ctx.ladder_path is not None:
+            ctx.ladder, ctx.tier_role = _load_ladder(ctx)
+            load = {seq: LADDER_ROLE_REGIME[role] for seq, role in ctx.tier_role.items()}
+        ctx.tier_regime = load
+        return
     labels = (ctx.register["judge"].get("near_boundary_tiers") or {}).get(ctx.ident.arm, [])
     by_label = {t.label: t for t in ctx.tt.tiers}
     bad = [x for x in labels if x not in by_label or by_label[x].kind not in ("up", "down")]
@@ -342,6 +424,63 @@ def _load_tier_regimes(ctx):
                                             "tiers of the tier table" % (ctx.ident.arm, bad))
     ctx.tier_regime = {t.seq: "near_boundary" if t.label in labels else "subsat"
                        for t in ctx.tt.tiers if t.kind in ("up", "down")}
+
+
+def _is_seq(v):
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _load_ladder(ctx):
+    """Read and check the arm's ladder.json (capkit.ladder/1, calib-v2 DESIGN-r7a 3.4) against
+    this launch's tier table. Returns (document, {load tier seq: role}). Every up / down tier
+    must be named by exactly one role (levels up_seq / down_seq, near, cal, holds, slope, or
+    baseline_seq): a load tier no role names would have no regime."""
+    item = "ladder.json"
+    try:
+        doc = read_json(ctx.ladder_path)
+    except (OSError, ValueError) as e:
+        raise InputInvalid(item, str(e))
+    if not isinstance(doc, dict) or doc.get("schema") != LADDER_SCHEMA:
+        raise InputInvalid(item, "schema must be %s" % LADDER_SCHEMA)
+    if doc.get("config") != ctx.config:
+        raise InputInvalid(item, "config %r != register.json arm_config[%s] %r"
+                           % (doc.get("config"), ctx.ident.arm, ctx.config))
+    kinds = {t.seq: t.kind for t in ctx.tt.tiers}
+    named = []  # (seq, role, kind it must have or None for any load kind)
+    levels = doc.get("levels")
+    if not isinstance(levels, list) or not all(isinstance(lv, dict) for lv in levels):
+        raise InputInvalid(item, "levels must be a list of objects")
+    for lv in levels:
+        if not _is_seq(lv.get("up_seq")) or not (lv.get("down_seq") is None
+                                                 or _is_seq(lv.get("down_seq"))):
+            raise InputInvalid(item, "levels[] needs an int up_seq and an int or null down_seq")
+        named.append((lv["up_seq"], "levels", "up"))
+        if lv["down_seq"] is not None:
+            named.append((lv["down_seq"], "levels", "down"))
+    for role in LADDER_SEQ_LISTS:
+        lst = doc.get(role)
+        if not isinstance(lst, list) or not all(isinstance(e, dict) and _is_seq(e.get("seq"))
+                                                for e in lst):
+            raise InputInvalid(item, "%s must be a list of objects with an int seq" % role)
+        named += [(e["seq"], role, None) for e in lst]
+    base = doc.get("baseline_seq")
+    if base is not None:
+        if not _is_seq(base):
+            raise InputInvalid(item, "baseline_seq must be an int or null")
+        named.append((base, "baseline", None))
+    roles = {}
+    for seq, role, want in named:
+        k = kinds.get(seq)
+        if k not in ("up", "down") or (want is not None and k != want):
+            raise InputInvalid(item, "%s seq %d must be a %s tier of the tier table (kind %r)"
+                               % (role, seq, want or "load (up / down)", k))
+        if seq in roles:
+            raise InputInvalid(item, "seq %d named by both %s and %s" % (seq, roles[seq], role))
+        roles[seq] = role
+    unnamed = sorted(s for s, k in kinds.items() if k in ("up", "down") and s not in roles)
+    if unnamed:
+        raise InputInvalid(item, "load tiers %s are named by no ladder role" % unnamed)
+    return doc, roles
 
 
 def _load_tier_table_and_schedule(ctx):

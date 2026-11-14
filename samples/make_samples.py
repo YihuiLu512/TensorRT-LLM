@@ -103,6 +103,14 @@ LOADGEN_BANDS = {"T1:send_lag_p50_ns": (-20 * US, 20 * US), "T3:send_lag_p99_ns"
 STUB_BANDS = {"T3:loop_lag_p99_ns": (0, 2 * MS), "T3:thread_cpu_cores": (0.0, 0.5)}
 ENV = {"hw_profile_sha": HW_SHA, "image_sha": IMAGE_SHA, "capkit_sha": CODE_SHA,
        "baseline_sha": "2f22a98d6e"}
+ARM = "synthetic-a"
+# Calibration v2 sources (opts "calib_v2", calib-v2 DESIGN-r7a 3.2): a bootstrap pilot/2 carries
+# the r6 design constants (the floors of the registered bootstrap rule, DESIGN-r7a 2.11.3); a
+# thresholds pilot/2 carries one null_z key per listed configuration.
+BOOTSTRAP = {"x_const": {"lag": {"z": 10.0, "min_D_ns": 10 * MS}, "count": {"z": 10.705}},
+             "ratio_tol": {"T2:delivery_ratio_norm": {"min_per_request": 2, "tol": 0.02}}}
+C13_CAP = {"T3:foreign_busy_frac": {"window": 0.10, "launch_mean": 0.05}}
+NULL_Z_STAT = "T1:req_first_lag_p50_ns:capload"
 
 
 def shape_doc(bands, max_key, max_value):
@@ -121,6 +129,19 @@ def tier(seq, label, kind, start, ramp, window, tail, rate, baseline=False):
             "beat_ns": 20 * MS, "prompt_set": "tok8" if load else None, "inject": [],
             "gate": None, "baseline": baseline, "note": "synthetic",
             "load_value": float(rate) if kind in ("up", "down") else None}
+
+
+def ladder_doc(config, arm):
+    """capkit.ladder/1 (calib-v2 DESIGN-r7a 3.4) for the sample tier table: tier 2 (r20) the
+    baseline, tier 4 (r40) a one-pass ladder level."""
+    return {"schema": "capkit.ladder/1", "synthetic": True, "config": config, "arm": arm,
+            "c_lad": 40.0, "axis": "rate_rps", "h": 0.0025, "K": 1, "span_half": 0.0,
+            "passes": 1, "u": 0.0, "settle_ns": 0, "ramp_base_ns": S,
+            "seed": {"base": "synthetic", "block_id": None, "slot": None, "sha": "0" * 64},
+            "baseline_seq": 2,
+            "levels": [{"level": 1, "rho": 1.0, "load_value": 40.0, "up_seq": 4,
+                        "down_seq": None}],
+            "near": [], "cal": [], "holds": [], "slope": [], "drain_rule": {}}
 
 
 def tier_table_doc():
@@ -257,6 +278,7 @@ class Builder:
         os.makedirs(os.path.join(W, "register"))
         self.reg_n = 0
         self.job_id = "local-sample-%s" % name.replace("_", "-")
+        self.arm = opts.get("arm", ARM)
 
     def rel(self, *p):
         return os.path.join(*p)
@@ -310,22 +332,109 @@ class Builder:
                       "schedule": self.register_file(sc_rel, "schedule"),
                       "prompts": self.register_file(pr_rel, "prompts"),
                       "scenario": self.register_file(sn_rel, "scenario")}
-        pilot = self.register_file(pi_rel, "pilot")
-        calibration = [{"kind": "pilot", "relpath": pilot["relpath"],
-                        "sha256": pilot["sha256"]}] + self.build_stage2_calibration()
+        if self.opts.get("calibration_entries") is not None:
+            calibration = self.copied_calibration()
+        elif self.opts.get("calib_v2"):
+            calibration = self.build_v2_calibration()
+        else:
+            pilot = self.register_file(pi_rel, "pilot")
+            calibration = [{"kind": "pilot", "relpath": pilot["relpath"],
+                            "sha256": pilot["sha256"]}]
+        calibration += self.build_stage2_calibration()
         judge = {"mode": "P+X+I+V" if self.opts.get("ixv") else "P+X",
                  "checks": CHECKS_STUB if self.opts.get("stub_ood") else CHECKS}
         if self.opts.get("slow"):
             judge["localize"] = LOCALIZE
-        if self.opts.get("regime_nb") is not None:
-            judge["near_boundary_tiers"] = {"synthetic-a": ["up-r40"]}
+        if self.opts.get("regime_nb") is not None or self.opts.get("near_boundary_tiers"):
+            judge["near_boundary_tiers"] = {self.arm: ["up-r40"]}
         rg_rel = "register/register.json"
-        write_plain(os.path.join(W, rg_rel), {
-            "schema": "capkit.register/1", "experiment": "E0", "synthetic": True,
-            "arms": ["synthetic-a"], "files": self.files, "calibration": calibration,
-            "expected": {"launches_per_arm": 1, "job_budget": 0}, "judge": judge})
+        reg = {"schema": "capkit.register/1", "experiment": "E0", "synthetic": True,
+               "arms": [self.arm] + list(self.opts.get("extra_arms", [])), "files": self.files,
+               "calibration": calibration,
+               "expected": {"launches_per_arm": 1, "job_budget": 0}, "judge": judge}
+        if self.opts.get("v2") is not None:
+            self.v2_register(reg, judge)
+        if self.opts.get("inline") is not None:
+            reg["inline_thresholds"] = self.opts["inline"]
+        write_plain(os.path.join(W, rg_rel), reg)
         late = "2026-11-13T00:00:20.000Z" if self.opts.get("register_late") else None
         self.register = self.register_file(rg_rel, "register", registered_at=late)
+
+    def copied_calibration(self):
+        """opts calibration_entries = [register.calibration entries, verbatim] with
+        calibration_files = {relpath: source file}: each source is copied byte for byte to its
+        relpath in W and registered with the entry's kind (e.g. the E1-0 register's entry for
+        the round-1 pilot.json)."""
+        out = []
+        for e in self.opts["calibration_entries"]:
+            dst = os.path.join(self.W, e["relpath"])
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            with open(self.opts["calibration_files"][e["relpath"]], "rb") as f:
+                atomic_write_bytes(dst, f.read())
+            self.register_file(e["relpath"], e["kind"])
+            out.append(dict(e))
+        return out
+
+    def build_v2_calibration(self):
+        """opts calib_v2 = {"stage": "bootstrap" | "thresholds", "configs": [...] (thresholds:
+        configurations with a null_z key), "d14_env": {...} (environment overrides of
+        e0_d14.json), "d14": False (no d14_result)}: a registered d14_result and pilot/2
+        instead of the v1 pilot.json."""
+        W, cv = self.W, self.opts["calib_v2"]
+        rule_rel = "register/d14_rule.json"
+        write_plain(os.path.join(W, rule_rel), {"schema": "capkit.d14_rule/1", "synthetic": True})
+        rule = self.register_file(rule_rel, "d14_rule")
+        d14_rel = "register/e0_d14.json"
+        write_plain(os.path.join(W, d14_rel), {
+            "schema": "capkit.d14_result/1", "synthetic": True, "rule": rule,
+            "select": "capjudge.pilot.select_tiers",
+            "environment": dict(ENV, **cv.get("d14_env", {})), "inputs": [],
+            "d14_softirq": {"rule": None, "rule_file": None, "readings": {},
+                            "n_trees_complete": 0, "irq_softirq_is_experiment": True,
+                            "conclusion_reason": "synthetic"}})
+        d14 = self.register_file(d14_rel, "d14_result")
+        stage = cv.get("stage", "bootstrap")
+        doc = {"schema": "capkit.pilot/2", "experiment": "E0", "stage": stage,
+               "synthetic": True, "environment": dict(ENV, judge_sha="b" * 40),
+               "d14": dict(d14), "inputs": [], "c13_cap": C13_CAP}
+        if stage == "bootstrap":
+            doc.update(BOOTSTRAP, select="capjudge.pilot.select_tiers", rule="synthetic")
+        else:
+            doc.update(window_ns=60 * S, ratio={}, null_z={
+                "%s|%s|%s|L=60" % (NULL_Z_STAT, cfg, rg): {
+                    "family": "lag", "thr_hi": 3.0, "thr_lo": -3.0, "uncalibrated": False}
+                for cfg in cv.get("configs", []) for rg in ("subsat", "near")},
+                i1_calibration={"near_one_core_min": I1_NEAR_ONE, "source_tiers": [], "n": 1})
+        p2_rel = "register/pilot2.json"
+        write_plain(os.path.join(W, p2_rel), doc)
+        out = [dict(self.register_file(p2_rel, "pilot"), kind="pilot")]
+        if cv.get("d14", True):
+            out.append(dict(d14, kind="d14_result"))
+        return out
+
+    def v2_register(self, reg, judge):
+        """opts v2 = {"configs": {arm: config}, "threshold_configs": {arm: config} (optional),
+        "ladders": {arm: {ladder.json field overrides}} (arms with a ladder), "ladder_kind"
+        (REGISTRY kind of the ladder files, default ladder), "nbt": True (writes
+        judge.near_boundary_tiers)}: arm_config etc. and files_by_arm."""
+        v2 = self.opts["v2"]
+        reg["arm_config"] = dict(v2["configs"])
+        if v2.get("threshold_configs") is not None:
+            reg["arm_threshold_config"] = dict(v2["threshold_configs"])
+        if v2.get("nbt"):
+            judge["near_boundary_tiers"] = {self.arm: ["up-r40"]}
+        by_arm = {}
+        for arm in reg["arms"]:
+            files = dict(self.files)
+            over = (v2.get("ladders") or {}).get(arm)
+            if over is not None:
+                rel = "register/ladder.%d.json" % len(by_arm)
+                write_plain(os.path.join(self.W, rel), dict(
+                    ladder_doc(v2["configs"].get(arm), arm), **over))
+                files["ladder"] = self.register_file(rel, v2.get("ladder_kind", "ladder"))
+            by_arm[arm] = files
+        del reg["files"]
+        reg["files_by_arm"] = by_arm
 
     def build_stage2_calibration(self):
         """loadgen_band (always; C1), stub_calib (stub_ood samples; C2) and near_boundary_noise
@@ -368,7 +477,7 @@ class Builder:
         sub = os.path.join(self.W, "submissions.tsv")
         base = {c: "" for c in ledger.SUBMISSION_COLUMNS}
         base.update({"plan_id": "plan-" + self.name, "experiment": "E0",
-                     "arms": "synthetic-a", "launches": "1", "gpus": "0", "exclusive": "0",
+                     "arms": self.arm, "launches": "1", "gpus": "0", "exclusive": "0",
                      "basis": "synthetic judge self-test sample (local, no cluster)",
                      "mounts_json": "[]", "tokenizer_dir_sha256": "none",
                      "assertions_json": json.dumps({k: True for k in
@@ -384,7 +493,7 @@ class Builder:
 
     # ---- the launch tree ---------------------------------------------------------------------
     def ident(self, role, worker=0, pid=None, tier=None):
-        i = Identity(experiment="E0", arm="synthetic-a", launch_seq=0, job_id=self.job_id,
+        i = Identity(experiment="E0", arm=self.arm, launch_seq=0, job_id=self.job_id,
                      restart_count=0, register_sha=self.register["sha256"], role=role,
                      worker=worker, pid=pid)
         return i.with_tier(tier.seq, tier.label) if tier is not None else i
@@ -477,7 +586,7 @@ class Builder:
         return n
 
     def build_tree(self):
-        self.tree_rel = os.path.join("runs", tree_dir_name(self.job_id, 0, 0, "synthetic-a"))
+        self.tree_rel = os.path.join("runs", tree_dir_name(self.job_id, 0, 0, self.arm))
         self.T = RunTree(os.path.join(self.W, self.tree_rel)).make_skeleton()
         sc = os.path.join(self.W, self.files["schedule"]["relpath"])
         from capcommon.capbin import read_capbin

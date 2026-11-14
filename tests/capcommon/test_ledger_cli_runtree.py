@@ -38,6 +38,23 @@ def test_registry(tmp_path):
     assert lines[0] == "\t".join(ledger.REGISTRY_COLUMNS) and len(lines) == 2
 
 
+CALIB_V2_KINDS = ("errata", "ladder", "e0_params", "e0_summary", "d14_result", "e0_list",
+                  "job_plan", "node_exclusions", "node_list")
+
+
+def test_registry_takes_the_calibration_v2_kinds(tmp_path):
+    # calib-v2 DESIGN-r7a P2-02: the kinds E0 v2 registers
+    p = str(tmp_path / "REGISTRY.tsv")
+    for i, kind in enumerate(CALIB_V2_KINDS):
+        sha = "%064x" % (i + 1)
+        row = ledger.registry_append(p, "E0", "02_e0/E0/register/v2/%s" % kind, sha,
+                                     "kind=%s;calib-v2" % kind,
+                                     registered_at="2026-11-15T00:00:00.%03dZ" % i)
+        assert ledger.registry_kind(row) == kind
+    with pytest.raises(ledger.LedgerError, match="unknown registry kind"):
+        ledger.registry_append(p, "E0", "x", "f" * 64, "kind=ladders;")
+
+
 def _sub(**kw):
     row = {c: "" for c in ledger.SUBMISSION_COLUMNS}
     row.pop("event_at")

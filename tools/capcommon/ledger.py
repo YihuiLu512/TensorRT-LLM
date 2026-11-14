@@ -19,7 +19,10 @@ from .policy import (ASSERTION_KEYS, NO_MODEL_EXPERIMENTS, PREP_ASSERTION_KEYS,
 REGISTRY_COLUMNS = ("registered_at", "experiment", "relpath", "sha256", "note")
 REGISTRY_KINDS = ("register", "register_md", "tier_table", "schedule", "prompts", "scenario",
                   "pilot", "loadgen_band", "stub_calib", "near_boundary_noise", "prediction",
-                  "hw_profile", "d14_rule")
+                  "hw_profile", "d14_rule",
+                  # calibration v2 (calib-v2 DESIGN-r7a 3.1 P2-02, 3.2)
+                  "errata", "ladder", "e0_params", "e0_summary", "d14_result", "e0_list",
+                  "job_plan", "node_exclusions", "node_list")
 SUBMISSION_COLUMNS = ("event_at", "plan_id", "event", "job_id", "status", "reason", "experiment",
                       "arms", "launches", "basis", "account", "partition", "qos", "exclude",
                       "time_limit", "mem", "cpus_per_task", "gpus", "exclusive", "snapshot_dir",

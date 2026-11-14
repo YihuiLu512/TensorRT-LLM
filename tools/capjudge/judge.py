@@ -312,7 +312,8 @@ def _judge(tree, W, adir, log):
     write_json_stamped(os.path.join(adir, "inputs.json"), INPUTS_SCHEMA, ident, {
         "status": "OK", "code_sha": sha, "code_sha_source": how,
         "files_read": ctx.files_read, "calibration": ctx.bands.sources,
-        "band_lookups": ctx.bands.lookups, "checks_applied": ctx.checks_applied,
+        "band_lookups": ctx.bands.lookups, "thresholds": ctx.thresholds.sources,
+        "threshold_lookups": ctx.thresholds.lookups, "checks_applied": ctx.checks_applied,
         "identity_scan": ctx.identity_scan, "submission_submitted_at":
             ctx.submission["submitted_at"]})
     vpath = os.path.join(adir, "verdicts.json")
@@ -479,7 +480,9 @@ def _launch_verdict(ctx, tier_out, launch_res, launch_p, gpu_void):
     out = {"launch_verdict": lv, "exit_code": code, "tiers": tier_out,
            "upstream": up, "state_line": {"status": state, "reason": reason, "by": "capjudge"},
            "launch_checks": {r.check_id: r.status for r in launch_res},
-           "axis": ctx.tt.axis, "boundary_T4": boundary, "mode": ctx.mode, "batch": 2}
+           "axis": ctx.tt.axis, "boundary_T4": boundary, "mode": ctx.mode, "batch": 2,
+           # register.json arm_config / arm_threshold_config of this arm (null: v1 register)
+           "arm_config": ctx.config, "arm_threshold_config": ctx.threshold_config}
     if ctx.mode != "P+X+I+V":
         out.update(localisation_I=NOT_REQUESTED, intervention_V=NOT_REQUESTED,
                    grade=NOT_REQUESTED)
