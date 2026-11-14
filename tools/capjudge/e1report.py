@@ -15,16 +15,22 @@ Input is a capjudge.boundary product. Two parts:
         [(1/b.upper - 1/a.lower), (1/b.lower - 1/a.upper)] / (delta_b - delta_a) * W / p
     with W the dosed role's workers and p its passes per unit of load_value by construction
     (capcommon.expect on the launch's reconcile chain of the site's unit and the tier
-    parameters; load_key rate_rps or nominal_msgs_per_s). PASS: every pair closed and contains
-    1; FAIL: some pair's known end excludes 1; INCONCLUSIVE otherwise; fewer than 3 levels or
-    no usable p -> NOT_RUN.
+    parameters; load_key rate_rps or nominal_msgs_per_s). Per pair: FAIL when a known end
+    excludes 1; PASS when the interval is closed, contains 1 and its lower end is > 0 (an
+    interval that also holds 0 cannot tell slope 1 from "the dose did not move the boundary");
+    INCONCLUSIVE otherwise. Overall: FAIL if any pair fails, else INCONCLUSIVE if any pair is,
+    else PASS; fewer than 3 levels or no usable p -> NOT_RUN.
   * counts per launch (B, "计数真实性"): bytes the sink sent == bytes the load generator
     received, and connections the sink accepted == connections the load generator opened, at
     launch scope (sums over every tier directory; the tools attribute these to tiers by planned
     or by event time, which differ). HTTP: the sink's bytes include one response head per
     stream, capload's do not, so the heads are rebuilt from the sink's per-stream records with
     capload.sink.response_head. gRPC: payload bytes on both sides; nullgrpc does not count
-    accepts (NOT_RUN).
+    accepts (NOT_RUN). The sink counts bytes handed to its transport: more than the load
+    generator received is expected when requests failed, timed out or were unfinished there
+    (bytes in flight when the stream was dropped), so that case is NOT_RUN with the
+    difference; without such requests, and whenever the load generator received more, FAIL.
+    A counter missing from any summary leaves its item NOT_RUN (never summed as 0).
   * sink health (with --sink-bands; E1 "隔离": the sink's thread CPU and event-loop lag stay
     in their sub-saturation band): per load tier and sink worker, the C2 statistics against the
     bands `T3:loop_lag_p99_ns:<sink>` / `T3:thread_cpu_cores:<sink>` of a registered
@@ -97,10 +103,6 @@ def passes_per_unit(tree, W, role, site):
     return ps.pop(), None
 
 
-def _div(a, b):
-    return None if a is None or b in (None, 0) else a / b
-
-
 def slope(bdoc, W):
     out = {"status": NOT_RUN, "levels": [], "pairs": [], "excluded": [], "reasons": []}
     control, dosed = [], []
@@ -164,15 +166,15 @@ def slope(bdoc, W):
         for b in out["levels"][i + 1:]:
             ea, eb, dd = a["envelope"], b["envelope"], b["delta_s"] - a["delta_s"]
             k = w / p / dd
-            lo = (None if None in (_div(1, eb["upper"]), _div(1, ea["lower"]))
+            lo = (None if None in (stats.ratio(1, eb["upper"]), stats.ratio(1, ea["lower"]))
                   else (1 / eb["upper"] - 1 / ea["lower"]) * k)
-            hi = (None if None in (_div(1, eb["lower"]), _div(1, ea["upper"]))
+            hi = (None if None in (stats.ratio(1, eb["lower"]), stats.ratio(1, ea["upper"]))
                   else (1 / eb["lower"] - 1 / ea["upper"]) * k)
             if (lo is not None and lo > 1) or (hi is not None and hi < 1):
                 v = FAIL
-            elif lo is not None and hi is not None:
+            elif lo is not None and hi is not None and lo > 0:
                 v = PASS
-            else:
+            else:  # an open end, or the interval also holds 0: the dose may not have moved it
                 v = INCONCLUSIVE
             verdicts.append(v)
             out["pairs"].append({"from_delta_s": a["delta_s"], "to_delta_s": b["delta_s"],
@@ -184,16 +186,21 @@ def slope(bdoc, W):
 
 # ---- counts ------------------------------------------------------------------------------------
 
+def tier_dirs(tree):
+    """Names of the tree's tier directories (`NNN_<label>`), sorted; other entries of
+    raw/tiers (pre/) are not tiers."""
+    base = os.path.join(tree, "raw", "tiers")
+    return sorted(d for d in os.listdir(base) if d[:3].isdigit() and d[3:4] == "_"
+                  and os.path.isdir(os.path.join(base, d)))
+
+
 def _summaries(tree, role):
     """[(tier dir, worker, doc)] of every per-tier summary of `role` in the tree."""
-    base = os.path.join(tree, "raw", "tiers")
     out = []
-    for d in sorted(os.listdir(base)):
-        dp = os.path.join(base, d)
-        if not os.path.isdir(dp):
-            continue
+    pre = role + ".w"
+    for d in tier_dirs(tree):
+        dp = os.path.join(tree, "raw", "tiers", d)
         for f in sorted(os.listdir(dp)):
-            pre = role + ".w"
             if f.startswith(pre) and f.endswith(".summary.json"):
                 out.append((d, int(f[len(pre):-len(".summary.json")]),
                             read_json(os.path.join(dp, f))))
@@ -207,15 +214,23 @@ def _get(doc, path):
     return v
 
 
+def _sum(docs, path):
+    """(sum of the integer at `path` over the summaries, None) or (None, why) when one lacks
+    it (never counted as 0)."""
+    vals = [_get(d, path) for _t, _w, d in docs]
+    bad = [(t, w) for (t, w, _d), v in zip(docs, vals) if not isinstance(v, int)]
+    if bad:
+        return None, "%d summaries lack %s (first: %s w%s)" % (len(bad), ".".join(path),
+                                                                bad[0][0], bad[0][1])
+    return sum(vals), None
+
+
 def _head_bytes(tree, role):
     """(sum of response-head bytes rebuilt from the sink's stream records, None) or (None, why)."""
     from capload.sink import response_head  # noqa: PLC0415
-    base = os.path.join(tree, "raw", "tiers")
     total = rows = 0
-    for d in sorted(os.listdir(base)):
-        dp = os.path.join(base, d)
-        if not os.path.isdir(dp):
-            continue
+    for d in tier_dirs(tree):
+        dp = os.path.join(tree, "raw", "tiers", d)
         for f in sorted(os.listdir(dp)):
             if f.startswith(role + ".w") and f.endswith(".streams.capbin"):
                 try:
@@ -243,8 +258,7 @@ def counts(tree):
     c, s = cl[0], sv[0]
     out.update(client=c["role"], server=s["role"])
     cs, ss = _summaries(tree, c["role"]), _summaries(tree, s["role"])
-    n_tiers = sum(1 for d in os.listdir(os.path.join(tree, "raw", "tiers"))
-                  if d[:3].isdigit() and d[3:4] == "_")
+    n_tiers = len(tier_dirs(tree))
     short = ["%s: %d of %d per-tier summaries" % (r["role"], len(x), r["workers"] * n_tiers)
              for r, x in ((c, cs), (s, ss)) if len(x) != r["workers"] * n_tiers]
     if short:  # a missing summary would drop from both sums alike: never a PASS
@@ -252,10 +266,13 @@ def counts(tree):
         return out
     out["bytes"] = _bytes(tree, c, s, cs, ss)
     if s["module"] in HTTP_SINKS and c["module"] == "capload":
-        ca = sum(_get(d, ("conn_pool", "new_conns")) or 0 for _t, _w, d in cs)
-        sa = sum(_get(d, ("counts", "accepts")) or 0 for _t, _w, d in ss)
-        out["accepts"] = {"client_new_conns": ca, "server_accepts": sa,
-                          "status": PASS if ca == sa else FAIL}
+        ca, wc = _sum(cs, ("conn_pool", "new_conns"))
+        sa, wa = _sum(ss, ("counts", "accepts"))
+        out["accepts"] = {"client_new_conns": ca, "server_accepts": sa}
+        if wc or wa:
+            out["accepts"].update(status=NOT_RUN, why="; ".join(w for w in (wc, wa) if w))
+        else:
+            out["accepts"]["status"] = PASS if ca == sa else FAIL
     else:
         out["accepts"]["why"] = "%s does not count accepted connections" % s["module"]
     return out
@@ -266,26 +283,60 @@ def _bytes(tree, c, s, cs, ss):
     if cp is None or sp is None:
         return {"status": NOT_RUN, "why": "no byte counter for %s / %s" % (c["module"],
                                                                            s["module"])}
-    cb = [_get(d, cp) for _t, _w, d in cs]
-    sb = [_get(d, sp) for _t, _w, d in ss]
-    if not cb or not sb or None in cb or None in sb:
-        return {"status": NOT_RUN, "why": "a summary lacks the byte counter"}
-    res = {"client_bytes": sum(cb), "server_bytes": sum(sb), "head_bytes": 0}
+    cb, wc = _sum(cs, cp)
+    sb, ws = _sum(ss, sp)
+    if wc or ws:
+        return {"status": NOT_RUN, "why": "; ".join(w for w in (wc, ws) if w)}
+    res = {"client_bytes": cb, "server_bytes": sb, "head_bytes": 0}
     if s["module"] in HTTP_SINKS:
-        foreign = sum(_get(d, ("counts", "foreign_requests")) or 0 for _t, _w, d in ss)
-        reqs = sum(_get(d, ("counts", "requests")) or 0 for _t, _w, d in ss)
-        over = sum(_get(d, ("overflow", "streams")) or 0 for _t, _w, d in ss)
+        got = {}
+        for name, path in (("foreign", ("counts", "foreign_requests")),
+                           ("requests", ("counts", "requests")),
+                           ("overflow", ("overflow", "streams"))):
+            got[name], why = _sum(ss, path)
+            if why:
+                res.update(status=NOT_RUN, why="heads cannot be rebuilt: " + why)
+                return res
         hb, why = _head_bytes(tree, s["role"])
-        if foreign or over or hb is None or hb[1] != reqs:
+        if got["foreign"] or got["overflow"] or hb is None or hb[1] != got["requests"]:
             res.update(status=NOT_RUN, why="heads cannot be rebuilt: foreign %d, stream overflow "
-                       "%d, %s" % (foreign, over, why or "%s stream records for %d requests"
-                                   % (hb[1], reqs)))
+                       "%d, %s" % (got["foreign"], got["overflow"], why or "%s stream records for "
+                                   "%d requests" % (hb[1], got["requests"])))
             return res
         res["head_bytes"] = hb[0]
-    res["status"] = PASS if res["server_bytes"] - res["head_bytes"] == res["client_bytes"] \
-        else FAIL
+    diff = res["server_bytes"] - res["head_bytes"] - res["client_bytes"]
+    res["difference"] = diff
+    if diff == 0:
+        res["status"] = PASS
+    elif diff < 0:
+        res.update(status=FAIL, why="the load generator received %d bytes more than the sink "
+                   "sent" % -diff)
+    else:
+        res.update(_in_flight(cs, diff, c["module"]))
     return res
 
+
+# load-generator counters of requests that may leave sink bytes in flight (capgrpc.load
+# counts a request it gave up on as failed; it has no unfinished counter)
+FAILED_COUNTERS = {"capload": (("counts", "failed"), ("counts", "unfinished")),
+                   "capgrpc.load": (("counts", "failed"),)}
+
+
+def _in_flight(cs, diff, module):
+    """The sink sent `diff` > 0 bytes more than the load generator received: NOT_RUN when the
+    load generator had failed or unfinished requests (bytes in flight when they were dropped),
+    else FAIL."""
+    n = {}
+    for path in FAILED_COUNTERS.get(module, (("counts", "failed"),)):
+        n[path[-1]], why = _sum(cs, path)
+        if why:
+            return {"status": NOT_RUN, "why": "sink sent %d bytes more; %s" % (diff, why)}
+    failed, unfinished = n.get("failed", 0), n.get("unfinished", 0)
+    if failed or unfinished:
+        return {"status": NOT_RUN, "why": "sink sent %d bytes more; the load generator had %d "
+                "failed and %d unfinished requests (bytes in flight when dropped)"
+                % (diff, failed, unfinished)}
+    return {"status": FAIL, "why": "sink sent %d bytes more and no request failed" % diff}
 
 
 # ---- null-sink health --------------------------------------------------------------------------
@@ -345,6 +396,7 @@ def sink_health(tree, W, bands):
         out["status"] = ("OUTSIDE" if "OUTSIDE" in sts else NOT_RUN if NOT_RUN in sts
                          else "INSIDE")
     return out
+
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)

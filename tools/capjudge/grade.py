@@ -21,7 +21,8 @@ One launch (the judge): the first tier in load order that is not STABLE decides,
 VOID / NOT_RUN tiers whose RED checks are not only C1 / C2 (they widen the interval, they are
 listed). V is a cross-launch result, so the judge's grade never reaches CONFIRMED;
 capjudge.intervene combines the control launches' grades with V (final_grade). Granularity is
-the process (GIL domain); thread shares are reported, never a thread's limit.
+the process (GIL domain), or the core group when the localised processes share one core (the
+core is the reading; I's `granularity`); thread shares are reported, never a thread's limit.
 """
 
 MEASURED = ("under_test", "stub_in_domain")
@@ -67,14 +68,12 @@ def launch_grade(tiers, boundary):
         if i.get("status") == "LOCALIZED":
             cls = i.get("measure_class")
             out.update(role=i.get("role"), finding=i.get("finding"), via=i.get("via"),
-                       measure_class=cls, pids=i.get("pids"))
+                       measure_class=cls, pids=i.get("pids"),
+                       granularity=i.get("granularity") or "process")
             if cls in TOOLS:
                 return _lower(out, last_stable, "tier %d: I localised to %s (%s): the tool "
                               "saturated first" % (e["tier_seq"], i.get("role"), cls))
             out["grade"] = "LOCALIZED"
-        elif i.get("status") == "UNDETERMINED":
-            out["grade"] = "UNDETERMINED"
-            out["reasons"] += i.get("reasons") or []
         else:
             out["grade"] = "NOT_LOCALIZED"
             out["reasons"].append("tier %d: I %s" % (e["tier_seq"], i.get("status")))

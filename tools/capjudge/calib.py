@@ -332,8 +332,9 @@ def _same_env(env, ctx, tree):
 
 def build_near_boundary(list_path, W, regime):
     """Noise bands (T3 [min, max] of the judge's per-tier statistics) over the listed tiers,
-    every band tagged `regime`. Tiers with a RED check or a VOID / UNSTABLE verdict are left
-    out: a noise band is measured where nothing has reached its limit."""
+    every band tagged `regime`. Tiers with a RED check or a VOID / UNSTABLE / UNDETERMINED
+    verdict are left out: a noise band is measured where nothing has reached its limit
+    (UNDETERMINED: X held, the cause is undetermined)."""
     import os
     from . import pilot as P
     if regime not in REGIMES:
@@ -345,7 +346,7 @@ def build_near_boundary(list_path, W, regime):
     W = os.path.abspath(W)
     values, sources, inputs, env, experiment = {}, {}, [], None, None
     for tree, seqs in entries:
-        sel = _select(tree, seqs, W, ("VOID", "UNSTABLE"))
+        sel = _select(tree, seqs, W, NOISE_DROP)
         ctx, rec = sel["ctx"], sel["rec"]
         env = _same_env(env, ctx, tree)
         experiment = experiment or ctx.ident.experiment
@@ -375,6 +376,29 @@ def _select(tree, seqs, W, drop):
 
 
 SPLIT = {"loadgen_band": "schedule", "stub_calib": "even"}
+# verdicts a builder leaves out: a noise band only where nothing reached its limit; a shape only
+# from tiers that were judged stable
+NOISE_DROP = ("VOID", "UNSTABLE", "UNDETERMINED")
+SHAPE_DROP = NOISE_DROP + ("NOT_RUN",)
+
+
+def max_attribution(verdicts, role):
+    """Whether a launch's healthy maximum for `role` is a measured limit of that role: True
+    only when the launch's grade localised its first non-stable tier to `role` (I named it;
+    capjudge.grade sets `role` only then). Otherwise something else reached its limit first,
+    or nothing did, and the maximum is only a lower bound of the role's (censored).
+    Returns (uncensored?, {grade, role, why})."""
+    g = verdicts.get("grade")
+    if not isinstance(g, dict):
+        return False, {"grade": g, "role": None, "why": "launch judged without a grade (mode "
+                       "%s): nothing names the role that reached its limit" % verdicts.get("mode")}
+    att = {"grade": g.get("grade"), "role": g.get("role"), "tier_seq": g.get("tier_seq")}
+    if g.get("role") == role:
+        att["why"] = "the first non-stable tier was localised to %s" % role
+        return True, att
+    att["why"] = ("the first non-stable tier was localised to %s" % g.get("role")
+                  if g.get("role") else "no tier was localised (grade %s)" % g.get("grade"))
+    return False, att
 
 
 def build_shapes(kind, list_path, W):
@@ -382,8 +406,11 @@ def build_shapes(kind, list_path, W):
     health bands are T3 [min, max] of the per-worker statistics (loadgen_worker_stats /
     stub_worker_stats) over the listed STABLE tiers; the healthy maximum is, per launch, the
     busiest worker's planned load in the highest STABLE tier (verdicts.json boundary_T4
-    lower end), and over launches the smallest of those (the lower end of the T4 envelope);
-    `censored` when some launch never became UNSTABLE. `match` lists the (tokens_per_msg,
+    lower end), and over launches the smallest of those (the lower end of the T4 envelope).
+    It is `censored` (only "at least this") unless every contributing launch's grade
+    localised its first non-stable tier to the bound role (max_attribution; each input
+    records its attribution): a launch whose limit was reached elsewhere, or never, says
+    only that the role was healthy up to there. `match` lists the (tokens_per_msg,
     streams_c) of every tier that contributed; the judge applies the maximum only to matching
     tiers."""
     import os
@@ -394,7 +421,7 @@ def build_shapes(kind, list_path, W):
     W = os.path.abspath(W)
     acc, inputs, env, experiment = {}, [], None, None
     for tree, seqs, role, shape in entries:
-        sel = _select(tree, seqs, W, ("VOID", "UNSTABLE", "NOT_RUN"))
+        sel = _select(tree, seqs, W, SHAPE_DROP)
         ctx, rec = sel["ctx"], sel["rec"]
         env = _same_env(env, ctx, tree)
         experiment = experiment or ctx.ident.experiment
@@ -430,6 +457,7 @@ def build_shapes(kind, list_path, W):
                             {"tree": rec["tree"], "tier_seq": seq, "worker": k})
         b = sel["verdicts"].get("boundary_T4") or {}
         rec["boundary_T4"] = b
+        measured, rec["attribution"] = max_attribution(sel["verdicts"], role)
         if b.get("lower_seq") is not None:
             t = ctx.tt.tiers[b["lower_seq"]]
             loads = [worker_load(ctx, t, role, k, split, lk) for k in range(workers)]
@@ -437,8 +465,8 @@ def build_shapes(kind, list_path, W):
                 S["maxes"].append(max(loads))
                 S["tk"].add(t.tokens_per_msg)
                 S["sc"].add(t.streams_c)
-            if b.get("kind") == "lower_bound_only":
-                S["censored"] = True
+                if b.get("kind") == "lower_bound_only" or not measured:
+                    S["censored"] = True
     shapes = {}
     for shape, S in sorted(acc.items()):
         if not S["tk"]:
@@ -478,9 +506,12 @@ def main(argv=None):
         p.add_argument("--out", required=True)
         if name == "near-boundary":
             p.add_argument("--regime", required=True, choices=REGIMES)
+    from . import cmdrec
+    argv = list(sys.argv[1:] if argv is None else argv)
     a = ap.parse_args(argv)
-    if os.path.exists(a.out):
-        sys.stderr.write("capjudge.calib: refusing to overwrite %s\n" % a.out)
+    bad = cmdrec.refuse_existing(a.out)
+    if bad:
+        sys.stderr.write("capjudge.calib: %s\n" % bad)
         return 3
     try:
         if a.what == "near-boundary":
@@ -496,6 +527,9 @@ def main(argv=None):
         sys.stderr.write("capjudge.calib: %s\n" % e)
         return 3
     atomic_write_bytes(a.out, (dumps(doc) + "\n").encode("utf-8"))
+    cmdrec.write(a.out, "capjudge.calib", argv,
+                 [a.inputs] + [os.path.join(os.path.abspath(a.workdir), i["tree"], "judge",
+                                            "verdicts.json") for i in doc["inputs"]])
     print("wrote %s: %s" % (a.out, what))
     return 0
 

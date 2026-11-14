@@ -13,7 +13,7 @@ import sys
 import pytest
 from conftest import PKG, SAMPLES, TOOLS
 
-N_SAMPLES = 36  # entries of make_samples.SAMPLES + empty_tree (test_sample_table_size)
+N_SAMPLES = 38  # entries of make_samples.SAMPLES + empty_tree (test_sample_table_size)
 RUNNER = os.path.join(SAMPLES, "run_selftest.py")
 
 

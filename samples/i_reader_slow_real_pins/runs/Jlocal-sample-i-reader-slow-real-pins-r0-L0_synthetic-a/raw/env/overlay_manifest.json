@@ -1,0 +1,43 @@
+{
+ "base_commit": "2f22a98d6e",
+ "capkit_code_sha": "cccccccccccccccccccccccccccccccccccccccc",
+ "capkit_packages": [],
+ "created_wall": "synthetic",
+ "files": [],
+ "groups": [
+  "count"
+ ],
+ "image_commit": "synthetic",
+ "image_is_ancestor_of_target": true,
+ "non_python_changed": [],
+ "patchcheck": null,
+ "schema": "capkit.overlay/1",
+ "sites": {
+  "F2": {
+   "file": "synthetic",
+   "group": "count",
+   "lines": [
+    1
+   ],
+   "proc_kind": "frontend_openengine",
+   "slots": [
+    "count.F2.msgs"
+   ]
+  },
+  "W1": {
+   "file": "synthetic",
+   "group": "count",
+   "lines": [
+    1
+   ],
+   "proc_kind": "worker",
+   "slots": [
+    "count.W1.synthetic"
+   ]
+  }
+ },
+ "sites_selection": "all_sites_of_open_groups",
+ "target_commit": "synthetic",
+ "tier": "P2",
+ "unshipped_allowed": []
+}

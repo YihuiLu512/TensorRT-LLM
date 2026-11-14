@@ -5,21 +5,24 @@
 Computed per load tier in judge mode "P+X+I+V" from /proc readings and backlog readings, which
 are independent of X's sources (load generator and stub counts).
 
-I1 CPU, per registered process of every non-observer role, over the tier's steady window:
-  * the process's cores (roles.json procs[].cpus) must be exclusive (no other registered process
-    on any of them); per-core /proc/stat (sidecar cpus.jsonl) is the authority, thread
-    utime + stime (sidecar threads.jsonl) is the breakdown;
-  * one core ("single_core"): holds iff the core's busy fraction >= near_one_core_min AND its
-    offset from the same launch's baseline tier is above its band. Softirq ticks count as busy
-    only when the pilot's D14 result says they are the experiment's work: the statistic is
-    `T2:core_busy_frac_softirq:<role>` then, `T2:core_busy_frac:<role>` (softirq left out)
-    otherwise. Both are recorded on every tier whatever the pilot says, so a pilot can be built
-    from trees judged before it existed;
-  * several cores ("multi_core"): the GIL domain (threads of class python, summed) holds iff
-    its cores >= near_one_core_min, its offset is above `T2:gil_domain_cores:<role>` and the
-    run-queue wait of those threads did not rise (`T2:gil_run_delay_frac:<role>` not above);
-    or one thread outside the GIL (grpc_core / zmq_io / other, each alone) holds iff its cores
-    >= near_one_core_min and its offset is above `T2:nongil_thread_cores:<role>`.
+I1 CPU, per core group of every non-observer role, over the tier's steady window:
+  * a core group is the role's registered processes whose roles.json procs[].cpus intersect (a
+    parent and the workers pinned to the role's core set are one group); its cores must not be
+    shared with a registered process of another role (else NOT_RUN). Per-core /proc/stat
+    (sidecar cpus.jsonl) is the authority and is read per group; thread utime + stime (sidecar
+    threads.jsonl) is the breakdown, and the GIL domain is per process (one GIL each);
+  * one core ("single_core", one unit per group): holds iff the core's busy fraction >=
+    near_one_core_min AND its offset from the same launch's baseline tier is above its band.
+    Softirq ticks count as busy only when the pilot's D14 result says they are the
+    experiment's work: the statistic is `T2:core_busy_frac_softirq:<role>` then,
+    `T2:core_busy_frac:<role>` (softirq left out) otherwise. Both are recorded on every tier
+    whatever the pilot says, so a pilot can be built from trees judged before it existed;
+  * several cores ("multi_core", one unit per process of the group): the process's GIL domain
+    (threads of class python, summed) holds iff its cores >= near_one_core_min, its offset is
+    above `T2:gil_domain_cores:<role>` and the run-queue wait of those threads did not rise
+    (`T2:gil_run_delay_frac:<role>` not above); or one thread outside the GIL (grpc_core /
+    zmq_io / other, each alone) holds iff its cores >= near_one_core_min and its offset is
+    above `T2:nongil_thread_cores:<role>`.
   near_one_core_min comes from pilot.json `i1_calibration`; missing -> I1 NOT_RUN.
 I2 event-loop lag: side evidence only (its criterion needs E0's calibration curve).
 I3 backlog side: register.json judge.localize.readings, each a sum of backlog slot terms with
@@ -29,10 +32,12 @@ I3 backlog side: register.json judge.localize.readings, each a sum of backlog sl
   `T2:i3_backlog:<name>`: held at a plateau), "flat", or NOT_RUN. I3 holds for role R iff an
   entry reading (receiver R) is growing or elevated and every exit reading (sender R) is flat.
 
-Combination: the roles the holding signals point to. One role -> LOCALIZED; more than one ->
-UNDETERMINED (signals disagree: no boundary from this tier); none -> NOT_LOCALIZED, or NOT_RUN
-when some signal could not be evaluated. Only a tier where X holds gets a conclusion; every
-tier records its statistics so the pilot can build their bands from sub-saturation tiers.
+Every unit lists the group's pids. Combination: the roles the holding signals point to. One
+role -> LOCALIZED, unless a signal of another candidate role is NOT_RUN (that role is not
+ruled out) -> NOT_RUN with `holding` listed; more than one -> UNDETERMINED (signals disagree:
+no boundary from this tier); none -> NOT_LOCALIZED, or NOT_RUN when some signal could not be
+evaluated. Only a tier where X holds gets a conclusion; every tier records its statistics so
+the pilot can build their bands from sub-saturation tiers.
 """
 
 from capcommon import hist
@@ -70,54 +75,40 @@ def thread_classes(ld, td, pid):
     return out
 
 
-def proc_cores(ld, pid):
-    """(cores of `pid` from roles.json, exclusive?) - exclusive when no other registered process
-    is pinned to any of them."""
+def core_groups(ld, role):
+    """The role's registered processes grouped by the cores they are pinned to: processes whose
+    roles.json cpus intersect (directly or through another process of the role) form one
+    group - a parent and the workers pinned to the role's core set are one group.
+
+    Returns ([{pids, cores, shared_with}], [pids without cpus]); shared_with lists the pids of
+    other roles' registered processes pinned to any of the group's cores (exclusive when
+    empty). Processes of the same role never make a group non-exclusive."""
+    groups, nocpu = [], []
+    for p in ld.procs_of_role(role):
+        cpus = set(p.get("cpus") or [])
+        if not cpus:
+            nocpu.append(p["pid"])
+            continue
+        merged, rest = {"pids": [p["pid"]], "cores": cpus}, []
+        for g in groups:
+            if g["cores"] & merged["cores"]:
+                merged = {"pids": g["pids"] + merged["pids"], "cores": g["cores"] | merged["cores"]}
+            else:
+                rest.append(g)
+        groups = rest + [merged]
     procs = (ld.roles_json or {}).get("procs") or []
-    mine = None
-    for p in procs:
-        if p.get("pid") == pid:
-            mine = set(p.get("cpus") or [])
-    if not mine:
-        return set(), False
-    others = set()
-    for p in procs:
-        if p.get("pid") != pid:
-            others |= set(p.get("cpus") or [])
-    return mine, not (mine & others)
+    for g in groups:
+        g["pids"] = sorted(g["pids"])
+        g["shared_with"] = sorted(p["pid"] for p in procs if p.get("role") != role
+                                  and set(p.get("cpus") or []) & g["cores"])
+    return sorted(groups, key=lambda g: g["pids"]), sorted(nocpu)
 
 
-def proc_readings(ld, td, pid):
-    """CPU readings of one process over the tier's window: ({...}, None) or (None, why).
-
-    Keys: cores (sorted list), n_cores, core_busy_frac / core_busy_cores (non-idle ticks without
-    softirq), core_busy_frac_softirq (with it), threads [{tid, class, identified_as, cores,
-    run_delay_frac}], gil_cores, gil_run_delay_frac (None when a GIL thread lacks
-    run_delay_ns), unattributed_cores (core busy without softirq - all threads)."""
-    clk = (ld.sidecar_meta or {}).get("clk_tck")
-    cpu_rows, th_rows = ld.sidecar("cpus"), ld.sidecar("threads")
-    if cpu_rows is None or th_rows is None or not isinstance(clk, int) or clk <= 0:
-        return None, "sidecar cpus/threads/clk_tck missing"
-    cores, excl = proc_cores(ld, pid)
-    if not cores:
-        return None, "pid %d has no cpus in roles.json" % pid
-    if not excl:
-        return None, "pid %d cores %s are shared with another registered process" \
-            % (pid, sorted(cores))
-    ws, we = td.tier.window_start_ns, td.tier.window_end_ns
-    d, why = cpu_tick_deltas(cpu_rows[1], cores, ws, we)
-    if why:
-        return None, why
-    span = max(d[c]["t_last_rel_ns"] - d[c]["t_first_rel_ns"] for c in cores)
-    if span <= 0:
-        return None, "cpu rows of cores %s span no time in the window" % sorted(cores)
-    total = sum(d[c][k] for c in cores for k in ALL_COLS)
-    idle = sum(d[c][k] for c in cores for k in IDLE_COLS)
-    softirq = sum(d[c]["softirq"] for c in cores)
-    busy = total - idle - softirq
-    tf, tl = first_last_in_window(th_rows[1], lambda x: x["tid"] if x.get("pid") == pid
+def _thread_readings(th_rows, classes, pid, clk, ws, we):
+    """Per-thread CPU of one process over [ws, we): (threads, gil_cores, gil_run_delay_frac);
+    gil_run_delay_frac is None when a GIL thread lacks run_delay_ns."""
+    tf, tl = first_last_in_window(th_rows, lambda x: x["tid"] if x.get("pid") == pid
                                   else None, ws, we)
-    classes = thread_classes(ld, td, pid)
     threads, gil, gil_rd, rd_ok = [], 0.0, 0.0, True
     for tid in sorted(tf):
         a, b = tf[tid], tl[tid]
@@ -130,7 +121,7 @@ def proc_readings(ld, td, pid):
         if isinstance(b.get("run_delay_ns"), int) and isinstance(a.get("run_delay_ns"), int):
             rd = (b["run_delay_ns"] - a["run_delay_ns"]) / tspan
         cls, ident = classes.get(tid, ("unknown", None))
-        threads.append({"tid": tid, "comm": b.get("comm"), "class": cls,
+        threads.append({"tid": tid, "pid": pid, "comm": b.get("comm"), "class": cls,
                         "identified_as": ident, "cores": cores_t, "run_delay_frac": rd})
         if cls == GIL_CLASS:
             gil += cores_t
@@ -138,16 +129,73 @@ def proc_readings(ld, td, pid):
                 rd_ok = False
             else:
                 gil_rd += rd
-    if not threads:
-        return None, "pid %d: fewer than two sidecar thread rows in the window" % pid
+    return threads, gil, (gil_rd if rd_ok else None)
+
+
+def group_readings(ld, td, group):
+    """CPU readings of one core group over the tier's window: ({...}, None) or (None, why).
+
+    Core-level keys (the group's cores, per-core /proc/stat): pids, cores (sorted list),
+    n_cores, core_busy_frac / core_busy_cores (non-idle ticks without softirq),
+    core_busy_frac_softirq (with it), unattributed_cores (core busy without softirq - every
+    thread of the group). Per process (one GIL each): procs {pid: {threads [{tid, pid, class,
+    identified_as, cores, run_delay_frac}], gil_cores, gil_run_delay_frac}}."""
+    clk = (ld.sidecar_meta or {}).get("clk_tck")
+    cpu_rows, th_rows = ld.sidecar("cpus"), ld.sidecar("threads")
+    if cpu_rows is None or th_rows is None or not isinstance(clk, int) or clk <= 0:
+        return None, "sidecar cpus/threads/clk_tck missing"
+    cores = group["cores"]
+    if group["shared_with"]:
+        return None, "cores %s of pids %s are shared with process(es) %s of another role" \
+            % (sorted(cores), group["pids"], group["shared_with"])
+    ws, we = td.tier.window_start_ns, td.tier.window_end_ns
+    d, why = cpu_tick_deltas(cpu_rows[1], cores, ws, we)
+    if why:
+        return None, why
+    span = max(d[c]["t_last_rel_ns"] - d[c]["t_first_rel_ns"] for c in cores)
+    if span <= 0:
+        return None, "cpu rows of cores %s span no time in the window" % sorted(cores)
+    total = sum(d[c][k] for c in cores for k in ALL_COLS)
+    idle = sum(d[c][k] for c in cores for k in IDLE_COLS)
+    softirq = sum(d[c]["softirq"] for c in cores)
+    busy = total - idle - softirq
+    procs, missing = {}, []
+    for pid in group["pids"]:
+        th, gil, gil_rd = _thread_readings(th_rows[1], thread_classes(ld, td, pid), pid, clk,
+                                           ws, we)
+        if not th:
+            missing.append(pid)
+        procs[pid] = {"threads": th, "gil_cores": gil, "gil_run_delay_frac": gil_rd}
+    if missing:
+        return None, "pid(s) %s: fewer than two sidecar thread rows in the window" % missing
     core_busy_cores = busy / clk / (span / NS)
-    return {"pid": pid, "cores": sorted(cores), "n_cores": len(cores),
+    return {"pids": list(group["pids"]), "cores": sorted(cores), "n_cores": len(cores),
             "core_busy_cores": core_busy_cores,
             "core_busy_frac": busy / total if total > 0 else None,
             "core_busy_frac_softirq": (busy + softirq) / total if total > 0 else None,
-            "threads": threads, "gil_cores": gil,
-            "gil_run_delay_frac": gil_rd if rd_ok else None,
-            "unattributed_cores": core_busy_cores - sum(t["cores"] for t in threads)}, None
+            "procs": procs,
+            "unattributed_cores": core_busy_cores - sum(t["cores"] for p in procs.values()
+                                                        for t in p["threads"])}, None
+
+
+CORE_KEYS = ("pids", "cores", "n_cores", "core_busy_cores", "core_busy_frac",
+             "core_busy_frac_softirq", "unattributed_cores")
+
+
+def unit_view(g, pid=None):
+    """What i1_process reads for one unit of a group's readings `g`: the group's core-level
+    keys with the threads, GIL domain and run-queue wait of process `pid` (several cores: one
+    unit per process), or of every process of the group (pid None: a single-core group is one
+    unit; its GIL keys are not read there)."""
+    if g is None:
+        return None
+    v = {k: g[k] for k in CORE_KEYS}
+    ps = [g["procs"][pid]] if pid is not None else [g["procs"][p] for p in g["pids"]]
+    v["threads"] = [t for p in ps for t in p["threads"]]
+    if pid is not None:
+        v.update(pid=pid, gil_cores=ps[0]["gil_cores"],
+                 gil_run_delay_frac=ps[0]["gil_run_delay_frac"])
+    return v
 
 
 def _offset(cur, base, key):
@@ -348,11 +396,36 @@ def i3_roles(readings, roles):
 
 # ---- per tier --------------------------------------------------------------------------------
 
+def i1_role(ld, td, base_td, role, readings, eval_unit):
+    """I1 units of one role: a single-core group is one unit (its core is the reading), a
+    group of several cores has one unit per process (one GIL each); every unit lists the
+    group's pids. Processes without cpus and groups sharing a core with another role are
+    NOT_RUN."""
+    groups, nocpu = core_groups(ld, role)
+    per = [{"pid": pid, "pids": [pid], "status": NOT_RUN,
+            "reasons": ["pid %d has no cpus in roles.json" % pid]} for pid in nocpu]
+    for g in groups:
+        cur, why = readings(td, g)
+        if cur is None:
+            per.append({"pid": None, "pids": g["pids"], "cores": sorted(g["cores"]),
+                        "status": NOT_RUN, "reasons": [why]})
+            continue
+        base = readings(base_td, g)[0] if base_td is not None else None
+        units = [None] if cur["n_cores"] == 1 else list(g["pids"])
+        for pid in units:
+            v = unit_view(cur, pid)
+            r = eval_unit(v, unit_view(base, pid))
+            r.update(pid=pid, pids=g["pids"], unit="core_group" if pid is None else "process",
+                     readings=v)
+            per.append(r)
+    return per
+
+
 def localize_tier(ctx, ld, td, base_td, x, record, procs_cache):
     """I for one load tier (called through the symptoms hook with the tier's X result).
 
-    procs_cache: {(tier seq, pid): readings or (None, why)} shared across tiers so the
-    baseline tier's readings are computed once."""
+    procs_cache: {(tier seq, group pids): group readings or (None, why)} shared across tiers
+    so the baseline tier's readings are computed once."""
     bands = ctx.bands.view(ctx.tier_regime[td.tier.seq])
     pilot = ctx.bands.extras.get("pilot") or {}
     near = (pilot.get("i1_calibration") or {}).get("near_one_core_min")
@@ -362,24 +435,16 @@ def localize_tier(ctx, ld, td, base_td, x, record, procs_cache):
     out = {"I1": {}, "I2": {}, "I3": {"readings": [], "roles": {}}, "reasons": []}
     roles = sorted(r for r, d in ctx.roles.items() if d["measure_class"] in CANDIDATE_CLASSES)
 
-    def readings(tdx, pid):
-        key = (tdx.tier.seq, pid)
+    def readings(tdx, group):
+        key = (tdx.tier.seq, tuple(group["pids"]))
         if key not in procs_cache:
-            procs_cache[key] = proc_readings(ld, tdx, pid)
+            procs_cache[key] = group_readings(ld, tdx, group)
         return procs_cache[key]
 
     for role in roles:
-        per = []
-        for p in ld.procs_of_role(role):
-            pid = p["pid"]
-            cur, why = readings(td, pid)
-            if cur is None:
-                per.append({"pid": pid, "status": NOT_RUN, "reasons": [why]})
-                continue
-            base = readings(base_td, pid)[0] if base_td is not None else None
-            r = i1_process(cur, base, bands, role, near, d14, record, is_base)
-            r.update(pid=pid, readings=cur)
-            per.append(r)
+        per = i1_role(ld, td, base_td, role, readings,
+                      lambda cur, base: i1_process(cur, base, bands, role, near, d14, record,
+                                                   is_base))
         sts = [r["status"] for r in per]
         st = TRUE if TRUE in sts else (NOT_RUN if (NOT_RUN in sts or not per) else FALSE)
         out["I1"][role] = {"status": st, "processes": per}
@@ -406,14 +471,14 @@ def _conclude(out, x, ctx):
         if v["status"] == TRUE:
             holding.setdefault(role, []).append("I1")
         elif v["status"] == NOT_RUN:
-            not_run.append("I1:%s" % role)
+            not_run.append(("I1", role))
     for role, v in out["I3"]["roles"].items():
         if v["status"] == TRUE:
             holding.setdefault(role, []).append("I3")
         elif v["status"] == NOT_RUN:
-            not_run.append("I3:%s" % role)
+            not_run.append(("I3", role))
     out["holding"] = {r: sorted(s) for r, s in sorted(holding.items())}
-    out["not_run"] = not_run
+    out["not_run"] = ["%s:%s" % sr for sr in not_run]
     if x.get("holds") is not True:
         out["status"] = NOT_APPLICABLE
         out["reasons"].append("X does not hold in this tier")
@@ -426,21 +491,35 @@ def _conclude(out, x, ctx):
         out["status"] = NOT_RUN if not_run else NOT_LOCALIZED
         return out
     role, via = next(iter(holding.items()))
-    i1 = out["I1"].get(role) or {}
-    hot = [p for p in i1.get("processes", []) if p.get("status") == TRUE]
+    competing = sorted({"%s:%s" % (s, r) for s, r in not_run if r != role})
+    if competing:
+        # an unevaluated signal of another role may point elsewhere: not "not that role"
+        out["status"] = NOT_RUN
+        out["reasons"].append("only %s holds; competing roles not evaluated: %s"
+                              % (role, competing))
+        return out
+    units = (out["I1"].get(role) or {}).get("processes", [])
+    hot = [p for p in units if p.get("status") == TRUE]
     if hot and any(p.get("via") in ("core_idle", "gil_domain") for p in hot):
         finding = "domain_saturated"
     elif hot:
         finding = "thread_saturated"
     else:
         finding = "backlog_at_entry"
+    pids = sorted({q for p in hot for q in p.get("pids") or [p.get("pid")]})
+    shares = {}
+    for p in units:
+        if set(p.get("pids") or []) & set(pids):
+            for t in (p.get("readings") or {}).get("threads", []):
+                shares.setdefault(str(t["pid"]), []).append(
+                    {k: t[k] for k in ("tid", "class", "identified_as", "cores")})
+    kinds = {p.get("unit") for p in hot}
     out.update(status=LOCALIZED, role=role, via=via, finding=finding,
-               measure_class=ctx.roles[role]["measure_class"], granularity="process",
-               pids=[p["pid"] for p in hot],
-               thread_shares={str(p["pid"]): [{k: t[k] for k in ("tid", "class",
-                                                                  "identified_as", "cores")}
-                                              for t in p["readings"]["threads"]]
-                              for p in hot})
+               measure_class=ctx.roles[role]["measure_class"],
+               granularity="process" if "process" in kinds else
+               ("core_group" if kinds else "role"),
+               pids=pids, thread_shares=shares)
     if not_run:
-        out["reasons"].append("localised with signals not evaluated: %s" % not_run)
+        out["reasons"].append("localised with the role's own signals not evaluated: %s"
+                              % out["not_run"])
     return out

@@ -835,7 +835,8 @@ E0 已知答案链上的消息由 capkit 自己产生，不是产品 protobuf，
 ```json
 {"schema":"capkit.loadgen_band/1","experiment":"E1",
  "environment":{"hw_profile_sha":…,"image_sha":…,"capkit_sha":…,"baseline_sha":…},
- "inputs":[{"tree":…,"judge_verdicts_sha256":…,"role":"ld","shape":"http-r-ka","tiers_used":[…],"tiers_excluded":{…},"boundary_T4":{…}}],
+ "inputs":[{"tree":…,"judge_verdicts_sha256":…,"role":"ld","shape":"http-r-ka","tiers_used":[…],"tiers_excluded":{…},"boundary_T4":{…},
+           "attribution":{"grade":…,"role":…,"tier_seq":…,"why":…}}],
  "shapes":{"<形态>":{"match":{"tokens_per_msg":[1],"streams_c":[null]},
                      "per_worker_max":{"load_key":"rate_rps","value":…,"censored":false,"n_launches":3},
                      "bands":{"T1:send_lag_p50_ns":{"min":…,"max":…,"n":…,"unit":"ns","source_tiers":[…]},
@@ -843,7 +844,7 @@ E0 已知答案链上的消息由 capkit 自己产生，不是产品 protobuf，
 ```
 
 - `bands` 的键只能是这四个统计量（`<T>:<量>`，对象就是被绑定的角色），每个带 `min ≤ max`、整数 `n ≥ 1`；值是列表里每棵树入选档（判定为 STABLE、没有 RED 检查）上每个 worker 的读数的 [最小, 最大]（T3）。
-- `per_worker_max`：每次启动取 `verdicts.json` 的 `boundary_T4` 下端（最高 STABLE 档）上最忙 worker 的计划负载（档的总负载 × 该 worker 在时间表里的份额），多次启动取最小（T4 包络下端）。`load_key` ∈ `rate_rps`、`nominal_msgs_per_s`（由档参数算，§3.1）；没有 STABLE 档 ⇒ `value: null`；某次启动从没 UNSTABLE ⇒ `censored: true`（上界只是「不低于」）。
+- `per_worker_max`：每次启动取 `verdicts.json` 的 `boundary_T4` 下端（最高 STABLE 档）上最忙 worker 的计划负载（档的总负载 × 该 worker 在时间表里的份额），多次启动取最小（T4 包络下端）。`load_key` ∈ `rate_rps`、`nominal_msgs_per_s`（由档参数算，§3.1）；没有 STABLE 档 ⇒ `value: null`。`censored: true`（上界只是「不低于」）的条件：贡献了上界的启动里，有一次从没 UNSTABLE，或它的结论等级没有把第一个非稳定档定位到被绑定的角色（`grade.role` ≠ 该角色，包括按 `P+X` 判、没有等级的启动）：到顶的是别的组件或谁都没到顶时，这个数只说明该角色至少能到这里。每个输入的 `attribution` 写明这次启动的等级、定位到的角色与理由。判定器对 `censored` 的上界只在计划负载不超过它时比较，超过 ⇒ 该项 NOT_RUN（不判 RED，勘误 B2-2A-3）。
 - `match`：贡献了读数或上界的档的 `tokens_per_msg` 与 `streams_c`（R 轴为 null）的集合。判定器只在被判档落在 `match` 里时比较健康上界。
 
 ### 9.7 `stub_calib`（E2 的桩标定表，`schema: capkit.stub_calib/1`）
@@ -859,7 +860,7 @@ E0 已知答案链上的消息由 capkit 自己产生，不是产品 protobuf，
 
 ### 9.8 `near_boundary_noise`（各实验第一步量的噪声带，`schema: capkit.near_boundary_noise/1`）
 
-由 `capjudge.calib near-boundary --regime {subsat,near_boundary}` 构建：与 `pilot.json` 的 `noise_bands` 同一算法（判定器 `verdicts.json` 里各档 `stats` 的 [最小, 最大]），只是入选档另外剔除 UNSTABLE（pilot 只剔除 VOID 与 RED）。
+由 `capjudge.calib near-boundary --regime {subsat,near_boundary}` 构建：与 `pilot.json` 的 `noise_bands` 同一算法（判定器 `verdicts.json` 里各档 `stats` 的 [最小, 最大]），只是入选档另外剔除 UNSTABLE 与 UNDETERMINED（X 成立、原因未定的档）（pilot 只剔除 VOID 与 RED）。
 
 ```json
 {"schema":"capkit.near_boundary_noise/1","experiment":"E1","regime":"near_boundary",
@@ -869,6 +870,7 @@ E0 已知答案链上的消息由 capkit 自己产生，不是产品 protobuf，
 
 - 文件级 `regime` ∈ `subsat`、`near_boundary`，每个带的 `regime` 必须写出且与文件级相同。
 - 以 `capkit.pilot/1` 格式写的文件也接受登记为本类（RUNBOOK 阶段 2 的 D5：E1-0 的带由 `capjudge.pilot` 构建）：只读其 `noise_bands`，各带按自己的 `regime`（缺省 `subsat`）。
+- 本类可以登记多份（如一份 pilot 格式的 `subsat`、一份 `near_boundary`），每个 (键, regime) 仍只能有一个来源（勘误 B2-2A-1、B2-2A-2）。
 
 ## 10. 判定器的输入、输出与退出码
 
@@ -1028,9 +1030,9 @@ python3 -m capjudge.boundary --inputs <列表> --workdir <W> --out <新文件> [
 - 全部入选的树必须扫同一条轴（`verdicts.json` 的 `axis` 完全相同），否则 3。
 - `launches[]`：`tree`、`identity`（实验、臂、作业号、重启次数、启动序号）、`block`（区组 = 作业号：一个作业里每臂一次启动）、`mode`、`launch_verdict`、`roles`（`raw/launch.json` 每个角色的 `kind`、`measure_class`、`workers`）、`grade`（`P+X+I+V` 模式的逐启动等级，否则 null）、`doses` 与 `heartbeat`（`intervention_V` 的同名字段，否则 null），以及两个区间：
   - `t4`：判定器写的 `boundary_T4`。脚本按 `tiers` 重算一遍，`lower`、`upper`、`lower_seq`、`upper_seq`、`kind` 有一个不同 ⇒ 3。
-  - `interval`（跨启动用的区间）：在第一个「工具到顶档」以下的负载档上算 T4。工具到顶档指 RED 检查只有 C1 / C2 的 VOID 档，或 I 定位到 `load_source` / `stub_out_of_domain` 的 UNSTABLE 档（设计稿 §2.6「负载源或域外桩先离开健康带 ⇒ 下界」，与 `capjudge.grade` 同一判据）。截断发生在第一个不稳定档之前 ⇒ 上端为 null，`kind: lower_bound_only`，`censored_by` 写明是哪一档、为什么。`skipped` 列出既不是 STABLE 也不是 UNSTABLE 的档。
-- `arms.<臂>`：`envelope`（该臂全部启动的 T4 包络，按 `axis.order` 取 [各次下端的最小值, 各次上端的最大值]，任一次缺端 ⇒ 该端 null）、`by_block`（每个区组一个包络）、`n_launches`。
-- `t5[]`（每个 `--compare` 一项）：只用两臂都有的区组，`stats.t5_compare` 逐区组比包络。结果是 `different`（附方向）或 `indistinguishable`（附本次能分辨的最小差）；没有共同区组 ⇒ `NOT_RUN`。`blocks_missing` 列出只有一臂的区组。臂名不在输入里 ⇒ 3。
+  - `interval`（跨启动用的区间，T5 与 V 用它）：在第一个「工具到顶档」以下的负载档上算 T4。工具到顶档指 RED 检查只有 C1 / C2 的 VOID 档，或 I 定位到 `load_source` / `stub_out_of_domain` 的 UNSTABLE 档（设计稿 §2.6「负载源或域外桩先离开健康带 ⇒ 下界」，与 `capjudge.grade` 同一判据）。截断发生在第一个不稳定档之前 ⇒ 上端为 null，`kind: lower_bound_only`，`censored_by` 写明是哪一档、为什么。`skipped` 列出既不是 STABLE 也不是 UNSTABLE 的档。
+- `arms.<臂>`：`envelope`（该臂全部启动的 `interval` 包络，按 `axis.order` 取 [各次下端的最小值, 各次上端的最大值]，任一次缺端 ⇒ 该端 null）、`by_block`（每个区组一个包络）、`n_launches`；另有 `envelope_t4`、`by_block_t4`：同样的包络，但取判定器的 `t4`（不截断），给 14.2 用。
+- `t5[]`（每个 `--compare` 一项）：只用两臂都有的区组，`stats.t5_compare` 逐区组比 `by_block`。结果是 `different`（附方向）或 `indistinguishable`（附本次能分辨的最小差）；有开口端的区组不能算作分开；没有共同区组，或没有一个区组两臂的包络都闭合 ⇒ `NOT_RUN`（不是 `indistinguishable`）。`blocks_missing` 列出只有一臂的区组。臂名不在输入里 ⇒ 3。
 
 ### 14.2 `capjudge.scaling`（T6 与对侧翻倍归因；`schema: capkit.scaling/1`）
 
@@ -1039,7 +1041,7 @@ python3 -m capjudge.scaling --boundary <boundary.json> --pair <基准臂>,<加�
     --grows-min <比值> --flat-max <比值> --out <新文件>
 ```
 
-- 输入是 14.1 的产物（T4 只在那里算一次）。轴必须是 `asc`。两个界取实验登记表里事先登记的值，显式传入并写进输出；要求 0 < `flat-max` < `grows-min`。
+- 输入是 14.1 的产物（T4 只在那里算一次）。用每臂的 `by_block_t4`（判定器的 T4，不在工具到顶档截断）：对侧翻倍要判的正是哪一侧先到顶，空汇或负载器到顶的档在这里是证据，不是截断点；没有 `by_block_t4` 的文件 ⇒ 3。轴必须是 `asc`。两个界取实验登记表里事先登记的值，显式传入并写进输出；要求 0 < `flat-max` < `grows-min`。
 - 每一对：两臂的角色集合、`kind`、`measure_class` 相同；只有**一侧**（`kind` 为 `client`，即负载器；或为 `server`，即空汇 / 桩）的角色改了 `workers`，这一侧的全部角色按同一个倍数 f > 1 改，另一侧不变。不满足 ⇒ 3。一臂的各次启动角色不同 ⇒ 3。
 - 逐区组（两臂都有的区组）：基准臂包络 E_b，加倍臂包络 E_s，边界比值落在 [E_s.lower ÷ E_b.upper, E_s.upper ÷ E_b.lower] 内；缺端 ⇒ 对应一端为 null。同时给出效率（比值 ÷ f）。`t6_lower_ends`、`t6_upper_ends` 分别是只用下端、只用上端的 T6 区间（`stats.t6_ratio_range`），作对照。
 - 判断用不利端（设计稿 §2.6 T6）：最小比值 ≥ `grows-min` ⇒ `grows`；最大比值 ≤ `flat-max` ⇒ `flat`；否则 `unresolved`；没有可用区组（基准臂包络不闭合，或加倍臂没有下端）⇒ `NOT_RUN`。`grows` ⇒ `limit_side` 为加倍的那一侧；`flat` ⇒ 另一侧。
@@ -1058,15 +1060,16 @@ python3 -m capjudge.e1report --boundary <boundary.json> --workdir <W> --out <新
   - δ 按每次经过的注入时长算（`delta_ns ÷ every_n`，秒）。每个 δ 一个包络。
   - 单位换算：W = 加剂量角色的 `workers`；p = 每单位 `load_value` 的经过次数，由构造给出：用该启动的对账链（位点的单位，`intervene.SITE_UNIT`）和档位参数，经 `capcommon.expect` 算出。`rate_rps` 轴 p = 每请求的经过次数；`nominal_msgs_per_s` 轴再乘 `rate_rps ÷ load_value`。各负载档的 p 必须相同，档位表的 sha 必须与 `launch.json` 登记的一致，否则 NOT_RUN。
   - 对每一对 δ_a < δ_b，归一斜率落在 [(1/b.upper − 1/a.lower), (1/b.lower − 1/a.upper)] ÷ (δ_b − δ_a) × W ÷ p 内。
-  - 判定：每一对都闭合且包含 1 ⇒ PASS；某一对已知的一端把 1 排除在外 ⇒ FAIL；其余 ⇒ INCONCLUSIVE；少于 3 个 δ，或轴不是 `asc` ⇒ NOT_RUN。
+  - 判定（逐对）：已知的一端把 1 排除在外 ⇒ FAIL；区间闭合、包含 1、且下端 > 0 ⇒ PASS；其余（有开口端，或区间同时包含 0：剂量没让边界可分辨地移动时也会得到这样的区间）⇒ INCONCLUSIVE。总体：有 FAIL ⇒ FAIL，否则有 INCONCLUSIVE ⇒ INCONCLUSIVE，否则 PASS；少于 3 个 δ，或轴不是 `asc` ⇒ NOT_RUN。
 - **`counts`（E1 卡「计数真实性」，逐启动，启动范围求和）**：两个工具按计划档或事件档归档，口径不同，所以按全部档目录求和后再比。
   - 拓扑必须是 E1 形：恰好一个 `kind: client` 角色，恰好一个 `kind: server` 角色，且它是 `stub_out_of_domain`；否则 NOT_RUN。
   - 两个角色在每个档目录（`raw/tiers/NNN_*`）里每个 worker 都要有逐档摘要，缺一份 ⇒ NOT_RUN。缺的摘要会同时从两侧的和里消失，不能让它变成 PASS。
-  - 字节：HTTP 时，空汇的 `counts.bytes_sent` 包括每个响应的头，capload 的 `frames.bytes` 不包括。所以按空汇逐流记录（`streams.capbin` 的 `req_id`）用 `capload.sink.response_head` 重建头的字节数，要求空汇字节 − 头字节 = capload 字节。有外来请求、流记录溢出，或流记录条数 ≠ `counts.requests` ⇒ NOT_RUN。gRPC 时两侧都是消息负载字节，直接比。
+  - 字节：HTTP 时，空汇的 `counts.bytes_sent` 包括每个响应的头，capload 的 `frames.bytes` 不包括。所以按空汇逐流记录（`streams.capbin` 的 `req_id`）用 `capload.sink.response_head` 重建头的字节数，比较空汇字节 − 头字节与 capload 字节。有外来请求、流记录溢出，或流记录条数 ≠ `counts.requests` ⇒ NOT_RUN。gRPC 时两侧都是消息负载字节，直接比。相等 ⇒ PASS；负载器收到的多 ⇒ FAIL；空汇发出的多（空汇计的是交给传输层的字节，被丢下的流里有在途字节）：负载器有失败或未完成的请求（capload 的 `counts.failed`、`counts.unfinished`，capgrpc.load 的 `counts.failed`）⇒ NOT_RUN 并写出差值，没有 ⇒ FAIL。
   - accepts：capload 的 `conn_pool.new_conns` 之和 = 空汇的 `counts.accepts` 之和。nullgrpc 不计 accepts ⇒ NOT_RUN。
+  - 用到的计数（`frames.bytes` / `msgs.bytes`、`counts.bytes_sent`、`counts.foreign_requests`、`counts.requests`、`overflow.streams`、`conn_pool.new_conns`、`counts.accepts`、`counts.failed`）在任一份摘要里缺键 ⇒ 该项 NOT_RUN，不按 0 相加。
 - **`sink_health`（E1 卡「隔离」：空汇的线程 CPU 与事件循环延迟留在空载带内）**：
   - 只在给了 `--sink-bands` 时算。该文件的 sha 必须在 `<W>/REGISTRY.tsv` 里，否则退出码 3。只用其 `noise_bands` 里 `regime` 为 `subsat` 的有效带。
-  - 每个负载档、每个 `stub_out_of_domain` worker，用判定器 C2 的同一实现（`capjudge.calib.stub_worker_stats`）算 `T3:loop_lag_p99_ns` 与 `T3:thread_cpu_cores`，与 `<统计量>:<空汇角色>` 的带比。高于带 ⇒ OUTSIDE；没有值或没有带 ⇒ NOT_RUN。
+  - 每个负载档、每个 `stub_out_of_domain` worker，用判定器 C2 的同一实现（`capjudge.calib.stub_worker_stats`）算 `T3:loop_lag_p99_ns` 与 `T3:thread_cpu_cores`，与 `<统计量>:<空汇角色>` 的带比。高于带 ⇒ OUTSIDE；没有值或没有带 ⇒ NOT_RUN。只作 E1 报告的旁证，不进判定（勘误 B2-2E-A 第 7 条）。
   - 读原始数据前，先用 `capjudge.inputs.verify` 把树重新核对一遍。
 
 ## 勘误与补充
@@ -1205,17 +1208,17 @@ E0 第一轮的 pilot（`02_e0/E0/analysis/pilot.json`）定不出 `window_ns` /
 
 新增三种标定文件格式（正文 §9.6～§9.8）与构建器；判定器的 C2、C4、C12 从「`NOT_IMPLEMENTED_BATCH2` ⇒ 该档 NOT_RUN」变为真正的检查。已有格式（档位表、时间表、登记表的其余段、`pilot.json`、判定器输出文件）版本号不变；登记表新增可选键，判定器输出新增字段，见各条。
 
-1. **§9.2 标定登记项与环境**：`calibration[]` 每项只许 `kind`、`relpath`、`sha256` 三个键，`loadgen_band`、`stub_calib` 另有**必填**的 `bind: {"<本实验的角色>": "<文件里的形态名>"}`（非空；形态名必须在文件里，否则 13；可以列别的臂的角色；本次启动没有被绑定的 `load_source` / `stub_out_of_domain` 角色，其 C1 / C2 项 NOT_RUN）。多余的键 ⇒ 13。每个标定文件按种类做格式校验（`capjudge.calib.validate`，§9.4、§9.6～§9.8）⇒ 不过即 13；**每一种**标定文件都核 `environment` 的 `hw_profile_sha`、`image_sha` 与本树一致（原先只核 `pilot`），不一致 ⇒ 13（CONSTRAINTS §4 第 2 条「只用于同一环境」）。同一种类仍只许一个文件。
-2. **§9.2 / §9.4 噪声带按档的 regime 选**（RUNBOOK §2.2 第 2 条；解决「同一个键不能有两份来源」）：每个噪声带属于一个 regime：`subsat`（亚饱和档上量的）或 `near_boundary`（近边界档上量的）；带上没有 `regime` 字段按 `subsat`。登记表的 `judge` 段新增可选的 `near_boundary_tiers: {"<臂>": ["<档标签>", …]}`（臂必须在 `arms` 里；标签必须是该臂档位表里的 `up` / `down` 档，否则 13）；列出的档是近边界档，其余负载档是亚饱和档。被判档只读**本 regime** 的带（X 的全部量、C13 第二半）：同一 (键, regime) 出现在两个文件里仍是 13；同一个键在两个文件里各属一个 regime 是允许的。**近边界档查不到近边界带时不退回亚饱和带，该项 NOT_RUN**：RUNBOOK 写的是「近边界档优先取 near_boundary_noise」，这里按 DATA-AND-ANALYSIS §4 第 6 条「近边界的档不沿用亚饱和档的噪声带」与设计稿 §2.6 T3 取严格读法（代价：近边界档要有覆盖其全部统计量的近边界带，否则判不了；样本 `regime_nb_missing`）。输出：`verdicts.json` 每个被判档加 `regime`；`inputs.json` 的 `band_lookups` 的键改为 `<regime>|<统计量键>`。
-3. **§10.2 C1 改读 loadgen_band**：对每个 `load_source` 角色的每个 worker，按 `bind` 找到它的形态：① 被判档在形态的 `match` 里时，该 worker 的计划负载（档的总负载 × 时间表份额，单位取形态的 `load_key`）> `per_worker_max.value` ⇒ RED；不在 `match` 里、`value` 为 null、负载按该键算不出 ⇒ NOT_RUN；② 四个健康量（`T1:send_lag_p50_ns`、`T3:send_lag_p99_ns`、`T3:fionread_nonzero_frac`、`T3:loop_lag_p99_ns`，与原 C1 同一算法，`capjudge.calib.loadgen_worker_stats`）超出形态带的上界 ⇒ RED，值或带缺 ⇒ NOT_RUN。C1 **不再**读 `pilot.json` / `inline_thresholds` 里以 `T*:…:<负载器角色>` 为键的带（pilot 里这几个键仍会被写出，判定器不用）；没有登记 `loadgen_band` ⇒ C1 NOT_RUN（E0 第一轮重判时状态不变，只是原因措辞变了）。各档 `stats` 里记录的键不变。
+1. **§9.2 标定登记项与环境**：`calibration[]` 每项只许 `kind`、`relpath`、`sha256` 三个键，`loadgen_band`、`stub_calib` 另有**必填**的 `bind: {"<本实验的角色>": "<文件里的形态名>"}`（非空；形态名必须在文件里，否则 13；可以列别的臂的角色；本次启动没有被绑定的 `load_source` / `stub_out_of_domain` 角色，其 C1 / C2 项 NOT_RUN）。多余的键 ⇒ 13。每个标定文件按种类做格式校验（`capjudge.calib.validate`，§9.4、§9.6～§9.8）⇒ 不过即 13；**每一种**标定文件都核 `environment` 的 `hw_profile_sha`、`image_sha` 与本树一致（原先只核 `pilot`），不一致 ⇒ 13（CONSTRAINTS §4 第 2 条「只用于同一环境」）。`near_boundary_noise` 可以登记多份（同一 relpath 两次 ⇒ 13），其余种类仍只许一个文件。
+2. **§9.2 / §9.4 噪声带按档的 regime 选**（RUNBOOK §2.2 第 2 条；解决「同一个键不能有两份来源」）：每个噪声带属于一个 regime：`subsat`（亚饱和档上量的）或 `near_boundary`（近边界档上量的）；带上没有 `regime` 字段按 `subsat`。登记表的 `judge` 段新增可选的 `near_boundary_tiers: {"<臂>": ["<档标签>", …]}`（臂必须在 `arms` 里；标签必须是该臂档位表里的 `up` / `down` 档，否则 13）；列出的档是近边界档，其余负载档是亚饱和档。被判档只读**本 regime** 的带（X 的全部量、C13 第二半）：同一 (键, regime) 出现在两个文件里仍是 13；同一个键在两个文件里各属一个 regime 是允许的，所以 pilot、一份 `subsat` 的 `near_boundary_noise`（如 pilot 格式的 E1-0 `e1_noise`）与一份 `near_boundary` 的 `near_boundary_noise` 可以同时登记（RUNBOOK E1 正式臂、E2a）。**近边界档查不到近边界带时不退回亚饱和带，该项 NOT_RUN**：RUNBOOK 写的是「近边界档优先取 near_boundary_noise」，这里按 DATA-AND-ANALYSIS §4 第 6 条「近边界的档不沿用亚饱和档的噪声带」与设计稿 §2.6 T3 取严格读法（代价：近边界档要有覆盖其全部统计量的近边界带，否则判不了；样本 `regime_nb_missing`）。输出：`verdicts.json` 每个被判档加 `regime`；`inputs.json` 的 `band_lookups` 的键改为 `<regime>|<统计量键>`。
+3. **§10.2 C1 改读 loadgen_band**：对每个 `load_source` 角色的每个 worker，按 `bind` 找到它的形态：① 被判档在形态的 `match` 里时，该 worker 的计划负载（档的总负载 × 时间表份额，单位取形态的 `load_key`）> `per_worker_max.value` ⇒ RED，但上界 `censored`（§9.6：只知道「不低于」）时超出它 ⇒ NOT_RUN（超出标定范围），不判 RED；不在 `match` 里、`value` 为 null、负载按该键算不出 ⇒ NOT_RUN；② 四个健康量（`T1:send_lag_p50_ns`、`T3:send_lag_p99_ns`、`T3:fionread_nonzero_frac`、`T3:loop_lag_p99_ns`，与原 C1 同一算法，`capjudge.calib.loadgen_worker_stats`）超出形态带的上界 ⇒ RED，值或带缺 ⇒ NOT_RUN。C1 **不再**读 `pilot.json` / `inline_thresholds` 里以 `T*:…:<负载器角色>` 为键的带（pilot 里这几个键仍会被写出，判定器不用）；没有登记 `loadgen_band` ⇒ C1 NOT_RUN（E0 第一轮重判时状态不变，只是原因措辞变了）。各档 `stats` 里记录的键不变。
 4. **§10.2 C2（域外桩部分）**：对每个 `stub_out_of_domain` 角色的每个 worker，按 `stub_calib` 的 `bind` 找形态：计划负载（档的总负载 ÷ worker 数，按 worker 均分；同一监听端口的实际分配不受计划控制）对 `per_process_max`，`T3:loop_lag_p99_ns`（该 worker 摘要的 `loop_lag_ns` 直方图）与 `T3:thread_cpu_cores`（摘要 `identity.pid` 的全部线程，`capjudge.calib.stub_worker_stats`）对形态的带，规则同第 3 条；worker 没有摘要 ⇒ RED。**C1、C2 的应检数按 `workers` 计**（每个 worker 一份摘要），不按 `expected_procs`（推翻 §10.2「应检进程数 = `expected_procs` 之和」：`expected_procs` 含不服务请求的父进程，如 e0a 的 nullsse 是 2 worker + 1 父进程，父进程没有摘要，按它计会让 C2 永远 NOT_RUN）。`stub_in_domain` 角色不进 P，只在明细里列出（自身需求表见 §9.7 `in_domain`，后续子批次）。设计稿 §2.6 / §2.7 C2 里的「积压所在的一侧」与「弱读者检验」**本条没有实现**：前者要读者侧在途数，归 2E 的 I3（`capjudge/localize.py`）；后者是 E2a 的实验步骤（RUNBOOK §1.5），见第 10 条。
-5. **§10.2 C4（每请求输出 token 数 = `max_tokens`）**：应检 = 时间表 `meta.per_tier` × `kind=client` 角色数（每个客户端角色跑整张时间表）。每个计划在本档的请求（`loadgen.requests` 的 `tier_seq` = 本档）的计数取负载器的 `tokens` 列；负载器不计数（`-1`：`capgrpc.load` 一律写 -1，capload 失败的请求写 -1）时取本档 `server.streams` 里同一 `req_id` 的 `tokens`。有计数且 ≠ `max_tokens` ⇒ RED（不论请求状态：capload 把少出的请求记为 `short_output` 失败，C3 同时红）；没有计数的失败请求（`status ≠ 0`）计为已检（由 C3 / X 处理）；没有计数的成功请求、或有计划而没有记录的请求 ⇒ NOT_RUN。
-6. **§10.2 C12（加倍的进程确实承担了流量）**：作用对象 = `reconcile` 里 `kind: requests` 链上 `scope: tier` 的跳所在的角色中，摘要来源（`summary.*`）且 `workers ≥ 2` 的角色（每个 worker 一个单位），或快照槽来源（`slot:*`）且 `expected_procs ≥ 2` 的角色（每个登记进程一个单位，槽增量取本档开始到其后清空档结束、清空门已过，与 C5 同一实现 `checks._hop_parts`）；同一角色只查一次。应检 = 单位数之和。任一单位本档计数 ≤ 0 ⇒ NOT_RUN（设计稿 §2.7 C12 的阳性对照：没有流量必须记 NOT RUN 而不是通过），不判 RED；取不到计数 ⇒ NOT_RUN。没有这样的角色 ⇒ 应检 0 ⇒ NOT_RUN（所以只在确有加倍的场景登记 C12）。
+5. **§10.2 C4（每请求输出 token 数 = `max_tokens`）**：应检 = 时间表 `meta.per_tier` × `kind=client` 角色数（每个客户端角色跑整张时间表）。每个计划在本档的请求（`loadgen.requests` 的 `tier_seq` = 本档）的计数取负载器的 `tokens` 列（≥ 0 时不论请求状态都比：capload 把少出的请求记为 `short_output` 失败，C3 同时红）；负载器不计数（`-1`：`capgrpc.load` 一律写 -1，capload 没收到 usage 帧的失败请求写 -1）的**成功**请求（`status = 0`）取本档 `server.streams` 里同一 `req_id` 的 `tokens`。服务端记录按服务端角色分开读，不跨角色按 `req_id` 合并：写流记录的服务端角色多于一个、或需要回退的客户端角色多于一个（每个客户端角色跑整张时间表，`req_id` 会重复）⇒ 这些请求不比、计 NOT_RUN。有计数且 ≠ `max_tokens` ⇒ RED；负载器不计数的失败请求只计为已检（由 C3 / X 处理），不读服务端记录：被取消或超时的流在服务端记的是中止前已发的 token 数，读它会把每个登记超时判成 RED；没有计数的成功请求、或有计划而没有记录的请求 ⇒ NOT_RUN。
+6. **§10.2 C12（加倍的进程确实承担了流量）**：作用对象 = `reconcile` 里 `kind: requests` 链上 `scope: tier` 的跳所在的角色中，摘要来源（`summary.*`）且 `workers ≥ 2` 的角色（每个 worker 一个单位），或快照槽来源（`slot:*`）且 `expected_procs ≥ 2` 的角色（每个登记进程一个单位，槽增量取本档开始到其后清空档结束、清空门已过，与 C5 同一实现 `checks._hop_parts`）；同一角色只查一次。应检 = 单位数之和。单位的计数：负载器（`kind: client`、摘要来源）取每个 worker 摘要的 `counts.sent`（实发数，设计稿 §2.6 的前提是「实发数、收到数增量 > 0」：请求全部超时的 worker 也承担了流量），不取对账跳的 `counts.ok`；其余单位取该跳自己的计数。任一单位本档计数 ≤ 0 ⇒ NOT_RUN（设计稿 §2.7 C12 的阳性对照：没有流量必须记 NOT RUN 而不是通过），不判 RED；取不到计数 ⇒ NOT_RUN。没有这样的角色 ⇒ 应检 0 ⇒ NOT_RUN（所以只在确有加倍的场景登记 C12）。
 7. **§9.2 / §10.2 检查清单**：`judge.checks` 可以列 C2、C4、C12，它们按第 4～6 条判，不再出 `NOT_IMPLEMENTED_BATCH2`。强制集不变。
-8. **构建器**（§9.6～§9.8）：`python3 -m capjudge.calib {near-boundary,loadgen-band,stub-calib}` 或 `python3.11 analysis/calib_build.py …`（同一实现，与 `pilot_build.py` 一样的薄 CLI）。列表文件：`near-boundary` 与 pilot 相同（`<树>\t<档序号,…>`）；另两种每行 `<树>\t<档序号,…>\t<角色>\t<形态名>`。共同规则（与 pilot 共用 `capjudge.pilot.select_tiers`）：每棵树必须已判过、输入核对通过、判定前的启动级结论为 VALID（否则整树剔除并写原因）；列出的档有 RED 检查或判定为 VOID ⇒ 剔除并列出；`near-boundary` 另剔除 UNSTABLE，`loadgen-band` / `stub-calib` 只用 STABLE 档；全部树环境相同；不覆盖已有输出（退出码 3）。
-9. **§10.4 样本**：新增 8 个，共 33 个（`samples/README.md`）：`c1_loadgen_overdriven`、`c2_stub_good`、`c2_stub_loop_lag`、`c4_short_output`、`c12_idle_worker`、`regime_nb_missing`、`regime_nb_good`、`input_calib_invalid`。全部样本都登记一份合成的 `loadgen_band`（形态 `capload-r` 绑给 capload）；`good` 等样本的检查清单加了 C4、C12；合成的 capload 记录对没有 usage 帧的失败请求写 `tokens = -1`（与 capload 一致）；合成的 nullsse 摘要加了 `loop_lag_ns` 直方图（真实 nullsse 有）。
-10. **已知缺口（§12 追加）**：① C2 没有「积压所在的一侧」与弱读者检验（第 4 条）。② 桩的计划负载按 worker 均分；E0 第一轮重判（本地拷贝，C12 加入后在进程内判）实测 e0a（J5935100 L1）档 4 的 nullsse worker 1 本档请求数为 0（2 个长连接都落在 worker 0），所以「均分」在 `SO_REUSEPORT` 下不一定成立；C12 会把这样的档记 NOT_RUN，C2 的负载项在这种档上偏松。③ `match` 只做精确匹配，不外推。④ 两侧都不计 token 的拓扑（读者与桩都不写 `tokens`）C4 恒为 NOT_RUN。⑤ `stub_calib.in_domain`（域内桩自身需求）未定义。⑥ E1-0 的 `e1_noise` 若用 `capjudge.pilot` 构建，其带是 `subsat`，只用于亚饱和档（第 2 条）；要给近边界档用，须另用 `calib_build.py near-boundary --regime near_boundary` 从近边界档构建并登记。
-11. **验证**：`tests/judge/test_calib.py`（格式校验正反例、regime 选带、`bind` 与 regime 的输入核对、C1 / C2 形态项、C4、C12、三个构建器）；样本自测 33 个；E0 第一轮两棵树（e0a J5935100 L1、e0b J5935100 L0）拷到 `_local/b2-judge/e2e` 重判：CLI 重判 `checks.tsv` 前六列除 e0a 档 4 C7（SM-14 修复，原判早于它）外逐行相同，C1 只是 NOT_RUN 原因的措辞变了；在进程内加上 C2、C4、C12 再判：C2 NOT_RUN（没有 stub_calib）、C4 PASS、C12 为 PASS 或 NOT_RUN（见第 10 条②），没有报错。记录在 `_progress/b2-judge.md`。
+8. **构建器**（§9.6～§9.8）：`python3 -m capjudge.calib {near-boundary,loadgen-band,stub-calib}` 或 `python3.11 analysis/calib_build.py …`（同一实现，与 `pilot_build.py` 一样的薄 CLI）。列表文件：`near-boundary` 与 pilot 相同（`<树>\t<档序号,…>`）；另两种每行 `<树>\t<档序号,…>\t<角色>\t<形态名>`。共同规则（与 pilot 共用 `capjudge.pilot.select_tiers`）：每棵树必须已判过、输入核对通过、判定前的启动级结论为 VALID（否则整树剔除并写原因）；列出的档有 RED 检查或判定为 VOID ⇒ 剔除并列出；`near-boundary` 另剔除 UNSTABLE 与 UNDETERMINED，`loadgen-band` / `stub-calib` 只用 STABLE 档；全部树环境相同；不覆盖已有输出（输出或其 `.cmd.txt` 已存在 ⇒ 退出码 3），产物后写 `.cmd.txt`（`capjudge.cmdrec`，§14）。
+9. **§10.4 样本**：新增 8 个（全表见 `samples/README.md`）：`c1_loadgen_overdriven`、`c2_stub_good`、`c2_stub_loop_lag`、`c4_short_output`、`c12_idle_worker`、`regime_nb_missing`、`regime_nb_good`、`input_calib_invalid`。全部样本都登记一份合成的 `loadgen_band`（形态 `capload-r` 绑给 capload）；`good` 等样本的检查清单加了 C4、C12；合成的 capload 记录对没有 usage 帧的失败请求写 `tokens = -1`（与 capload 一致）；合成的 nullsse 摘要加了 `loop_lag_ns` 直方图（真实 nullsse 有）。
+10. **已知缺口（§12 追加）**：① C2 没有「积压所在的一侧」与弱读者检验（第 4 条）。② 桩的计划负载按 worker 均分；E0 第一轮重判（本地拷贝，C12 加入后在进程内判）实测 e0a（J5935100 L1）档 4 的 nullsse worker 1 本档请求数为 0（2 个长连接都落在 worker 0），所以「均分」在 `SO_REUSEPORT` 下不一定成立；C12 会把这样的档记 NOT_RUN，C2 的负载项在这种档上偏松。③ `match` 只做精确匹配，不外推。④ 两侧都不计 token 的拓扑（读者与桩都不写 `tokens`）C4 恒为 NOT_RUN。⑤ `stub_calib.in_domain`（域内桩自身需求）未定义。⑥ E1-0 的 `e1_noise` 若用 `capjudge.pilot` 构建，其带是 `subsat`，只用于亚饱和档（第 2 条）；要给近边界档用，须另用 `calib_build.py near-boundary --regime near_boundary` 从近边界档构建，作为第二份 `near_boundary_noise` 登记（第 1 条）。⑦ C12 的槽来源单位按 `expected_procs` 计，包含父进程（父进程不处理请求，其槽增量为 0 ⇒ 该档 NOT_RUN）；现有配置里没有槽来源的 `requests` 跳，未触发；出现时先按真实写方（`roles.json`、sidecar 快照）确认单位该是哪些进程，再定口径。
+11. **验证**：`tests/judge/test_calib.py`（格式校验正反例、regime 选带、`bind` 与 regime 的输入核对、C1 / C2 形态项、C4、C12、三个构建器）；样本自测全过；E0 第一轮两棵树（e0a J5935100 L1、e0b J5935100 L0）拷到 `_local/b2-judge/e2e` 重判：CLI 重判 `checks.tsv` 前六列除 e0a 档 4 C7（SM-14 修复，原判早于它）外逐行相同，C1 只是 NOT_RUN 原因的措辞变了；在进程内加上 C2、C4、C12 再判：C2 NOT_RUN（没有 stub_calib）、C4 PASS、C12 为 PASS 或 NOT_RUN（见第 10 条②），没有报错。记录在 `_progress/b2-judge.md`。
 12. **NOT_RUN 的原因**：C1、C2、C4、C12 应检为 0 时（本次启动没有 `load_source` 角色、没有 `stub_out_of_domain` 角色、本档没有计划请求、没有加倍的角色），`checks.tsv` 的明细写明是哪一种，不留空。
 
 #### B2-2E：定位 I、干预 V、结论等级（2026-11-14）
@@ -1223,16 +1226,18 @@ E0 第一轮的 pilot（`02_e0/E0/analysis/pilot.json`）定不出 `window_ns` /
 判定器新增判定模式 `P+X+I+V`：逐档算内部定位 I 与逐档的干预心跳，逐启动给结论等级；跨启动的剂量–反应与最终等级由新的 `python3 -m capjudge.intervene` 给出。`P+X` 模式的判定结果不变。已有格式的版本号不变：登记表、`pilot.json` 只加可选键，判定器输出只加字段。
 
 1. **§9.2 `judge.mode`**：取值 `P+X` 或 `P+X+I+V`，其他值 ⇒ 13。`judge.localize`（第 3 条）只许出现在 `P+X+I+V` 模式下，否则 ⇒ 13。`P+X` 模式下，`verdicts.json` 的 `tiers[].X.I`、`tiers[].X.V` 与顶层 `localisation_I`、`intervention_V`、`grade` 都写 `NOT_REQUESTED`（原来写 `NOT_IMPLEMENTED_BATCH2`）。两种模式的 `verdicts.json` 都新增 `mode`，`batch` 改为 2。
-2. **I1（CPU）**，逐进程算。作用对象：`measure_class` 不是 `observer` 的全部角色的登记进程；只用本档窗口内的数据。
-   - **前提**：该进程在 `roles.json` 里的 `procs[].cpus` 不与任何其他登记进程相交（独占），否则 NOT_RUN。单核规则另需 `pilot.json` 的 D14 结论（软中断算不算本进程的工作），没有 ⇒ NOT_RUN。
-   - **读数**：以每核 `/proc/stat`（`cpus.jsonl`）为准，线程 utime+stime（`threads.jsonl`）作分解。线程的 `class`、`identified_as` 先取线程清单，再用 `tier.json` 的窗口始末线程表覆盖。`class = python` 的线程合计为 GIL 域。核上的忙碌减去全部线程，余量单列为 `unattributed_cores`。
-   - **单核进程**：核的忙碌占比 ≥ `near_one_core_min`，并且它相对本次启动基线档的偏移在带上界之外，I1 才成立。这是设计稿「整进程只给 1 核时，看这个核的空闲时间是否接近零」的写法。D14 为真时用含软中断的 `T2:core_busy_frac_softirq:<角色>`，为假时用不含软中断的 `T2:core_busy_frac:<角色>`。
-   - **多核进程**，两条路，满足一条即成立：
+2. **I1（CPU）**，按核组算。作用对象：`measure_class` 不是 `observer` 的全部角色的登记进程；只用本档窗口内的数据。
+   - **核组**：同一角色里 `roles.json` 的 `procs[].cpus` 相交（直接或经同角色的另一进程）的登记进程合成一组。caplaunch 把一个角色的父进程与全部 worker 都绑在该角色的整组核上（E1-0：空汇父进程与 4 个 worker 同在核 0–3，负载器父子同在核 4），所以一个角色通常就是一个核组。
+   - **前提**：核组的核不与**其他角色**的任何登记进程相交（同角色的进程不算），否则 NOT_RUN；没有 `cpus` 的进程 NOT_RUN。单核规则另需 `pilot.json` 的 D14 结论（软中断算不算本进程的工作），没有 ⇒ NOT_RUN。
+   - **读数**：核级读数按核组算：以组内每核 `/proc/stat`（`cpus.jsonl`）为准（`core_busy_frac*`、`n_cores`，单核 / 多核分支按组的核数）。线程 utime+stime（`threads.jsonl`）作分解，线程份额与 GIL 域按进程算（每个进程一个 GIL）。线程的 `class`、`identified_as` 先取线程清单，再用 `tier.json` 的窗口始末线程表覆盖。`class = python` 的线程合计为该进程的 GIL 域。核上的忙碌减去组内全部线程，余量单列为 `unattributed_cores`。组内任一进程在窗口里没有两行线程读数 ⇒ 该组 NOT_RUN。
+   - **单元**：单核的核组是一个单元（读的就是那一个核）；多核的核组每个进程一个单元。每个单元都列出组内全部 `pids`。
+   - **单核核组**：核的忙碌占比 ≥ `near_one_core_min`，并且它相对本次启动基线档的偏移在带上界之外，I1 才成立。这是设计稿「整进程只给 1 核时，看这个核的空闲时间是否接近零」的写法。D14 为真时用含软中断的 `T2:core_busy_frac_softirq:<角色>`，为假时用不含软中断的 `T2:core_busy_frac:<角色>`。
+   - **多核核组的每个进程**，两条路，满足一条即成立：
      - GIL 域的核数 ≥ `near_one_core_min`，偏移超过 `T2:gil_domain_cores:<角色>`，并且 GIL 线程的运行队列等待占比 `T2:gil_run_delay_frac:<角色>` 没有超出带上界；
      - 某一条非 GIL 线程（grpc_core / zmq_io / other）单独 ≥ `near_one_core_min`，且偏移超过 `T2:nongil_thread_cores:<角色>`。
    - **为什么同时要绝对门槛和相对基线的偏移**：设计稿要求「一律与亚饱和档比」。如果自旋线程在空载时就接近 1 核，只看绝对门槛会误判。
    - **门槛来源**：`near_one_core_min` 来自 `pilot.json` 新增的可选键 `i1_calibration: {"near_one_core_min": (0, 1], "source_tiers": [...], "n": int ≥ 1}`，格式不对 ⇒ 13；缺这个键，或缺带、缺基线读数 ⇒ I1 NOT_RUN。
-   - **记录**：两种忙碌占比、GIL 域、运行队列、非 GIL 线程的偏移都逐档写进 `stats`，不论 pilot 有没有门槛或 D14 结论；这样 pilot 可以从它出现之前判过的树构建这些带。基线档本身的偏移按定义为 0，不记。
+   - **记录**：两种忙碌占比（每个单核核组一次）、GIL 域、运行队列、非 GIL 线程的偏移（每个多核核组里的每个进程一次）都逐档写进 `stats`，不论 pilot 有没有门槛或 D14 结论；这样 pilot 可以从它出现之前判过的树构建这些带。基线档本身的偏移按定义为 0，不记。
 3. **I3（积压在哪一侧）与 I2**：
    - **登记 I3 读数**：登记表 `judge.localize: {"readings": [{"name", "terms", "receiver", "sender"}]}`。`terms` 的写法与清空门读数相同（§8.1：只许 `backlog.*` 槽、本次启动的角色、`sign` 取 ±1、`agg` 取 sum / max）。`receiver`、`sender` 是本次启动的角色或 null，两者不能都为 null，也不能相同；`name` 必须唯一。两端计数之差（在途数）记作 receiver = 读者、sender = 发送方；一个角色自己的队列记作 receiver = 它、sender = null（设计稿 §2.4 的归因规则）。
    - **读数状态**：逐秒序列取 `snapshots.jsonl` 里每个登记进程在该秒的最后一个值，缺任一进程 ⇒ 该秒为空。状态分四种：
@@ -1244,12 +1249,12 @@ E0 第一轮的 pilot（`02_e0/E0/analysis/pilot.json`）定不出 `window_ns` /
    - **I2**：只作旁证。记录 `T2:loop_lag_p50_ns:<角色>`，不进判据，因为设计稿说要先过 E0 的标定曲线。
 4. **合并与输出（§10.2）**：
    - **合并**：成立的信号（I1、I3）指向的角色：
-     - 只有一个 ⇒ `LOCALIZED`，附 `finding`。`finding` 取值：`domain_saturated`（I1 由核空闲或 GIL 域判出，即「域到顶」）、`thread_saturated`（非 GIL 线程）、`backlog_at_entry`（只有 I3）。
+     - 只有一个 ⇒ `LOCALIZED`，附 `finding`；但其他候选角色有信号是 NOT_RUN（没有被排除）⇒ NOT_RUN，`holding` 照列，原因写明哪些竞争角色没算出（同一角色自己的另一个信号 NOT_RUN 不拦）。`finding` 取值：`domain_saturated`（I1 由核空闲或 GIL 域判出，即「域到顶」）、`thread_saturated`（非 GIL 线程）、`backlog_at_entry`（只有 I3）。
      - 多于一个 ⇒ `UNDETERMINED`；
      - 没有，且有信号没算出 ⇒ NOT_RUN；
      - 没有，且全部信号都算出了 ⇒ `NOT_LOCALIZED`。
      - 只有 X 成立的档才下结论；其余档写 `NOT_APPLICABLE`，统计量照记。
-   - **`tiers[].X.I` 的字段**：`I1`（逐进程的读数与线程份额）、`I2`、`I3`（读数与逐角色结果）、`holding`、`not_run`、`status`、`role`、`via`、`finding`、`measure_class`、`granularity: process`、`pids`、`thread_shares`。
+   - **`tiers[].X.I` 的字段**：`I1`（逐单元的读数与线程份额，每个单元带 `unit`（`core_group` / `process`）、`pid`（多核单元的进程，单核单元为 null）、`pids`（组内全部进程））、`I2`、`I3`（读数与逐角色结果）、`holding`、`not_run`、`status`、`role`、`via`、`finding`、`measure_class`、`granularity`（`process`：成立的单元里有多核单元的进程；`core_group`：只有单核核组；`role`：只有 I3）、`pids`（成立单元所在核组的全部进程）、`thread_shares`（这些进程的线程份额，按 pid 分）。
    - **档的判定**：P 全过、X 成立、而 I 是 `UNDETERMINED` 的档，判 `UNDETERMINED`（原因未定，不出上限）。被推翻的是正文「第一批只实现 P 与 X」那句。
    - **`tiers[].X.V`**：本档的心跳（第 7 条）。
    - **顶层新增字段**：
@@ -1264,23 +1269,25 @@ E0 第一轮的 pilot（`02_e0/E0/analysis/pilot.json`）定不出 `window_ns` /
    - C3、C5～C7、X、V 心跳用同一个分类，都传入 `ctx.roles`。C3 的明细加了 `by_category`。
    - 服务端日志里的原因（前端每请求积压上限的 503、看门狗中止）还没有写方，本条不读。
 7. **V**：
-   - **逐档心跳**：每个负载档对档位表声明的每个 busy / sleep 注入（`launch_inject` 加上本档的 `inject`）核对：
-     - 各 worker 摘要都报了该位点，且规格与声明的相同；
+   - **逐档心跳**：每个负载档对档位表声明的每个 busy / sleep 注入（`launch_inject` 加上本档的 `inject`）核对。「没有数据」与「注入失败」分开：
+     - 某个 worker 本档没有摘要（档没跑完、没写摘要）⇒ NOT_RUN，此时不判 `applied > 0`、不比经过次数；
+     - 摘要在、但没报该位点 ⇒ FAIL；报了的规格与声明的不同 ⇒ FAIL；
+     - `hits_delta`、`applied_delta`、`applied_ns_delta`、`aux_pending_at_end` 任一缺键 ⇒ NOT_RUN（不按 0 算）；
      - `activation_unchanged` 为真、`expected_applied_delta` 不为 null，否则 ⇒ NOT_RUN；
-     - `applied == expected_applied`，`aux_pending_at_end == 0`，`applied_ns ≥ applied × delta_ns`，`applied > 0`；
+     - `applied == expected_applied`，`aux_pending_at_end == 0`，`applied_ns ≥ applied × delta_ns`；全部摘要都在时另要 `applied > 0`；
      - 经过次数之和落在对账链给出的该角色那一跳的 [应有数 − 过载失败, 应有数] 内。每请求位点查 `requests` 链，每消息位点查 `messages` / `chunks` 链（`intervene.SITE_UNIT`）。没有对应的跳（如 `beat.step`、产品探针位点）⇒ NOT_RUN。
      - 摘要里出现了没有声明的注入 ⇒ FAIL。
-   - **跨启动**：`python3 -m capjudge.intervene --inputs <列表> --workdir <W> --out <新文件>`。列表每行一个已判（`JUDGED.tsv` 的 sha 与 `verdicts.json` 一致）、模式为 `P+X+I+V` 的树。实验与负载轴必须相同。不覆盖已有输出；出错 ⇒ 退出码 3。输出 `capkit.intervention/1`。
+   - **跨启动**：`python3 -m capjudge.intervene --inputs <列表> --workdir <W> --out <新文件>`。列表与已判核对同 `capjudge.boundary`（§14）：每行一个已判（`JUDGED.tsv` 的 sha 与 `verdicts.json` 一致）、模式为 `P+X+I+V` 的树。实验与负载轴必须相同。不覆盖已有输出（输出或 `.cmd.txt` 已存在 ⇒ 3），产物后写 `.cmd.txt`；出错 ⇒ 退出码 3。输出 `capkit.intervention/1`。每次启动的边界用 §14.1 的 `interval`（在第一个工具到顶档截断），判定器的 T4 并列为 `boundary_t4`。
    - **剂量–反应的规则**：
      - 先看心跳：带剂量的启动，心跳必须为 PASS 才用，否则排除并写明原因；
      - 对照：不带剂量的启动，它们都必须 `LOCALIZED` 到同一个角色；
      - 正向：只给该角色加剂量，至少要有两个 δ > 0。按 δ 从小到大，相邻两档的包络用 T5 比较，必须是「different，δ 小的一方边界更高」；
-     - 反向：剂量加在没有 VOID 档的 `load_source` / `stub_out_of_domain` 上，T5 必须是 `indistinguishable`；
+     - 反向：剂量加在 `load_source` / `stub_out_of_domain` 上，T5 必须是 `indistinguishable`。只有这样的反向启动才算「边界没动」的证据：没有 VOID 档、区间没有被工具到顶截断（`censored_by` 为空：截断说明加剂量的工具或别的工具先到顶，区间不是被定位角色的边界）、对照与反向两边的包络都闭合（开口端分不出动没动）；否则列进 `excluded` 写明原因，不进 `reverse`，也不判 FAIL；
      - 结论：任何一步边界上移，或反向剂量让边界移动 ⇒ FAIL；正向不足两个 δ，或没有可用的反向剂量 ⇒ NOT_RUN；全部满足 ⇒ PASS；其余（某一步没有超出噪声带）⇒ `INCONCLUSIVE`。
      - 结果只用 δ = 0 时的边界，不用剂量–反应的截距去推上限。
 8. **结论等级（`capjudge.grade`）**：
    - **逐启动**：按负载序，由第一个不是 STABLE 的档决定：
-     - `UNSTABLE` 档：I 定位到 `under_test` / `stub_in_domain` ⇒ `LOCALIZED`；定位到 `load_source` / `stub_out_of_domain` ⇒ `LOWER_BOUND`（工具先到顶）；I 为 UNDETERMINED ⇒ `UNDETERMINED`；其余 ⇒ `NOT_LOCALIZED`；
+     - `UNSTABLE` 档：I 定位到 `under_test` / `stub_in_domain` ⇒ `LOCALIZED`；定位到 `load_source` / `stub_out_of_domain` ⇒ `LOWER_BOUND`（工具先到顶）；其余 ⇒ `NOT_LOCALIZED`（I 为 UNDETERMINED 的档判定器已改判 `UNDETERMINED`，第 4 条）；
      - `UNDETERMINED` 档 ⇒ `UNDETERMINED`；
      - 只因 C1 / C2 红而 VOID 的档 ⇒ `LOWER_BOUND`（下端为它下面最高的稳定档）；
      - 其余 VOID / NOT_RUN 档跳过（区间变宽，跳过的档逐个列出）；
@@ -1292,12 +1299,12 @@ E0 第一轮的 pilot（`02_e0/E0/analysis/pilot.json`）定不出 `window_ns` /
      - 否则有 `LOWER_BOUND` ⇒ `LOWER_BOUND`；
      - 否则有 `NOT_LOCALIZED` ⇒ `NOT_LOCALIZED`；
      - 否则：V 为 PASS 且作用在同一角色上 ⇒ `CONFIRMED`；V 为 FAIL ⇒ `UNDETERMINED`；其余 ⇒ `LOCALIZED`。
-   - **粒度**：一律是进程（GIL 域），线程份额只并列报告。
+   - **粒度**：进程（GIL 域）；定位到的进程同在一个核上时是核组（等级的 `granularity` 取 I 的）。线程份额只并列报告。
    - **两处不是设计稿原文的规定**（推断，请裁决）：
      - `NOT_LOCALIZED`：设计稿没有给「P + X 成立而无 I」定等级；
      - 「V FAIL ⇒ UNDETERMINED」：干预结果与定位矛盾时怎么处理，设计稿没有写。
 9. **§10.4 样本**：
-   - **新增三个，共 36 个**：`i_server_slow`（服务端慢：待发队列增长、在途数持平 ⇒ nullsse，`LOCALIZED`）、`i_reader_slow`（读者慢：在途数顶在平台 ⇒ capload，即负载源，`LOWER_BOUND`）、`i_conflict`（I1 指向 nullsse、I3 指向 capload ⇒ 档 4 `UNDETERMINED`）。
+   - **新增三个**：`i_server_slow`（服务端慢：待发队列增长、在途数持平 ⇒ nullsse，`LOCALIZED`）、`i_reader_slow`（读者慢：在途数顶在平台 ⇒ capload，即负载源，`LOWER_BOUND`）、`i_conflict`（I1 指向 nullsse、I3 指向 capload ⇒ 档 4 `UNDETERMINED`）。
    - **`sat_spin_thread_same_process` 改用 `P+X+I+V`**：事件循环在档 4 从 0.10 核升到 0.27 核，自旋线程为 0.70 核，档 4 判出 `LOCALIZED`、`finding: domain_saturated`。
    - **全部样本的合成 `pilot.json`**：加了 `i1_calibration`（0.95）和 I 用的带；样本线程的 CPU 改成可以按档变化（`rate_at`），其余样本的读数不变。
    - **`expect.json`**：新增 `tier_localisation`、`grade`，`run_selftest.py` 比对 `tiers[].X.I` 与顶层 `grade`。
@@ -1308,11 +1315,11 @@ E0 第一轮的 pilot（`02_e0/E0/analysis/pilot.json`）定不出 `window_ns` /
     - ④ `beat.step` 等没有对账跳的位点，心跳 NOT_RUN。
     - ⑤ 设计稿「E0 自检在哪类已知答案上失败，对应形态的等级封顶在已定位」没有实现。
     - ⑥ 弱读者检验仍未实现（B2-2A-10①），C2 的「积压所在一侧」由 I3 承担，但 I3 不进 P。
-    - ⑦ I3 按角色判，I1 按进程判。多进程角色的「指向同一进程」按角色比较，`pids` 列出 I1 成立的进程。
+    - ⑦ I3 按角色判，I1 按核组 / 进程判（第 2 条）。多进程角色的「指向同一进程」按角色比较，`pids` 列出 I1 成立的单元所在核组的全部进程。
     - ⑧ 合成的读者慢样本为了让 I 被判到，保持 C1 绿；真实的读者慢多半会让 C1 的 FIONREAD 变红，档 VOID，等级同样是 `LOWER_BOUND`（经 C1 那条路）。
     - ⑨ 分析脚本 `boundary.py`、`scaling.py`、`e1_report.py` 与 §14 不在本步（已补，见勘误 B2-2E-A）。
 11. **验证**：
-    - **测试**：`tests/judge/test_localize.py`、`tests/judge/test_intervene.py`（I1 单核 / 多核 / 非 GIL / 独占核，I3 四种状态与两侧规则，合并，失败归类，心跳逐项，剂量–反应 PASS / FAIL / INCONCLUSIVE / NOT_RUN，降序轴，等级，`mode` 与 `localize` 的输入核对，`i1_calibration` 格式，CLI）；`tests/judge` 全量 220 passed；样本自测 36 个全过；变异 N1～N14 全部杀死（`_local/b2-judge/mut/summary2.txt`）。
+    - **测试**：`tests/judge/test_localize.py`、`tests/judge/test_intervene.py`（I1 单核 / 多核 / 非 GIL / 独占核，I3 四种状态与两侧规则，合并，失败归类，心跳逐项，剂量–反应 PASS / FAIL / INCONCLUSIVE / NOT_RUN，降序轴，等级，`mode` 与 `localize` 的输入核对，`i1_calibration` 格式，CLI）；`tests/judge` 全量、样本自测全过；变异 N1～N14 全部杀死（`_local/b2-judge/mut/summary2.txt`；实测数字记在 `_progress/b2-judge.md`）。
     - **e2e**：E0(b) J5933747 L1～L4 拷到 `_local/b2-judge/e2e/trees2`，在进程内按 `P+X+I+V` 判。门槛用诊断值 0.90，不是登记值；E0 第一轮没有 X 的带，所以 X 为 NOT_RUN，只看 I1。结果：
       - s1、s2、s3 在过载档（档 6）都是 relay1 的 I1 成立（核忙碌 0.996～0.998），亚饱和档与近边界档都不成立；
       - s2 的 relay2（δ 较小）不成立；
@@ -1324,25 +1331,40 @@ E0 第一轮的 pilot（`02_e0/E0/analysis/pilot.json`）定不出 `window_ns` /
 
 新增正文 §14（分析脚本的输入与输出）。判定器的输入、输出与退出码都不变。
 
-1. **`capjudge.boundary`、`capjudge.scaling`（§14.1、§14.2）**：薄封装 `analysis/boundary.py`、`analysis/scaling.py`。共同的 `.cmd.txt` 由 `capjudge.cmdrec` 写，满足 DATA-AND-ANALYSIS §4 第 8 条。
-2. **跨启动用的区间不完全等于判定器的 T4**：在第一个工具到顶档以下截断（§14.1），工具先到顶时上端写 null。判定器的 `boundary_T4` 原样并列输出。`capjudge.grade` 的逐启动区间是另一种口径：它取第一个非稳定档，非单调时不同。T4 包络与 T5、T6 一律用 `interval`。
+1. **`capjudge.boundary`、`capjudge.scaling`（§14.1、§14.2）**：薄封装 `analysis/boundary.py`、`analysis/scaling.py`。共同的 `.cmd.txt` 由 `capjudge.cmdrec` 写，满足 DATA-AND-ANALYSIS §4 第 8 条；`capjudge.calib`（构建器）与 `capjudge.intervene` 同样写 `.cmd.txt`、同样拒绝已存在的产物或记录。
+2. **跨启动用的区间不完全等于判定器的 T4**：在第一个工具到顶档以下截断（§14.1），工具先到顶时上端写 null。判定器的 `boundary_T4` 原样并列输出。`capjudge.grade` 的逐启动区间是另一种口径：它取第一个非稳定档，非单调时不同。每个读方各选口径：T5（`boundary --compare`）与 V（`intervene` 的正向、反向）用截断后的 `interval`，问的是被定位角色的边界；T6 与对侧翻倍归因（`scaling`）用判定器的 T4（`by_block_t4`），问的正是哪一侧先到顶，工具到顶档是证据；标定上限（§9.6）用 T4 下端，并按等级把未定位到被绑定角色的启动记为 `censored`。
 3. **区组 = 作业号**（设计稿 §2.6 T5「同区组」、RUNBOOK §1.3「3 个作业 = 3 个区组」）。同一作业里同一臂有几次启动时，它们进同一个区组的包络。
 4. **T6 用区间算比值**：设计稿 T6 的分子分母是数，这里两臂的边界都是区间，所以逐区组给比值的上下界，判断取不利端（§14.2）。只用下端、只用上端的两个 T6 区间并列给出，作对照。`grows-min`、`flat-max` 的取值设计稿没有给，要在实验登记表里事先登记，运行时显式传入。
 5. **对侧翻倍按 `kind` 分侧**：client 侧是负载器，server 侧是空汇 / 桩，aux 角色不参与。E1 卡「只加 Z 不加 W 时不再增长 ⇒ 限制在负载器；只加 W 不加 Z 时不再增长 ⇒ 限制在空汇」写成：加倍的一侧 `grows` ⇒ 限制在这一侧，`flat` ⇒ 限制在另一侧；两侧的结论吻合才给出 `client` / `server`。
 6. **`capjudge.e1report`（§14.3）**：为了让字节对账不复写空汇的头格式，`capload.sink` 抽出了 `response_head(rid, foreign)`，空汇与分析共用。空汇的写法与字节数不变。
-7. **空汇健康的带从哪来**：E1-0 的 `e1_noise` 里没有空汇的 `T3:loop_lag_p99_ns`、`T3:thread_cpu_cores`。这两个统计量只有判定器跑 C2 时才写进 `stats`（没有 `stub_calib` 时 C2 是 NOT_RUN，但仍会记录），而 E1-0 的检查清单没有 C2。所以对现有 E1 树，`sink_health` 是 NOT_RUN。要用它，标定树的 `judge.checks` 要加 C2，再用 `calib_build.py near-boundary --regime subsat` 建带并登记。另外，「线程 CPU 留在空载带内」按字面实现：空汇的 CPU 随负载线性上升，高负载档可能因此 OUTSIDE。这条判据是否应改成「离 1 核足够远」，**挑战设计，待裁决**。
+7. **空汇健康的带从哪来**：E1-0 的 `e1_noise` 里没有空汇的 `T3:loop_lag_p99_ns`、`T3:thread_cpu_cores`。这两个统计量只有判定器跑 C2 时才写进 `stats`（没有 `stub_calib` 时 C2 是 NOT_RUN，但仍会记录），而 E1-0 的检查清单没有 C2。所以对现有 E1 树，`sink_health` 是 NOT_RUN。要用它，标定树的 `judge.checks` 要加 C2，再用 `calib_build.py near-boundary --regime subsat` 建带并登记。另外，「线程 CPU 留在空载带内」按字面实现：空汇的 CPU 随负载线性上升，高负载档可能因此 OUTSIDE。已按推荐项定（R1 自审 C30）：维持字面实现，OUTSIDE 只作 E1 报告的旁证，不进判定；是否改成「离 1 核足够远」（需要一个另行登记的阈值）列为 follow-up。
 8. **斜率对账只用 `P+X+I+V` 判过的启动**，因为剂量与心跳只在这种模式下写进 `verdicts.json`。p 由构造给出，不从心跳计数反推。
 9. **已知缺口**：
-   - `scaling` 的两个界没有登记表的机器可读入口，只靠命令行加 `.cmd.txt` 记录；`slope` 没有另设容差，「斜率为 1」只看区间是否包含 1，区间宽度由档距决定；
+   - `scaling` 的两个界没有登记表的机器可读入口，只靠命令行加 `.cmd.txt` 记录；`slope` 没有另设容差：「斜率为 1」要求区间包含 1、且下端 > 0（同时包含 0 的区间分不出「斜率 1」与「剂量没让边界动」，记 INCONCLUSIVE），区间宽度由档距决定；
    - `boundary` 的筛选不读 `launch_end.json`（判定器的 `upstream` 已包括它）；
    - gRPC 的 accepts 没有计数方；
    - `slope` 不检验截距。
 10. **验证**：
-    - **测试**：`tests/judge/test_analysis.py`，覆盖区间截断、T4 重算核对、T5 区组、对侧翻倍的分侧与归因、斜率 PASS / FAIL / INCONCLUSIVE / NOT_RUN、字节与 accepts、逐档摘要齐全、拓扑、空汇健康的登记核对与带比较、`.cmd.txt`、不覆盖。变异 M1～M7、E1～E7 全部杀死（`_local/b2-judge/mut/summary3.txt`～`summary5.txt`）。`tests/judge` 全量 247 passed，`tests/capload` 33 passed，样本自测 36 个全过。
+    - **测试**：`tests/judge/test_analysis.py`，覆盖区间截断、T4 重算核对、T5 区组、对侧翻倍的分侧与归因、斜率 PASS / FAIL / INCONCLUSIVE / NOT_RUN、字节与 accepts、逐档摘要齐全、拓扑、空汇健康的登记核对与带比较、`.cmd.txt`、不覆盖。变异 M1～M7、E1～E7 全部杀死（`_local/b2-judge/mut/summary3.txt`～`summary5.txt`）。`tests/judge`、`tests/capload` 全量与样本自测全过（实测数字记在 `_progress/b2-judge.md`）。
     - **e2e**：全部在 W 只读下进行，产物在 `_local/b2-judge/e2e/an/`：
       - E0(b) 12 棵已判真树跑 `boundary`；
       - e0a 3 棵树、E1-0 15 棵树（按 R、M 两条轴分组）跑 `boundary` 与 `e1report`：字节对账全部 PASS（HTTP 重建头后相等，gRPC 直接相等）；HTTP 的 accepts 全部 PASS（new-per-request 臂 30200 = 30200）；gRPC 的 accepts 是 NOT_RUN；这些树判定时还没有噪声带，T4 都是 `none`，斜率都是 NOT_RUN。
     - SM-9 的离线判读写在 `_local/b2-judge/sm9.md`。
+
+#### B2-R1：本子批 R1 自审修复（2026-11-15）
+
+R1 自审（slug `capkit-b2judge-J17871`）发现的问题已直接改进本子批的正文（§9.6、§9.8、§14）与上面 B2-2A、B2-2E、B2-2E-A 各条，这里只列改了哪里：
+
+1. I1 按核组算，同角色共享核（父进程、兄弟 worker）不再算「不独占」：B2-2E-2、B2-2E-4 的字段、B2-2E-10⑦。
+2. 合并：其他候选角色有信号 NOT_RUN 时不给 LOCALIZED：B2-2E-4。
+3. T5：没有一个区组两边都闭合 ⇒ NOT_RUN：§14.1。V 的正向、反向改用截断后的区间；反向启动被截断、或对照 / 反向包络开口 ⇒ 排除，不判 FAIL：B2-2E-7。心跳分开「没有数据」（NOT_RUN）与「注入失败」（FAIL）：B2-2E-7。
+4. 斜率对账的 PASS 另要区间下端 > 0：§14.3、B2-2E-A-9。字节对账分方向，空汇多发且负载器有失败 / 未完成请求 ⇒ NOT_RUN；计数缺键 ⇒ NOT_RUN：§14.3。
+5. `scaling` 用判定器的 T4（`boundary` 新增 `envelope_t4`、`by_block_t4`）：§14.1、§14.2、B2-2E-A-2。
+6. C4 失败请求不读服务端的中止前计数、服务端记录不跨角色合并：B2-2A-5。C12 的负载器单位读 `counts.sent`：B2-2A-6。C1 / C2 对 `censored` 上界超出 ⇒ NOT_RUN：B2-2A-3、§9.6。
+7. 标定：`near_boundary_noise` 可登记多份：B2-2A-1、B2-2A-2、§9.8。构建器剔除 UNDETERMINED：§9.8、B2-2A-8。`loadgen_band` / `stub_calib` 上界按等级归因记 `censored`、输入写 `attribution`：§9.6。`calib`、`intervene` 写 `.cmd.txt`：B2-2A-8、B2-2E-7。
+8. 等级：去掉判定器不会走到的「UNSTABLE 档 I 为 UNDETERMINED」分支：B2-2E-8。空汇健康的判据按推荐项定：B2-2E-A-7。已知缺口追加 C12 槽来源单位含父进程：B2-2A-10⑦。
+9. 样本：新增 `i_reader_slow_real_pins`、`good_real_pins`（集群上的拓扑：父进程登记、角色核组共享）；`c12_idle_worker` 改为 worker 1 一个请求都没发出（`samples/README.md`）。
+10. 验证：`tests/judge` 全量、样本自测、变异（`_local/b2-judge/mut/summary6.txt`）与 e2e 的实测记录在 `_progress/b2-judge.md`。
 
 ## 审阅记录（r2，2026-11-13）
 

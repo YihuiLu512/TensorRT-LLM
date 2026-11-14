@@ -6,7 +6,7 @@
   "job_id": "local-sample-regime-nb-missing",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "b8ffbcb0ec5bda13d3d6e6e7d3238be7a71281bb88caebe75f1239ac01a958e8",
+  "register_sha": "eb3e34bf0ab302cdda28ab1a4d13c92bb4f9b845714bb191e5e04f80d73babc2",
   "restart_count": 0,
   "role": "gate",
   "tier_label": null,
@@ -64,6 +64,6 @@
  "schema": "capkit.exclusivity/1",
  "slurm_view_error": null,
  "slurm_view_file": "synthetic",
- "written_mono_ns": 9839918200183100,
- "written_wall": "2026-11-14T13:38:14.280Z"
+ "written_mono_ns": 9852506415272803,
+ "written_wall": "2026-11-14T17:08:02.495Z"
 }

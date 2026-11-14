@@ -88,7 +88,8 @@ def _shape_for(ctx, kind, role):
 def _shape_items(r, ctx, kind, shape, tier, role, worker, st, why, split):
     """Compare one worker with its calibrated shape: planned load against the healthy maximum
     (only on tiers the shape's match covers) and every statistic of the kind against the
-    shape's band. Above -> RED. Returns True when every item was evaluated."""
+    shape's band. Above -> RED, except a planned load above a censored maximum (only "at
+    least this" is known): NOT_RUN. Returns True when every item was evaluated."""
     names = calib.SHAPE_KINDS[kind][3]
     w = "%s.w%d" % (role, worker)
     ok = True
@@ -105,6 +106,11 @@ def _shape_items(r, ctx, kind, shape, tier, role, worker, st, why, split):
         if load is None:
             r.not_run.append("%s: planned load in %s not computable for this tier"
                              % (w, mx["load_key"]))
+            ok = False
+        elif load > mx["value"] and mx["censored"]:
+            r.not_run.append("%s planned %.6g %s beyond the calibrated range: the healthy "
+                             "maximum %.6g is censored (only a lower bound)"
+                             % (w, load, mx["load_key"], mx["value"]))
             ok = False
         elif load > mx["value"]:
             r.red += 1
@@ -126,8 +132,9 @@ def check_c1(ctx, td, record):
     """Per load_source worker against the loadgen_band shape its role is bound to (INTERFACES
     9.6): planned load vs the healthy maximum, and the four health statistics
     (calib.LOADGEN_STATS: send-lag trend T1, send-lag p99, FIONREAD non-zero fraction,
-    event-loop lag p99) vs the shape's bands. Above -> RED; no binding, statistic or band ->
-    NOT_RUN. A worker without summary or request records -> RED."""
+    event-loop lag p99) vs the shape's bands (_shape_items). Above -> RED (planned load
+    above a censored maximum: NOT_RUN); no binding, statistic or band -> NOT_RUN. A worker
+    without summary or request records -> RED."""
     r = Result("C1", td.tier.seq, "launch.json roles[measure_class=load_source].workers")
     for role in _roles_of(ctx, "load_source"):
         name = role["role"]
@@ -157,8 +164,8 @@ def check_c2(ctx, ld, td, record):
     """Out-of-domain stub health (design 2.6 / 2.7 C2; INTERFACES 9.7): per worker of every
     stub_out_of_domain role, against the stub_calib out_of_domain shape its role is bound to:
     planned load (an even split over the workers) vs the healthy maximum, event-loop lag p99
-    and thread CPU (cores) vs the shape's bands. stub_in_domain roles are not a precondition
-    (design 2.6) and are only listed."""
+    and thread CPU (cores) vs the shape's bands, as C1 (_shape_items). stub_in_domain roles
+    are not a precondition (design 2.6) and are only listed."""
     r = Result("C2", td.tier.seq, "launch.json roles[measure_class=stub_out_of_domain].workers")
     for role in _roles_of(ctx, "stub_out_of_domain"):
         name = role["role"]
@@ -479,12 +486,17 @@ def _chunk_rows(ctx, td, r, next_drain=None):
 def check_c4(ctx, td):
     """Every request planned in this tier that got a response carries exactly the tier's
     max_tokens output tokens (design 2.7 C4). The count of a request is the load generator's
-    `tokens` column, or, where the generator does not count (-1: capgrpc.load), the `tokens`
-    of the server.streams row with the same req_id in this tier. Expected = schedule
-    meta.per_tier x client roles (each client role runs the whole schedule). A count other
-    than max_tokens -> RED whatever the request's status; a failed request (status != 0)
-    without a count is checked (C3 / X account for it); an OK request without a count, or a
-    planned request without a record -> NOT_RUN."""
+    `tokens` column (>= 0, whatever the request's status: capload counts a short stream too);
+    where the generator does not count (-1: capgrpc.load) and the request is OK (status 0),
+    the `tokens` of the server.streams row with the same req_id in this tier. The server side
+    is read per server role and only when the req_id names one stream: with more than one
+    server role writing stream records, or more than one client role needing it, that part is
+    NOT_RUN (each client role runs the whole schedule, so req_ids repeat). A failed request is
+    never compared with the server's record (a cancelled or timed-out stream records the
+    tokens sent before it ended): without a generator count it is checked only (C3 / X
+    account for it). Expected = schedule meta.per_tier x client roles. A count other than
+    max_tokens -> RED; an OK request without a count, or a planned request without a record
+    -> NOT_RUN."""
     r = Result("C4", td.tier.seq, "schedule meta.per_tier x launch.json roles[kind=client]")
     clients = client_roles(ctx)
     if clients is None:
@@ -493,40 +505,74 @@ def check_c4(ctx, td):
     seq, want = td.tier.seq, td.tier.max_tokens
     r.expected = int(ctx.schedule_meta["per_tier"].get(str(seq), 0)) * len(clients)
     server = {}
-    for _ident, _h, cols in td.capbins.get("server.streams", []):
+    for ident, _h, cols in td.capbins.get("server.streams", []):
+        mine = server.setdefault(ident.get("role"), {})
         for rid, tok, ts in zip(cols["req_id"], cols["tokens"], cols["tier_seq"]):
             if ts == seq:
-                server.setdefault(rid, set()).add(tok)
-    bad, uncounted = [], 0
+                mine.setdefault(rid, set()).add(tok)
     names = {x["role"] for x in clients}
+    rows = []
     for ident, _h, cols in td.capbins.get("loadgen.requests", []):
         if ident.get("role") not in names:
             continue
-        for rid, st, tok, ts in zip(cols["req_id"], cols["status"], cols["tokens"],
-                                    cols["tier_seq"]):
-            if ts != seq:
-                continue
-            got = {tok} if tok >= 0 else server.get(rid, set())
-            if got:
-                r.checked += 1
-                if got != {want}:
-                    r.red += 1
-                    bad.append((ident.get("role"), rid, sorted(got)))
-            elif st != 0:
-                r.checked += 1
-            else:
-                uncounted += 1
+        rows += [(ident.get("role"), rid, st, tok) for rid, st, tok, ts in
+                 zip(cols["req_id"], cols["status"], cols["tokens"], cols["tier_seq"])
+                 if ts == seq]
+    need = sorted({role for role, _rid, st, tok in rows if tok < 0 and st == 0})
+    ambiguous = None
+    if need and (len(server) > 1 or len(need) > 1):
+        ambiguous = ("server-side counts are per req_id but %d client role(s) %s need them "
+                     "and %d server role(s) %s write stream records"
+                     % (len(need), need, len(server), sorted(server)))
+    table = next(iter(server.values())) if len(server) == 1 else {}
+    bad, uncounted, unmatched = [], 0, 0
+    for role, rid, st, tok in rows:
+        if tok >= 0:
+            got = {tok}
+        elif st != 0:
+            r.checked += 1
+            continue
+        elif ambiguous:
+            unmatched += 1
+            continue
+        else:
+            got = table.get(rid, set())
+        if got:
+            r.checked += 1
+            if got != {want}:
+                r.red += 1
+                bad.append((role, rid, sorted(got)))
+        else:
+            uncounted += 1
     if bad:
         r.detail.append("%d request(s) with output tokens != max_tokens %d, first: %s"
                         % (len(bad), want, bad[:5]))
     if uncounted:
         r.not_run.append("%d OK request(s) without a token count on either side" % uncounted)
-    if r.checked + uncounted < r.expected:
+    if unmatched:
+        r.not_run.append("%d OK request(s) not compared: %s" % (unmatched, ambiguous))
+    if r.checked + uncounted + unmatched < r.expected:
         r.not_run.append("%d of %d planned requests have a record"
-                         % (r.checked + uncounted, r.expected))
+                         % (r.checked + uncounted + unmatched, r.expected))
     if r.expected == 0:
         r.not_run.append("no request planned in this tier for %d client role(s)" % len(clients))
     return r.finish()
+
+
+def _sent_parts(ctx, td, role):
+    """Requests each load-generator worker sent in this tier ({"w<k>": counts.sent}), None; or
+    (None, why)."""
+    docs = td.summaries.get(role, {})
+    out, missing = {}, []
+    for k in range(ctx.roles[role]["workers"]):
+        v = summary_value(docs[k], "counts.sent") if k in docs else None
+        if not isinstance(v, int) or isinstance(v, bool):
+            missing.append(k)
+        else:
+            out["w%d" % k] = v
+    if missing:
+        return None, "workers %s have no integer summary counts.sent" % missing
+    return out, None
 
 
 def check_c12(ctx, ld, td, next_drain):
@@ -534,7 +580,9 @@ def check_c12(ctx, ld, td, next_drain):
     hop of a `requests` reconcile chain that has more than one unit: workers >= 2 for a
     summary source (one unit per worker summary), expected_procs >= 2 for a snapshot slot
     (one unit per registered process). Expected = the units' count from launch.json. Every
-    unit's count of that hop in this tier must be > 0; a unit with 0 means the doubling did
+    unit's count in this tier must be > 0: a load generator's (kind client, summary source)
+    is the requests it sent (summary counts.sent: requests that all timed out still carried
+    traffic), any other unit's is the hop's own count. A unit with 0 means the doubling did
     not take effect -> NOT_RUN, never PASS (design 2.7 positive control). A role on several
     request chains is checked once (its first hop)."""
     r = Result("C12", td.tier.seq,
@@ -551,15 +599,20 @@ def check_c12(ctx, ld, td, next_drain):
                 continue
             seen.add(hop["role"])
             r.expected += n
-            parts, why, is_red = _hop_parts(ctx, ld, td, hop, next_drain)
+            if summary and role.get("kind") == "client":
+                src = "summary.counts.sent"
+                parts, why = _sent_parts(ctx, td, hop["role"])
+            else:
+                src = hop["source"]
+                parts, why, _is_red = _hop_parts(ctx, ld, td, hop, next_drain)
             if parts is None:
-                r.not_run.append("%s %s: %s" % (hop["role"], hop["source"], why))
+                r.not_run.append("%s %s: %s" % (hop["role"], src, why))
                 continue
             r.checked += len(parts)
             idle = sorted(u for u, v in parts.items() if v <= 0)
             if idle:
                 r.not_run.append("%s %s: %s carried no traffic in this tier"
-                                 % (hop["role"], hop["source"], idle))
+                                 % (hop["role"], src, idle))
             if len(parts) < n:
                 r.not_run.append("%s: %d of %d units have a count" % (hop["role"],
                                                                      len(parts), n))

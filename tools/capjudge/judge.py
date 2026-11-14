@@ -377,7 +377,7 @@ def judge_tree(ctx, log, code_ok=True, code_note=""):
                                                        r.checked, r.red, r.detail[:3]))
     # ---- per tier ---------------------------------------------------------------------------
     tier_out = []
-    i_cache = {}  # (tier seq, pid) -> I1 readings, shared so the baseline is read once
+    i_cache = {}  # (tier seq, group pids) -> I1 readings, shared: the baseline is read once
     for t in tt.tiers:
         entry = {"tier_seq": t.seq, "tier_label": t.label, "kind": t.kind,
                  "load_value": t.load_value, "judged": t.kind in ("up", "down")}

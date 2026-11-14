@@ -119,6 +119,22 @@
    "source_tiers": [],
    "unit": "synthetic"
   },
+  "T2:gil_domain_cores:capload": {
+   "max": 0.05,
+   "min": -0.05,
+   "n": 6,
+   "regime": "subsat",
+   "source_tiers": [],
+   "unit": "synthetic"
+  },
+  "T2:gil_run_delay_frac:capload": {
+   "max": 0.05,
+   "min": -0.05,
+   "n": 6,
+   "regime": "subsat",
+   "source_tiers": [],
+   "unit": "synthetic"
+  },
   "T2:i3_backlog:sink_pending": {
    "max": 3,
    "min": -3,
@@ -130,6 +146,14 @@
   "T2:i3_backlog:sse_in_flight": {
    "max": 3,
    "min": -3,
+   "n": 6,
+   "regime": "subsat",
+   "source_tiers": [],
+   "unit": "synthetic"
+  },
+  "T2:nongil_thread_cores:capload": {
+   "max": 0.05,
+   "min": -0.05,
    "n": 6,
    "regime": "subsat",
    "source_tiers": [],

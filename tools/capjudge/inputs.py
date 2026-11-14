@@ -21,7 +21,7 @@ from capcommon.snapshot import SnapshotError, read_snapshot_file
 from capcommon.tiers import TierTable, TierTableError
 
 from . import calib
-from .thresholds import BandError, Bands
+from .thresholds import MULTI_KINDS, BandError, Bands
 
 LAUNCH_SCHEMA = "capkit.launch/1"
 REGISTER_SCHEMA = "capkit.register/1"
@@ -69,7 +69,9 @@ class Ctx:
         self.schedule_tier = None  # array('h'): planned tier of every req_id
         self.roles = {}  # role -> launch.json roles[] entry
         self.bands = Bands()
-        self.calib_docs = {}  # kind -> validated calibration document
+        # kind -> validated calibration document; a kind in thresholds.MULTI_KINDS (registered
+        # possibly more than once) -> {relpath: document}
+        self.calib_docs = {}
         self.calib_bind = {}  # kind in BIND_KINDS -> {role: shape}
         self.tier_regime = {}  # tier seq -> "subsat" / "near_boundary" (load tiers)
         self.mode = None  # register.json judge.mode
@@ -248,7 +250,10 @@ def _load_calibration(ctx):
             ctx.bands.add_source(c["kind"], c["relpath"], c["sha256"], doc)
         except BandError as e:
             raise InputInvalid(item, str(e))
-        ctx.calib_docs[c["kind"]] = doc
+        if c["kind"] in MULTI_KINDS:
+            ctx.calib_docs.setdefault(c["kind"], {})[c["relpath"]] = doc
+        else:
+            ctx.calib_docs[c["kind"]] = doc
     inline = ctx.register.get("inline_thresholds")
     if inline:
         if ctx.ident.experiment != "E0":

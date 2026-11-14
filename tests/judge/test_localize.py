@@ -1,8 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Internal localisation I (design 2.6; INTERFACES errata B2-2E): I1 per process (single core:
-core idle; several cores: GIL domain summed with run-queue wait, or one non-GIL thread), I3 by
-the side where the backlog sits, and the combination into LOCALIZED / UNDETERMINED / ...; plus
+"""Internal localisation I (design 2.6; INTERFACES errata B2-2E): I1 per core group (a role's
+processes whose cores intersect, parent included; single core: core idle; several cores: per
+process, GIL domain summed with run-queue wait, or one non-GIL thread), I3 by the side where
+the backlog sits, and the combination into LOCALIZED / UNDETERMINED / ...; plus
 reclassify_failure's load-generator connection failures."""
 
 from types import SimpleNamespace as NS
@@ -53,8 +54,9 @@ def _td(pid, classes, seq=4):
     return NS(tier=_tier(seq), tier_json={"threads": {"wstart": {str(pid): th}}}, summaries={})
 
 
-def readings(core_rates, classes, cores=(4,), others=(), softirq=0, run_delay=None):
-    """proc_readings of pid 7 on `cores`; core_rates {tid: ticks/s}."""
+def group(core_rates, classes, cores=(4,), others=(), softirq=0, run_delay=None):
+    """group_readings of pid 7 (role r) alone on `cores`; core_rates {tid: ticks/s}; others:
+    one process of role o on each listed core."""
     pid = 7
     cpu_rows = []
     total = sum(core_rates.values())
@@ -63,18 +65,29 @@ def readings(core_rates, classes, cores=(4,), others=(), softirq=0, run_delay=No
     procs = [{"pid": pid, "role": "r", "cpus": list(cores)}] + [
         {"pid": 100 + i, "role": "o", "cpus": [c]} for i, c in enumerate(others)]
     ld = _ld(cpu_rows, _th_rows(pid, core_rates, run_delay), procs)
-    return L.proc_readings(ld, _td(pid, classes), pid)
+    (g,), nocpu = L.core_groups(ld, "r")
+    assert nocpu == []
+    return L.group_readings(ld, _td(pid, classes), g)
+
+
+def readings(*a, **kw):
+    """What i1_process reads for pid 7: the single-core group's unit, or pid 7's unit."""
+    g, why = group(*a, **kw)
+    if g is None:
+        return None, why
+    return L.unit_view(g, None if g["n_cores"] == 1 else 7), None
 
 
 # ---- I1 readings -----------------------------------------------------------------------------
 
 def test_single_core_readings_and_gil_sum():
-    cur, why = readings({7: 60, 8: 30, 9: 5}, {7: "python", 8: "python", 9: "grpc_core"},
-                        softirq=2)
-    assert why is None and cur["n_cores"] == 1
-    assert abs(cur["core_busy_frac"] - 0.95) < 1e-9  # 95 user; softirq left out
-    assert abs(cur["core_busy_frac_softirq"] - 0.97) < 1e-9  # + 2 softirq
-    assert abs(cur["gil_cores"] - 0.9) < 1e-9
+    g, why = group({7: 60, 8: 30, 9: 5}, {7: "python", 8: "python", 9: "grpc_core"},
+                   softirq=2)
+    assert why is None and g["n_cores"] == 1 and g["pids"] == [7]
+    assert abs(g["core_busy_frac"] - 0.95) < 1e-9  # 95 user; softirq left out
+    assert abs(g["core_busy_frac_softirq"] - 0.97) < 1e-9  # + 2 softirq
+    assert abs(g["procs"][7]["gil_cores"] - 0.9) < 1e-9
+    cur = L.unit_view(g)
     assert {t["tid"]: t["class"] for t in cur["threads"]} == {7: "python", 8: "python",
                                                             9: "grpc_core"}
 
@@ -91,9 +104,9 @@ def test_d14_picks_the_softirq_statistic():
     assert r["status"] == "NOT_RUN" and "D14" in r["reasons"][0]
 
 
-def test_shared_cores_are_not_run():
+def test_cores_shared_with_another_role_are_not_run():
     cur, why = readings({7: 50}, {7: "python"}, cores=(4,), others=(4,))
-    assert cur is None and "shared" in why
+    assert cur is None and "shared" in why and "another role" in why
     cur, why = readings({7: 50}, {7: "python"}, cores=(4,), others=(5,))
     assert cur is not None
 
@@ -173,6 +186,98 @@ def test_multi_core_non_gil_thread_alone():
     assert (r["status"], r["via"], r["threads_hot"]) == ("TRUE", "non_gil_thread", [9])
     no_band = {k: v for k, v in MC.items() if "nongil" not in k}
     assert _i1(hot, base, no_band)["status"] == "NOT_RUN"
+
+
+# ---- I1 on the real topology: a parent registered with its workers on the role's core set ----
+
+# roles.json as caplaunch writes it (E1-0): sink parent 10 + workers 11, 12 on cores 0-1; ld
+# parent 20 + its worker 21 on core 2; canary 30 (observer) on core 3.
+REAL = [{"pid": 10, "role": "sink", "cpus": [0, 1]}, {"pid": 11, "role": "sink", "cpus": [0, 1]},
+        {"pid": 12, "role": "sink", "cpus": [0, 1]}, {"pid": 20, "role": "ld", "cpus": [2]},
+        {"pid": 21, "role": "ld", "cpus": [2]}, {"pid": 30, "role": "canary", "cpus": [3]}]
+
+
+def _real_ld(rates, procs=REAL):
+    """rates: {pid: ticks/s of its one python thread (tid = pid)}; each core's busy ticks are
+    the sum over the processes pinned to it, split evenly over a process's cores."""
+    busy = {}
+    for p in procs:
+        for c in p["cpus"]:
+            busy[c] = busy.get(c, 0) + rates.get(p["pid"], 0) // len(p["cpus"])
+    cpu_rows = [r for c in sorted(busy) for r in _cpu_rows(c, busy[c])]
+    th = [r for p in procs for r in _th_rows(p["pid"], {p["pid"]: rates.get(p["pid"], 0)},
+                                             run_delay={})]
+    return _ld(cpu_rows, th, procs)
+
+
+def _real_td(seq):
+    th = {str(p["pid"]): [{"tid": p["pid"], "class": "python"}] for p in REAL}
+    return NS(tier=_tier(seq), tier_json={"threads": {"wstart": th}}, summaries={})
+
+
+def test_core_groups_join_a_roles_parent_and_workers():
+    ld = _real_ld({})
+    (sink,), nocpu = L.core_groups(ld, "sink")
+    assert (sink["pids"], sink["cores"], sink["shared_with"], nocpu) == ([10, 11, 12], {0, 1},
+                                                                         [], [])
+    (g,), _ = L.core_groups(ld, "ld")
+    assert (g["pids"], g["cores"], g["shared_with"]) == ([20, 21], {2}, [])
+    # chained overlap joins too; another role on one of the cores makes the group shared
+    procs = [dict(p, cpus=[1]) if p["pid"] == 12 else p for p in REAL] + [
+        {"pid": 13, "role": "sink", "cpus": [1, 4]}, {"pid": 40, "role": "o", "cpus": [4]},
+        {"pid": 14, "role": "sink", "cpus": []}]
+    (g,), nocpu = L.core_groups(_real_ld({}, procs), "sink")
+    assert (g["pids"], g["cores"], g["shared_with"], nocpu) == ([10, 11, 12, 13], {0, 1, 4},
+                                                                [40], [14])
+
+
+def _i1_real(hot, base, bands, rec):
+    lds, tds = {4: _real_ld(hot), 2: _real_ld(base)}, {4: _real_td(4), 2: _real_td(2)}
+
+    def readings(tdx, g):
+        return L.group_readings(lds[tdx.tier.seq], tdx, g)
+    out = {}
+    for role in ("sink", "ld"):
+        out[role] = L.i1_role(lds[4], tds[4], tds[2], role, readings,
+                              lambda cur, b, role=role: L.i1_process(cur, b, bands, role, 0.95,
+                                                                     False, rec, False))
+    return out
+
+
+SINK_MC = {"T2:gil_domain_cores:sink": BAND, "T2:gil_run_delay_frac:sink": BAND,
+           "T2:nongil_thread_cores:sink": BAND, "T2:core_busy_frac:ld": BAND}
+
+
+def test_i1_on_a_parent_and_workers_sharing_the_roles_cores():
+    rec = {}
+    out = _i1_real({10: 1, 11: 97, 12: 40, 20: 2, 21: 96}, {10: 1, 11: 30, 12: 30, 20: 2,
+                                                            21: 30}, SINK_MC, rec)
+    sink = out["sink"]  # two cores: one unit per process (one GIL each), each lists the group
+    assert [(u["pid"], u["unit"], u["branch"], u["status"]) for u in sink] == [
+        (10, "process", "multi_core", "FALSE"), (11, "process", "multi_core", "TRUE"),
+        (12, "process", "multi_core", "FALSE")]
+    assert all(u["pids"] == [10, 11, 12] for u in sink) and sink[1]["via"] == "gil_domain"
+    assert sink[1]["readings"]["cores"] == [0, 1] and sink[1]["readings"]["n_cores"] == 2
+    (ld,) = out["ld"]  # one core shared by parent and worker: one unit, the core is the reading
+    assert (ld["pid"], ld["pids"], ld["unit"], ld["branch"], ld["status"], ld["via"]) == (
+        None, [20, 21], "core_group", "single_core", "TRUE", "core_idle")
+    assert {t["pid"] for t in ld["readings"]["threads"]} == {20, 21}
+    assert len(rec["T2:core_busy_frac:ld"]) == 1  # recorded once per group, not per process
+    assert len(rec["T2:gil_domain_cores:sink"]) == 3  # once per process
+
+
+def test_conclusion_lists_every_pid_of_the_localised_group():
+    i1 = _i1_real({10: 1, 11: 30, 12: 30, 20: 2, 21: 96}, {10: 1, 11: 30, 12: 30, 20: 2,
+                                                           21: 30}, SINK_MC, {})
+    out = {"I1": {r: {"status": "TRUE" if any(u["status"] == "TRUE" for u in us) else "FALSE",
+                      "processes": us} for r, us in i1.items()},
+           "I3": {"readings": [], "roles": {}}, "reasons": []}
+    ctx = NS(roles={"sink": {"measure_class": "stub_out_of_domain"},
+                    "ld": {"measure_class": "under_test"}})
+    r = L._conclude(out, {"holds": True}, ctx)
+    assert (r["status"], r["role"], r["pids"], r["granularity"]) == ("LOCALIZED", "ld",
+                                                                     [20, 21], "core_group")
+    assert sorted(r["thread_shares"]) == ["20", "21"]
 
 
 # ---- I3 --------------------------------------------------------------------------------------
@@ -267,6 +372,17 @@ def test_conclusion_localized_undetermined_and_not_localized():
     assert L._conclude(_out({"sv": "FALSE"}, {"sv": "FALSE"}), {"holds": True},
                        CTX)["status"] == "NOT_LOCALIZED"
     assert L._conclude(_out({"sv": "NOT_RUN"}, {}), {"holds": True}, CTX)["status"] == "NOT_RUN"
+
+
+def test_an_unevaluated_competing_role_blocks_the_conclusion():
+    # I1 of sv holds; rd's I3 could not be evaluated: rd is not ruled out
+    r = L._conclude(_out({"sv": "TRUE", "rd": "FALSE"}, {"rd": "NOT_RUN"}), {"holds": True},
+                    CTX)
+    assert r["status"] == "NOT_RUN" and r["holding"] == {"sv": ["I1"]}
+    assert r["not_run"] == ["I3:rd"] and "competing" in r["reasons"][-1]
+    # the localised role's own other signal NOT_RUN does not block it
+    r = L._conclude(_out({"sv": "TRUE"}, {"sv": "NOT_RUN"}), {"holds": True}, CTX)
+    assert (r["status"], r["role"]) == ("LOCALIZED", "sv") and r["not_run"] == ["I3:sv"]
 
 
 def test_no_conclusion_without_x():

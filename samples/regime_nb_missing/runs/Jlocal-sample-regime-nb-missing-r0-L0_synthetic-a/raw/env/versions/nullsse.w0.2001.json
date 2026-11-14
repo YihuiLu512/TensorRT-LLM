@@ -5,7 +5,7 @@
   "job_id": "local-sample-regime-nb-missing",
   "launch_seq": 0,
   "pid": 2001,
-  "register_sha": "b8ffbcb0ec5bda13d3d6e6e7d3238be7a71281bb88caebe75f1239ac01a958e8",
+  "register_sha": "eb3e34bf0ab302cdda28ab1a4d13c92bb4f9b845714bb191e5e04f80d73babc2",
   "restart_count": 0,
   "role": "nullsse",
   "tier_label": null,
@@ -33,6 +33,6 @@
   "python": "3.12.3 synthetic",
   "switchinterval_s": 0.005
  },
- "written_mono_ns": 9839918208383521,
- "written_wall": "2026-11-14T13:38:14.288Z"
+ "written_mono_ns": 9852506422987034,
+ "written_wall": "2026-11-14T17:08:02.503Z"
 }

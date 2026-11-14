@@ -41,7 +41,7 @@
   "job_id": "local-sample-regime-nb-good",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "d7dd44cd397bf6f89b2b4eee3d1f351b2576ae02c294fe0f6f92519a3cf3baea",
+  "register_sha": "3cb959d261a92f7cfd2a46e521c257e793571d819895d00f427b912b3149058a",
   "restart_count": 0,
   "role": "launch",
   "tier_label": "drain-01",
@@ -88,7 +88,7 @@
       0,
       "local-sample-regime-nb-good",
       0,
-      "d7dd44cd397bf6f89b2b4eee3d1f351b2576ae02c294fe0f6f92519a3cf3baea"
+      "3cb959d261a92f7cfd2a46e521c257e793571d819895d00f427b912b3149058a"
      ],
      "pid": 1001,
      "seq": 20,
@@ -102,7 +102,7 @@
       0,
       "local-sample-regime-nb-good",
       0,
-      "d7dd44cd397bf6f89b2b4eee3d1f351b2576ae02c294fe0f6f92519a3cf3baea"
+      "3cb959d261a92f7cfd2a46e521c257e793571d819895d00f427b912b3149058a"
      ],
      "pid": 1002,
      "seq": 20,
@@ -116,7 +116,7 @@
       0,
       "local-sample-regime-nb-good",
       0,
-      "d7dd44cd397bf6f89b2b4eee3d1f351b2576ae02c294fe0f6f92519a3cf3baea"
+      "3cb959d261a92f7cfd2a46e521c257e793571d819895d00f427b912b3149058a"
      ],
      "pid": 2001,
      "seq": 20,
@@ -166,7 +166,7 @@
       0,
       "local-sample-regime-nb-good",
       0,
-      "d7dd44cd397bf6f89b2b4eee3d1f351b2576ae02c294fe0f6f92519a3cf3baea"
+      "3cb959d261a92f7cfd2a46e521c257e793571d819895d00f427b912b3149058a"
      ],
      "pid": 1001,
      "seq": 22,
@@ -180,7 +180,7 @@
       0,
       "local-sample-regime-nb-good",
       0,
-      "d7dd44cd397bf6f89b2b4eee3d1f351b2576ae02c294fe0f6f92519a3cf3baea"
+      "3cb959d261a92f7cfd2a46e521c257e793571d819895d00f427b912b3149058a"
      ],
      "pid": 1002,
      "seq": 22,
@@ -194,7 +194,7 @@
       0,
       "local-sample-regime-nb-good",
       0,
-      "d7dd44cd397bf6f89b2b4eee3d1f351b2576ae02c294fe0f6f92519a3cf3baea"
+      "3cb959d261a92f7cfd2a46e521c257e793571d819895d00f427b912b3149058a"
      ],
      "pid": 2001,
      "seq": 22,
@@ -211,6 +211,6 @@
  "schema": "capkit.drain_gate/1",
  "source": "default",
  "t_pass_rel_ns": 2200000000,
- "written_mono_ns": 9839918514725157,
- "written_wall": "2026-11-14T13:38:14.595Z"
+ "written_mono_ns": 9852506678206489,
+ "written_wall": "2026-11-14T17:08:02.758Z"
 }

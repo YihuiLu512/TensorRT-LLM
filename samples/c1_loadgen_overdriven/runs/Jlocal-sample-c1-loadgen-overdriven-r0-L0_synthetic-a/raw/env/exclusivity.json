@@ -6,7 +6,7 @@
   "job_id": "local-sample-c1-loadgen-overdriven",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "d513af8df0624adecee03c1184b0d00e269e243c58bb38521c01848857500a41",
+  "register_sha": "2a09620b16ad69a777a5a150bb7cab6b519706544238cd3cde013d4f2b7b0177",
   "restart_count": 0,
   "role": "gate",
   "tier_label": null,
@@ -64,6 +64,6 @@
  "schema": "capkit.exclusivity/1",
  "slurm_view_error": null,
  "slurm_view_file": "synthetic",
- "written_mono_ns": 9839916946943613,
- "written_wall": "2026-11-14T13:38:13.027Z"
+ "written_mono_ns": 9852505258424560,
+ "written_wall": "2026-11-14T17:08:01.338Z"
 }

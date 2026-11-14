@@ -12,18 +12,23 @@ Two parts:
     chain, per-message sites: the messages / chunks chain). Plus the launch's dose: the busy /
     sleep specs per role, identical on every load tier, else "mixed" (unusable for V).
   * across launches (`python3 -m capjudge.intervene`): the dose-response. Hop counts first:
-    a dosed launch is used only when every judged load tier's heartbeat is PASS. Then the
-    forward direction: delta only on the role the control launches (no dose) localised, at
-    least two delta > 0 besides delta = 0; the boundary (T4 interval per launch, envelope per
-    delta) must move to less load at every step and every step must exceed the noise band (T5
-    "different", in that direction). Reverse: the same kind of delta on a load source or an
-    out-of-domain stub that stayed healthy (no VOID tier) must leave the boundary where it is
-    (T5 "indistinguishable" from delta = 0). The boundary at delta = 0 is the result; the
+    a dosed launch is used only when every judged load tier's heartbeat is PASS. The boundary
+    of a launch is the interval capjudge.boundary uses across launches (T4 below the first
+    tool-limited tier, INTERFACES 14.1); the envelope per delta spans those. Forward
+    direction: delta only on the role the control launches (no dose) localised, at least two
+    delta > 0 besides delta = 0; the boundary must move to less load at every step and every
+    step must exceed the noise band (T5 "different", in that direction). Reverse: the same
+    kind of delta on a load source or an out-of-domain stub must leave the boundary where it
+    is (T5 "indistinguishable" from delta = 0). A reverse launch is evidence only when it
+    stayed healthy (no VOID tier, no tool limit cut its interval) and both envelopes are
+    closed; otherwise it is listed as excluded. The boundary at delta = 0 is the result; the
     intercept of the dose-response is never used.
 
     python3 -m capjudge.intervene --inputs <list> --workdir <W> --out <new json>
 
-The list names one judged launch tree per line (literal paths, no globs). Output: schema
+The list names one judged launch tree per line (literal paths, no globs; the format of
+capjudge.boundary). The output and its recompute record (`<name>.cmd.txt`, capjudge.cmdrec) are
+never overwritten. Output: schema
 capkit.intervention/1 with every launch used or excluded (and why), the forward and reverse
 comparisons, V's status (PASS / FAIL / INCONCLUSIVE / NOT_RUN) and the final grade
 (capjudge.grade.final_grade).
@@ -36,8 +41,10 @@ import sys
 from capcommon import expect
 from capcommon.exitcodes import ConfigError
 from capcommon.hashing import sha256_file
-from capcommon.jsonio import atomic_write_bytes, dumps, read_json
+from capcommon.jsonio import atomic_write_bytes, dumps
 
+from . import boundary as B
+from . import cmdrec
 from . import grade as G
 from . import stats
 from .symptoms import failures_by_class
@@ -53,6 +60,8 @@ SITE_UNIT = {"send.req": "requests", "short.req": "requests", "recv.chunk": "chu
              "send.chunk": "chunks", "send.msg": "messages", "recv.msg": "messages",
              "relay.msg": "messages"}
 SPEC_KEYS = ("site", "mode", "delta_ns", "every_n", "phase", "where")
+# Counter keys of a tool's per-tier `inject` report the heartbeat reads; a missing one is NOT_RUN
+COUNT_KEYS = ("hits_delta", "applied_delta", "applied_ns_delta", "aux_pending_at_end")
 
 
 class InterveneError(ConfigError):
@@ -127,6 +136,9 @@ def tier_heartbeat(ctx, td):
 
 
 def _one_site(ctx, td, role, site, decl, obs):
+    """Heartbeat of one (role, site). No data (a worker's summary missing, a counter key
+    missing) is NOT_RUN; a summary that is there but does not report a declared site, or
+    reports a wrong count, is FAIL."""
     it = {"role": role, "site": site, "declared": decl, "status": PASS, "why": []}
 
     def bad(st, why):
@@ -137,28 +149,43 @@ def _one_site(ctx, td, role, site, decl, obs):
         bad(FAIL, "injection observed but not declared in the tier table")
         return it
     workers = ctx.roles[role]["workers"]
-    if len(obs) != workers:
-        bad(FAIL, "%d of %d worker summaries report the site" % (len(obs), workers))
+    have = {str(w) for w in (td.summaries.get(role) or {})}
+    missing = [w for w in range(workers) if str(w) not in have]
+    if missing:
+        bad(NOT_RUN, "no summary of worker(s) %s in this tier (not run to the end?)" % missing)
+    reported = {str(w) for w, _e in obs}
+    silent = sorted(have - reported)
+    if silent:
+        bad(FAIL, "summaries of worker(s) %s do not report the site" % silent)
     hits = applied = 0
+    complete = not missing
     for w, e in obs:
         if spec_sig(e["spec"]) != decl:
             bad(FAIL, "w%s spec %s != declared" % (w, spec_sig(e["spec"])))
         if not e.get("activation_unchanged"):
             bad(NOT_RUN, "w%s activation changed inside the tier" % w)
+        absent = [k for k in COUNT_KEYS if not isinstance(e.get(k), int)]
+        if absent:
+            bad(NOT_RUN, "w%s reports no %s" % (w, absent))
+            complete = False
+            continue
         exp = e.get("expected_applied_delta")
         if not isinstance(exp, int):
             bad(NOT_RUN, "w%s expected_applied_delta is null" % w)
-        elif e.get("applied_delta") != exp:
-            bad(FAIL, "w%s applied %s != expected %s" % (w, e.get("applied_delta"), exp))
-        if e.get("aux_pending_at_end", 0) != 0:
-            bad(FAIL, "w%s aux_pending_at_end %s" % (w, e.get("aux_pending_at_end")))
-        ad, ns = e.get("applied_delta") or 0, e.get("applied_ns_delta") or 0
+        elif e["applied_delta"] != exp:
+            bad(FAIL, "w%s applied %s != expected %s" % (w, e["applied_delta"], exp))
+        if e["aux_pending_at_end"] != 0:
+            bad(FAIL, "w%s aux_pending_at_end %s" % (w, e["aux_pending_at_end"]))
+        ad, ns = e["applied_delta"], e["applied_ns_delta"]
         if ns < ad * decl["delta_ns"]:
             bad(FAIL, "w%s injected %d ns < applied %d x delta %d" % (w, ns, ad,
                                                                      decl["delta_ns"]))
-        hits += e.get("hits_delta") or 0
+        hits += e["hits_delta"]
         applied += ad
     it.update(hits=hits, applied=applied)
+    if not complete:
+        it["hits_expected"] = None
+        return it
     if applied <= 0:
         bad(FAIL, "no pass was injected (site not on the path?)")
     unit = SITE_UNIT.get(site)
@@ -186,42 +213,22 @@ def launch_heartbeat(tier_entries):
 
 # ---- across launches -------------------------------------------------------------------------
 
-def read_list(path):
-    out = []
-    with open(path) as f:
-        for n, line in enumerate(f, 1):
-            line = line.strip()
-            if not line or line.startswith("#"):
-                continue
-            if any(c in line for c in "*?[") or "\t" in line:
-                raise InterveneError("%s:%d: one literal tree path per line" % (path, n))
-            out.append(line)
-    if not out:
-        raise InterveneError("%s lists no tree" % path)
-    if len({os.path.abspath(t) for t in out}) != len(out):
-        raise InterveneError("a tree is listed twice")
-    return out
-
-
 def load_launch(tree, W):
     """The judged launch record of one tree (judge/verdicts.json, committed: its JUDGED.tsv row
-    carries the same sha). Raises InterveneError."""
-    from capcommon import ledger  # noqa: PLC0415
-    vp = os.path.join(tree, "judge", "verdicts.json")
-    if not os.path.isfile(vp):
-        raise InterveneError("%s is not judged (no judge/verdicts.json)" % tree)
-    v = read_json(vp)
+    carries the same sha), with the interval capjudge.boundary uses across launches: T4 below
+    the first tool-limited tier (`boundary`, `censored_by` set when cut there) next to the
+    judge's T4 as recorded (`boundary_t4`). Raises InterveneError."""
+    try:
+        v, _vp, sha = B.load_judged(tree, W)
+        if v.get("mode") != "P+X+I+V":
+            raise InterveneError("%s was judged in mode %r, not P+X+I+V" % (tree, v.get("mode")))
+        t4, used = B.launch_interval(v)
+    except B.BoundaryError as e:
+        raise InterveneError(str(e))
     ident = v.get("identity") or {}
-    key = tuple(ident.get(k) for k in ("job_id", "restart_count", "launch_seq", "arm"))
-    hit = ledger.judged_lookup(os.path.join(W, "JUDGED.tsv"), *key)
-    sha = sha256_file(vp)
-    if hit is None or hit["verdicts_sha256"] != sha:
-        raise InterveneError("%s: JUDGED.tsv has no row with this verdicts.json sha" % tree)
-    if v.get("mode") != "P+X+I+V":
-        raise InterveneError("%s was judged in mode %r, not P+X+I+V" % (tree, v.get("mode")))
     iv = v.get("intervention_V") or {}
     return {"tree": tree, "verdicts_sha256": sha, "identity": ident, "axis": v.get("axis"),
-            "boundary": v.get("boundary_T4") or {}, "grade": v.get("grade") or {},
+            "boundary": used, "boundary_t4": t4, "grade": v.get("grade") or {},
             "doses": iv.get("doses"), "heartbeat": iv.get("heartbeat"),
             "measure_class": iv.get("measure_class") or {},
             "void_tiers": [t["tier_seq"] for t in v.get("tiers", []) if t.get("judged")
@@ -239,6 +246,22 @@ def _env(launches, order):
             sign * x["boundary"]["upper"] if x["boundary"].get("upper") is not None else None)
            for x in launches]
     return stats.t4_envelope(ivs, "asc")
+
+
+def _reverse_unusable(x, base_env, env):
+    """Why a reverse-dose launch cannot show "the boundary did not move", or None. Usable only
+    when no tier is VOID, no tool limit cut its interval (the dosed tool or another one
+    reached its limit first: the interval is not the boundary of the localised role) and both
+    envelopes are closed (an open end cannot be shown to overlap or not)."""
+    if x["void_tiers"]:
+        return "VOID tiers %s (a tool left its healthy band?)" % x["void_tiers"]
+    cut = x["boundary"].get("censored_by")
+    if cut:
+        return "interval cut at tier %s (%s)" % (cut.get("tier_seq"), cut.get("why"))
+    for name, e in (("control", base_env), ("reverse", env)):
+        if None in (e.get("lower"), e.get("upper")):
+            return "the %s envelope has an open end" % name
+    return None
 
 
 def dose_response(launches):
@@ -288,11 +311,15 @@ def dose_response(launches):
         if role == target:
             levels.setdefault(_scalar_dose(x["doses"][role]), []).append(x)
         elif cls in ("load_source", "stub_out_of_domain"):
-            if x["void_tiers"]:
-                out["excluded"].append({"tree": x["tree"], "why": "reverse dose: VOID tiers %s "
-                                        "(a tool left its healthy band?)" % x["void_tiers"]})
+            why = _reverse_unusable(x, base_env, _env([x], order))
+            if why:
+                out["excluded"].append({"tree": x["tree"], "why": "reverse dose: " + why})
                 continue
             cmp_ = stats.t5_compare([{"block": "all", "a": base_env, "b": _env([x], order)}])
+            if cmp_["result"] not in ("different", "indistinguishable"):
+                out["excluded"].append({"tree": x["tree"], "why": "reverse dose: T5 %s"
+                                        % cmp_["result"]})
+                continue
             out["reverse"].append({"tree": x["tree"], "role": role, "t5": cmp_,
                                    "moved": cmp_["result"] == "different"})
         else:
@@ -330,11 +357,16 @@ def main(argv=None):
     ap.add_argument("--inputs", required=True)
     ap.add_argument("--workdir", required=True)
     ap.add_argument("--out", required=True)
+    argv = list(sys.argv[1:] if argv is None else argv)
     a = ap.parse_args(argv)
     try:
-        if os.path.lexists(a.out):
-            raise InterveneError("%s exists (never overwritten)" % a.out)
-        trees = read_list(a.inputs)
+        bad = cmdrec.refuse_existing(a.out)
+        if bad:
+            raise InterveneError(bad)
+        try:
+            trees = B.read_list(a.inputs)
+        except B.BoundaryError as e:
+            raise InterveneError(str(e))
         launches = [load_launch(os.path.abspath(t), os.path.abspath(a.workdir))
                     for t in trees]
         v = dose_response(launches)
@@ -343,10 +375,13 @@ def main(argv=None):
                "inputs_list_sha256": sha256_file(a.inputs), "V": v,
                "grade": G.final_grade([x["grade"] for x in launches
                                        if x["tree"] in v.get("control", [])], v)}
-    except (InterveneError, ConfigError, OSError, ValueError) as e:
+    except (InterveneError, ConfigError, OSError, ValueError, KeyError) as e:
         sys.stderr.write("capjudge.intervene: %s\n" % e)
         return 3
     atomic_write_bytes(a.out, (dumps(doc) + "\n").encode("utf-8"))
+    cmdrec.write(a.out, "capjudge.intervene", argv,
+                 [a.inputs] + [os.path.join(x["tree"], "judge", "verdicts.json")
+                               for x in launches])
     print("V %s; grade %s -> %s" % (v["status"], doc["grade"]["grade"], a.out))
     return 0
 

@@ -9,7 +9,7 @@
   "job_id": "local-sample-c2-stub-loop-lag",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "c7edbef80e67381dfee13b98985631a939ed0896860d16d6d3423d42e36f5880",
+  "register_sha": "a796d6b4ada485c51985b58a6dc88e534ccc28d325975e9f1750c49500209f96",
   "restart_count": 0,
   "role": "launch",
   "tier_label": "up-r40",
@@ -249,6 +249,6 @@
   "tokens_per_msg": 1,
   "window_ns": 4000000000
  },
- "written_mono_ns": 9839917616873890,
- "written_wall": "2026-11-14T13:38:13.697Z"
+ "written_mono_ns": 9852505803602806,
+ "written_wall": "2026-11-14T17:08:01.884Z"
 }

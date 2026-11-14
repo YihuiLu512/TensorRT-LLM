@@ -9,7 +9,7 @@
   "job_id": "local-sample-gpu-busy",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "85b1ee634bb766370552bad15a3bc3037091e3d2568ebafeb4a048949495009b",
+  "register_sha": "fafcd6d3122ea924b1dc14283a7c718dfb9e75b290caa87f4edfb86c3ab104ff",
   "restart_count": 0,
   "role": "launch",
   "tier_label": "drain-02",
@@ -194,6 +194,6 @@
   "tokens_per_msg": 1,
   "window_ns": 2000000000
  },
- "written_mono_ns": 9839914483252579,
- "written_wall": "2026-11-14T13:38:10.563Z"
+ "written_mono_ns": 9852502507968547,
+ "written_wall": "2026-11-14T17:07:58.588Z"
 }

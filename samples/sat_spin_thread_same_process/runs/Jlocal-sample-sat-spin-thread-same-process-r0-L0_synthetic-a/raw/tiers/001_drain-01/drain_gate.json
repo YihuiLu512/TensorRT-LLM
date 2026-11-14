@@ -41,7 +41,7 @@
   "job_id": "local-sample-sat-spin-thread-same-process",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "d051ad6dc42259a2317bd4a031f121c22a051370327b1fbeb5afc6999684d8f7",
+  "register_sha": "67c5cafd07719815fff5a1de882382d154efa72bc9b235ee4b82772cc519ef36",
   "restart_count": 0,
   "role": "launch",
   "tier_label": "drain-01",
@@ -88,7 +88,7 @@
       0,
       "local-sample-sat-spin-thread-same-process",
       0,
-      "d051ad6dc42259a2317bd4a031f121c22a051370327b1fbeb5afc6999684d8f7"
+      "67c5cafd07719815fff5a1de882382d154efa72bc9b235ee4b82772cc519ef36"
      ],
      "pid": 1001,
      "seq": 20,
@@ -102,7 +102,7 @@
       0,
       "local-sample-sat-spin-thread-same-process",
       0,
-      "d051ad6dc42259a2317bd4a031f121c22a051370327b1fbeb5afc6999684d8f7"
+      "67c5cafd07719815fff5a1de882382d154efa72bc9b235ee4b82772cc519ef36"
      ],
      "pid": 1002,
      "seq": 20,
@@ -116,7 +116,7 @@
       0,
       "local-sample-sat-spin-thread-same-process",
       0,
-      "d051ad6dc42259a2317bd4a031f121c22a051370327b1fbeb5afc6999684d8f7"
+      "67c5cafd07719815fff5a1de882382d154efa72bc9b235ee4b82772cc519ef36"
      ],
      "pid": 2001,
      "seq": 20,
@@ -166,7 +166,7 @@
       0,
       "local-sample-sat-spin-thread-same-process",
       0,
-      "d051ad6dc42259a2317bd4a031f121c22a051370327b1fbeb5afc6999684d8f7"
+      "67c5cafd07719815fff5a1de882382d154efa72bc9b235ee4b82772cc519ef36"
      ],
      "pid": 1001,
      "seq": 22,
@@ -180,7 +180,7 @@
       0,
       "local-sample-sat-spin-thread-same-process",
       0,
-      "d051ad6dc42259a2317bd4a031f121c22a051370327b1fbeb5afc6999684d8f7"
+      "67c5cafd07719815fff5a1de882382d154efa72bc9b235ee4b82772cc519ef36"
      ],
      "pid": 1002,
      "seq": 22,
@@ -194,7 +194,7 @@
       0,
       "local-sample-sat-spin-thread-same-process",
       0,
-      "d051ad6dc42259a2317bd4a031f121c22a051370327b1fbeb5afc6999684d8f7"
+      "67c5cafd07719815fff5a1de882382d154efa72bc9b235ee4b82772cc519ef36"
      ],
      "pid": 2001,
      "seq": 22,
@@ -211,6 +211,6 @@
  "schema": "capkit.drain_gate/1",
  "source": "default",
  "t_pass_rel_ns": 2200000000,
- "written_mono_ns": 9839916020562905,
- "written_wall": "2026-11-14T13:38:12.101Z"
+ "written_mono_ns": 9852503984508593,
+ "written_wall": "2026-11-14T17:08:00.065Z"
 }

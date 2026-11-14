@@ -134,6 +134,33 @@ def test_same_key_and_regime_twice_is_an_error():
         b.add_source("near_boundary_noise", "n", "b" * 64, _nb())
 
 
+def test_pilot_subsat_and_near_boundary_noise_files_register_together(monkeypatch, tmp_path):
+    # RUNBOOK E1 / E2a: the pilot, a subsat near_boundary_noise file (pilot format, built by
+    # capjudge.pilot) and a near_boundary one, all in one register
+    pilot = {"schema": K.PILOT_SCHEMA, "environment": dict(ENV),
+             "noise_bands": {"T1:p_ns:r": dict(BAND)}}
+    subsat = {"schema": K.PILOT_SCHEMA, "environment": dict(ENV),
+              "noise_bands": {"T1:x_ns:r": dict(BAND, max=5)}}
+    ctx = _load_cal(monkeypatch, tmp_path, [_entry("pilot", "p"),
+                                            _entry("near_boundary_noise", "e1_noise"),
+                                            _entry("near_boundary_noise", "nb")],
+                    [pilot, subsat, _nb()])
+    assert ctx.bands.get("T1:x_ns:r", "subsat")["max"] == 5
+    assert ctx.bands.get("T1:x_ns:r", "near_boundary")["regime"] == "near_boundary"
+    assert ctx.bands.extras["pilot"] is ctx.calib_docs["pilot"]
+    assert sorted(ctx.bands.extras["near_boundary_noise"]) == ["e1_noise", "nb"]
+    assert sorted(ctx.calib_docs["near_boundary_noise"]) == ["e1_noise", "nb"]
+    # still one source per (key, regime), and the other kinds at most once
+    with pytest.raises(I.InputInvalid, match="defined by both"):
+        _load_cal(monkeypatch, tmp_path, [_entry("near_boundary_noise", "a"),
+                                          _entry("near_boundary_noise", "b")], [_nb(), _nb()])
+    for kind, doc in (("pilot", pilot), ("loadgen_band", _loadgen())):
+        b = T.Bands()
+        b.add_source(kind, "one", "a" * 64, doc)
+        with pytest.raises(T.BandError, match="two calibration files"):
+            b.add_source(kind, "two", "b" * 64, dict(doc, noise_bands={}))
+
+
 def test_near_boundary_tier_never_falls_back_to_the_subsat_band():
     b = T.Bands()
     b.add_source("pilot", "p", "a" * 64, {"noise_bands": {"T1:x_ns:r": dict(BAND)}})
@@ -260,6 +287,15 @@ def test_shape_items_pass_and_each_way_to_fail():
     assert not ok and "outside the calibrated match" in r.not_run[0]
     ok, r = _items(_shape(K.LOADGEN_STATS, "per_worker_max", value=None), GOOD_ST)
     assert not ok and "no healthy maximum" in r.not_run[0]
+    # a censored maximum is only "at least this": a planned load above it is beyond the
+    # calibrated range, NOT_RUN, never RED; at or below it the item passes as usual
+    cen = _shape(K.LOADGEN_STATS, "per_worker_max", value=15.0)
+    cen["per_worker_max"]["censored"] = True
+    ok, r = _items(cen, GOOD_ST)
+    assert not ok and r.red == 0 and "censored" in r.not_run[0]
+    cen["per_worker_max"]["value"] = 30.0
+    ok, r = _items(cen, GOOD_ST)
+    assert ok and r.red == 0 and not r.not_run
     sh2 = copy.deepcopy(sh)
     del sh2["bands"]["T3:loop_lag_p99_ns"]
     ok, r = _items(sh2, GOOD_ST)
@@ -372,6 +408,40 @@ def test_c4_uses_the_server_count_when_the_loader_does_not_count():
     assert r.status == "NOT_RUN" and "without a token count" in r.not_run[0]
 
 
+def test_c4_failed_requests_never_read_the_servers_partial_count():
+    # gRPC: the loader does not count; a timed-out / cancelled stream's server row holds the
+    # tokens sent before it ended. Failed -> checked only; OK -> compared.
+    rows = [(1, 0, -1, 4), (2, 6, -1, 4), (3, 6, -1, 4)]
+    r = _c4(rows, [(1, 3, 4), (2, 1, 4), (3, 0, 4)])
+    assert (r.status, r.checked, r.red) == ("PASS", 3, 0)
+    # a failed request the loader did count (capload's short stream) is still compared
+    assert _c4([(1, 0, 3, 4), (2, 6, 2, 4), (3, 0, 3, 4)]).status == "RED"
+
+
+def test_c4_server_counts_are_not_merged_across_roles():
+    def cb(rows, cols):
+        return {c: [r[i] for r in rows] for i, c in enumerate(cols)}
+    rows = [(1, 0, -1, 4), (2, 0, -1, 4), (3, 0, -1, 4)]
+    srv = [(1, 3, 4), (2, 3, 4), (3, 3, 4)]
+    caps = {"loadgen.requests": [({"role": "ld"}, {}, cb(rows, ("req_id", "status", "tokens",
+                                                                "tier_seq")))],
+            "server.streams": [({"role": s}, {}, cb(srv, ("req_id", "tokens", "tier_seq")))
+                               for s in ("sink", "sink2")]}
+    ctx = NS(roles={"ld": {"role": "ld", "kind": "client"},
+                    "sink": {"role": "sink", "kind": "server"},
+                    "sink2": {"role": "sink2", "kind": "server"}},
+             schedule_meta={"per_tier": {"4": 3}})
+    r = CH.check_c4(ctx, NS(tier=_tier(), capbins=caps))
+    assert r.status == "NOT_RUN" and "2 server role(s)" in r.not_run[0] and r.red == 0
+    # two client roles both needing the server side: their req_ids repeat
+    caps["server.streams"] = caps["server.streams"][:1]
+    caps["loadgen.requests"].append(({"role": "ld2"}, {}, caps["loadgen.requests"][0][2]))
+    ctx.roles["ld2"] = {"role": "ld2", "kind": "client"}
+    ctx.schedule_meta = {"per_tier": {"4": 3}}
+    r = CH.check_c4(ctx, NS(tier=_tier(), capbins=caps))
+    assert r.status == "NOT_RUN" and "2 client role(s)" in r.not_run[0]
+
+
 def test_c4_missing_records_not_run():
     r = _c4([(1, 0, 3, 4), (2, 0, 3, 4)])
     assert r.status == "NOT_RUN" and "2 of 3 planned" in r.not_run[0]
@@ -385,17 +455,21 @@ def test_c4_nothing_planned_states_why():
 
 # ---- C12 doubled processes carry traffic -----------------------------------------------------
 
-def _c12(workers=2, vals=(5, 7), slot=False, procs=(), slot_rows=()):
+def _c12(workers=2, vals=(5, 7), slot=False, procs=(), slot_rows=(), ld=None):
+    """ld: {"workers": n, "counts": [summary counts per worker]} of the load generator."""
     hop = {"role": "sink", "source": "slot:count.req" if slot else "summary.counts.requests",
            "scope": "tier"}
-    ctx = NS(roles={"ld": {"workers": 1, "expected_procs": 1},
-                    "sink": {"workers": workers, "expected_procs": len(procs) or workers}},
+    ldr = ld or {"workers": 1, "counts": [{"ok": 3, "sent": 3}]}
+    ctx = NS(roles={"ld": {"workers": ldr["workers"], "expected_procs": ldr["workers"],
+                           "kind": "client"},
+                    "sink": {"workers": workers, "expected_procs": len(procs) or workers,
+                             "kind": "server"}},
              launch={"reconcile": {"chains": [
                  {"kind": "requests", "hops": [{"role": "ld", "source": "summary.counts.ok",
                                                 "scope": "tier"}, hop]},
                  {"kind": "chunks", "hops": [dict(hop, source="summary.counts.frames")]}]}})
     td = NS(tier=NS(seq=4, start_ns=0),
-            summaries={"ld": {0: {"counts": {"ok": 3}}},
+            summaries={"ld": {k: {"counts": c} for k, c in enumerate(ldr["counts"])},
                        "sink": {k: {"counts": {"requests": v}} for k, v in enumerate(vals)}})
     ld = NS(procs_of_role=lambda role: [{"pid": p} for p in procs],
             sidecar=lambda name: ({}, list(slot_rows)))
@@ -411,6 +485,16 @@ def test_c12_every_doubled_worker_received_traffic():
 def test_c12_idle_worker_is_not_run_never_pass():
     r = _c12(vals=(9, 0))
     assert r.status == "NOT_RUN" and "['w1'] carried no traffic" in r.not_run[0]
+
+
+def test_c12_load_generator_workers_count_what_they_sent():
+    # every request of worker 1 timed out: none ok, but it sent them - it carried traffic
+    r = _c12(ld={"workers": 2, "counts": [{"ok": 3, "sent": 3}, {"ok": 0, "sent": 3}]})
+    assert (r.status, r.expected, r.checked) == ("PASS", 4, 4)
+    r = _c12(ld={"workers": 2, "counts": [{"ok": 3, "sent": 3}, {"ok": 0, "sent": 0}]})
+    assert r.status == "NOT_RUN" and "ld summary.counts.sent: ['w1'] carried no" in r.not_run[0]
+    r = _c12(ld={"workers": 2, "counts": [{"ok": 3, "sent": 3}, {"ok": 3}]})
+    assert r.status == "NOT_RUN" and "no integer summary counts.sent" in r.not_run[0]
 
 
 def test_c12_without_doubled_roles_has_nothing_to_check():
@@ -464,11 +548,16 @@ def test_near_boundary_builder_tags_every_band_with_the_regime(tmp_path):
     assert d["noise_bands"]["T1:req_first_lag_p50_ns:capload"]["n"] == 2
     assert d["inputs"][0]["tiers_used"] == [2, 4]
     p2, _ = _build(tmp_path, W, "near-boundary", ["%s\t2\n" % tree], "--regime", "subsat")
-    assert p2.returncode == 3 and "refusing to overwrite" in p2.stderr
+    assert p2.returncode == 3 and "exists (never overwritten)" in p2.stderr
+    rec = (tmp_path / "out.cmd.txt").read_text()
+    assert "module\tcapjudge.calib" in rec
+    assert "input\t%s\t" % os.path.join(str(tree), "judge", "verdicts.json") in rec
 
 
-def test_near_boundary_builder_leaves_out_unstable_tiers(tmp_path):
-    W, tree = _judged(tmp_path, "sat_overloaded_tier")
+@pytest.mark.parametrize("name", ["sat_overloaded_tier", "i_conflict"])
+def test_near_boundary_builder_leaves_out_saturated_tiers(tmp_path, name):
+    # UNSTABLE, and UNDETERMINED (X held, the cause is undetermined)
+    W, tree = _judged(tmp_path, name)
     p, o = _build(tmp_path, W, "near-boundary", ["%s\t2,4\n" % tree], "--regime", "subsat")
     assert p.returncode == 0, p.stderr
     d = json.loads(o.read_text())
@@ -497,9 +586,32 @@ def test_loadgen_band_builder_uses_stable_tiers_only(tmp_path):
     assert p.returncode == 0, p.stderr
     d = json.loads(o.read_text())
     sh = d["shapes"]["ld-r"]
-    assert sh["per_worker_max"]["value"] == 10.0 and sh["per_worker_max"]["censored"] is False
+    # judged P+X: no grade names what reached its limit, so the maximum is only a lower bound
+    assert sh["per_worker_max"]["value"] == 10.0 and sh["per_worker_max"]["censored"] is True
+    assert "without a grade" in d["inputs"][0]["attribution"]["why"]
     assert all(b["n"] == 2 for b in sh["bands"].values())
     assert "4" in d["inputs"][0]["tiers_excluded"]
+
+
+@pytest.mark.parametrize("name, censored, role", [("i_reader_slow", False, "capload"),
+                                                  ("i_server_slow", True, "nullsse")])
+def test_loadgen_band_maximum_is_measured_only_when_the_role_was_localised(tmp_path, name,
+                                                                           censored, role):
+    W, tree = _judged(tmp_path, name)
+    p, o = _build(tmp_path, W, "loadgen-band", ["%s\t2,4\tcapload\tld-r\n" % tree])
+    assert p.returncode == 0, p.stderr
+    d = json.loads(o.read_text())
+    assert d["shapes"]["ld-r"]["per_worker_max"]["censored"] is censored
+    assert d["inputs"][0]["attribution"]["role"] == role
+
+
+def test_shape_builder_leaves_out_undetermined_tiers(tmp_path):
+    W, tree = _judged(tmp_path, "i_conflict")  # tier 4 UNDETERMINED
+    p, o = _build(tmp_path, W, "loadgen-band", ["%s\t2,4\tcapload\tld-r\n" % tree])
+    assert p.returncode == 0, p.stderr
+    d = json.loads(o.read_text())
+    assert d["inputs"][0]["tiers_used"] == [2] and "4" in d["inputs"][0]["tiers_excluded"]
+    assert d["shapes"]["ld-r"]["per_worker_max"]["censored"] is True
 
 
 def test_stub_calib_builder(tmp_path):

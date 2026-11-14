@@ -9,7 +9,7 @@
   "job_id": "local-sample-c11-stale-gate",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "85b1ee634bb766370552bad15a3bc3037091e3d2568ebafeb4a048949495009b",
+  "register_sha": "fafcd6d3122ea924b1dc14283a7c718dfb9e75b290caa87f4edfb86c3ab104ff",
   "restart_count": 0,
   "role": "launch",
   "tier_label": "up-r20",
@@ -249,6 +249,6 @@
   "tokens_per_msg": 1,
   "window_ns": 4000000000
  },
- "written_mono_ns": 9839913781573948,
- "written_wall": "2026-11-14T13:38:09.862Z"
+ "written_mono_ns": 9852501796979624,
+ "written_wall": "2026-11-14T17:07:57.877Z"
 }

@@ -9,8 +9,12 @@ INTERFACES 14.2).
 Input is a capjudge.boundary product (the T4 intervals are computed once, there). A pair names
 two arms of it; the scaled arm must differ from the base only in the worker count of the roles
 on ONE side (kind client = the load generators, kind server = the sinks / stubs), all by the
-same factor f > 1, the same in every launch of the arm. Per block both arms have, with the
-per-block envelopes E_b (base) and E_s (scaled): the ratio of the boundary lies in
+same factor f > 1, the same in every launch of the arm. The envelopes are those of the judge's
+T4 as recorded (`by_block_t4`), not the intervals cut at the first tool-limited tier: which
+side reached its limit first is what the doubling decides, so a tier where a tool (an
+out-of-domain sink, the load generator) saturated is evidence here, not a cut. Per block both
+arms have, with the per-block envelopes E_b (base) and E_s (scaled): the ratio of the boundary
+lies in
 [E_s.lower / E_b.upper, E_s.upper / E_b.lower] (None when an end is missing). T6 = the range
 of the per-block ratios (also of the lower ends and of the upper ends alone). The claims use
 the unfavourable end (design 2.6 T6): "grows" when the smallest ratio >= --grows-min, "flat"
@@ -86,8 +90,12 @@ def scaled_side(base, scaled):
     return side, f, sorted(changed)
 
 
-def _div(a, b):
-    return None if a is None or b in (None, 0) else a / b
+def _t4_blocks(bdoc, arm):
+    blocks = bdoc["arms"][arm].get("by_block_t4")
+    if not isinstance(blocks, dict):
+        raise ScalingError("boundary file has no arms.%s.by_block_t4 (written by an older "
+                           "capjudge.boundary?)" % arm)
+    return blocks
 
 
 def pair(bdoc, base, scaled, grows_min, flat_max):
@@ -95,17 +103,17 @@ def pair(bdoc, base, scaled, grows_min, flat_max):
         raise ScalingError("T6 of boundaries needs an ascending axis (load grows with "
                            "load_value); axis is %s" % bdoc["axis"])
     side, f, roles = scaled_side(_arm_roles(bdoc, base), _arm_roles(bdoc, scaled))
-    eb, es = bdoc["arms"][base]["by_block"], bdoc["arms"][scaled]["by_block"]
+    eb, es = (_t4_blocks(bdoc, base), _t4_blocks(bdoc, scaled))
     common = sorted(set(eb) & set(es))
     res = {"base": base, "scaled": scaled, "side": side, "factor": f, "roles": roles,
            "blocks": common, "blocks_missing": sorted(set(eb) ^ set(es)), "per_block": []}
     lo, hi, skipped = [], [], []
     for k in common:
         b, s = eb[k], es[k]
-        r_lo, r_hi = _div(s["lower"], b["upper"]), _div(s["upper"], b["lower"])
+        r_lo, r_hi = stats.ratio(s["lower"], b["upper"]), stats.ratio(s["upper"], b["lower"])
         res["per_block"].append({"block": k, "ratio_min": r_lo, "ratio_max": r_hi,
-                                 "efficiency_min": _div(r_lo, f),
-                                 "efficiency_max": _div(r_hi, f)})
+                                 "efficiency_min": stats.ratio(r_lo, f),
+                                 "efficiency_max": stats.ratio(r_hi, f)})
         if r_lo is None:
             skipped.append(k)
             continue

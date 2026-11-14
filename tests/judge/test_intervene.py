@@ -78,7 +78,10 @@ def test_heartbeat_fail(kw, why):
 
 def test_heartbeat_undeclared_or_unchecked():
     assert _hb([_entry()], declared=False)["status"] == "FAIL"  # observed, not declared
-    assert _hb([], declared=True)["status"] == "FAIL"  # declared, no worker reports it
+    # declared, the worker's summary is there but does not report it
+    ctx, tier = _hb_ctx()
+    r = V.tier_heartbeat(ctx, NS(tier=tier, summaries={"relay1": {0: {"inject": []}}}))
+    assert r["status"] == "FAIL" and "do not report the site" in r["injections"][0]["why"][0]
     assert _hb([_entry(expected_applied_delta=None)])["status"] == "NOT_RUN"
     assert _hb([_entry(activation_unchanged=False)])["status"] == "NOT_RUN"
     ctx, tier = _hb_ctx()
@@ -88,6 +91,26 @@ def test_heartbeat_undeclared_or_unchecked():
     assert r["status"] == "NOT_RUN" and "no reconcile hop" in r["injections"][0]["why"][0]
     ctx.tt = NS(inject_for=lambda role, seq: [])
     assert V.tier_heartbeat(ctx, NS(tier=tier, summaries={}))["status"] == "NONE"
+
+
+def test_heartbeat_without_data_is_not_run():
+    # no summary of the worker in this tier (the tier did not run to the end): no data, and
+    # "nothing injected" is not concluded from it
+    r = _hb([], declared=True)
+    why = r["injections"][0]["why"]
+    assert r["status"] == "NOT_RUN" and "no summary of worker(s) [0]" in why[0]
+    assert not any("no pass was injected" in w for w in why)
+    # two workers, one summary: the other's passes are unknown
+    ctx, tier = _hb_ctx(workers=2)
+    r = V.tier_heartbeat(ctx, NS(tier=tier, summaries={"relay1": {0: {"inject": [_entry(
+        hits_delta=0, applied_delta=0, expected_applied_delta=0, applied_ns_delta=0)]}}}))
+    assert r["status"] == "NOT_RUN" and r["injections"][0]["hits_expected"] is None
+    # a counter key missing is NOT_RUN, never read as 0
+    for k in ("hits_delta", "applied_delta", "applied_ns_delta", "aux_pending_at_end"):
+        e = _entry()
+        del e[k]
+        r = _hb([e])
+        assert r["status"] == "NOT_RUN" and k in r["injections"][0]["why"][0], k
 
 
 def test_launch_doses_constant_or_mixed():
@@ -157,6 +180,24 @@ def test_dose_response_inconclusive_and_not_run():
     assert v["status"] == "NOT_RUN" and "need at least 2" in v["reasons"][0]
     v = V.dose_response([_ctl(), _launch(800, 900), _launch(500, 600, delta=40000)])
     assert v["status"] == "NOT_RUN" and "no usable reverse dose" in v["reasons"][0]
+
+
+def test_reverse_dose_needs_a_healthy_closed_interval():
+    fwd = [_launch(800, 900), _launch(500, 600, delta=40000)]
+    # the reverse launch's interval was cut at a tool limit (the dosed stub saturated first):
+    # not evidence that the boundary stayed, and not a FAIL either
+    cut = _launch(None, None, role_dose="drain")
+    cut["boundary"] = {"lower": 700, "upper": None, "censored_by": {
+        "tier_seq": 6, "why": "I localised to drain (stub_out_of_domain)"}}
+    v = V.dose_response([_ctl()] + fwd + [cut])
+    assert v["status"] == "NOT_RUN" and v["reverse"] == []
+    assert "interval cut at tier 6" in v["excluded"][0]["why"]
+    # an open end on either side cannot show "did not move"
+    for ctl, rev in ((_ctl(), _launch(1000, None, role_dose="drain")),
+                     (_ctl(1000, None), _launch(1000, 1100, role_dose="drain"))):
+        v = V.dose_response([ctl] + fwd + [rev])
+        assert v["reverse"] == [] and "open end" in v["excluded"][-1]["why"], v
+        assert v["status"] != "PASS"
 
 
 def test_hop_counts_first_and_unusable_launches_are_listed():
@@ -377,6 +418,21 @@ def test_intervene_cli_on_a_judged_control_launch(tmp_path):
     assert doc["grade"]["role"] == "nullsse"
     p2, _ = _intervene(tmp_path, W, [tree])  # never overwrites
     assert p2.returncode == 3 and "exists" in p2.stderr
+
+
+def test_load_launch_uses_the_interval_cut_at_the_tool_limit(tmp_path):
+    W, tree, p = _judge_sample(tmp_path, "i_reader_slow")
+    assert p.returncode == 0, p.stderr
+    x = V.load_launch(tree, W)
+    v = json.load(open(os.path.join(tree, "judge", "verdicts.json")))
+    assert x["boundary_t4"]["upper"] == v["boundary_T4"]["upper"] is not None
+    # tier 4 localised to capload (the load source): the interval used stops below it
+    assert x["boundary"]["upper"] is None and x["boundary"]["censored_by"]["tier_seq"] == 4
+    p, o = _intervene(tmp_path, W, [tree])
+    assert p.returncode == 0, p.stderr
+    rec = open(o[:-len(".json")] + ".cmd.txt").read()
+    assert "module\tcapjudge.intervene" in rec
+    assert "input\t%s\t" % os.path.join(tree, "judge", "verdicts.json") in rec
 
 
 def test_intervene_cli_rejects_p_x_trees_and_globs(tmp_path):

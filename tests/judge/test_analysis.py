@@ -86,6 +86,10 @@ def test_compare_uses_common_blocks_only():
     assert B.compare(arms, "a", "b")["result"] == "indistinguishable"
     arms["c"] = {"by_block": {"9": _env(1, 2)}}
     assert B.compare(arms, "a", "c")["result"] == "NOT_RUN"
+    # every common block has an open end: nothing to compare, not "indistinguishable"
+    arms["d"] = {"by_block": {"1": _env(100, None), "2": _env(110, None)}}
+    r = B.compare(arms, "a", "d")
+    assert r["result"] == "NOT_RUN" and r["t5"]["min_resolvable_diff"] is None
     with pytest.raises(B.BoundaryError):
         B.compare(arms, "a", "zz")
 
@@ -104,14 +108,18 @@ def _roles(w, z):
             "sidecar": {"kind": "aux", "measure_class": "observer", "workers": 1}}
 
 
-def _bdoc(arms):
-    """arms: {arm: ((w, z), {block: (lo, hi)})}"""
+def _bdoc(arms, cut=None):
+    """arms: {arm: ((w, z), {block: (lo, hi)})} - the judge's T4 per block (by_block_t4);
+    cut: {arm: {block: (lo, hi)}} the interval used across launches where it differs (a tool
+    limit cut it), else the same as T4."""
     doc = {"schema": B.SCHEMA, "axis": {"name": "R", "load_key": "rate_rps", "unit": "req/s",
                                         "order": "asc"}, "launches": [], "arms": {}}
     for arm, ((w, z), blocks) in arms.items():
         for blk in blocks:
             doc["launches"].append({"identity": {"arm": arm}, "block": blk, "roles": _roles(w, z)})
-        doc["arms"][arm] = {"by_block": {b: _env(*iv) for b, iv in blocks.items()}}
+        used = dict(blocks, **(cut or {}).get(arm, {}))
+        doc["arms"][arm] = {"by_block": {b: _env(*iv) for b, iv in used.items()},
+                            "by_block_t4": {b: _env(*iv) for b, iv in blocks.items()}}
     return doc
 
 
@@ -152,6 +160,21 @@ def test_sink_limited_mirror_and_contradictions():
     assert pw["claim"] == "unresolved"
     assert S.attribute([pw, pz])["result"] == "NOT_RUN"
     assert S.attribute([pz])["result"] == "NOT_RUN"
+
+
+def test_scaling_reads_the_judges_t4_not_the_cut_interval():
+    # E1 sink limit: the out-of-domain sink saturates first, I localises the unstable tier to
+    # it, so the interval used across launches is cut to a lower bound; the doubling must
+    # still see the closed T4 to attribute the limit to the server side
+    sink_cut = {"w1z4": {"1": (1000, None)}, "w2z4": {"1": (1000, None)}}
+    doc = _bdoc({"w1z4": ((1, 4), {"1": (1000, 1200)}), "w2z4": ((2, 4), {"1": (1000, 1200)}),
+                 "w1z8": ((1, 8), {"1": (2000, 2400)})}, cut=sink_cut)
+    pw, pz = S.pair(doc, "w1z4", "w2z4", 1.6, 1.25), S.pair(doc, "w1z4", "w1z8", 1.6, 1.25)
+    assert (pw["claim"], pz["claim"]) == ("flat", "grows")
+    assert S.attribute([pw, pz])["result"] == "server"
+    del doc["arms"]["w1z8"]["by_block_t4"]
+    with pytest.raises(S.ScalingError, match="by_block_t4"):
+        S.pair(doc, "w1z4", "w1z8", 1.6, 1.25)
 
 
 def test_open_ends_decide_what_can_be_claimed():
@@ -197,11 +220,30 @@ def test_boundary_cli_writes_product_and_record(tmp_path):
     assert x["grade"]["grade"] == "LOCALIZED" and doc["excluded"] == []
     arm = v["identity"]["arm"]
     assert doc["arms"][arm]["envelope"]["upper"] == v["boundary_T4"]["upper"]
+    assert doc["arms"][arm]["envelope_t4"]["upper"] == v["boundary_T4"]["upper"]
+    assert doc["arms"][arm]["by_block_t4"] == doc["arms"][arm]["by_block"]
     rec = open(str(tmp_path / "boundary.cmd.txt")).read()
     assert "\ncommand\t" in rec and "exit_code\t0" in rec and "code_sha\t" + "0" * 40 in rec
     assert "input\t%s\t" % os.path.join(tree, "judge", "verdicts.json") in rec
     p2 = _run("capjudge.boundary", "--inputs", str(lst), "--workdir", W, "--out", out)
     assert p2.returncode == 3 and "exists" in p2.stderr
+
+
+def test_boundary_keeps_the_judges_t4_next_to_the_cut_interval(tmp_path):
+    W, tree = _judged(tmp_path, "i_reader_slow")  # tier 4 localised to the load source
+    lst = tmp_path / "trees.txt"
+    lst.write_text(tree + "\n")
+    out = str(tmp_path / "boundary.json")
+    assert _run("capjudge.boundary", "--inputs", str(lst), "--workdir", W,
+                "--out", out).returncode == 0
+    doc = json.load(open(out))
+    (arm,) = doc["arms"].values()
+    v = json.load(open(os.path.join(tree, "judge", "verdicts.json")))
+    assert arm["envelope"]["upper"] is None
+    assert arm["envelope_t4"]["upper"] == v["boundary_T4"]["upper"] is not None
+    (blk,) = arm["by_block_t4"].values()
+    assert blk["upper"] == v["boundary_T4"]["upper"]
+    assert all(b["upper"] is None for b in arm["by_block"].values())
 
 
 def test_boundary_cli_excludes_a_launch_marked_void_after_judging(tmp_path):
@@ -312,9 +354,20 @@ def test_slope_not_run_and_exclusions(two_passes):
     assert E.slope(doc, "/W")["status"] == "INCONCLUSIVE"
 
 
+def test_slope_interval_holding_zero_is_inconclusive(two_passes):
+    # boundaries so noisy that slope intervals span 0 and 1: a dose that did not move the
+    # boundary would give such an interval too, so it is not a PASS
+    s = E.slope(_slope_doc(_known(100e-6, [None, 100000, 200000, 400000], rel=0.4)), "/W")
+    assert all(p["slope_min"] < 1 < p["slope_max"] for p in s["pairs"])  # all contain 1
+    zero = [p for p in s["pairs"] if p["slope_min"] <= 0]
+    assert zero and all(p["status"] == "INCONCLUSIVE" for p in zero), s["pairs"]
+    assert s["status"] == "INCONCLUSIVE"
+
+
 # ---- E1 report: bytes and accepts -------------------------------------------------------------
 
-def _sink_tree(tmp_path, client_bytes, rids, accepts=(3, 3), foreign=0):
+def _sink_tree(tmp_path, client_bytes, rids, accepts=(3, 3), foreign=0, failed=0, drop=()):
+    """drop: (file, dotted key) summary keys to delete."""
     from array import array
     from capcommon.capbin import write_capbin
     from capload.sink import response_head
@@ -327,11 +380,19 @@ def _sink_tree(tmp_path, client_bytes, rids, accepts=(3, 3), foreign=0):
               "measure_class": "stub_out_of_domain", "workers": 1}]
     json.dump({"roles": roles}, open(str(tree / "raw" / "launch.json"), "w"))
     heads = sum(len(response_head(r, False)) for r in rids)
-    json.dump({"frames": {"bytes": client_bytes}, "conn_pool": {"new_conns": accepts[0]}},
-              open(str(td / "ld.w0.summary.json"), "w"))
-    json.dump({"counts": {"bytes_sent": 1000 + heads, "requests": len(rids),
-                          "accepts": accepts[1], "foreign_requests": foreign},
-               "overflow": {"streams": 0}}, open(str(td / "sink.w0.summary.json"), "w"))
+    docs = {"ld": {"frames": {"bytes": client_bytes}, "conn_pool": {"new_conns": accepts[0]},
+                   "counts": {"failed": failed, "unfinished": 0}},
+            "sink": {"counts": {"bytes_sent": 1000 + heads, "requests": len(rids),
+                                "accepts": accepts[1], "foreign_requests": foreign},
+                     "overflow": {"streams": 0}}}
+    for who, key in drop:
+        d = docs[who]
+        *path, last = key.split(".")
+        for k in path:
+            d = d[k]
+        del d[last]
+    for who, doc in docs.items():
+        json.dump(doc, open(str(td / ("%s.w0.summary.json" % who)), "w"))
     ident = {"experiment": "E1", "arm": "a", "launch_seq": 0, "job_id": "local-1",
              "restart_count": 0, "register_sha": "0" * 64, "role": "sink", "worker": 0,
              "pid": 1, "tier_seq": None, "tier_label": None}
@@ -347,15 +408,27 @@ def test_counts_bytes_reconcile_with_rebuilt_heads(tmp_path):
 
 
 @pytest.mark.parametrize("kw, part, status", [
-    ({"client_bytes": 999}, "bytes", "FAIL"),
+    ({"client_bytes": 999}, "bytes", "FAIL"),  # sink sent more, no request failed
+    ({"client_bytes": 1001}, "bytes", "FAIL"),  # the load generator received more
+    ({"client_bytes": 999, "failed": 2}, "bytes", "NOT_RUN"),  # bytes in flight when dropped
+    ({"client_bytes": 999, "drop": [("ld", "counts.failed")]}, "bytes", "NOT_RUN"),
     ({"accepts": (3, 2)}, "accepts", "FAIL"),
     ({"foreign": 1}, "bytes", "NOT_RUN"),
+    # a missing counter is never summed as 0
+    ({"drop": [("ld", "conn_pool.new_conns")]}, "accepts", "NOT_RUN"),
+    ({"drop": [("ld", "conn_pool.new_conns"), ("sink", "counts.accepts")]}, "accepts",
+     "NOT_RUN"),
+    ({"drop": [("sink", "counts.foreign_requests")]}, "bytes", "NOT_RUN"),
+    ({"drop": [("sink", "counts.requests")]}, "bytes", "NOT_RUN"),
+    ({"drop": [("sink", "overflow.streams")]}, "bytes", "NOT_RUN"),
 ])
 def test_counts_mismatches(tmp_path, kw, part, status):
     args = {"client_bytes": 1000, "rids": [7, 12345, 99]}
     args.update(kw)
     c = E.counts(_sink_tree(tmp_path, **args))
     assert c[part]["status"] == status, c
+    if status == "NOT_RUN" and part == "bytes" and "client_bytes" in kw:
+        assert "1 bytes more" in c[part]["why"]
 
 
 def test_counts_need_every_per_tier_summary(tmp_path):

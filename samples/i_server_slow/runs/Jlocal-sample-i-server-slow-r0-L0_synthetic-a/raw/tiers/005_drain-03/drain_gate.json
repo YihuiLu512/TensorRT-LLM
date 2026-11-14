@@ -41,7 +41,7 @@
   "job_id": "local-sample-i-server-slow",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "6c145def9635572b34295e90eb3b738d847c4671f9e1836e762106f22542a23e",
+  "register_sha": "9298d0c36235233833cb1c7557f9efd63ec3fd8ec0aa8d10ff14a4aa21160dd0",
   "restart_count": 0,
   "role": "launch",
   "tier_label": "drain-03",
@@ -88,7 +88,7 @@
       0,
       "local-sample-i-server-slow",
       0,
-      "6c145def9635572b34295e90eb3b738d847c4671f9e1836e762106f22542a23e"
+      "9298d0c36235233833cb1c7557f9efd63ec3fd8ec0aa8d10ff14a4aa21160dd0"
      ],
      "pid": 1001,
      "seq": 180,
@@ -102,7 +102,7 @@
       0,
       "local-sample-i-server-slow",
       0,
-      "6c145def9635572b34295e90eb3b738d847c4671f9e1836e762106f22542a23e"
+      "9298d0c36235233833cb1c7557f9efd63ec3fd8ec0aa8d10ff14a4aa21160dd0"
      ],
      "pid": 1002,
      "seq": 180,
@@ -116,7 +116,7 @@
       0,
       "local-sample-i-server-slow",
       0,
-      "6c145def9635572b34295e90eb3b738d847c4671f9e1836e762106f22542a23e"
+      "9298d0c36235233833cb1c7557f9efd63ec3fd8ec0aa8d10ff14a4aa21160dd0"
      ],
      "pid": 2001,
      "seq": 180,
@@ -166,7 +166,7 @@
       0,
       "local-sample-i-server-slow",
       0,
-      "6c145def9635572b34295e90eb3b738d847c4671f9e1836e762106f22542a23e"
+      "9298d0c36235233833cb1c7557f9efd63ec3fd8ec0aa8d10ff14a4aa21160dd0"
      ],
      "pid": 1001,
      "seq": 182,
@@ -180,7 +180,7 @@
       0,
       "local-sample-i-server-slow",
       0,
-      "6c145def9635572b34295e90eb3b738d847c4671f9e1836e762106f22542a23e"
+      "9298d0c36235233833cb1c7557f9efd63ec3fd8ec0aa8d10ff14a4aa21160dd0"
      ],
      "pid": 1002,
      "seq": 182,
@@ -194,7 +194,7 @@
       0,
       "local-sample-i-server-slow",
       0,
-      "6c145def9635572b34295e90eb3b738d847c4671f9e1836e762106f22542a23e"
+      "9298d0c36235233833cb1c7557f9efd63ec3fd8ec0aa8d10ff14a4aa21160dd0"
      ],
      "pid": 2001,
      "seq": 182,
@@ -244,7 +244,7 @@
       0,
       "local-sample-i-server-slow",
       0,
-      "6c145def9635572b34295e90eb3b738d847c4671f9e1836e762106f22542a23e"
+      "9298d0c36235233833cb1c7557f9efd63ec3fd8ec0aa8d10ff14a4aa21160dd0"
      ],
      "pid": 1001,
      "seq": 184,
@@ -258,7 +258,7 @@
       0,
       "local-sample-i-server-slow",
       0,
-      "6c145def9635572b34295e90eb3b738d847c4671f9e1836e762106f22542a23e"
+      "9298d0c36235233833cb1c7557f9efd63ec3fd8ec0aa8d10ff14a4aa21160dd0"
      ],
      "pid": 1002,
      "seq": 184,
@@ -272,7 +272,7 @@
       0,
       "local-sample-i-server-slow",
       0,
-      "6c145def9635572b34295e90eb3b738d847c4671f9e1836e762106f22542a23e"
+      "9298d0c36235233833cb1c7557f9efd63ec3fd8ec0aa8d10ff14a4aa21160dd0"
      ],
      "pid": 2001,
      "seq": 184,
@@ -322,7 +322,7 @@
       0,
       "local-sample-i-server-slow",
       0,
-      "6c145def9635572b34295e90eb3b738d847c4671f9e1836e762106f22542a23e"
+      "9298d0c36235233833cb1c7557f9efd63ec3fd8ec0aa8d10ff14a4aa21160dd0"
      ],
      "pid": 1001,
      "seq": 186,
@@ -336,7 +336,7 @@
       0,
       "local-sample-i-server-slow",
       0,
-      "6c145def9635572b34295e90eb3b738d847c4671f9e1836e762106f22542a23e"
+      "9298d0c36235233833cb1c7557f9efd63ec3fd8ec0aa8d10ff14a4aa21160dd0"
      ],
      "pid": 1002,
      "seq": 186,
@@ -350,7 +350,7 @@
       0,
       "local-sample-i-server-slow",
       0,
-      "6c145def9635572b34295e90eb3b738d847c4671f9e1836e762106f22542a23e"
+      "9298d0c36235233833cb1c7557f9efd63ec3fd8ec0aa8d10ff14a4aa21160dd0"
      ],
      "pid": 2001,
      "seq": 186,
@@ -367,6 +367,6 @@
  "schema": "capkit.drain_gate/1",
  "source": "default",
  "t_pass_rel_ns": 18600000000,
- "written_mono_ns": 9839916322140978,
- "written_wall": "2026-11-14T13:38:12.402Z"
+ "written_mono_ns": 9852504267623920,
+ "written_wall": "2026-11-14T17:08:00.348Z"
 }

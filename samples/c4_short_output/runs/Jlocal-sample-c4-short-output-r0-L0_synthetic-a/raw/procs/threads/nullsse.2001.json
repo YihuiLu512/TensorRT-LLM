@@ -5,7 +5,7 @@
   "job_id": "local-sample-c4-short-output",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "85b1ee634bb766370552bad15a3bc3037091e3d2568ebafeb4a048949495009b",
+  "register_sha": "fafcd6d3122ea924b1dc14283a7c718dfb9e75b290caa87f4edfb86c3ab104ff",
   "restart_count": 0,
   "role": "launch",
   "tier_label": null,
@@ -34,6 +34,6 @@
    "tid": 2002
   }
  ],
- "written_mono_ns": 9839917732156184,
- "written_wall": "2026-11-14T13:38:13.812Z"
+ "written_mono_ns": 9852505905217099,
+ "written_wall": "2026-11-14T17:08:01.985Z"
 }

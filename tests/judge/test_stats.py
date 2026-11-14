@@ -68,7 +68,12 @@ def test_t5_disjoint_same_direction_else_indistinguishable():
     assert r["result"] == "indistinguishable" and r["min_resolvable_diff"] == 30
     r = S.t5_compare([{"block": "x", "a": {"lower": 10, "upper": 35}, "b": b}])
     assert r["result"] == "indistinguishable" and r["min_resolvable_diff"] == 30
+    # no block with both envelopes closed: no comparison at all
     r = S.t5_compare([{"block": "x", "a": {"lower": 10, "upper": None}, "b": b}])
+    assert r["result"] == "NOT_RUN" and r["min_resolvable_diff"] is None
+    # one closed block and one open: the open one counts against "different"
+    r = S.t5_compare([{"block": "x", "a": {"lower": 10, "upper": None}, "b": b},
+                      {"block": "y", "a": a, "b": b}])
     assert r["result"] == "indistinguishable"
 
 

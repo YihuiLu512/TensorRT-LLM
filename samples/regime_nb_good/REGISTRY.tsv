@@ -3,7 +3,7 @@ registered_at	experiment	relpath	sha256	note
 2026-11-13T00:00:00.001Z	E0	register/schedule.capbin	4275dc232d95f33bcf6c5eca28ea37bc306bb49ad15e15037f98c84a920346b4	kind=schedule;synthetic sample
 2026-11-13T00:00:00.002Z	E0	register/prompts.json	2e03b59f7251c4c4646ea0f542daedf57fecb6aa27fd8d52f6379ff9a40e6672	kind=prompts;synthetic sample
 2026-11-13T00:00:00.003Z	E0	register/scenario.json	c5e744357404ac03d0aeb2cfc9c78e9808d73cd4f9d1d1afa50408415c5bde6e	kind=scenario;synthetic sample
-2026-11-13T00:00:00.004Z	E0	register/pilot.json	df8d5ed2cc4b19bb1679a86cc9f072244dcf31a2403e3a9a050e4b4552eddabd	kind=pilot;synthetic sample
+2026-11-13T00:00:00.004Z	E0	register/pilot.json	4ef14ba54ddb27c603a0ed07218ebdc9319ba7f030c29dd52f87741bc6d853fa	kind=pilot;synthetic sample
 2026-11-13T00:00:00.005Z	E0	register/loadgen_band.json	858ae51d62b92718523cf8e913d44680346be2eddd23c9c5027b074b362de001	kind=loadgen_band;synthetic sample
-2026-11-13T00:00:00.006Z	E0	register/near_boundary_noise.json	cbeb2363943916f42f117640f447e40ceb10f65b7576ae2f56f66e8c237488a9	kind=near_boundary_noise;synthetic sample
-2026-11-13T00:00:00.007Z	E0	register/register.json	d7dd44cd397bf6f89b2b4eee3d1f351b2576ae02c294fe0f6f92519a3cf3baea	kind=register;synthetic sample
+2026-11-13T00:00:00.006Z	E0	register/near_boundary_noise.json	1df1f7425ba2419872562818b467574da238776043939f0f5dc60f6412a6bc0f	kind=near_boundary_noise;synthetic sample
+2026-11-13T00:00:00.007Z	E0	register/register.json	3cb959d261a92f7cfd2a46e521c257e793571d819895d00f427b912b3149058a	kind=register;synthetic sample

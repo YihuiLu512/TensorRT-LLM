@@ -9,7 +9,7 @@
   "job_id": "local-sample-c2-stub-good",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "c7edbef80e67381dfee13b98985631a939ed0896860d16d6d3423d42e36f5880",
+  "register_sha": "a796d6b4ada485c51985b58a6dc88e534ccc28d325975e9f1750c49500209f96",
   "restart_count": 0,
   "role": "launch",
   "tier_label": "drain-03",
@@ -194,6 +194,6 @@
   "tokens_per_msg": 1,
   "window_ns": 2000000000
  },
- "written_mono_ns": 9839917354867395,
- "written_wall": "2026-11-14T13:38:13.435Z"
+ "written_mono_ns": 9852505599116872,
+ "written_wall": "2026-11-14T17:08:01.679Z"
 }

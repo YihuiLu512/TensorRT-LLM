@@ -5,7 +5,7 @@
   "job_id": "local-sample-input-calib-invalid",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "ec89d5c4c5718965d22d16fb867c2ece8256e04ba30279a23dd891cfc18939f3",
+  "register_sha": "60e2f269db39155f7f945947585bbc825714d081ddd15a17e48cae4a4d45164a",
   "restart_count": 0,
   "role": "launch",
   "tier_label": null,
@@ -34,6 +34,6 @@
    "tid": 2002
   }
  ],
- "written_mono_ns": 9839918696226958,
- "written_wall": "2026-11-14T13:38:14.776Z"
+ "written_mono_ns": 9852506855015389,
+ "written_wall": "2026-11-14T17:08:02.935Z"
 }

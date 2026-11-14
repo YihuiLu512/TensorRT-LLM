@@ -18,8 +18,11 @@ them) is not VALID is excluded and listed with the reason. Per launch:
     load_source / stub_out_of_domain role). When that cut comes before any unstable tier the
     upper end is dropped: the result is a lower bound ("censored", design 2.6).
 Per arm: the envelope [min of lower ends, max of upper ends] in load order, over all its
-launches and per block (block = job id: one job carries one launch of each arm). --compare
-gives T5 for two arms over the blocks both have. All inputs must share one axis.
+launches and per block (block = job id: one job carries one launch of each arm), of the
+interval used across launches (`envelope`, `by_block`) and of the judge's T4 as recorded
+(`envelope_t4`, `by_block_t4`: for capjudge.scaling, which asks which side reached its limit
+first, so a tool-limited tier is evidence there, not a cut). --compare gives T5 of the
+intervals for two arms over the blocks both have. All inputs must share one axis.
 """
 
 import argparse
@@ -193,16 +196,18 @@ def build(trees, W, compares):
         blocks = {}
         for x in ls:
             blocks.setdefault(x["block"], []).append(x)
-        out["arms"][arm] = {"n_launches": len(ls), "envelope": _env(ls, order),
-                            "by_block": {b: _env(xs, order) for b, xs in sorted(blocks.items())}}
+        out["arms"][arm] = {
+            "n_launches": len(ls), "envelope": _env(ls, order),
+            "by_block": {b: _env(xs, order) for b, xs in sorted(blocks.items())},
+            "envelope_t4": _env(ls, order, "t4"),
+            "by_block_t4": {b: _env(xs, order, "t4") for b, xs in sorted(blocks.items())}}
     for a, b in compares:
         out["t5"].append(compare(out["arms"], a, b))
     return out
 
 
-def _env(launches, order):
-    return stats.t4_envelope([(x["interval"]["lower"], x["interval"]["upper"])
-                              for x in launches], order)
+def _env(launches, order, key="interval"):
+    return stats.t4_envelope([(x[key]["lower"], x[key]["upper"]) for x in launches], order)
 
 
 def compare(arms, a, b):

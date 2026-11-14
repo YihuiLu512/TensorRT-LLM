@@ -5,7 +5,7 @@
   "job_id": "local-sample-c1-loadgen-overdriven",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "d513af8df0624adecee03c1184b0d00e269e243c58bb38521c01848857500a41",
+  "register_sha": "2a09620b16ad69a777a5a150bb7cab6b519706544238cd3cde013d4f2b7b0177",
   "restart_count": 0,
   "role": "launch",
   "tier_label": null,
@@ -34,6 +34,6 @@
    "tid": 2002
   }
  ],
- "written_mono_ns": 9839916963019678,
- "written_wall": "2026-11-14T13:38:13.043Z"
+ "written_mono_ns": 9852505267771863,
+ "written_wall": "2026-11-14T17:08:01.348Z"
 }

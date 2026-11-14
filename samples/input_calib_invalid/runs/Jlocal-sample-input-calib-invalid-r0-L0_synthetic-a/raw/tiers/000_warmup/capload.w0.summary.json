@@ -30,7 +30,7 @@
   "job_id": "local-sample-input-calib-invalid",
   "launch_seq": 0,
   "pid": 1001,
-  "register_sha": "ec89d5c4c5718965d22d16fb867c2ece8256e04ba30279a23dd891cfc18939f3",
+  "register_sha": "60e2f269db39155f7f945947585bbc825714d081ddd15a17e48cae4a4d45164a",
   "restart_count": 0,
   "role": "capload",
   "tier_label": "warmup",
@@ -455,6 +455,6 @@
  "stop": null,
  "tier_table_sha256": "9ec2e9504387d851b23a6054f90df5b2f04de7e8eb81493c87e89591cb70e2a9",
  "tool": "capload",
- "written_mono_ns": 9839918710564292,
- "written_wall": "2026-11-14T13:38:14.791Z"
+ "written_mono_ns": 9852506866117307,
+ "written_wall": "2026-11-14T17:08:02.946Z"
 }

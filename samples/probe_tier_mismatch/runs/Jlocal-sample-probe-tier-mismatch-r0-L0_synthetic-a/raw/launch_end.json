@@ -11,7 +11,7 @@
   "job_id": "local-sample-probe-tier-mismatch",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "85b1ee634bb766370552bad15a3bc3037091e3d2568ebafeb4a048949495009b",
+  "register_sha": "fafcd6d3122ea924b1dc14283a7c718dfb9e75b290caa87f4edfb86c3ab104ff",
   "restart_count": 0,
   "role": "launch",
   "tier_label": null,
@@ -32,6 +32,6 @@
  "state": "VALID",
  "stop": null,
  "tiers_completed": 5,
- "written_mono_ns": 9839915322716197,
- "written_wall": "2026-11-14T13:38:11.403Z"
+ "written_mono_ns": 9852503292758224,
+ "written_wall": "2026-11-14T17:07:59.373Z"
 }

@@ -5,7 +5,7 @@
   "job_id": "local-sample-c13-unknown-thread",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "85b1ee634bb766370552bad15a3bc3037091e3d2568ebafeb4a048949495009b",
+  "register_sha": "fafcd6d3122ea924b1dc14283a7c718dfb9e75b290caa87f4edfb86c3ab104ff",
   "restart_count": 0,
   "role": "launch",
   "tier_label": null,
@@ -42,6 +42,6 @@
    "tid": 2999
   }
  ],
- "written_mono_ns": 9839913927839438,
- "written_wall": "2026-11-14T13:38:10.008Z"
+ "written_mono_ns": 9852501940748477,
+ "written_wall": "2026-11-14T17:07:58.021Z"
 }

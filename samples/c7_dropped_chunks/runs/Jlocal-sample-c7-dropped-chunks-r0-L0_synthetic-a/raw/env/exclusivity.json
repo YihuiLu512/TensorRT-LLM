@@ -6,7 +6,7 @@
   "job_id": "local-sample-c7-dropped-chunks",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "85b1ee634bb766370552bad15a3bc3037091e3d2568ebafeb4a048949495009b",
+  "register_sha": "fafcd6d3122ea924b1dc14283a7c718dfb9e75b290caa87f4edfb86c3ab104ff",
   "restart_count": 0,
   "role": "gate",
   "tier_label": null,
@@ -64,6 +64,6 @@
  "schema": "capkit.exclusivity/1",
  "slurm_view_error": null,
  "slurm_view_file": "synthetic",
- "written_mono_ns": 9839912752266224,
- "written_wall": "2026-11-14T13:38:08.832Z"
+ "written_mono_ns": 9852500861834995,
+ "written_wall": "2026-11-14T17:07:56.942Z"
 }

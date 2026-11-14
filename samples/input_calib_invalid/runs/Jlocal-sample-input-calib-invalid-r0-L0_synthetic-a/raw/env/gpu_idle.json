@@ -28,7 +28,7 @@
   "job_id": "local-sample-input-calib-invalid",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "ec89d5c4c5718965d22d16fb867c2ece8256e04ba30279a23dd891cfc18939f3",
+  "register_sha": "60e2f269db39155f7f945947585bbc825714d081ddd15a17e48cae4a4d45164a",
   "restart_count": 0,
   "role": "jobs",
   "tier_label": null,
@@ -73,6 +73,6 @@
  "schema": "capkit.gpu_idle/1",
  "status": "PASS",
  "visible_gpus": 1,
- "written_mono_ns": 9839918684500422,
- "written_wall": "2026-11-14T13:38:14.765Z"
+ "written_mono_ns": 9852506842391585,
+ "written_wall": "2026-11-14T17:08:02.922Z"
 }

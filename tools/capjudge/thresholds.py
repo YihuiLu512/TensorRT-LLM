@@ -7,6 +7,7 @@ e.g. "T1:msg_lag_p50_ns:capload". Every noise band belongs to one regime: "subsa
 sub-saturation tiers) or "near_boundary" (measured on tiers near the boundary); a band without a
 `regime` field is "subsat". The same (key, regime) defined by two sources is an input error (no
 silent precedence); the same key may come from two sources when each owns a different regime.
+Only near_boundary_noise files may be registered more than once (MULTI_KINDS).
 A judged tier reads only the bands of its own regime (register.json judge.near_boundary_tiers
 marks the near-boundary tiers; every other tier is subsat): a near-boundary tier never falls
 back to a sub-saturation band (DATA-AND-ANALYSIS 4 item 6). A key that no source defines for
@@ -17,6 +18,9 @@ from . import stats
 
 KEY_CODES = ("T1", "T2", "T3", "T6")
 REGIMES = ("subsat", "near_boundary")
+# Calibration kinds a launch may register more than once (e.g. one near_boundary_noise file per
+# regime); every other kind at most once. Either way a (key, regime) has one source.
+MULTI_KINDS = ("near_boundary_noise",)
 
 
 class BandError(Exception):
@@ -58,7 +62,9 @@ class Bands:
     def __init__(self):
         self._bands = {}  # (key, regime) -> (band, source label)
         self.sources = []  # [{"kind", "relpath", "sha256", "n_keys"}]
-        self.extras = {}  # source kind -> the whole document (pilot: d14_softirq etc.)
+        # source kind -> the whole document (pilot: d14_softirq etc.); a kind in MULTI_KINDS ->
+        # {relpath: document}
+        self.extras = {}
         self.lookups = {}  # "<regime>|<key>" -> "found" / "missing" (written to inputs.json)
 
     def add_source(self, kind, relpath, sha256, doc):
@@ -68,13 +74,19 @@ class Bands:
             if (key, regime) in self._bands:
                 raise BandError("band %r (regime %s) defined by both %s and %s"
                                 % (key, regime, self._bands[(key, regime)][1], relpath))
-        if kind in self.extras:
+        if kind in MULTI_KINDS:
+            if relpath in self.extras.get(kind, {}):
+                raise BandError("calibration file %s registered twice" % relpath)
+        elif kind in self.extras:
             raise BandError("two calibration files of kind %s" % kind)
         for key, (band, regime) in checked.items():
             self._bands[(key, regime)] = (band, relpath)
         self.sources.append({"kind": kind, "relpath": relpath, "sha256": sha256,
                              "n_keys": len(checked)})
-        self.extras[kind] = doc
+        if kind in MULTI_KINDS:
+            self.extras.setdefault(kind, {})[relpath] = doc
+        else:
+            self.extras[kind] = doc
 
     def get(self, key, regime):
         if regime not in REGIMES:

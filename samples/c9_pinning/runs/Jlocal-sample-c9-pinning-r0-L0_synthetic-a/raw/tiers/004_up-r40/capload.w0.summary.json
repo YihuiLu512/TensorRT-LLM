@@ -30,7 +30,7 @@
   "job_id": "local-sample-c9-pinning",
   "launch_seq": 0,
   "pid": 1001,
-  "register_sha": "85b1ee634bb766370552bad15a3bc3037091e3d2568ebafeb4a048949495009b",
+  "register_sha": "fafcd6d3122ea924b1dc14283a7c718dfb9e75b290caa87f4edfb86c3ab104ff",
   "restart_count": 0,
   "role": "capload",
   "tier_label": "up-r40",
@@ -455,6 +455,6 @@
  "stop": null,
  "tier_table_sha256": "9ec2e9504387d851b23a6054f90df5b2f04de7e8eb81493c87e89591cb70e2a9",
  "tool": "capload",
- "written_mono_ns": 9839913316455820,
- "written_wall": "2026-11-14T13:38:09.397Z"
+ "written_mono_ns": 9852501383368210,
+ "written_wall": "2026-11-14T17:07:57.463Z"
 }
