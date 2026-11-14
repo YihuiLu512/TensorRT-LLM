@@ -8,7 +8,12 @@ rules in :data:`OWNERSHIP`, every commit in ``<base>..<head>`` must carry
 exactly one ``PoC3-Task`` line, reading exactly ``PoC3-Task: <work item>`` (read
 as ``poc3_common`` describes), and the range must hold at least one commit. A
 fix (``WT-xx-fixN``) owns what WT-xx owns, plus the per-item files named after
-the fix itself; WT-xx and its other fixes do not own those. The gate files
+the fix itself; WT-xx and its other fixes do not own those. Likewise an
+``exception`` that names the work item it is for allows that item alone: an
+exception for WT-xx-fixN allows neither WT-xx nor WT-xx's other fixes, and one
+for WT-xx allows none of WT-xx's fixes. It allows nothing once that item has
+landed, that is once a commit with its trailer is in the history of
+``<base>``. The gate files
 (``scripts/poc3/`` except the invariant registry and ``wt54_*``) can only be
 changed by WT-30 and its fixes, whatever the table says.
 
@@ -30,15 +35,16 @@ in one of two forms (patterns are regular expressions in which ``\d`` and
 A top-level statement runs from its first line (its first decorator) up to the
 line before the next top-level statement of any kind. A ``def`` or ``class`` is
 named by its name, an assignment (plain or annotated) whose first target is a
-name by that name, and any import by ``import``; other statements have no name.
+bare name by that name, and any import by ``import``; other statements have no name.
 A hunk lies in a named statement when its removed lines lie in it in the file at
 the merge base, and its added lines lie in it in the file at the head; a hunk
 that only adds lines must also follow or precede a line of that statement at the
 merge base, and the file must be Python the interpreter running the check parses
 at both. A ``changes`` exception may also list the statements it renames, each
 from one name to another: the file must have a statement by the first name and
-none by the second at the merge base, and the other way round at the head, and
-at the merge base the statement goes by the second. With either form nothing
+none by the second at the merge base, and the other way round at the head; the
+changes are matched as if the statement already went by the second at the
+merge base. With either form nothing
 else about the file may change (its mode or final newline, for example);
 otherwise the path is out of bounds. Paths changed under ``shared`` and
 ``exception`` rules are listed for a reviewer to check by hand.
@@ -76,7 +82,16 @@ from functools import lru_cache
 from pathlib import Path
 from typing import NamedTuple
 
-from poc3_common import TRAILER, UNREADABLE, git, git_error, parse_task, run_git, trailer_log
+from poc3_common import (
+    TRAILER,
+    UNREADABLE,
+    git,
+    git_error,
+    landed_tasks,
+    parse_task,
+    run_git,
+    trailer_log,
+)
 
 TRTLLM = "trtllm"
 DS = "ds"
@@ -106,6 +121,9 @@ class Rule:
     # With changes: the top-level statements the hunks rename, as (name at the merge base, name at
     # the head). A change names a renamed statement by its name at the head.
     renames: tuple[tuple[str, str], ...] = ()
+    # For an exception: the one work item it allows (a fix by its own name), until that item has
+    # landed; empty for the work item whose entry lists it and all of that item's fixes.
+    item: str = ""
 
 
 def _own(*patterns: str, repo: str = TRTLLM) -> list[Rule]:
@@ -123,7 +141,10 @@ def _exception(
     lines: tuple[str, ...] = (),
     changes: tuple[Change, ...] = (),
     renames: tuple[tuple[str, str], ...] = (),
+    item: str = "",
 ) -> Rule:
+    if item:
+        parse_task(item)  # raises ValueError for a name that is not a work item
     if lines and changes:
         raise ValueError(f"{pattern}: an exception lists lines or changes, not both")
     if renames and not changes:
@@ -139,7 +160,7 @@ def _exception(
             raise ValueError(
                 f"{pattern}: renaming {old} to {new} needs a change in {new}, none in {old}"
             )
-    return Rule(pattern, "exception", note, repo, lines, changes, renames)
+    return Rule(pattern, "exception", note, repo, lines, changes, renames, item)
 
 
 def _change(within: str, removed: tuple[str, ...] = (), added: tuple[str, ...] = ()) -> Change:
@@ -170,6 +191,8 @@ _NO_EVENTS_HTTP_TEST_WAS = "test_kv_cache_events_the_frontend_cannot_read_answer
 _NO_EVENTS_HTTP_TEST = "test_kv_cache_events_the_frontend_cannot_read_answer_no_events"
 _NO_EVENTS_SUBSCRIPTION_TEST_WAS = "test_kv_cache_events_unsupported_raise_a_new_error_each_call"
 _NO_EVENTS_SUBSCRIPTION_TEST = "test_kv_cache_events_unsupported_answer_no_events_each_call"
+_GENERATION_FIRST_TEST_WAS = "test_schedule_style_is_unimplemented_without_generation_first"
+_GENERATION_FIRST_TEST = "test_context_only_takes_a_generation_first_schedule_style"
 # The registry of lines check_invariants.py lets CS-20 add.
 INVARIANT_ADDITIONS = "scripts/poc3/invariant_additions.yaml"
 # Gate files only WT-30 and its fixes may change (see the module docstring).
@@ -312,6 +335,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
             "only the version 4 capability keys and counters in the expectations,"
             ' kv_transfer_backend="" for two GetModelInfo cases, and min_tokens following'
             " one-model speculation",
+            item="WT-40",
             changes=(
                 _change(
                     "import",
@@ -380,6 +404,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
         _exception(
             f"{OE_SERVER_TESTS}/test_servicer.py",
             'only kv_transfer_backend="NIXL" for the two servicers that receive disagg requests',
+            item="WT-40",
             changes=(
                 _change(
                     "test_generate_preserves_child_identity_and_authenticates_parent_affinity",
@@ -412,6 +437,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
             f"{OE_SERVER_TESTS}/test_multimodal.py",
             "only a kv_transfer_backend for the servicers of"
             " test_audio_text_prompt_survives_preparation_without_placeholders",
+            item="WT-40",
             changes=(
                 _change(
                     "test_audio_text_prompt_survives_preparation_without_placeholders",
@@ -577,6 +603,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
         _exception(
             f"{POC_TESTS}/wt50/wt50_chain.py",
             "only engine() serving a disagg_profile, with its docstring and import",
+            item="WT-52",
             changes=(
                 _change(
                     "import",
@@ -610,6 +637,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
             f"{POC_TESTS}/wt50/test_poc3_wt50_internal_auth.py",
             "only the two handoffs past the signature check expecting 200 and one engine call,"
             " with their comment and docstrings, and _refused_by_the_facade removed",
+            item="WT-52",
             changes=(
                 _change(
                     "_refused_by_the_facade",
@@ -683,6 +711,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
             "DQ-48 flip only: the over-gRPC min_tokens probe expecting the facade to refuse"
             " min_tokens to an engine on the current conventions that does not declare"
             " trtllm.stopping.min_tokens; the mapping-level probes are unchanged",
+            item="WT-52",
             changes=(
                 _change(
                     "test_over_grpc_the_engine_receives_what_the_mapping_sends",
@@ -734,6 +763,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
             f"{POC}/engine_client.py",
             "contract v11 (U24, N46) only: the EngineInfo.kv_block_size and total_kv_blocks"
             " fields and their docstring",
+            item="WT-53-fix1",
             changes=(
                 _change(
                     "EngineInfo",
@@ -760,6 +790,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
             f"{POC}/engine_client_impl.py",
             "contract v11 (U24, N46) only: _engine_info filling kv_block_size and"
             " total_kv_blocks from the capacity",
+            item="WT-53-fix1",
             changes=(
                 _change(
                     "_engine_info",
@@ -774,6 +805,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
             f"{CLIENT_TESTS}/test_openengine_poc_serve.py",
             "contract v11 (U24) only: the 501 handler case raising OpenEngineUnsupportedError"
             " itself, since the default /kv_cache_events answers no events",
+            item="WT-53-fix1",
             changes=(
                 _change(
                     _UNSUPPORTED_HANDLER_TEST,
@@ -793,6 +825,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
             f"{POC_TESTS}/wt01/test_poc2_wt01_contracts.py",
             "U24 flips only: contract version 11 in test_contract_version, and the default"
             " metrics answering no KV-cache events instead of raising OpenEngineUnsupportedError",
+            item="WT-53-fix1",
             changes=(
                 _change(
                     "test_contract_version",
@@ -816,6 +849,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
         _exception(
             f"{POC_TESTS}/wt35/test_poc3_wt35_contracts.py",
             "U24 flip only: contract version 11 in test_contract_version",
+            item="WT-53-fix1",
             changes=(
                 _change(
                     "test_contract_version",
@@ -831,6 +865,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
             " answering no events instead of raising OpenEngineUnsupportedError for an engine"
             " without sources; N46: the test client's server_info() and load(); a comment on the"
             " first call",
+            item="WT-53-fix1",
             changes=(
                 _change(
                     "test_kv_cache_events_arrive_through_get_kv_event_sources",
@@ -926,6 +961,82 @@ OWNERSHIP: dict[str, list[Rule]] = {
         _shared(f"{POC}/facade.py", "CS-14 gen-first"),
         _shared(f"{POC}/handoff*.py", "CS-14: the gen worker front end building KvSessionRef"),
         _shared(f"{OE_SERVER}/disagg.py", "CO-09: reading extra on prefill requests"),
+        # CO-09: an engine with a KV cache transceiver declares generation-first and serves a
+        # generation-first context-only request that carries its disagg_request_id (DQ-06).
+        _exception(
+            f"{OE_SERVER_TESTS}/test_disagg_control.py",
+            "DQ-06 flip only: trtllm.disagg.generation_first declared with a transceiver in"
+            " test_model_info_declares_every_version_4_capability_key",
+            item="WT-55",
+            changes=(
+                _change(
+                    "test_model_info_declares_every_version_4_capability_key",
+                    ('        "trtllm.disagg.generation_first": False,',),
+                    ('        "trtllm.disagg.generation_first": enabled,',),
+                ),
+            ),
+        ),
+        _exception(
+            f"{OE_SERVER_TESTS}/test_disagg_servicer.py",
+            "DQ-06 flip only: the schedule_style refusal turned into the acceptance of a"
+            " generation-first context-only request, renamed to say so; schedule_style among the"
+            " keys refused without a transceiver",
+            item="WT-55",
+            changes=(
+                _change(
+                    _GENERATION_FIRST_TEST,
+                    (
+                        f"def {_GENERATION_FIRST_TEST_WAS}():",
+                        '    request = _request(extra={"request_type": "context_only",'
+                        ' "schedule_style": 1})',
+                    ),
+                    (
+                        f"def {_GENERATION_FIRST_TEST}():",
+                        "    llm = _Llm([_prefill_result()])",
+                        "    request = _request(",
+                        "        extra={",
+                        '            "request_type": "context_only",',
+                        '            "disagg_request_id": str(CALLER_ID),',
+                        '            "schedule_style": 1,',
+                        "        }",
+                        "    )",
+                    ),
+                ),
+                _change(
+                    _GENERATION_FIRST_TEST,
+                    ("    _, context = _generate(_servicer(), request)",),
+                    ("    _, context = _generate(_servicer(llm), request)",),
+                ),
+                _change(
+                    _GENERATION_FIRST_TEST,
+                    (
+                        "    assert context.abort_code == grpc.StatusCode.UNIMPLEMENTED",
+                        '    assert "schedule_style" in context.abort_details',
+                    ),
+                    (
+                        "    assert context.abort_code is None, context.abort_details",
+                        '    params = llm.calls[0]["disaggregated_params"]',
+                        "    assert params.schedule_style == DisaggScheduleStyle.GENERATION_FIRST",
+                        "    assert params.disagg_request_id == CALLER_ID",
+                    ),
+                ),
+                _change(
+                    "test_disagg_request_keys_are_unimplemented_without_a_transceiver",
+                    (
+                        '    for extra in ({"disagg_request_id": str(CALLER_ID)},'
+                        ' {"orig_elapsed_s": 0.5}):',
+                    ),
+                    (
+                        "    for extra in (",
+                        '        {"disagg_request_id": str(CALLER_ID)},',
+                        '        {"schedule_style": 1},',
+                        '        {"orig_elapsed_s": 0.5},',
+                        "    ):",
+                    ),
+                ),
+            ),
+            renames=((_GENERATION_FIRST_TEST_WAS, _GENERATION_FIRST_TEST),),
+        ),
     ],
     "WT-56": _own(
         f"{APPS}/_test_openengine_ds_disagg_basic.py",
@@ -989,6 +1100,30 @@ for _name in OWNERSHIP:
     OWNERSHIP[_name] += _own(f"{POC_TESTS}/wt{_name.removeprefix('WT-')}/**")
 
 
+def _named_fixes(table: dict[str, list[Rule]]) -> list[str]:
+    """The fixes the exceptions of ``table`` are for, in the order of the table.
+
+    Raises:
+        ValueError: An exception lists its changes but no work item, or is for neither the work
+            item it is listed under nor one of that item's fixes.
+    """
+    fixes: list[str] = []
+    for name, rules in table.items():
+        for rule in rules:
+            if rule.changes and not rule.item:
+                raise ValueError(f"{rule.pattern}: an exception listing changes names no item")
+            if not rule.item:
+                continue
+            if parse_task(rule.item)[0] != name:
+                raise ValueError(f"{rule.pattern}: an exception for {rule.item} is under {name}")
+            if rule.item not in table and rule.item not in fixes:
+                fixes.append(rule.item)
+    return fixes
+
+
+NAMED_FIXES = _named_fixes(OWNERSHIP)
+
+
 @lru_cache(maxsize=None)
 def _regex(pattern: str) -> re.Pattern[str]:
     """Compile a glob: ``**`` crosses directories, ``*`` and ``?`` do not."""
@@ -1031,7 +1166,7 @@ def match_rule(task: str, path: str, repo: str = TRTLLM) -> Rule | None:
     rules = OWNERSHIP[base] + (_per_item(task) if fix is not None else [])
     matched: Rule | None = None
     for rule in rules:
-        if rule.repo != repo:
+        if rule.repo != repo or rule.item not in ("", task):
             continue
         if rule.pattern.startswith("!"):
             if matched is not None and _regex(rule.pattern[1:]).match(path):
@@ -1043,11 +1178,20 @@ def match_rule(task: str, path: str, repo: str = TRTLLM) -> Rule | None:
 
 
 def owners(path: str, repo: str = TRTLLM) -> list[tuple[str, Rule]]:
-    """Every work item that may change ``path``, with the rule that allows it."""
+    """Every work item with a rule for ``path``, and that rule.
+
+    A fix is listed only where an exception for it by name covers the path. An
+    exception whose work item has landed is listed too, though it allows nothing
+    any more (see :func:`check`).
+    """
     found = []
     for name in OWNERSHIP:
         rule = match_rule(name, path, repo)
         if rule is not None:
+            found.append((name, rule))
+    for name in NAMED_FIXES:
+        rule = match_rule(name, path, repo)
+        if rule is not None and rule.item == name:
             found.append((name, rule))
     return found
 
@@ -1256,6 +1400,8 @@ def check(task: str, revision_range: str, repo_dir: str = ".", repo: str | None 
         return 1
 
     status = 0
+    # The work items landed at <base>, read once a rule naming its work item matches a path.
+    landed: set[str] | None = None
     changed = git(
         repo_dir,
         "diff",
@@ -1269,9 +1415,17 @@ def check(task: str, revision_range: str, repo_dir: str = ".", repo: str | None 
     review = []
     for path in filter(None, changed):
         rule = match_rule(task, path, repo)
+        if rule is not None and rule.item and landed is None:
+            landed = landed_tasks(repo_dir, base_ref)
         if rule is None:
             others = ", ".join(name for name, _ in owners(path, repo)) or "nobody"
             print(f"OUT OF BOUNDS  {path}  (owned by {others})")
+            status = 1
+        elif rule.item and rule.item in (landed or ()):
+            print(
+                f"OUT OF BOUNDS  {path}  (the exception for {rule.item} is spent: {rule.item}"
+                " has landed at the base)"
+            )
             status = 1
         elif (rule.lines or rule.changes) and (
             bad := disallowed_lines(rule, repo_dir, base_ref, head_ref, path)

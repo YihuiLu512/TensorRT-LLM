@@ -1648,14 +1648,14 @@ def _wt53_repo(tmp_path, path, edit, base_edit=None):
     return _edited_repo(tmp_path, WT53_FIX1_BASE, path, edit, "WT-53-fix1", base_edit)
 
 
-# Every item that may change each file: WT-53 by its exception, the others as before it.
+# Every item with a rule for each file: WT-53-fix1 by its exception, the others as before it.
 WT53_OWNERS = {
-    WT53_ENGINE_CLIENT: [("WT-35", "own"), ("WT-51", "shared"), ("WT-53", "exception")],
-    WT53_ENGINE_CLIENT_IMPL: [("WT-51", "own"), ("WT-52", "shared"), ("WT-53", "exception")],
-    WT53_SERVE: [("WT-50", "exception"), ("WT-53", "exception")],
-    WT53_WT01: [("WT-35", "exception"), ("WT-51", "exception"), ("WT-53", "exception")],
-    WT53_WT35: [("WT-35", "own"), ("WT-53", "exception")],
-    WT53_WT15: [("WT-53", "exception")],
+    WT53_ENGINE_CLIENT: [("WT-35", "own"), ("WT-51", "shared"), ("WT-53-fix1", "exception")],
+    WT53_ENGINE_CLIENT_IMPL: [("WT-51", "own"), ("WT-52", "shared"), ("WT-53-fix1", "exception")],
+    WT53_SERVE: [("WT-50", "exception"), ("WT-53-fix1", "exception")],
+    WT53_WT01: [("WT-35", "exception"), ("WT-51", "exception"), ("WT-53-fix1", "exception")],
+    WT53_WT35: [("WT-35", "own"), ("WT-53-fix1", "exception")],
+    WT53_WT15: [("WT-53-fix1", "exception")],
 }
 
 
@@ -1668,7 +1668,7 @@ def test_the_wt53_fix1_exceptions_list_exactly_its_changes(path):
         for within, old, new, _ in WT53_CHANGES[path]
     ]
     assert dict(rule.renames) == WT53_RENAMES.get(path, {})
-    assert check_ownership.match_rule("WT-53", path) is rule
+    assert check_ownership.match_rule("WT-53", path) is None
     assert [(n, r.kind) for n, r in check_ownership.owners(path)] == WT53_OWNERS[path]
 
 
