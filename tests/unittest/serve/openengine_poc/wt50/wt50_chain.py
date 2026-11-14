@@ -11,7 +11,7 @@ itself, so ``cluster_uri`` is the orchestrator's own address.
 The module also holds two HTTP middlewares the worker frontends load with
 ``--middleware``: :func:`record_requests` appends ``<method> <path>`` of every
 request to the file named by ``WT50_REQUEST_LOG``, and
-:func:`fail_server_info` answers ``GET /server_info`` with 500.
+:func:`fail_server_info` answers ``GET /server_info`` as an unhandled error does.
 """
 
 from __future__ import annotations
@@ -177,9 +177,10 @@ class Process:
         self._log.close()
 
 
-def cluster_config(orchestrator_port: int, cluster_uri: str | None = None) -> dict[str, Any]:
+def cluster_config(cluster_uri: str) -> dict[str, Any]:
+    """A ``disagg_cluster`` section; for HTTP storage, ``cluster_uri`` is the orchestrator's URL."""
     return {
-        "cluster_uri": cluster_uri or f"http://127.0.0.1:{orchestrator_port}",
+        "cluster_uri": cluster_uri,
         "cluster_name": "wt50",
         "heartbeat_interval_sec": HEARTBEAT_SECONDS,
         "inactive_timeout_sec": INACTIVE_SECONDS,

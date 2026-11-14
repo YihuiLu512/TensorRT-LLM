@@ -77,8 +77,9 @@ def launch_openengine_server(
     ``report_addr``, the socket is bound before the engine is awaited and the
     bound address is written to ``report_addr``, as the in-process server
     does. ``port=0`` (the kernel picks the port) needs ``report_addr`` or
-    ``disagg_cluster_config``: the port is then bound before the engine is
-    awaited, and the frontend registers it with the disaggregated cluster.
+    ``disagg_cluster_config`` to tell clients the bound port: it is written to
+    ``report_addr`` when one is given and registered with the cluster when
+    there is one.
 
     ``server_role`` (a ``ServerRole``), ``disagg_cluster_config`` and
     ``internal_disagg_auth_key`` make the frontend a disaggregated worker, as
@@ -95,7 +96,7 @@ def launch_openengine_server(
     from tensorrt_llm.commands.serve import _apply_fastapi_middlewares, _publish_bound_address
     from tensorrt_llm.serve.openai_server import OpenAIServer
 
-    if port == 0 and not report_addr and disagg_cluster_config is None:
+    if port == 0 and not report_addr and not disagg_cluster_config:
         raise click.UsageError(
             "--port 0 needs --report_addr or a disagg_cluster to tell clients the port"
         )

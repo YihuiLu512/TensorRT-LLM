@@ -1784,6 +1784,11 @@ def serve(
             disagg_cluster_config = DisaggClusterConfig(
                 cluster_uri=disagg_cluster_uri)
 
+        if (openengine_endpoint is not None
+                and disagg_cluster_config is not None and server_role is None):
+            raise click.UsageError(
+                "--openengine-endpoint with a disagg_cluster needs --server_role"
+            )
         if metadata_server_cfg is not None or disagg_cluster_config is not None:
             assert (
                 server_role is not None

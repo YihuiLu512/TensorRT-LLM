@@ -96,6 +96,9 @@ LOAD_READ_INTERVAL_S = 0.5
 LOG_PROMPT_IDS_ENV = "TRTLLM_OPENENGINE_POC_LOG_PROMPT_IDS"
 # Where preprocess leaves a prompt's mapped media for generate_async.
 _MAPPED_MEDIA_KEY = "openengine_media"
+# The conventions version before the disaggregated keys: an engine on it serves
+# aggregated requests only.
+_AGGREGATED_ONLY_VERSION = 3
 
 
 class _MappedMedia(list):
@@ -515,15 +518,20 @@ class OpenEngineLLM:
                 f"{CONVENTIONS_VERSION_KEY} is not an integer: serve={CONVENTIONS_VERSION} "
                 f"engine={reported!r}",
             )
-        # A disaggregated worker needs this version; without a role, an engine
-        # on version 3 (no disaggregated keys) still serves aggregated requests.
+        # A frontend started with a role needs the current version; one without
+        # a role also accepts an engine on _AGGREGATED_ONLY_VERSION.
         role = self._server_role
         if version is None and role is None:
             logger.warning(
                 f"OpenEngine engine {info.engine_name!r} at {self._endpoint} reports no "
                 f"{CONVENTIONS_VERSION_KEY}; requests are checked against the capabilities it declares"
             )
-        elif version != CONVENTIONS_VERSION and (role is not None or version != 3):
+        elif version == _AGGREGATED_ONLY_VERSION and role is None:
+            logger.info(
+                f"OpenEngine engine {info.engine_name!r} at {self._endpoint} reports "
+                f"{CONVENTIONS_VERSION_KEY}={version}: it serves aggregated requests only"
+            )
+        elif version != CONVENTIONS_VERSION:
             needed = "" if role is None else f"; a {role.name} worker needs {CONVENTIONS_VERSION}"
             raise self._startup_error(
                 "conventions version",

@@ -77,6 +77,11 @@ def test_a_role_other_than_context_or_generation_is_refused(tmp_path, role):
         _run_cli(tmp_path, "--server_role", role)
 
 
+def test_a_cluster_without_a_role_is_refused(tmp_path):
+    with pytest.raises(click.UsageError, match="disagg_cluster needs --server_role"):
+        _run_cli(tmp_path, "--disagg_cluster_uri", "http://localhost:1")
+
+
 def test_a_frontend_without_worker_options_starts_as_before(tmp_path):
     launch = _run_cli(tmp_path)
     kwargs = launch.call_args.kwargs
@@ -159,11 +164,32 @@ def test_launch_gives_the_worker_options_to_the_server_and_the_facade(tmp_path, 
     assert port > 0 and bound == [port]
 
 
-def test_port_zero_still_needs_a_report_addr_without_a_cluster(tmp_path):
+@pytest.mark.parametrize("cluster", [None, {}], ids=["no-cluster", "empty-cluster"])
+def test_port_zero_still_needs_a_report_addr_without_a_cluster(tmp_path, cluster):
     with pytest.raises(click.UsageError, match="report_addr or a disagg_cluster"):
         launch_module.launch_openengine_server(
-            "127.0.0.1", 0, {"model": str(tmp_path)}, "x:1", server_role=ServerRole.CONTEXT
+            "127.0.0.1",
+            0,
+            {"model": str(tmp_path)},
+            "x:1",
+            server_role=ServerRole.CONTEXT,
+            disagg_cluster_config=cluster,
         )
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [("disagg_cluster_config", {}), ("internal_disagg_auth_key", "")],
+    ids=["empty-cluster", "empty-auth-key"],
+)
+def test_empty_worker_options_start_a_frontend_as_before(field, value):
+    with (
+        mock.patch.object(contracts, "default_launch_frontends") as default,
+        mock.patch.object(launch_module, "launch_openengine_server") as launch,
+    ):
+        contracts.launch_frontends(_config(**{field: value}))
+    default.assert_called_once()
+    launch.assert_not_called()
 
 
 def test_every_frontend_of_several_gets_the_worker_options(monkeypatch):

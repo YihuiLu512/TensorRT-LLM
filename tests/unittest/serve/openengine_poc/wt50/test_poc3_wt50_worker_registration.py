@@ -8,6 +8,7 @@ command lines (see ``wt50_chain``).
 
 from __future__ import annotations
 
+import contextlib
 import os
 import secrets
 import shutil
@@ -35,12 +36,15 @@ def _worker_config(cluster: dict, auth_key: str | None = None) -> dict:
 
 def _started_orchestrator(tmp_path: Path, **kwargs) -> tuple[chain.Process, str, dict]:
     port = chain.free_port()
-    cluster = kwargs.pop("cluster", None) or chain.cluster_config(port)
-    orchestrator = chain.start_orchestrator(tmp_path, port, cluster=cluster, **kwargs)
     url = f"http://127.0.0.1:{port}"
-    chain.wait(
-        lambda: chain.cluster_info(url), "the orchestrator to answer", processes=[orchestrator]
-    )
+    cluster = kwargs.pop("cluster", None) or chain.cluster_config(url)
+    orchestrator = chain.start_orchestrator(tmp_path, port, cluster=cluster, **kwargs)
+    with contextlib.ExitStack() as on_failure:
+        on_failure.callback(orchestrator.stop)
+        chain.wait(
+            lambda: chain.cluster_info(url), "the orchestrator to answer", processes=[orchestrator]
+        )
+        on_failure.pop_all()
     return orchestrator, url, cluster
 
 
@@ -65,19 +69,27 @@ def test_worker_frontend_registers_over_http_storage(tmp_path):
                 "the ctx worker frontend to register",
                 processes=[orchestrator, ctx],
             )
-            # One role only: registered, but the orchestrator is not ready.
+            # One role only: registered and listed, but the orchestrator is not ready.
+            chain.wait(
+                lambda: chain.listed(url)[0],
+                "the ctx worker frontend to be listed",
+                processes=[orchestrator, ctx],
+            )
             assert len(ctx_workers) == 1 and chain.registered(url)[1] == []
+            assert "registration successful" in ctx.log()
             assert chain.status(f"{url}/health") == 503
             assert chain.cluster_info(url)["is_ready"] is False
             ctx_port = ctx_workers[0]["port"]
             assert ctx_port > 0 and chain.status(f"http://127.0.0.1:{ctx_port}/health") == 200
 
-            # The registration outlives the inactive timeout: the heartbeat renews it.
+            # The registration outlives the inactive timeout without a gap: the heartbeat renews it.
             keys = _role_keys(url, "CONTEXT")
             assert len(keys) == 1 and f":{ctx_port}-" in keys[0]
-            time.sleep(chain.INACTIVE_SECONDS * 2)
-            assert _role_keys(url, "CONTEXT") == keys
-            assert len(chain.registered(url)[0]) == 1
+            deadline = time.monotonic() + chain.INACTIVE_SECONDS * 2
+            while time.monotonic() < deadline:
+                assert _role_keys(url, "CONTEXT") == keys
+                assert len(chain.registered(url)[0]) == 1 and len(chain.listed(url)[0]) == 1
+                time.sleep(0.2)
 
             gen = chain.start_worker(
                 tmp_path, "gen", model, gen_engine, role="generation", config=config
@@ -103,8 +115,8 @@ def test_worker_frontend_registers_over_http_storage(tmp_path):
 def test_static_urls_reach_worker_frontends(tmp_path):
     """NT-005 (DG-27): the orchestrator's static ``urls`` reach two worker frontends without roles."""
     pytest.skip(
-        "needs a two-leg request: PrefillReady from the fake engine (WT-36) and the facade's "
-        "handoff mapping (WT-51); WT-51 completes this test"
+        "needs a two-leg request, which needs PrefillReady from the fake engine and the "
+        "facade's handoff mapping"
     )
 
 
@@ -115,6 +127,7 @@ def test_worker_frontend_registers_over_etcd(tmp_path):
 
     etcd_port = chain.free_port()
     peer_port = chain.free_port()
+    etcd_log = (tmp_path / "etcd.log").open("w")
     etcd = subprocess.Popen(  # nosec B603
         [
             shutil.which("etcd"),
@@ -127,17 +140,22 @@ def test_worker_frontend_registers_over_etcd(tmp_path):
             "--listen-peer-urls",
             f"http://127.0.0.1:{peer_port}",
         ],
-        stdout=(tmp_path / "etcd.log").open("w"),
+        stdout=etcd_log,
         stderr=subprocess.STDOUT,
     )
-    model = chain.model_dir(tmp_path / "model")
     try:
+        chain.wait(
+            lambda: etcd.poll() is not None
+            or chain.status(f"http://127.0.0.1:{etcd_port}/health") == 200,
+            "etcd to answer",
+        )
+        assert etcd.poll() is None, (tmp_path / "etcd.log").read_text()
+        model = chain.model_dir(tmp_path / "model")
         with (
             chain.running_in_thread(chain.engine(model)) as ctx_engine,
             chain.running_in_thread(chain.engine(model)) as gen_engine,
         ):
-            orchestrator_port = chain.free_port()
-            cluster = chain.cluster_config(orchestrator_port, f"etcd://127.0.0.1:{etcd_port}")
+            cluster = chain.cluster_config(f"etcd://127.0.0.1:{etcd_port}")
             orchestrator, url, _ = _started_orchestrator(tmp_path, cluster=cluster)
             config = _worker_config(cluster)
             ctx = chain.start_worker(
@@ -157,6 +175,7 @@ def test_worker_frontend_registers_over_etcd(tmp_path):
     finally:
         etcd.kill()
         etcd.wait(timeout=30)
+        etcd_log.close()
 
 
 def test_new_worker_is_listed_after_clock_sync_and_server_info(tmp_path):
@@ -258,5 +277,7 @@ def test_a_worker_frontend_that_fails_its_startup_checks_never_registers(tmp_pat
             ctx.proc.wait(timeout=chain.STARTUP_SECONDS)
             assert ctx.proc.returncode != 0
             assert "conventions version" in ctx.log()
+            # Never registered, rather than registered and removed on the way out.
+            assert "registration successful" not in ctx.log()
             assert chain.registered(url)[0] == []
             assert _role_keys(url, "CONTEXT") == []

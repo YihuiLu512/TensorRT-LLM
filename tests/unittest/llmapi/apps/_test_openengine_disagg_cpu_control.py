@@ -32,8 +32,8 @@ def test_worker_frontend_models_version_health(tmp_path):
         chain.running_in_thread(chain.engine(model)) as gen_engine,
     ):
         port = chain.free_port()
-        cluster = chain.cluster_config(port)
         url = f"http://127.0.0.1:{port}"
+        cluster = chain.cluster_config(url)
         orchestrator = chain.start_orchestrator(tmp_path, port, cluster=cluster)
         config = {"disagg_cluster": cluster, "cache_transceiver_config": {"backend": "DEFAULT"}}
         ctx = chain.start_worker(tmp_path, "ctx", model, ctx_engine, role="context", config=config)
@@ -44,8 +44,14 @@ def test_worker_frontend_models_version_health(tmp_path):
                 processes=[orchestrator, ctx],
             )
             ctx_url = f"http://127.0.0.1:{ctx_workers[0]['port']}"
-            # F-05c: one healthy worker frontend is not enough.
-            assert chain.status(f"{ctx_url}/health") == 200
+            # F-05c: with service discovery the orchestrator does not poll the
+            # workers' /health; it is ready once a worker frontend of each role
+            # has registered and answered its /server_info. One is not enough.
+            chain.wait(
+                lambda: chain.listed(url)[0],
+                "the ctx worker frontend to be listed",
+                processes=[orchestrator, ctx],
+            )
             assert chain.status(f"{url}/health") == 503
 
             gen = chain.start_worker(
@@ -57,10 +63,13 @@ def test_worker_frontend_models_version_health(tmp_path):
                     "the orchestrator to be ready",
                     processes=[orchestrator, ctx, gen],
                 )
-                gen_url = f"http://127.0.0.1:{chain.registered(url)[1][0]['port']}"
-                assert chain.status(f"{gen_url}/health") == 200
+                assert all(chain.listed(url))
+                # Only the orchestrator asks the worker frontends for /server_info here.
                 for name in ("ctx", "gen"):
-                    assert "GET /health" in chain.requests_seen(tmp_path, name)
+                    assert "GET /server_info" in chain.requests_seen(tmp_path, name)
+                gen_url = f"http://127.0.0.1:{chain.registered(url)[1][0]['port']}"
+                for worker_url in (ctx_url, gen_url):
+                    assert chain.status(f"{worker_url}/health") == 200
 
                 # F-05a: the orchestrator answers /v1/models from the ctx worker frontend.
                 response = chain.get(f"{url}/v1/models")

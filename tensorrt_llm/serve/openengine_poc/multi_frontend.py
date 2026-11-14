@@ -121,13 +121,11 @@ def launch_frontends(config: FrontendLaunchConfig) -> None:
 
 def _is_worker(config: FrontendLaunchConfig) -> bool:
     """Whether the frontend serves as a disaggregated worker."""
-    return any(
-        value is not None
-        for value in (
-            config.server_role,
-            config.disagg_cluster_config,
-            config.internal_disagg_auth_key,
-        )
+    # As OpenAIServer reads them: an empty cluster configuration or key is none.
+    return (
+        config.server_role is not None
+        or bool(config.disagg_cluster_config)
+        or bool(config.internal_disagg_auth_key)
     )
 
 

@@ -31,6 +31,17 @@ AUTH_FAILED = "Invalid internal disaggregated request authentication"
 NO_TRANSCEIVER = "require cache_transceiver_config"
 
 
+def _refused_by_the_facade(response: requests.Response) -> bool:
+    """A 400 about ``disaggregated_params``, past the signature and transceiver checks."""
+    text = response.text
+    return (
+        response.status_code == 400
+        and "disaggregated_params" in text
+        and AUTH_FAILED not in text
+        and NO_TRANSCEIVER not in text
+    )
+
+
 def _handoff(opaque_state: str) -> dict:
     return {
         "model": chain.MODEL,
@@ -112,18 +123,25 @@ def test_gen_worker_frontend_rejects_a_tampered_handoff_signature(gen_workers):
         assert AUTH_FAILED in response.text
     assert chain.generate_calls(keyed_engine) == before
 
-    # Only one side has the key: the worker frontend warns and lets it through, as in-process.
+    # Only one side has the key: the worker frontend warns and lets it through, as in-process,
+    # to the facade's refusal of the handoff fields.
     response = _post(keyless, tampered, headers)
-    assert AUTH_FAILED not in response.text
+    assert _refused_by_the_facade(response), (response.status_code, response.text)
+    assert chain.generate_calls(keyless_engine) == 0
 
 
 def test_a_signed_handoff_is_not_refused_for_a_missing_transceiver(gen_workers):
-    """SV-DSG-1 (UV-43): the worker frontend's YAML keeps ``cache_transceiver_config``, so the check passes."""
-    keyed, _, _, _ = gen_workers
+    """SV-DSG-1 (UV-43): the worker frontend's YAML keeps ``cache_transceiver_config``, so the check passes.
+
+    The request passes the signature and transceiver checks and reaches the
+    facade, which refuses the handoff fields it does not map.
+    """
+    keyed, _, keyed_engine, _ = gen_workers
     body = _handoff("b3BhcXVl")
+    before = chain.generate_calls(keyed_engine)
     response = _post(keyed, body, _signed(body))
-    assert AUTH_FAILED not in response.text
-    assert NO_TRANSCEIVER not in response.text
+    assert _refused_by_the_facade(response), (response.status_code, response.text)
+    assert chain.generate_calls(keyed_engine) == before
 
 
 def test_a_worker_frontend_without_a_transceiver_refuses_a_handoff(tmp_path):
