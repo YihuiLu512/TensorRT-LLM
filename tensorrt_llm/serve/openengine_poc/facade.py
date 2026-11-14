@@ -1636,7 +1636,7 @@ class OpenEngineRequestOutput:
             async for event in stream:
                 count()
                 if isinstance(event, PrefillReady):
-                    self._prefill_ready(event)
+                    self._prefill_ready(event, offset)
                 if queue.qsize() >= MAX_BUFFERED_EVENTS:
                     stream.cancel()
                     queue.put_nowait((offset, self._overflow_error()))
@@ -1654,11 +1654,14 @@ class OpenEngineRequestOutput:
             await stream.aclose()
         queue.put_nowait((offset, _END))
 
-    def _prefill_ready(self, event: PrefillReady) -> None:
+    def _prefill_ready(self, event: PrefillReady, offset: int) -> None:
         """Take in a handoff: count it, and each attribute the conventions do not register in it.
 
         :attr:`disaggregated_params` becomes the handoff, decoded as the
-        assembler decodes it.
+        assembler decodes it. With the postprocessing pool the session gets
+        the events instead of the assembler, so this also sets the handoff as
+        the ``disaggregated_params`` of the output the event ends; the
+        output's other fields are left as they are.
 
         Raises:
             ValueError: The handoff cannot be decoded.
@@ -1675,6 +1678,9 @@ class OpenEngineRequestOutput:
         self.disaggregated_params = handoff.with_handoff_attributes(
             *handoff.decode_kv_session(event.kv_session)
         )
+        if self._session is not None:
+            output = self.outputs[offset + event.output_index]
+            output.disaggregated_params = self.disaggregated_params
 
     def _leg_events(self, offset: int, event: Any) -> list[Any]:
         """The events to apply for ``event`` of the call at ``offset``, in order.
