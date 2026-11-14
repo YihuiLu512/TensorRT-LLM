@@ -1394,7 +1394,7 @@ def test_disagg_worker_on_port_0_gets_a_port_its_handle_keeps(fake, tmp_path, gi
     handle.terminate(grace=1)
 
 
-def test_disagg_worker_on_port_0_gets_a_port_below_the_ephemeral_range(fake, tmp_path, monkeypatch):
+def test_disagg_worker_on_port_0_gets_its_port_from_pick_port(fake, tmp_path, monkeypatch):
     fake.env["FAKE_ENGINE_SAY"] = launch.TRANSCEIVER_STARTED_LINE
     args = _worker(fake, tmp_path, {"cache_transceiver_config": {"backend": "DEFAULT"}})
     args[args.index("--port") + 1] = "0"

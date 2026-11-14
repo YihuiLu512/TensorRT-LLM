@@ -129,7 +129,10 @@ entries:
   #   before any engine call; the PoC-S3 functional test plan (row T1) lists them as not applicable
   #   to the disaggregated form. The test in error, test_completion_with_logit_bias_effect, did not
   #   start: its generation worker's front end could not bind the port the harness had picked for it
-  #   (address already in use)
+  #   (address already in use). On 6992576efded53e6d15ff730768e33dab1ebbf6f, whose harness picks
+  #   such ports below the kernel's ephemeral range, T1 ran again: the same eight tests failed and
+  #   that test passed
+  #   (b200-1g-r4-topology/b200-1g-r4-topology/job-5954578_0-r0/node0/results/e00/junit/inner-20261115T054845-1794692925169876105-2711934-test_e2e.py_test_openai_completions_example_pytorch_.xml)
   - row: F-30
     features:
     - F-30
@@ -145,8 +148,8 @@ entries:
     result: failed
     chain_proof: incomplete
   # XD-014 ok, XD-059 ok, XD-208 failed
-  # XD-208: failed: the context engine runs out of GPU memory for the KV cache, as it does without
-  #   the chain
+  # XD-208: failed: the context engine runs out of GPU memory for the KV cache, as it also did in
+  #   the run without the chain that the work item's status file records
   - row: F-34
     features:
     - F-34
@@ -211,7 +214,8 @@ entries:
   # XD-025 ok, XD-007 ok, XD-107 ok, XD-058 ok, XD-121 self-routed, XD-123 failed, XD-059 ok
   # XD-123: failed: no KV-cache event of the kind 'created' reaches the test, so it finds no block
   #   pool size; the KV-event path through the chain is left to WT-53-fix2 (the test also fails
-  #   without the chain, at a later assertion)
+  #   without the chain, at a later assertion). Its chain proof fails too: CH-3 finds one aggregated
+  #   call to a generation engine as the only engine call
   - row: DG-19
     features:
     - DG-19
@@ -339,8 +343,9 @@ entries:
     result: passed
     chain_proof: incomplete
   # XD-055 ok, NT-009 cpu, XD-073 ok, XD-125 failed
-  # XD-125: failed: the harness cannot import the test module's helper (test_disaggregated); it does
-  #   not run without the chain either
+  # XD-125: failed: the stress test's own harness cannot import its helper module
+  #   test_disaggregated; it did not run either in the run without the chain that the work item's
+  #   status file records
   - row: DG-38
     features:
     - DG-38
@@ -652,9 +657,9 @@ entries:
     - b200-4g-r3/b200-4g-r3/job-5950556_0-r0/node0/results/e07/outer-junit.xml
     result: passed
     chain_proof: ok
-  # XD-012 ok, XD-014 ok, XD-212 ok
-  # Not listed: XD-043, XD-204, which ran only on an earlier commit, where CH-6 was as the ch6 tag
-  #   describes
+  # XD-012 ok, XD-014 ok, XD-212[False-False] ok
+  # Not listed: XD-043, XD-204, XD-212[True-False], XD-212[True-True], XD-212[False-True], which ran
+  #   only on an earlier commit, where CH-6 was as the ch6 tag describes
   - row: EG-18
     features:
     - EG-18

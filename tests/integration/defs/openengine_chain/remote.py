@@ -229,7 +229,8 @@ def launch_disagg_topology(
     workdir = _results_dir()
     auth_key = secrets.token_hex(32)
     # The disaggregated server binds its port only after the workers have started;
-    # until then a socket bound to it keeps it from other processes.
+    # while they start, a socket bound to the port, if it can be bound, keeps it from
+    # other processes. The socket is closed just before the server starts.
     reserve_ports(port)
     holder = _hold_port(port)
     try:
