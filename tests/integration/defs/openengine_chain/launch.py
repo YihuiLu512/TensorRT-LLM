@@ -1736,9 +1736,12 @@ def _free_port_other_than(*taken: int | None) -> int:
     raise ChainError(f"no free port other than {taken} found")
 
 
-# Where _below_ephemeral looks: from this port up to the kernel's ephemeral range.
+# Where _below_ephemeral looks: from this port up to the tests' own port window.
 _LISTEN_PORT_FLOOR = 20000
 _EPHEMERAL_RANGE_FILE = "/proc/sys/net/ipv4/ip_local_port_range"
+# The ports just below the kernel's ephemeral range from which get_free_port_in_ci
+# (tests/integration/defs/common.py) takes a test's ports when no CI port range is set.
+_TEST_PORT_WINDOW = 4096
 # Not seeded by the tests' random.seed, so harness processes on one node draw differently.
 _PORT_RANDOM = random.SystemRandom()
 
@@ -1762,22 +1765,41 @@ def _bindable(port: int) -> bool:
     return True
 
 
+def _ci_ports() -> range:
+    """The CI-assigned port range get_free_port_in_ci takes a test's ports from, if set."""
+    try:
+        start = int(os.environ["CONTAINER_PORT_START"])
+        count = int(os.environ["CONTAINER_PORT_NUM"])
+    except (KeyError, ValueError):
+        return range(0)
+    return range(start, start + count)
+
+
 def _below_ephemeral(count: int) -> Iterator[int]:
-    """Up to 100 random first ports of ``count`` consecutive ports below the kernel's ephemeral range.
+    """Up to 100 random first ports of ``count`` consecutive ports below the tests' port window.
 
     A port the harness picks for a process it starts is bound by that process
     only some time later: a front end once it has started up, which on the chain
     is after its engine has loaded, and an engine's KV event publisher after the
     model has loaded. Until then the kernel can hand a port of the ephemeral
-    range to any other process's outgoing connection or port-0 bind. Yields
-    nothing when the range cannot be read or fewer than 1000 ports lie between
-    ``_LISTEN_PORT_FLOOR`` and it.
+    range to any other process's outgoing connection or port-0 bind, and a test
+    can take a port of its own window (the ``_TEST_PORT_WINDOW`` ports below the
+    ephemeral range, or the CI-assigned range) for a server it starts later; so
+    the ports lie below that window and outside the CI-assigned range. Yields
+    nothing when the ephemeral range cannot be read or fewer than 1000 ports lie
+    between ``_LISTEN_PORT_FLOOR`` and the window.
     """
     low = _ephemeral_low()
-    if low is None or low - _LISTEN_PORT_FLOOR < 1000:
+    if low is None:
         return
+    top = low - _TEST_PORT_WINDOW
+    if top - _LISTEN_PORT_FLOOR < 1000:
+        return
+    ci = _ci_ports()
     for _ in range(100):
-        yield _PORT_RANDOM.randrange(_LISTEN_PORT_FLOOR, low - count + 1)
+        base = _PORT_RANDOM.randrange(_LISTEN_PORT_FLOOR, top - count + 1)
+        if not any(port in ci for port in range(base, base + count)):
+            yield base
 
 
 def pick_port(*taken: int | None) -> int:

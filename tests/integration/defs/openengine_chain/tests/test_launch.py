@@ -1680,7 +1680,8 @@ def test_harness_error_while_others_load_is_not_a_startup_failure(fake, tmp_path
     assert not any(handle.alive for handle in launch._HANDLES)
 
 
-def test_harness_port_picks_stay_below_the_ephemeral_range(monkeypatch):
+def test_harness_port_picks_stay_below_the_tests_port_window(monkeypatch):
+    monkeypatch.delenv("CONTAINER_PORT_START", raising=False)
     monkeypatch.setattr(launch, "_PICKED_PORTS", set())
     monkeypatch.setattr(launch, "_ephemeral_low", lambda: 32768)
     monkeypatch.setattr(launch, "free_port", lambda: pytest.fail("free_port used"))
@@ -1696,12 +1697,14 @@ def test_harness_port_picks_stay_below_the_ephemeral_range(monkeypatch):
     launch.reserve_ports(20002)
     # 20001 is taken by the caller, 20002 was reserved and 20003 cannot be bound.
     assert launch.pick_port(20001) == 20004
-    assert ranges == [(launch._LISTEN_PORT_FLOOR, 32768)] * 4
+    assert ranges == [(launch._LISTEN_PORT_FLOOR, 32768 - launch._TEST_PORT_WINDOW)] * 4
     assert 20004 in launch._PICKED_PORTS
 
 
-@pytest.mark.parametrize("low", [None, 20999])
-def test_harness_port_picks_use_free_port_without_room_below_the_ephemeral_range(monkeypatch, low):
+@pytest.mark.parametrize("low", [None, 20999, 25095])
+def test_harness_port_picks_use_free_port_without_room_below_the_tests_port_window(
+    monkeypatch, low
+):
     monkeypatch.setattr(launch, "_PICKED_PORTS", set())
     monkeypatch.setattr(launch, "_ephemeral_low", lambda: low)
     monkeypatch.setattr(launch._PORT_RANDOM, "randrange", lambda *a: pytest.fail("randrange used"))
@@ -1709,7 +1712,8 @@ def test_harness_port_picks_use_free_port_without_room_below_the_ephemeral_range
     assert launch.pick_port() == 45000
 
 
-def test_harness_port_blocks_stay_below_the_ephemeral_range(monkeypatch):
+def test_harness_port_blocks_stay_below_the_tests_port_window(monkeypatch):
+    monkeypatch.delenv("CONTAINER_PORT_START", raising=False)
     monkeypatch.setattr(launch, "_PICKED_PORTS", set())
     monkeypatch.setattr(launch, "_ephemeral_low", lambda: 32768)
     monkeypatch.setattr(launch, "free_port", lambda: pytest.fail("free_port used"))
@@ -1729,8 +1733,18 @@ def test_harness_port_blocks_stay_below_the_ephemeral_range(monkeypatch):
     launch.reserve_ports(20012)
     # 20010..20012 overlaps 20012; the block's last port stays below the range.
     assert launch._free_port_block(3) == 20020
-    assert ranges == [(launch._LISTEN_PORT_FLOOR, 32766)] * 2
+    assert ranges == [(launch._LISTEN_PORT_FLOOR, 32766 - launch._TEST_PORT_WINDOW)] * 2
     assert {20020, 20021, 20022} <= launch._PICKED_PORTS
+
+
+def test_harness_port_draws_leave_out_the_ci_port_range(monkeypatch):
+    monkeypatch.setattr(launch, "_ephemeral_low", lambda: 32768)
+    monkeypatch.setenv("CONTAINER_PORT_START", "20000")
+    monkeypatch.setenv("CONTAINER_PORT_NUM", "5")
+    draws = iter([20002, 20004, 20010] + [20010] * 97)
+    monkeypatch.setattr(launch._PORT_RANDOM, "randrange", lambda start, stop: next(draws))
+    # 20002..20004 and 20004..20006 overlap 20000..20004.
+    assert next(launch._below_ephemeral(3)) == 20010
 
 
 def test_harness_port_draws_ignore_the_tests_random_seed(monkeypatch):
