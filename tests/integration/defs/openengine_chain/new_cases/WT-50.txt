@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+unittest/llmapi/apps/_test_openengine_disagg_cpu_control.py::test_worker_frontend_models_version_health
+unittest/serve/openengine_poc/wt50/test_poc3_wt50_worker_registration.py::test_worker_frontend_registers_over_http_storage
+unittest/serve/openengine_poc/wt50/test_poc3_wt50_worker_registration.py::test_static_urls_reach_worker_frontends
+unittest/serve/openengine_poc/wt50/test_poc3_wt50_worker_registration.py::test_worker_frontend_registers_over_etcd
+unittest/serve/openengine_poc/wt50/test_poc3_wt50_worker_registration.py::test_new_worker_is_listed_after_clock_sync_and_server_info
+unittest/serve/openengine_poc/wt50/test_poc3_wt50_internal_auth.py::test_gen_worker_frontend_rejects_a_tampered_handoff_signature
+unittest/serve/openengine_poc/wt50/test_poc3_wt50_conventions_version.py::test_engine_version_3_is_accepted_only_without_server_role
