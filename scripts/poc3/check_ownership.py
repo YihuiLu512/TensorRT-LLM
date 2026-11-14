@@ -16,19 +16,26 @@ A rule is ``own`` (no other item owns the path; another item may change it only
 under a ``shared`` or ``exception`` rule of its own), ``shared`` (this item may
 change only the part the note names; the rest of the file belongs to its owner,
 which may be another item or code outside PoC-S3) or ``exception`` (a one-off
-allowance the note describes). An ``exception`` may also list the only lines
-it allows, as regular expressions (``\d`` and ``\w`` match ASCII characters
-only), in one of two forms:
+allowance the note describes). An ``exception`` may also limit what it allows,
+in one of three forms (patterns are regular expressions in which ``\d`` and
+``\w`` match ASCII characters only):
 
 - ``lines``: the range may only replace lines of that file in place, each
-  removed and each added line matching one of them in full;
+  removed and each added line matching one of the patterns in full;
 - ``changes``: each hunk of the range's diff (``-U0``) must be one of the
-  listed changes, each listed change used at most once: the same number of
-  removed and of added lines, each matching its counterpart in the change in
-  full, in order. Where in the file a change is made is not checked.
+  listed changes, each listed change used at most once: in the top-level
+  statement the change names, with the same number of removed and of added
+  lines, each matching its counterpart in the change in full, in order;
+- ``within``: each hunk must lie in one of the named top-level statements,
+  whatever it changes.
 
-Either way nothing else about the file may change (its mode or final newline,
-for example); otherwise the path is out of bounds. Paths changed under
+A hunk lies in a top-level statement of the file as it is at the merge base:
+a ``def`` or ``class`` (from its first decorator), an assignment to a name, or
+any import (named ``import``), up to the line before the next top-level
+statement. A hunk that removes lines lies where those lines are; one that only
+adds lines lies where the lines before and after it are. With any of the three forms
+nothing else about the file may change (its mode or final newline, for
+example); otherwise the path is out of bounds. Paths changed under
 ``shared`` and ``exception`` rules are listed for a reviewer to check by hand.
 Test files that already exist at the base are ``shared`` even for the item they
 belong to: tasks.md §0.3 lets existing assertions change only for the flips it
@@ -58,12 +65,14 @@ The scripts need Python 3.9 or newer.
 from __future__ import annotations
 
 import argparse
+import ast
 import re
 import subprocess
 import sys
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from typing import NamedTuple, Optional
 
 from poc3_common import TRAILER, UNREADABLE, git, git_error, parse_task, run_git, trailer_log
 
@@ -71,8 +80,12 @@ TRTLLM = "trtllm"
 DS = "ds"
 
 
-# A hunk an exception allows: the patterns of its removed lines, then of its added lines.
-Change = "tuple[tuple[str, ...], tuple[str, ...]]"
+class Change(NamedTuple):
+    """A hunk an exception allows."""
+
+    removed: tuple[str, ...]  # patterns of its removed lines, in order
+    added: tuple[str, ...]  # patterns of its added lines, in order
+    within: Optional[str]  # the top-level statement it lies in (see _regions), or anywhere
 
 
 @dataclass(frozen=True)
@@ -84,8 +97,10 @@ class Rule:
     # For an exception: regular expressions, one of which every changed line must match in full,
     # for lines replaced in place ...
     lines: tuple[str, ...] = ()
-    # ... or the only hunks allowed, as (removed lines, added lines), each used at most once.
+    # ... or the only hunks allowed, each used at most once ...
     changes: tuple[Change, ...] = ()
+    # ... or the top-level statements every hunk must lie in, whatever it changes.
+    within: tuple[str, ...] = ()
 
 
 def _own(*patterns: str, repo: str = TRTLLM) -> list[Rule]:
@@ -102,15 +117,20 @@ def _exception(
     repo: str = TRTLLM,
     lines: tuple[str, ...] = (),
     changes: tuple[Change, ...] = (),
+    within: tuple[str, ...] = (),
 ) -> Rule:
-    if lines and changes:
-        raise ValueError(f"{pattern}: an exception lists lines or changes, not both")
-    return Rule(pattern, "exception", note, repo, lines, changes)
+    if sum(map(bool, (lines, changes, within))) > 1:
+        raise ValueError(f"{pattern}: an exception lists lines, changes or within, not two")
+    return Rule(pattern, "exception", note, repo, lines, changes, within)
 
 
-def _change(removed: tuple[str, ...] = (), added: tuple[str, ...] = ()) -> Change:
-    """A hunk that removes exactly the lines ``removed`` and adds exactly the lines ``added``."""
-    return tuple(re.escape(line) for line in removed), tuple(re.escape(line) for line in added)
+def _change(within: str, removed: tuple[str, ...] = (), added: tuple[str, ...] = ()) -> Change:
+    """A hunk in ``within`` that removes exactly the lines ``removed`` and adds exactly ``added``."""
+    return Change(
+        tuple(re.escape(line) for line in removed),
+        tuple(re.escape(line) for line in added),
+        within,
+    )
 
 
 POC = "tensorrt_llm/serve/openengine_poc"
@@ -122,6 +142,9 @@ OE_SERVER = "tensorrt_llm/grpc/openengine"
 OE_SERVER_TESTS = "tests/unittest/grpc/openengine"
 PERF = "tests/integration/defs/perf"
 DS_OE = "python/dsv4_serve/openengine"
+_SPECULATION_TEST = (
+    "test_model_info_reports_only_no_effect_min_p_and_penalties_under_one_model_speculation"
+)
 # The registry of lines check_invariants.py lets CS-20 add.
 INVARIANT_ADDITIONS = "scripts/poc3/invariant_additions.yaml"
 # Gate files only WT-30 and its fixes may change (see the module docstring).
@@ -266,29 +289,33 @@ OWNERSHIP: dict[str, list[Rule]] = {
             " one-model speculation",
             changes=(
                 _change(
+                    "import",
                     added=(
                         "from tensorrt_llm.grpc.openengine_conventions import (  # noqa: E402",
                         "    COUNTER_GENERATE_ACCEPTED_BUCKETS,",
                         "    VERSION_4_ENGINE_COUNTERS,",
                         ")",
-                    )
+                    ),
                 ),
                 _change(
+                    "EXPECTED_EXTRA_CAPABILITIES",
                     added=(
                         '    "trtllm.stopping.min_tokens": True,',
                         "    # No KV cache transceiver is configured.",
                         '    "trtllm.request.disagg_request_id": False,',
                         '    "trtllm.disagg.generation_first": False,',
                         '    "trtllm.disagg.orig_elapsed_s": False,',
-                    )
+                    ),
                 ),
                 _change(
+                    "test_model_info_without_a_tokenizer_reports_capabilities_but_no_fingerprint",
                     ("    info = await _servicer(_tokenizer=None).GetModelInfo(",),
                     (
                         '    info = await _servicer(kv_transfer_backend="", _tokenizer=None).GetModelInfo(',
                     ),
                 ),
                 _change(
+                    _SPECULATION_TEST,
                     ("    info = await _servicer(speculative_config=make_config()).GetModelInfo(",),
                     (
                         '    info = await _servicer(kv_transfer_backend="",'
@@ -296,6 +323,18 @@ OWNERSHIP: dict[str, list[Rule]] = {
                     ),
                 ),
                 _change(
+                    _SPECULATION_TEST,
+                    added=(
+                        "    # The one-model speculative sampler rejects min_tokens as well.",
+                        '    assert info.extra["trtllm.stopping.min_tokens"] == supported',
+                    ),
+                ),
+                _change(
+                    _SPECULATION_TEST,
+                    added=('    other_keys.discard("trtllm.stopping.min_tokens")',),
+                ),
+                _change(
+                    "test_generate_counters_start_at_zero_and_only_increase",
                     ("    assert counters.attributes() == {RECEIVED: 0, ACCEPTED: 0}",),
                     (
                         "    zero = {key: 0 for key in VERSION_4_ENGINE_COUNTERS}",
@@ -303,6 +342,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
                     ),
                 ),
                 _change(
+                    "test_generate_counters_start_at_zero_and_only_increase",
                     ("    assert counters.attributes() == {RECEIVED: 2, ACCEPTED: 1}",),
                     (
                         '    aggregated = COUNTER_GENERATE_ACCEPTED_BUCKETS["aggregated"]',
@@ -310,13 +350,6 @@ OWNERSHIP: dict[str, list[Rule]] = {
                         " {RECEIVED: 2, ACCEPTED: 1, **zero, aggregated: 1}",
                     ),
                 ),
-                _change(
-                    added=(
-                        "    # The one-model speculative sampler rejects min_tokens as well.",
-                        '    assert info.extra["trtllm.stopping.min_tokens"] == supported',
-                    )
-                ),
-                _change(added=('    other_keys.discard("trtllm.stopping.min_tokens")',)),
             ),
         ),
         _exception(
@@ -324,6 +357,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
             'only kv_transfer_backend="NIXL" for the two servicers that receive disagg requests',
             changes=(
                 _change(
+                    "test_generate_preserves_child_identity_and_authenticates_parent_affinity",
                     (
                         '        llm, model="test-model", subagent_affinity_auth_key="shared-secret"',
                     ),
@@ -335,6 +369,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
                     ),
                 ),
                 _change(
+                    "test_generate_context_only_ends_at_prefill_ready",
                     (
                         "    servicer = OpenEngineInferenceServicer(_FakeLlm(results),"
                         ' model="test-model", metrics=metrics)',
@@ -354,6 +389,7 @@ OWNERSHIP: dict[str, list[Rule]] = {
             " test_audio_text_prompt_survives_preparation_without_placeholders",
             changes=(
                 _change(
+                    "test_audio_text_prompt_survives_preparation_without_placeholders",
                     (
                         '    inference = OpenEngineInferenceServicer(llm, "audio-model")',
                         '    control = OpenEngineControlServicer(llm, "audio-model", inference)',
@@ -400,11 +436,13 @@ OWNERSHIP: dict[str, list[Rule]] = {
             DS,
         ),
         _shared("README.md", "the OpenEngine section", DS),
-        # The user's ruling U14 let WT-41 serve aggregated requests only and pin that down in
-        # its tests; WT-42 opens the disagg roles, so it flips these assertions (DECISIONS N9).
+        # WT-41 serves aggregated requests only and its tests pin that down (ruling U14); WT-42
+        # opens the disagg roles and flips those assertions in the tests that make them. The
+        # whole file is allowed and listed for review.
         _exception(
             "tests/openengine/test_cli_entry.py",
-            "U14 flip only: test_openengine_refuses_a_disagg_role turned into the roles' acceptance",
+            "U14 flip only: test_openengine_refuses_a_disagg_role turned into the roles'"
+            " acceptance, with the fixture and module docstring that describe it",
             DS,
         ),
         _exception(
@@ -688,13 +726,69 @@ _PLAIN_HEADER = ("diff --git ", "index ", "--- ", "+++ ")
 _HUNK = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 
 
-def _matches_change(change: tuple[list, list], removed: list[str], added: list[str]) -> bool:
-    return (
-        len(change[0]) == len(removed)
-        and len(change[1]) == len(added)
-        and all(p.fullmatch(line) for p, line in zip(change[0], removed))
-        and all(p.fullmatch(line) for p, line in zip(change[1], added))
-    )
+def _statement_name(node: ast.stmt) -> str | None:
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return node.name
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        return "import"
+    targets = node.targets if isinstance(node, ast.Assign) else [getattr(node, "target", None)]
+    if isinstance(node, (ast.Assign, ast.AnnAssign)) and isinstance(targets[0], ast.Name):
+        return targets[0].id
+    return None
+
+
+def _regions(source: str) -> list[str | None]:
+    """The name of the top-level statement each line of ``source`` lies in (index 0 is line 1).
+
+    A statement's lines run from its first line (its first decorator) to the
+    line before the next top-level statement; lines before the first statement
+    lie in none (None), as do the lines of statements :func:`_statement_name`
+    does not name.
+
+    Raises:
+        SyntaxError, ValueError: ``source`` is not Python, or splits into lines
+            differently for Python and for git (a lone carriage return).
+    """
+    if "\r" in source.replace("\r\n", ""):
+        raise ValueError("a lone carriage return")
+    count = len(source.split("\n")) - (1 if source.endswith("\n") else 0)
+    regions: list[str | None] = [None] * count
+    nodes = ast.parse(source).body
+    starts = [min([n.lineno] + [d.lineno for d in getattr(n, "decorator_list", [])]) for n in nodes]
+    for i, node in enumerate(nodes):
+        end = starts[i + 1] - 1 if i + 1 < len(nodes) else count
+        regions[starts[i] - 1 : end] = [_statement_name(node)] * (end - starts[i] + 1)
+    return regions
+
+
+def _hunk_regions(regions: list[str | None], span: list[int]) -> set[str]:
+    """The named statements a hunk with ``span`` (old start, old count, ...) lies in.
+
+    One that removes lines lies in the statement of all of them, if they share
+    one; one that only adds lines lies in the statements of the lines before
+    and after it.
+    """
+    start, count = span[0], span[1]
+    if count:
+        names = set(regions[start - 1 : start - 1 + count]) if start >= 1 else {None}
+        names = names if len(names) == 1 and start - 1 + count <= len(regions) else set()
+    else:
+        names = {regions[i] for i in (start - 1, start) if 0 <= i < len(regions)}
+    return {name for name in names if name is not None}
+
+
+def _base_regions(repo_dir: str, base_ref: str, head_ref: str, path: str) -> list[str | None]:
+    """:func:`_regions` of ``path`` at the merge base; empty when it cannot be read or parsed."""
+    merge_base = run_git(repo_dir, "merge-base", base_ref, head_ref).stdout.decode().strip()
+    found = run_git(repo_dir, "show", f"{merge_base}:{path}", check=False)
+    if found.returncode != 0:
+        return []
+    try:
+        return _regions(found.stdout.decode())
+    except (SyntaxError, ValueError, RuntimeError, MemoryError):
+        # ValueError: not UTF-8, a NUL byte or a lone carriage return; RuntimeError
+        # (RecursionError) and MemoryError: nested too deep to parse.
+        return []
 
 
 def disallowed_lines(
@@ -706,7 +800,8 @@ def disallowed_lines(
     every hunk replaces lines in place (as many removed as added, at the same
     line number) and every removed and added line matches one of
     ``rule.lines``; with ``rule.changes``, every hunk is one of the changes,
-    none used twice.
+    none used twice; with ``rule.within``, every hunk lies in one of the named
+    statements.
     """
     # Bytes, not text mode: universal newlines would hide a CRLF line ending. --text: a file git
     # takes for binary (core.bigFileThreshold, a -diff attribute) is still diffed by line.
@@ -728,18 +823,33 @@ def disallowed_lines(
     ).stdout.decode("utf-8", errors="replace")
     patterns = [re.compile(line, re.ASCII) for line in rule.lines]
     unused = [
-        ([re.compile(p, re.ASCII) for p in removed], [re.compile(p, re.ASCII) for p in added])
-        for removed, added in rule.changes
+        (
+            [re.compile(p, re.ASCII) for p in change.removed],
+            [re.compile(p, re.ASCII) for p in change.added],
+            change.within,
+        )
+        for change in rule.changes
     ]
+    regions = _base_regions(repo_dir, base_ref, head_ref, path) if not rule.lines else []
     bad = []
-    # The hunk being read: its header, removed lines and added lines.
-    hunk: tuple[str, list[str], list[str]] | None = None
+    # The hunk being read: its header, the statements it lies in, its removed and added lines.
+    hunk: tuple[str, set[str], list[str], list[str]] | None = None
+
+    def matches(change: tuple, where: set[str], removed: list[str], added: list[str]) -> bool:
+        old, new, within = change
+        return (
+            within in where
+            and len(old) == len(removed)
+            and len(new) == len(added)
+            and all(p.fullmatch(line) for p, line in zip(old, removed))
+            and all(p.fullmatch(line) for p, line in zip(new, added))
+        )
 
     def end_hunk() -> None:
-        if hunk is None or rule.lines:
+        if hunk is None or not rule.changes:
             return
-        header, removed, added = hunk
-        index = next((i for i, c in enumerate(unused) if _matches_change(c, removed, added)), None)
+        header, where, removed, added = hunk
+        index = next((i for i, c in enumerate(unused) if matches(c, where, removed, added)), None)
         if index is None:
             bad.append(f"{header}: not one of the allowed changes")
         else:
@@ -748,19 +858,22 @@ def disallowed_lines(
     for line in diff.split("\n")[:-1]:
         if line.startswith("@@"):
             end_hunk()
-            hunk = (line, [], [])
             match = _HUNK.match(line)
             # (old start, old count, new start, new count); a missing count is 1.
             span = [int(n) if n is not None else 1 for n in match.groups()] if match else None
+            where = _hunk_regions(regions, span) if span else set()
+            hunk = (line, where, [], [])
             if span is None:
                 bad.append(f"{line}: not a hunk header")
             elif rule.lines and span[:2] != span[2:]:
                 bad.append(f"{line}: not a replacement in place")
+            elif rule.within and not where & set(rule.within):
+                bad.append(f"{line}: not in {', '.join(rule.within)}")
         elif hunk is None:
             if not line.startswith(_PLAIN_HEADER):
                 bad.append(line)
         elif line[:1] in ("+", "-"):
-            hunk[1 if line[0] == "-" else 2].append(line[1:])
+            hunk[2 if line[0] == "-" else 3].append(line[1:])
             if rule.lines and not any(p.fullmatch(line[1:]) for p in patterns):
                 bad.append(line)
         else:
@@ -800,7 +913,7 @@ def check(task: str, revision_range: str, repo_dir: str = ".", repo: str | None 
             others = ", ".join(name for name, _ in owners(path, repo)) or "nobody"
             print(f"OUT OF BOUNDS  {path}  (owned by {others})")
             status = 1
-        elif (rule.lines or rule.changes) and (
+        elif (rule.lines or rule.changes or rule.within) and (
             bad := disallowed_lines(rule, repo_dir, base_ref, head_ref, path)
         ):
             print(
@@ -816,18 +929,18 @@ def check(task: str, revision_range: str, repo_dir: str = ".", repo: str | None 
     if not commits:
         print(f"NO COMMITS     in {revision_range}")
         status = 1
-    for sha, values, malformed in commits:
-        for value in malformed:
-            if value.endswith(UNREADABLE):
-                problem = UNREADABLE
-                value = value[: -len(UNREADABLE)].rstrip()
-            else:
-                problem = f"is not written as the exact line '{TRAILER}: <work item>'"
-            print(f"BAD TRAILER    {sha[:12]}  {TRAILER} line {value!r} {problem}")
+    for record in commits:
+        sha = record.sha[:12]
+        if record.readable:
+            problem = f"is not written as the exact line '{TRAILER}: <work item>'"
+        else:
+            problem = f"does not count: {UNREADABLE}"
+        for value in record.malformed:
+            print(f"BAD TRAILER    {sha}  {TRAILER} line with {value!r} {problem}")
             status = 1
-        if not malformed and values != [task]:
-            found = ", ".join(values) or "no trailer"
-            print(f"BAD TRAILER    {sha[:12]}  has {found}, expected {TRAILER}: {task}")
+        if not record.malformed and record.values != [task]:
+            found = ", ".join(record.values) or "no trailer"
+            print(f"BAD TRAILER    {sha}  has {found}, expected {TRAILER}: {task}")
             status = 1
     print(f"{'PASS' if status == 0 else 'FAIL'}: {task} {revision_range} ({repo})")
     return status

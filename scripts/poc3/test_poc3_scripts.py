@@ -96,6 +96,8 @@ def test_task_names_cover_wt30_to_wt79_and_fixes():
         "wt-30",
         "WT-3",
         "WT-30-R2",
+        "WT-3\u0660",
+        "WT-30-fix1\u0661",
     ],
 )
 def test_task_names_reject_poc2_and_malformed(name):
@@ -141,6 +143,9 @@ def test_an_exact_line_outside_the_trailers_fails_the_gate(tmp_path, capsys, mes
         ("s\n\nPoC3-Task: WT-30\r", [], ["WT-30"]),
         ("s\n\nPoC3-Task: WT-35\nSigned-off-by: a\n   \nPoC3-Task: WT-30", ["WT-30"], ["WT-35"]),
         ("\n \nPoC3-Task: WT-30\n", [], ["WT-30"]),
+        ("s\n\nPoC3-Task: WT-35\n\f\nPoC3-Task: WT-30", ["WT-35", "WT-30"], []),
+        ("s\n\nPoC3-Task: WT-35\n\u00a0\nPoC3-Task: WT-30", ["WT-35", "WT-30"], []),
+        ("s\n\u00a0\nPoC3-Task: WT-30", [], ["WT-30"]),
     ],
     ids=[
         "trailing-blank-line",
@@ -149,6 +154,9 @@ def test_an_exact_line_outside_the_trailers_fails_the_gate(tmp_path, capsys, mes
         "carriage-return",
         "spaces-separate",
         "subject-after-blank-lines",
+        "form-feed-does-not-separate",
+        "no-break-space-does-not-separate",
+        "no-break-space-line-is-not-blank",
     ],
 )
 def test_task_lines_of_unusual_messages(message, values, malformed):
@@ -206,8 +214,9 @@ def _raw_commit(repo: Path, headers: bytes, message: bytes, parent: str | None =
         (b"encoding IBM037\n", b"s3\n\nPoC3-Task: WT-30\n"),
         (b"encoding ISO-8859-1\n", b"s3\n\nPoC3-Task: WT-30\n"),
         (b"", b"s3\n\nPoC3-Task: WT-30\n\0\n"),
+        (b"x-note a\0b\n", b"s3\n\nPoC3-Task: WT-30\n"),
     ],
-    ids=["ebcdic", "latin-1", "nul"],
+    ids=["ebcdic", "latin-1", "nul", "nul-in-a-header"],
 )
 def test_a_message_git_log_does_not_read_as_it_is_neither_passes_nor_lands(
     tmp_path, capsys, headers, message
@@ -217,10 +226,10 @@ def test_a_message_git_log_does_not_read_as_it_is_neither_passes_nor_lands(
     sha = _raw_commit(repo, headers, message, parent=base)
     _git(repo, "update-ref", "refs/heads/main", sha)
     [record] = trailer_log(repo, f"{base}..{sha}")
-    assert record.values == [] and record.malformed == [f"WT-30 {poc3_common.UNREADABLE}"]
+    assert record.values == [] and record.malformed == ["WT-30"] and not record.readable
     assert landed_tasks(repo, "main") == set()
     assert check_ownership.check("WT-30", f"{base}..{sha}", str(repo)) == 1
-    assert f"BAD TRAILER    {sha[:12]}  PoC3-Task line 'WT-30' (the commit" in (
+    assert f"BAD TRAILER    {sha[:12]}  PoC3-Task line with 'WT-30' does not count: the commit" in (
         capsys.readouterr().out
     )
 
@@ -237,8 +246,8 @@ def test_each_malformed_line_is_reported_on_its_own(tmp_path, capsys):
     repo, base = _two_commit_repo(tmp_path, {"scripts/poc3/x.py": "x\n"}, message)
     assert check_ownership.check("WT-30", f"{base}..HEAD", str(repo)) == 1
     out = capsys.readouterr().out
-    assert "PoC3-Task line 'WT-30' is not written as the exact line" in out
-    assert "PoC3-Task line 'WT-35' is not written as the exact line" in out
+    assert "PoC3-Task line with 'WT-30' is not written as the exact line" in out
+    assert "PoC3-Task line with 'WT-35' is not written as the exact line" in out
     assert "[" not in out
 
 
@@ -856,10 +865,28 @@ def test_replace_refs_do_not_hide_the_real_change(tmp_path, capsys):
     assert poc3_common.git_env()["GIT_NO_REPLACE_OBJECTS"] == "1"
 
 
-# WT-40's changes to three tests it does not own: (removed lines, added lines) per hunk.
+def test_grafts_do_not_hide_a_commit(tmp_path, capsys):
+    repo = _repo(tmp_path)
+    base = _commit(repo, {"tensorrt_llm/__init__.py": ""}, "base")
+    _commit(repo, {"scripts/poc3/y.py": "y\n"}, "other item\n\nPoC3-Task: WT-35")
+    head = _commit(repo, {"scripts/poc3/x.py": "x\n"}, "in bounds\n\nPoC3-Task: WT-30")
+    (repo / ".git" / "info").mkdir(exist_ok=True)
+    (repo / ".git" / "info" / "grafts").write_text(f"{head} {base}\n")
+    assert len(_git(repo, "rev-list", f"{base}..{head}").split()) == 1  # git itself skips it
+    assert landed_tasks(repo, "main") == {"WT-30", "WT-35"}
+    assert check_ownership.check("WT-30", f"{base}..{head}", str(repo)) == 1
+    assert "BAD TRAILER" in capsys.readouterr().out
+
+
+SPECULATION_TEST = (
+    "test_model_info_reports_only_no_effect_min_p_and_penalties_under_one_model_speculation"
+)
+# WT-40's changes to three tests it does not own, one per hunk: (the statement it lies in, removed
+# lines, added lines, and for a change that only adds lines, a line it may follow).
 WT40_CHANGES = {
     "tests/unittest/grpc/openengine/test_control.py": [
         (
+            "import",
             [],
             [
                 "from tensorrt_llm.grpc.openengine_conventions import (  # noqa: E402",
@@ -867,8 +894,10 @@ WT40_CHANGES = {
                 "    VERSION_4_ENGINE_COUNTERS,",
                 ")",
             ],
+            "from tensorrt_llm.grpc.openengine.servicer import OpenEngineInferenceServicer  # noqa: E402",
         ),
         (
+            "EXPECTED_EXTRA_CAPABILITIES",
             [],
             [
                 '    "trtllm.stopping.min_tokens": True,',
@@ -877,43 +906,60 @@ WT40_CHANGES = {
                 '    "trtllm.disagg.generation_first": False,',
                 '    "trtllm.disagg.orig_elapsed_s": False,',
             ],
+            '    "trtllm.request.best_of": False,',
         ),
         (
+            "test_model_info_without_a_tokenizer_reports_capabilities_but_no_fingerprint",
             ["    info = await _servicer(_tokenizer=None).GetModelInfo("],
             ['    info = await _servicer(kv_transfer_backend="", _tokenizer=None).GetModelInfo('],
+            None,
         ),
         (
+            SPECULATION_TEST,
             ["    info = await _servicer(speculative_config=make_config()).GetModelInfo("],
             [
                 '    info = await _servicer(kv_transfer_backend="",'
                 " speculative_config=make_config()).GetModelInfo("
             ],
+            None,
         ),
         (
-            ["    assert counters.attributes() == {RECEIVED: 0, ACCEPTED: 0}"],
-            [
-                "    zero = {key: 0 for key in VERSION_4_ENGINE_COUNTERS}",
-                "    assert counters.attributes() == {RECEIVED: 0, ACCEPTED: 0, **zero}",
-            ],
-        ),
-        (
-            ["    assert counters.attributes() == {RECEIVED: 2, ACCEPTED: 1}"],
-            [
-                '    aggregated = COUNTER_GENERATE_ACCEPTED_BUCKETS["aggregated"]',
-                "    assert counters.attributes() == {RECEIVED: 2, ACCEPTED: 1, **zero, aggregated: 1}",
-            ],
-        ),
-        (
+            SPECULATION_TEST,
             [],
             [
                 "    # The one-model speculative sampler rejects min_tokens as well.",
                 '    assert info.extra["trtllm.stopping.min_tokens"] == supported',
             ],
+            "    )",
         ),
-        ([], ['    other_keys.discard("trtllm.stopping.min_tokens")']),
+        (
+            SPECULATION_TEST,
+            [],
+            ['    other_keys.discard("trtllm.stopping.min_tokens")'],
+            "    other_keys = set(EXPECTED_EXTRA_CAPABILITIES) - set(SPECULATIVE_SAMPLING_KEYS)",
+        ),
+        (
+            "test_generate_counters_start_at_zero_and_only_increase",
+            ["    assert counters.attributes() == {RECEIVED: 0, ACCEPTED: 0}"],
+            [
+                "    zero = {key: 0 for key in VERSION_4_ENGINE_COUNTERS}",
+                "    assert counters.attributes() == {RECEIVED: 0, ACCEPTED: 0, **zero}",
+            ],
+            None,
+        ),
+        (
+            "test_generate_counters_start_at_zero_and_only_increase",
+            ["    assert counters.attributes() == {RECEIVED: 2, ACCEPTED: 1}"],
+            [
+                '    aggregated = COUNTER_GENERATE_ACCEPTED_BUCKETS["aggregated"]',
+                "    assert counters.attributes() == {RECEIVED: 2, ACCEPTED: 1, **zero, aggregated: 1}",
+            ],
+            None,
+        ),
     ],
     "tests/unittest/grpc/openengine/test_servicer.py": [
         (
+            "test_generate_preserves_child_identity_and_authenticates_parent_affinity",
             ['        llm, model="test-model", subagent_affinity_auth_key="shared-secret"'],
             [
                 "        llm,",
@@ -921,8 +967,10 @@ WT40_CHANGES = {
                 '        subagent_affinity_auth_key="shared-secret",',
                 '        kv_transfer_backend="NIXL",',
             ],
+            None,
         ),
         (
+            "test_generate_context_only_ends_at_prefill_ready",
             [
                 "    servicer = OpenEngineInferenceServicer(_FakeLlm(results),"
                 ' model="test-model", metrics=metrics)'
@@ -933,10 +981,12 @@ WT40_CHANGES = {
                 ' kv_transfer_backend="NIXL"',
                 "    )",
             ],
+            None,
         ),
     ],
     "tests/unittest/grpc/openengine/test_multimodal.py": [
         (
+            "test_audio_text_prompt_survives_preparation_without_placeholders",
             [
                 '    inference = OpenEngineInferenceServicer(llm, "audio-model")',
                 '    control = OpenEngineControlServicer(llm, "audio-model", inference)',
@@ -948,129 +998,281 @@ WT40_CHANGES = {
                 '    control = OpenEngineControlServicer(llm, "audio-model", inference,'
                 " kv_transfer_backend=backend)",
             ],
+            None,
         ),
     ],
 }
 
 
-def _changes_repo(tmp_path, path, changes, applied):
-    """A repo whose ``path`` holds each change's removed lines between filler lines.
+def _apply(lines, regions, within, removed, added, after):
+    """``lines`` with one change made in the statement ``within``."""
+    for i in range(len(lines)):
+        if regions[i] != within:
+            continue
+        if removed and lines[i : i + len(removed)] == removed:
+            return lines[:i] + added + lines[i + len(removed) :]
+        if not removed and lines[i] == after:
+            return lines[: i + 1] + added + lines[i + 1 :]
+    raise AssertionError(f"no place for the change in {within}")
 
-    ``applied`` maps a change's index to the (removed, added) lines that replace them.
-    """
-    blocks = [(f"filler_{i} = {i}", removed) for i, (removed, _) in enumerate(changes)]
-    text = "".join(f"{filler}\n" + "".join(f"{x}\n" for x in removed) for filler, removed in blocks)
-    head = "".join(
-        f"{filler}\n" + "".join(f"{x}\n" for x in applied.get(i, (removed, removed))[1])
-        for i, (filler, removed) in enumerate(blocks)
+
+def _wt40_repo(tmp_path, path, edit):
+    """A repo holding ``path`` as at the frozen base, then ``edit`` of its lines as WT-40."""
+    found = subprocess.run(
+        ["git", "-C", str(Path(__file__).resolve().parents[2]), "show"]
+        + [f"{check_invariants.FROZEN_BASE}:{path}"],
+        capture_output=True,
+        text=True,
     )
+    if found.returncode != 0:
+        pytest.skip("the frozen base is not in this checkout")
+    text = found.stdout
     repo = _repo(tmp_path)
     base = _commit(repo, {"tensorrt_llm/__init__.py": "", path: text}, "base")
-    _commit(repo, {path: head}, "tests\n\nPoC3-Task: WT-40")
+    lines = text.split("\n")
+    _commit(
+        repo,
+        {path: "\n".join(edit(lines, check_ownership._regions(text)))},
+        "t\n\nPoC3-Task: WT-40",
+    )
     return repo, base
 
 
 @pytest.mark.parametrize("path", WT40_CHANGES)
 def test_the_wt40_exceptions_list_exactly_its_changes(path):
     rule = check_ownership.match_rule("WT-40", path)
-    assert rule.kind == "exception" and not rule.lines
-    expected = [
-        (tuple(map(re.escape, removed)), tuple(map(re.escape, added)))
-        for removed, added in WT40_CHANGES[path]
+    assert rule.kind == "exception" and not rule.lines and not rule.within
+    assert list(rule.changes) == [
+        check_ownership.Change(tuple(map(re.escape, old)), tuple(map(re.escape, new)), within)
+        for within, old, new, _ in WT40_CHANGES[path]
     ]
-    assert list(rule.changes) == expected
     assert check_ownership.match_rule("WT-41", path) is None
 
 
+def _all_changes(path):
+    def edit(lines, regions):
+        for change in WT40_CHANGES[path]:
+            lines = _apply(lines, regions, *change)
+            # Keep regions aligned with the edited lines.
+            regions = check_ownership._regions("\n".join(lines))
+        return lines
+
+    return edit
+
+
 @pytest.mark.parametrize("path", WT40_CHANGES)
-def test_wt40_may_make_its_changes(tmp_path, capsys, path):
-    changes = WT40_CHANGES[path]
-    repo, base = _changes_repo(tmp_path, path, changes, dict(enumerate(changes)))
+def test_wt40_may_make_its_changes_to_the_frozen_base_files(tmp_path, capsys, path):
+    repo, base = _wt40_repo(tmp_path, path, _all_changes(path))
     assert check_ownership.check("WT-40", f"{base}..HEAD", str(repo)) == 0
     assert f"CHECK BY HAND  EXCEPTION  {path}" in capsys.readouterr().out
+
+
+def _largest(path, insertion):
+    changes = WT40_CHANGES[path]
+    matching = [c for c in changes if bool(c[1]) != insertion] or changes
+    return max(matching, key=lambda c: len(c[2]))
 
 
 @pytest.mark.parametrize("path", WT40_CHANGES)
 @pytest.mark.parametrize(
     "tamper",
     [
-        lambda removed, added: (removed, added[:-1]),
-        lambda removed, added: (removed, [*added, added[-1]]),
-        lambda removed, added: (removed, [*added[:-1], added[-1] + " "]),
-        lambda removed, added: (removed, ["    pass"]),
-        lambda removed, added: (removed, list(reversed(added)) if len(added) > 1 else ["#"]),
+        lambda change: (*change[:2], change[2][:-1], change[3]),
+        lambda change: (*change[:2], [*change[2], change[2][-1]], change[3]),
+        lambda change: (*change[:2], [*change[2][:-1], change[2][-1] + " "], change[3]),
+        lambda change: (*change[:2], ["    pass"], change[3]),
     ],
-    ids=["line-dropped", "line-repeated", "line-altered", "other-line", "reordered"],
+    ids=["line-dropped", "line-repeated", "line-altered", "other-line"],
 )
 def test_wt40_may_not_change_anything_else(tmp_path, capsys, path, tamper):
-    changes = WT40_CHANGES[path]
-    applied = dict(enumerate(changes))
-    # The change with both removed lines and the most added lines.
-    index = max(range(len(changes)), key=lambda i: (bool(changes[i][0]), len(changes[i][1])))
-    applied[index] = tamper(*changes[index])
-    repo, base = _changes_repo(tmp_path, path, changes, applied)
+    changed = _largest(path, insertion=False)
+
+    def edit(lines, regions):
+        return _apply(lines, regions, *tamper(changed))
+
+    repo, base = _wt40_repo(tmp_path, path, edit)
     assert check_ownership.check("WT-40", f"{base}..HEAD", str(repo)) == 1
     assert f"OUT OF BOUNDS  {path}  (the exception allows only" in capsys.readouterr().out
 
 
-def _change_rule(*changes):
-    return check_ownership._exception("x.py", "test", changes=changes)
+@pytest.mark.parametrize("path", WT40_CHANGES)
+def test_wt40_may_not_make_a_change_in_another_statement(tmp_path, capsys, path):
+    within, removed, added, after = _largest(path, insertion=True)
+
+    def edit(lines, regions):
+        # The first line of the last test function that is not the change's own.
+        other = max(
+            i
+            for i, name in enumerate(regions)
+            if name and name.startswith("test_") and name != within
+        )
+        other = regions.index(regions[other])
+        return lines[: other + 1] + added + lines[other + 1 :]
+
+    repo, base = _wt40_repo(tmp_path, path, edit)
+    assert check_ownership.check("WT-40", f"{base}..HEAD", str(repo)) == 1
+    assert "not one of the allowed changes" in capsys.readouterr().out
 
 
-def _change_diff(tmp_path, old, new):
+FUNCTIONS = (
+    "import os\n\n\ndef f():\n    a = 1\n    return a\n\n\ndef g():\n    a = 1\n    return a\n"
+)
+
+
+def _limited_diff(tmp_path, new, **limits):
+    rule = check_ownership._exception("x.py", "test", **limits)
     repo = _repo(tmp_path)
-    base = _commit(repo, {"x.py": old}, "base")
+    base = _commit(repo, {"x.py": FUNCTIONS}, "base")
     _commit(repo, {"x.py": new}, "change")
-    return repo, base
+    return check_ownership.disallowed_lines(rule, str(repo), base, "HEAD", "x.py")
+
+
+A_TO_2 = check_ownership._change("f", ("    a = 1",), ("    a = 2",))
 
 
 @pytest.mark.parametrize(
-    "old, new, bad",
+    "new, bad",
     [
-        ("a = 1\nb = 1\n", "a = 2\nb = 1\n", None),
-        ("a = 1\nb = 1\na = 1\n", "a = 2\nb = 1\na = 2\n", "not one of the allowed changes"),
-        ("a = 1\nb = 1\n", "b = 1\n", "not one of the allowed changes"),
-        ("b = 1\na = 1", "b = 1\na = 2", "No newline at end of file"),
+        (FUNCTIONS.replace("a = 1", "a = 2", 1), None),
+        (FUNCTIONS.replace("a = 1", "a = 2"), "not one of the allowed changes"),
+        (FUNCTIONS.replace("    a = 1\n", "", 1), "not one of the allowed changes"),
+        (FUNCTIONS, None),
+        (FUNCTIONS[::-1].replace("1 = a", "2 = a", 1)[::-1], "not one of the allowed changes"),
+        (FUNCTIONS.replace("a = 1", "a = 2", 1).rstrip("\n"), "No newline at end of file"),
     ],
-    ids=["allowed", "used-twice", "removed-only", "no-final-newline"],
+    ids=[
+        "allowed",
+        "used-twice",
+        "removed-only",
+        "unchanged",
+        "in-another-function",
+        "no-final-newline",
+    ],
 )
-def test_each_listed_change_is_used_at_most_once(tmp_path, old, new, bad):
-    rule = _change_rule(check_ownership._change(("a = 1",), ("a = 2",)))
-    repo, base = _change_diff(tmp_path, old, new)
-    found = check_ownership.disallowed_lines(rule, str(repo), base, "HEAD", "x.py")
+def test_each_listed_change_is_made_once_where_it_names(tmp_path, new, bad):
+    found = _limited_diff(tmp_path, new, changes=(A_TO_2,))
     if bad is None:
         assert found == []
     else:
-        assert found and all(bad in line for line in found)
+        assert found and any(bad in line for line in found)
 
 
-# U14 (DECISIONS N9): the tests where WT-41 pinned down aggregated-only serving, which WT-42 flips.
-WT42_DS_FILES = {
-    "python/dsv4_serve/cli.py": "SHARED",
-    "README.md": "SHARED",
-    "tests/openengine/test_cli_entry.py": "EXCEPTION",
-    "tests/openengine/test_openengine_server.py": "EXCEPTION",
-    "tests/openengine/test_validation.py": "EXCEPTION",
+@pytest.mark.parametrize(
+    "new, allowed",
+    [
+        (FUNCTIONS.replace("    return a\n", "    return a + 1\n", 1), True),
+        (
+            FUNCTIONS.replace(
+                "    return a\n\n\ndef g", "    return a\n\n\ndef h():\n    pass\n\n\ndef g"
+            ),
+            True,
+        ),
+        (FUNCTIONS.replace("def f():", "@decorated\ndef f():"), True),
+        (FUNCTIONS[::-1].replace("a nruter", "1 + a nruter", 1)[::-1], False),
+        (FUNCTIONS.replace("import os", "import sys"), False),
+        ("# header\n" + FUNCTIONS, False),
+        (FUNCTIONS.replace("    return a\n\n\ndef g():", "    return b\n\n\ndef h():"), False),
+    ],
+    ids=[
+        "inside",
+        "after-it",
+        "its-decorator",
+        "in-another-function",
+        "an-import",
+        "before-everything",
+        "in-both",
+    ],
+)
+def test_within_limits_the_statements_a_change_may_touch(tmp_path, new, allowed):
+    found = _limited_diff(tmp_path, new, within=("f",))
+    assert (found == []) == allowed, found
+
+
+def test_within_needs_a_base_python_can_parse(tmp_path):
+    rule = check_ownership._exception("x.py", "test", within=("f",))
+    repo = _repo(tmp_path)
+    base = _commit(repo, {"x.py": "def f(:\n    pass\n"}, "base")
+    _commit(repo, {"x.py": "def f(:\n    pass\n    pass\n"}, "change")
+    assert check_ownership.disallowed_lines(rule, str(repo), base, "HEAD", "x.py")
+
+
+@pytest.mark.parametrize(
+    "source, expected",
+    [
+        ("x = 1\n\n# c\ndef f():\n    pass\n", ["x", "x", "x", "f", "f"]),
+        ("# c\n@d\nclass K:\n    pass\n\nimport os\n", [None, "K", "K", "K", "K", "import"]),
+        ("a.b = 1\nfor i in ():\n    pass\n", [None, None, None]),
+    ],
+    ids=["assignment-and-def", "header-class-import", "unnamed"],
+)
+def test_regions(source, expected):
+    assert check_ownership._regions(source) == expected
+
+
+def test_regions_refuse_a_lone_carriage_return():
+    with pytest.raises(ValueError):
+        check_ownership._regions("x = 1\ry = 2\n")
+
+
+# WT-42 opens the disagg roles that WT-41's tests pin down (ruling U14): the shared files, and
+# the tests it flips, each with the tests in it that the note names.
+WT42_SHARED = ("python/dsv4_serve/cli.py", "README.md")
+WT42_TESTS = {
+    "tests/openengine/test_cli_entry.py": ("test_openengine_refuses_a_disagg_role",),
+    "tests/openengine/test_openengine_server.py": (
+        "test_ctl_4_model_info_explicit",
+        "test_extra_conventions",
+    ),
+    "tests/openengine/test_validation.py": ("test_disagg_request_keys_refused",),
 }
 
 
-def test_wt42_may_open_the_disagg_roles_in_wt41s_files(tmp_path, capsys):
+def _ds_test(names):
+    return "import pytest\n\n\n" + "".join(
+        f"def {name}():\n    assert False\n\n\n" for name in (*names, "test_other")
+    )
+
+
+@pytest.mark.parametrize("target", ["named", "test_other"])
+def test_wt42_may_change_the_tests_of_wt41_it_flips_for_review(tmp_path, capsys, target):
     repo = _repo(tmp_path)
-    files = {"python/dsv4_serve/__init__.py": "", **{path: "old\n" for path in WT42_DS_FILES}}
+    files = {"python/dsv4_serve/__init__.py": "", **{path: "old\n" for path in WT42_SHARED}}
+    files |= {path: _ds_test(names) for path, names in WT42_TESTS.items()}
+    files["tests/openengine/test_unlisted.py"] = _ds_test(())
     base = _commit(repo, files, "base")
-    _commit(repo, {path: "new\n" for path in WT42_DS_FILES}, "roles\n\nPoC3-Task: WT-42")
-    assert check_ownership.check("WT-42", f"{base}..HEAD", str(repo)) == 0
+    changed = {path: "new\n" for path in WT42_SHARED}
+    for path, names in WT42_TESTS.items():
+        name = names[-1] if target == "named" else target
+        changed[path] = _ds_test(names).replace(
+            f"def {name}():\n    assert False", f"def {name}():\n    assert True"
+        )
+    head = _commit(repo, changed, "roles\n\nPoC3-Task: WT-42")
+    assert check_ownership.check("WT-42", f"{base}..{head}", str(repo)) == 0
     out = capsys.readouterr().out
-    for path, kind in WT42_DS_FILES.items():
-        assert re.search(rf"CHECK BY HAND  {kind} +{re.escape(path)}  -- ", out), path
-    for path in WT42_DS_FILES:
+    for path in WT42_SHARED:
+        assert re.search(rf"CHECK BY HAND  SHARED +{re.escape(path)}  -- ", out), path
         assert check_ownership.match_rule("WT-42", path) is None  # the TRT-LLM repository
+    for path in WT42_TESTS:
+        assert f"CHECK BY HAND  EXCEPTION  {path}  -- U14 flip" in out
         assert check_ownership.match_rule("WT-43", path, check_ownership.DS) is None
+    unlisted = _ds_test(()).replace("assert False", "assert True")
+    _commit(repo, {"tests/openengine/test_unlisted.py": unlisted}, "more\n\nPoC3-Task: WT-42")
+    assert check_ownership.check("WT-42", f"{base}..HEAD", str(repo)) == 1
+    assert "OUT OF BOUNDS  tests/openengine/test_unlisted.py" in capsys.readouterr().out
 
 
-def test_an_exception_lists_lines_or_changes_not_both():
+@pytest.mark.parametrize(
+    "limits",
+    [
+        {"lines": ("a",), "changes": (A_TO_2,)},
+        {"lines": ("a",), "within": ("f",)},
+        {"changes": (A_TO_2,), "within": ("f",)},
+    ],
+    ids=["lines-changes", "lines-within", "changes-within"],
+)
+def test_an_exception_limits_in_one_form_only(limits):
     with pytest.raises(ValueError):
-        check_ownership._exception("x.py", "test", lines=("a",), changes=(((), ("a",)),))
+        check_ownership._exception("x.py", "test", **limits)
 
 
 def test_a_missing_git_fails_with_a_message(tmp_path, capsys, monkeypatch):
@@ -1155,6 +1357,42 @@ def test_a_verification_record_yaml_cannot_convert_is_reported_and_ignored(tmp_p
     _commit(repo, {}, "bad record")
     assert pending_e2e.read_verified(repo, "main") == set()
     assert "WT-51.yaml is not valid YAML" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "groups: [\n",
+        "groups: !!bool x\nrows: []\n",
+        "groups: !!int '-'\nrows: []\n",
+        "groups: {}\nrows: " + "[" * 5000 + "]" * 5000 + "\n",
+        "groups: {}\nrows:\n  - {id: F-01, deps: 5}\n",
+        "groups: {}\nrows:\n  - {id: F-01, deps: [WT-12]}\n",
+        "rows: []\n",
+    ],
+    ids=[
+        "not-yaml",
+        "bad-bool",
+        "bad-int",
+        "too-deep",
+        "deps-not-a-list",
+        "poc2-item",
+        "no-groups",
+    ],
+)
+def test_a_feature_table_that_cannot_load_fails_with_a_message(tmp_path, capsys, monkeypatch, text):
+    table = tmp_path / "feature_deps.yaml"
+    table.write_text(text)
+    with pytest.raises(ValueError, match="feature_deps.yaml"):
+        pending_e2e.load_rows(table)
+    original = pending_e2e.load_rows
+    monkeypatch.setattr(pending_e2e, "load_rows", lambda: original(table))
+    repo = _repo(tmp_path)
+    _commit(repo, {}, "s3\n\nPoC3-Task: WT-30")
+    with pytest.raises(SystemExit) as raised:
+        pending_e2e.main(["--task", "WT-51", "--repo", str(repo), "--ref", "main"])
+    assert raised.value.code == 1
+    assert "error: " in capsys.readouterr().err
 
 
 def test_verification_entries_that_are_not_a_list_are_reported_and_ignored(tmp_path, capsys):
@@ -1311,6 +1549,16 @@ def _extra(task, landed, rows):
         [row.id for row in result.orphaned],
         [row.id for row in result.noted],
     )
+
+
+@pytest.mark.parametrize(
+    "note, noted",
+    [("\u7531WT-40\u505a", True), ("WT-40-fix1", False), ("WT-401", False), ("xWT-40", False)],
+    ids=["between-cjk-characters", "a-fix", "a-longer-number", "after-a-letter"],
+)
+def test_a_note_names_an_item_only_as_a_whole_name(note, noted):
+    row = pending_e2e.Row(id="F-99", features=("F-99",), cases=(), deps=frozenset(), notes=(note,))
+    assert bool(pending_e2e.obligations("WT-40", set(), [row]).noted) is noted
 
 
 def test_a_fix_landing_does_not_land_its_item(rows):

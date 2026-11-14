@@ -65,7 +65,7 @@ from functools import lru_cache
 from pathlib import Path
 
 import yaml
-from poc3_common import git, git_error, run_git
+from poc3_common import YAML_LOAD_ERRORS, git, git_error, run_git
 
 # The commit PoC-S3 starts from: the PoC-S2 branch fork/feat/engine_integration at that point.
 FROZEN_BASE = "2f22a98d6e8b32ed185bcdfe051ef0e4405ae4e8"
@@ -96,15 +96,15 @@ ADDITION_REGIONS = ((PROTOCOL, "DisaggregatedParams"), (AUTH, "file"))
 
 Reader = Callable[[str, str], "str | None"]
 Differ = Callable[[str, str, str], bool]
-# What PyYAML may raise for a document it cannot load: besides YAMLError, ValueError for a value
-# it cannot convert (the date 2026-02-30), LookupError, AttributeError or TypeError for an
-# explicit tag it cannot apply (!!bool x, !!int '-', !!timestamp x), and RuntimeError
-# (RecursionError) for a document nested too deep.
-YAML_ERRORS = (yaml.YAMLError, ValueError, LookupError, AttributeError, TypeError, RuntimeError)
+YAML_ERRORS = (yaml.YAMLError, *YAML_LOAD_ERRORS)
+
+
+def _toplevel(repo: str | Path) -> Path:
+    return _toplevel_of(str(Path(repo).resolve()))
 
 
 @lru_cache(maxsize=None)
-def _toplevel(repo: str) -> Path:
+def _toplevel_of(repo: str) -> Path:
     return Path(git(repo, "rev-parse", "--show-toplevel").strip())
 
 
@@ -119,7 +119,7 @@ def source_lines(text: str) -> list[str]:
 
 def git_reader(repo: str | Path) -> Reader:
     """Read ``path`` at revision ``rev`` (None when it does not exist there); rev "" is the disk."""
-    top = _toplevel(str(repo))
+    top = _toplevel(repo)
 
     def read(rev: str, path: str) -> str | None:
         # Line endings are kept as they are, so a CRLF change is a change.
@@ -156,7 +156,7 @@ def git_differ(repo: str | Path) -> Differ:
     index flags such as ``--assume-unchanged``) cannot hide a change; a file
     that is, or lies under, a symbolic link counts as changed.
     """
-    top = _toplevel(str(repo))
+    top = _toplevel(repo)
 
     def differs_on_disk(base: str, path: str) -> bool:
         entry = git(repo, "ls-tree", "-z", "--full-tree", base, "--", path).rstrip("\0")

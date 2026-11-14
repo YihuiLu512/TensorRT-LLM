@@ -76,11 +76,18 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from poc3_common import DEFAULT_REF, DS_DEFAULT_REF, git, git_error, landed_tasks, parse_task
+from poc3_common import (
+    DEFAULT_REF,
+    DS_DEFAULT_REF,
+    YAML_LOAD_ERRORS,
+    git,
+    git_error,
+    landed_tasks,
+    parse_task,
+)
 
 FEATURE_DEPS = Path(__file__).resolve().parent / "feature_deps.yaml"
-# What PyYAML may raise for a document it cannot load (see check_invariants.YAML_ERRORS).
-YAML_ERRORS = (yaml.YAMLError, ValueError, LookupError, AttributeError, TypeError, RuntimeError)
+YAML_ERRORS = (yaml.YAMLError, *YAML_LOAD_ERRORS)
 VERIFIED_DIR = "tests/integration/defs/openengine_chain/verified"
 R13 = "WT-62"
 R14 = "WT-79"
@@ -132,7 +139,19 @@ class Obligations:
 
 
 def load_rows(path: Path = FEATURE_DEPS) -> tuple[dict[str, list[str]], list[Row]]:
-    """Read ``feature_deps.yaml``; dependency groups are expanded."""
+    """Read ``feature_deps.yaml``; dependency groups are expanded.
+
+    Raises:
+        ValueError: The file is not a valid feature table.
+    """
+    try:
+        return _load_rows(path)
+    except (*YAML_ERRORS, TypeError) as error:
+        # TypeError: a field of the wrong kind, such as a number where a list belongs.
+        raise ValueError(f"{path}: {type(error).__name__}: {error}") from error
+
+
+def _load_rows(path: Path) -> tuple[dict[str, list[str]], list[Row]]:
     data = yaml.safe_load(path.read_text())
     groups: dict[str, list[str]] = data["groups"]
     rows = []
@@ -235,7 +254,6 @@ def read_verified(repo: str | Path, ref: str, known: Iterable[str] | None = None
         try:
             records.append(yaml.safe_load(git(repo, "show", f"{ref}:{VERIFIED_DIR}/{name}")))
         except YAML_ERRORS as error:
-            # ValueError also covers a record that is not UTF-8 (UnicodeDecodeError).
             print(
                 f"warning: {name} is not valid YAML, ignored: {type(error).__name__}: {error}",
                 file=sys.stderr,
@@ -244,7 +262,9 @@ def read_verified(repo: str | Path, ref: str, known: Iterable[str] | None = None
 
 
 def _names(task: str, notes: Iterable[str]) -> bool:
-    return any(re.search(rf"(?<![\w-]){re.escape(task)}(?![\w-])", note) for note in notes)
+    # Not \w: the notes are Chinese text, and a CJK character next to a name does not extend it.
+    edge = "[A-Za-z0-9_-]"
+    return any(re.search(rf"(?<!{edge}){re.escape(task)}(?!{edge})", note) for note in notes)
 
 
 def obligations(
@@ -365,7 +385,7 @@ def main(argv: list[str] | None = None) -> int:
     except subprocess.CalledProcessError as error:
         parser.exit(1, f"{parser.prog}: error: {git_error(error)}\n")
     except (OSError, ValueError) as error:
-        # ValueError: a feature_deps.yaml naming something that is not a work item.
+        # ValueError: feature_deps.yaml is not a valid feature table.
         parser.exit(1, f"{parser.prog}: error: {type(error).__name__}: {error}\n")
 
 
