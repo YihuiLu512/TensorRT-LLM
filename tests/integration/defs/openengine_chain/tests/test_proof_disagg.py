@@ -709,10 +709,10 @@ def leaving(request, legs):
 def _register_and_leave(leaving):
     ctx, gen, outside = leaving
     # The disaggregated server lists the workers once they register during the test.
-    reads = STATE["reads"]
     STATE["members"] = {"ctx": ("localhost:8005",), "gen": ("localhost:8006", *outside)}
-    # The watch reads the lists while they name the workers: the second read from now on
-    # started after the change.
+    # The watch reads the lists while they name the workers: of the reads counted from now
+    # on, the second started after the change.
+    reads = STATE["reads"]
     deadline = time.monotonic() + 30
     while STATE["reads"] < reads + 2 and time.monotonic() < deadline:
         time.sleep(0.01)
@@ -1257,6 +1257,53 @@ def test_without_the_lists_when_the_test_starts_only_the_last_lists_count(monkey
     stale = {CTX: (ctx.address,), GEN: (gen.address, "node0:8009")}
     end = {CTX: (ctx.address,), GEN: (gen.address,)}
     reading = _watch_readings(monkeypatch, [None, stale, end])
+    assert reading.members == end
+    assert _ch6([ctx, gen], reading).status == P.OK
+
+
+def _watch_found_late(monkeypatch, members, ran_at_start):
+    """The watch's reading of a disaggregated server found only after the test started.
+
+    Its worker lists are ``members`` in turn, from the read that finds it on;
+    ``ran_at_start`` is whether its process ran when the test started.
+    """
+    found = []
+    plugin, seq = _quiet_watch(monkeypatch, found)
+    monkeypatch.setattr(P, "live_descendants", lambda root: {7} if ran_at_start else set())
+    lists = iter(members)
+    monkeypatch.setattr(
+        P,
+        "read_orchestrator",
+        lambda o: dataclasses.replace(_orchestrator(2, 2), members=next(lists)),
+    )
+    watch = plugin._Watch(seq, root=1)
+    found.append(P.Orchestrator(7, "http://o:1", "c"))
+    for _ in members[:-1]:
+        watch._poll()
+    watch.stop()
+    end = object()
+    assert next(lists, end) is end, "every list was read"
+    return watch.orchestrator()
+
+
+def test_a_disaggregated_server_the_test_starts_keeps_every_worker_it_listed(monkeypatch):
+    """A test that starts the server, then stops the workers first, ends with empty lists."""
+    ctx, gen = _two_legs()
+    both = {CTX: (ctx.address,), GEN: (gen.address,)}
+    lists = [both, {CTX: (), GEN: (gen.address,)}, {CTX: (), GEN: ()}]
+    reading = _watch_found_late(monkeypatch, lists, ran_at_start=False)
+    assert reading.members == both
+    assert _ch6([ctx, gen], reading).status == P.OK
+
+
+def test_a_server_that_ran_before_the_test_but_was_found_late_keeps_only_its_last_lists(
+    monkeypatch,
+):
+    """Its address became known late (e.g. a --report_addr file): it may list an earlier test's worker."""
+    ctx, gen = _two_legs()
+    stale = {CTX: (ctx.address,), GEN: (gen.address, "node0:8009")}
+    end = {CTX: (ctx.address,), GEN: (gen.address,)}
+    reading = _watch_found_late(monkeypatch, [stale, end], ran_at_start=True)
     assert reading.members == end
     assert _ch6([ctx, gen], reading).status == P.OK
 
