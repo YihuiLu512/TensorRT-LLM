@@ -18,14 +18,14 @@
 #   CH-5 has no count of that server to compare with (+CH-n: CH-n is not met either).
 # - failed: the case failed, for the reason given below the tags.
 # - inner: the case runs a test file; the counts are of that file's tests, and the tests that
-#   failed are named below the tags with the reason.
+#   failed or are in error are named below the tags with the reason.
 # Rows WT-37 owed but could not verify, and so does not list: DG-27 (its only case, NT-005, skips
 # itself: it needs a two-leg request, which needs PrefillReady from the fake engine), DG-40 (XD-021
 # and XD-312, both skipped on the trtllm chain by expectations/WT-54.py), DG-82+rest (XD-312),
 # F-43 (XD-120 fails: the context worker's KV-cache events match none of the test's blocks; left to
-# WT-53-fix2) and DG-24 (XD-026 and XD-119 pass, but the generation engine also takes aggregated
-# calls, which conditional disaggregation makes by design and no expectation allows yet; left to
-# WT-53-fix2).
+# WT-53-fix2) and DG-24 (XD-026 and XD-119 fail on the chain proof alone: their tests pass, but
+# CH-3 fails on the generation leg, whose engine also takes aggregated calls, which conditional
+# disaggregation makes by design and no expectation allows yet; left to WT-53-fix2).
 entries:
   # XD-014 ok, XD-022 ok
   - row: F-01
@@ -123,13 +123,13 @@ entries:
     - b200-4g-r3/b200-4g-r3/job-5950556_0-r0/node0/results/e08/outer-junit.xml
     result: failed
     chain_proof: incomplete
-  # XD-014 ok, T2 inner 33 passed, 16 skipped, T1 inner 9 failed, 22 passed, 2 skipped
-  # T1: eight of the nine failed tests (test_batch_completions[*] and
-  #   test_batch_completions_streaming[*]) send several prompts in one request, which the
-  #   disaggregated server answers with HTTP 500 before any engine call; the PoC-S3 functional test
-  #   plan (row T1) lists them as not applicable to the disaggregated form. The ninth,
-  #   test_completion_with_logit_bias_effect, did not start: its generation worker's front end could
-  #   not bind the port the harness had picked for it (address already in use)
+  # XD-014 ok, T2 inner 33 passed, 16 skipped, T1 inner 8 failed, 1 error, 22 passed, 2 skipped
+  # T1: the eight failed tests (test_batch_completions[*] and test_batch_completions_streaming[*])
+  #   send several prompts in one request, which the disaggregated server answers with HTTP 500
+  #   before any engine call; the PoC-S3 functional test plan (row T1) lists them as not applicable
+  #   to the disaggregated form. The test in error, test_completion_with_logit_bias_effect, did not
+  #   start: its generation worker's front end could not bind the port the harness had picked for it
+  #   (address already in use)
   - row: F-30
     features:
     - F-30
@@ -811,7 +811,7 @@ entries:
     - unittest/grpc/openengine/_test_direct_handoff.py::test_two_engines_complete_a_handoff
     commit: b85dc161b8663ef9c6b74ca986672c7c6beeb07d
     junit:
-    - b200-1g-r3-nochain/b200-1g-r3-nochain/job-5950555_0-r0/node0/results/e00/outer-junit.xml
+    - b200-1g-r3-nochain/b200-1g-r3-nochain/job-5950555_0-r0/node0/results/e00/junit/inner-20261115T031112-1794683472422855079-1251922-est_unittests.py_test_unittests_v2_unittest_grpc_openengine__test_direct_handoff.py_test_two_engines_complete_a_handoff_.xml
     - cpu-gate/unittest_serve_openengine_poc.xml
     result: passed
     chain_proof: incomplete
