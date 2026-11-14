@@ -45,6 +45,8 @@ STARTUP_SECONDS = 300
 HEARTBEAT_SECONDS = 1
 INACTIVE_SECONDS = 4
 REQUEST_LOG_ENV = "WT50_REQUEST_LOG"
+# Launcher variables a plain HTTP process must not inherit, as in cpu_disagg_chain.
+_LAUNCHER_ENV_PREFIXES = ("SLURM_", "PMIX_", "PMI_", "OMPI_", "UCX_", "I_MPI_", "HYDRA_", "MPI_")
 HERE = Path(__file__).resolve().parent
 
 __all__ = ["running_in_thread"]
@@ -143,7 +145,14 @@ class Process:
     def __init__(self, cmd: Sequence[str], log_path: Path, env: dict[str, str] | None = None):
         self.cmd = list(cmd)
         self.log_path = log_path
-        full_env = {**os.environ, **(env or {})}
+        full_env = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith(_LAUNCHER_ENV_PREFIXES)
+        }
+        # Each process starts its own metrics directory.
+        full_env.pop("PROMETHEUS_MULTIPROC_DIR", None)
+        full_env.update(env or {})
         # A launcher's socket in the test's environment would make this an attached frontend.
         full_env.pop(LAUNCHER_UDS_ENV, None)
         self._log = log_path.open("w")

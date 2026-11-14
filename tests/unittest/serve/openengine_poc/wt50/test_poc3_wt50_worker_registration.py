@@ -9,6 +9,7 @@ command lines (see ``wt50_chain``).
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import secrets
 import shutil
@@ -19,6 +20,7 @@ from pathlib import Path
 
 import psutil
 import pytest
+import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -50,6 +52,29 @@ def _started_orchestrator(tmp_path: Path, **kwargs) -> tuple[chain.Process, str,
 
 def _role_keys(orchestrator: str, role: str) -> list[str]:
     return [key for key in chain.storage_keys(orchestrator) if f"/{role}-" in key]
+
+
+def test_the_processes_do_not_inherit_the_launchers_variables(tmp_path, monkeypatch):
+    """Under ``srun``, a ``trtllm-serve`` that sees the launcher's variables may block in MPI setup."""
+    inherited = {f"{prefix}WT50": "1" for prefix in chain._LAUNCHER_ENV_PREFIXES}
+    inherited["PROMETHEUS_MULTIPROC_DIR"] = str(tmp_path)
+    for name, value in {**inherited, "WT50_KEPT": "1"}.items():
+        monkeypatch.setenv(name, value)
+    dump = tmp_path / "env.json"
+    process = chain.Process(
+        [
+            sys.executable,
+            "-c",
+            f"import json, os; json.dump(dict(os.environ), open({str(dump)!r}, 'w'))",
+        ],
+        tmp_path / "env.log",
+        {"WT50_GIVEN": "1"},
+    )
+    process.proc.wait(timeout=60)
+    process.stop()
+    seen = json.loads(dump.read_text())
+    assert not set(inherited) & set(seen)
+    assert seen["WT50_KEPT"] == seen["WT50_GIVEN"] == "1"
 
 
 def test_worker_frontend_registers_over_http_storage(tmp_path):
@@ -137,11 +162,63 @@ def test_worker_frontend_registers_over_http_storage(tmp_path):
 
 
 def test_static_urls_reach_worker_frontends(tmp_path):
-    """NT-005 (DG-27): the orchestrator's static ``urls`` reach two worker frontends without roles."""
-    pytest.skip(
-        "needs a two-leg request, which needs PrefillReady from the fake engine and the "
-        "facade's handoff mapping"
-    )
+    """NT-005 (DG-27): the orchestrator's static ``urls`` reach two worker frontends without roles.
+
+    Neither the orchestrator nor the worker frontends have a key, so the
+    handoff goes unsigned. A two-leg request is answered: the context leg
+    reaches the ctx engine as a prefill call, the generation leg the gen engine
+    as a decode call of the session the prefill call sent.
+    """
+    from tensorrt_llm.grpc.openengine_conventions import REQ_REQUEST_TYPE, REQUEST_TYPE_CONTEXT_ONLY
+
+    model = chain.model_dir(tmp_path / "model")
+    config = {"cache_transceiver_config": {"backend": "DEFAULT"}}
+    with (
+        chain.running_in_thread(chain.engine(model)) as ctx_engine,
+        chain.running_in_thread(chain.engine(model)) as gen_engine,
+    ):
+        ports = {"ctx": chain.free_port(), "gen": chain.free_port()}
+        workers = {
+            name: chain.start_worker(
+                tmp_path, name, model, fake, role=None, config=config, port=ports[name]
+            )
+            for name, fake in (("ctx", ctx_engine), ("gen", gen_engine))
+        }
+        with chain.stopping(*workers.values()) as running:
+            for name, worker_port in ports.items():
+                chain.wait(
+                    lambda: chain.status(f"http://127.0.0.1:{worker_port}/health") == 200,
+                    f"the {name} worker frontend to be healthy",
+                    processes=running,
+                )
+            port = chain.free_port()
+            url = f"http://127.0.0.1:{port}"
+            orchestrator = chain.start_orchestrator(
+                tmp_path,
+                port,
+                urls={name: [f"127.0.0.1:{worker_port}"] for name, worker_port in ports.items()},
+            )
+            running.append(orchestrator)
+            chain.wait(
+                lambda: chain.status(f"{url}/health") == 200,
+                "the orchestrator to be ready",
+                processes=running,
+            )
+            response = requests.post(
+                f"{url}/v1/completions",
+                json={"model": chain.MODEL, "prompt": "He", "max_tokens": 2},
+                timeout=60,
+            )
+            assert response.status_code == 200, response.text
+            assert response.json()["choices"][0]["text"]
+            for name in workers:
+                assert "POST /v1/completions" in chain.requests_seen(tmp_path, name), name
+        [prefill] = ctx_engine.requests
+        assert prefill.extra[REQ_REQUEST_TYPE] == REQUEST_TYPE_CONTEXT_ONLY
+        [decode] = gen_engine.requests
+        assert decode.kv.HasField("session")
+        [(_, sent)] = ctx_engine.handoffs
+        assert decode.kv.session.session_id == sent.session_id
 
 
 @pytest.mark.skipif(shutil.which("etcd") is None, reason="etcd is not installed")

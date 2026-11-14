@@ -2,6 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """A gen worker frontend checks the orchestrator's signature on a handoff (SV-DSG-1), on CPU.
 
+A worker frontend with the orchestrator's key refuses a handoff whose
+signature does not match; one without a key refuses a signed handoff, whose
+signature it cannot verify, and serves an unsigned one.
+
 The worker frontends are the real ``trtllm-serve`` command line on the gRPC
 fake engine (see ``wt50_chain``); the requests are sent to them directly, as
 the orchestrator would send the generation leg.
@@ -29,6 +33,7 @@ pytestmark = [pytest.mark.cpu_only, pytest.mark.threadleak(enabled=False), pytes
 AUTH_KEY = secrets.token_hex(16)
 AUTH_FAILED = "Invalid internal disaggregated request authentication"
 NO_TRANSCEIVER = "require cache_transceiver_config"
+UNVERIFIABLE = "no internal_request_auth_key to verify it"
 
 
 def _handoff(opaque_state: str) -> dict:
@@ -45,8 +50,18 @@ def _handoff(opaque_state: str) -> dict:
     }
 
 
+def _chat_handoff(opaque_state: str) -> dict:
+    body = _handoff(opaque_state)
+    del body["prompt"]
+    return {**body, "messages": [{"role": "user", "content": "He"}]}
+
+
 def _signed(body: dict, key: str = AUTH_KEY) -> dict[str, str]:
-    return build_internal_disagg_auth_headers(key, CompletionRequest(**body))
+    # The signature covers the disaggregated fields only, so a chat body signs as a completion.
+    request = CompletionRequest(
+        model=body["model"], prompt="He", disaggregated_params=body["disaggregated_params"]
+    )
+    return build_internal_disagg_auth_headers(key, request)
 
 
 def _gen_worker(
@@ -85,12 +100,18 @@ def keyless_gen_worker(tmp_path_factory) -> Iterator[tuple[str, chain.FakeEngine
     yield from _gen_worker(tmp_path_factory, "keyless", None)
 
 
-def _post(url: str, body: dict, headers: dict[str, str]) -> requests.Response:
-    return requests.post(f"{url}/v1/completions", json=body, headers=headers, timeout=60)
+def _post(
+    url: str, body: dict, headers: dict[str, str], path: str = "/v1/completions"
+) -> requests.Response:
+    return requests.post(f"{url}{path}", json=body, headers=headers, timeout=60)
 
 
 def test_gen_worker_frontend_rejects_a_tampered_handoff_signature(gen_worker, keyless_gen_worker):
-    """NT-008 (DG-34, DG-37): a keyed worker refuses a handoff whose signature does not match."""
+    """NT-008 (DG-34, DG-37): a worker frontend refuses a signature it does not accept.
+
+    A worker frontend with the key refuses a handoff whose signature does not
+    match; one without a key refuses every signed handoff.
+    """
     keyed, keyed_engine = gen_worker
     keyless, keyless_engine = keyless_gen_worker
     body = _handoff("b3BhcXVl")
@@ -109,12 +130,44 @@ def test_gen_worker_frontend_rejects_a_tampered_handoff_signature(gen_worker, ke
         assert AUTH_FAILED in response.text
     assert chain.generate_calls(keyed_engine) == before
 
-    # Only one side has the key: the worker frontend warns and lets it through, as in-process,
-    # to the engine.
+    # Only the orchestrator has the key: the worker frontend cannot verify the signature, so it
+    # refuses the handoff, tampered or not.
     keyless_before = chain.generate_calls(keyless_engine)
-    response = _post(keyless, tampered, headers)
+    for sent_body in (tampered, body):
+        response = _post(keyless, sent_body, headers)
+        assert response.status_code == 400, response.text
+        assert AUTH_FAILED in response.text and UNVERIFIABLE in response.text
+    assert chain.generate_calls(keyless_engine) == keyless_before
+
+
+def test_a_keyless_worker_frontend_refuses_a_signed_chat_handoff(keyless_gen_worker):
+    """As a signed completion handoff, a signed chat completion handoff is refused."""
+    keyless, keyless_engine = keyless_gen_worker
+    body = _chat_handoff("b3BhcXVl")
+    before = chain.generate_calls(keyless_engine)
+    response = _post(keyless, body, _signed(body), "/v1/chat/completions")
+    assert response.status_code == 400, response.text
+    assert AUTH_FAILED in response.text and UNVERIFIABLE in response.text
+    assert chain.generate_calls(keyless_engine) == before
+
+
+def test_a_keyless_worker_frontend_serves_what_carries_no_signature_to_verify(keyless_gen_worker):
+    """A worker frontend without a key serves an unsigned handoff.
+
+    It also serves a request without handoff fields that carries the signature
+    header: the header alone makes no handoff.
+    """
+    keyless, keyless_engine = keyless_gen_worker
+    body = _handoff("b3BhcXVl")
+    before = chain.generate_calls(keyless_engine)
+    response = _post(keyless, body, {})
     assert response.status_code == 200, response.text
-    assert chain.generate_calls(keyless_engine) == keyless_before + 1
+    assert chain.generate_calls(keyless_engine) == before + 1
+
+    plain = {"model": chain.MODEL, "prompt": "He", "max_tokens": 2}
+    response = _post(keyless, plain, _signed(body))
+    assert response.status_code == 200, response.text
+    assert chain.generate_calls(keyless_engine) == before + 2
 
 
 def test_a_signed_handoff_is_not_refused_for_a_missing_transceiver(gen_worker):
@@ -144,6 +197,9 @@ def test_a_worker_frontend_without_a_transceiver_refuses_a_handoff(tmp_path):
                 "the worker to be healthy",
                 processes=[worker],
             )
-            response = _post(url, _handoff("b3BhcXVl"), {})
-            assert response.status_code == 400 and NO_TRANSCEIVER in response.text
+            body = _handoff("b3BhcXVl")
+            # Signed or not: the transceiver check comes before the signature checks.
+            for headers in ({}, _signed(body)):
+                response = _post(url, body, headers)
+                assert response.status_code == 400 and NO_TRANSCEIVER in response.text
             assert chain.generate_calls(fake) == 0

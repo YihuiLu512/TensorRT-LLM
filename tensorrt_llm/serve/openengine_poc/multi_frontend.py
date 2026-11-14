@@ -396,12 +396,8 @@ def _build_frontend(
     from tensorrt_llm.commands.serve import _apply_fastapi_middlewares
     from tensorrt_llm.serve.openai_server import OpenAIServer
 
-    from .facade import (
-        DEFAULT_CONTROL_TIMEOUT_S,
-        DEFAULT_READY_TIMEOUT_S,
-        OpenEngineLLM,
-        adapt_server,
-    )
+    from .facade import DEFAULT_CONTROL_TIMEOUT_S, DEFAULT_READY_TIMEOUT_S, OpenEngineLLM
+    from .launch import adapt_server
 
     try:
         facade = OpenEngineLLM.from_llm_args(

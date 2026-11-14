@@ -15,7 +15,50 @@ import uvloop
 
 from tensorrt_llm.logger import logger
 
-from .facade import DEFAULT_CONTROL_TIMEOUT_S, DEFAULT_READY_TIMEOUT_S, OpenEngineLLM, adapt_server
+from . import facade as _facade
+from .facade import DEFAULT_CONTROL_TIMEOUT_S, DEFAULT_READY_TIMEOUT_S, OpenEngineLLM
+
+UNVERIFIABLE_SIGNATURE = (
+    "Invalid internal disaggregated request authentication: the request carries a signature, but "
+    "this worker has no internal_request_auth_key to verify it"
+)
+
+
+def adapt_server(server: Any, facade: OpenEngineLLM) -> None:
+    """:func:`facade.adapt_server`, and refuse a signed handoff when the server has no key.
+
+    ``launch_openengine_server`` and ``multi_frontend._build_frontend`` adapt
+    their servers with this function rather than :func:`facade.adapt_server`.
+
+    ``OpenAIServer`` checks the orchestrator's signature on the protected
+    disaggregated fields only when it has ``internal_disagg_auth_key``; without
+    one it warns and leaves the signature unchecked. The adapted server, when it
+    has no key, also refuses a request that carries protected fields and the
+    signature header, whatever the header's value: the orchestrator signs, and
+    this worker cannot verify the signature. A request without the header goes
+    unverified, so the check does not stop a handoff whose header was removed on
+    the way. The server's own checks run first, and a request they refuse gets
+    their error.
+    """
+    from tensorrt_llm.serve.disagg_auth import (
+        INTERNAL_DISAGG_AUTH_HEADER,
+        request_requires_internal_disagg_auth,
+    )
+
+    _facade.adapt_server(server, facade)
+    validate = server._validate_internal_disagg_request
+
+    def validate_refusing_an_unverifiable_signature(request: Any, raw_request: Any) -> None:
+        validate(request, raw_request)
+        if (
+            not getattr(server, "_internal_disagg_auth_key", None)
+            and raw_request is not None
+            and raw_request.headers.get(INTERNAL_DISAGG_AUTH_HEADER) is not None
+            and request_requires_internal_disagg_auth(request)
+        ):
+            raise ValueError(UNVERIFIABLE_SIGNATURE)
+
+    server._validate_internal_disagg_request = validate_refusing_an_unverifiable_signature
 
 
 def _bind(host: str, port: int) -> socket.socket:
@@ -85,7 +128,9 @@ def launch_openengine_server(
     ``internal_disagg_auth_key`` make the frontend a disaggregated worker, as
     for the in-process server: ``OpenAIServer`` registers with the cluster once
     it serves, which is after the engine checks pass, and checks the
-    orchestrator's signatures with the key.
+    orchestrator's signatures with the key. Unlike the in-process server, a
+    frontend without the key refuses a request that carries protected handoff
+    fields and a signature (:func:`adapt_server`).
 
     Raises:
         click.UsageError: The configuration asks for something this frontend cannot do.

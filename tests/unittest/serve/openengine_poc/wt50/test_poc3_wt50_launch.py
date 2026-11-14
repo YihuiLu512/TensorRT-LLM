@@ -146,7 +146,9 @@ def test_launch_gives_the_worker_options_to_the_server_and_the_facade(tmp_path, 
             built["serve"] = (port, [s.getsockname()[1] for s in sockets or ()])
 
     monkeypatch.setattr(launch_module.OpenEngineLLM, "from_llm_args", from_llm_args)
-    monkeypatch.setattr(launch_module, "adapt_server", lambda server, facade: None)
+    monkeypatch.setattr(
+        launch_module, "adapt_server", lambda server, facade: built.setdefault("adapted", server)
+    )
     monkeypatch.setattr("tensorrt_llm.serve.openai_server.OpenAIServer", Server)
     monkeypatch.setattr(launch_module.uvloop, "run", asyncio.run)
     monkeypatch.setattr(launch_module, "_bind", recording_bind)
@@ -167,6 +169,7 @@ def test_launch_gives_the_worker_options_to_the_server_and_the_facade(tmp_path, 
     assert server["disagg_cluster_config"] is CLUSTER
     assert server["internal_disagg_auth_key"] == "k"
     assert server["metadata_server_cfg"] is None
+    assert isinstance(built["adapted"], Server)
     port, bound = built["serve"]
     assert port > 0 and bound == [port]
     assert order == ["bind", "engine"]
@@ -214,14 +217,18 @@ def test_every_frontend_of_several_gets_the_worker_options(monkeypatch):
     from tensorrt_llm.serve.openengine_poc import facade as facade_module
 
     monkeypatch.setattr(facade_module.OpenEngineLLM, "from_llm_args", from_llm_args)
-    monkeypatch.setattr(facade_module, "adapt_server", lambda server, facade: None)
+    # The refusal of a signature the frontend cannot verify comes with launch's adapt_server.
+    monkeypatch.setattr(
+        launch_module, "adapt_server", lambda server, facade: built.setdefault("adapted", server)
+    )
     monkeypatch.setattr("tensorrt_llm.serve.openai_server.OpenAIServer", server)
     monkeypatch.setattr(serve_cmd, "_apply_fastapi_middlewares", lambda app, middleware: None)
     config = _config(
         server_role=ServerRole.CONTEXT, disagg_cluster_config=CLUSTER, internal_disagg_auth_key="k"
     )
     serving = SimpleNamespace(is_launcher=False)
-    multi_frontend._build_frontend(config, postproc_workers=0, serving=serving)
+    _, built_server = multi_frontend._build_frontend(config, postproc_workers=0, serving=serving)
+    assert built["adapted"] is built_server
     assert built["facade"]["server_role"] is ServerRole.CONTEXT
     kwargs = built["server"]
     assert kwargs["server_role"] is ServerRole.CONTEXT
@@ -229,3 +236,91 @@ def test_every_frontend_of_several_gets_the_worker_options(monkeypatch):
     assert kwargs["disagg_cluster_config"] is CLUSTER
     assert kwargs["internal_disagg_auth_key"] == "k"
     assert kwargs["multi_frontend_serving"] is serving
+
+
+# -- A signature the frontend cannot verify -----------------------------------------------
+
+_HANDOFF = {
+    "request_type": "generation_only",
+    "ctx_request_id": 1,
+    "disagg_request_id": 2,
+    "encoded_opaque_state": "b3BhcXVl",
+}
+
+
+class _Server:
+    """What ``launch.adapt_server`` reads of an ``OpenAIServer``; its own check is recorded."""
+
+    def __init__(self, key, refusal=None):
+        self._internal_disagg_auth_key = key
+        self.checked = []
+        self._refusal = refusal
+
+    def _validate_internal_disagg_request(self, request, raw_request):
+        self.checked.append(request)
+        if self._refusal is not None:
+            raise ValueError(self._refusal)
+
+
+def _adapted(monkeypatch, server):
+    from tensorrt_llm.serve.openengine_poc import facade as facade_module
+
+    adapted = []
+    monkeypatch.setattr(facade_module, "adapt_server", lambda *args: adapted.append(args))
+    facade = object()
+    launch_module.adapt_server(server, facade)
+    assert adapted == [(server, facade)]
+    return server
+
+
+def _request(handoff=_HANDOFF):
+    from tensorrt_llm.serve.openai_protocol import CompletionRequest
+
+    params = {} if handoff is None else {"disaggregated_params": handoff}
+    return CompletionRequest(model="m", prompt="He", **params)
+
+
+# Handoff fields, none of them protected: nothing a signature covers.
+_UNPROTECTED = {key: _HANDOFF[key] for key in ("request_type", "ctx_request_id")}
+
+
+def _raw(signed: bool, name: str = "x-trtllm-disagg-auth"):
+    from starlette.datastructures import Headers
+
+    return SimpleNamespace(headers=Headers({name: "sha256=00"} if signed else {}))
+
+
+@pytest.mark.parametrize("key", [None, ""], ids=["no-key", "empty-key"])
+@pytest.mark.parametrize("name", ["x-trtllm-disagg-auth", "X-TRTLLM-Disagg-Auth"])
+def test_a_keyless_frontend_refuses_a_signed_handoff_after_its_own_check(monkeypatch, key, name):
+    server = _adapted(monkeypatch, _Server(key))
+    request = _request()
+    with pytest.raises(ValueError, match="no internal_request_auth_key to verify it"):
+        server._validate_internal_disagg_request(request, _raw(True, name))
+    assert server.checked == [request]
+
+
+@pytest.mark.parametrize(
+    "key, handoff, raw",
+    [
+        ("k", _HANDOFF, _raw(True)),
+        (None, _HANDOFF, _raw(False)),
+        (None, _HANDOFF, None),
+        (None, None, _raw(True)),
+        (None, _UNPROTECTED, _raw(True)),
+    ],
+    ids=["keyed", "unsigned", "no-raw-request", "no-handoff-fields", "no-protected-fields"],
+)
+def test_what_has_no_signature_or_a_key_to_check_it_is_left_to_the_server(
+    monkeypatch, key, handoff, raw
+):
+    server = _adapted(monkeypatch, _Server(key))
+    request = _request(handoff)
+    server._validate_internal_disagg_request(request, raw)
+    assert server.checked == [request]
+
+
+def test_the_servers_own_refusal_comes_first(monkeypatch):
+    server = _adapted(monkeypatch, _Server(None, refusal="needs cache_transceiver_config"))
+    with pytest.raises(ValueError, match="needs cache_transceiver_config"):
+        server._validate_internal_disagg_request(_request(), _raw(True))
