@@ -9,12 +9,14 @@ the job's STATE line to each launch tree, after the launcher's own (INTERFACES.m
         --deadline-epoch E --out <job dir>/launches.json
 
 Per launch: skip (NOT_RUN, recorded) when the remaining allocation time is below
-budget_s + kill_grace_s + margin_s + launchplan.PINS_TIMEOUT_S, or an earlier launch ended
-ENV_INVALID or left processes that survived SIGKILL; generate its pin table on this node
-(pin_table(); a failure skips the launch as NOT_RUN, marked pin_table_failed: main then exits 3
-as for config_refused); otherwise run the plan's argv with --overlay-manifest, --nvidia-smi,
---job-env-dir <job dir>/env, --pin-table and the identity arguments appended, under a budget_s
-timeout; kill
+budget_s + kill_grace_s + margin_s + launchplan.in_job_bound_s (pin table + job inputs), or an
+earlier launch ended ENV_INVALID or left processes that survived SIGKILL; generate its pin table
+on this node (pin_table(); a failure skips the launch as NOT_RUN, marked pin_table_failed: main
+then exits 3 as for config_refused); generate the job inputs its scenario declares
+(capjobs.jobinputs into <job dir>/job_inputs/<tree>/; a failure skips the launch as NOT_RUN,
+marked job_input_failed, exit 3 likewise); otherwise run the plan's argv with
+--overlay-manifest, --nvidia-smi, --job-env-dir <job dir>/env, --pin-table, one --job-input per
+generated kind and the identity arguments appended, under a budget_s timeout; kill
 whatever the launch left behind; copy <L>/runs/<tree> to <R>/<tree>; verify; chmod a-w raw/;
 append STATE. Status of that STATE line:
   copy-back not verified -> VOID; a process survived SIGKILL -> VOID; budget exceeded (killed) ->
@@ -53,7 +55,7 @@ from capcommon.identity import Identity
 from capcommon.jsonio import write_json_stamped
 from capcommon.runtree import append_state, read_state, tree_dir_name, worst_state
 
-from . import copyback, launchplan
+from . import copyback, jobinputs, launchplan
 
 SCHEMA = "capkit.launches/1"
 POLL_S = 0.5
@@ -97,10 +99,11 @@ def probe_env(manifest_doc, base_env):
 
 
 def launch_argv(plan, ln, values, job_id, restart_count, run_dir, overlay_manifest, nvidia_smi,
-                job_env_dir, pin_table_path):
+                job_env_dir, pin_table_path, job_inputs=None):
     argv = [launchplan.substitute(x, values) for x in ln["argv"]]
     return argv + ["--overlay-manifest", overlay_manifest, "--nvidia-smi", nvidia_smi,
-                   "--job-env-dir", job_env_dir, "--pin-table", pin_table_path,
+                   "--job-env-dir", job_env_dir, "--pin-table", pin_table_path] \
+        + jobinputs.caplaunch_args(job_inputs or {}) + [
                    "--experiment", plan["experiment"], "--arm", ln["arm"],
                    "--launch-seq", str(ln["launch_seq"]), "--job-id", str(job_id),
                    "--restart-count", str(restart_count), "--register-sha", plan["register_sha"],
@@ -141,6 +144,24 @@ def pin_table(a, plan, ln, env, out_path):
     if rc != 0 or not os.path.isfile(out_path):
         return "pin table: capenv.pins generate exit %r (log %s.log)" % (rc, out_path)
     return None
+
+
+def job_inputs(a, ln, values, env, out_dir):
+    """Generate the job inputs of one launch's scenario (capjobs.jobinputs.generate) with this
+    launch's --param values and the job's environment. Returns ({kind: path}, records, None) or
+    (None, records, why)."""
+    try:
+        doc = launchplan.load_scenario(ln)
+        wd, _rel = launchplan.scenario_path(ln)
+        params = jobinputs.params_from_argv([launchplan.substitute(x, values)
+                                             for x in ln["argv"]])
+        paths, recs = jobinputs.generate(doc, os.path.realpath(wd), params, a.python, out_dir,
+                                         env, launchplan.JOB_INPUT_TIMEOUT_S)
+    except jobinputs.JobInputError as e:
+        return None, e.records, "job inputs: %s" % e
+    except (CapkitError, OSError, ValueError) as e:
+        return None, [], "job inputs: %s: %s" % (type(e).__name__, e)
+    return paths, recs, None
 
 
 def become_subreaper():
@@ -380,21 +401,34 @@ def run_all(a, plan, manifest_doc, now_fn=time.time):
             r.update(ran=False, status="NOT_RUN", reason="skipped: " + halted)
             continue
         grace = plan["kill_grace_s"]
-        if left < ln["budget_s"] + grace + plan["margin_s"] + launchplan.PINS_TIMEOUT_S:
+        try:
+            bound = launchplan.in_job_bound_s(ln)
+        except CapkitError as e:  # the scenario is unreadable: the pin table needs it too
+            r.update(ran=False, status="NOT_RUN", reason="skipped: pin table: %s" % e,
+                     pin_table_failed=True)
+            continue
+        if left < ln["budget_s"] + grace + plan["margin_s"] + bound:
             r.update(ran=False, status="NOT_RUN", reason="skipped: %.0f s left < budget %d s + "
-                     "kill grace %d s + margin %d s + pin table %d s"
-                     % (left, ln["budget_s"], grace, plan["margin_s"],
-                        launchplan.PINS_TIMEOUT_S))
+                     "kill grace %d s + margin %d s + pin table and job inputs %d s"
+                     % (left, ln["budget_s"], grace, plan["margin_s"], bound))
             continue
         pins = os.path.join(pins_dir, name + ".pin_table.json")
         why = pin_table(a, plan, ln, env, pins)
         if why is not None:
             r.update(ran=False, status="NOT_RUN", reason="skipped: " + why, pin_table_failed=True)
             continue
+        jpaths, jrecs, why = job_inputs(a, ln, values, env,
+                                        os.path.join(a.job_dir, "job_inputs", name))
+        if jrecs:
+            r["job_inputs"] = [{k: x.get(k) for k in ("kind", "rc", "out_sha256", "log")}
+                               for x in jrecs]
+        if why is not None:
+            r.update(ran=False, status="NOT_RUN", reason="skipped: " + why, job_input_failed=True)
+            continue
         local = os.path.join(a.local_root, "runs", name)
         private_mkdir(local)
         argv = launch_argv(plan, ln, values, a.job_id, a.restart_count, local, a.overlay_manifest,
-                           a.nvidia_smi, os.path.join(a.job_dir, "env"), pins)
+                           a.nvidia_smi, os.path.join(a.job_dir, "env"), pins, jpaths)
         r["argv"] = argv
         r["started_wall"] = wall_iso()
         logs = os.path.join(a.local_root, "logs", name)
@@ -468,6 +502,7 @@ def main(argv=None):
         "child_subreaper": subreaper,
         "config_refused": sum(1 for r in results if r.get("config_refused")),
         "pin_table_failed": sum(1 for r in results if r.get("pin_table_failed")),
+        "job_input_failed": sum(1 for r in results if r.get("job_input_failed")),
         "statuses": {s: sum(1 for r in results if r.get("status") == s)
                      for s in ("VALID", "VOID", "NOT_RUN", "ENV_INVALID")},
         "launches": results})
@@ -480,7 +515,8 @@ def main(argv=None):
         return RUNTIME
     if any(r.get("status") == "ENV_INVALID" for r in results):
         return ENV_INVALID
-    if any(r.get("config_refused") or r.get("pin_table_failed") for r in results):
+    if any(r.get("config_refused") or r.get("pin_table_failed") or r.get("job_input_failed")
+           for r in results):
         # recorded NOT_RUN (nothing was measured), but the job must not look like a success
         return CONFIG
     return OK

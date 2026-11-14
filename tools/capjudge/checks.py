@@ -583,10 +583,57 @@ def check_c10(ctx, ld):
     res = check_versions(records, decls)
     r.expected, r.checked = res["expected_count"], res["checked_count"]
     r.detail += errors
-    if res["status"] != "PASS" or errors:
-        r.not_run += res["problems"] or ["version records incomplete"]
+    stub = stub_module_problems(ctx, ld)
+    r.expected += stub["expected"]
+    r.checked += stub["checked"]
+    if res["status"] != "PASS" or errors or stub["problems"]:
+        r.not_run += res["problems"] + stub["problems"] or ["version records incomplete"]
         return r.finish(NOT_RUN)
     return r.finish()
+
+
+SPB_MODULE = "capstubs.prebaked_server"
+
+
+def stub_module_problems(ctx, ld):
+    """S-PB in frontend mode (errata B2B-11, D16): a capstubs.prebaked_server role started with
+    --sfe-module must report in its ready file (info.control.sha256) the sha256 of the overlay
+    manifest's stub module "sfe" (the base-commit export); one without it must report no control.
+    One expected item per S-PB role."""
+    out = {"expected": 0, "checked": 0, "problems": []}
+    want = None
+    for e in (ld.overlay or {}).get("stub_modules") or []:
+        if isinstance(e, dict) and e.get("key") == "sfe":
+            want = e.get("sha256")
+    for name, role in sorted(ctx.roles.items()):
+        if role.get("module") != SPB_MODULE:
+            continue
+        out["expected"] += 1
+        args = role.get("args") or []
+        frontend = any(isinstance(a, str) and a.split("=", 1)[0] == "--sfe-module"
+                       for a in args)
+        ready = ld.ready_doc(name)
+        if not isinstance(ready, dict):
+            out["problems"].append("role %s: no ready file" % name)
+            continue
+        control = (ready.get("info") or {}).get("control")
+        if not frontend:
+            if control is not None:
+                out["problems"].append("role %s: control %r without --sfe-module" % (name,
+                                                                                    control))
+            else:
+                out["checked"] += 1
+            continue
+        got = control.get("sha256") if isinstance(control, dict) else None
+        if want is None:
+            out["problems"].append("role %s: --sfe-module given but the overlay manifest lists "
+                                   "no stub module sfe" % name)
+        elif got != want:
+            out["problems"].append("role %s: --sfe-module sha256 %s != overlay stub module sfe "
+                                   "%s" % (name, got, want))
+        else:
+            out["checked"] += 1
+    return out
 
 
 # ---- GPU-IDLE (launch level) -----------------------------------------------------------------

@@ -14,7 +14,7 @@
   输出前用产品自己的 `TokenizerFingerprint.from_extra` + `compare_tokenizer_fingerprints` 做往返自检，不一致退出码 4。
 - 输出 `capkit.fingerprint/1`,其中 `sfe_args` 是可直接拼进 S-FE 命令行的参数列表：
   `--vocab-size N [--eos-token-ids ...] --profile-json {"bos_token_id":..,"fingerprint":<to_extra()>}`
-  (S-FE 在引擎上报 `ModelInfo.extra` 时以 `fingerprint` 为准)。场景配置用 `{"splice_json": "{param:fingerprint_json}", "key": "sfe_args"}` 引用它。
+  (S-FE 在引擎上报 `ModelInfo.extra` 时以 `fingerprint` 为准)。作业里不手跑：场景在 `job_inputs.fingerprint` 里声明它的参数，`capjobs.launches` 在门禁之后生成(INTERFACES 勘误 B2B-9),角色参数用 `{"splice_json": "{input:fingerprint}", "key": "sfe_args"}` 引用。
 
 测试 `tests/launch/test_fingerprint.py` 用 probe-tree 里真实的 `openengine_conventions.py` + 假的 tokenizer 加载器；
 真实 tokenizer + 真实容器的运行属于 E0(c),未在本机运行。
@@ -41,6 +41,7 @@
 - 注入位点：`send.msg`（每条消息交给 gRPC 之前；`busy`/`sleep`）、`beat.step`（每个节拍步；`busy`/`sleep`）、`short.req`（每个被接纳的请求一次；`short`：该请求按 `max(N − short_tokens, 1)` 出流，按 nullsse 的规则）。
 - 快照槽：`backlog.active_streams`、`backlog.pending_msgs`、`backlog.yielded`（counter）、`self.accepted/completed/cancelled/rejected`、`bytes.sent`、`count.beat_steps`、`count.beat_late_steps`、`count.beat_enqueued`、`lag.beat_wake`、`lag.loop`、`inject.<site>.*`。
 - 输出（每档）：`streams`（`server.streams`；`req_id` = 十进制 `request_id`，不是十进制时 −1；`n_msgs` = 实际发出的 gRPC 消息数，含 finished；`tokens` = 这些消息的 token 数；`tier_seq` 见上「档的归属」，`meta.tier_seq` 写 `schedule` 或 `event`）、`steps`（`beat.steps`）、`summary.json`：`counts`（`streams_accepted/completed/cancelled/truncated/rejected`、`first_step_bumped`、`msgs_sent`、`bytes_sent`、`finished_sent`、`tokens_sent`、`short_requests`、`request_id_not_decimal`）、`beat`、`yielded_event_time`、`rejects`、`method`、`prebaked`（路径与 sha256）、`tokens_per_msg`、`stream_interval`、`tier_attribution`、`control`、`inject`、`loop_lag_ns`、`cpu`、`overflow`。
-- **场景配置的 `expected_procs` = 1**。
+- **场景配置的 `expected_procs` = 1**(TOOL_TABLE 的 `single`:`workers`、`expected_procs` 不是 1 即拒绝)。
+- 作业里的用法(INTERFACES 勘误 B2B-9、B2B-11):`--prebaked {input:prebaked}`(场景 `job_inputs.prebaked`,由 `capjobs.launches` 用产品的 `generation_pb2` 在作业里生成);前端模式的 `--sfe-module` 指向覆盖清单 `stub_modules` 里 `sfe` 在快照中的文件(计划写 `--param sfe_module={SNAP}/<src>`),判定器的 C10 核对就绪文件里报的 sha 等于清单的；指纹参数拼自 `{input:fingerprint}`。示例场景见 `configs/e0s/e0s-spb-frontend.scenario.json`。
 
 测试 `tests/capstubs/`：线格式读取器以真 protobuf 解析为准绳；预制文件用 pb2 测试替身（`oe_double.py`）与探针树里产品的 `_generated/generation_pb2.py`（按路径作私有包导入，只需 protobuf）各生成一次；本地 e2e 用 `capgrpc.load --request-format openengine`（请求字节同样由替身生成）读 S-PB；前端模式用一个替身 S-FE 模块。真 `fake_openengine.py` 与真前端连 S-PB 属于 1.4 补充冒烟，本机没有运行。

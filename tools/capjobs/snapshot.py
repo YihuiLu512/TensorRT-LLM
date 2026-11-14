@@ -8,7 +8,8 @@ Layout of <snapshot_root>/<plan_id>/:
                         *.draft, and not jobs/prep_tokenizer.sbatch: the tokenizer copy job has
                         its own plan dir, see capjobs.submit prep-tokenizer)
   <include relpaths>    configs and other inputs named by the caller (relative to code_root)
-  <overlay srcs>        every src of the overlay manifest (probe-tree files), sha-verified
+  <overlay srcs>        every src of the overlay manifest (probe-tree files, capkit packages,
+                        stub modules), sha-verified
   overlay_manifest.json launch_plan.json mounts.json job.env   generated / copied inputs
   MANIFEST.json         [[relpath, size, sha256], ...] of every other file, sorted
 snapshot_sha256 = sha256 of MANIFEST.json's bytes. Everything is chmod a-w after writing.
@@ -67,8 +68,13 @@ def _walk_files(base, rel_top):
             yield src, os.path.relpath(src, base)
 
 
+STUB_KEYS = ("key", "repo_path", "commit", "src", "sha256", "size")
+
+
 def overlay_entries(manifest_doc):
-    """(src relpath, sha256, size) of every file the overlay manifest names."""
+    """(src relpath, sha256, size) of every file the overlay manifest names: files and
+    capkit_packages (installed into site-packages) and stub_modules (used in place from the
+    snapshot, never installed; see capjobs.overlay)."""
     out = []
     for key in ("files", "capkit_packages"):
         for e in manifest_doc.get(key) or []:
@@ -76,6 +82,18 @@ def overlay_entries(manifest_doc):
                 raise SnapshotError("overlay manifest %s entry lacks src/dst/sha256/size" % key)
             _check_rel(e["src"])
             out.append((e["src"], e["sha256"], e["size"]))
+    stubs = manifest_doc.get("stub_modules") or []
+    if not isinstance(stubs, list):
+        raise SnapshotError("overlay manifest stub_modules must be a list")
+    keys = [e.get("key") if isinstance(e, dict) else None for e in stubs]
+    if len(set(keys)) != len(keys):
+        raise SnapshotError("overlay manifest stub_modules repeats a key: %s" % keys)
+    for e in stubs:
+        if not isinstance(e, dict) or set(e) != set(STUB_KEYS):
+            raise SnapshotError("overlay manifest stub_modules entry must have exactly %s"
+                                % (STUB_KEYS,))
+        _check_rel(e["src"])
+        out.append((e["src"], e["sha256"], e["size"]))
     if not out:
         raise SnapshotError("overlay manifest lists no files")
     return out

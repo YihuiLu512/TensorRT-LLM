@@ -81,6 +81,7 @@ fork 出来、没有 exec 的子进程命令行不变，仍启用（各自归零
 ## 覆盖清单（`capprobe.overlay`）的补充参数
 
 - `--export-dir DIR`：P0 必需。探针树的工作树是打过补丁的，P0 的文件从基线提交的 blob 导出到这里，`src` 指向导出的文件。
+- `--stub-module KEY=PATH`（可重复，每个 KEY 一次；KEY 只有 `sfe`；INTERFACES 勘误 B2B-11）：把 `tensorrt_llm/` 之外的一个桩脚本（如 `sfe=tests/unittest/grpc/openengine_client/fake_openengine.py`）从**基线提交**的 blob 零改动导出到 `<--export-dir>/<PATH>`，记进清单的 `stub_modules`（`key`、`repo_path`、`commit`、`src`、`sha256`、`size`）。要 `--export-dir`（任何档位）。它随快照进作业，但不装进 site-packages；S-PB 前端模式从快照里加载它，判定器 C10 核 sha。
 - `--allow-unshipped PATH`（可重复）：`tensorrt_llm/` 下改了、但不是安装包内容的非 Python 文件，逐个显式放行并记进 `unshipped_allowed`。9fd3822a00 → 2f22a98d6e 之间有一个：`tensorrt_llm/grpc/openengine/README.md`（`setup.py` 的 `package_data` 不含它）。放行一个没有变的路径会报错。
 - `--sites LIST`：仅 P2；从打开组的位点里选出本场景会经过的那些（如单前端不经过 `Lmfl`、`Lmfa`），记 `sites_selection: "cli"`。不给时列出打开组的全部位点。
 - 清单另加字段：`image_is_ancestor_of_target`（9fd3822a00 不是 2f22a98d6e 的祖先，镜像提交是侧枝）、`unshipped_allowed`、`sites_selection`、`patchcheck`（P1/P2 的检查摘要）、`created_wall`。

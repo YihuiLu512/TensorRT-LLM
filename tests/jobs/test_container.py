@@ -304,6 +304,8 @@ for k in ("--experiment", "--arm", "--job-id", "--register-sha", "--role", "--ru
     ap.add_argument(k, required=k != "--mode")
 ap.add_argument("--launch-seq", type=int)
 ap.add_argument("--restart-count", type=int)
+ap.add_argument("--param", action="append", default=[])
+ap.add_argument("--job-input", action="append", default=[])
 a = ap.parse_args()
 if a.mode == "config":  # caplaunch refusing its inputs before it writes anything
     print("caplaunch: scenario x does not match register entry", file=sys.stderr)
@@ -319,7 +321,8 @@ with open(os.path.join(a.run_dir, "raw", "launch.json"), "w") as f:
                "tier": os.environ.get("CAPPROBE_TIER"),
                "patch": os.environ.get("CAPPROBE_PATCH_SHA"),
                "overlay_manifest": a.overlay_manifest, "nvidia_smi": a.nvidia_smi,
-               "job_env_dir": a.job_env_dir, "pin_table": a.pin_table}, f)
+               "job_env_dir": a.job_env_dir, "pin_table": a.pin_table,
+               **({"job_inputs": a.job_input} if a.job_input else {})}, f)
 def orphan(ignore_term):
     # a role in its own session, as caplaunch starts them; it outlives this launcher
     code = ("import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN) if %r else None; "
@@ -629,7 +632,7 @@ def test_remaining_time_check_counts_the_pin_table_bound(tmp_path, short):
     res = launches.run_all(a, plan, manifest, now_fn=lambda: a.deadline_epoch - need + short)
     if short:
         assert res[0]["status"] == "NOT_RUN" and res[0]["ran"] is False
-        assert "+ pin table %d s" % launchplan.PINS_TIMEOUT_S in res[0]["reason"]
+        assert "+ pin table and job inputs %d s" % launchplan.PINS_TIMEOUT_S in res[0]["reason"]
     else:
         assert res[0]["ran"] is True and res[0]["status"] == "VALID", res[0]["reason"]
 

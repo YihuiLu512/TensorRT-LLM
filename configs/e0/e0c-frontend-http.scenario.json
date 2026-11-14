@@ -74,7 +74,7 @@
     "--step-delay",
     "{param:sfe_step_delay_s}",
     {
-     "splice_json": "{param:fingerprint_json}",
+     "splice_json": "{input:fingerprint}",
      "key": "sfe_args"
     }
    ],
@@ -88,7 +88,7 @@
     "kind": "plain_port_file",
     "host": "127.0.0.1"
    },
-   "note": "S-FE = tests/unittest/grpc/openengine_client/fake_openengine.py (CLI :1966-1984 at 2f22a98d6e; --port-file writes a plain port line, :2030-2034); fingerprint args from python -m capstubs.fingerprint, never hand-copied"
+   "note": "S-FE = tests/unittest/grpc/openengine_client/fake_openengine.py (CLI :1966-1984 at 2f22a98d6e; --port-file writes a plain port line, :2030-2034); fingerprint args from the job input fingerprint (python -m capstubs.fingerprint in the job after the gate), never hand-copied"
   },
   {
    "role": "frontend",
@@ -260,7 +260,6 @@
   "capload_pool_pick",
   "capload_pool_reset",
   "capload_pool_seed",
-  "fingerprint_json",
   "httpprobe_requests_json",
   "httpprobe_timeout_s",
   "lag_period_us",
@@ -271,7 +270,9 @@
   "sfe_step_delay_s",
   "sfe_tokens_per_step",
   "tokenizer_dir",
-  "trtllm_serve"
+  "tokenizer_mode",
+  "trtllm_serve",
+  "trust_remote_code"
  ],
  "dims": {
   "tokenizer": "TBD-by-registration (configs/tokenizers/<name>)",
@@ -280,5 +281,17 @@
   "interpretation": "E0 round 1: method self-check / pilot; not a capacity result",
   "log_sink": "raw/logs on the node-local disk (orchestrator redirect)"
  },
- "note": "E0 (c): real tokenizer + frontend + S-FE answer /v1/completions and /v1/chat/completions; empty-delta frames recorded (X2 premise); access-log lines counted by caplaunch.smoke --tree. httpprobe is ready (its result written) before the origin; capload then places one low warmup rate and a drain, because the tier-table schema needs a drain tier with a gate and only capload publishes a backlog slot here."
+ "note": "E0 (c): real tokenizer + frontend + S-FE answer /v1/completions and /v1/chat/completions; empty-delta frames recorded (X2 premise); access-log lines counted by caplaunch.smoke --tree. httpprobe is ready (its result written) before the origin; capload then places one low warmup rate and a drain, because the tier-table schema needs a drain tier with a gate and only capload publishes a backlog slot here.",
+ "job_inputs": {
+  "fingerprint": {
+   "args": [
+    "--tokenizer",
+    "{param:tokenizer_dir}",
+    "--trust-remote-code",
+    "{param:trust_remote_code}",
+    "--tokenizer-mode",
+    "{param:tokenizer_mode}"
+   ]
+  }
+ }
 }

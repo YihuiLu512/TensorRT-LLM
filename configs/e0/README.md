@@ -24,6 +24,10 @@
 3. 场景里的 `prompts` 路径(`<name>.prompts.json`)由提示词池生成步骤给出(本组件未实现)。
 4. 把三份文件的 sha 写进 register.json,launch 时编排器逐个核对。
 
+## S-FE 的指纹参数(SEAMS SM-6)
+
+`e0a-frontend-sfe`、`e0c-frontend-http` 声明作业输入 `job_inputs.fingerprint`(INTERFACES 勘误 B2B-9):作业在门禁之后用 `python -m capstubs.fingerprint --tokenizer {param:tokenizer_dir} --trust-remote-code {param:trust_remote_code} --tokenizer-mode {param:tokenizer_mode}` 生成，S-FE 角色用 `{"splice_json": "{input:fingerprint}", "key": "sfe_args"}` 拼参数。`trust_remote_code`、`tokenizer_mode` 必须与前端加载 tokenizer 的设置一致。
+
 ## 冒烟(E0(c))
 
 - `python -m caplaunch.smoke --config configs/e0/e0c-smoke.json --out <新目录> --param python=<容器 python> --param cuda_compat_dir=<compat 目录> --param loopback_sender_cpu=<n> --param loopback_receiver_cpu=<m> --param cores_<角色>=<核数> ...`

@@ -2,7 +2,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Copy the overlay (INTERFACES.md 6.6) into the container's site-packages and verify every file
 byte for byte; writes env/overlay_verify.json (capkit.overlay_verify/1). Runs inside the
-container with PYTHONPATH=<snapshot>/tools:<snapshot>/jobs (only for this step).
+container with PYTHONPATH=<snapshot>/tools:<snapshot>/jobs (only for this step). The manifest's
+stub_modules are not copied: their bytes are verified where the launch loads them, in the
+snapshot (source root).
 
     python -m capjobs.overlay --manifest <snap>/overlay_manifest.json --source-root <snap> \
         --dest <purelib> --out <job dir>/env/overlay_verify.json <identity args>
@@ -72,9 +74,36 @@ def apply(manifest_doc, source_root, dest):
             r["problem"] = "read-back bytes differ"
             continue
         r["ok"] = True
-    expected = len(entries)
+    for e in manifest_doc.get("stub_modules") or []:
+        results.append(verify_stub(e, source_root))
+    expected = len(results)
     passed = expected > 0 and all(r["ok"] for r in results)
     return results, passed, expected
+
+
+def verify_stub(e, source_root):
+    """A stub_modules entry is not installed: the launch loads it from the snapshot at <source
+    root>/<src> (e.g. capstubs.prebaked_server --sfe-module), so only its bytes there are
+    checked against the manifest."""
+    r = {"list": "stub_modules", "key": e["key"], "src": e["src"], "dst": None,
+         "sha256": e["sha256"], "size": e["size"], "ok": False, "problem": None}
+    if not _safe_rel(e["src"]):
+        r["problem"] = "unsafe path"
+        return r
+    path = os.path.join(source_root, e["src"])
+    try:
+        with open(path, "rb") as f:
+            data = f.read()
+    except OSError as ex:
+        r["problem"] = "cannot read source: %s" % ex
+        return r
+    r["readback_sha256"] = sha256_bytes(data)
+    if len(data) != e["size"] or r["readback_sha256"] != e["sha256"]:
+        r["problem"] = "source differs from manifest"
+        return r
+    r["ok"] = True
+    r["path"] = os.path.abspath(path)
+    return r
 
 
 def main(argv=None):

@@ -310,6 +310,10 @@ class LaunchData:
             return out, errors
         return self._get("versions", load)
 
+    def ready_doc(self, role):
+        """procs/ready/<role>.json (single-process role), or None."""
+        return self._get("ready_" + role, lambda: self._json(self.ctx.tree.ready_file(role)))
+
     @property
     def launch_end(self):
         return self._get("launch_end", lambda: self._json(self.ctx.tree.launch_end_json))

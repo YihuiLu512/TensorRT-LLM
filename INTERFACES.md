@@ -112,6 +112,8 @@
 | `--inject SPEC` | 全部（可重复） | 启动级注入（§7）；逐档注入在档位表里 |
 | `--stop-grace-s FLOAT` | 全部长驻进程 | 收到停止信号后最多等多久再落盘退出 |
 
+场景参数里指向作业输入（指纹、请求字节、预制字节）的占位符 `{input:fingerprint}`、`{input:request_bytes}`、`{input:prebaked}` 见勘误 B2B-9。
+
 ### 2.3 端口文件、就绪文件、停止
 
 - **端口文件**：服务端绑定 `127.0.0.1:0`（或 `--host`/`--port` 显式给定）后，用 `capcommon.lifecycle.write_port_file(path, identity, host, port)` 写 JSON：`{"schema":"capkit.portfile/1","identity":…,"host":…,"port":…,"pid":…,"t_mono_ns":…}`。多进程共享端口（`SO_REUSEPORT`）的服务：父进程先绑定拿到端口，再起子进程绑同一端口，全部子进程就绪后才写端口文件。读：`capcommon.lifecycle.wait_port_file(path, timeout_s)`。
@@ -157,7 +159,7 @@
 | `uses_grpc: true` | 再加 `grpc`、`protobuf`、`protobuf_impl` |
 | `probe_tier` 为 `P1` / `P2` | 再加 `probe_tier`、`probe_patch_sha`（`P0` 只加 `probe_tier`） |
 
-**必须跨进程一致**的字段（出现即比，`capcommon.versions.CONSISTENT_FIELDS`）：`python`、`implementation`、`grpc`、`protobuf`、`protobuf_impl`、`capkit_code_sha`、`probe_tier`、`probe_patch_sha`。**允许不同**：`loop_impl`（按角色；只核对与该角色的声明一致）、`gc_enabled`、`switchinterval_s`（记进维度表，D9、D13）、`pid`、`executable`、`env`。应检进程 = `launch.json` 的 `expected_procs` 之和（不是「报上来的进程」）；缺版本记录也算一条问题。判定由 `capcommon.versions.check_versions(records, decls)` 给出；**有任何问题 ⇒ 整次启动 `NOT_RUN`**（D11 原文「缺项或不一致 ⇒ NOT RUN」），不是红。
+**必须跨进程一致**的字段（出现即比，`capcommon.versions.CONSISTENT_FIELDS`）：`python`、`implementation`、`grpc`、`protobuf`、`protobuf_impl`、`capkit_code_sha`、`probe_tier`、`probe_patch_sha`。**允许不同**：`loop_impl`（按角色；只核对与该角色的声明一致）、`gc_enabled`、`switchinterval_s`（记进维度表，D9、D13）、`pid`、`executable`、`env`。应检进程 = `launch.json` 的 `expected_procs` 之和（不是「报上来的进程」）；缺版本记录也算一条问题。判定由 `capcommon.versions.check_versions(records, decls)` 给出；**有任何问题 ⇒ 整次启动 `NOT_RUN`**（D11 原文「缺项或不一致 ⇒ NOT RUN」），不是红。S-PB 前端模式加载的 S-FE 模块 sha 也在 C10 里核（见勘误 B2B-11）。
 
 ## 3. 档位表（tier table）
 
@@ -660,7 +662,7 @@ offset 40  meta_len 字节 JSON 元数据
 
 `sites` = `capprobe.SITES` 里属于本次打开的组的那些位点（P0、P1 为空表）。C8（探针已接上）的应检位点数取自这里（只算本拓扑适用的位点，见勘误 R1-19），不取自「快照里出现了的槽」：每个应检位点在每个被判档的窗口增量 > 0，且与 §5.8 对账链给出的应有条数一致（该位点在某条链上时）。
 
-`dst` 相对容器的 `dist-packages`。`non_python_changed` 必须为空（镜像提交到目标提交之间 C++ 与非 Python 的包内容没有变），否则生成器以退出码 3 退出（要重烤镜像，先问用户）。P0 的 `target_commit` = `base_commit`（无探针补丁）；P1 与 P2 的 `files` 相同，只差 `groups`。
+`dst` 相对容器的 `dist-packages`（`stub_modules` 没有 `dst`、不装进 `dist-packages`，见勘误 B2B-11）。`non_python_changed` 必须为空（镜像提交到目标提交之间 C++ 与非 Python 的包内容没有变），否则生成器以退出码 3 退出（要重烤镜像，先问用户）。P0 的 `target_commit` = `base_commit`（无探针补丁）；P1 与 P2 的 `files` 相同，只差 `groups`。
 
 ## 7. 注入与自检开关
 
@@ -839,6 +841,7 @@ python3 -m capjudge --tree <启动树的路径> --workdir <W>
 - 在 VM 上的完整命令是 `PYTHONPATH=<C>/tools python3.11 -m capjudge --tree <T> --workdir <W>`。
 - **一棵树只判一次**（流程已改，见勘误 R1-16）：判定器先查 `<W>/JUDGED.tsv`（列 `judged_at, job_id, restart_count, launch_seq, arm, experiment, tree_relpath, verdicts_sha256`），同一 `(job_id, restart_count, launch_seq, arm)` 已在表里 → 退出码 12（防止把树拷到别处再判一次）；再 `os.mkdir(<tree>/judge)`，已存在 → 退出码 12。两步都不写任何东西就退出。判完在 `JUDGED.tsv` 追加一行。
 - 输入核对在 `judge/` 建好之后做（已改为先写尝试目录，见勘误 R1-16；任一不过 → 在 `judge/inputs.json` 写明哪一项，退出码 13，不追加 `JUDGED.tsv`；`judge/` 已存在，所以同一棵树也不能再判）：`launch.json` 的 `register.sha256` 在 `REGISTRY.tsv` 里，且 `registered_at` 早于 `submissions.tsv` 里该作业的 `submitted_at`（毫秒，严格小于；本机运行的 `local-*` 作业同样要有 `--local-record` 写的台账行）；`launch.json` 的 `reconcile` 过 `expect.validate_reconcile`；`register.json` 列出的每个文件现算 sha 与登记一致；每个标定文件同样已登记且早于提交；树内全部文件的 `identity` 前六个字段一致（§2.1）。
+- 另核 `launch.json` 的 `job_inputs` 与登记场景声明的作业输入一致、树里的拷贝与记录未变（见勘误 B2B-10）。
 
 ### 10.2 输出（全部在 `<tree>/judge/`，不写 `raw/`）
 
@@ -890,7 +893,7 @@ python3 -m capjudge --tree <启动树的路径> --workdir <W>
 | `python -m capselfcheck.relay`（B2） | 通用、快照、档位、`--loop`、`--ready-file`、`--port-file`、`--inject`（可选；四种已知答案模式都用注入表达：单级 = `site=relay.msg,mode=busy`；另一线程 = 加 `where=aux_thread`；不耗 CPU = `mode=sleep`；两级串联 = 两个中继进程首尾相连，**角色名分别为 `relay1`、`relay2`**（§0：拓扑位置不同的进程用不同角色名），档位表里的注入按角色分别给 δ，互换 δ 就是互换两条规格的 `role`）；`--host`、`--port`；`--upstream HOST:PORT` 与 `--upstream-port-file` 二选一；`--lag-period-us INT` | 位点 `relay.msg`；`backlog.queue_msgs`、`backlog.active_streams` | 每档 `summary.json`、`lag` |
 | `import capprobe`（B3） | 环境变量 §6.5 | 位点见设计稿 §2.4 位点表（第一批：`count`、`lag` 两组） | 快照 §6、`ts` 落盘 |
 | `python -m capprobe.decode FILE`（B3） | — | — | 把快照解码成 JSON 打到标准输出 |
-| `python -m capprobe.overlay`（B3） | `--tier {P0,P1,P2}`、`--probe-tree PATH`、`--image-commit SHA`、`--base-commit SHA`、`--capkit-root <C>`、`--capkit-sha SHA`、`--packages LIST`、`--groups LIST`、`--out PATH` | — | §6.6 |
+| `python -m capprobe.overlay`（B3） | `--tier {P0,P1,P2}`、`--probe-tree PATH`、`--image-commit SHA`、`--base-commit SHA`、`--capkit-root <C>`、`--capkit-sha SHA`、`--packages LIST`、`--groups LIST`、`--out PATH`；可选 `--stub-module KEY=PATH`（见勘误 B2B-11） | — | §6.6 |
 | `python -m capenv.sidecar`（B4；新参数见勘误 R1-10） | 通用、快照目录 `--shm-dir`、`--origin-ns`、`--roles-file PATH`、`--interval-ms INT`、`--out-dir PATH`、`--cpus-watch {all,LIST}`（LIST 必须 ⊇ 绑核表全部角色的核，§5.6）、`--gpu-every-s FLOAT`、`--numa-every-s FLOAT`、`--logs-dir PATH` | — | §5.6 |
 | `python -m capenv.canary`（B4） | 通用、`--origin-ns`、`--interval-ms INT`、`--out PATH`（`--cpus` 恰好 1 个核） | — | §5.6 |
 | `python -m capenv.gate`（B4；新参数见勘误 R1-21） | `--run-dir`（作业目录）、`--phase {pre,post}`、`--registered-hw-sha SHA`、`--comparable-file PATH` 或 `--no-comparable`、`--slurm-view-file PATH`、`--slurm-view-wait-s FLOAT`（§5.5.2）、身份参数（`--role gate`） | — | 作业目录 `env/` 各文件；退出码 0 / 6 |
@@ -898,11 +901,11 @@ python3 -m capjudge --tree <启动树的路径> --workdir <W>
 | `python -m capenv.hwprofile`、`capenv.pins`、`capenv.loopback`（B4；hwprofile 新参数见勘误 R1-21） | 各自 README | — | `env/hw_profile.json`、`env/pin_table.json`、`env/loopback_softirq.json` |
 | `python -m capjudge`（B5） | §10.1 | — | §10.2 |
 | `python -m capjudge.pilot`（B5） | `--inputs FILE`（逐行列出启动树，不接受通配符）、`--workdir <W>`、`--out PATH` | — | §9.4 |
-| `python -m caplaunch`（B7；新必填参数见勘误 R1-1） | 身份参数（`--role launch`）、`--run-dir`、`--scenario PATH`、`--pin-table PATH`、快照（`--shm-dir` 给作业级根 `/dev/shm/<用户名>-<作业号>/snap`，编排器自己建本次启动的子目录）、`--origin-lead-ms INT`（**起第一个进程之前**选定 `origin = now + lead`；原点到达时还有角色没就绪 ⇒ 停止、`NOT_RUN`，§0；没有单独的就绪超时参数，就绪期限就是原点） | — | §5.2、§5.3、§5.4 的编排器部分、§8.3 |
+| `python -m caplaunch`（B7；新必填参数见勘误 R1-1；`--job-input` 见勘误 B2B-9） | 身份参数（`--role launch`）、`--run-dir`、`--scenario PATH`、`--pin-table PATH`、快照（`--shm-dir` 给作业级根 `/dev/shm/<用户名>-<作业号>/snap`，编排器自己建本次启动的子目录）、`--origin-lead-ms INT`（**起第一个进程之前**选定 `origin = now + lead`；原点到达时还有角色没就绪 ⇒ 停止、`NOT_RUN`，§0；没有单独的就绪超时参数，就绪期限就是原点） | — | §5.2、§5.3、§5.4 的编排器部分、§8.3 |
 | `python -m capstubs.fingerprint`（B7） | `--tokenizer DIR`、`--out PATH` | — | 指纹 JSON 与生成的 S-FE 命令行（S-PB 的两个入口见勘误 B2B-3） |
 | `python3.11 -m capjobs.submit`（B6） | 子命令 `probe`（只做 `--test-only`，过 `policy.check_test_only_argv`）、`submit`（写 `PLANNED` 前过 §9.5 的五项断言；挂载另有覆盖要求，见勘误 R2-9）、`slurm-view`（§5.5.2）、`--local-record`（本机运行的台账行）、`--dry-run`；资源参数全部显式 | — | `submissions.tsv`（§9.5）、快照目录、`env/slurm_view.json` |
 
-场景配置（`configs/<实验>/<场景>.json`，B7 定义，`schema: capkit.scenario/1`）至少有：`roles`（每个角色一个顶层进程：`module`、`args`（逐字的额外参数）、`kind`（`server` / `client` / `aux`，只管起停顺序）、`start_after`（依赖哪些角色的端口文件）、`cpus_needed`、`numa`，以及下面这些**必填**的声明）、`tier_table`、`schedule`、`prompts`（均为相对 `<W>` 的路径）、`probe_tier`、`stop_order`、`reconcile`（§5.8，必填）。
+场景配置（`configs/<实验>/<场景>.json`，B7 定义，`schema: capkit.scenario/1`）至少有：`roles`（每个角色一个顶层进程：`module`、`args`（逐字的额外参数）、`kind`（`server` / `client` / `aux`，只管起停顺序）、`start_after`（依赖哪些角色的端口文件）、`cpus_needed`、`numa`，以及下面这些**必填**的声明）、`tier_table`、`schedule`、`prompts`（均为相对 `<W>` 的路径；可选的 `job_inputs` 段见勘误 B2B-9）、`probe_tier`、`stop_order`、`reconcile`（§5.8，必填）。
 
 | 角色的必填声明 | 含义 |
 |---|---|
@@ -1086,7 +1089,7 @@ E0 作业 5933747 的 L0（`e0a-nullsse`）启动 VALID、数据完整，判定�
 
 ### Batch 2B: S-PB prebaked stub, fingerprint seam and request-bytes input（2026-11-14）
 
-第二批子批次 2B（RUNBOOK-stage2-draft.md §2.1 第 3 行；设计稿 §2.3「S-PB 的规格」、E2 卡、§7 S-PB 一行、§12.7）。本节按实现步骤追加；本步（2B-1）只有 S-PB 的两个入口与测试：场景 `TOOL_TABLE`、`INPUT_KEYS` 的 `request_bytes`、作业内生成指纹与请求字节（SM-6）、判定器输入核对、补充冒烟场景属于本子批次的后续步骤，未做。正文里被本节覆盖或补充的句子各加了「见勘误 B2B-n」。新增文件格式 `capkit.prebaked/1`；已有格式的版本号与字段不变。
+第二批子批次 2B（RUNBOOK-stage2-draft.md §2.1 第 3 行；设计稿 §2.3「S-PB 的规格」、E2 卡、§7 S-PB 一行、§12.7）。本节按实现步骤追加：第 1–8 条（2B-1）是 S-PB 的两个入口与测试；第 9–14 条（2B-2）把它接进场景、作业与判定器：作业输入（指纹、请求字节、预制字节，SM-6）、覆盖清单的 `stub_modules`（D16）、C10 的 S-FE 模块核对、`caplaunch.smoke` 角色与补充冒烟场景。正文里被本节覆盖或补充的句子各加了「见勘误 B2B-n」。新增文件格式 `capkit.prebaked/1`、`capkit.job_input_record/1`；`capkit.smoke` 升为 `/2`（第 12 条）；新增字段：场景的 `job_inputs`、`launch.json` 的 `job_inputs`、覆盖清单的 `stub_modules`、`launches.json` 的 `job_input_failed` 与 `job_inputs`、`capjobs.submit` 时间预算的 `job_inputs_s`；其余格式不变。
 
 1. **§1.1 / §1.2 包与依赖**：`capstubs` 新增 `capstubs.prebaked`（预制响应字节的生成与读取）与 `capstubs.prebaked_server`（S-PB）。`capstubs.prebaked_server` import `capgrpc` 的运行时（`capgrpc.common` 的 `ToolRuntime`、`bind_server`、`make_server`、`combine_launch_specs`、`write_inprocess_ready`，以及 `capgrpc.inject_slot_decls`），`capstubs.prebaked` 的命令行 import `capgrpc.reqbytes.import_pb2`。这是 §1.2「包之间的依赖只允许指向 `capcommon`」之外的又一个例外，与已有的 `capselfcheck.relay` → `capgrpc.common` 相同（那一处正文没有登记，这里一并登记）：S-PB 的节拍、待发队列、档界标记与 nullgrpc 是同一套运行时，另写一份会有两个实现。部署上的后果：起 S-PB 的启动，覆盖清单的 `--packages` 必须同时含 `capstubs`、`capgrpc`、`capcommon`。S-PB 的两个模块都不在模块导入时 import `tensorrt_llm`：生成器只在运行时按 `--pb2-module` 导入产品模块，桩只在给了 `--sfe-module` 时按路径导入 S-FE 模块。
 2. **§13.1 S-PB 契约（新增）**：
@@ -1095,7 +1098,7 @@ E0 作业 5933747 的 L0（`e0a-nullsse`）启动 VALID、数据完整，判定�
    - **请求**：Generate 的方法路径取预制文件的 `method`，用恒等（反）序列化注册（勘误前的 U-1 是同一个前提）；请求字节只读 `request_id` 与 `stopping.max_tokens`（protobuf 合并语义：都取最后一次出现的值），不建 protobuf 对象。每请求的 N 取 `max_tokens`；k、s 不在请求里，取档位表各负载档共同的（k、s）——负载档的（k、s）不唯一 ⇒ 启动拒绝（退出码 3）；K 轴按 k 分启动。设计稿 §12.7 的「k 取 MTP 实测的 3 与 4 混合」本步不支持。
    - **每请求的消息**：`expect.msgs_per_request(N, k, s, "product")` 条 token 消息 + 1 条 finished 消息。节拍同 nullgrpc `--pacing beat`：第 j 条 token 消息在步 `first_step + msg_step_offsets(N, k, s, "product")[j]` 入队，finished 与最后一条 token 消息同一步入队；`first_step = step_at_or_after(接纳时刻)`。没有 `asap` 模式，档位表必须有 `beat_ns > 0` 的档。
    - **拒绝**（`INVALID_ARGUMENT`，`rejects` 与 `streams_rejected` 按事件档）：`not_bytes`、`malformed`、`no_max_tokens`（未设或为 0）、`no_prebaked_stream`、`request_id_not_in_schedule`。其他方法路径 ⇒ `UNIMPLEMENTED`。
-   - **前端模式**（`--sfe-module PATH`，D16：探针树基线里零改动的 `fake_openengine.py`）：按路径以私有名导入；本桩收到的 S-FE 选项（`--sfe-profile` 对应 S-FE 的 `--profile`；`--model`、`--max-context-length`、`--vocab-size`、`--eos-token-ids`、`--profile-json` 同名，指纹 JSON 的 `sfe_args` 可原样拼入）交给它自己的 `_parse_args` 与 `_profile_from_args`，建 `FakeEngine(profile, tokens_per_step=1, step_delay=0.0, record=False)`（不启动它），把它的 `_Control`、`_Health` 注册在同一个 server 上。给了 S-FE 选项而没给 `--sfe-module`、模块读不到或导入失败、它的解析器拒绝这些选项 ⇒ 退出码 3。模块 sha256 与传给它的 argv 写进就绪文件 `info.control` 与每档自报的 `control`（C10 的核对属本子批次后续步骤）。
+   - **前端模式**（`--sfe-module PATH`，D16：探针树基线里零改动的 `fake_openengine.py`）：按路径以私有名导入；本桩收到的 S-FE 选项（`--sfe-profile` 对应 S-FE 的 `--profile`；`--model`、`--max-context-length`、`--vocab-size`、`--eos-token-ids`、`--profile-json` 同名，指纹 JSON 的 `sfe_args` 可原样拼入）交给它自己的 `_parse_args` 与 `_profile_from_args`，建 `FakeEngine(profile, tokens_per_step=1, step_delay=0.0, record=False)`（不启动它），把它的 `_Control`、`_Health` 注册在同一个 server 上。给了 S-FE 选项而没给 `--sfe-module`、模块读不到或导入失败、它的解析器拒绝这些选项 ⇒ 退出码 3。模块 sha256 与传给它的 argv 写进就绪文件 `info.control` 与每档自报的 `control`（C10 的核对见第 11 条）。
    - 与设计稿 §2.3 保真度表的对应：F3（字节数）由预制文件决定；F5 所有流回同一串 token；F7、F8 不实现；另有三处设计稿没列的差别：`usage.prompt_tokens` 是文件里的固定值，不随请求的 prompt 变；`TokenOutput.text` 不填（与 S-FE 相同）；没有 prompt 事件（S-FE 只在请求 prompt logprobs 时发）。
 3. **§11 新增两行**：
    - `python -m capstubs.prebaked_server`（S-PB）：通用、快照、档位、`--loop`、`--ready-file`、`--port-file`、`--inject`（可选）；`--host`、`--port`、`--workers 1`（只能为 1；`expected_procs` = 1）、`--prebaked PATH`、`--lag-period-us INT`；可选 `--schedule PATH`、`--max-stream-records N`（缺省 `count_schedule_rows`）、`--lag-records-capacity N`、前端模式的 `--sfe-module` 与 S-FE 选项。位点 `send.msg`、`beat.step`、`short.req`；`backlog.pending_msgs`、`backlog.active_streams`、`backlog.yielded`（counter）。输出：每档 `summary.json`、`steps`、`streams`（§5.4.2）、`lag`。退出码 0 / 3 / 4（绑定失败）。解析器不接受缩写的长选项。
@@ -1105,6 +1108,24 @@ E0 作业 5933747 的 L0（`e0a-nullsse`）启动 VALID、数据完整，判定�
 6. **§7 / §8.2 S-PB 的位点与积压槽**：位点 `send.msg`（每条消息交给 gRPC 之前，`busy` / `sleep`）、`beat.step`（每步，`busy` / `sleep`）、`short.req`（每个通过全部检查的请求一次，`short`）。与 nullgrpc 不同，S-PB 在启动时按位点核对模式（不支持的模式 ⇒ 退出码 3，而不是在第一次经过时抛错）。积压槽与节拍源相同（`backlog.pending_msgs`、`backlog.active_streams`、`backlog.yielded`），另有 `self.rejected`。
 7. **验证**：`tests/capstubs/`（`test_prebaked.py` 65 项、`test_prebaked_server.py` 17 项）：线格式读取器以真 protobuf 解析为准绳；预制文件用 pb2 测试替身与探针树里产品的 `_generated/generation_pb2.py`（按路径作私有包导入）各生成一次，后者按产品客户端的 `_validate` 规则逐条核对；本地 e2e 是 `capgrpc.load --request-format openengine`（弱读者形态）读 S-PB；前端模式用替身 S-FE 模块。变异 M1～M11 全部被测试抓到（`_local/b2-spb/mut/summary.txt`，不入库）。
 8. **§12 已知缺口与未核对（新增）**：① 真 `fake_openengine.py` 的 `_Control` / `_Health` 挂在未启动的 `FakeEngine` 上能否答真前端的启动检查、`Abort` 找不到 S-PB 的流（它们不在 `FakeEngine._active` 里）时前端怎样处理、真前端是否接受没有 prompt 事件与 `text` 的流——都只能在容器里验证，属 1.4 补充冒烟【未核对】。② 给了 `--schedule` 时，流若归到一个还没开始就被停掉的档，该档没有自报（`streams` 行仍在该档目录里）；按时间表发送的负载器不会出现这种情况。③ 不给 `--schedule`（前端模式）时按接纳时刻归档，档界附近的请求会落到下一档：经过 S-PB 的对账链在前端模式下用 `scope: launch`。④ `short.req` 的经过次数含「通过全部检查、但缩短后的 N 没有预制流」而被拒绝的请求；启动时已核对档位表的每个 N 都有缩短后的流，只有档位表之外的 N 才会这样。
+9. **§2.2 / §11 作业输入 `job_inputs`（SM-6；D15）**：只有容器里才造得出、而启动又要用的文件（S-FE / S-PB 的指纹、S-PB 的预制响应字节、`capgrpc.load --request-format openengine` 的请求字节），由场景的可选顶层段 `job_inputs` 声明，作业在门禁之后按启动生成（`capcommon.jobinputs`、`capjobs.jobinputs`）：
+   - **场景**：`"job_inputs": {<种类>: {"args": [...]}}`。种类与生成模块一一对应、写死：`fingerprint` → `capstubs.fingerprint`（`capkit.fingerprint/1`），`request_bytes` → `capgrpc.reqbytes`（`capkit.reqbytes/1`），`prebaked` → `capstubs.prebaked`（`capkit.prebaked/1`）。`args` 只许用 `{param:<params_required 里的名字>}` 与 `{input:tier_table|schedule|prompts}` 两种占位符，不许含 `--out`（由生成方追加）。角色参数里的 `{input:<种类>}` 只在场景声明了该种类时才合法（`caplaunch.scenario.INPUT_KEYS` = 三种登记输入 + 三种作业输入），解析为启动树里那份拷贝的绝对路径；`splice_json` 同样可以引用它（例：`{"splice_json": "{input:fingerprint}", "key": "sfe_args"}`，指纹参数与 S-FE 相同，D15）。
+   - **生成**（`capjobs.launches`，门禁通过之后、每个启动的绑核表之后、起编排器之前）：对启动场景声明的每个种类，在本作业环境里跑 `<{PY}> -m <模块> <args，占位符代入该启动 argv 的 --param 值与 <W> 里的登记输入> --out <作业目录>/job_inputs/<启动树名>/<种类>.json`，旁边写 `<种类>.json.record.json`（`capkit.job_input_record/1`：`kind`、`module`、`argv`、`inputs`（args 引用到的登记输入 → 生成前现算的 sha256）、`rc`、`out_sha256`（只在退出 0、文件存在且 schema 正确时才填）、`log`、起止时刻）与 `.log`。任一生成失败（退出码非 0、超时、没有输出、schema 不对、输出已存在）⇒ 该启动不起、记 NOT_RUN（原因以 `skipped: job inputs:` 开头），`launches.json` 的启动项带 `job_input_failed: true` 与 `job_inputs`（各生成记录的 `kind`、`rc`、`out_sha256`、`log`），顶层另有计数 `job_input_failed`；`capjobs.launches` 因此以 3 退出（与 `config_refused`、`pin_table_failed` 同一条，勘误 R5-3）。成功则给编排器追加 `--job-input <种类>=<路径>`（每个种类一个；计划 argv 里出现 `--job-input` 即拒绝，`launchplan.RESERVED_FLAGS`）。每个生成最多 `launchplan.JOB_INPUT_TIMEOUT_S`（600 s），计入启动前的剩余时间检查（`budget_s + kill_grace_s + margin_s + launchplan.in_job_bound_s`，后者 = 绑核表 120 s + 600 s × 该启动的种类数）与 `capjobs.submit` 的时间预算（新增 `job_inputs_s`，`pin_tables_s` 不变）；提交端预检计划 argv 时按场景声明的种类补示例 `--job-input`（`submit.check_plan_argv`）。按启动、不按作业生成：请求字节与预制字节随启动的档位表、prompts 变；指纹也按启动生成，代价是每个启动多一次 `import tensorrt_llm`。`jobs/capkit_inner.sh` 不变（生成在它调起的 `capjobs.launches` 里），只改了头注释。作业之外可以用 `python -m capjobs.jobinputs --workdir W --scenario <relpath> --python PY --out-dir DIR [--param K=V]...` 造同样的文件与记录，它打印对应的 `--job-input` 参数。
+   - **编排器**（`caplaunch --job-input KIND=PATH`，可重复）：种类集合必须等于场景声明的集合；`PATH` 是绝对路径；文件的 `schema` 是该种类的；记录（`PATH.record.json`）过 `capcommon.jobinputs.check_record`：种类与模块对得上、`rc` 0、`out_sha256` 等于文件现算 sha、`inputs` 里每个登记输入的 sha 等于本启动登记的 sha。任一不过 ⇒ 退出码 3、起进程之前、不写树（勘误 R5-3 的 `config_refused`）。通过后文件与记录原样写进 `raw/env/job_inputs/<种类>.json` 与 `<种类>.record.json`，`launch.json` 新增 `job_inputs`：`{<种类>: {relpath, sha256, size, record_sha256, module, source}}`（没有作业输入时为 `{}`）。
+   - **SM-6 的处理**：`configs/e0` 的 `e0a-frontend-sfe`、`e0c-frontend-http` 改为声明 `job_inputs.fingerprint`（`--tokenizer {param:tokenizer_dir} --trust-remote-code {param:trust_remote_code} --tokenizer-mode {param:tokenizer_mode}`，与前端加载 tokenizer 的设置相同），S-FE 角色用 `{input:fingerprint}` 拼参数；参数 `fingerprint_json` 去掉，新增 `trust_remote_code`、`tokenizer_mode`。已登记在 `<W>` 里的旧场景副本不受影响。
+10. **§10.1 判定器的作业输入核对**（`capjudge.inputs._load_job_inputs`，在档位表与时间表之后、对账段之前）：`launch.json` 的 `job_inputs` 种类集合必须等于登记场景文件（`register.json files.scenario`）声明的集合；每项的 `relpath` 必须是 `raw/env/job_inputs/<种类>.json`，树里的文件与记录现算 sha 等于 `sha256`、`record_sha256`，文件 `schema` 是该种类的，记录过 `check_record`（登记输入的 sha 取 `launch.json` 的 `tier_table`/`schedule`/`prompts`）。任一不过 ⇒ `INPUT_INVALID`（13）。没有 `job_inputs` 键的 `launch.json`（本批之前写的）按「没有作业输入」处理，场景也没有声明时照常通过。
+11. **§6.6 / §2.5 覆盖清单的 `stub_modules` 与 C10 的 S-FE 模块核对（D16）**：
+   - `capprobe.overlay` 新增可选 `--stub-module KEY=PATH`（可重复，每个 KEY 一次；KEY 只有 `sfe`）：PATH 是 `tensorrt_llm/` 之外的 `.py` 仓库相对路径（如 `tests/unittest/grpc/openengine_client/fake_openengine.py`），取**基线提交**的 blob 零改动写到 `<--export-dir>/<PATH>`（任何档位都要 `--export-dir`；不读探针树的工作文件），清单新增 `stub_modules: [{key, repo_path, commit, src, sha256, size}]`（没给时为 `[]`）。
+   - 快照：`capjobs.snapshot.overlay_entries` 把 `stub_modules` 一并列入（拷进快照、提交端与建快照时核 sha；条目必须恰好有上述六个键、`key` 不重复、`src` 是代码根相对路径）。作业里的 `capjobs.overlay` **不**把它们装进 site-packages，只核对 `<快照>/<src>` 的字节等于清单（`overlay_verify.json` 里 `list: stub_modules` 的项，带 `path`）。所以 S-PB 的 `--sfe-module` 在计划里写 `--param sfe_module={SNAP}/<src>`。
+   - C10 新增一项（每个 `module` 为 `capstubs.prebaked_server` 的角色一项，计入 C10 的应检与已检数）：角色参数里有 `--sfe-module`（前端模式）⇒ 它的就绪文件 `info.control.sha256` 必须等于覆盖清单 `stub_modules` 里 `key = sfe` 的 `sha256`；没有 `--sfe-module` ⇒ `info.control` 必须为 `null`。不符、清单里没有 `sfe`、或读不到就绪文件 ⇒ C10 `NOT_RUN`（与版本记录的问题同一处理，D11）。第 2 条「C10 的核对属本子批次后续步骤」由本条取代。
+12. **§11 新增与修改的入口**：
+   - 场景 `TOOL_TABLE` 新增 `capstubs.prebaked_server`（循环、档位、快照、就绪文件、端口文件、`--workers`；另有 `single`：场景里 `workers` 与 `expected_procs` 都必须为 1）与 `caplaunch.smoke`（与 `caplaunch.httpprobe` 相同：只有身份、`--run-dir`、`--stop-grace-s`、`--cpus`，没有就绪文件，就绪用 `file_exists`）。
+   - `caplaunch.smoke` 作为启动角色：新增可选 `--run-dir`、`--stop-grace-s`、`--cpus`（只记录）、`--items LIST`（项组，取自 `env,d13,d14,read,cores,tree`，按这个固定顺序跑；缺省全部）、`--hold`（写完 `smoke.json` 后等 SIGTERM；SIGTERM 处理器在跑项之前装好），`--result-dir` 是 `--out` 的别名（`--out` 是编排器管的参数）。输出格式升为 `capkit.smoke/2`：`identity` 改为身份对象（含 pid；原来的身份参数列表移到 `identity_argv`），新增 `item_groups`、`role`。这样它写在 `raw/` 下的 `smoke.json` 能过判定器的身份核对。
+13. **补充冒烟场景 `configs/e0s/`（RUNBOOK-stage2 1.4 第 1、2 项；生成器 `configs/gen_e0s_configs.py`）**：
+   - `e0s-import-probe`：第 1 项。`importprobe` 角色（`caplaunch.smoke --items env`，配置 `e0s-smoke.json`：`import tensorrt_llm, uvloop, grpc_health.v1.health_pb2`，带与不带 compat 路径各一次）+ `capload → capload.nullsse`（一档低速 warmup 与一个带门的 drain：档位表要求最后是带门的 drain）。
+   - `e0s-spb-frontend`：第 2 项。`importprobe` → S-PB（前端模式：`--prebaked {input:prebaked}`、`--sfe-module {param:sfe_module}`、`--sfe-profile trtllm-like`、指纹拼自 `{input:fingerprint}`；不给 `--schedule`，流按接纳时刻归档）→ 真前端（`--openengine-endpoint {addr:spb}`）→ `httpprobe`（`/v1/completions`、`/v1/chat/completions` 各一条，请求取 `configs/e0/e0c-httpprobe.requests.json`）→ `capload` 的 warmup 与带门的 drain（门读 capload 在途数与 S-PB 的活跃流、待发消息）。作业输入 `fingerprint` 与 `prebaked`（`--pb2-module tensorrt_llm.grpc.openengine._generated.generation_pb2`）。档位表 `max_tokens` 固定为 16 = httpprobe 两个请求的 `max_tokens`（S-PB 拒绝没有预制流的 `max_tokens`）；`beat_ns` 必须 > 0。
+   - 这两个场景里 `httpprobe` 与 `importprobe` 不写就绪文件、也没有快照，没有版本记录，所以判定器的 C10 对它们是 `NOT_RUN`（与 E0(c) 相同）；冒烟结论读 `raw/smoke/smoke.json`、`raw/httpprobe.json` 与 `caplaunch.smoke --tree`，不读判定。第 3 项（S-NL 最小版）属 2C-min。
+14. **§12 已知缺口与未核对（新增）**：① 三个生成器在容器里的真实运行（`capstubs.fingerprint` 要 `import tensorrt_llm` 与真 tokenizer；`capstubs.prebaked`、`capgrpc.reqbytes` 用产品的 `generation_pb2`）、真 `fake_openengine.py` 被 S-PB 加载、真前端连 S-PB、两个 `e0s` 场景——本机都没有运行，属 1.4 补充冒烟【未核对】。本地的作业路径 e2e 用 pb2 测试替身跑了真 `capstubs.prebaked` 与 `capgrpc.reqbytes`、真 `capjobs.jobinputs` 与 `caplaunch`（`tests/capstubs/test_spb_job_path.py`）。② 每个启动都重新生成指纹（多一次 `import tensorrt_llm`），同一作业里各启动的指纹文件应当相同，但没有跨启动核对。③ 前端模式下 S-PB 与 `{param:sfe_module}` 指向的文件之间只靠 C10 的 sha 核对把关；计划里写错路径时 S-PB 起不来（退出码 3），不会静默换成别的文件。
 
 ## 审阅记录（r2，2026-11-13）
 

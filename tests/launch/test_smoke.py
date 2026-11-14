@@ -161,3 +161,56 @@ def test_smoke_empty_delta_without_expected_count_is_not_run(tmp_path):
     out = str(tmp_path / "o")
     smoke.main(SID + ["--config", str(p), "--out", out, "--tree", str(tmp_path / "tree")])
     assert _items(out)["tree.empty_delta"]["status"] == "NOT_RUN"
+
+
+# ---- caplaunch.smoke as a launch role (errata B2B-12) --------------------------------------------
+
+def test_smoke_role_mode_runs_the_chosen_items_and_holds(tmp_path):
+    import signal  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+    import time  # noqa: PLC0415
+    cfg = tmp_path / "s.json"
+    cfg.write_text(json.dumps({"schema": smoke.CONFIG_SCHEMA,
+                               "import_probe": {"code": "import json", "timeout_s": 30}}))
+    out = tmp_path / "raw" / "smoke"
+    argv = [sys.executable, "-m", "caplaunch.smoke"] + SID + [
+        "--run-dir", str(tmp_path), "--stop-grace-s", "1.0", "--cpus", "0",
+        "--config", str(cfg), "--result-dir", str(out), "--items", "env",
+        "--param", "python=%s" % sys.executable, "--param", "cuda_compat_dir=%s" % tmp_path,
+        "--hold"]
+    env = dict(os.environ, PYTHONPATH=cf.TOOLS)
+    p = subprocess.Popen(argv, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    try:
+        end = time.monotonic() + 60
+        while not (out / "smoke.json").exists() and time.monotonic() < end:
+            time.sleep(0.05)
+        assert (out / "smoke.json").exists()
+        time.sleep(0.3)
+        assert p.poll() is None  # --hold: alive after writing
+        p.send_signal(signal.SIGTERM)
+        p.wait(timeout=10)
+    finally:
+        if p.poll() is None:
+            p.kill()
+    doc = json.loads((out / "smoke.json").read_text())
+    assert doc["item_groups"] == ["env"]
+    assert {i["id"].split(".")[0] for i in doc["items"]} == {"env"}
+    probe = [i for i in doc["items"] if i["id"] == "env.import_probe"][0]
+    assert probe["status"] == "PASS"
+    ident = doc["identity"]  # an identity object, as every file under raw/ carries
+    assert ident["role"] == "smoke" and ident["pid"] == p.pid and ident["job_id"] == "local-x"
+    assert doc["identity_argv"] == SID and doc["role"]["run_dir"] == str(tmp_path)
+    assert p.returncode in (0, 4)  # 4: env.compat_path FAIL (LD_LIBRARY_PATH not compat-first)
+
+
+def test_smoke_items_must_be_known_and_distinct(tmp_path):
+    cfg = tmp_path / "s.json"
+    cfg.write_text(json.dumps({"schema": smoke.CONFIG_SCHEMA}))
+    for bad in ("env,env", "nope", ""):
+        assert smoke.main(SID + ["--config", str(cfg), "--out", str(tmp_path / bad.replace(
+            ",", "_") / "o"), "--items", bad]) == 2
+    rc = smoke.main(SID + ["--config", str(cfg), "--out", str(tmp_path / "ok"), "--items",
+                           "d13,env"])
+    doc = json.loads((tmp_path / "ok" / "smoke.json").read_text())
+    assert doc["item_groups"] == ["env", "d13"]  # run order is fixed, not the --items order
+    assert rc in (0, 4)

@@ -53,6 +53,9 @@ def build_parser():
                    help="job-level env/ directory (gate results, gpu_idle.json, ...); its files "
                         "are copied into raw/env/. Not a directory -> the launch stops as NOT_RUN "
                         "before starting any process")
+    p.add_argument("--job-input", action="append", default=[], metavar="KIND=PATH",
+                   help="a job input the scenario's job_inputs declares (capjobs.jobinputs "
+                        "writes PATH and PATH.record.json); one per declared kind, no others")
     return p
 
 

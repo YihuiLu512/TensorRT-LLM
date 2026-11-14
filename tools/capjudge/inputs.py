@@ -9,7 +9,7 @@ attempt directory and exits 13. Nothing here relaxes a rule for synthetic or loc
 import json
 import os
 
-from capcommon import expect, ledger
+from capcommon import expect, jobinputs, ledger
 from capcommon.capbin import CapbinError, read_capbin
 from capcommon.exitcodes import ConfigError
 from capcommon.hashing import is_sha256_hex, sha256_file
@@ -263,6 +263,50 @@ def _load_tier_table_and_schedule(ctx):
         raise InputInvalid("schedule", "row count != meta.n_requests")
 
 
+def _load_job_inputs(ctx):
+    """Job inputs (errata B2B-9): launch.json job_inputs lists exactly the kinds the registered
+    scenario file declares; each copy in the tree (raw/env/job_inputs/<kind>.json) has the listed
+    sha256 and its kind's schema, and its record (<kind>.record.json, record_sha256) says the
+    kind's module built it from this launch's registered tier table / schedule / prompts.
+    A launch.json without the key (written before job inputs existed) counts as none."""
+    sp = os.path.join(ctx.W, ctx.register_files["scenario"]["relpath"])
+    try:
+        want = jobinputs.kinds_of(read_json(sp))
+    except (OSError, ValueError) as e:
+        raise InputInvalid("scenario", str(e))
+    got = ctx.launch.get("job_inputs", {})
+    if not isinstance(got, dict) or sorted(got) != sorted(want):
+        raise InputInvalid("launch.json job_inputs", "kinds %s != scenario job_inputs %s"
+                           % (sorted(got) if isinstance(got, dict) else got, want))
+    reg = {k: ctx.launch[k]["sha256"] for k in jobinputs.REGISTERED_INPUTS}
+    for k in want:
+        item = "job_inputs.%s" % k
+        ent = got[k]
+        rel = "raw/env/job_inputs/%s.json" % k
+        if not isinstance(ent, dict) or ent.get("relpath") != rel:
+            raise InputInvalid(item, "relpath must be %s" % rel)
+        p = os.path.join(ctx.root, rel)
+        try:
+            sha = sha256_file(p)
+            doc = read_json(p)
+            rp = p[:-len(".json")] + ".record.json"
+            rsha = sha256_file(rp)
+            record = read_json(rp)
+        except (OSError, ValueError) as e:
+            raise InputInvalid(item, str(e))
+        if sha != ent.get("sha256") or rsha != ent.get("record_sha256"):
+            raise InputInvalid(item, "sha256 %s / record %s != launch.json %s / %s"
+                               % (sha, rsha, ent.get("sha256"), ent.get("record_sha256")))
+        if not isinstance(doc, dict) or doc.get("schema") != jobinputs.KINDS[k][1]:
+            raise InputInvalid(item, "schema must be %s" % jobinputs.KINDS[k][1])
+        try:
+            jobinputs.check_record(record, k, sha, reg)
+        except ConfigError as e:
+            raise InputInvalid(item, str(e))
+        ctx.note_file(p, sha)
+        ctx.note_file(rp, rsha)
+
+
 def _check_reconcile_and_scenario(ctx):
     try:
         expect.validate_reconcile(ctx.launch["reconcile"], set(ctx.roles))
@@ -383,6 +427,7 @@ def verify(workdir, tree_root):
     _load_register(ctx)
     _load_calibration(ctx)
     _load_tier_table_and_schedule(ctx)
+    _load_job_inputs(ctx)
     _check_reconcile_and_scenario(ctx)
     _scan_identities(ctx)
     _load_upstream(ctx)
