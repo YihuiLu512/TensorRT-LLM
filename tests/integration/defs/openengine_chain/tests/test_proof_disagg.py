@@ -716,6 +716,7 @@ def _register_and_leave(leaving):
     deadline = time.monotonic() + 30
     while STATE["reads"] < reads + 2 and time.monotonic() < deadline:
         time.sleep(0.01)
+    assert STATE["reads"] >= reads + 2, "the watch did not read the lists"
     ctx.take(1)
     gen.take(1)
     # It drops them from its lists, as when they stop before it.
@@ -1248,6 +1249,16 @@ def test_a_worker_listed_when_the_test_starts_counts_only_while_the_last_reading
     end = {CTX: (ctx.address,), GEN: (gen.address, *last)}
     reading = _watch_readings(monkeypatch, [stale, stale, end])
     assert _ch6([ctx, gen], reading).status == status
+
+
+def test_without_the_lists_when_the_test_starts_only_the_last_lists_count(monkeypatch):
+    """Which listed workers an earlier test left is not known without the first lists."""
+    ctx, gen = _two_legs()
+    stale = {CTX: (ctx.address,), GEN: (gen.address, "node0:8009")}
+    end = {CTX: (ctx.address,), GEN: (gen.address,)}
+    reading = _watch_readings(monkeypatch, [None, stale, end])
+    assert reading.members == end
+    assert _ch6([ctx, gen], reading).status == P.OK
 
 
 def test_a_disaggregated_server_that_never_lists_a_worker_leaves_ch6_unproven(monkeypatch):

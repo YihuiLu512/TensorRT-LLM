@@ -264,8 +264,9 @@ class _Watch:
 
     It reads the disaggregated servers when started, when stopped and every
     ``_WATCH_INTERVAL_S`` in between from a thread, so that one the test starts
-    and stops is still seen, as is a worker a reading listed before it left the
-    lists (see :meth:`orchestrator`). For a test with worker roles it also looks for
+    and stops is still seen; a worker that left a server's lists still counts if
+    a reading listed it, with the exceptions :meth:`orchestrator` gives. For a
+    test with worker roles it also looks for
     in-process workers holding a GPU, and takes each worker's topology and
     engine information while it runs (for a test that kills a worker), every
     ``_GPU_CHECK_INTERVAL_S`` and when stopped.
@@ -293,6 +294,8 @@ class _Watch:
         self._members: dict[str, dict[str, set[str]]] = {}
         self._start_members: dict[str, dict[str, set[str]]] = {}
         self._last_members: dict[str, dict[str, set[str]]] = {}
+        # Servers whose process ran when the test started, whether found then or later.
+        self._ran_at_start: set[str] = set()
         # Servers found when the test started, those whose increase is only a lower bound
         # (not read when the test started, or restarted during it), and those alive at the end.
         self._present_at_start: set[str] = set()
@@ -333,6 +336,8 @@ class _Watch:
                 }
             with self._lock:
                 self._record(url, reading, at_start, orchestrator.pid in self._pids_at_start)
+                if orchestrator.pid in self._pids_at_start:
+                    self._ran_at_start.add(url)
                 if members is not None:
                     if at_start:
                         self._start_members[url] = members
@@ -391,7 +396,9 @@ class _Watch:
         Its worker lists hold, by role, every worker a reading during the test named,
         except one that the reading when the test started named and the server's last
         lists read no longer name: a server can keep listing a worker that an earlier
-        test stopped. ``members`` is ``None`` if the lists of some server were never read.
+        test stopped. For a server that ran when the test started but whose lists were
+        not read then, they hold only its last lists read. ``members`` is ``None`` if
+        a server was read but its lists never were.
         """
         with self._lock:
             if not self._last:
@@ -402,12 +409,19 @@ class _Watch:
                 seen = self._members.get(url)
                 members = None
                 if seen is not None:
-                    start = self._start_members.get(url, {})
                     final = self._last_members[url]
-                    members = {
-                        r: tuple(sorted(seen[r] - (start.get(r, set()) - final[r])))
-                        for r in proof.ROLES
-                    }
+                    start = self._start_members.get(url)
+                    if start is None and (
+                        url in self._present_at_start or url in self._ran_at_start
+                    ):
+                        # Which listed workers an earlier test left is not known.
+                        members = {r: tuple(sorted(final[r])) for r in proof.ROLES}
+                    else:
+                        start = start or {}
+                        members = {
+                            r: tuple(sorted(seen[r] - (start.get(r, set()) - final[r])))
+                            for r in proof.ROLES
+                        }
                 readings.append(
                     proof.OrchestratorReading(
                         {k: v - base.get(k, 0) for k, v in last.counts.items()},
