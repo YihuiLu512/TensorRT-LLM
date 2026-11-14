@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 import secrets
+import socket
 import subprocess
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -227,56 +228,77 @@ def launch_disagg_topology(
     listen_host = option_value(command.args, "--host", strict) or DEFAULT_SERVE_HOST
     workdir = _results_dir()
     auth_key = secrets.token_hex(32)
-    # The disaggregated server binds its port only after the workers have started.
+    # The disaggregated server binds its port only after the workers have started;
+    # until then a socket bound to it keeps it from other processes.
     reserve_ports(port)
-    ports = {"context": pick_port(port)}
-    ports["generation"] = pick_port(port, ports["context"])
-    workers = disagg_worker_commands(
-        cmd, ports=ports, host=listen_host, auth_key=auth_key, out_dir=workdir, strict=strict
-    )
-    gpus = worker_gpus(visible_gpus(env), workers.gpus_per_worker, workers.share_gpu)
-    ctx_handle, gen_handle = launch_serve_commands(
-        [workers.commands[role] for role in WORKER_ROLES],
-        labels=[f"the {role} worker" for role in WORKER_ROLES],
-        envs=[{**env, "CUDA_VISIBLE_DEVICES": gpus[role]} for role in WORKER_ROLES],
-        sinks=[sink, sink],
-        chain=chain,
-        kv_aware_router=False,
-        role_indices=[0, 0],
-    )
+    holder = _hold_port(port)
     try:
-        config = disagg_server_config(
-            host=listen_host,
-            port=port,
-            workers={role: f"{host}:{ports[role]}" for role in WORKER_ROLES},
-            auth_key=auth_key,
+        ports = {"context": pick_port(port)}
+        ports["generation"] = pick_port(port, ports["context"])
+        workers = disagg_worker_commands(
+            cmd, ports=ports, host=listen_host, auth_key=auth_key, out_dir=workdir, strict=strict
         )
-        fd, config_path = tempfile.mkstemp(prefix="disagg-server-", suffix=".yaml", dir=workdir)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            yaml.safe_dump(config, f)
-        # The executable part without a "serve" subcommand.
-        executable = list(command.prefix[:-1] if command.prefix[-1] == "serve" else command.prefix)
-        server_cmd = executable + [
-            "disaggregated",
-            "-c",
-            config_path,
-            "--server_start_timeout",
-            str(int(server_start_timeout)),
-        ]
-        server_env = {k: v for k, v in env.items() if k != "CUDA_VISIBLE_DEVICES"}
-        server = subprocess.Popen(server_cmd, env=server_env, stdout=sink, stderr=sink)
-    except BaseException:
+        gpus = worker_gpus(visible_gpus(env), workers.gpus_per_worker, workers.share_gpu)
+        ctx_handle, gen_handle = launch_serve_commands(
+            [workers.commands[role] for role in WORKER_ROLES],
+            labels=[f"the {role} worker" for role in WORKER_ROLES],
+            envs=[{**env, "CUDA_VISIBLE_DEVICES": gpus[role]} for role in WORKER_ROLES],
+            sinks=[sink, sink],
+            chain=chain,
+            kv_aware_router=False,
+            role_indices=[0, 0],
+        )
         try:
-            gen_handle.terminate()
-        finally:
-            ctx_handle.terminate()
-        raise
-    return DisaggTopology(
-        chain=chain,
-        host=host,
-        port=port,
-        ctx_handle=ctx_handle,
-        gen_handle=gen_handle,
-        server=server,
-        workdir=workdir,
-    )
+            config = disagg_server_config(
+                host=listen_host,
+                port=port,
+                workers={role: f"{host}:{ports[role]}" for role in WORKER_ROLES},
+                auth_key=auth_key,
+            )
+            fd, config_path = tempfile.mkstemp(prefix="disagg-server-", suffix=".yaml", dir=workdir)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                yaml.safe_dump(config, f)
+            # The executable part without a "serve" subcommand.
+            executable = list(
+                command.prefix[:-1] if command.prefix[-1] == "serve" else command.prefix
+            )
+            server_cmd = executable + [
+                "disaggregated",
+                "-c",
+                config_path,
+                "--server_start_timeout",
+                str(int(server_start_timeout)),
+            ]
+            server_env = {k: v for k, v in env.items() if k != "CUDA_VISIBLE_DEVICES"}
+            if holder is not None:
+                holder.close()
+            server = subprocess.Popen(server_cmd, env=server_env, stdout=sink, stderr=sink)
+        except BaseException:
+            try:
+                gen_handle.terminate()
+            finally:
+                ctx_handle.terminate()
+            raise
+        return DisaggTopology(
+            chain=chain,
+            host=host,
+            port=port,
+            ctx_handle=ctx_handle,
+            gen_handle=gen_handle,
+            server=server,
+            workdir=workdir,
+        )
+    finally:
+        if holder is not None:
+            holder.close()
+
+
+def _hold_port(port: int) -> socket.socket | None:
+    """A socket bound to ``port`` on all interfaces, or ``None`` if ``port`` cannot be bound now."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind(("", port))
+    except OSError:
+        sock.close()
+        return None
+    return sock

@@ -1483,9 +1483,7 @@ class ServeStart:
                 # The handle keeps the worker's address after the worker has stopped,
                 # which the chain proof needs; a front end on port 0 would have none.
                 # The port can still be taken before the front end binds it.
-                port = _free_port_other_than(
-                    self._given_metrics_port, self._check_port, self._engine_port
-                )
+                port = pick_port(self._given_metrics_port, self._check_port, self._engine_port)
                 handle.port = port
                 frontend_port = str(port)
             with handle.stop_on_error():
@@ -1694,9 +1692,11 @@ def reserve_ports(*ports: int | None) -> None:
 
 
 def _free_port_block(count: int) -> int:
-    """The first of ``count`` consecutive ports that were free a moment ago and not picked before."""
-    for _ in range(100):
-        base = free_port()
+    """The first of ``count`` consecutive ports that were free a moment ago and not picked before.
+
+    The first ports tried come from :func:`_below_ephemeral`, the rest from :func:`free_port`.
+    """
+    for base in itertools.chain(_below_ephemeral(count), (free_port() for _ in range(100))):
         if base + count > 65536 or _PICKED_PORTS.intersection(range(base, base + count)):
             continue
         socks = []
@@ -1736,9 +1736,11 @@ def _free_port_other_than(*taken: int | None) -> int:
     raise ChainError(f"no free port other than {taken} found")
 
 
-# Where pick_port looks first: from this port up to the kernel's ephemeral range.
+# Where _below_ephemeral looks: from this port up to the kernel's ephemeral range.
 _LISTEN_PORT_FLOOR = 20000
 _EPHEMERAL_RANGE_FILE = "/proc/sys/net/ipv4/ip_local_port_range"
+# Not seeded by the tests' random.seed, so harness processes on one node draw differently.
+_PORT_RANDOM = random.SystemRandom()
 
 
 def _ephemeral_low() -> int | None:
@@ -1760,21 +1762,33 @@ def _bindable(port: int) -> bool:
     return True
 
 
+def _below_ephemeral(count: int) -> Iterator[int]:
+    """Up to 100 random first ports of ``count`` consecutive ports below the kernel's ephemeral range.
+
+    A port the harness picks for a process it starts is bound by that process
+    only some time later: a front end once it has started up, which on the chain
+    is after its engine has loaded, and an engine's KV event publisher after the
+    model has loaded. Until then the kernel can hand a port of the ephemeral
+    range to any other process's outgoing connection or port-0 bind. Yields
+    nothing when the range cannot be read or fewer than 1000 ports lie between
+    ``_LISTEN_PORT_FLOOR`` and it.
+    """
+    low = _ephemeral_low()
+    if low is None or low - _LISTEN_PORT_FLOOR < 1000:
+        return
+    for _ in range(100):
+        yield _PORT_RANDOM.randrange(_LISTEN_PORT_FLOOR, low - count + 1)
+
+
 def pick_port(*taken: int | None) -> int:
     """A free port for a process the harness starts, kept off its later picks.
 
-    The port is below the kernel's ephemeral range when at least 1000 ports
-    lie between ``_LISTEN_PORT_FLOOR`` and it: the process binds the port only
-    after its engine has loaded, and until then the kernel can hand a port of
-    that range to any other process's outgoing connection or port-0 bind.
-    Otherwise the port comes from :func:`free_port`.
+    The port is the first of :func:`_below_ephemeral`'s ports that is none of
+    ``taken``, was not picked before and can be bound now; if there is none,
+    it comes from :func:`_free_port_other_than`, from the ephemeral range.
     """
-    low = _ephemeral_low()
-    if low is not None and low - _LISTEN_PORT_FLOOR >= 1000:
-        for _ in range(100):
-            port = random.randrange(_LISTEN_PORT_FLOOR, low)
-            if port in taken or port in _PICKED_PORTS or not _bindable(port):
-                continue
+    for port in _below_ephemeral(1):
+        if port not in taken and port not in _PICKED_PORTS and _bindable(port):
             reserve_ports(port)
             return port
     return _free_port_other_than(*taken)

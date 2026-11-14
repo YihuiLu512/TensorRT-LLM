@@ -823,6 +823,58 @@ def test_topology_worker_ports_avoid_the_servers_port(fake_topology, monkeypatch
     assert port in launch._PICKED_PORTS
 
 
+def _bindable(port):
+    import socket
+
+    with socket.socket() as s:
+        try:
+            s.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def test_topology_holds_the_servers_port_until_it_starts_the_server(fake_topology, monkeypatch):
+    port = _free_port()
+    real = remote.launch_serve_commands
+    while_loading = []
+
+    def launch_workers(*args, **kwargs):
+        while_loading.append(_bindable(port))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(remote, "launch_serve_commands", launch_workers)
+    cmd = [fake_topology.exe, "/m", "--host", "127.0.0.1", "--port", str(port)]
+    topology = remote.launch_disagg_topology(
+        cmd, env=fake_topology.env, sink=None, chain=cv.CHAIN_NONE, server_start_timeout=60
+    )
+    try:
+        _records(fake_topology.records, "disagg-start", 1)
+        assert while_loading == [False]
+        assert topology.poll() is None
+    finally:
+        topology.terminate(grace=5)
+
+
+def test_topology_that_fails_to_start_its_workers_lets_the_servers_port_go(
+    fake_topology, monkeypatch
+):
+    port = _free_port()
+
+    def launch_workers(*args, **kwargs):
+        raise RuntimeError("stop")
+
+    monkeypatch.setattr(remote, "launch_serve_commands", launch_workers)
+    with pytest.raises(RuntimeError, match="stop"):
+        remote.launch_disagg_topology(
+            [fake_topology.exe, "/m", "--port", str(port)],
+            env=fake_topology.env,
+            sink=None,
+            chain="trtllm",
+        )
+    assert _bindable(port)
+
+
 def test_topology_listens_where_the_command_line_says(fake_topology):
     port = _free_port()
     cmd = [fake_topology.exe, "/m", "--host", "0.0.0.0", "--port", str(port)]

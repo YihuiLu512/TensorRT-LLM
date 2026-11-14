@@ -4,9 +4,11 @@
 
 import contextlib
 import glob
+import itertools
 import json
 import os
 import pathlib
+import random
 import re
 import signal
 import socket
@@ -1392,6 +1394,23 @@ def test_disagg_worker_on_port_0_gets_a_port_its_handle_keeps(fake, tmp_path, gi
     handle.terminate(grace=1)
 
 
+def test_disagg_worker_on_port_0_gets_a_port_below_the_ephemeral_range(fake, tmp_path, monkeypatch):
+    fake.env["FAKE_ENGINE_SAY"] = launch.TRANSCEIVER_STARTED_LINE
+    args = _worker(fake, tmp_path, {"cache_transceiver_config": {"backend": "DEFAULT"}})
+    args[args.index("--port") + 1] = "0"
+    real = launch.pick_port
+    picked = []
+
+    def pick_port(*taken):
+        picked.append(real(*taken))
+        return picked[-1]
+
+    monkeypatch.setattr(launch, "pick_port", pick_port)
+    handle = _start(fake, args, chain="trtllm")
+    assert picked == [handle.port]
+    handle.terminate(grace=1)
+
+
 def test_disagg_worker_on_a_given_port_keeps_it(fake, tmp_path):
     fake.env["FAKE_ENGINE_SAY"] = launch.TRANSCEIVER_STARTED_LINE
     args = _worker(fake, tmp_path, {"cache_transceiver_config": {"backend": "DEFAULT"}})
@@ -1672,7 +1691,7 @@ def test_harness_port_picks_stay_below_the_ephemeral_range(monkeypatch):
         ranges.append((start, stop))
         return next(draws)
 
-    monkeypatch.setattr(launch.random, "randrange", randrange)
+    monkeypatch.setattr(launch._PORT_RANDOM, "randrange", randrange)
     monkeypatch.setattr(launch, "_bindable", lambda port: port != 20003)
     launch.reserve_ports(20002)
     # 20001 is taken by the caller, 20002 was reserved and 20003 cannot be bound.
@@ -1685,9 +1704,46 @@ def test_harness_port_picks_stay_below_the_ephemeral_range(monkeypatch):
 def test_harness_port_picks_use_free_port_without_room_below_the_ephemeral_range(monkeypatch, low):
     monkeypatch.setattr(launch, "_PICKED_PORTS", set())
     monkeypatch.setattr(launch, "_ephemeral_low", lambda: low)
-    monkeypatch.setattr(launch.random, "randrange", lambda *a: pytest.fail("randrange used"))
+    monkeypatch.setattr(launch._PORT_RANDOM, "randrange", lambda *a: pytest.fail("randrange used"))
     monkeypatch.setattr(launch, "free_port", lambda: 45000)
     assert launch.pick_port() == 45000
+
+
+def test_harness_port_blocks_stay_below_the_ephemeral_range(monkeypatch):
+    monkeypatch.setattr(launch, "_PICKED_PORTS", set())
+    monkeypatch.setattr(launch, "_ephemeral_low", lambda: 32768)
+    monkeypatch.setattr(launch, "free_port", lambda: pytest.fail("free_port used"))
+    monkeypatch.setattr(
+        launch.socket,
+        "socket",
+        lambda *a: types.SimpleNamespace(bind=lambda address: None, close=lambda: None),
+    )
+    draws = iter([20010, 20020])
+    ranges = []
+
+    def randrange(start, stop):
+        ranges.append((start, stop))
+        return next(draws)
+
+    monkeypatch.setattr(launch._PORT_RANDOM, "randrange", randrange)
+    launch.reserve_ports(20012)
+    # 20010..20012 overlaps 20012; the block's last port stays below the range.
+    assert launch._free_port_block(3) == 20020
+    assert ranges == [(launch._LISTEN_PORT_FLOOR, 32766)] * 2
+    assert {20020, 20021, 20022} <= launch._PICKED_PORTS
+
+
+def test_harness_port_draws_ignore_the_tests_random_seed(monkeypatch):
+    monkeypatch.setattr(launch, "_ephemeral_low", lambda: 60000)
+    state = random.getstate()
+    draws = []
+    try:
+        for _ in range(2):
+            random.seed(0)
+            draws.append(list(itertools.islice(launch._below_ephemeral(1), 5)))
+    finally:
+        random.setstate(state)
+    assert draws[0] != draws[1]
 
 
 def test_ephemeral_low_reads_the_kernel_range(monkeypatch, tmp_path):
