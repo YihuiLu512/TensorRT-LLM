@@ -44,7 +44,7 @@ E0 配置生成器在 `configs/gen_e0_configs.py`。
 | 进程在允许之前退出 | VOID | 5 |
 | 停止后仍有残留进程(标记扫描) | VOID | 4 |
 | 有 `probe_tier` 角色而覆盖清单缺失 | NOT_RUN(reason 写明 overlay manifest) | 5 |
-| 参数或输入不合法、外层环境的 `CAPPROBE_TIER` / `CAPPROBE_GROUPS` 与场景不符(场景有产品角色时)、启动树里已有 `raw/launch.json` 或 `STATE` | 不写(不往启动树写任何文件、不起进程) | 3 |
+| 参数或输入不合法、外层环境的 `CAPKIT_CODE_SHA` 与 `--capkit-sha` 不符、`CAPPROBE_PATCH_SHA` 与覆盖清单不符、`CAPPROBE_TIER` / `CAPPROBE_GROUPS` / `CAPPROBE_LAG_PERIOD_US` 与场景不符或有非空的 `CAPPROBE_INJECT`(后四项只在场景有产品角色时)、启动树里已有 `raw/launch.json` 或 `STATE` | 不写(不往启动树写任何文件、不起进程) | 3 |
 
 收到第一个 SIGTERM/SIGINT:停止启动(NOT_RUN),进入收尾。收尾(停进程、残留核验、写收尾文件)期间再收到信号只记录，并跳过剩余的宽限等待、直接 SIGKILL;`launch_end.json` 的 `signals` 列出每个信号。
 

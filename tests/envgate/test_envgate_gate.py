@@ -16,6 +16,7 @@ import time
 import pytest
 
 from b4_envgate_util import PY, SHA, capenv_env, id_args, kill_all, make_ident, spawn_py
+from capcommon import hwprofile as hwprofile_mod
 from capcommon.hwprofile import profile_sha256
 from capcommon.jsonio import read_json, write_json_stamped
 from capenv import gate, gpu, hwprofile, memguard, procfs, runcmd
@@ -387,3 +388,46 @@ def test_gate_cli_with_fake_bin(jobdir, tmp_path):
     r = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
     assert r.returncode == 6 and json.loads(r.stdout)["items"]["3"] == "RED"
     assert runcmd.ok({"rc": 0})
+
+
+def _pci(root, addr, cls, ven, dev, vf=False):
+    d = os.path.join(root, "bus", "pci", "devices", addr)
+    os.makedirs(d)
+    for name, text in (("class", cls), ("vendor", ven), ("device", dev)):
+        with open(os.path.join(d, name), "w") as f:
+            f.write(text + "\n")
+    if vf:
+        os.symlink("../0000:01:00.0", os.path.join(d, "physfn"))
+
+
+def _netdev(root, name, ven, dev, speed):
+    d = os.path.join(root, "class", "net", name)
+    os.makedirs(os.path.join(d, "device"))
+    for name_, text in (("device/vendor", ven), ("device/device", dev), ("speed", speed),
+                        ("operstate", "up")):
+        with open(os.path.join(d, name_), "w") as f:
+            f.write(text + "\n")
+
+
+def test_nic_identity_is_the_pci_device_list_not_the_netdevs(tmp_path):
+    """SM-12: two nodes with the same network controllers but different network interfaces
+    (drivers, links, speeds) get the same identity "nics"; netdevs are observed only."""
+    profs = []
+    for node, netdevs in (("a", [("ib0", "50000"), ("eth0", "-1")]), ("b", [("eth0", "100")])):
+        root = str(tmp_path / node)
+        _pci(root, "0000:01:00.0", "0x020700", "0x15b3", "0x1021")
+        _pci(root, "0000:02:00.0", "0x020700", "0x15b3", "0x1021")
+        _pci(root, "0000:03:00.0", "0x030200", "0x10de", "0x2901")  # a GPU: not a NIC
+        _pci(root, "0000:01:00.2", "0x020000", "0x15b3", "0x101e", vf=True)  # SR-IOV VF
+        for name, speed in netdevs:
+            _netdev(root, name, "0x15b3", "0x1021", speed)
+        col = hwprofile.Collector(str(tmp_path), "dmi", runner=fake_runner({}), sys_root=root)
+        col.nics()
+        profs.append(dict(col.prof))
+    assert profs[0]["nics"] == profs[1]["nics"] == [{"model": "0x15b3:0x1021", "count": 2}]
+    assert profs[0]["netdevs"] != profs[1]["netdevs"]
+    assert "nics" in hwprofile_mod.IDENTITY_FIELDS and "netdevs" in hwprofile_mod.OBSERVED_FIELDS
+    col = hwprofile.Collector(str(tmp_path), "dmi", runner=fake_runner({}),
+                              sys_root=str(tmp_path / "none"))
+    col.nics()
+    assert "unreadable" in col.prof["nics"]

@@ -193,8 +193,9 @@ def launch_argv(wd, run_dir, shm_root, lead_ms=4000, params=(), launch_seq=0, sn
 def _env():
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(PATHS)
-    env.pop("CAPPROBE_TIER", None)
-    env.pop("CAPPROBE_GROUPS", None)
+    for k in ("CAPPROBE_TIER", "CAPPROBE_GROUPS", "CAPPROBE_INJECT", "CAPPROBE_PATCH_SHA",
+              "CAPPROBE_LAG_PERIOD_US", "CAPKIT_CODE_SHA"):
+        env.pop(k, None)
     return env
 
 

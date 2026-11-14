@@ -12,7 +12,7 @@ Cpus_allowed_list and last-run CPU with the table. Expected count = registered p
 role is in the table; 0 -> NOT_RUN. Exit 0 PASS, 6 RED or NOT_RUN.
 
     python -m capenv.pins generate <identity> --demand FILE --out PATH --source-sha SHA
-        [--lscpu-file PATH] [--avoid-cpus LIST] [--primary-numa N]
+        [--lscpu-file PATH] [--avoid-cpus LIST] [--only-affinity] [--primary-numa N]
     python -m capenv.pins verify <identity> --pin-table PATH --roles-file PATH --out PATH
 """
 
@@ -241,6 +241,9 @@ def main(argv=None):
                                         "instead of running lscpu")
     g.add_argument("--avoid-cpus", type=parse_cpu_list, default=[],
                    help="CPUs whose whole physical core must not be assigned")
+    g.add_argument("--only-affinity", action="store_true",
+                   help="also avoid every CPU outside this process's affinity mask (the job "
+                        "step's cpuset when run inside the job)")
     g.add_argument("--primary-numa", type=int, default=None)
     v = sub.add_parser("verify")
     add_identity_args(v)
@@ -261,8 +264,13 @@ def main(argv=None):
                 topo, rec = topology.probe()
                 src = {"cmd": rec["cmd"], "stdout_sha256": rec["stdout_sha256"]}
             demand = read_json(args.demand)
+            avoid = list(args.avoid_cpus)
+            if args.only_affinity:
+                allowed = os.sched_getaffinity(0)
+                avoid += [c["cpu"] for c in topo.cpus
+                          if c["cpu"] not in allowed and c["cpu"] not in avoid]
             try:
-                payload = generate(topo, demand, args.avoid_cpus, args.primary_numa,
+                payload = generate(topo, demand, avoid, args.primary_numa,
                                    args.source_sha)
             except PinGap as e:
                 print(json.dumps({"verdict": "DOES_NOT_FIT", "gap": e.gap}), file=sys.stderr)

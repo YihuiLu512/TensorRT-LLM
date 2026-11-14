@@ -8,7 +8,10 @@ Run inside the same job step and container as the processes under test. Writes i
 Exit 0 on PASS, 6 on ENV_INVALID, 3 on bad configuration.
 
 Items (RESOURCES.md 3, "in-job exclusivity"), each with the command, rc, stdout sha and source:
-  1 scontrol show job $JOB    rc 0; OverSubscribe=NO; GPUs in TRES <= --max-alloc-gpus
+  1 scontrol show job $JOB    rc 0; OverSubscribe=NO; requested GPUs (ReqTRES; without it the
+    allocation, TRES / AllocTRES) <= --max-alloc-gpus. On a whole-node allocation Slurm puts
+    every GPU of the node into AllocTRES although one was requested; that number is recorded
+    (alloc_gpus), and what the job can use is checked by item 5 (visible GPUs == requested)
   2 scontrol show node $NODE  rc 0; CPUAlloc == CPUTot
   3 squeue -h -w $NODE -o '%i %u %T'   rc 0; own job listed (positive control); only that line
   4 /proc/self/status Cpus_allowed_list covers every online cpu
@@ -132,19 +135,26 @@ def item1(src, job_id, max_gpus):
         return _item(1, cmd, rc, out, source, False, {"why": why or "rc %s" % rc}), {}
     kv = parse_kv_tokens(out)
     rec = {k: kv.get(k) for k in ("JobId", "OverSubscribe", "NumCPUs", "NumNodes", "NodeList",
-                                  "TRES", "Partition")}
-    tres = kv.get("TRES") or kv.get("AllocTRES")
+                                  "TRES", "ReqTRES", "AllocTRES", "TresPerNode", "Partition")}
+    alloc = kv.get("TRES") or kv.get("AllocTRES")
+    rec["alloc_gpus"] = _gpus_in_tres(alloc) if alloc else None
+    # the requested count; an output without ReqTRES is checked on the allocation (never less)
+    rec["gpus_checked_from"] = "ReqTRES" if kv.get("ReqTRES") else (
+        "TRES" if kv.get("TRES") else "AllocTRES")
+    tres = kv.get(rec["gpus_checked_from"])
     gpus = _gpus_in_tres(tres)
-    rec["alloc_gpus"] = gpus if tres else None
+    rec["req_gpus"] = gpus if tres else None
     bad = []
     if not tres:  # no TRES at all is an unreadable allocation, not "0 GPUs"
-        bad.append("no TRES / AllocTRES in the scontrol output: GPU allocation unreadable")
+        bad.append("no ReqTRES / TRES / AllocTRES in the scontrol output: GPU request "
+                   "unreadable")
     if kv.get("JobId") != str(job_id):
         bad.append("JobId %r != %r (wrong job queried)" % (kv.get("JobId"), job_id))
     if kv.get("OverSubscribe") != "NO":
         bad.append("OverSubscribe=%r, need NO (exclusive)" % kv.get("OverSubscribe"))
     if tres and gpus > max_gpus:
-        bad.append("allocated GPUs %d > --max-alloc-gpus %d" % (gpus, max_gpus))
+        bad.append("%s GPUs %d > --max-alloc-gpus %d" % (rec["gpus_checked_from"], gpus,
+                                                         max_gpus))
     rec["problems"] = bad
     return _item(1, cmd, rc, out, source, not bad, rec), kv
 

@@ -34,7 +34,9 @@ IDENTITY_FIELDS = {
     "gpu_count": "nvidia-smi line count (int)",
     "gpu_mem_mib": "nvidia-smi memory.total in MiB, sorted list of int",
     "gpu_driver": "nvidia-smi driver_version (string)",
-    "nics": "sorted list of {model, speed_mbps} for physical NICs (no interface names)",
+    "nics": "network controllers as PCI devices: sorted list of {model 'vendor:device', count} "
+            "of /sys/bus/pci/devices with class 0x02xxxx, SR-IOV virtual functions excluded "
+            "(independent of drivers, network interfaces and link state)",
     "local_disk_type": "lsblk ROTA/TRAN/MODEL of the disk holding the local run dir (string)",
     "kernel": "uname -r (string)",
     "container_runtime": "enroot/pyxis version string as the job script recorded it",
@@ -49,6 +51,8 @@ OBSERVED_FIELDS = {
     "cpu_freq_khz": "per-cpu scaling_cur_freq at collection time",
     "mem_available_kib": "MemAvailable",
     "local_disk_free_bytes": "statvfs of the local run dir",
+    "netdevs": "sorted list of {model, speed_mbps} of the network interfaces backed by a device "
+               "(/sys/class/net; which exist and their speed depend on drivers and links)",
     "nic_link": "per-interface operstate and rx/tx byte counters",
     "sources": "per-key: where the value came from (container / slurm_view / unreadable)",
 }

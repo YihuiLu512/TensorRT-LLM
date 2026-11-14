@@ -9,7 +9,7 @@
 # run: node-local dirs <base>/<user>-<job>-r<restart> -> overlay into site-packages
 #      (byte-verified) -> PYTHONPATH unset; import origins checked -> job/image/mounts/local-disk/
 #      gpu-idle files -> (srun --mpi=none: unset PMIX_* PMI_* SLURM_*) -> hardware profile ->
-#      env gate -> launches (capjobs.launches).
+#      env gate -> launches (capjobs.launches; it generates each launch's pin table on this node).
 #      Any failed check: job-level STATE ENV_INVALID, exit 6, no measurement. A job submitted with
 #      --registered-hw-sha UNREGISTERED stops at the gate this way after writing the profile.
 # EXIT trap (both modes): sweep copy-back + verify of the node-local dirs this run owns, then
@@ -156,11 +156,16 @@ if [[ $CAPJOBS_CHASSIS_SOURCE == slurm_view ]]; then
 fi
 SVIEW_ARG=()
 [[ -s $SVIEW ]] && SVIEW_ARG=(--slurm-view-file "$SVIEW")
-log "hardware profile (chassis source $CAPJOBS_CHASSIS_SOURCE)"
+# code_baseline (an identity field of the profile) is the TRT-LLM baseline commit: the overlay
+# manifest's base_commit, not the capkit code sha (that would change the profile sha with every
+# capkit commit).
+BASELINE=$("$PY" -c 'import json, sys; print(json.load(open(sys.argv[1]))["base_commit"])' \
+    "$SNAP/overlay_manifest.json") || env_invalid "cannot read base_commit of the overlay manifest"
+log "hardware profile (chassis source $CAPJOBS_CHASSIS_SOURCE, code baseline $BASELINE)"
 "$PY" -m capenv.hwprofile "${IDENT[@]}" --role hwprofile --out "$JOB_DIR/env/hw_profile.json" \
     --raw-out "$JOB_DIR/env/hw_raw.json" --local-dir "$LOCAL_ROOT" \
     --chassis-source "$CAPJOBS_CHASSIS_SOURCE" "${SVIEW_ARG[@]}" \
-    --image-sha256 "$CAPJOBS_IMAGE_SHA256" --code-baseline "$CAPJOBS_CODE_SHA" \
+    --image-sha256 "$CAPJOBS_IMAGE_SHA256" --code-baseline "$BASELINE" \
     --container-runtime pyxis-enroot --nvidia-smi "$CAPJOBS_NVIDIA_SMI" >> "$LOG" 2>&1 \
     || env_invalid "hardware profile failed"
 
@@ -183,7 +188,7 @@ fi
 log "launches"
 "$PY" -m capjobs.launches --plan "$SNAP/launch_plan.json" \
     --overlay-manifest "$SNAP/overlay_manifest.json" --nvidia-smi "$CAPJOBS_NVIDIA_SMI" \
-    --snap "$SNAP" --job-dir "$JOB_DIR" \
+    --hw-profile "$JOB_DIR/env/hw_profile.json" --snap "$SNAP" --job-dir "$JOB_DIR" \
     --local-root "$LOCAL_ROOT" --shm-root "$SHM_ROOT" --run-root "$CAPJOBS_RUN_ROOT" \
     --job-id "$JOB_ID" --restart-count "$RESTART" --python "$PY" \
     --deadline-epoch "$CAPJOBS_DEADLINE_EPOCH" --out "$JOB_DIR/launches.json" >> "$LOG" 2>&1

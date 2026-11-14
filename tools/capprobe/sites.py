@@ -100,12 +100,17 @@ SITE_NOTES = {
                    "while the request is live (end markers and error items are not counted; "
                    "an item the engine cancelled is). Without a postprocessing pool, __anext__ "
                    "takes items only while the response handler waits for its next output and "
-                   "stops once the request has finished, so F2 - F4 is the backlog in the "
-                   "queue. With a pool, _feed takes every item as soon as it arrives and counts "
-                   "it while the postprocessing session is open, so F2 - F4 stays near 0 and the "
-                   "backlog sits after F4 (in the pool and the result queue); items _feed takes "
-                   "between handing the final event to the pool and the session closing are "
-                   "counted, which the path without a pool does not count"},
+                   "stops once the request has finished. With a pool, _feed takes every item as "
+                   "soon as it arrives and counts it while the postprocessing session is open, "
+                   "so the backlog sits after F4 (in the pool and the result queue). F2 - F4 is "
+                   "therefore the queue backlog only without a pool and only while every request "
+                   "finishes normally: F2 also counts error, unknown and overflow events, and "
+                   "events read after a request was aborted, failed or hit a stop string (with a "
+                   "pool: after its session closed) are read by F2 but never taken by F4; filter "
+                   "tiers by their failure counts before reading F2 - F4. The two paths also "
+                   "differ at the end of a request: _feed counts items it takes between handing "
+                   "the final event to the pool and the session closing, which __anext__ never "
+                   "takes"},
     "Lfe": {"what": "single new-architecture frontend: run() on its uvloop, once "
                     "facade.start() has returned, before the HTTP server starts"},
     "Lmfl": {"what": "multi-frontend launcher: _run_launcher on its loop, once every attached "

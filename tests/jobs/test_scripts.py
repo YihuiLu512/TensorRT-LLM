@@ -481,19 +481,21 @@ def test_batch_runs_main_and_fallback_steps(tmp_path):
 
 FAKE_PY = r'''#!/bin/bash
 printf '%%s\n' "$*" >> "%(calls)s"
+[[ $1 == -c && $2 == *base_commit* ]] && exec "%(real)s" "$@"
 [[ $1 == -c ]] && { echo "%(purelib)s"; exit 0; }
 [[ $1 == -m && $2 == capjobs.copyback ]] && exit 1   # finalize keeps the node-local dirs
 [[ $1 == -m && $2 == capenv.gate ]] && exit "${FAKE_GATE_RC:-0}"
 exit 0
 '''
 NVSMI_ROW = "0, GPU-0, 00000000:1B:00.0, NVIDIA B200, 183359, 0, 0, 580.1"
+BASE_COMMIT = "2" * 40
 
 
 def run_snap(tmp_path, **over):
     calls, purelib = tmp_path / "py_calls.txt", tmp_path / "purelib"
     purelib.mkdir()
     py = tmp_path / "fakepy"
-    py.write_text(FAKE_PY % {"calls": calls, "purelib": purelib})
+    py.write_text(FAKE_PY % {"calls": calls, "purelib": purelib, "real": sys.executable})
     py.chmod(0o755)
     smi = tmp_path / "nv" / "nvidia-smi"
     smi.parent.mkdir()
@@ -508,6 +510,8 @@ def run_snap(tmp_path, **over):
              "CAPJOBS_IMAGE_SHA256": "f" * 64, "CAPJOBS_SRUN_MPI": "pmix"}
     extra.update(over)
     snap = fake_snap(tmp_path, extra)
+    with open(os.path.join(snap, "overlay_manifest.json"), "w") as f:
+        json.dump({"tier": "P0", "base_commit": BASE_COMMIT, "capkit_code_sha": "c" * 40}, f)
     return snap, calls, smi
 
 
@@ -550,6 +554,9 @@ def test_inner_run_wires_registered_limits_into_profile_gate_and_launches(tmp_pa
     assert flag(prof, "--slurm-view-file") == str(jd / "env" / "slurm_view.json")
     assert flag(prof, "--local-dir") == local_root
     assert flag(prof, "--out") == str(jd / "env" / "hw_profile.json")
+    # SM-4: the profile's code_baseline is the TRT-LLM baseline (overlay manifest base_commit),
+    # not the capkit code sha (CAPJOBS_CODE_SHA)
+    assert flag(prof, "--code-baseline") == BASE_COMMIT
     gate = call_of(calls, "capenv.gate")
     for k, v in (("--max-alloc-gpus", "1"), ("--idle-window-s", "30"),
                  ("--idle-busy-max-frac", "0.02"), ("--nvidia-smi", str(smi)),
@@ -562,6 +569,7 @@ def test_inner_run_wires_registered_limits_into_profile_gate_and_launches(tmp_pa
     lau = call_of(calls, "capjobs.launches")
     assert flag(lau, "--nvidia-smi") == str(smi)
     assert flag(lau, "--overlay-manifest") == snap + "/overlay_manifest.json"
+    assert flag(lau, "--hw-profile") == str(jd / "env" / "hw_profile.json")
     # The recorded argv must be accepted by the real capenv components (cross-component names).
     from capenv import gate as real_gate
     from capenv import hwprofile as real_hwprofile
@@ -571,6 +579,20 @@ def test_inner_run_wires_registered_limits_into_profile_gate_and_launches(tmp_pa
     assert real_hwprofile.main(prof) == 0
     doc = json.load(open(jd / "env" / "hw_profile.json"))
     assert doc["profile"]["gpu_count"] == 1 and doc["profile"]["chassis_model"] == "DGXB200"
+
+
+def test_inner_without_base_commit_is_env_invalid(tmp_path):
+    snap, calls, _ = run_snap(tmp_path)
+    with open(os.path.join(snap, "overlay_manifest.json"), "w") as f:
+        json.dump({"tier": "P0"}, f)
+    jd = tmp_path / "runs" / "J4242-r0"
+    jd.mkdir()
+    slurm_view_doc(jd)
+    r = subprocess.run(["bash", INNER, snap, str(jd), "run"], capture_output=True, text=True,
+                       env=slurm_env(tmp_path))
+    assert r.returncode == 6
+    assert "base_commit" in read_state(str(jd))[-1][3]
+    assert "capenv.hwprofile" not in calls.read_text()
 
 
 def test_inner_unregistered_profile_capture_stops_at_gate(tmp_path):

@@ -356,7 +356,30 @@ def register_environment(workdir, row, register_sha, experiment):
     if env["chassis_source"] not in CHASSIS_SOURCES:
         raise SubmitError("register environment.chassis_source must be one of %s"
                           % (CHASSIS_SOURCES,))
-    return {"path": path, "sha256": sha, "environment": dict(env)}
+    return {"path": path, "sha256": sha, "environment": dict(env), "doc": doc}
+
+
+def check_plan_scenarios(plan, workdir, register_doc):
+    """Each launch's --workdir is --workdir and its --scenario is the file register.json lists
+    as files.scenario for that launch's arm (same relpath, same sha256): the check caplaunch
+    makes in the job, made before anything is submitted."""
+    has_f = "files" in register_doc
+    if has_f == ("files_by_arm" in register_doc):
+        raise SubmitError("register needs exactly one of files / files_by_arm")
+    root = os.path.realpath(workdir)
+    for ln in plan["launches"]:
+        wd, rel = launchplan.scenario_path(ln)
+        if os.path.realpath(wd) != root:
+            raise SubmitError("launch %d: --workdir %s is not --workdir %s"
+                              % (ln["launch_seq"], wd, workdir))
+        files = register_doc["files"] if has_f else \
+            (register_doc["files_by_arm"] or {}).get(ln["arm"])
+        regd = files.get("scenario") if isinstance(files, dict) else None
+        sha = sha256_file(os.path.join(root, rel))
+        if not isinstance(regd, dict) or regd.get("relpath") != rel or regd.get("sha256") != sha:
+            raise SubmitError("launch %d: scenario %s (sha %s) is not the register's "
+                              "files.scenario %r for arm %s"
+                              % (ln["launch_seq"], rel, sha, regd, ln["arm"]))
 
 
 def _plan_identity(a, plan):
@@ -423,7 +446,14 @@ def prepare_submit(a, code_state_fn):
         raise SubmitError("code HEAD %r is not a 40-hex sha" % head)
     overlay = _load_overlay_manifest(a.overlay_manifest, head)
     file_plan = snapshot.plan_files(code_root, includes, overlay)
-    launchplan.check_kill_grace(plan, code_root, set(file_plan))
+    launchplan.check_kill_grace(plan)
+    check_plan_scenarios(plan, workdir, reg["doc"])
+    for ln in plan["launches"]:
+        # caplaunch sets CAPKIT_CODE_SHA = --capkit-sha and refuses a different outer value; in the
+        # job the outer value is the overlay manifest's capkit_code_sha, i.e. this HEAD
+        if launchplan.flag_value(ln["argv"], "--capkit-sha") != head:
+            raise SubmitError("launch %d: --capkit-sha must be the code HEAD %s"
+                              % (ln["launch_seq"], head))
     for rel, sha, size in snapshot.overlay_entries(overlay):
         src = os.path.join(code_root, rel)
         if os.path.getsize(src) != size or sha256_file(src) != sha:

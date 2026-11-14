@@ -16,7 +16,7 @@ from capcommon.hashing import sha256_bytes
 from capcommon.runtree import read_state
 from conftest import CODE_ROOT
 
-from capjobs import copyback, envfiles, launches, overlay
+from capjobs import copyback, envfiles, launches, launchplan, overlay
 
 REG = "a" * 64
 
@@ -300,11 +300,14 @@ ap = argparse.ArgumentParser()
 ap.add_argument("--mode")
 for k in ("--experiment", "--arm", "--job-id", "--register-sha", "--role", "--run-dir",
           "--snap", "--overlay-manifest", "--nvidia-smi", "--job-env-dir", "--scenario",
-          "--kill-after-s"):
+          "--kill-after-s", "--workdir", "--pin-table"):
     ap.add_argument(k, required=k != "--mode")
 ap.add_argument("--launch-seq", type=int)
 ap.add_argument("--restart-count", type=int)
 a = ap.parse_args()
+if a.mode == "config":  # caplaunch refusing its inputs before it writes anything
+    print("caplaunch: scenario x does not match register entry", file=sys.stderr)
+    sys.exit(3)
 os.makedirs(os.path.join(a.run_dir, "raw", "tiers", "000_w"), exist_ok=True)
 with open(os.path.join(a.run_dir, "raw", "launch.json"), "w") as f:
     json.dump({"arm": a.arm, "seq": a.launch_seq, "role": a.role, "snap": a.snap,
@@ -312,7 +315,7 @@ with open(os.path.join(a.run_dir, "raw", "launch.json"), "w") as f:
                "tier": os.environ.get("CAPPROBE_TIER"),
                "patch": os.environ.get("CAPPROBE_PATCH_SHA"),
                "overlay_manifest": a.overlay_manifest, "nvidia_smi": a.nvidia_smi,
-               "job_env_dir": a.job_env_dir}, f)
+               "job_env_dir": a.job_env_dir, "pin_table": a.pin_table}, f)
 def orphan(ignore_term):
     # a role in its own session, as caplaunch starts them; it outlives this launcher
     code = ("import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN) if %r else None; "
@@ -349,33 +352,48 @@ if a.mode == "owndir":  # caplaunch's own --run-dir check (capcommon.snapshot.en
         print(e, file=sys.stderr)
         sys.exit(3)
     sys.exit(0)
-sys.exit({"ok": 0, "env": 6, "fail": 4, "notready": 5}[a.mode])
+sys.exit({"ok": 0, "env": 6, "fail": 4, "notready": 5, "config_late": 3}[a.mode])
 '''
+
+
+HW_SHA = "e" * 64
 
 
 def launch_env(tmp_path, modes, budgets=None, margin=1):
     fake = tmp_path / "fake_launch.py"
     fake.write_text(FAKE)
+    # {PY}: the container python; here a wrapper that finds the capkit packages (capenv.pins)
+    py = tmp_path / "py"
+    py.write_text("#!/bin/sh\nPYTHONPATH=%s exec %s \"$@\"\n"
+                  % (os.path.join(CODE_ROOT, "tools"), sys.executable))
+    py.chmod(0o755)
+    w = tmp_path / "W"
     reg = "b" * 64
     plan = {"schema": "capkit.launch_plan/1", "experiment": "E0", "register_sha": reg,
             "job_arm": "job", "margin_s": margin, "kill_grace_s": 1,
             "launches": [{"launch_seq": i, "arm": "arm%d" % i,
                           "budget_s": (budgets or {}).get(i, 60),
                           "argv": ["{PY}", str(fake), "--mode", m, "--snap", "{SNAP}",
-                                   "--scenario", "{SNAP}/scen.json", "--kill-after-s", "0.1"]}
+                                   "--workdir", str(w), "--scenario", "scen.json",
+                                   "--kill-after-s", "0.1"]}
                          for i, m in enumerate(modes)]}
     a = types.SimpleNamespace(
-        python=sys.executable, snap=str(tmp_path / "snap"),
+        python=str(py), snap=str(tmp_path / "snap"),
         job_dir=str(tmp_path / "runs" / "J9-r0"),
         shm_root=str(tmp_path / "shm"), local_root=str(tmp_path / "local"),
         run_root=str(tmp_path / "runs"), job_id="9", restart_count=0, deadline_epoch=1e12,
         overlay_manifest=str(tmp_path / "snap" / "overlay_manifest.json"),
-        nvidia_smi="/opt/x/nvidia-smi")
-    os.makedirs(a.job_dir)
+        nvidia_smi="/opt/x/nvidia-smi",
+        hw_profile=str(tmp_path / "runs" / "J9-r0" / "env" / "hw_profile.json"))
+    os.makedirs(os.path.dirname(a.hw_profile))
+    with open(a.hw_profile, "w") as f:
+        json.dump({"profile_sha256": HW_SHA}, f)
     os.makedirs(a.snap)
+    os.makedirs(str(w))
     os.mkdir(a.local_root, 0o700)  # capkit_inner.sh creates it (mkdir -m 700) before launches
-    with open(os.path.join(a.snap, "scen.json"), "w") as f:  # worst-case stop 0.4 s <= 1 s
-        json.dump({"stop_grace_s": 0.1, "stop_order": ["role"]}, f)
+    with open(os.path.join(str(w), "scen.json"), "w") as f:  # worst-case stop 0.4 s <= 1 s
+        json.dump({"stop_grace_s": 0.1, "stop_order": ["role"],
+                   "roles": [{"pin_role": "role", "cpus_needed": 1, "numa": None}]}, f)
     manifest = {"tier": "P2", "groups": ["count", "lag"], "capkit_code_sha": "c" * 40,
                 "target_commit": "d" * 40}
     return a, plan, manifest
@@ -394,12 +412,79 @@ def test_launches_statuses(tmp_path):
     assert doc == {"arm": "arm0", "seq": 0, "role": "launch", "snap": a.snap,
                    "code_sha": "c" * 40, "tier": "P2", "patch": "d" * 40,
                    "overlay_manifest": a.overlay_manifest, "nvidia_smi": "/opt/x/nvidia-smi",
-                   "job_env_dir": os.path.join(a.job_dir, "env")}
+                   "job_env_dir": os.path.join(a.job_dir, "env"),
+                   "pin_table": os.path.join(a.job_dir, "pins", "J9-r0-L0_arm0.pin_table.json")}
     assert not os.access(os.path.join(t0, "raw"), os.W_OK)
     assert read_state(os.path.join(a.run_root, "J9-r0-L2_arm2"))[0][1] == "NOT_RUN"
     assert not os.path.exists(os.path.join(a.run_root, "J9-r0-L4_arm4"))
     rec = json.load(open(os.path.join(a.job_dir, "copyback", "J9-r0-L0_arm0.verify.json")))
     assert rec["passed"] and rec["files_expected"] == 1
+
+
+def test_launches_generate_the_pin_table_on_the_node(tmp_path):
+    """SM-2: each launch gets a pin table generated in the job (capenv.pins on this node) with
+    this launch's identity and the job's hardware profile sha, inside this process's affinity;
+    it is passed as --pin-table (a plan cannot give one)."""
+    a, plan, manifest = launch_env(tmp_path, ["ok", "ok"])
+    res = launches.run_all(a, plan, manifest)
+    assert [r["status"] for r in res] == ["VALID", "VALID"], [r["reason"] for r in res]
+    for i in (0, 1):
+        path = os.path.join(a.job_dir, "pins", "J9-r0-L%d_arm%d.pin_table.json" % (i, i))
+        doc = json.load(open(path))
+        ident = doc["identity"]
+        assert (ident["experiment"], ident["arm"], ident["launch_seq"], ident["job_id"],
+                ident["restart_count"], ident["register_sha"], ident["role"]) == \
+            ("E0", "arm%d" % i, i, "9", 0, "b" * 64, "pins")
+        assert doc["source_sha"] == HW_SHA and doc["demand"][0]["role"] == "role"
+        assert set(doc["roles"]["role"]["cpus"]) <= os.sched_getaffinity(0)
+        assert res[i]["argv"][res[i]["argv"].index("--pin-table") + 1] == path
+    bad = dict(plan, launches=[dict(plan["launches"][0], argv=plan["launches"][0]["argv"]
+                                    + ["--pin-table", "/x.json"])])
+    with pytest.raises(launchplan.PlanError, match="--pin-table"):
+        launchplan.validate(bad)
+
+
+def test_launch_without_pin_table_is_not_run(tmp_path):
+    """No hardware profile (or a demand that does not fit) -> no pin table -> the launch is
+    skipped as NOT_RUN; nothing is started."""
+    a, plan, manifest = launch_env(tmp_path, ["ok"])
+    os.remove(a.hw_profile)
+    res = launches.run_all(a, plan, manifest)
+    assert res[0]["status"] == "NOT_RUN" and res[0]["ran"] is False
+    assert "pin table" in res[0]["reason"]
+    (tmp_path / "big").mkdir()
+    a, plan, manifest = launch_env(tmp_path / "big", ["ok"])
+    with open(os.path.join(str(tmp_path / "big" / "W"), "scen.json"), "w") as f:
+        json.dump({"stop_grace_s": 0.1, "stop_order": ["role"],
+                   "roles": [{"pin_role": "role", "cpus_needed": 100000, "numa": None}]}, f)
+    res = launches.run_all(a, plan, manifest)
+    assert res[0]["status"] == "NOT_RUN" and "capenv.pins generate exit 3" in res[0]["reason"]
+
+
+def test_config_error_before_launch_json_is_not_run(tmp_path, monkeypatch):
+    """SM-5: caplaunch exit 3 before it wrote raw/launch.json (no role can have started) is
+    NOT_RUN with the launcher's last stderr line, and its empty tree is not a copy-back failure;
+    exit 3 once launch.json exists stays VOID."""
+    monkeypatch.setattr(launches, "become_subreaper", lambda: False)  # not on pytest itself
+    a, plan, manifest = launch_env(tmp_path, ["config", "config_late"])
+    res = launches.run_all(a, plan, manifest)
+    assert [r["status"] for r in res] == ["NOT_RUN", "VOID"], [r["reason"] for r in res]
+    assert "does not match register entry" in res[0]["reason"]
+    assert "copy-back not verified" not in res[0]["reason"]
+    assert "nothing to copy back" in res[0]["reason"]
+    assert res[1]["reason"].startswith("launcher exit 3") or "exit 3" in res[1]["reason"]
+    (tmp_path / "m").mkdir()
+    b, plan, manifest = launch_env(tmp_path / "m", ["config"])
+    pp, mp = tmp_path / "plan.json", tmp_path / "manifest.json"
+    pp.write_text(json.dumps(plan))
+    mp.write_text(json.dumps(manifest))
+    out = os.path.join(b.job_dir, "launches.json")
+    assert launches.main(["--plan", str(pp), "--overlay-manifest", str(mp), "--nvidia-smi",
+                          b.nvidia_smi, "--snap", b.snap, "--hw-profile", b.hw_profile,
+                          "--job-dir", b.job_dir, "--local-root", b.local_root, "--shm-root",
+                          b.shm_root, "--run-root", b.run_root, "--job-id", "9", "--python",
+                          b.python, "--out", out, "--restart-count", "0",
+                          "--deadline-epoch", "1e12"]) == 0  # not a copy-back failure
 
 
 def test_launch_trees_are_private_under_umask_002(tmp_path, monkeypatch):
@@ -507,7 +592,8 @@ def run_main(a, plan, manifest, tmp_path):
                         "--overlay-manifest", str(mp), "--nvidia-smi", a.nvidia_smi, "--snap",
                         a.snap, "--job-dir", a.job_dir, "--local-root", a.local_root,
                         "--shm-root", a.shm_root, "--run-root", a.run_root, "--job-id", "9",
-                        "--python", sys.executable, "--out", out, "--restart-count", "0",
+                        "--hw-profile", a.hw_profile,
+                        "--python", a.python, "--out", out, "--restart-count", "0",
                         "--deadline-epoch", "1e12"], capture_output=True, text=True, env=env,
                        timeout=120)
     doc = json.load(open(out))
@@ -550,10 +636,10 @@ def test_launches_main_writes_record(tmp_path, monkeypatch):
     mp.write_text(json.dumps(manifest))
     out = os.path.join(a.job_dir, "launches.json")
     rc = launches.main(["--plan", str(pp), "--overlay-manifest", str(mp), "--nvidia-smi",
-                        "/opt/x/nvidia-smi", "--snap", a.snap,
+                        "/opt/x/nvidia-smi", "--snap", a.snap, "--hw-profile", a.hw_profile,
                         "--job-dir", a.job_dir, "--local-root", a.local_root, "--shm-root",
                         a.shm_root, "--run-root", a.run_root, "--job-id", "9", "--python",
-                        sys.executable, "--out", out, "--restart-count", "0",
+                        a.python, "--out", out, "--restart-count", "0",
                         "--deadline-epoch", "1e12"])
     assert rc == 0
     doc = json.load(open(out))
@@ -594,7 +680,8 @@ def test_sigterm_stops_launch_and_skips_the_rest(tmp_path):
                           "--overlay-manifest", str(mp), "--nvidia-smi", a.nvidia_smi, "--snap",
                           a.snap, "--job-dir", a.job_dir, "--local-root", a.local_root,
                           "--shm-root", a.shm_root, "--run-root", a.run_root, "--job-id", "9",
-                          "--python", sys.executable, "--out", out, "--restart-count", "0",
+                          "--hw-profile", a.hw_profile,
+                          "--python", a.python, "--out", out, "--restart-count", "0",
                           "--deadline-epoch", "1e12"], env=env)
     pid_file = os.path.join(a.local_root, "runs", "J9-r0-L0_arm0", "raw", "orphan.pid")
     end = time.monotonic() + 30

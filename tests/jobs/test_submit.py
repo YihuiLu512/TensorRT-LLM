@@ -29,6 +29,12 @@ class Env:
         os.makedirs(self.w)
         with open(os.path.join(self.w, "STATUS.md"), "w") as f:
             f.write("# STATUS\n\n- earlier line\n%s\n" % BASIS)
+        # the registered scenario: in <W>, listed in register.json files.scenario
+        self.scen_rel = "02_e0/E0/register/e0a-nullsse.scenario.json"
+        os.makedirs(os.path.join(self.w, os.path.dirname(self.scen_rel)))
+        with open(os.path.join(CODE_ROOT, "configs", "e0", "e0a-nullsse.scenario.json"),
+                  "rb") as f, open(os.path.join(self.w, self.scen_rel), "wb") as g:
+            g.write(f.read())
         self.reg_sha = self.register("register.json", REG_ENV)
         self.image = os.path.join(self.root, "img.sqsh")
         with open(self.image, "wb") as f:
@@ -53,16 +59,18 @@ class Env:
                      "register_sha": self.reg_sha, "job_arm": "job", "margin_s": 60,
                      "kill_grace_s": 60,
                      "launches": [{"launch_seq": i, "arm": arm, "budget_s": 600,
-                                   "argv": ["{PY}", "-m", "caplaunch", "--scenario",
-                                            "{SNAP}/configs/e0/e0a-nullsse.scenario.json",
-                                            "--kill-after-s", "2"]}
+                                   "argv": ["{PY}", "-m", "caplaunch", "--workdir", self.w,
+                                            "--scenario", self.scen_rel,
+                                            "--kill-after-s", "2", "--capkit-sha", HEAD]}
                                   for i, arm in enumerate(["nullsse-a", "sfe-a"])]}
         self.plan_path = self.write_json("plan.json", self.plan)
 
     def register(self, name, environment, experiment="E0"):
         """A real register.json under <W> with an "environment" section, entered in REGISTRY."""
         rel = "02_e0/E0/register/" + name
-        doc = {"schema": "capkit.register/1", "experiment": experiment, "arms": ["nullsse-a"]}
+        doc = {"schema": "capkit.register/1", "experiment": experiment, "arms": ["nullsse-a"],
+               "files": {"scenario": {"relpath": self.scen_rel, "sha256": sha256_file(
+                   os.path.join(self.w, self.scen_rel))}}}
         if environment is not None:
             doc["environment"] = environment
         p = os.path.join(self.w, rel)
@@ -316,6 +324,23 @@ def _forbidden_cases(env):
     env_extra = env.register("env-extra.json", dict(REG_ENV, cpu=1))
     env_frac = env.register("env-frac.json", dict(REG_ENV, idle_busy_max_frac=0))
     env_chassis = env.register("env-chassis.json", dict(REG_ENV, chassis_source="guess"))
+    other_scen = env.scen_rel.replace("e0a-nullsse", "copy")
+    with open(os.path.join(env.w, env.scen_rel), "rb") as f, \
+            open(os.path.join(env.w, other_scen), "wb") as g:
+        g.write(f.read())
+    def plan_argv(**kw):  # the plan with each launch's argv changed by kw (flag -> value)
+        lns = []
+        for ln in env.plan["launches"]:
+            argv = list(ln["argv"])
+            for k, v in kw.items():
+                argv[argv.index(k) + 1] = v
+            lns.append(dict(ln, argv=argv))
+        return dict(env.plan, launches=lns)
+    other_w = os.path.join(env.root, "W2")
+    os.makedirs(os.path.dirname(os.path.join(other_w, env.scen_rel)))
+    with open(os.path.join(env.w, env.scen_rel), "rb") as f, \
+            open(os.path.join(other_w, env.scen_rel), "wb") as g:
+        g.write(f.read())
     lib_link = os.path.join(env.root, "lib-link")
     os.symlink("/home/scratch.trt_llm_data_ci/llm-models", lib_link)
     return {
@@ -372,7 +397,14 @@ def _forbidden_cases(env):
         "nvidia_smi_from_path": {"--nvidia-smi": "nvidia-smi"},
         "kill_grace_below_worst_stop": {"--launch-plan": env.write_json(
             "pk.json", dict(env.plan, kill_grace_s=51))},
-        "scenario_not_in_snapshot": {"--include": False},
+        "scenario_not_registered": {"--launch-plan": env.write_json(
+            "ps.json", plan_argv(**{"--scenario": other_scen}))},
+        "scenario_snap_path": {"--launch-plan": env.write_json(
+            "pq.json", plan_argv(**{"--scenario": "{SNAP}/configs/e0/e0a-nullsse.scenario.json"}))},
+        "scenario_other_workdir": {"--launch-plan": env.write_json(
+            "pw.json", plan_argv(**{"--workdir": other_w}))},
+        "capkit_sha_not_head": {"--launch-plan": env.write_json(
+            "pc2.json", plan_argv(**{"--capkit-sha": "b" * 40}))},
     }
 
 
@@ -396,7 +428,10 @@ EXPECTED_REASON = {
     "mount_readonly_for_writes": "is not under an identity rw mount",
     "mount_no_secondary_disk": "secondary scratch disk",
     "mount_secondary_not_identity": "secondary scratch disk",
-    "scenario_not_in_snapshot": "not in the job snapshot",
+    "scenario_not_registered": "is not the register's files.scenario",
+    "scenario_snap_path": "must be literal paths",
+    "scenario_other_workdir": "is not --workdir",
+    "capkit_sha_not_head": "--capkit-sha must be the code HEAD",
 }
 
 

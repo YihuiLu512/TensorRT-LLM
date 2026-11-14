@@ -22,7 +22,7 @@ cd <C> && systemd-run --user --scope -q -p MemoryMax=6G timeout 600 \
   <venv>/bin/python -m pytest -q -p no:cacheprovider tests/<目录>
 ```
 
-`<venv>` = `/home/scratch.yihlu_coreai/tmp/20261106-wt03-venv/venv`（Python 3.11、grpcio、psutil、pytest；无 uvloop / numpy / tensorrt_llm）。本 VM 上 `systemd-run --user -p MemoryMax` 实际不生效（cgroup v1，B4 实测）。下表「测试结果」是集成提交前最后一轮（2026-11-13 r2）。
+`<venv>` = `/home/scratch.yihlu_coreai/tmp/20261106-wt03-venv/venv`（Python 3.11、grpcio、psutil、pytest；无 uvloop / numpy / tensorrt_llm）。本 VM 上 `systemd-run --user -p MemoryMax` 实际不生效（cgroup v1，B4 实测）。下表「测试结果」是集成提交前最后一轮（2026-11-13 r2）的记录，其中的命令与数字是当时的，不要照抄：判定器自测的 `--expect-samples` 取 `samples/` 下带 `expect.json` 的样本目录数（见 `samples/README.md`）。
 
 | 件 | 包 / 目录 | 批 | 状态 | 测试与结果 | 已知缺口 |
 |---|---|---|---|---|---|

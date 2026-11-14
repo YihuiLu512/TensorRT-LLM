@@ -66,18 +66,37 @@ def test_invalid_scenarios_rejected(mutate, needle):
     assert needle in str(e.value)
 
 
-@pytest.mark.parametrize("tier", ["P1", "P2"])
-def test_probed_product_role_must_expect_snapshots(tier):
-    """A product role with probe groups on (P1/P2) must be an expected snapshot writer: with
-    snapshots none a probe silently switched off would leave nothing missing for the judge."""
+@pytest.mark.parametrize("tier,scope,ok", [
+    ("P0", "none", True), ("P0", "all", True),
+    ("P1", "none", True), ("P1", "all", True), ("P1", "workers", True),
+    ("P2", "none", False), ("P2", "workers", False), ("P2", "all", True),
+])
+def test_snapshot_writing_product_role_must_expect_all_snapshots(tier, scope, ok):
+    """S1 / RS19: only a role that writes snapshots (product, P2) is constrained, and to scope
+    all: with none or workers a probe that stayed off in its started process would leave nothing
+    missing for the judge. P0 / P1 roles write none, so any scope is accepted."""
     d = _doc()
     d["probe_tier"] = tier
     d["probe_groups"] = ["count"] if tier == "P2" else []
-    d["roles"][1].update(probe_tier=tier, snapshots="none")
-    with pytest.raises(ConfigError) as e:
+    d["roles"][1].update(probe_tier=tier, snapshots=scope)
+    if ok:
         sc.validate_scenario(d)
-    assert "runs probe groups; snapshots must not be none" in str(e.value)
-    d["roles"][1].update(snapshots="all")
+    else:
+        with pytest.raises(ConfigError, match="probe_tier P2 writes snapshots; snapshots must "
+                                              "be all"):
+            sc.validate_scenario(d)
+
+
+def test_lag_group_needs_the_lag_period_param():
+    """S2 / RS20: the orchestrator sets CAPPROBE_LAG_PERIOD_US from the scenario param
+    lag_period_us, so a lag group on product roles without that param is refused."""
+    d = _doc()
+    d["probe_tier"] = "P2"
+    d["probe_groups"] = ["count", "lag"]
+    d["roles"][1].update(probe_tier="P2", snapshots="all")
+    with pytest.raises(ConfigError, match="lag_period_us"):
+        sc.validate_scenario(d)
+    d["params_required"] = ["lag_period_us"]
     sc.validate_scenario(d)
 
 

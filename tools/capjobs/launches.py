@@ -4,13 +4,16 @@
 the job's STATE line to each launch tree, after the launcher's own (INTERFACES.md 5.1, 5.7, 5.9).
 
     python -m capjobs.launches --plan <snap>/launch_plan.json --overlay-manifest <snap>/... \
-        --nvidia-smi PATH --snap S --job-dir JD --local-root L --shm-root SH --run-root R \
-        --job-id J --restart-count N --python PY --deadline-epoch E --out <job dir>/launches.json
+        --nvidia-smi PATH --hw-profile <job dir>/env/hw_profile.json --snap S --job-dir JD \
+        --local-root L --shm-root SH --run-root R --job-id J --restart-count N --python PY \
+        --deadline-epoch E --out <job dir>/launches.json
 
 Per launch: skip (NOT_RUN, recorded) when the remaining allocation time is below
 budget_s + kill_grace_s + margin_s, or an earlier launch ended ENV_INVALID or left processes that
-survived SIGKILL; otherwise run the plan's argv with --overlay-manifest, --nvidia-smi,
---job-env-dir <job dir>/env and the identity arguments appended, under a budget_s timeout; kill
+survived SIGKILL; generate its pin table on this node (pin_table(); a failure skips the launch as
+NOT_RUN); otherwise run the plan's argv with --overlay-manifest, --nvidia-smi,
+--job-env-dir <job dir>/env, --pin-table and the identity arguments appended, under a budget_s
+timeout; kill
 whatever the launch left behind; copy <L>/runs/<tree> to <R>/<tree>; verify; chmod a-w raw/;
 append STATE. Status of that STATE line:
   copy-back not verified -> VOID; a process survived SIGKILL -> VOID; budget exceeded (killed) ->
@@ -21,7 +24,8 @@ append STATE. Status of that STATE line:
   otherwise the launcher's own last STATE line in the tree (by "caplaunch") when it wrote one and
   its exit code agrees (0 or 5 for VALID) -> that status; disagreement -> VOID;
   no launcher STATE: a control/stop.json reason in NOT_RUN_STOPS with exit 5 -> NOT_RUN;
-  exit 0 -> VALID;
+  exit 3 and no raw/launch.json (a config error before any role could start) -> NOT_RUN, with the
+  last line of the launcher's stderr as the reason; exit 0 -> VALID;
   exit 6 -> ENV_INVALID; any other exit -> VOID.
 Process tree: the launcher's descendants are recorded while it runs (and this process is a child
 subreaper when run as main, so orphans re-parent here); after the launcher is gone, every recorded
@@ -41,7 +45,7 @@ import sys
 import time
 
 from capcommon.clock import wall_iso
-from capcommon.exitcodes import ENV_INVALID, OK, RUNTIME, STOPPED_EARLY, CapkitError
+from capcommon.exitcodes import CONFIG, ENV_INVALID, OK, RUNTIME, STOPPED_EARLY, CapkitError
 from capcommon.identity import Identity
 from capcommon.jsonio import write_json_stamped
 from capcommon.runtree import append_state, read_state, tree_dir_name, worst_state
@@ -90,14 +94,50 @@ def probe_env(manifest_doc, base_env):
 
 
 def launch_argv(plan, ln, values, job_id, restart_count, run_dir, overlay_manifest, nvidia_smi,
-                job_env_dir):
+                job_env_dir, pin_table_path):
     argv = [launchplan.substitute(x, values) for x in ln["argv"]]
     return argv + ["--overlay-manifest", overlay_manifest, "--nvidia-smi", nvidia_smi,
-                   "--job-env-dir", job_env_dir,
+                   "--job-env-dir", job_env_dir, "--pin-table", pin_table_path,
                    "--experiment", plan["experiment"], "--arm", ln["arm"],
                    "--launch-seq", str(ln["launch_seq"]), "--job-id", str(job_id),
                    "--restart-count", str(restart_count), "--register-sha", plan["register_sha"],
                    "--role", "launch", "--run-dir", run_dir]
+
+
+PINS_TIMEOUT_S = 120
+
+
+def pin_table(a, plan, ln, env, out_path):
+    """Generate one launch's pin table on this node with capenv.pins generate (INTERFACES.md
+    5.5.1; plan RESOURCES 5 item 5): demand = the launch scenario's roles
+    [{pin_role, cpus_needed, numa}], --source-sha = profile_sha256 of this job's hardware profile
+    (--hw-profile), CPUs outside this process's affinity avoided, identity = this launch with role
+    "pins". Returns None, or why no table was written."""
+    try:
+        roles = launchplan.load_scenario(ln)["roles"]
+        demand = [{"role": r["pin_role"], "cpus_needed": r["cpus_needed"], "numa": r["numa"]}
+                  for r in roles]
+        with open(a.hw_profile, "r", encoding="utf-8") as f:
+            hw_sha = json.load(f)["profile_sha256"]
+    except (CapkitError, OSError, ValueError, KeyError, TypeError) as e:
+        return "pin table: %s: %s" % (type(e).__name__, e)
+    dpath = out_path + ".demand.json"
+    with open(dpath, "w", encoding="utf-8") as f:
+        json.dump(demand, f)
+    argv = [a.python, "-m", "capenv.pins", "generate", "--experiment", plan["experiment"],
+            "--arm", ln["arm"], "--launch-seq", str(ln["launch_seq"]), "--job-id", str(a.job_id),
+            "--restart-count", str(a.restart_count), "--register-sha", plan["register_sha"],
+            "--role", "pins", "--demand", dpath, "--out", out_path, "--source-sha", str(hw_sha),
+            "--only-affinity"]
+    try:
+        with open(out_path + ".log", "wb") as log:
+            rc = subprocess.run(argv, env=env, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
+                                timeout=PINS_TIMEOUT_S).returncode
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return "pin table: %s" % e
+    if rc != 0 or not os.path.isfile(out_path):
+        return "pin table: capenv.pins generate exit %r (log %s.log)" % (rc, out_path)
+    return None
 
 
 def become_subreaper():
@@ -237,6 +277,20 @@ def _on_sigterm(_signum, _frame):
     _TERMINATED.append(time.monotonic())
 
 
+def early_config_error(tree, err_path):
+    """The launcher's last non-empty stderr line when the tree has no raw/launch.json (else
+    None): caplaunch starts roles only after writing it."""
+    if os.path.exists(os.path.join(tree, "raw", "launch.json")):
+        return None
+    try:
+        with open(err_path, "rb") as f:
+            lines = [ln.strip() for ln in f.read().decode("utf-8", "replace").splitlines()]
+    except OSError:
+        return "(launcher stderr unreadable)"
+    lines = [ln for ln in lines if ln]
+    return lines[-1][-500:] if lines else "(launcher stderr empty)"
+
+
 def stop_reason(tree):
     try:
         with open(os.path.join(tree, "control", "stop.json"), "r", encoding="utf-8") as f:
@@ -260,11 +314,14 @@ NOT_RUN_STOPS = ("not_ready_before_origin", "overlay_manifest_missing", "job_env
                  "orchestrator_signalled")
 
 
-def classify(rc, timed_out, stop, recorded=None, terminated=False):
+def classify(rc, timed_out, stop, recorded=None, terminated=False, early_config_error=None):
     """The launcher's recorded STATE is the more specific record and wins unless the launch was
     killed for overrunning its budget or the exit code contradicts it. A launch stopped because
     the job got SIGTERM did not finish measuring: NOT_RUN. A budget kill or SIGTERM only makes the
-    launcher's own record worse (runtree.worst_state), never better."""
+    launcher's own record worse (runtree.worst_state), never better. early_config_error (the
+    launcher's last stderr line, given only when the tree has no raw/launch.json): exit 3 there
+    means caplaunch refused its configuration before starting any role (roles start after
+    launch.json is written), so nothing was measured: NOT_RUN."""
     if timed_out or terminated:
         mine = "VOID" if timed_out else "NOT_RUN"
         why = ("launcher exceeded its budget and was killed (rc=%r)" % rc if timed_out else
@@ -280,6 +337,9 @@ def classify(rc, timed_out, stop, recorded=None, terminated=False):
         return "VOID", "launcher STATE VALID but exit %r: %s" % (rc, why)
     if stop in NOT_RUN_STOPS and rc == STOPPED_EARLY:
         return "NOT_RUN", "launcher stopped: %s (rc=%r)" % (stop, rc)
+    if rc == CONFIG and early_config_error is not None:
+        return "NOT_RUN", "launcher refused its configuration before starting any role (rc=3): " \
+            "%s" % early_config_error
     if rc == OK:
         return "VALID", "launcher exit 0"
     if rc == ENV_INVALID:
@@ -294,6 +354,7 @@ def run_all(a, plan, manifest_doc, now_fn=time.time):
               "LOCAL_ROOT": a.local_root, "JOB_ID": a.job_id, "RESTART_COUNT": a.restart_count}
     private_mkdir(os.path.join(a.local_root, "runs"), exist_ok=True)
     private_mkdir(os.path.join(a.local_root, "logs"), exist_ok=True)
+    pins_dir = private_mkdir(os.path.join(a.job_dir, "pins"), exist_ok=True)
     halted = None
     for ln in plan["launches"]:
         name = tree_dir_name(a.job_id, a.restart_count, ln["launch_seq"], ln["arm"])
@@ -311,10 +372,15 @@ def run_all(a, plan, manifest_doc, now_fn=time.time):
                      "kill grace %d s + margin %d s" % (left, ln["budget_s"], grace,
                                                         plan["margin_s"]))
             continue
+        pins = os.path.join(pins_dir, name + ".pin_table.json")
+        why = pin_table(a, plan, ln, env, pins)
+        if why is not None:
+            r.update(ran=False, status="NOT_RUN", reason="skipped: " + why)
+            continue
         local = os.path.join(a.local_root, "runs", name)
         private_mkdir(local)
         argv = launch_argv(plan, ln, values, a.job_id, a.restart_count, local, a.overlay_manifest,
-                           a.nvidia_smi, os.path.join(a.job_dir, "env"))
+                           a.nvidia_smi, os.path.join(a.job_dir, "env"), pins)
         r["argv"] = argv
         r["started_wall"] = wall_iso()
         logs = os.path.join(a.local_root, "logs", name)
@@ -323,7 +389,7 @@ def run_all(a, plan, manifest_doc, now_fn=time.time):
         r.update(ran=True, rc=rc, timed_out=timed_out, terminated=terminated,
                  ended_wall=wall_iso(), leftovers=leftovers)
         status, reason = classify(rc, timed_out, stop_reason(local), launcher_state(local),
-                                  terminated)
+                                  terminated, early_config_error(local, logs + ".launcher.err"))
         survived = [x["pid"] for x in leftovers if x["survived_sigkill"]]
         if leftovers:
             reason = "%s; %d leftover process(es) killed after the launcher exited" % (
@@ -342,6 +408,8 @@ def run_all(a, plan, manifest_doc, now_fn=time.time):
             copyback.lock_raw(dst)
             reason = "%s; copy-back verified %d files %d bytes" % (
                 reason, rec["files_expected"], rec["bytes_expected"])
+        elif status == "NOT_RUN" and rec.get("outcome") == "NOT_RUN":
+            reason = "%s; nothing to copy back (no file in the launch tree)" % reason
         else:
             status = worst_state([status, "VOID"])
             reason = "copy-back not verified (%s); %s" % (rec["outcome"], reason)
@@ -357,15 +425,15 @@ def run_all(a, plan, manifest_doc, now_fn=time.time):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m capjobs.launches")
-    for k in ("--plan", "--overlay-manifest", "--nvidia-smi", "--snap", "--job-dir", "--local-root",
-              "--shm-root", "--run-root", "--job-id", "--python", "--out"):
+    for k in ("--plan", "--overlay-manifest", "--nvidia-smi", "--hw-profile", "--snap", "--job-dir",
+              "--local-root", "--shm-root", "--run-root", "--job-id", "--python", "--out"):
         ap.add_argument(k, required=True)
     ap.add_argument("--restart-count", required=True, type=int)
     ap.add_argument("--deadline-epoch", required=True, type=float)
     a = ap.parse_args(argv)
     try:
         plan = launchplan.load(a.plan)
-        launchplan.check_kill_grace(plan, a.snap)
+        launchplan.check_kill_grace(plan)
         with open(a.overlay_manifest, "r", encoding="utf-8") as f:
             manifest_doc = json.load(f)
         ident = Identity(experiment=plan["experiment"], arm=plan["job_arm"], launch_seq=0,
@@ -387,7 +455,9 @@ def main(argv=None):
     for r in results:
         print("capjobs.launches: L%d %s %s %s" % (r["launch_seq"], r["arm"], r.get("status"),
                                                  r.get("reason")))
-    if any(r.get("copyback", {}).get("outcome") not in (None, "PASS") for r in results):
+    if any(r.get("copyback", {}).get("outcome") not in (None, "PASS")
+           and not (r.get("status") == "NOT_RUN" and r["copyback"]["outcome"] == "NOT_RUN")
+           for r in results):
         return RUNTIME
     if any(r.get("status") == "ENV_INVALID" for r in results):
         return ENV_INVALID

@@ -31,7 +31,7 @@ python -m capenv.gate <身份> --run-dir <作业目录> --phase {pre,post}
 - `pre`：RESOURCES §3 第 1～6 项 → `env/exclusivity.json`；`hw_gate.json`；`memguard.json`（本进程 + `--roles-file` 里的 pid）。`post`：第 1～5 项 → `env/exclusivity.post.json`。
 - **任何一项不是 PASS（RED 或 NOT_RUN）门禁就是 `ENV_INVALID`**：查不了的项不算通过。
 - 第 1～3 项先在容器里跑 `scontrol` / `squeue`；命令不存在或返回非 0 时等 `--slurm-view-file` 出现（最多 `--slurm-view-wait-s` 秒），用它的原文判同样的条件，`source` 写 `slurm_view`。
-- 各项判据：1 `JobId` 等于本作业、`OverSubscribe=NO`、TRES 里的 GPU 数 ≤ `--max-alloc-gpus`（输出里没有 `TRES`/`AllocTRES` 记红：分配读不到不等于 0 张）；2 `NodeName` 对、`CPUAlloc == CPUTot`；3 退出码 0、列出本作业（阳性对照，列不出 ⇒ NOT_RUN）、没有别的作业；4 `/proc/self/status` 的 `Cpus_allowed_list` 覆盖全部在线核（掩码里多出的离线 possible 核不算问题，本 VM 上就是 `0-95` 对在线 `0-23`）；5 用 `--nvidia-smi` 指定的可执行文件、经 `capenv.gpu.check_visible` 判「可见数 == `--max-alloc-gpus`」且无计算进程：请求 ≥1 张时先要列出 ≥1 张（阳性对照，否则 NOT_RUN），张数不等记红；请求 0 张时要求 nvidia-smi 报告没有卡（查询成功且为空，或输出 `No devices were found`），看见卡记红、查不了记 NOT_RUN，阳性对照与计算进程检查需要一张卡，记 NOT_RUN 并写明原因；6 空转 `--idle-window-s` 秒、每个在线核的忙碌比例（user+nice+system+irq+softirq+steal ÷ 全部 tick）≤ `--idle-busy-max-frac`；每核另记 `irq_ticks`、`softirq_ticks`（D14 的空载读数）。**不给第 6 项的两个参数时第 6 项 NOT_RUN ⇒ 门禁 ENV_INVALID**（窗口与阈值「待 E0 试点」，由登记表给出）。
+- 各项判据：1 `JobId` 等于本作业、`OverSubscribe=NO`、申请的 GPU 数（`ReqTRES`；输出里没有它时按分配数 `TRES`/`AllocTRES`）≤ `--max-alloc-gpus`，分配数照原样记在 `alloc_gpus`（整机独占时是整台的卡数；可用几张由第 5 项核）（三者都没有记红：读不到不等于 0 张）；2 `NodeName` 对、`CPUAlloc == CPUTot`；3 退出码 0、列出本作业（阳性对照，列不出 ⇒ NOT_RUN）、没有别的作业；4 `/proc/self/status` 的 `Cpus_allowed_list` 覆盖全部在线核（掩码里多出的离线 possible 核不算问题，本 VM 上就是 `0-95` 对在线 `0-23`）；5 用 `--nvidia-smi` 指定的可执行文件、经 `capenv.gpu.check_visible` 判「可见数 == `--max-alloc-gpus`」且无计算进程：请求 ≥1 张时先要列出 ≥1 张（阳性对照，否则 NOT_RUN），张数不等记红；请求 0 张时要求 nvidia-smi 报告没有卡（查询成功且为空，或输出 `No devices were found`），看见卡记红、查不了记 NOT_RUN，阳性对照与计算进程检查需要一张卡，记 NOT_RUN 并写明原因；6 空转 `--idle-window-s` 秒、每个在线核的忙碌比例（user+nice+system+irq+softirq+steal ÷ 全部 tick）≤ `--idle-busy-max-frac`；每核另记 `irq_ticks`、`softirq_ticks`（D14 的空载读数）。**不给第 6 项的两个参数时第 6 项 NOT_RUN ⇒ 门禁 ENV_INVALID**（窗口与阈值「待 E0 试点」，由登记表给出）。
 - `hw_gate.json`：本节点画像 sha 等于 `--registered-hw-sha` 即过；不等时只有 `--comparable-file` 里登记了全部差异字段才过。可比登记文件格式（本组件定义，INTERFACES 未定义）：`{"schema":"capkit.hw_comparable/1","registered_profile":{…主型号画像，恰好 §5.5.3 的键…},"comparable_fields":["kernel",…],"evidence":{…}}`；门禁先核对 `profile_sha256(registered_profile) == --registered-hw-sha`。
 
 ### `python -m capenv.hwprofile`
@@ -44,15 +44,15 @@ python -m capenv.hwprofile <身份> --out env/hw_profile.json --raw-out env/hw_r
 ```
 
 - `hw_profile.json`（`capkit.hw_profile/1`）的载荷：`profile`（**恰好** `capcommon.hwprofile` 的 IDENTITY_FIELDS + OBSERVED_FIELDS）、`profile_sha256`、`sha_fields`、`raw_file_sha256`、`unreadable_identity_fields`。读：`capenv.hwprofile.load_profile(path)`（会重算 sha 核对）。
-- **进 sha 的字段**（identity）：`chassis_model cpu_arch cpu_model sockets cores_per_socket threads_per_core microcode numa_layout cpu_governor mem_total_gib mem_per_numa_gib gpu_model gpu_count gpu_mem_mib gpu_driver nics local_disk_type kernel container_runtime image_sha256 code_baseline`。**不进 sha**（observed）：`node_name partition collected_at collected_mono_ns cpu_freq_khz mem_available_kib local_disk_free_bytes nic_link sources`。读不到写 `{"unreadable": 原因}`，identity 键的这个标记也进 sha（原因文字也在内）。
-- 取法：lscpu（`LC_ALL=C`）、`/proc/cpuinfo` 的 microcode、`/sys/devices/system/node`、cpufreq、`/proc/meminfo`、`--nvidia-smi` 指定的 `nvidia-smi --query-gpu`（`memory.total` 读不到时 `gpu_mem_mib` 记 unreadable）、`/sys/class/net/*`（只有带 `device` 链接的才算物理网卡；型号写 PCI `vendor:device`，速率读不到写 unreadable）、mountinfo + `/sys/dev/block` 定本地盘类型。`chassis_model` 的来源由 `--chassis-source` 显式指定：`slurm_view`（`scontrol show node` 原文里的 `SystemProductName`，与 capcommon 文档一致）或 `dmi`（`/sys/class/dmi/id/product_name`）。同一研究里必须始终用同一个来源，否则 sha 会因来源不同而不同。
+- **进 sha 的字段**（identity）：`chassis_model cpu_arch cpu_model sockets cores_per_socket threads_per_core microcode numa_layout cpu_governor mem_total_gib mem_per_numa_gib gpu_model gpu_count gpu_mem_mib gpu_driver nics local_disk_type kernel container_runtime image_sha256 code_baseline`。**不进 sha**（observed）：`node_name partition collected_at collected_mono_ns cpu_freq_khz mem_available_kib local_disk_free_bytes netdevs nic_link sources`。读不到写 `{"unreadable": 原因}`，identity 键的这个标记也进 sha（原因文字也在内）。
+- 取法：lscpu（`LC_ALL=C`）、`/proc/cpuinfo` 的 microcode、`/sys/devices/system/node`、cpufreq、`/proc/meminfo`、`--nvidia-smi` 指定的 `nvidia-smi --query-gpu`（`memory.total` 读不到时 `gpu_mem_mib` 记 unreadable）、`nics` 取 `/sys/bus/pci/devices` 里 class 为 `0x02xxxx` 的设备（SR-IOV 虚拟功能除外）按 PCI `vendor:device` 计数；`/sys/class/net/*`（只有带 `device` 链接的才算）的型号与速率记进 observed 的 `netdevs`（速率读不到写 unreadable）、mountinfo + `/sys/dev/block` 定本地盘类型。`chassis_model` 的来源由 `--chassis-source` 显式指定：`slurm_view`（`scontrol show node` 原文里的 `SystemProductName`，与 capcommon 文档一致）或 `dmi`（`/sys/class/dmi/id/product_name`）。同一研究里必须始终用同一个来源，否则 sha 会因来源不同而不同。
 - `hw_raw.json`（`capkit.hw_raw/1`）放没有画像键的原始证据：`lscpu`、`lscpu -e`、`lscpu -p`、`numactl -H`、`free -b`、`lsblk`、`df` 原文与退出码，`iommu_groups_count`、DMI 产品名、超线程兄弟表（topology.summary）、uname。
 
 ### `python -m capenv.pins`
 
 ```
 python -m capenv.pins generate <身份> --demand FILE --out env/pin_table.json --source-sha <hw sha>
-    [--lscpu-file PATH] [--avoid-cpus LIST] [--primary-numa N]
+    [--lscpu-file PATH] [--avoid-cpus LIST] [--only-affinity] [--primary-numa N]
 python -m capenv.pins verify <身份> --pin-table PATH --roles-file PATH --out env/pin_readback.json
 ```
 

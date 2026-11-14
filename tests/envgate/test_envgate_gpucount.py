@@ -19,7 +19,7 @@ from capcommon.hwprofile import profile_sha256
 from capcommon.jsonio import read_json
 from capenv import gate, gpu, hwprofile
 from test_envgate_gate import (GPU_LINE, JOB, Args, _ident, fake_runner, good_table,  # noqa: F401
-                               jobdir, nvsmi)
+                               NODE_OK, jobdir, nvsmi)
 
 GPU_LINE2 = GPU_LINE.replace("0, GPU-abc, 00000000:1B:00.0", "1, GPU-def, 00000000:2B:00.0")
 NO_DEV = "No devices were found\n"
@@ -249,3 +249,21 @@ def test_item1_without_tres_is_not_zero_gpus(jobdir):
     out = _gate(d, prof, good_table(scontrol=lambda a: (0, no_tres) if a[2] == "job" else (
         0, "NodeName=node-a CPUAlloc=24 CPUTot=24")))
     assert out["items"]["1"] == "RED" and "TRES" in out["reasons"][0]
+
+
+WHOLE_NODE = ("JobId=4242 OverSubscribe=NO NodeList=node-a "
+              "ReqTRES=cpu=224,mem=1900G,node=1,billing=1,gres/gpu=%d,gres/gpu:b200=%d "
+              "AllocTRES=cpu=224,mem=1900G,node=1,billing=8,gres/gpu=8,gres/gpu:b200=8 "
+              "TresPerNode=gres/gpu:b200:%d Partition=p1")
+
+
+@pytest.mark.parametrize("req,status", [(1, "PASS"), (2, "RED")])
+def test_item1_checks_the_requested_gpus_on_a_whole_node(jobdir, req, status):
+    """SM-10: with --exclusive Slurm records every GPU of the node in AllocTRES (8 here) although
+    one was requested; item 1 checks the request (ReqTRES) and records the allocation."""
+    d, prof = jobdir
+    out = _gate(d, prof, good_table(scontrol=lambda a: (0, WHOLE_NODE % (req, req, req))
+                                    if a[2] == "job" else (0, NODE_OK)))
+    assert out["items"]["1"] == status, out["reasons"]
+    it1 = read_json(os.path.join(d, "env", "exclusivity.json"))["items"][0]["detail"]
+    assert (it1["req_gpus"], it1["alloc_gpus"], it1["gpus_checked_from"]) == (req, 8, "ReqTRES")

@@ -234,12 +234,13 @@ class Collector:
                 self.put(k, unreadable(why), None)
 
     def nics(self):
+        self.pci_nics()
         base = os.path.join(self.sys_root, "class/net")
         nics, link = [], {}
         try:
             names = sorted(os.listdir(base))
         except OSError as e:
-            self.put("nics", unreadable("cannot list %s: %s" % (base, e)), None)
+            self.put("netdevs", unreadable("cannot list %s: %s" % (base, e)), None)
             self.put("nic_link", unreadable("cannot list %s" % base), None)
             return
         for n in names:
@@ -263,8 +264,35 @@ class Collector:
                          "speed_mbps": speed if speed is not None and speed >= 0 else
                          unreadable(serr or "speed %r (link down?)" % (spd or "").strip())})
         nics.sort(key=lambda x: json.dumps(x, sort_keys=True))
-        self.put("nics", nics, "container:/sys/class/net")
+        self.put("netdevs", nics, "container:/sys/class/net")
         self.put("nic_link", link, "container:/sys/class/net")
+
+    def pci_nics(self):
+        """Identity "nics": network controllers (PCI class 0x02xxxx) counted by vendor:device,
+        SR-IOV virtual functions (a physfn link) left out. Which network interfaces a container
+        sees and their link state are not hardware identity (they go to netdevs / nic_link)."""
+        base = os.path.join(self.sys_root, "bus/pci/devices")
+        try:
+            addrs = sorted(os.listdir(base))
+        except OSError as e:
+            self.put("nics", unreadable("cannot list %s: %s" % (base, e)), None)
+            return
+        counts = {}
+        for a in addrs:
+            d = os.path.join(base, a)
+            cls, cerr = procfs.try_read_text(os.path.join(d, "class"))
+            if cls is None:
+                self.put("nics", unreadable("%s/class: %s" % (a, cerr)), None)
+                return
+            if not cls.strip().lower().startswith("0x02") or \
+                    os.path.lexists(os.path.join(d, "physfn")):
+                continue
+            ven, _ = procfs.try_read_text(os.path.join(d, "vendor"))
+            dev, _ = procfs.try_read_text(os.path.join(d, "device"))
+            model = "%s:%s" % ((ven or "?").strip(), (dev or "?").strip())
+            counts[model] = counts.get(model, 0) + 1
+        self.put("nics", [{"model": m, "count": n} for m, n in sorted(counts.items())],
+                 "container:/sys/bus/pci")
 
     def disk(self):
         self._raw_cmd("lsblk", ["lsblk", "-o", "NAME,MAJ:MIN,TYPE,ROTA,TRAN,MODEL,SIZE,MOUNTPOINT"])

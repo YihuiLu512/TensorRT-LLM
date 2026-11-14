@@ -38,6 +38,9 @@ from .ready import (ReadyError, http_get_status, read_capkit_port, read_capkit_r
                     read_plain_port, read_report_addr)
 
 MARK_ENV = "CAPKIT_LAUNCH_MARK"
+INJECT_ENV = "CAPPROBE_INJECT"
+LAG_ENV = "CAPPROBE_LAG_PERIOD_US"
+PATCH_ENV = "CAPPROBE_PATCH_SHA"
 NONE = "none"  # explicit "not applicable" value for the provenance arguments
 # Roles whose own unregistered descendants (e.g. the sidecar's nvidia-smi queries) are not part of
 # the process set under test: they are left out of the window pid comparison and of
@@ -153,8 +156,8 @@ class Launch:
         self._check_provenance()
         self._check_nvidia_smi()
         self._load_inputs()
-        self._check_outer_probe_env()
         self._load_overlay()
+        self._check_outer_probe_env()
         self.taskset = shutil.which("taskset")
         if self.taskset is None:
             raise ConfigError("taskset not found on PATH (needed to pin roles)")
@@ -177,18 +180,40 @@ class Launch:
         self.signals = []
 
     def _check_outer_probe_env(self):
-        """An outer CAPPROBE_TIER / CAPPROBE_GROUPS that contradicts the scenario is a config
-        error before anything is written or started (product roles get the scenario's values)."""
-        if not any(d["launcher"] == "product" for d in self.roles.values()):
-            return
-        for key, val in self._probe_switches():
-            if key in os.environ and os.environ[key] != val:
-                raise ConfigError("environment %s=%r conflicts with scenario %r"
+        """Config errors before anything is written or started: an outer value that contradicts
+        what this orchestrator sets (version-report variables for every role; capprobe switches
+        for product roles), and an outer CAPPROBE_INJECT when the scenario has product roles (no
+        scenario field carries a product-side injection, so it is never passed through)."""
+        sw = list(self._version_env().items())
+        if any(d["launcher"] == "product" for d in self.roles.values()):
+            if os.environ.get(INJECT_ENV):
+                raise ConfigError("environment %s=%r: product-side injection is not supported by "
+                                  "this orchestrator" % (INJECT_ENV, os.environ[INJECT_ENV]))
+            sw += self._probe_switches()
+        for key, val in sw:
+            if val is not None and key in os.environ and os.environ[key] != val:
+                raise ConfigError("environment %s=%r conflicts with %r set by the orchestrator"
                                   % (key, os.environ[key], val))
 
     def _probe_switches(self):
-        return (("CAPPROBE_TIER", self.scen["probe_tier"]),
-                ("CAPPROBE_GROUPS", ",".join(self.scen["probe_groups"])))
+        """capprobe switches a product role gets from the scenario: tier, groups, and with the
+        lag group the lag period (scenario param lag_period_us, checked in _load_inputs)."""
+        out = [("CAPPROBE_TIER", self.scen["probe_tier"]),
+               ("CAPPROBE_GROUPS", ",".join(self.scen["probe_groups"]))]
+        if "lag" in self.scen["probe_groups"]:
+            out.append((LAG_ENV, self.params[sc.LAG_PARAM]))
+        return out
+
+    def _version_env(self):
+        """Version-report variables every role gets (INTERFACES 2.5): CAPKIT_CODE_SHA =
+        --capkit-sha; with launch tier P1/P2 also CAPPROBE_PATCH_SHA = the overlay manifest's
+        target_commit (None when there is no manifest: the launch then stops as
+        overlay_manifest_missing before any role starts). _role_env removes an outer
+        CAPPROBE_PATCH_SHA first, so P0 / no-tier launches never carry one."""
+        out = {"CAPKIT_CODE_SHA": self.a.capkit_sha}
+        if self.scen["probe_tier"] in ("P1", "P2"):
+            out[PATCH_ENV] = self.overlay_target
+        return out
 
     def _check_provenance(self):
         a = self.a
@@ -286,6 +311,9 @@ class Launch:
         if set(self.params) != req:
             raise ConfigError("--param keys %s != scenario params_required %s"
                               % (sorted(self.params), sorted(req)))
+        lag = self.params.get(sc.LAG_PARAM)
+        if sc.LAG_PARAM in req and not (lag.isdigit() and int(lag) > 0):
+            raise ConfigError("--param %s must be an integer > 0, got %r" % (sc.LAG_PARAM, lag))
         self.rt = {n: RoleRT(d, self.cpus_of[n]) for n, d in self.roles.items()}
         self.order = sc.start_order(self.roles)
 
@@ -308,6 +336,18 @@ class Launch:
                 with open(dup, "rb") as f:
                     if f.read() != self.overlay_bytes:
                         raise ConfigError("%s differs from --overlay-manifest %s" % (dup, path))
+        self.overlay_target = None
+        if self.overlay_bytes is not None and self.scen["probe_tier"] in ("P1", "P2"):
+            import json  # noqa: PLC0415
+            try:
+                tgt = json.loads(self.overlay_bytes.decode("utf-8")).get("target_commit")
+            except (ValueError, AttributeError) as e:
+                raise ConfigError("--overlay-manifest %s is not a JSON object: %s" % (path, e))
+            if not is_git_sha(tgt):
+                raise ConfigError("--overlay-manifest %s: target_commit %r is not a 40-hex sha "
+                                  "(CAPPROBE_PATCH_SHA of a %s launch)"
+                                  % (path, tgt, self.scen["probe_tier"]))
+            self.overlay_target = tgt
         self.overlay_record = {
             "source": path, "present": self.overlay_bytes is not None,
             "sha256": None if self.overlay_bytes is None else
@@ -449,11 +489,14 @@ class Launch:
 
     # ---- processes ---------------------------------------------------------------------------
     def _role_env(self, d):
-        """Environment of one role, without an entry rule (see _entry_rule). Product roles get
-        the capprobe switches; no role inherits an outer CAPPROBE_ENTRY."""
+        """Environment of one role, without an entry rule (see _entry_rule). Every role gets the
+        version-report variables (_version_env), product roles also the capprobe switches; no
+        role inherits an outer CAPPROBE_ENTRY or CAPPROBE_PATCH_SHA."""
         env = dict(os.environ)
         env.update(d["env"])
         env.pop(probe_entry.ENV_VAR, None)
+        env.pop(PATCH_ENV, None)
+        env.update({k: v for k, v in self._version_env().items() if v is not None})
         k, _, v = self.mark.partition("=")
         env[k] = v
         if d["launcher"] == "product":
@@ -751,11 +794,14 @@ class Launch:
 
     # ---- window boundaries (INTERFACES 5.4) ---------------------------------------------------
     def _snapshot_procs(self, roles=None):
-        """Registered procs that are expected to write snapshots (role snapshots scope)."""
+        """Registered procs that are expected to write snapshots (role snapshots scope; a
+        product role only when it writes them at all, scenario.product_writes_snapshots)."""
         out = []
         for p in self.procs:
             d = self.roles[p["role"]]
             if roles is not None and p["role"] not in roles:
+                continue
+            if d["launcher"] == "product" and not sc.product_writes_snapshots(d):
                 continue
             if d["snapshots"] == "all" or (d["snapshots"] == "workers"
                                            and p["discovered_via"] != "launched"):

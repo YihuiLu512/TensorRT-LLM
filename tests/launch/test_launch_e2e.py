@@ -7,6 +7,8 @@ import json
 import os
 import stat
 
+import pytest
+
 import conftest as cf
 from capcommon.runtree import read_state
 from caplaunch import procfs
@@ -97,6 +99,11 @@ def test_full_launch_passes(tmp_path):
     assert ov["needed_by_roles"] == ["product"]
     assert _j(T, "raw", "env", "gpu_idle.json") == {"schema": "test.gpu_idle/0"}  # job env/
     assert rj_unattributed(T) == []
+    # RS20: the orchestrator is the writer of CAPKIT_CODE_SHA (= --capkit-sha) for every role;
+    # the outer environment here has none
+    vdir = os.path.join(T, "raw", "env", "versions")
+    recs = [_j(vdir, n)["versions"] for n in sorted(os.listdir(vdir))]
+    assert recs and {v["capkit_code_sha"] for v in recs} == {cf.ZERO_SHA}
     mc = _j(T, "raw", "procs", "monitor_children.json")
     assert mc["monitor_classes"] == ["load_source", "observer"] and mc["n_proc_scans"] > 0
     assert os.path.isfile(os.path.join(T, "raw", "sidecar", "generations.json"))
@@ -422,18 +429,24 @@ def test_tool_runtime_helper_is_attributed_not_unattributed(tmp_path):
     _no_leftovers(T)
 
 
-def test_outer_capprobe_tier_conflict_fails_before_anything_starts(tmp_path):
-    """An outer CAPPROBE_TIER that contradicts the scenario (P0 here) is a config error found
-    before the launch tree is written or any role starts, not halfway through the role starts
-    (which left launch.json without STATE / launch_end.json)."""
+@pytest.mark.parametrize("key,val", [
+    ("CAPPROBE_TIER", "P2"),
+    ("CAPPROBE_INJECT", "site=F2,mode=busy,delta_ns=20000,every_n=1"),
+    ("CAPKIT_CODE_SHA", "1" * 40),
+])
+def test_outer_capprobe_tier_conflict_fails_before_anything_starts(tmp_path, key, val):
+    """An outer CAPPROBE_TIER that contradicts the scenario (P0 here), an outer CAPPROBE_INJECT
+    (never passed to product roles) or an outer CAPKIT_CODE_SHA other than --capkit-sha is a
+    config error found before the launch tree is written or any role starts, not halfway through
+    the role starts (which left launch.json without STATE / launch_end.json)."""
     roles = cf.default_roles(with_observers=False)
     wd = cf.make_workdir(tmp_path, cf.tier_doc(_gate()), roles)
     T = os.path.join(str(tmp_path), "T")
     env = cf._env()
-    env["CAPPROBE_TIER"] = "P2"
+    env[key] = val
     r = cf.subprocess.run(cf.launch_argv(wd, T, os.path.join(str(tmp_path), "shm")), env=env,
                           capture_output=True, text=True, timeout=120)
-    assert r.returncode == 3 and "CAPPROBE_TIER" in r.stderr, (r.returncode, r.stderr)
+    assert r.returncode == 3 and key in r.stderr, (r.returncode, r.stderr)
     assert not os.path.exists(os.path.join(T, "raw", "launch.json"))
 
 

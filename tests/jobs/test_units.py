@@ -243,46 +243,66 @@ def test_plan_ok_and_arms():
         launchplan.substitute("{JOB_DIR}", {"SNAP": "/s"})
 
 
-def _grace_plan(tmp_path, kill_grace_s, argv_tail=("--scenario", "{SNAP}/c/s.json",
+def _grace_plan(tmp_path, kill_grace_s, argv_tail=("--scenario", "c/s.json",
                                                    "--kill-after-s", "2"), scen=None):
-    snap = tmp_path / "snap"
-    (snap / "c").mkdir(parents=True)
-    (snap / "c" / "s.json").write_text(json.dumps(
+    w = tmp_path / "W"
+    (w / "c").mkdir(parents=True)
+    (w / "c" / "s.json").write_text(json.dumps(
         scen if scen is not None else {"stop_grace_s": 10, "stop_order": ["a", "b", "c", "d"]}))
     d = plan_doc(kill_grace_s=kill_grace_s)
     for ln in d["launches"]:
-        ln["argv"] = ["{PY}", "-m", "caplaunch"] + list(argv_tail)
-    return launchplan.validate(d), str(snap)
+        ln["argv"] = ["{PY}", "-m", "caplaunch", "--workdir", str(w)] + [
+            x.replace("<W>", str(w)) for x in argv_tail]
+    return launchplan.validate(d), str(w)
 
 
 def test_kill_grace_covers_the_orchestrator_worst_stop(tmp_path):
     """4 roles x (10 + 2) + 2 x 2 = 52 s: kill_grace_s 52 passes, 51 is refused."""
-    plan, snap = _grace_plan(tmp_path, 52)
-    assert launchplan.check_kill_grace(plan, snap) == {0: 52.0, 1: 52.0}
-    assert launchplan.check_kill_grace(plan, snap, {"c/s.json"}) == {0: 52.0, 1: 52.0}
-    with pytest.raises(ConfigError, match="not in the job snapshot"):
-        launchplan.check_kill_grace(plan, snap, {"other.json"})
-    plan51, snap51 = _grace_plan(tmp_path / "x", 51)
+    plan, w = _grace_plan(tmp_path, 52)
+    assert launchplan.check_kill_grace(plan) == {0: 52.0, 1: 52.0}
+    assert launchplan.scenario_path(plan["launches"][0]) == (w, "c/s.json")
+    plan51, _w = _grace_plan(tmp_path / "x", 51)
     with pytest.raises(ConfigError, match="worst-case orchestrator stop 52.0"):
-        launchplan.check_kill_grace(plan51, snap51)
+        launchplan.check_kill_grace(plan51)
+
+
+def test_scenario_is_the_registered_file_in_the_work_dir(tmp_path):
+    """SM-1: --scenario is relative to --workdir or an absolute path inside it, never a {SNAP}/
+    path (caplaunch compares its relpath under --workdir with the register)."""
+    plan, w = _grace_plan(tmp_path, 52, ("--scenario", "<W>/c/s.json", "--kill-after-s", "2"))
+    assert launchplan.scenario_path(plan["launches"][0]) == (w, "c/s.json")
+    assert launchplan.check_kill_grace(plan) == {0: 52.0, 1: 52.0}
 
 
 @pytest.mark.parametrize("tail,scen", [
-    (("--scenario", "{SNAP}/c/s.json"), None),  # no --kill-after-s
+    (("--scenario", "c/s.json"), None),  # no --kill-after-s
     (("--kill-after-s", "2"), None),  # no --scenario
-    (("--scenario", "/abs/s.json", "--kill-after-s", "2"), None),
-    (("--scenario", "{SNAP}/../s.json", "--kill-after-s", "2"), None),
-    (("--scenario={SNAP}/c/s.json", "--kill-after-s", "0"), None),
-    (("--scenario", "{SNAP}/c/s.json", "--kill-after-s", "2", "--kill-after-s", "1"), None),
-    (("--scenario", "{SNAP}/c/missing.json", "--kill-after-s", "2"), None),
-    (("--scenario", "{SNAP}/c/s.json", "--kill-after-s", "2"), {"stop_grace_s": 1}),
-    (("--scenario", "{SNAP}/c/s.json", "--kill-after-s", "2"),
+    (("--scenario", "/abs/s.json", "--kill-after-s", "2"), None),  # outside --workdir
+    (("--scenario", "../s.json", "--kill-after-s", "2"), None),
+    (("--scenario", "{SNAP}/c/s.json", "--kill-after-s", "2"), None),
+    (("--scenario", "<W>/{JOB_DIR}/s.json", "--kill-after-s", "2"), None),
+    (("--scenario=c/s.json", "--kill-after-s", "0"), None),
+    (("--scenario", "c/s.json", "--kill-after-s", "2", "--kill-after-s", "1"), None),
+    (("--scenario", "c/missing.json", "--kill-after-s", "2"), None),
+    (("--scenario", "c/s.json", "--kill-after-s", "2"), {"stop_grace_s": 1}),
+    (("--scenario", "c/s.json", "--kill-after-s", "2"),
      {"stop_grace_s": -1, "stop_order": ["a"]}),
+    (("--scenario", "c/s.json", "--kill-after-s", "2", "--workdir", "/x"), None),
 ])
 def test_kill_grace_needs_a_computable_bound(tmp_path, tail, scen):
-    plan, snap = _grace_plan(tmp_path, 3600, tail, scen)
+    plan, _w = _grace_plan(tmp_path, 3600, tail, scen)
     with pytest.raises(ConfigError):
-        launchplan.check_kill_grace(plan, snap)
+        launchplan.check_kill_grace(plan)
+
+
+def test_workdir_must_be_an_absolute_literal_path(tmp_path):
+    for wd in ("rel/W", "{SNAP}"):
+        d = plan_doc()
+        for ln in d["launches"]:
+            ln["argv"] = ["{PY}", "-m", "caplaunch", "--workdir", wd, "--scenario", "s.json",
+                          "--kill-after-s", "2"]
+        with pytest.raises(ConfigError, match="--workdir"):
+            launchplan.check_kill_grace(launchplan.validate(d))
 
 
 @pytest.mark.parametrize("mut", [

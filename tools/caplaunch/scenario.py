@@ -76,6 +76,16 @@ MEASURE_CLASSES = ("load_source", "stub_out_of_domain", "stub_in_domain", "under
                    "observer")
 SNAPSHOT_SCOPES = ("none", "all", "workers")
 PROBE_TIERS = ("P0", "P1", "P2")
+# The capprobe switch that the lag group needs, and the scenario param it is set from.
+LAG_PARAM = "lag_period_us"
+
+
+def product_writes_snapshots(r):
+    """Whether a role's processes write snapshots through capprobe: a product role with probe
+    tier P2 (a probe group on). P0 / P1 turn no group on, and the orchestrator refuses an outer
+    CAPPROBE_INJECT (the other switch that makes capprobe write), so their processes never write a
+    snapshot whatever the role's snapshots scope says."""
+    return r["launcher"] == "product" and r["probe_tier"] == "P2"
 LOOPS = ("asyncio", "uvloop")
 READY_KINDS = ("capkit_ready", "plain_port_file", "report_addr", "http_get", "file_exists")
 PORT_KINDS = ("plain_port_file", "report_addr", "none")
@@ -247,12 +257,12 @@ def validate_role(r, role_names, params):
             _err(where, "product roles need a non-empty command list and no module")
         if r["probe_tier"] not in PROBE_TIERS:
             _err(where, "product roles need probe_tier in %s" % (PROBE_TIERS,))
-        # With P1/P2 the role's processes run probe groups and write snapshots; scope none would
-        # drop them from the expected snapshot writers, so a probe that stayed off (e.g. its
-        # CAPPROBE_ENTRY rule did not match) would leave no missing snapshot for RECORDS to see.
-        if r["probe_tier"] in ("P1", "P2") and r["snapshots"] == "none":
-            _err(where, "probe_tier %s runs probe groups; snapshots must not be none"
-                 % r["probe_tier"])
+        # A role that writes snapshots (P2) must expect them from every process, its started
+        # process (the registered entry) included: with none or workers a probe that stayed off
+        # in that process (e.g. its CAPPROBE_ENTRY rule did not match) would leave no missing
+        # snapshot for RECORDS to see.
+        if product_writes_snapshots(r) and r["snapshots"] != "all":
+            _err(where, "probe_tier P2 writes snapshots; snapshots must be all")
         port = r.get("port")
         if not isinstance(port, dict) or port.get("kind") not in PORT_KINDS:
             _err(where, "product roles need port {kind: %s, host}" % (PORT_KINDS,))
@@ -315,6 +325,10 @@ def validate_scenario(doc):
             _err("role %s" % r["role"], "probe_tier differs from the launch probe_tier")
     if sorted(doc["stop_order"]) != sorted(names):
         _err("top", "stop_order must list every role exactly once")
+    if "lag" in pg and any(d["launcher"] == "product" for d in out.values()) \
+            and LAG_PARAM not in params:
+        _err("top", "probe group lag on product roles needs %s in params_required (the "
+             "orchestrator sets CAPPROBE_LAG_PERIOD_US from it)" % LAG_PARAM)
     _toposort(out)
     validate_reconcile(doc["reconcile"], set(names))
     return out
