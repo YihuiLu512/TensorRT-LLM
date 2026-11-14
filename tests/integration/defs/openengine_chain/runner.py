@@ -235,10 +235,14 @@ def node_dirs(out: str) -> list[str]:
 def merge_nodes(per_node: list[list[dict]]) -> list[dict]:
     """One row per ``cross_node`` test, judged over the rows of every node (TH-DSG-4).
 
-    A test is its outer test and its name. It passes only if it passed on every
-    node and the checks that need both nodes' readings hold; a node without the
-    test's row leaves it ``incomplete``.
+    A test is its outer test and its name. Its proof is the worst of each
+    node's own proof and of the checks that need both nodes' readings; it
+    passes only if it passed on every node and that proof is ``ok``. A node
+    without the test's row leaves it ``incomplete``.
     """
+
+    def as_status(value: str | None) -> str:
+        return value if value in proof.STATUSES else proof.INCOMPLETE
 
     def key(row: dict) -> tuple[str, str]:
         return row.get("outer_test", ""), row["name"]
@@ -260,7 +264,19 @@ def merge_nodes(per_node: list[list[dict]]) -> list[dict]:
             except ValueError:
                 counts.append(None)
         result = proof.judge_cross_node(counts)
-        status = result.status
+        present = [r for r in rows if r]
+        status = proof.worst([result.status, *(as_status(r.get("chain_proof")) for r in present)])
+        roles = {
+            role: proof.worst(
+                [result.roles[role]]
+                + [
+                    as_status(r.get(f"chain_proof_{role}"))
+                    for r in present
+                    if r.get(f"chain_proof_{role}") not in ("", None, proof.NOT_HERE)
+                ]
+            )
+            for role in proof.ROLES
+        }
         outcomes = [row["outcome"] if row else "missing" for row in rows]
         if any(o in ("failed", "error") for o in outcomes) or status == proof.FAIL:
             outcome = "failed"
@@ -270,7 +286,7 @@ def merge_nodes(per_node: list[list[dict]]) -> list[dict]:
             outcome = "incomplete"
         row = {key: "" for key in _PROPS}
         if result.counts:
-            row.update(proof.disagg_props(result.counts, result.roles))
+            row.update(proof.disagg_props(result.counts, roles))
         row.update(
             file=CROSS_NODE_FILE,
             name=name,

@@ -11,8 +11,9 @@ leave processes running when they stop. A test whose chain servers are workers
 of a disaggregated server is proven leg by leg (``proof.judge_disagg``) and
 gets the per-role markers too; while it runs, a thread follows the
 disaggregated servers and the GPU use of the processes the test started. The
-legs of a disaggregated server whose workers have no role are not proven, so
-such a test's proof is at best ``incomplete``. With
+legs of a disaggregated server whose workers have no role (``--server_role``,
+or for a ``cross_node`` test its node's) are not proven, so such a test's
+proof is at best ``incomplete``. With
 ``TRTLLM_TEST_OPENENGINE_NEGATIVE_CONTROL=<ctx|gen>`` (CH-9), each test's first
 worker of that role starts outside the chain, and a test proven leg by leg
 passes only if its CH-6 fails.
@@ -269,11 +270,20 @@ class _Watch:
     ``_GPU_CHECK_INTERVAL_S`` and when stopped.
     """
 
-    def __init__(self, seq: int, root: int | None = None, disagg: bool = False) -> None:
+    def __init__(
+        self, seq: int, root: int | None = None, disagg: bool = False, node_role: str | None = None
+    ) -> None:
         self._seq = seq
         # The test is known to run a disaggregated server even if its workers have no role.
         self._disagg = disagg
+        # The role of a worker without one (a cross_node test's, by its node).
+        self._node_role = node_role
         self._root = os.getpid() if root is None else root
+        # Processes that ran when the test started, whether or not a server among them was found.
+        try:
+            self._pids_at_start = set(proof.live_descendants(self._root))
+        except OSError:
+            self._pids_at_start = set()
         # Per server address: the counters the increase is taken from, and the last reading.
         self._base: dict[str, dict[str, int]] = {}
         self._last: dict[str, proof.OrchestratorReading] = {}
@@ -310,16 +320,16 @@ class _Watch:
             except Exception:  # noqa: BLE001 - not serving yet, or stopping
                 continue
             with self._lock:
-                self._record(url, reading, at_start)
+                self._record(url, reading, at_start, orchestrator.pid in self._pids_at_start)
                 if at_end:
                     self._alive_at_end.add(url)
         handles = _chain_handles(self._seq)
-        disagg = self._disagg or any(getattr(h, "role", None) for h in handles)
+        disagg = self._disagg or any(self._role(h) for h in handles)
         now = time.monotonic()
         if disagg and (at_end or now - self._last_gpu_check >= _GPU_CHECK_INTERVAL_S):
             self._last_gpu_check = now
             for handle in handles:
-                if getattr(handle, "role", None) and handle.alive:
+                if self._role(handle) and handle.alive:
                     _topology(handle)
                     _engine_info(handle, [])
             try:
@@ -330,10 +340,15 @@ class _Watch:
                 with self._lock:
                     self._inprocess = (self._inprocess or set()) | set(found)
 
-    def _record(self, url: str, reading: proof.OrchestratorReading, at_start: bool) -> None:
+    def _role(self, handle) -> str | None:
+        return getattr(handle, "role", None) or self._node_role
+
+    def _record(
+        self, url: str, reading: proof.OrchestratorReading, at_start: bool, ran_at_start: bool
+    ) -> None:
         last = self._last.get(url)
         if url not in self._base:
-            if at_start or url not in self._present_at_start:
+            if at_start or (url not in self._present_at_start and not ran_at_start):
                 # Read when the test started, or started during the test (counting from 0).
                 self._base[url] = dict(reading.counts) if at_start else {}
             else:
@@ -387,7 +402,12 @@ def pytest_runtest_call(item: pytest.Item):
     seq = next_seq()
     details: list[str] = []
     before = {id(h): _safe_counters(h, details) for h in _chain_handles(seq)}
-    watch = _Watch(seq, disagg=ex.leg_expectation(item.stash.get(_FOUND, [])) is not None)
+    rule = ex.leg_expectation(item.stash.get(_FOUND, []))
+    watch = _Watch(
+        seq,
+        disagg=rule is not None,
+        node_role=_node_role(rule.leg) if rule is not None else None,
+    )
     try:
         yield
     finally:
@@ -517,10 +537,15 @@ def _roles(handles, rule: proof.LegRule) -> dict[int, str | None]:
     A cross_node test's worker without one takes its node's: the context worker
     runs on node 0 and the generation worker on node 1.
     """
-    node_role = None
-    if rule.leg == ex.CROSS_NODE:
-        node_role = {"0": proof.CTX, "1": proof.GEN}.get(os.environ.get("SLURM_NODEID", ""))
+    node_role = _node_role(rule.leg)
     return {id(h): getattr(h, "role", None) or node_role for h in handles}
+
+
+def _node_role(leg: str | None) -> str | None:
+    """For a cross_node test, the role of this node's worker: context on node 0, generation on 1."""
+    if leg != ex.CROSS_NODE:
+        return None
+    return {"0": proof.CTX, "1": proof.GEN}.get(os.environ.get("SLURM_NODEID", ""))
 
 
 def _engine_info(handle, details: list[str]) -> proof.EngineInfo | None:

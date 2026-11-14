@@ -385,7 +385,8 @@ def read_counters(handle) -> Counters:
         serve = {k: counts[k] for k in SERVE_V4_COUNTERS}
     engine_v4 = None
     if load is not None and any(k in load for k in ENGINE_V4_COUNTERS):
-        engine_v4 = {k: load.get(k, 0) for k in (ENGINE_ACCEPTED, *ENGINE_V4_COUNTERS)}
+        # A counter the engine leaves out is unknown, not 0.
+        engine_v4 = {k: load.get(k) for k in (ENGINE_ACCEPTED, *ENGINE_V4_COUNTERS)}
     return Counters(
         frontend=None if counts is None else counts[cv.FRONTEND_COUNTER_FIELD],
         engine=None if load is None else load.get(cv.ENGINE_COUNTER_KEY),
@@ -582,9 +583,10 @@ class OrchestratorReading:
     """The disaggregated servers' client counters (``"<role>.<name>"``) and worker lists.
 
     ``members`` maps a role to the worker addresses the servers route to, or is
-    ``None`` if it could not be read. ``stale`` means a server stopped during
-    the test, so its counters are those of its last reading before it stopped:
-    a lower bound of what it sent.
+    ``None`` if it could not be read. ``stale`` means the counts of a server are
+    only a lower bound of what it sent during the test: it stopped during the
+    test (its last reading counts), restarted, or ran before the test without
+    being read when the test started.
     """
 
     counts: Mapping[str, int]
@@ -806,6 +808,7 @@ def normalize_address(address: str) -> str:
 # does not keep the test from counting as proven.
 KILLED_INCOMPLETE = "incomplete(killed)"
 _RANK = {OK: 0, KILLED_INCOMPLETE: 1, INCOMPLETE: 2, FAIL: 3}
+STATUSES = tuple(_RANK)
 
 
 @dataclass(frozen=True)
@@ -1108,7 +1111,7 @@ def _check_leg_buckets(add, leg: Leg, deltas: Mapping[str, int | None], rule: Le
         if expected is None:
             sent_agg = deltas[SERVE_SENT_BUCKETS[BUCKET_AGGREGATED]]
             http_agg = deltas[SERVE_HTTP_RECEIVED[BUCKET_AGGREGATED]]
-            rejected = deltas[SERVE_HTTP_REJECTED]
+            rejected = _refused_aggregated(deltas)
             if None not in (sent_agg, http_agg, rejected) and sent_agg < http_agg - rejected:
                 add(
                     "CH-3",
@@ -1139,6 +1142,23 @@ def _check_leg_buckets(add, leg: Leg, deltas: Mapping[str, int | None], rule: Le
     add("CH-3", leg.role, OK, f"{where}: {by_bucket}")
 
 
+def _refused_aggregated(deltas: Mapping[str, int | None]) -> int | None:
+    """``http_rejected`` less the refusals of the other buckets' requests.
+
+    A request of another bucket is one call or one refusal.
+    """
+    received = [deltas[k] for k in SERVE_HTTP_RECEIVED.values()]
+    sent = [deltas[k] for k in SERVE_SENT_BUCKETS.values()]
+    rejected = deltas[SERVE_HTTP_REJECTED]
+    if None in received or None in sent or rejected is None:
+        return None
+    others = [b for b in BUCKETS if b != BUCKET_AGGREGATED]
+    refused_other = sum(
+        deltas[SERVE_HTTP_RECEIVED[b]] - deltas[SERVE_SENT_BUCKETS[b]] for b in others
+    )
+    return rejected - max(refused_other, 0)
+
+
 def _check_frontend_requests(
     add, leg: Leg, deltas: Mapping[str, int | None], rule: LegRule
 ) -> None:
@@ -1159,24 +1179,23 @@ def _check_frontend_requests(
         f"{where}: {received} HTTP requests received, {deltas['sent']} calls sent, "
         f"{rejected} refused"
     )
-    # An aggregated request may be split into one call per sequence (UV-52). The calls of
-    # one request cannot be told from those of another, so the aggregated requests are not
-    # balanced then; the other buckets must still be, each request one call or one refusal.
+    # The requests of the other buckets are one call or one refusal each.
     http_agg = deltas[SERVE_HTTP_RECEIVED[BUCKET_AGGREGATED]]
     sent_agg = deltas[SERVE_SENT_BUCKETS[BUCKET_AGGREGATED]]
-    if sent_agg > http_agg:
-        refused_other = (received - http_agg) - (deltas["sent"] - sent_agg)
-        if not rule.cancels_calls and not 0 <= refused_other <= rejected:
-            add("CH-5", leg.role, FAIL, sides)
-        else:
-            add(
-                "CH-5",
-                leg.role,
-                INCOMPLETE,
-                f"{sides}; aggregated requests were split into several calls",
-            )
-        return
-    if received == handled or (rule.cancels_calls and received > handled):
+    refused_other = (received - http_agg) - (deltas["sent"] - sent_agg)
+    if not rule.cancels_calls and not 0 <= refused_other <= rejected:
+        add("CH-5", leg.role, FAIL, f"{sides}; the requests of the other buckets do not balance")
+    elif handled > received:
+        # More calls and refusals than requests: an aggregated request was split into one
+        # call per sequence (UV-52). Whose calls they are is not known, so the aggregated
+        # requests are not balanced; a split that offsets a lost request also reads as balanced.
+        add(
+            "CH-5",
+            leg.role,
+            INCOMPLETE,
+            f"{sides}; aggregated requests were split into several calls",
+        )
+    elif received == handled or rule.cancels_calls:
         add("CH-5", leg.role, OK, sides)
     else:
         add("CH-5", leg.role, FAIL, sides)
@@ -1289,7 +1308,7 @@ def judge_roles(sums: Mapping, orchestrator: OrchestratorReading | None, rule: L
                     "CH-5",
                     role,
                     INCOMPLETE,
-                    f"{sides}; it stopped during the test, so the count is a lower bound",
+                    f"{sides}; the disaggregated server's count is a lower bound",
                 )
             else:
                 add("CH-5", role, FAIL, sides)

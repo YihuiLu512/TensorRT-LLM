@@ -18,7 +18,8 @@ plan's id if it gives one; (2) every listed migrated test is a migrated test of
 the plan; (3) no node id is listed twice, in one list file or two; (4) a new GPU end-to-end test
 lives in the file the plan requires for its case. With ``--complete`` the
 lists must also hold every test the plan marks, as at the end of the stage.
-An empty list set, or a plan in which no mark is found, fails.
+An empty list set fails, and so does a plan in which no new-test row or no
+migrated mark is found.
 """
 
 from __future__ import annotations

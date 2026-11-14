@@ -409,6 +409,21 @@ def test_the_runner_merges_the_nodes_of_a_cross_node_test(tmp_path, gen_takes, o
         assert (merged[0]["handoffs"], merged[0]["orphan_handoffs"]) == ("2", "0"), merged
 
 
+@pytest.mark.parametrize("node_proof", [P.INCOMPLETE, P.FAIL])
+def test_a_cross_node_test_is_no_better_than_a_node_s_own_proof(tmp_path, node_proof):
+    node0, node1 = _cross_node()
+    _junit(tmp_path / "node-0" / "junit" / "a.xml", "test_x", "passed", node0)
+    extra = {"chain_proof": node_proof, "chain_proof_gen": node_proof}
+    _junit(tmp_path / "node-1" / "junit" / "a.xml", "test_x", "passed", node1, extra)
+    (merged,) = [r for r in runner.summarize(str(tmp_path)) if r["file"] == "cross-node"]
+    assert (merged["outcome"], merged["chain_proof"], merged["chain_proof_gen"]) == (
+        "failed" if node_proof == P.FAIL else "incomplete",
+        node_proof,
+        node_proof,
+    ), merged
+    assert merged["chain_proof_ctx"] == P.OK
+
+
 def test_the_runner_merges_a_cross_node_test_by_its_outer_test(tmp_path):
     node0, node1 = _cross_node()
     for outer in ("test_e2e[a]", "test_e2e[b]"):
@@ -944,6 +959,63 @@ def test_a_split_request_does_not_hide_extra_calls_of_another_bucket():
     assert ("CH-5", GEN) in _failed(_judge([ctx, gen], None, rule=rule))
 
 
+def _split_with(other):
+    """A generation worker: one aggregated request split into two calls, and ``other``."""
+    gen = Worker(GEN, 8002)
+    gen.take(2, P.BUCKET_AGGREGATED)
+    gen.serve[HTTP[P.BUCKET_AGGREGATED]] -= 1
+    if other == "refused":
+        gen.serve[HTTP[P.BUCKET_AGGREGATED]] += 1
+        gen.serve[P.SERVE_HTTP_REJECTED] += 1
+    elif other == "lost":
+        gen.serve[HTTP[P.BUCKET_AGGREGATED]] += 1
+    elif other == "refused_other":
+        gen.serve[HTTP[P.BUCKET_GENERATION_ONLY]] += 1
+        gen.serve[P.SERVE_HTTP_REJECTED] += 1
+    return gen
+
+
+@pytest.mark.parametrize(
+    "other, expected",
+    [
+        # A split with a refusal: the counts read as more handled than received.
+        ("refused", P.INCOMPLETE),
+        # A refusal of another bucket's request does not change that.
+        ("refused_other", P.INCOMPLETE),
+        # A split that offsets a lost request cannot be told from no split.
+        ("lost", P.OK),
+    ],
+)
+def test_a_split_aggregated_request_next_to_another_outcome(other, expected):
+    gen = _split_with(other)
+    rule = P.LegRule(leg=ex.DIRECT_WORKER)
+    statuses = {
+        (n, r): c.status for n, r, c in _judge([Worker(CTX, 8001), gen], None, rule=rule).checks
+    }
+    assert statuses[("CH-5", GEN)] == expected
+
+
+def test_a_refusal_of_another_bucket_does_not_excuse_a_lost_aggregated_request():
+    ctx, gen = Worker(CTX, 8001), Worker(GEN, 8002)
+    gen.take(1, P.BUCKET_AGGREGATED)
+    gen.serve[HTTP[P.BUCKET_AGGREGATED]] += 1  # received, never sent nor refused
+    gen.serve[HTTP[P.BUCKET_GENERATION_ONLY]] += 1
+    gen.serve[P.SERVE_HTTP_REJECTED] += 1  # a generation_only request refused
+    rule = P.LegRule(leg=ex.DIRECT_WORKER)
+    assert ("CH-3", GEN) in _failed(_judge([ctx, gen], None, rule=rule))
+
+
+def test_a_v4_counter_the_engine_leaves_out_is_unknown(monkeypatch):
+    handle = types.SimpleNamespace(role=CTX, alive=True)
+    counts = dict.fromkeys((*P.SERVE_V4_COUNTERS, P.cv.FRONTEND_COUNTER_FIELD), 0)
+    monkeypatch.setattr(P, "read_frontend_counts", lambda h: counts)
+    load = {P.ENGINE_ACCEPTED_BUCKETS[P.BUCKET_CONTEXT_ONLY]: 2}
+    monkeypatch.setattr(P, "read_engine_load", lambda h: load)
+    engine_v4 = P.read_counters(handle).engine_v4
+    assert engine_v4[P.ENGINE_ACCEPTED] is None
+    assert engine_v4[P.ENGINE_ACCEPTED_BUCKETS[P.BUCKET_CONTEXT_ONLY]] == 2
+
+
 def test_direct_worker_without_a_registered_count_needs_a_call_per_request():
     ctx, gen = Worker(CTX, 8001), Worker(GEN, 8002)
     gen.take(2, P.BUCKET_AGGREGATED)
@@ -1017,3 +1089,42 @@ def test_only_one_leg_expectation_applies_to_a_test():
     ]
     with pytest.raises(ValueError, match="conflicting"):
         ex.applicable(table, "a/t.py::test", "trtllm")
+
+
+def _quiet_watch(monkeypatch, found):
+    from openengine_chain import launch
+    from openengine_chain import pytest_plugin as plugin
+
+    monkeypatch.setattr(launch, "_HANDLES", [])
+    monkeypatch.setattr(P, "find_orchestrators", lambda root: list(found))
+    monkeypatch.setattr(P, "inprocess_workers", lambda root: None)
+    monkeypatch.setattr(plugin, "_WATCH_INTERVAL_S", 3600.0)
+    return plugin, launch.next_seq()
+
+
+@pytest.mark.parametrize("pid, stale", [(7, True), (8, False)])
+def test_a_disaggregated_server_found_late_counts_from_0_only_if_it_started_late(
+    monkeypatch, pid, stale
+):
+    found = []
+    plugin, seq = _quiet_watch(monkeypatch, found)
+    monkeypatch.setattr(P, "live_descendants", lambda root: {7})
+    monkeypatch.setattr(P, "read_orchestrator", lambda o: _orchestrator(5, 5))
+    watch = plugin._Watch(seq, root=1)
+    # Its address became known only during the test (e.g. a --report_addr file written late).
+    found.append(P.Orchestrator(pid, "http://o:1", "c"))
+    watch.stop()
+    reading = watch.orchestrator()
+    assert (reading.stale, reading.counts["ctx.total_requests"]) == (stale, 0 if stale else 5)
+
+
+def test_the_watch_takes_a_cross_node_worker_s_topology_while_it_runs(monkeypatch):
+    from plugin_support import FakeHandle
+
+    plugin, seq = _quiet_watch(monkeypatch, [])
+    monkeypatch.setattr(P, "check_topology", lambda h: P.Check(P.OK, "checked"))
+    monkeypatch.setattr(P, "engine_info", lambda h: None)
+    handle = FakeHandle()
+    watch = plugin._Watch(seq, root=1, disagg=True, node_role=CTX)
+    watch.stop()
+    assert handle.proven_topology == P.Check(P.OK, "checked")

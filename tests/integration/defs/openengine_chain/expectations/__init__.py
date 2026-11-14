@@ -55,8 +55,9 @@ OUTCOME_KINDS = (HTTP_STATUS, STARTUP_REJECTED, SKIP)
 # - single_side: only one side runs: the context side alone, or the generation side alone
 #   in the generation-only benchmark mode.
 # - direct_worker: the test sends to one worker front end itself, not through the
-#   disaggregated server; ``direct_requests`` is the number of generation requests it sends,
-#   if the test knows it.
+#   disaggregated server; ``direct_requests`` is the number of aggregated calls its generation
+#   requests make (one per request unless a request with n > 1 is split into one call per
+#   sequence), if the test knows it.
 # - direct_two_leg: the test sends both legs to the two worker front ends itself.
 # - direct_ctx_leg: the test sends context legs to a context worker front end itself and no
 #   generation leg; ``orphans`` is the number of hand-offs left unused (default: one per
