@@ -70,6 +70,7 @@ from .engine_client import (
     EngineLoad,
     KvEventSource,
     OutputFinished,
+    PrefillReady,
     PromptInfo,
     TokenDelta,
 )
@@ -241,16 +242,20 @@ class _OutputTiming:
     # Each token's logprob, None where the engine sent none or a non-finite one.
     token_logprobs: list[float | None] = field(default_factory=list)
     finish_reason: str | None = None
+    # When the context leg's handoff (PrefillReady) arrived.
+    handoff_time: float | None = None
 
     def kept(self, length: int) -> tuple[float | None, float | None, list[float]]:
         """The first and last token times and the logprobs of an output of ``length`` tokens.
 
         The output keeps its first ``length`` tokens; those past them, which the
-        response left out after a serving-side stop, do not count.
+        response left out after a serving-side stop, do not count. A context
+        leg that handed off its KV cache serves no token: its first and last
+        token times are when the handoff arrived.
         """
         times = self.token_times
         if not times:
-            return None, None, []
+            return self.handoff_time, self.handoff_time, []
         logprobs = [lp for lp in self.token_logprobs[:length] if lp is not None]
         return times[0], times[max(min(length, len(times)), 1) - 1], logprobs
 
@@ -365,11 +370,21 @@ class OpenEngineRequestMetrics:
             if timing.finish_reason is None:
                 self._finish_order.append(event.output_index)
             timing.finish_reason = event.reason
-            if event.usage is not None and not self._usage_seen:
-                # The first one counts, as in the response's usage.
-                self._usage_seen = True
-                self._usage_prompt_tokens = event.usage.prompt_tokens
-                self._usage_cached_tokens = event.usage.cached_prompt_tokens
+            self._take_usage(event.usage)
+        elif isinstance(event, PrefillReady):
+            # The context leg's tokens before its handoff are dropped from the
+            # response (the generation leg sends the first token), so they do
+            # not count here either.
+            timing = self._output(event.output_index)
+            timing.token_times.clear()
+            timing.token_logprobs.clear()
+            timing.handoff_time = now
+            if timing.finish_reason is None:
+                self._finish_order.append(event.output_index)
+                # As OpenEngineResponseAssembler._apply_prefill_ready ends the
+                # output, which the postprocessing pool's outputs do not show.
+                timing.finish_reason = "length"
+            self._take_usage(event.usage)
         elif isinstance(event, PromptInfo):
             # The first prompt token has no logprob; the engine sends a
             # placeholder entry for it, which the response leaves out too.
@@ -377,6 +392,13 @@ class OpenEngineRequestMetrics:
                 if math.isfinite(logprob.logprob):
                     self._prompt_logprob_sum += logprob.logprob
                     self._prompt_logprob_count += 1
+
+    def _take_usage(self, usage: Any) -> None:
+        if usage is not None and not self._usage_seen:
+            # The first one counts, as in the response's usage.
+            self._usage_seen = True
+            self._usage_prompt_tokens = usage.prompt_tokens
+            self._usage_cached_tokens = usage.cached_prompt_tokens
 
     def metrics_dict(self) -> dict[Any, Any]:
         return self._metrics
@@ -444,8 +466,14 @@ class OpenEngineRequestMetrics:
         stats: dict[Any, Any] = {}
         # An output that has no finish reason of its own and that the engine
         # did not end was ended in the postprocessing pool; it is recorded as
-        # stopped.
-        finish_reason = getattr(output, "finish_reason", None) or timing.finish_reason or "stop"
+        # stopped. A context leg that handed off its KV cache ended at the
+        # handoff, even if the pool's output was cancelled after it.
+        finish_reason = (
+            (timing.finish_reason if timing.handoff_time is not None else None)
+            or getattr(output, "finish_reason", None)
+            or timing.finish_reason
+            or "stop"
+        )
         stats[MetricsCollector.labelname_finish_reason] = finish_reason
         first_token_time, last_token_time, logprobs = timing.kept(length)
         times = {RequestEventTiming.ARRIVAL_TIME: self.arrival_time}

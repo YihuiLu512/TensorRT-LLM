@@ -1,11 +1,25 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Per-request streaming state: response formatting, registration, stall watchdog."""
+"""Per-request streaming state: response formatting, registration, stall watchdog, leg durations."""
 
 import asyncio
+import json
+import math
+import os
+import socket
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Optional
+
+from tensorrt_llm.grpc.openengine_conventions import (
+    REQUEST_TYPE_CONTEXT_ONLY,
+    REQUEST_TYPE_GENERATION_ONLY,
+)
+from tensorrt_llm.logger import logger
 
 from .bindings import error_pb2, generation_pb2
 from .disagg import prefill_ready_response
@@ -284,3 +298,172 @@ class ActiveRequest:
     def release(self) -> None:
         if self._table.get(self._request_id) is self._handle:
             del self._table[self._request_id]
+
+
+# --- Leg durations (EN-TRTD-8) ------------------------------------------------------
+
+# File name prefix of the engine's leg-duration records; the frontends' perf
+# records use ``perf_metrics-``, which this must not match.
+LEG_DURATIONS_FILE_PREFIX = "openengine_leg_durations"
+# Records waiting to be written; past this many, a new record is dropped (and counted).
+_LEG_DURATIONS_MAX_PENDING = 1024
+# The leg each request type of a disaggregated request is.
+_LEGS = {REQUEST_TYPE_CONTEXT_ONLY: "context", REQUEST_TYPE_GENERATION_ONLY: "generation"}
+# (key in "durations_ms", start, end) of the request's timing metrics.
+_LEG_DURATIONS = (
+    ("queue", "arrival_time", "first_scheduled_time"),
+    ("scheduled_to_first_token", "first_scheduled_time", "first_token_time"),
+    ("kv_cache_transfer", "kv_cache_transfer_start", "kv_cache_transfer_end"),
+    ("arrival_to_first_token", "arrival_time", "first_token_time"),
+    ("arrival_to_last_token", "arrival_time", "last_token_time"),
+)
+
+
+def _seconds(value: Any) -> Optional[float]:
+    """A timing metric in seconds, or None when the engine did not set it."""
+    try:
+        seconds = float(value.total_seconds())
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 and math.isfinite(seconds) else None
+
+
+def _first_set(sources: list[Any], name: str) -> Any:
+    return next(
+        (value for value in (getattr(s, name, None) for s in sources) if value is not None), None
+    )
+
+
+def leg_durations_record(result: Any, params: Any, request_id: str) -> Optional[dict[str, Any]]:
+    """The record of one finished leg of a disaggregated request, or None for any other request.
+
+    ``params`` are the request's disaggregated params. A context leg takes each
+    id from its output's params, which carry the ``ctx_request_id`` the engine
+    gave it, and falls back on the request's; a generation leg takes them from
+    the request's. The record holds durations
+    in milliseconds, between two times the engine measured, and never a time:
+    the engine's clock is not aligned with the frontends'. A duration whose
+    end or start the engine did not measure is None, not 0, and so is a
+    negative one.
+    """
+    leg = _LEGS.get(getattr(params, "request_type", None))
+    if leg is None or not getattr(result, "outputs", None):
+        return None
+    output = result.outputs[0]
+    sources = [params]
+    if leg == "context":
+        sources.insert(0, getattr(output, "disaggregated_params", None))
+    metrics = getattr(output, "request_perf_metrics", None)
+    timing = getattr(metrics, "timing_metrics", None)
+    times = {}
+    for _, start, end in _LEG_DURATIONS:
+        for name in (start, end):
+            times.setdefault(name, _seconds(getattr(timing, name, None)))
+    durations = {}
+    for key, start, end in _LEG_DURATIONS:
+        elapsed = None
+        if times[start] is not None and times[end] is not None:
+            elapsed = (times[end] - times[start]) * 1000
+            if elapsed < 0:
+                elapsed = None
+        durations[key] = elapsed
+    kv_cache_size = getattr(timing, "kv_cache_size", None)
+    return {
+        "leg": leg,
+        "request_id": request_id,
+        "disagg_request_id": _first_set(sources, "disagg_request_id"),
+        "ctx_request_id": _first_set(sources, "ctx_request_id"),
+        "finish_reason": getattr(output, "finish_reason", None),
+        "durations_ms": durations,
+        "kv_cache_size": kv_cache_size
+        if isinstance(kv_cache_size, int) and kv_cache_size > 0
+        else None,
+    }
+
+
+class LegDurationsWriter:
+    """Appends leg-duration records to a JSONL file of ``output_dir``, one file per process.
+
+    The file, ``openengine_leg_durations-<host>-<pid>-<UTC time>.jsonl``, is
+    created at the first record. Records are written by one background thread
+    in the order submitted, so writing never holds up the event loop. A record
+    that fails to write, or that arrives while
+    ``_LEG_DURATIONS_MAX_PENDING`` records wait to be written (a stalled
+    file system), is dropped and counted, never failing the request; the
+    first drop of each kind is logged. Records still waiting when the
+    interpreter exits normally are written then, since ``concurrent.futures``
+    joins its threads at exit.
+    """
+
+    def __init__(self, output_dir: str) -> None:
+        self._output_dir = Path(output_dir)
+        self._path: Optional[Path] = None
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="openengine-legs")
+        self._lock = threading.Lock()
+        self._pending = 0
+        self._write_failed = False
+        self._queue_full = False
+        self.dropped_records = 0
+
+    @classmethod
+    def from_llm(cls, llm: Any) -> Optional["LegDurationsWriter"]:
+        """A writer to the engine's ``perf_metrics_output_dir``, or None when it has none."""
+        output_dir = getattr(getattr(llm, "args", None), "perf_metrics_output_dir", None)
+        return cls(output_dir) if output_dir else None
+
+    @property
+    def path(self) -> Optional[Path]:
+        return self._path
+
+    def submit(self, record: dict[str, Any]) -> None:
+        line = json.dumps(record, separators=(",", ":"), allow_nan=False) + "\n"
+        with self._lock:
+            full = self._pending >= _LEG_DURATIONS_MAX_PENDING
+            if full:
+                self.dropped_records += 1
+                first_drop = not self._queue_full
+                self._queue_full = True
+            else:
+                self._pending += 1
+        if full:
+            if first_drop:
+                logger.warning(
+                    f"Dropping OpenEngine leg durations: {_LEG_DURATIONS_MAX_PENDING} "
+                    "records are waiting to be written"
+                )
+            return
+        try:
+            self._executor.submit(self._write, line)
+        except RuntimeError:
+            # Raised after close(): the record is not written.
+            with self._lock:
+                self._pending -= 1
+                self.dropped_records += 1
+            raise
+
+    def close(self) -> None:
+        """Write (or drop) every record submitted, and stop the thread."""
+        self._executor.shutdown(wait=True)
+
+    def _write(self, line: str) -> None:
+        # Runs only on the writer's one thread.
+        try:
+            if self._path is None:
+                self._output_dir.mkdir(parents=True, exist_ok=True)
+                timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                self._path = self._output_dir / (
+                    f"{LEG_DURATIONS_FILE_PREFIX}-{socket.gethostname()}-"
+                    f"{os.getpid()}-{timestamp}.jsonl"
+                )
+            with self._path.open("a", encoding="utf-8") as output:
+                output.write(line)
+        except OSError as error:
+            with self._lock:
+                self.dropped_records += 1
+                first_failure = not self._write_failed
+                self._write_failed = True
+            if first_failure:
+                logger.warning(f"Failed to write OpenEngine leg durations: {error}")
+        finally:
+            with self._lock:
+                self._pending -= 1

@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Two engines complete a handoff over OpenEngine gRPC and each writes the duration record of its leg,
+# without a front end (both engines on one GPU).
+unittest/llmapi/apps/_test_openengine_disagg_perf_metrics.py::test_engine_leg_records_of_a_direct_handoff

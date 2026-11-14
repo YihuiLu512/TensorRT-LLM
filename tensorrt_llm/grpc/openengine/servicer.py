@@ -56,9 +56,11 @@ from .request_mapping import (
 from .streaming import (
     RESPONSE_STALL_TIMEOUT_SECONDS,
     ActiveRequest,
+    LegDurationsWriter,
     StallWatchdog,
     _format_result,
     _OpenEngineFormatState,
+    leg_durations_record,
 )
 
 # The legs of a two-phase request; each must ask for one sequence.
@@ -211,6 +213,9 @@ class OpenEngineInferenceServicer(openengine_pb2_grpc.InferenceServicer):
         self._active_requests: dict[str, Any] = {}
         self._metrics = metrics
         self.generate_counters = GenerateCounters()
+        # With perf_metrics_output_dir, each finished leg of a disaggregated
+        # request leaves a record of its durations there (EN-TRTD-8).
+        self._leg_durations = LegDurationsWriter.from_llm(llm)
 
     @property
     def supported_media_modalities(self) -> frozenset[str]:
@@ -233,6 +238,18 @@ class OpenEngineInferenceServicer(openengine_pb2_grpc.InferenceServicer):
         if callable(is_shutdown) and is_shutdown():
             return True
         return bool(getattr(executor, "_engine_dead", False))
+
+    def _record_leg_durations(self, result: Any, params: Any, request_id: str) -> None:
+        """Write the durations of a finished leg; a failure is logged, never served."""
+        if self._leg_durations is None:
+            return
+        try:
+            record = leg_durations_record(result, params, request_id)
+            if record is not None:
+                self._leg_durations.submit(record)
+        # Broad by design: telemetry must not turn a finished request into an error.
+        except Exception as error:
+            logger.warning(f"Could not record the leg durations of request {request_id}: {error}")
 
     def active_request_count(self) -> int:
         """Requests accepted and not yet completed."""
@@ -703,6 +720,10 @@ class OpenEngineInferenceServicer(openengine_pb2_grpc.InferenceServicer):
                     abort_request("RPC cancelled")
                     return
                 responses = _format_result(result, format_state)
+                if result.finished and not result.error:
+                    # Before its last responses are sent, so that a leg whose
+                    # caller goes away at the last one still leaves its record.
+                    self._record_leg_durations(result, disaggregated_params, request_id)
                 for resp in responses or ():
                     if request_metrics is not None:
                         request_metrics.observe_response(resp)
