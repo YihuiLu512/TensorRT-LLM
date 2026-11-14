@@ -24,7 +24,7 @@ def test_raw_bytes_both_directions():
         return behavior
 
     async def main():
-        server = make_server(reuseport=False)
+        server = make_server(reuseport=False, max_unrequested_s=30)
         server.add_generic_rpc_handlers([AnyMethodHandler(factory)])
         port = bind_server(server, "127.0.0.1", 0)
         await server.start()

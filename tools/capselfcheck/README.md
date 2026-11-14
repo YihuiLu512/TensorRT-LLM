@@ -1,6 +1,6 @@
 # capselfcheck.relay（B2：已知瓶颈中继）
 
-入口是 `python -m capselfcheck.relay`（INTERFACES.md §11）。单进程（`expected_procs = 1`，`--cpus` 恰好一个核），`--loop {asyncio,uvloop}`。
+入口是 `python -m capselfcheck.relay`（INTERFACES.md §11）。单进程（`expected_procs = 1`，`--cpus` 恰好一个核），`--loop {asyncio,uvloop}`。可选 `--max-unrequested-s N`：同 `capgrpc.nullgrpc`（gRPC 内核的 `grpc.server_max_unrequested_time_in_server`，缺省不短于档位表的 `request_timeout_ns`），实际值写进就绪文件 `info` 与每档 summary 的 `grpc_server_options`。
 
 ## 行为
 
@@ -21,4 +21,4 @@
 
 ## 输出（每档）
 
-`summary.json`：`counts`（`streams_*`、`msgs_received`、`msgs_forwarded`、`bytes_forwarded`、`requests_without_capkit_header`，按请求头里的计划档；没有 capkit 头的请求按事件档）、`event_time`（`read`、`yielded`、`service_ns`、`hold_ns`）、`upstream_failures`（按计划档，各档只含本档的数）、`inject`、`loop_lag_ns`、`cpu`（`process_ns` 与 `loop_thread_ns`：场景 3 时两者之差就是辅助线程的忙等）、`overflow`；`lag`（可选）。只在收到信号时退出，退出码 0。
+`summary.json`：`grpc_server_options`、`counts`（`streams_*`、`msgs_received`、`msgs_forwarded`、`bytes_forwarded`、`requests_without_capkit_header`，按请求头里的计划档；没有 capkit 头的请求按事件档）、`event_time`（`read`、`yielded`、`service_ns`、`hold_ns`）、`upstream_failures`（按计划档，各档只含本档的数）、`inject`、`loop_lag_ns`、`cpu`（`process_ns` 与 `loop_thread_ns`：场景 3 时两者之差就是辅助线程的忙等）、`overflow`；`lag`（可选）。只在收到信号时退出，退出码 0。

@@ -207,7 +207,7 @@ def test_slurm_view(tmp_path, stub_runner):
     r = stub_runner({"scontrol": lambda argv: (0, job if " job " in argv[-1] else "NodeName=n",
                                                ""),
                      "squeue": (0, "77 me RUNNING\n", "")})
-    doc = slurmview.collect(r, "fe", "77")
+    doc = slurmview.collect(r, "fe", "77", 1, 0)
     assert doc["node"] == "umbriel-b200-021" and [i["rc"] for i in doc["items"]] == [0, 0, 0]
     assert r.calls[2][-1] == "squeue -h -w umbriel-b200-021 -o '%i %u %T'"
     with pytest.raises(FileNotFoundError):
@@ -216,7 +216,7 @@ def test_slurm_view(tmp_path, stub_runner):
     p = slurmview.write(str(tmp_path / "J77-r0"), doc)
     assert json.load(open(p))["schema"] == "capkit.slurm_view/1"
     r2 = stub_runner({"scontrol": (0, "JobId=77 NodeList=(null)\n", "")})
-    doc2 = slurmview.collect(r2, "fe", "77")
+    doc2 = slurmview.collect(r2, "fe", "77", 1, 0)
     assert doc2["node"] is None and [i["rc"] for i in doc2["items"]] == [0, None, None]
     assert slurmview.node_of("NodeList=a\nNodeList=b") is None
     assert slurmview.node_of("ReqNodeList=(null) NodeList=n1") == "n1"

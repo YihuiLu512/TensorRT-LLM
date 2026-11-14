@@ -41,6 +41,9 @@ TIER_SUMMARY_SCHEMA = "capkit.tier_summary/1"
 BASE_CHANNEL_OPTIONS = (("grpc.max_receive_message_length", -1),
                         ("grpc.max_send_message_length", -1))
 LOCAL_SUBCHANNEL_POOL = ("grpc.use_local_subchannel_pool", 1)
+# gRPC core server channel arg (integer seconds), see resolve_max_unrequested.
+UNREQUESTED_OPTION = "grpc.server_max_unrequested_time_in_server"
+GRPC_INT_MAX = 2 ** 31 - 1
 
 
 # ---- raw-bytes gRPC plumbing -------------------------------------------------------------------
@@ -73,9 +76,43 @@ class AnyMethodHandler(grpc.GenericRpcHandler):
         return h
 
 
-def make_server(reuseport):
-    """A grpc.aio server (call from inside the running loop)."""
-    opts = list(BASE_CHANNEL_OPTIONS) + [("grpc.so_reuseport", 1 if reuseport else 0)]
+def add_server_args(group):
+    """Arguments every capkit gRPC server takes (nullgrpc, capselfcheck.relay)."""
+    group.add_argument("--max-unrequested-s", type=int,
+                       help="%s in whole seconds (default: the tier table's request_timeout_ns "
+                            "or its length, whichever is longer, rounded up)" % UNREQUESTED_OPTION)
+
+
+def resolve_max_unrequested(value_s, tt):
+    """The value for grpc.server_max_unrequested_time_in_server and where it came from.
+
+    gRPC core cancels a call that has waited longer than this in the server's queue of calls the
+    application has not picked up yet (grpcio 1.85: default 30 s; 0 or a negative value cancels
+    every queued call). The default is never shorter than the registered request timeout, so a
+    queued call ends by the load generator's deadline (timeout_registered) and not by a server
+    cancel; with request_timeout_ns null, the tier table's length bounds every call instead.
+    """
+    timeout_ns = tt.request_timeout_ns or 0
+    if value_s is None:
+        value_s = -(-max(timeout_ns, tt.end_ns) // 1_000_000_000)
+        source = "default: max(request_timeout_ns, tier table end_ns), whole seconds rounded up"
+    else:
+        source = "--max-unrequested-s"
+    if not isinstance(value_s, int) or not 1 <= value_s <= GRPC_INT_MAX:
+        raise ConfigError("%s must be an integer in [1, %d] seconds, got %r"
+                          % (UNREQUESTED_OPTION, GRPC_INT_MAX, value_s))
+    if value_s * 1_000_000_000 < timeout_ns:
+        raise ConfigError("--max-unrequested-s %d is shorter than the tier table's "
+                          "request_timeout_ns %d: queued calls would be cancelled by the server "
+                          "before the registered timeout" % (value_s, timeout_ns))
+    return {UNREQUESTED_OPTION: value_s, "source": source}
+
+
+def make_server(reuseport, max_unrequested_s):
+    """A grpc.aio server (call from inside the running loop). max_unrequested_s comes from
+    resolve_max_unrequested (no default here: every server passes it explicitly)."""
+    opts = list(BASE_CHANNEL_OPTIONS) + [("grpc.so_reuseport", 1 if reuseport else 0),
+                                         (UNREQUESTED_OPTION, max_unrequested_s)]
     return grpc.aio.server(options=opts)
 
 

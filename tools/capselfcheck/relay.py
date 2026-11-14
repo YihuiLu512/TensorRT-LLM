@@ -34,9 +34,10 @@ from capcommon.lifecycle import StopController, write_port_file
 from capcommon.tiers import POST_SEQ
 from capcommon.wire import WireError, unpack_grpc_request
 
-from capgrpc.common import (AnyMethodHandler, ToolRuntime, bind_server, make_server,
-                                 open_channel, raw_stream_callable, resolve_target,
-                                 status_reason, wait_channels_ready, write_inprocess_ready)
+from capgrpc.common import (UNREQUESTED_OPTION, AnyMethodHandler, ToolRuntime, add_server_args,
+                            bind_server, make_server, open_channel, raw_stream_callable,
+                            resolve_max_unrequested, resolve_target, status_reason,
+                            wait_channels_ready, write_inprocess_ready)
 
 from . import SITES, SLOTS, TOOL
 
@@ -52,6 +53,7 @@ def build_parser():
     g.add_argument("--upstream-port-file", help="port file of the upstream role")
     g.add_argument("--lag-period-us", type=int, required=True)
     g.add_argument("--lag-records-capacity", type=int, default=0)
+    add_server_args(g)
     return p
 
 
@@ -62,6 +64,8 @@ def validate_args(args, common):
         raise ConfigError("--port out of range")
     if len(common.cpus) != 1:
         raise ConfigError("the relay is one process: --cpus takes exactly one cpu")
+    args.grpc_server_options = resolve_max_unrequested(args.max_unrequested_s,
+                                                       common.load_tier_table())
 
 
 class Relay:
@@ -220,13 +224,15 @@ class Relay:
         target = resolve_target(args.upstream, args.upstream_port_file)
         self.channel = open_channel(target, local_subchannel_pool=True)
         await wait_channels_ready([self.channel], rt.origin_ns)
-        server = make_server(reuseport=False)
+        opts = args.grpc_server_options
+        server = make_server(reuseport=False, max_unrequested_s=opts[UNREQUESTED_OPTION])
         server.add_generic_rpc_handlers([AnyMethodHandler(self.behavior_for)])
         port = bind_server(server, args.host, args.port)
         await server.start()
         info = {"host": args.host, "port": port, "upstream": target,
                 "serializers": "identity (raw bytes both ways)",
-                "inject_site": SITES[0], "aux_threads": rt.aux_threads}
+                "inject_site": SITES[0], "aux_threads": rt.aux_threads,
+                "grpc_server_options": dict(opts)}
         rt.start(loop, info)
         write_port_file(args.port_file, rt.identity, args.host, port)
         write_inprocess_ready(rt, args.ready_file, info)
@@ -248,6 +254,7 @@ class Relay:
             payload = rt.tier_common(seq)
             payload.update({
                 "schedule_sha256": None,
+                "grpc_server_options": dict(self.args.grpc_server_options),
                 "counts": {"streams_accepted": self.c_acc[seq],
                            "streams_completed": self.c_done[seq],
                            "streams_failed": self.c_fail[seq],

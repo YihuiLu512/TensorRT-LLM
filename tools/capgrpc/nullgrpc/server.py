@@ -33,9 +33,10 @@ from capcommon.schedule import STEP_STAMP, BeatSchedule, count_schedule_rows
 from capcommon.tiers import POST_SEQ
 from capcommon.wire import WireError, unpack_grpc_request
 
-from capgrpc.common import (AnyMethodHandler, ToolRuntime, bind_server, child_main,
-                                 make_server, reserve_port, run_supervisor, worker_ready_info,
-                                 write_inprocess_ready)
+from capgrpc.common import (UNREQUESTED_OPTION, AnyMethodHandler, ToolRuntime, add_server_args,
+                            bind_server, child_main, make_server, reserve_port,
+                            resolve_max_unrequested, run_supervisor, worker_ready_info,
+                            write_inprocess_ready)
 
 from . import SITES, SLOTS, TOOL
 
@@ -63,6 +64,7 @@ def build_parser():
                    help="streams capacity per process (default: all requests the tier table "
                         "can generate, count_schedule_rows)")
     g.add_argument("--lag-records-capacity", type=int, default=0)
+    add_server_args(g)
     return p
 
 
@@ -81,6 +83,8 @@ def validate_args(args, common):
         raise ConfigError("--port out of range")
     if len(common.cpus) < args.workers:
         raise ConfigError("--cpus lists %d cpus for %d workers" % (len(common.cpus), args.workers))
+    args.grpc_server_options = resolve_max_unrequested(args.max_unrequested_s,
+                                                       common.load_tier_table())
 
 
 class _Stream:
@@ -347,7 +351,8 @@ class NullServer:
         stopper.on_stop(self.on_stop)
         if self.link is not None:
             self.link.attach(loop, stopper)
-        server = make_server(reuseport=True)
+        opts = args.grpc_server_options
+        server = make_server(reuseport=True, max_unrequested_s=opts[UNREQUESTED_OPTION])
         server.add_generic_rpc_handlers([AnyMethodHandler(self.behavior_for)])
         port = bind_server(server, args.host, self.bind_port)
         await server.start()
@@ -355,7 +360,8 @@ class NullServer:
                 "msg_bytes": self.msg_bytes, "gate": GATE,
                 "stream_capacity": self.stream_rec.capacity,
                 "beat_steps": self.bs.n_steps if self.beat else None,
-                "serializers": "identity (request_deserializer=None, response_serializer=None)"}
+                "serializers": "identity (request_deserializer=None, response_serializer=None)",
+                "grpc_server_options": dict(opts)}
         rt.start(loop, info)
         driver = loop.create_task(self.beat_driver(loop)) if self.beat else None
         if self.link is not None:
@@ -390,6 +396,7 @@ class NullServer:
             payload.update({
                 "schedule_sha256": None, "pacing": args.pacing, "stamp": self.stamp,
                 "msg_bytes": self.msg_bytes, "gate": GATE, "in_process": bool(args.in_process),
+                "grpc_server_options": dict(args.grpc_server_options),
                 "counts": {"streams_accepted": self.c_accepted[seq],
                            "streams_completed": self.c_completed[seq],
                            "streams_cancelled": self.c_cancelled[seq],
