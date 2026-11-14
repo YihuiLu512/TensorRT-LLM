@@ -724,10 +724,15 @@ def test_topology_without_a_chain_starts_a_worker_of_a_role_as_before(
     monkeypatch.setenv(cv.ENV_TOPOLOGY, cv.TOPOLOGY_DISAGG)
     role = types.SimpleNamespace(name="CONTEXT")
     server = server_module.RemoteOpenAIServer("/m", [], port=1234, wait=False, role=role)
-    (proc,) = popen
-    assert proc.args[0][-2:] == ["--server_role", "CONTEXT"]
+    monkeypatch.delenv(cv.ENV_TOPOLOGY)
+    baseline = server_module.RemoteOpenAIServer("/m", [], port=1234, wait=False, role=role)
+    proc, baseline_proc = popen
+    assert proc.args == baseline_proc.args
+    assert "--server_role" in proc.args[0]
+    assert proc.args[0][proc.args[0].index("--server_role") + 1] == "CONTEXT"
     assert server._chain_handle is None and server.proc is proc
     server.terminate()
+    baseline.terminate()
 
 
 def test_worker_of_a_role_keeps_its_address_and_its_engine_listens_locally(
