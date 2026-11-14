@@ -356,13 +356,20 @@ def check_chains(ctx, ld, td, next_drain, kind):
                     chain["name"], hop["role"], hop["source"], v,
                     hi if lo == hi else "[%d, %d]" % (lo, hi)))
     if kind == "chunks":
-        _chunk_rows(ctx, td, r)
+        _chunk_rows(ctx, td, r, next_drain)
     return r.finish()
 
 
-def _chunk_rows(ctx, td, r):
+def _chunk_rows(ctx, td, r, next_drain=None):
     """C7 per request: every sampled request (req_id % chunk_sample_mod == 0, planned in this
-    tier, completed OK) must have exactly the chain's frames-per-request chunk rows."""
+    tier, completed OK) must have exactly the chain's frames-per-request chunk rows.
+
+    Chunk rows are filed by the tier of their receive time (INTERFACES 5.4), so the rows of a
+    request planned near the end of this tier may lie partly in the following tier's files. A
+    load tier is always followed by a drain tier (TierTable rule 3, INTERFACES 3.2), so a
+    request's rows are counted over this tier's chunk files and those of `next_drain`; rows
+    anywhere else are not counted. Stray ids are the rows in this tier's own files whose request
+    is not a sampled request planned in this tier."""
     t = td.tier
     chains = [c for c in ctx.launch["reconcile"]["chains"] if c["kind"] == "chunks"]
     for role in td.roles_with("loadgen.chunks"):
@@ -388,6 +395,19 @@ def _chunk_rows(ctx, td, r):
         counts = {}
         for rid in chunks.get("req_id", []):
             counts[rid] = counts.get(rid, 0) + 1
+        sampled_set = set(sampled)
+        stray = [rid for rid in counts if rid not in sampled_set]
+        if next_drain is not None:
+            later = {}
+            for rid in next_drain.rows("loadgen.chunks", role)[0].get("req_id", []):
+                if rid in sampled_set:
+                    later[rid] = later.get(rid, 0) + 1
+            for rid, n in later.items():
+                counts[rid] = counts.get(rid, 0) + n
+            if later:
+                r.detail.append("chunks of %s: %d rows of %d sampled requests counted from tier "
+                                "%d (received after this tier's end)"
+                                % (role, sum(later.values()), len(later), next_drain.tier.seq))
         bad = 0
         for rid in sampled:
             if rid not in ok_ids:
@@ -395,8 +415,6 @@ def _chunk_rows(ctx, td, r):
             r.checked += 1
             if counts.get(rid, 0) != per:
                 bad += 1
-        sampled_set = set(sampled)
-        stray = [rid for rid in counts if rid not in sampled_set]
         if bad or stray:
             r.red += bad + len(stray)
             r.detail.append("chunks of %s: %d sampled requests with != %d rows, %d stray ids"

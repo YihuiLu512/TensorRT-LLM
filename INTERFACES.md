@@ -422,7 +422,7 @@ JSON 头：
 | `<角色>.w<k>.summary.json` | 负载器、排空端、空汇、节拍源、中继 | 本档自报（§5.4.1） |
 | `<角色>.w<k>.<名字>.capbin` | 同上 | 本档的逐行记录（§5.4.2），由 `RecordArray.dump_split` 在进程退出前写 |
 
-**每个文件的 `identity` 带 `tier_seq`、`tier_label`、`worker`、`pid`。** 记录归档的规则：逐请求记录按**计划时刻所在的档**归档（`tier_seq` 取时间表那一列）；逐事件记录（滞后采样、FIONREAD 采样、消息到达）按**事件发生时刻所在的档**归档（`TierTable.tier_seq_at(rel_ns)`，原点之前记 `-1` → `tiers/pre/`，最后一档之后记 `-2` → `tiers/post/`）。
+**每个文件的 `identity` 带 `tier_seq`、`tier_label`、`worker`、`pid`。** 记录归档的规则：逐请求记录按**计划时刻所在的档**归档（`tier_seq` 取时间表那一列）；逐事件记录（滞后采样、FIONREAD 采样、消息到达）按**事件发生时刻所在的档**归档（`TierTable.tier_seq_at(rel_ns)`，原点之前记 `-1` → `tiers/pre/`，最后一档之后记 `-2` → `tiers/post/`）。判定器按请求核对块行时，把本档与其后清空档的文件合计（见勘误 SM-14-1）。
 
 #### 5.4.1 逐档自报 `<角色>.w<k>.summary.json`（`capkit.tier_summary/1`）
 
@@ -468,7 +468,7 @@ JSON 头：
 | 文件名 `<名字>` | `kind` | 列 |
 |---|---|---|
 | `requests` | `loadgen.requests` | `req_id q`、`planned_rel_ns q`、`sent_rel_ns q`（实际写出请求的时刻；重连重发见勘误 R1-7）、`first_rel_ns q`（首个数据帧，无则 −1）、`done_rel_ns q`（完成或失败时刻）、`frames i`、`bytes q`、`tokens i`、`status h`（0 = 成功，其余为 `meta.status_codes` 里的失败原因编号）、`conn_id i`、`new_conn b`、`tier_seq h` |
-| `chunks` | `loadgen.chunks` | `req_id q`、`idx i`（该流的第几个数据帧，0 起）、`recv_rel_ns q`、`nbytes i`、`tier_seq h`。只记 `req_id % chunk_sample_mod == 0` 的请求；`meta.chunk_sample_mod` 必写，判定器据此算应有行数 |
+| `chunks` | `loadgen.chunks` | `req_id q`、`idx i`（该流的第几个数据帧，0 起）、`recv_rel_ns q`、`nbytes i`、`tier_seq h`。只记 `req_id % chunk_sample_mod == 0` 的请求；`meta.chunk_sample_mod` 必写，判定器据此算应有行数（按接收时刻归档，一个请求的行可能跨到下一档，见勘误 SM-14-1） |
 | `fionread` | `loadgen.fionread` | `t_rel_ns q`、`conn_id i`、`bytes i`、`tier_seq h` |
 | `lag` | `loop.lag` | `planned_rel_ns q`、`late_ns q`、`tier_seq h`（只在开了逐样本记录时有，§6.4） |
 | `steps` | `beat.steps` | `step q`、`planned_rel_ns q`、`actual_rel_ns q`、`msgs i`、`tier_seq h`（节拍源每步一行） |
@@ -1075,6 +1075,14 @@ R5 三路自审里唯一的 Important（路 A R5-R1，`code-review/self-review-c
 
 1. **§5.7 / §9.5 起进程前的失败不论退出码**（推翻勘误 R4-9、R5-3 里「退出码 3」这一条件）：caplaunch 写完 `raw/launch.json` 才起角色，所以判据是「launcher 自己以非 0 退出（不是超预算被杀，也不是作业收到 SIGTERM）、启动树里没有 `raw/launch.json`、也没有编排器自己的 `STATE` 行」，不看退出码是几：配置错 3、argparse 用法错 2（缺必填参数、缩写、未知参数）、未捕获的异常 1（如登记表读不到的 `FileNotFoundError`）都记 NOT_RUN 并带 `config_refused`，原因是 `launcher exited before starting any role (rc=<退出码>): <launcher stderr 的最后一行>`，`capjobs.launches` 按勘误 R5-3 的口径以 `CONFIG`（3）退出（`launches.prestart_config_refusal`，`classify` 用同一判据）。原先只认 3：退出 2、1 被记成 VOID，空树的拷回结论 NOT_RUN 又把原因改写成「copy-back not verified」，作业以 4 退出，看起来像拷回失败，`config_refused` 为 0。编排器起了进程之后的失败不会落进这一类：唯一起进程的地方（`_start_role`）在写完 `launch.json` 之后，之后的退出照旧按 `STATE` 或退出码判（例如有 `launch.json` 而退出 3 或 4 ⇒ VOID）。
 2. **§9.5 提交端用 caplaunch 的解析器预检计划 argv**（补勘误 R5-6）：`capjobs.submit submit` 对计划里每个启动，按作业里实际运行的样子构造 argv（`capjobs.launches.launch_argv`：占位符代入示例值 `submit.EXAMPLE_PLACEHOLDER_VALUES`，追加身份参数、`--run-dir`、`--pin-table` 等 `capjobs.launches` 会加的参数），取 `-m caplaunch` 之后的部分，用 caplaunch 自己的 `build_parser()` 只解析、不执行（`submit.check_plan_argv`）。缺必填参数、缩写、未知参数、值类型不对、`-h` 都在提交时拒绝（退出码 3，不写台账、不建快照、不调 ssh）；argv 里没有 `-m caplaunch` 同样拒绝。提交端原先只取 `--workdir`、`--scenario`、`--kill-after-s`、`--capkit-sha` 四个值核对，少一个 `--housekeeping-ms` 的计划能提交，到作业里 caplaunch 才以 2 退出。
+
+### SM-14 判定器修复（2026-11-14）
+
+E0 作业 5933747 的 L0（`e0a-nullsse`）启动 VALID、数据完整，判定器却在第 4 档（`up-sub-hi`）判 C7 RED「1 sampled requests with != 17 rows」，档与启动随之 VOID（`02_e0/SEAMS.md` SM-14）。原因：C7 的抽样请求按**计划档**取（时间表 `tier_seq`），块行却只数本档目录里的 `chunks` 文件，而 capload 按**接收时刻所在的档**归档块行（§5.4）；req 5599 计划 141.990 s、完成 142.007 s，17 行里 8 行在档 4、9 行在档 5（`drain-03`，档界 142.000 s）。只改判定器，capload 的写文件规则不变，集群上已采的树用修好的判定器重判即可。格式版本号与字段不变。
+
+1. **§5.4.2 / §10.2 C7 的逐请求块行跨档合计**（补 §5.4 的归档规则在判定器一侧的用法）：对计划在本档、`req_id % chunk_sample_mod == 0`、成功完成的请求，块行数 = 本档的 `chunks` 文件里它的行数 + **紧接其后的清空档**的 `chunks` 文件里它的行数（`checks._chunk_rows` 的 `next_drain`），仍要求恰好等于每请求帧数。按规则 3（§3.2）负载档后面一定是清空档，清空门要求在途数归零才算过，所以合法的块行只可能落在这两档；再往后的档里的行不计入（缺了照旧 RED），清空档文件里不属于本档抽样请求的行不计入、也不算 stray。stray id 的口径不变：本档自己的文件里、不是「计划在本档的抽样请求」的行，一行一个 RED。C7 的 `detail` 另记「N rows of M sampled requests counted from tier <清空档>」。
+2. **同一根因的扫描**（「按请求的计划档取请求 × 按档文件数逐事件行」）：C7 是判定器里唯一按请求数逐事件行的检查。C5、C6 的跳值来自逐档自报（capload 的 `frames`、nullsse 的 `requests` / `frames_sent`、节拍源的 `msgs_sent`、中继的 `msgs_received` / `msgs_forwarded`、排空端的 `summary.msgs.msgs` 都按计划档计）或快照槽从本档开始到下一个清空档结束的增量，不受影响。未改、只登记：① `symptoms.msg_lag_from_chunks`（X2 消息层，`pilot._lag_series` 同）按 `req_id` 把本档的块行与本档的 `server.streams` 连接，块行若来自更早计划档的请求会记「chunk rows without a server stream」⇒ X2 该项 NOT_RUN；按规则 3 本档前一档是没有请求的清空档，只有请求跨过整个清空档才会出现，不改。② `msg_lag_from_chunks` 与 `msg_lag_from_msgs` 按计划时刻取窗口内的消息、只读本档文件：计划在窗口内、接收晚于本档结束（滞后 > `tail_ns`）的消息不在本档文件里，不进 X2 的逐秒序列（滞后极大时序列被截尾）。这是 X2 的灵敏度问题，不是 P 的计数口径，另案处理。③ 原有缺口：清空档不判（§10.2），清空档文件里的块行从不做 stray 核对。
+3. **验证**：`tests/judge/test_c7_chunk_rows.py`；把拷出的 J5933747 L0 树重判，第 4 档 C7 PASS（见 `_progress/fix-SM14.md`）。
 
 ## 审阅记录（r2，2026-11-13）
 

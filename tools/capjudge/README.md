@@ -38,7 +38,7 @@
 |---|---|---|
 | C1 | `measure_class=load_source` 角色的 `workers` 之和（逐 worker 自报） | 四项各与带比：`T1:send_lag_p50_ns`、`T3:send_lag_p99_ns`、`T3:fionread_nonzero_frac`、`T3:loop_lag_p99_ns`；超上界 ⇒ RED；带或值缺 ⇒ NOT_RUN |
 | C3 | 时间表 `meta.per_tier`；已检 = `kind=client` 角色各 worker 的 `ok + failed` | 非过载型失败 > 0 ⇒ RED；已检 < 应检（有计划请求没有结果）⇒ NOT_RUN。第一批只认负载器 `class_hint == overload`（登记超时）为过载型，其余（含 `unclassified`）按非过载型 |
-| C5 / C6 / C7 | `reconcile` 里该类链的 `scope: tier` 跳数；C7 另加「抽样请求数」= 时间表里本档、`req_id % chunk_sample_mod == 0` 的请求 | 每跳值 ∉ [`expected_hop_count(n − 过载失败)`, `expected_hop_count(n)`] ⇒ RED；C7 抽样请求的块行数 ≠ 每请求帧数 ⇒ RED |
+| C5 / C6 / C7 | `reconcile` 里该类链的 `scope: tier` 跳数；C7 另加「抽样请求数」= 时间表里本档、`req_id % chunk_sample_mod == 0` 的请求 | 每跳值 ∉ [`expected_hop_count(n − 过载失败)`, `expected_hop_count(n)`] ⇒ RED；C7 抽样请求的块行数（本档与其后清空档的 `chunks` 文件合计，块行按接收时刻归档）≠ 每请求帧数 ⇒ RED；本档文件里不属于本档抽样请求的行（stray）⇒ RED |
 | C8 | 覆盖清单里 `proc_kind` 属于本次启动的位点个数（进程类 = `launch.json` 各角色 `proc_kinds` 的并集；产品角色声明自己运行的 capprobe 进程类） | 适用位点的槽在全部窗口快照里都不存在，或窗口增量之和 ≤ 0 ⇒ RED（直方图槽按各桶计数之和算增量）；其余位点在明细里列为「本拓扑不适用」，不算 PASS 也不算 RED；清单缺失或无位点、没有角色声明 `proc_kinds`（或格式不对）、没有一个适用位点 ⇒ NOT_RUN |
 | C9 | 窗口长 ÷ `sidecar/meta.json` 的 `interval_ns` × 线程清单里的线程数 | 任一行 `cpus_allowed` 越出本角色核或与他角色核相交、`last_cpu` 不在本角色核 ⇒ RED；已检行数 < 应检 ⇒ RED |
 | C10 | 各角色 `expected_procs` 之和 | `versions.check_versions` 不过 ⇒ 整次启动 NOT_RUN（D11） |
