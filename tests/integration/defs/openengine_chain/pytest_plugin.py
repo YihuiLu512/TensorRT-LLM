@@ -10,11 +10,12 @@ Per test it records ``openengine_chain``, ``engine_calls``, ``engine_name`` and
 leave processes running when they stop. A test whose chain servers are workers
 of a disaggregated server is proven leg by leg (``proof.judge_disagg``) and
 gets the per-role markers too; while it runs, a thread follows the
-disaggregated servers and the GPU use of the processes the test started. A
-test that runs a disaggregated server whose workers have no role is not
-proven (``incomplete``). With
-``TRTLLM_TEST_OPENENGINE_NEGATIVE_CONTROL=<ctx|gen>`` (CH-9), the first worker
-of that role starts outside the chain and the test passes only if CH-6 fails.
+disaggregated servers and the GPU use of the processes the test started. The
+legs of a disaggregated server whose workers have no role are not proven, so
+such a test's proof is at best ``incomplete``. With
+``TRTLLM_TEST_OPENENGINE_NEGATIVE_CONTROL=<ctx|gen>`` (CH-9), each test's first
+worker of that role starts outside the chain, and a test proven leg by leg
+passes only if its CH-6 fails.
 When ``TRTLLM_OPENENGINE_RESULTS_DIR`` is set and the pytest run writes no
 junit file, it writes one there, so that the pytest a wrapper test starts still
 leaves per-test results.
@@ -69,7 +70,7 @@ _WATCH_INTERVAL_S = 1.0
 _GPU_CHECK_INTERVAL_S = 5.0
 # Names the role whose first worker starts outside the chain, for the CH-9 negative control.
 ENV_NEGATIVE_CONTROL = "TRTLLM_TEST_OPENENGINE_NEGATIVE_CONTROL"
-_NEGATIVE_CONTROL_UNDO = pytest.StashKey[object]()
+_OUTSIDE_THE_CHAIN = pytest.StashKey["_OutsideTheChain | None"]()
 # The default leg expectation, written in leg_expectation when a test registers none.
 TWO_LEGS = "two_legs"
 
@@ -104,8 +105,8 @@ def pytest_configure(config: pytest.Config) -> None:
     config.stash[_CHAIN] = chain
     config.stash[_EXPECTATIONS] = ex.load() if chain != cv.CHAIN_NONE else []
     config.stash[_STARTUP_VERDICTS] = {}
-    config.stash[_NEGATIVE_CONTROL_UNDO] = (
-        _start_one_worker_outside_the_chain(negative_control_role())
+    config.stash[_OUTSIDE_THE_CHAIN] = (
+        _OutsideTheChain(negative_control_role())
         if chain != cv.CHAIN_NONE and negative_control_role()
         else None
     )
@@ -127,9 +128,9 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
-    undo = config.stash.get(_NEGATIVE_CONTROL_UNDO, None)
-    if undo is not None:
-        undo()
+    outside = config.stash.get(_OUTSIDE_THE_CHAIN, None)
+    if outside is not None:
+        outside.undo()
 
 
 def pytest_report_header(config: pytest.Config) -> str:
@@ -155,13 +156,12 @@ def _start_outside_the_chain(cmd, env=None, sink=None) -> launch.ServeHandle:
         stdout=sink,
         stderr=None if sink is None else subprocess.STDOUT,
     )
-    host = proof._option(cmd, "--host") or "localhost"
-    port = proof._option(cmd, "--port")
+    host, port = launch._address(cmd)
     return launch.ServeHandle(
         chain=cv.CHAIN_NONE,
         model=cmd[1] if len(cmd) > 1 else "",
         host=host,
-        port=int(port) if port and port.isdigit() else None,
+        port=port,
         frontend=proc,
         engine=None,
         engine_endpoint=None,
@@ -171,42 +171,48 @@ def _start_outside_the_chain(cmd, env=None, sink=None) -> launch.ServeHandle:
     )
 
 
-def _start_one_worker_outside_the_chain(role: str):
-    """Make the harness start the first ``role`` worker as an in-process worker (CH-9).
+class _OutsideTheChain:
+    """Makes the harness start each test's first ``role`` worker as an in-process worker (CH-9).
 
     Replaces ``launch_serve_command`` in ``launch`` and in every module of this
-    package already holding it; returns the function that undoes this. A module
-    that imports it later keeps the replacement, which does nothing once undone.
+    package already holding it, until :meth:`undo`. A module that imports it
+    later keeps the replacement, which does nothing once undone.
     """
-    original = launch.launch_serve_command
-    used = []
-    active = [True]
 
-    def launch_serve_command(cmd, *args, **kwargs):
-        if active[0] and not used and launch.ServeHandle.role_in(cmd) == role:
-            used.append(cmd)
-            return _start_outside_the_chain(cmd, kwargs.get("env"), kwargs.get("sink"))
-        return original(cmd, *args, **kwargs)
+    def __init__(self, role: str) -> None:
+        original = launch.launch_serve_command
+        self._used = False
+        self._active = True
 
-    package = launch.__name__.rpartition(".")[0]
-    holders = [launch] + [
-        module
-        for name, module in list(sys.modules.items())
-        if module is not None
-        and module is not launch
-        and name.startswith(package + ".")
-        and vars(module).get("launch_serve_command") is original
-    ]
-    for module in holders:
-        module.launch_serve_command = launch_serve_command
+        def launch_serve_command(cmd, *args, **kwargs):
+            if self._active and not self._used and launch.ServeHandle.role_in(cmd) == role:
+                self._used = True
+                return _start_outside_the_chain(cmd, kwargs.get("env"), kwargs.get("sink"))
+            return original(cmd, *args, **kwargs)
 
-    def undo() -> None:
-        active[0] = False
-        for module in holders:
-            if vars(module).get("launch_serve_command") is launch_serve_command:
-                module.launch_serve_command = original
+        package = launch.__name__.rpartition(".")[0]
+        self._holders = [launch] + [
+            module
+            for name, module in list(sys.modules.items())
+            if module is not None
+            and module is not launch
+            and name.startswith(package + ".")
+            and vars(module).get("launch_serve_command") is original
+        ]
+        for module in self._holders:
+            module.launch_serve_command = launch_serve_command
+        self._original = original
+        self._replacement = launch_serve_command
 
-    return undo
+    def next_test(self) -> None:
+        """The next ``role`` worker started is again the first of a test."""
+        self._used = False
+
+    def undo(self) -> None:
+        self._active = False
+        for module in self._holders:
+            if vars(module).get("launch_serve_command") is self._replacement:
+                module.launch_serve_command = self._original
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
@@ -223,6 +229,9 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_setup(item: pytest.Item):
     item.stash[_SETUP_SEQ] = next_seq()
+    outside = item.config.stash.get(_OUTSIDE_THE_CHAIN, None)
+    if outside is not None:
+        outside.next_test()
     yield
 
 
@@ -387,9 +396,16 @@ def pytest_runtest_call(item: pytest.Item):
 
 
 def _topology(handle) -> proof.Check:
-    """The topology of a running server, checked until it is once ``ok``; else the one at shutdown."""
+    """The topology of a running server, checked until it is once ``ok``.
+
+    For a stopped server, the one checked at shutdown, else the one proven while it ran.
+    """
     if not handle.alive:
-        return handle.final_topology or proof.Check(proof.INCOMPLETE, "not checked before shutdown")
+        return (
+            handle.final_topology
+            or handle.proven_topology
+            or proof.Check(proof.INCOMPLETE, "not checked before shutdown")
+        )
     if handle.proven_topology is not None:
         return handle.proven_topology
     try:
@@ -520,7 +536,7 @@ def _address(handle) -> str | None:
 
     ``None`` if that port is not known (CH-6's member check is then incomplete).
     """
-    port = handle.port
+    port = getattr(handle, "port", None)
     if not port:
         frontend = getattr(handle, "frontend", None)
         if frontend is None or not handle.alive:
@@ -532,7 +548,7 @@ def _address(handle) -> str | None:
         if len(ports) != 1:
             return None
         port = ports.pop()
-    return proof.normalize_address(f"{handle.host}:{port}")
+    return proof.normalize_address(f"{getattr(handle, 'host', None) or 'localhost'}:{port}")
 
 
 def _settles(result: proof.DisaggProof) -> bool:
@@ -573,16 +589,17 @@ def _prove_disagg(
             legs.append(proof.Leg(role, _address(h), start, end, infos[id(h)], topologies[id(h)]))
         unknown = sorted({leg.role for leg in legs} - set(proof.ROLES))
         if unknown:
-            # An aggregated server next to the workers is not part of a two-leg proof.
+            # A chain server without a worker role next to the workers is not one of
+            # their legs: neither proof applies to it.
             result = proof.DisaggProof(
-                proof.FAIL,
-                {r: proof.FAIL for r in proof.ROLES},
+                proof.INCOMPLETE,
+                {r: proof.INCOMPLETE for r in proof.ROLES},
                 [
                     (
                         "CH-1",
                         None,
                         proof.Check(
-                            proof.FAIL,
+                            proof.INCOMPLETE,
                             "a chain server without a worker role "
                             "runs next to the workers of a disaggregated server",
                         ),
@@ -622,12 +639,12 @@ def _prove_disagg(
 
 
 def _judge_negative_control(report: pytest.TestReport, props: list, result: ProofResult) -> None:
-    """CH-9: with a worker outside the chain, the test passes only if CH-6 fails.
+    """CH-9: with a worker outside the chain, a test proven leg by leg passes only if CH-6 fails.
 
     The test's own outcome does not count, as the worker outside the chain may
     change what it sees; processes its servers left running still fail it.
     """
-    failed = result.disagg is not None and any(
+    failed = any(
         name == "CH-6" and check.status == proof.FAIL for name, _, check in result.disagg.checks
     )
     props.append(
@@ -796,7 +813,7 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo):
         elif result.handles:
             props.append(("chain_topology", "agg"))
 
-    if result is not None and negative_control_role():
+    if result is not None and result.disagg is not None and negative_control_role():
         _judge_negative_control(report, props, result)
         return
 

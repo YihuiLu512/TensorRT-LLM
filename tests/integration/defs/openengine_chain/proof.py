@@ -328,7 +328,10 @@ def read_engine_name(handle) -> str | None:
 
 
 def engine_info(handle) -> EngineInfo | None:
-    """The engine's :class:`EngineInfo` as read before, else read now if it runs; ``None`` if not read."""
+    """The engine's :class:`EngineInfo` as read before, else read now if it runs.
+
+    ``None`` for a stopped server whose engine was never read; raises if reading it fails.
+    """
     if handle not in _ENGINE_INFO and handle.alive:
         read_engine_name(handle)
     return _ENGINE_INFO.get(handle)
@@ -610,9 +613,20 @@ def _option(args: Sequence[str], *names: str) -> str | None:
     return value
 
 
-def find_orchestrators(root: int, *, cmdline_reader=None) -> list[Orchestrator]:
-    """The ``trtllm-serve disaggregated`` processes below ``root``, one per address."""
+def _in_cwd_of(pid: int, path: str) -> str:
+    """``path`` as process ``pid`` resolves it; raises OSError if its directory cannot be read."""
+    return path if os.path.isabs(path) else os.path.join(os.readlink(f"/proc/{pid}/cwd"), path)
+
+
+def find_orchestrators(root: int, *, cmdline_reader=None, ports_reader=None) -> list[Orchestrator]:
+    """The ``trtllm-serve disaggregated`` processes below ``root``, one per address.
+
+    With ``--report_addr``, the address is the one the server wrote to that file;
+    otherwise its configuration's, and for port 0 the one port the process
+    listens on. A server whose address is not known yet is left out.
+    """
     cmdline_reader = cmdline_reader or _cmdline
+    ports_reader = ports_reader or listening_ports
     found: dict[str, Orchestrator] = {}
     for pid in sorted(live_descendants(root)):
         args = cmdline_reader(pid)
@@ -621,22 +635,31 @@ def find_orchestrators(root: int, *, cmdline_reader=None) -> list[Orchestrator]:
         program = _serve_program(args)
         if program is None or "disaggregated" not in args[program + 1 : program + 2]:
             continue
-        path = _option(args, "-c", "--config_file")
+        path = _option(args, "-c", "--config", "--config_file")
         if not path:
             continue
-        if not os.path.isabs(path):
-            try:
-                path = os.path.join(os.readlink(f"/proc/{pid}/cwd"), path)
-            except OSError:
-                continue
         try:
+            path = _in_cwd_of(pid, path)
             with open(path, encoding="utf-8") as f:
                 config = yaml.safe_load(f) or {}
         except (OSError, yaml.YAMLError):
             continue
         host = str(config.get("hostname") or "localhost")
-        host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
         port = config.get("port", 8000)
+        report = _option(args, "--report_addr")
+        if report:
+            try:
+                with open(_in_cwd_of(pid, report), encoding="utf-8") as f:
+                    host, _, port = f.read().strip().rpartition(":")
+            except OSError:
+                continue
+            host = host.strip("[]")
+        elif str(port) == "0":
+            ports = ports_reader([pid])
+            if len(ports) != 1:
+                continue
+            port = ports.pop()
+        host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(host, host)
         url = f"http://{'[' + host + ']' if ':' in host else host}:{port}"
         found.setdefault(url, Orchestrator(pid, url, path))
     return list(found.values())
@@ -1136,22 +1159,25 @@ def _check_frontend_requests(
         f"{where}: {received} HTTP requests received, {deltas['sent']} calls sent, "
         f"{rejected} refused"
     )
-    # An aggregated request may be split into one call per sequence (UV-52): then the other
-    # buckets must still balance, each of their requests one call or one refusal, and each
-    # aggregated request at least one call unless refused.
+    # An aggregated request may be split into one call per sequence (UV-52). The calls of
+    # one request cannot be told from those of another, so the aggregated requests are not
+    # balanced then; the other buckets must still be, each request one call or one refusal.
     http_agg = deltas[SERVE_HTTP_RECEIVED[BUCKET_AGGREGATED]]
     sent_agg = deltas[SERVE_SENT_BUCKETS[BUCKET_AGGREGATED]]
-    split = sent_agg > http_agg
-    if split and rule.cancels_calls:
-        add("CH-5", leg.role, INCOMPLETE, f"{sides}; split requests and cancelled calls together")
-        return
-    if split:
+    if sent_agg > http_agg:
         refused_other = (received - http_agg) - (deltas["sent"] - sent_agg)
-        ok = 0 <= refused_other <= rejected and sent_agg >= http_agg - (rejected - refused_other)
-    else:
-        ok = received == handled or (rule.cancels_calls and received > handled)
-    if ok:
-        add("CH-5", leg.role, OK, sides + ("; aggregated requests were split" if split else ""))
+        if not rule.cancels_calls and not 0 <= refused_other <= rejected:
+            add("CH-5", leg.role, FAIL, sides)
+        else:
+            add(
+                "CH-5",
+                leg.role,
+                INCOMPLETE,
+                f"{sides}; aggregated requests were split into several calls",
+            )
+        return
+    if received == handled or (rule.cancels_calls and received > handled):
+        add("CH-5", leg.role, OK, sides)
     else:
         add("CH-5", leg.role, FAIL, sides)
 
@@ -1208,8 +1234,11 @@ def judge_roles(sums: Mapping, orchestrator: OrchestratorReading | None, rule: L
                 expected = rule.orphans
                 if expected is None:
                     expected = ctx[SERVE_HTTP_RECEIVED[BUCKET_CONTEXT_ONLY]]
-                status = OK if expected is not None and orphans == expected else FAIL
-                add("CH-4", None, status, f"{sides}; expected {expected}")
+                if expected is None:
+                    add("CH-4", None, INCOMPLETE, f"{sides}; the front end reports no count")
+                else:
+                    status = OK if orphans == expected else FAIL
+                    add("CH-4", None, status, f"{sides}; expected {expected}")
             elif orphans < 0:
                 add("CH-4", None, FAIL, sides)
             elif orphans == 0:

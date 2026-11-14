@@ -77,6 +77,7 @@ def test_lists_that_agree_with_the_plan_pass(tmp_path):
         ),
         ([], ["XD-704 unittest/llmapi/apps/_test_openai_chat.py::test_chat_streaming"], "'T2'"),
         ([_E2E], [_E2E], "listed in both"),
+        ([_CPU, f"NT-024 {_CPU}"], [], "listed twice"),
     ],
 )
 def test_lists_that_disagree_with_the_plan_fail(tmp_path, new, migrated, expected):

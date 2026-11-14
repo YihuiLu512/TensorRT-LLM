@@ -235,21 +235,24 @@ def node_dirs(out: str) -> list[str]:
 def merge_nodes(per_node: list[list[dict]]) -> list[dict]:
     """One row per ``cross_node`` test, judged over the rows of every node (TH-DSG-4).
 
-    The test passes only if it passed on every node and the checks that need
-    both nodes' readings hold; a node without the test's row leaves it
-    ``incomplete``.
+    A test is its outer test and its name. It passes only if it passed on every
+    node and the checks that need both nodes' readings hold; a node without the
+    test's row leaves it ``incomplete``.
     """
-    names: list[str] = []
+
+    def key(row: dict) -> tuple[str, str]:
+        return row.get("outer_test", ""), row["name"]
+
+    keys: list[tuple[str, str]] = []
     for rows in per_node:
         for row in rows:
-            if (
-                row.get("leg_expectation", "").startswith("cross_node:")
-                and row["name"] not in names
-            ):
-                names.append(row["name"])
+            if row.get("leg_expectation", "").startswith("cross_node:") and key(row) not in keys:
+                keys.append(key(row))
     merged = []
-    for name in names:
-        rows = [next((r for r in reversed(node) if r["name"] == name), None) for node in per_node]
+    for outer, name in keys:
+        rows = [
+            next((r for r in reversed(node) if key(r) == (outer, name)), None) for node in per_node
+        ]
         counts = []
         for row in rows:
             try:
@@ -271,6 +274,7 @@ def merge_nodes(per_node: list[list[dict]]) -> list[dict]:
         row.update(
             file=CROSS_NODE_FILE,
             name=name,
+            outer_test=outer,
             outcome=outcome,
             time="",
             chain_proof=status,
@@ -297,10 +301,10 @@ def summarize(out: str) -> list[dict]:
     with open(os.path.join(out, "summary.json"), "w", encoding="utf-8") as f:
         json.dump(rows, f, indent=1)
     counts: dict[str, int] = {}
-    merged = {row["name"] for row in rows if row["file"] == CROSS_NODE_FILE}
+    merged = {(row["outer_test"], row["name"]) for row in rows if row["file"] == CROSS_NODE_FILE}
     for row in rows:
         # A cross_node test counts once, by its merged row.
-        if row["file"] != CROSS_NODE_FILE and row["name"] in merged:
+        if row["file"] != CROSS_NODE_FILE and (row.get("outer_test", ""), row["name"]) in merged:
             continue
         counts[row["outcome"]] = counts.get(row["outcome"], 0) + 1
     cols = ["file", "name", "outcome", "time", *_PROPS, "message"]
@@ -337,7 +341,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--summarize-only",
         action="store_true",
-        help="only rebuild summary.md from the junit files in --out",
+        help="only rebuild summary.md from the junit files in --out; with per-node "
+        "directories, also judge each cross_node test over the nodes and return 1 if one failed",
     )
     parser.add_argument("extra", nargs=argparse.REMAINDER, help="-- extra pytest arguments")
     args = parser.parse_args(argv)

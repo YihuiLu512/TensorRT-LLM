@@ -15,7 +15,7 @@ the plan's ``<file>::<test>``; a plan entry naming a file alone covers its tests
 
 The checks: (1) every listed new test is a new test of the plan, with the
 plan's id if it gives one; (2) every listed migrated test is a migrated test of
-the plan; (3) no node id is in two list files; (4) a new GPU end-to-end test
+the plan; (3) no node id is listed twice, in one list file or two; (4) a new GPU end-to-end test
 lives in the file the plan requires for its case. With ``--complete`` the
 lists must also hold every test the plan marks, as at the end of the stage.
 An empty list set, or a plan in which no mark is found, fails.
@@ -159,8 +159,12 @@ def check(doc_text: str, root: str = _HERE, complete: bool = False) -> list[str]
     seen: dict[str, Entry] = {}
     for entry in new + migrated:
         other = seen.setdefault(entry.nodeid, entry)
-        if other is not entry and other.path != entry.path:
+        if other is entry:
+            continue
+        if other.path != entry.path:
             problems.append(f"{entry.nodeid}: listed in both {other.path} and {entry.path}")
+        else:
+            problems.append(f"{entry.path}:{entry.line}: {entry.nodeid}: listed twice")
     for nodeid, (case_id, layer) in planned_new.items():
         rule = _E2E_FILES.get(layer)
         if rule is not None and not rule.match(nodeid.split("::")[0]):

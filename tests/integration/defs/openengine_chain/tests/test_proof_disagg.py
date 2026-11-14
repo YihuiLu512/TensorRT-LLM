@@ -6,6 +6,7 @@ import dataclasses
 import json
 import os
 import pathlib
+import types
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -358,9 +359,9 @@ def test_a_cross_node_test_keeps_its_expectations():
     assert P.judge_cross_node(nodes).status == P.FAIL
 
 
-def _junit(path, name, outcome, counts):
+def _junit(path, name, outcome, counts, extra=None):
     failure = "<failure message='x'/>" if outcome == "failed" else ""
-    props = {"chain_proof": "ok", "leg_expectation": "cross_node:met on this node"}
+    props = {"chain_proof": "ok", "leg_expectation": "cross_node:met on this node", **(extra or {})}
     props["chain_leg_counts"] = json.dumps(counts)
     xml = "".join(f"<property name='{k}' value='{_attr(v)}'/>" for k, v in props.items())
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -406,6 +407,19 @@ def test_the_runner_merges_the_nodes_of_a_cross_node_test(tmp_path, gen_takes, o
     assert rc == (1 if expected == "failed" else 0)
     if expected == "passed":
         assert (merged[0]["handoffs"], merged[0]["orphan_handoffs"]) == ("2", "0"), merged
+
+
+def test_the_runner_merges_a_cross_node_test_by_its_outer_test(tmp_path):
+    node0, node1 = _cross_node()
+    for outer in ("test_e2e[a]", "test_e2e[b]"):
+        props = {"outer_test": outer}
+        _junit(tmp_path / "node-0" / "junit" / f"{outer}.xml", "test_x", "passed", node0, props)
+        _junit(tmp_path / "node-1" / "junit" / f"{outer}.xml", "test_x", "passed", node1, props)
+    merged = [r for r in runner.summarize(str(tmp_path)) if r["file"] == "cross-node"]
+    assert [(r["outer_test"], r["outcome"]) for r in merged] == [
+        ("test_e2e[a]", "passed"),
+        ("test_e2e[b]", "passed"),
+    ], merged
 
 
 @pytest.mark.parametrize(
@@ -468,6 +482,24 @@ def test_disaggregated_servers_are_found_and_read(tmp_path, monkeypatch):
     monkeypatch.setattr(P, "live_descendants", lambda root: set(cmdlines))
     found = P.find_orchestrators(1, cmdline_reader=cmdlines.get)
     assert found == [P.Orchestrator(5, "http://127.0.0.1:8123", str(config))]
+    # Port 0: the address the server reported, else the one port it listens on.
+    unbound = tmp_path / "unbound.yaml"
+    unbound.write_text("port: 0\n")
+    reported = tmp_path / "addr"
+    reported.write_text("node0:8124\n")
+    cmdlines = {
+        8: ["trtllm-serve", "disaggregated", "--config", str(unbound)],
+        9: ["trtllm-serve", "disaggregated", "-c", str(unbound), "--report_addr", str(reported)],
+        10: ["trtllm-serve", "disaggregated", "-c", str(unbound), "--report_addr", "missing"],
+    }
+    ports = {8: {8125}}
+    found = P.find_orchestrators(
+        1, cmdline_reader=cmdlines.get, ports_reader=lambda pids: set(ports[next(iter(pids))])
+    )
+    assert [(o.pid, o.url) for o in found] == [
+        (8, "http://localhost:8125"),
+        (9, "http://node0:8124"),
+    ]
     pages = {
         "/prometheus/metrics": b"# TYPE ctx_total_requests_total counter\n"
         b"ctx_total_requests_total 3.0\ngen_total_requests_total 2.0\n"
@@ -637,6 +669,14 @@ def test_killed_gen(pair):
     time.sleep(0.5)  # the watch takes the workers' topology while they run
     pair[0].take(1)
     pair[1].topology = P.Check(P.INCOMPLETE, "the front end has exited")
+
+
+def test_a_server_without_a_role_next_to_the_workers(legs):
+    other = FakeHandle()
+    legs[0].take(1)
+    legs[1].take(1)
+    other.send(1)
+    other.end()
 """
 
 AGG = """
@@ -766,6 +806,8 @@ def test_the_plugin_proves_each_leg(run_disagg):
     # An aggregated server next to a disaggregated one is not proven.
     outcome, props = cases["test_agg"]
     assert (props["chain_topology"], props["chain_proof"]) == ("agg", "incomplete"), props
+    outcome, props = cases["test_a_server_without_a_role_next_to_the_workers"]
+    assert (outcome, props["chain_proof"]) == ("passed", "incomplete"), props
 
 
 def test_orphan_handoffs_are_counted(run_disagg):
@@ -786,6 +828,9 @@ def test_the_negative_control_passes_only_when_ch6_fails(run_disagg):
     assert (outcome, props["negative_control"]) == ("passed", "gen:met"), props
     outcome, props = cases["test_two_legs"]
     assert (outcome, props["negative_control"]) == ("failure", "gen:not met"), props
+    # A test not proven leg by leg keeps its own outcome.
+    outcome, props = cases["test_agg"]
+    assert outcome == "passed" and "negative_control" not in props, props
 
 
 def test_direct_two_leg_checks_each_worker_s_own_counts():
@@ -796,22 +841,21 @@ def test_direct_two_leg_checks_each_worker_s_own_counts():
     assert not [c for n, _, c in result.checks if n == "CH-6"]
 
 
-def test_direct_ctx_leg_without_a_reading_is_incomplete():
+@pytest.mark.parametrize("unread", ["engine_v4", "serve"])
+def test_direct_ctx_leg_without_a_reading_is_incomplete(unread):
     workers, _, _ = _direct_ctx_leg()
-    workers[0].start = dataclasses.replace(workers[0].start, engine_v4=None)
+    workers[0].start = dataclasses.replace(workers[0].start, **{unread: None})
     result = _judge(workers, None, rule=P.LegRule(leg=ex.DIRECT_CTX_LEG))
     assert result.status == P.INCOMPLETE, result.details()
 
 
-def test_an_aggregated_request_split_into_calls_is_not_a_mismatch():
-    """UV-52: a request with n > 1 may reach the engine as n calls."""
+@pytest.mark.parametrize("cancels_calls", [False, True])
+def test_aggregated_requests_split_into_calls_are_not_balanced(cancels_calls):
+    """UV-52: a request with n > 1 may reach the engine as n calls; whose they are is unknown."""
     ctx, gen = Worker(CTX, 8001), Worker(GEN, 8002)
     gen.take(2, P.BUCKET_AGGREGATED)
     gen.serve[HTTP[P.BUCKET_AGGREGATED]] -= 1
-    rule = P.LegRule(leg=ex.DIRECT_WORKER)
-    statuses = {(n, r): c.status for n, r, c in _judge([ctx, gen], None, rule=rule).checks}
-    assert statuses[("CH-5", GEN)] == P.OK
-    rule = P.LegRule(leg=ex.DIRECT_WORKER, cancels_calls=True)
+    rule = P.LegRule(leg=ex.DIRECT_WORKER, cancels_calls=cancels_calls)
     statuses = {(n, r): c.status for n, r, c in _judge([ctx, gen], None, rule=rule).checks}
     assert statuses[("CH-5", GEN)] == P.INCOMPLETE
 
@@ -834,28 +878,49 @@ def test_the_negative_control_starts_the_first_worker_of_its_role_outside_the_ch
     monkeypatch.setattr(launch, "_HANDLES", [])
     monkeypatch.setattr(launch, "launch_serve_command", lambda cmd, **kw: started.append(cmd))
     sleeper = [sys.executable, "-c", "import time; time.sleep(60)"]
-    undo = plugin._start_one_worker_outside_the_chain(GEN)
+    outside_the_chain = plugin._OutsideTheChain(GEN)
+    outside = []
     try:
         context = launch.launch_serve_command(sleeper + ["--server_role", "CONTEXT"])
-        outside = launch.launch_serve_command(
-            sleeper + ["--server_role", "GENERATION", "--port", "8"]
+        outside.append(
+            launch.launch_serve_command(
+                sleeper + ["--server_role", "GENERATION", "--host", "0.0.0.0", "--port", "8"]
+            )
         )
         again = launch.launch_serve_command(sleeper + ["--server_role", "GENERATION"])
         assert context is None and again is None and len(started) == 2
-        try:
-            assert (outside.chain, outside.role, outside.port) == ("none", GEN, 8)
-            assert outside.frontend.poll() is None
-        finally:
-            outside.frontend.kill()
-            outside.frontend.wait()
+        # Each test's first worker of the role starts outside the chain.
+        outside_the_chain.next_test()
+        outside.append(launch.launch_serve_command(sleeper + ["--server_role", "generation"]))
+        assert len(started) == 2
+        assert [(h.chain, h.role, h.host, h.port) for h in outside] == [
+            ("none", GEN, "localhost", 8),
+            ("none", GEN, "localhost", None),
+        ]
+        assert all(h.frontend.poll() is None for h in outside)
     finally:
-        undo()
+        for h in outside:
+            h.frontend.kill()
+            h.frontend.wait()
+        outside_the_chain.undo()
     assert launch.launch_serve_command is not None and len(started) == 2
-    wrapper_after_undo = plugin._start_one_worker_outside_the_chain(GEN)
+    after_undo = plugin._OutsideTheChain(GEN)
     held = launch.launch_serve_command
-    wrapper_after_undo()
+    after_undo.undo()
+    after_undo.next_test()
     # A module that took the replacement keeps it, but it no longer replaces anything.
     assert held(sleeper + ["--server_role", "GENERATION"]) is None and len(started) == 3
+
+
+def test_a_stopped_worker_keeps_the_topology_proven_while_it_ran():
+    from openengine_chain import pytest_plugin as plugin
+
+    handle = types.SimpleNamespace(alive=False, final_topology=None, proven_topology=None)
+    assert plugin._topology(handle).status == P.INCOMPLETE
+    handle.proven_topology = P.Check(P.OK, "proven")
+    assert plugin._topology(handle) is handle.proven_topology
+    handle.final_topology = P.Check(P.FAIL, "at shutdown")
+    assert plugin._topology(handle) is handle.final_topology
 
 
 def test_a_test_that_cancels_calls_is_held_to_equal_counts_until_the_last_read():
