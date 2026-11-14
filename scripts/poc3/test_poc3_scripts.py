@@ -4,7 +4,7 @@
 
 Run from the repository root::
 
-    python3 -m pytest -p no:cacheprovider scripts/poc3/test_poc3_scripts.py
+    python3 -m pytest -p no:cacheprovider scripts/poc3/
 
 ``POC3_TASKS_MD`` (the plan's tasks.md) enables the check that
 ``feature_deps.yaml`` matches the plan's tables; without it that test skips.
@@ -2542,7 +2542,7 @@ def test_rows_waiting_for_another_fix_of_the_item_are_listed(rows):
         result = pending_e2e.obligations(task, LINK | {"WT-51-fix1"}, rows)
         assert {row.id for row in result.other_fix} == set(SPLIT_ROWS), task
     assert pending_e2e.obligations("WT-51-fix2", LINK, rows).other_fix == []
-    assert pending_e2e.obligations("WT-52", LINK, rows).other_fix == []
+    assert pending_e2e.obligations("WT-54", LINK, rows).other_fix == []
     landed = LINK | {"WT-51-fix2"}
     assert pending_e2e.obligations("WT-51-fix3", landed, rows).other_fix == []
 
@@ -2877,11 +2877,15 @@ def test_a_split_that_does_not_fit_the_tables_is_rejected(split, dg91_deps, mess
         _split(split, dg91_deps)
 
 
-def test_a_split_of_a_row_with_supplementary_cases_is_rejected():
-    for note in ("Hopper 分片：XD-036", "PoC 机型不可跑：XD-202"):
+def test_a_split_leaves_the_supplementary_cases_with_the_row():
+    for note, key in (
+        ("Hopper 分片：XD-036", "hopper_cases"),
+        ("PoC 机型不可跑：XD-202", "not_runnable"),
+    ):
         table = SPLIT_TABLE.replace("NT-082 |", f"NT-082（{note}） |")
-        with pytest.raises(ValueError, match="Hopper, two-node or unrunnable cases"):
-            _split(("DG-91", ("NT-081",), "WT-51-fix2"), table=table)
+        rows = _split(("DG-91", ("NT-081",), "WT-51-fix2"), table=table)
+        assert rows["DG-91"][key] == [note.split("：")[1]]
+        assert key not in rows["DG-91+WT-51-fix2"]
 
 
 def test_one_split_per_row_and_moved_cases_keep_the_table_order():
@@ -2894,17 +2898,26 @@ def test_one_split_per_row_and_moved_cases_keep_the_table_order():
 
 def test_a_split_that_does_not_fit_fails_the_check_without_a_traceback(tmp_path, capsys):
     tasks_md = tmp_path / "tasks.md"
-    tasks_md.write_text(GROUPS_TABLE + REPO_TABLE + SPLIT_TABLE.replace("{DG91_DEPS}", "链路"))
+    # Row ids no table will use, so that no split of SPLITS finds its row.
+    table = SPLIT_TABLE.replace("DG-90", "DG-ZZY").replace("DG-91", "DG-ZZZ")
+    tasks_md.write_text(GROUPS_TABLE + REPO_TABLE + table.replace("{DG91_DEPS}", "链路"))
     assert sync_feature_deps.main(["--tasks-md", str(tasks_md), "--check"]) == 1
     out = capsys.readouterr().out
-    assert "FAIL" in out and "split of DG-16, DG-82: no such row" in out
+    missing = ", ".join(sorted(row_id for row_id, _, _ in sync_feature_deps.SPLITS))
+    assert "FAIL" in out and f"split of {missing}: no such row" in out
 
 
 def test_the_splits_name_poc3_items_and_rows_of_the_file(rows):
-    ids = {row.id for row in rows}
+    by_id = {row.id: row for row in rows}
     for row_id, cases, item in sync_feature_deps.SPLITS:
         assert parse_task(item)[0] in WORK_ITEMS
-        assert row_id in ids and f"{row_id}+{item}" in ids
+        if cases[0] == sync_feature_deps.WHOLE:  # the row waits for the item under its own id
+            cases, split = cases[1:], by_id[row_id]
+            assert f"{row_id}+{item}" not in by_id
+        else:
+            split = by_id[f"{row_id}+{item}"]
+            assert item not in by_id[row_id].deps and not set(cases) & set(by_id[row_id].cases)
+        assert item in split.deps and set(cases) == set(split.cases)
 
 
 def test_the_table_parser_rejects_unknown_dependencies():

@@ -32,15 +32,23 @@ file no longer matches the tables:
 - The ds-engine repository's items (group ``ds-repo``) come from the
   repository table of tasks.md §0.2.
 
-``SPLITS`` lists rows split after the tables were written: each moves some
-cases of a row to a row ``<id>+<item>`` that also waits for ``<item>``, the work
-item (or fix, such as ``WT-51-fix2``) that writes them; the authors of the row
-are worked out again from the cases it keeps. A split is refused when its row
-is missing, deferred, has a fixed verifier or performance evidence, or carries
-notes or Hopper, two-node or unrunnable cases; when a case is not one the row
-keeps (``+rest`` cases included) or would leave it none; and when the item is
-malformed or a dependency of the row already, groups expanded. So ``--check``
-still compares every row with the tables.
+``SPLITS`` lists rows split after the tables were written: each makes some
+cases of a row also wait for ``<item>``, a work item or fix (such as
+``WT-51-fix2``); the moved cases are credited to ``<item>``. A split normally
+moves the cases to a row ``<id>+<item>``, and the authors of the row are worked
+out again from the cases it keeps. A whole split, whose cases are ``*`` followed by every case in the
+row's ``cases`` (its main cases: not those of its ``+rest`` row, nor its Hopper,
+two-node or unrunnable ones), adds no row: the row itself, under its own id,
+waits for ``<item>``. The row's Hopper, two-node and unrunnable cases stay with
+it. A split is refused when its
+row is missing, deferred, has a fixed verifier, performance evidence or notes;
+when it lists no case, a case twice, or ``*`` other than first; when a case is
+not a main case of the row (``+rest`` cases included) or is also among its
+Hopper, two-node or unrunnable cases; when a partial split would leave the row
+no main case, or a whole split leaves it any; and when the item is malformed or
+a dependency of the row already, groups expanded. So ``--check`` still compares
+every row with the tables, and fails when the tables add a main case to the row
+of a whole split.
 
 The scripts need Python 3.9 or newer.
 
@@ -87,7 +95,8 @@ HEADER = """\
 #   features      Feature ids.
 #   cases         The cases whose passing verifies the row.
 #   author        The work items that write, move or re-expect those cases (a
-#                 list: one row's cases can come from several items).
+#                 list: one row's cases can come from several items); cases
+#                 split out of a row are credited to the item they wait for.
 #   deps          Work items, fixes of them (WT-51-fix2) or groups that must
 #                 have landed; a fix lands under its own name only.
 #   chain         case-04 (the TRT-LLM engine) or case-03 (ds-engine).
@@ -102,7 +111,9 @@ HEADER = """\
 #   notes         Clauses of the tables this file does not model, verbatim.
 #
 # A row <id>+<item> (DG-16+WT-51-fix2) holds cases split out of row <id> after
-# the tables were written, because <item> writes them; it waits for <item> too.
+# the tables were written; it waits for <item> too. A whole split covers all the
+# cases of row <id> without adding a row: row <id> itself waits for <item>
+# instead.
 # sync_feature_deps.SPLITS lists these splits.
 #
 # A row with an assignee is verified by it. Otherwise the verifier of a case-04
@@ -118,14 +129,56 @@ _SECTION_RE = re.compile(r"^### 3\.([2-7]) ")
 _MAIN_ROWS_RE = re.compile(r"（(\d+) 个主行）")
 _PU_RULE_RE = re.compile(r"(PU-\d+) 取证（(WT-\d\d)）")
 _OPEN, _CLOSE = "（(", "）)"
+WHOLE = "*"  # first of a split's cases: the cases listed are every case in the row's cases
 
-# Rows split after the tables were written: (row id, cases moved out, the item that writes them).
+# Rows split after the tables were written: (row id, cases that wait for the item, the item). The
+# cases of a whole split start with WHOLE and list every case in the row's cases (neither its +rest
+# cases nor its Hopper, two-node or unrunnable ones); the row itself then waits for the item.
 # WT-51-fix2 writes the GPU file of NT-080 and NT-179 once the link has landed, so the item that
-# completes the link cannot verify them.
+# completes the link cannot verify them. On the rows whose dependencies are exactly the link and
+# WT-52 (WT-53), every GPU-layer NT case (the layer column of the plan's functional tests, §6.3)
+# also waits for WT-52-fix1 (WT-53-fix2); the CPU-layer NT cases stay with the row.
 SPLITS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("DG-16", ("NT-080",), "WT-51-fix2"),
     ("DG-82", ("NT-179",), "WT-51-fix2"),
+    ("F-06", ("*", "NT-055"), "WT-53-fix2"),
+    ("F-10", ("*", "NT-058"), "WT-52-fix1"),
+    ("F-19", ("*", "NT-064"), "WT-52-fix1"),
+    ("F-25", ("NT-065",), "WT-52-fix1"),
+    ("F-26", ("*", "NT-066"), "WT-52-fix1"),
+    ("F-39", ("*", "NT-069"), "WT-53-fix2"),
+    ("F-43", ("NT-073",), "WT-53-fix2"),
+    ("DG-19", ("NT-081",), "WT-53-fix2"),
+    ("DG-22", ("NT-083", "NT-084"), "WT-53-fix2"),
+    ("DG-23", ("*", "NT-085"), "WT-53-fix2"),
+    ("DG-24", ("NT-086",), "WT-53-fix2"),
+    ("DG-25", ("*", "NT-087"), "WT-53-fix2"),
+    ("DG-35", ("NT-083", "NT-084"), "WT-53-fix2"),
+    ("DG-38", ("NT-089",), "WT-52-fix1"),
+    ("DG-39", ("*", "NT-090"), "WT-52-fix1"),
+    ("DG-39c", ("NT-092",), "WT-52-fix1"),
+    ("DG-84", ("NT-180", "NT-040"), "WT-52-fix1"),
+    ("DG-85", ("NT-181",), "WT-52-fix1"),
+    ("DG-86", ("NT-182",), "WT-52-fix1"),
+    ("DG-87", ("NT-183", "NT-184"), "WT-52-fix1"),
+    ("DG-88", ("NT-185",), "WT-52-fix1"),
+    ("DG-89", ("*", "NT-186"), "WT-53-fix2"),
+    ("DG-90", ("NT-187",), "WT-52-fix1"),
+    ("EG-05a", ("*", "NT-190"), "WT-52-fix1"),
+    ("EG-05b", ("NT-190",), "WT-52-fix1"),
+    ("EG-07", ("NT-191",), "WT-52-fix1"),
+    ("EG-10b", ("*", "NT-192"), "WT-52-fix1"),
+    ("EG-16a", ("NT-197",), "WT-52-fix1"),
+    ("EG-19", ("NT-216",), "WT-52-fix1"),
+    ("EG-21", ("NT-201",), "WT-53-fix2"),
+    ("EG-29", ("*", "NT-204"), "WT-52-fix1"),
 )
+
+
+def split_cases(cases: tuple[str, ...]) -> tuple[bool, tuple[str, ...]]:
+    """Whether a split's ``cases`` mark a whole split, and the cases without the marker."""
+    whole = cases[:1] == (WHOLE,)
+    return whole, cases[1:] if whole else cases
 
 
 def split_top(text: str, sep: str) -> list[str]:
@@ -316,9 +369,10 @@ def rows_for(
 ) -> list[dict[str, Any]]:
     """The feature_deps rows of one feature on one chain.
 
-    ``split`` (cases, work item) moves those cases of the row to a row
-    ``<row_id>+<item>`` that also waits for the item (``SPLITS``); ``groups``
-    expands the dependency groups when checking it.
+    ``split`` (cases, work item) makes those cases of the row wait for the
+    item too (``SPLITS``): they move to a row ``<row_id>+<item>``, or, for a
+    whole split (cases starting with ``WHOLE``), the row itself waits for it.
+    ``groups`` expands the dependency groups when checking the split.
     """
     cases = parse_cases(case_parts)
     authors = parse_authors(author_parts, cases["cases"])
@@ -359,26 +413,38 @@ def rows_for(
     if deps["rest"] and not later:
         raise ValueError(f"{row_id}: no case is written by {deps['rest']}")
     now = {**main, "cases": [c for c in main["cases"] if c not in later]}
+    row_deps = deps["deps"]
     split_rows = []
     if split is not None:
-        moved, item = split
+        whole, moved = split_cases(split[0])
+        item = split[1]
         missing = [c for c in moved if c not in now["cases"]]
         if missing:
             # A case of the +rest row is split in the tables already.
             raise ValueError(f"split of {row_id}: {missing} not among the cases row {row_id} keeps")
-        now = {**now, "cases": [c for c in now["cases"] if c not in moved]}
-        if not now["cases"]:
-            raise ValueError(f"split of {row_id}: no case would be left")
-        split_rows.append(
-            _row(
-                f"{row_id}+{item}",
-                feature,
-                chain,
-                {"cases": [c for c in main["cases"] if c in moved]},
-                dict.fromkeys(moved, item),
-                deps["deps"] + [item],
+        kept = [c for c in now["cases"] if c not in moved]
+        if whole and kept:
+            raise ValueError(f"split of {row_id}: marked whole, but the row also keeps {kept}")
+        if not whole and not kept:
+            raise ValueError(
+                f"split of {row_id}: no case would be left; a whole split starts with {WHOLE!r}"
             )
-        )
+        if not whole:
+            now = {**now, "cases": kept}
+            split_rows.append(
+                _row(
+                    f"{row_id}+{item}",
+                    feature,
+                    chain,
+                    {"cases": [c for c in main["cases"] if c in moved]},
+                    dict.fromkeys(moved, item),
+                    deps["deps"] + [item],
+                )
+            )
+        else:
+            # Every case of the row waits for the item: the row itself does, under its own id.
+            authors = {**authors, **dict.fromkeys(moved, item)}
+            row_deps = row_deps + [item]
     rows = [
         _row(
             row_id,
@@ -386,7 +452,7 @@ def rows_for(
             chain,
             now,
             {c: authors[c] for c in now["cases"]},
-            deps["deps"],
+            row_deps,
             **extra,
         )
     ]
@@ -414,13 +480,16 @@ def _check_split(
     groups: dict[str, list[str]],
 ) -> None:
     """Refuse a split the rows of the tables do not leave room for."""
-    moved, item = split
+    _, moved = split_cases(split[0])
+    item = split[1]
     try:
         parse_task(item)
     except ValueError:
         raise ValueError(f"split of {row_id}: {item!r} is not a PoC-S3 work item") from None
-    if not moved or len(set(moved)) != len(moved):
-        raise ValueError(f"split of {row_id}: no case to move, or a case listed twice")
+    if not moved or len(set(moved)) != len(moved) or WHOLE in moved:
+        raise ValueError(
+            f"split of {row_id}: no case to move, or a case listed twice, or {WHOLE!r} not first"
+        )
     if deps["deferred"] or deps["assignee"] or deps["fallback"] or deps["performance"]:
         raise ValueError(
             f"split of {row_id}: the row is deferred, has a fixed verifier or performance evidence"
@@ -429,11 +498,14 @@ def _check_split(
     members |= {member for name in deps["deps"] for member in groups.get(name, ())}
     if item in members:
         raise ValueError(f"split of {row_id}: {item} is a dependency of the row already")
-    # These may concern the moved cases; the tables must say which.
-    if notes or any(cases[key] for key in ("hopper_cases", "two_node_cases", "not_runnable")):
-        raise ValueError(
-            f"split of {row_id}: the row has notes, or Hopper, two-node or unrunnable cases"
-        )
+    # Notes may concern the moved cases; the tables must say which.
+    if notes:
+        raise ValueError(f"split of {row_id}: the row has notes")
+    # The row keeps its Hopper, two-node and unrunnable cases; none of them may move.
+    extra = {c for key in ("hopper_cases", "two_node_cases", "not_runnable") for c in cases[key]}
+    supplementary = sorted(extra & set(moved))
+    if supplementary:
+        raise ValueError(f"split of {row_id}: {supplementary} are Hopper, two-node or unrunnable")
 
 
 def table_rows(tasks_md: str) -> list[tuple[str, list[str]]]:
