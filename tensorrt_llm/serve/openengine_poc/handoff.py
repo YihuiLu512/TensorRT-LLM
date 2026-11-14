@@ -19,8 +19,10 @@ field by field without changing its value: ``ctx_info_endpoint`` stays the
 string the engine wrote, ``opaque_state`` crosses as the same base64 text,
 ids are decimal strings and numbers that are integers come back as ints.
 Every other attribute crosses unread in ``openengine_handoff_attributes``.
-Encoding a decoded session gives the session back, for its ``session_id``,
-its ``dp_rank`` and its attributes.
+Encoding a session decoded from the server's packing gives the session back,
+for its ``session_id``, its ``dp_rank`` and its attributes; a session the
+server does not pack (a ``session_id`` with leading zeros, a ``dp_rank``
+without the ``ctx_dp_rank`` attribute) comes back in the server's form.
 
 The module is imported in postprocessing processes as well, so it does not
 import the gRPC stack or the facade.
@@ -79,10 +81,10 @@ def with_handoff_attributes(
     params: DisaggregatedParams, handoff_attributes: str | None
 ) -> OpenEngineDisaggregatedParams:
     """A copy of ``params`` carrying ``handoff_attributes`` as its ``openengine_handoff_attributes``."""
-    return OpenEngineDisaggregatedParams(
-        **{field.name: getattr(params, field.name) for field in dataclasses.fields(params)},
-        openengine_handoff_attributes=handoff_attributes,
-    )
+    fields = {
+        field.name: getattr(params, field.name) for field in dataclasses.fields(DisaggregatedParams)
+    }
+    return OpenEngineDisaggregatedParams(**fields, openengine_handoff_attributes=handoff_attributes)
 
 
 def handoff_attributes_of(params: Any) -> str | None:

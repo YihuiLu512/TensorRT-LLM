@@ -124,7 +124,8 @@ class OpenEngineResponseAssembler:
     :meth:`finish_cancelled`.
 
     A ``PrefillReady`` event ends its output with ``finish_reason`` ``length``,
-    as a context-only response of ``LLM`` ends, and sets the output's
+    one of the reasons for which the orchestrator sends the generation leg
+    (``LLM`` reports ``not_finished``), and sets the output's
     ``disaggregated_params`` to the handoff it carries, decoded by
     :func:`.handoff.decode_kv_session` with its
     ``openengine_handoff_attributes`` kept on it

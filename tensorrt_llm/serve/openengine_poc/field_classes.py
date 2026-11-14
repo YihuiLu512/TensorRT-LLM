@@ -169,7 +169,9 @@ GENERATE_OPTIONS: dict[str, FieldClass] = {
     "lora_name": _mapped("lora_name", "LoRA"),
     "disaggregated_params": _mapped(
         "context_only: extra[request_type], extra[disagg_request_id]; "
-        "generation_only: kv.session, from the handoff the facade encodes",
+        "context_and_generation: extra[request_type]; "
+        "generation_only: kv.session, from the handoff the facade encodes "
+        "(orig_elapsed_s is not sent)",
         "trtllm.request.disagg_request_id for a disagg_request_id",
     ),
     "cache_salt": _mapped("kv.cache_salt", "supports_cache_salt"),

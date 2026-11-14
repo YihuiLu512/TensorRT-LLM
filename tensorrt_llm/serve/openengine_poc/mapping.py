@@ -42,6 +42,8 @@ from tensorrt_llm.grpc.openengine_conventions import (
     CAP_REQ_SCHEDULING,
     CAP_REQ_THINKING_TOKEN_BUDGET,
     CAP_STOP_TEXT,
+    DISAGG_REQUEST_ID_LIMIT,
+    DISAGG_REQUEST_ID_MIN,
     LOGIT_BIAS_MAX,
     LOGIT_BIAS_MAX_ENTRIES,
     LOGIT_BIAS_MIN,
@@ -59,6 +61,7 @@ from tensorrt_llm.grpc.openengine_conventions import (
     SCHEDULE_STYLE_GENERATION_FIRST,
     ExtraCapabilities,
     ModelCapabilities,
+    parse_disagg_request_id,
     parse_extra_capabilities,
     struct_to_dict,
 )
@@ -519,11 +522,15 @@ def _disaggregation(
     and the caller's ``disagg_request_id``; a ``context_and_generation``
     request sends its ``request_type``; a ``generation_only`` request (the
     decode call) sends neither: its handoff goes in ``kv_session``, which the
-    facade sets. Only context-first scheduling is served.
+    facade sets. A ``context_only`` request must ask for context-first
+    scheduling (the default); a ``generation_only`` one is mapped whatever its
+    ``schedule_style``, which travels in the handoff for the engine to judge.
 
     Raises:
-        ValueError: The request type is unknown, the engine does not declare
-            ``disagg_request_id``, or the request asks for generation-first scheduling.
+        ValueError: The request type is unknown; or, for a ``context_only``
+            request, it asks for generation-first scheduling, or its
+            ``disagg_request_id`` is outside the range the conventions give
+            it or the engine does not declare ``disagg_request_id``.
     """
     if params is None:
         return None, {}
@@ -549,7 +556,15 @@ def _disaggregation(
             raise _not_supported(
                 "disaggregated_params.disagg_request_id", params.disagg_request_id, engine_name
             )
-        extra[REQ_DISAGG_REQUEST_ID] = str(int(params.disagg_request_id))
+        value = str(params.disagg_request_id)
+        if parse_disagg_request_id(value) is None:
+            raise _not_supported(
+                "disaggregated_params.disagg_request_id",
+                params.disagg_request_id,
+                engine_name,
+                f"an id is an integer in [{DISAGG_REQUEST_ID_MIN}, {DISAGG_REQUEST_ID_LIMIT})",
+            )
+        extra[REQ_DISAGG_REQUEST_ID] = value
     return request_type, extra
 
 

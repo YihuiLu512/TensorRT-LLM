@@ -312,6 +312,26 @@ def test_a_new_field_naming_a_mapped_attribute_is_refused(chain):
     _check_counters(chain, before, after)
 
 
+def test_the_new_field_on_a_context_leg_is_refused(chain):
+    # Only a generation leg carries a handoff; 400 before any Generate call.
+    before = chain.snapshot()
+    body = {
+        **_body("/v1/completions"),
+        "disaggregated_params": {
+            "request_type": "context_only",
+            "disagg_request_id": DISAGG_REQUEST_ID_MIN + 505,
+            "openengine_handoff_attributes": json.dumps({"vendor_hint": "x"}),
+        },
+    }
+    response = chain.post("/v1/completions", body, url=chain.ctx.url)
+    assert response.status_code == 400, response.text
+    assert "openengine_handoff_attributes" in response.text
+    after = chain.snapshot()
+    assert _frontend(before, after, "context", SERVE_COUNTER_HTTP_REJECTED) == 1
+    assert _frontend(before, after, "context", SERVE_COUNTER_GENERATE_SENT) == 0
+    _check_counters(chain, before, after)
+
+
 def test_an_aggregated_request_to_a_worker_counts_as_aggregated(chain):
     for worker in chain.workers:
         before = chain.snapshot()

@@ -194,7 +194,8 @@ class _CountGenerationRequests:
     """ASGI middleware counting the generation requests a worker frontend receives (SV-DSG-13).
 
     The counts are kept only with the counters of disaggregated serving
-    (:meth:`OpenEngineLLM._counts_disaggregated`).
+    (:meth:`OpenEngineLLM._counts_disaggregated`); without them a request
+    passes through untouched.
 
     Every ``POST`` to :data:`GENERATION_PATHS` counts once in
     ``http_received.<bucket>``, whatever its answer, the bucket read from the
@@ -215,6 +216,7 @@ class _CountGenerationRequests:
             scope["type"] != "http"
             or scope.get("method") != "POST"
             or scope.get("path") not in GENERATION_PATHS
+            or not self._facade._counts_disaggregated()
         ):
             await self.app(scope, receive, send)
             return
@@ -2089,7 +2091,8 @@ def adapt_server(server: Any, facade: OpenEngineLLM) -> None:
       signal that stopped it again once the app has shut down, and a process
       with no handler of its own for that signal ends there, before the
       launcher's ``aclose()`` runs;
-    - the generation requests are counted (:class:`_CountGenerationRequests`).
+    - with an engine that has KV transfer, the generation requests are
+      counted (:class:`_CountGenerationRequests`).
       Middleware added afterwards runs first, so a request it answers itself
       is not counted.
     """

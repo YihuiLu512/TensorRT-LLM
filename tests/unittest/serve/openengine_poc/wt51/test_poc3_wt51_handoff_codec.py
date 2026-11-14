@@ -171,6 +171,10 @@ def test_the_params_keep_the_new_field_on_the_llm_side():
     assert handoff.handoff_attributes_of(carried) == attributes
     assert handoff.handoff_attributes_of(params) is None
     assert carried.first_gen_tokens == params.first_gen_tokens
+    # Carrying other attributes replaces those it carried.
+    again = handoff.with_handoff_attributes(carried, None)
+    assert handoff.handoff_attributes_of(again) is None
+    assert again.first_gen_tokens == params.first_gen_tokens
 
 
 @pytest.mark.parametrize(
