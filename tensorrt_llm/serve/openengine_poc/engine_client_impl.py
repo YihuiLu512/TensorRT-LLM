@@ -15,9 +15,11 @@ when the engine ends an accepted request with an error, and
 from __future__ import annotations
 
 import grpc
+from google.protobuf import struct_pb2
 
 from tensorrt_llm.grpc.openengine.bindings import (
     generation_pb2,
+    kv_pb2,
     lifecycle_pb2,
     lora_pb2,
     model_pb2,
@@ -29,7 +31,12 @@ from tensorrt_llm.grpc.openengine_client import (
     OpenEngineProtocolError,
     OpenEngineRpcError,
 )
-from tensorrt_llm.grpc.openengine_conventions import model_capabilities_from_proto, struct_to_dict
+from tensorrt_llm.grpc.openengine_conventions import (
+    REQ_REQUEST_TYPE,
+    REQUEST_TYPE_CONTEXT_ONLY,
+    model_capabilities_from_proto,
+    struct_to_dict,
+)
 
 from .engine_client import (
     EngineEvent,
@@ -37,12 +44,17 @@ from .engine_client import (
     EngineInfo,
     EngineLoad,
     EngineRequest,
+    EngineRole,
     FinishReason,
     HealthState,
+    KvConnectorInfo,
+    KvEndpoint,
     KvEventSource,
+    KvSessionSpec,
     LoraAdapter,
     ModelCapabilities,
     OutputFinished,
+    PrefillReady,
     PromptInfo,
     TokenDelta,
     TokenLogprob,
@@ -79,14 +91,29 @@ _HEALTH_STATES: dict[int, HealthState] = {
     lifecycle_pb2.HEALTH_STATE_DEGRADED: "degraded",
     lifecycle_pb2.HEALTH_STATE_NOT_READY: "not_ready",
 }
+_ENGINE_ROLES: dict[int, EngineRole] = {
+    server_pb2.ENGINE_ROLE_AGGREGATED: "aggregated",
+    server_pb2.ENGINE_ROLE_PREFILL: "prefill",
+    server_pb2.ENGINE_ROLE_DECODE: "decode",
+}
 
 
 def to_generate_request(request: EngineRequest) -> generation_pb2.GenerateRequest:
     """Build the ``GenerateRequest`` for one :class:`EngineRequest`.
 
+    ``request.request_type`` goes to ``extra["request_type"]`` and
+    ``request.kv_session`` to ``kv.session``.
+
     Raises:
-        ValueError: ``request.sampling`` names a field ``SamplingParams`` does not have.
+        ValueError: ``request.sampling`` names a field ``SamplingParams`` does
+            not have; ``request.extra`` holds ``request_type``; the request
+            sets both ``request_type`` and ``kv_session``; or the
+            ``kv_session`` attributes cannot be held in a ``Struct``.
     """
+    if REQ_REQUEST_TYPE in request.extra:
+        raise ValueError(f"extra[{REQ_REQUEST_TYPE!r}] is set from EngineRequest.request_type only")
+    if request.request_type is not None and request.kv_session is not None:
+        raise ValueError("a decode call carries kv_session and no request_type")
     message = generation_pb2.GenerateRequest(
         request_id=request.request_id,
         model=request.model,
@@ -130,6 +157,8 @@ def to_generate_request(request: EngineRequest) -> generation_pb2.GenerateReques
             setattr(message.guided, request.guided.mode, request.guided.value or "")
     if request.cache_salt is not None:
         message.kv.cache_salt = request.cache_salt
+    if request.kv_session is not None:
+        message.kv.session.CopyFrom(_kv_session_ref(request.kv_session))
     for media in request.media:
         item = message.media.add(modality=_MODALITIES[media.modality])
         if media.url is not None:
@@ -146,7 +175,42 @@ def to_generate_request(request: EngineRequest) -> generation_pb2.GenerateReques
         message.lora_name = request.lora_name
     if request.extra:
         message.extra.update(dict(request.extra))
+    if request.request_type is not None:
+        message.extra.update({REQ_REQUEST_TYPE: request.request_type})
     return message
+
+
+def _kv_session_ref(session: KvSessionSpec) -> kv_pb2.KvSessionRef:
+    message = kv_pb2.KvSessionRef(
+        session_id=session.session_id,
+        transfer_backend=session.transfer_backend,
+        dp_rank=session.dp_rank,
+    )
+    for endpoint in session.endpoints:
+        message.endpoints.add(host=endpoint.host, port=endpoint.port, protocol=endpoint.protocol)
+    if session.attributes:
+        attributes = struct_pb2.Struct()
+        try:
+            attributes.update(dict(session.attributes))
+        except (TypeError, ValueError, OverflowError) as error:
+            raise ValueError(f"the kv_session attributes cannot be sent: {error}") from None
+        message.attributes_struct.CopyFrom(attributes)
+    return message
+
+
+def _kv_session(message: kv_pb2.KvSessionRef) -> KvSessionSpec:
+    return KvSessionSpec(
+        session_id=message.session_id,
+        transfer_backend=message.transfer_backend,
+        dp_rank=message.dp_rank,
+        endpoints=tuple(
+            KvEndpoint(host=endpoint.host, port=endpoint.port, protocol=endpoint.protocol)
+            for endpoint in message.endpoints
+        ),
+        attributes=struct_to_dict(message.attributes_struct)
+        if message.HasField("attributes_struct")
+        else {},
+    )
 
 
 def _token_logprob(info: generation_pb2.TokenInfo) -> TokenLogprob:
@@ -175,10 +239,14 @@ class EngineEventStream:
     :meth:`aclose` cancels it if it has not finished and waits for the call to end.
     """
 
-    def __init__(self, stream: GenerateStream, *, endpoint: str, logprobs: bool) -> None:
+    def __init__(
+        self, stream: GenerateStream, *, endpoint: str, logprobs: bool, prefill: bool = False
+    ) -> None:
         self._stream = stream
         self._endpoint = endpoint
         self._logprobs = logprobs
+        # A prefill call (request_type context_only) may end with prefill_ready.
+        self._prefill = prefill
 
     @property
     def request_id(self) -> str:
@@ -240,14 +308,38 @@ class EngineEventStream:
                 token_logprobs=tuple(_token_logprob(info) for info in response.prompt.tokens)
             )
         if kind == "prefill_ready":
-            # Requests from this client never ask for prefill only.
-            raise OpenEngineProtocolError(
-                f"OpenEngine engine sent prefill_ready for request {self.request_id}, "
-                "which did not ask for prefill only",
-                target=self._endpoint,
-                request_id=self.request_id,
+            if not self._prefill:
+                raise OpenEngineProtocolError(
+                    f"OpenEngine engine sent prefill_ready for request {self.request_id}, "
+                    "which did not ask for prefill only",
+                    target=self._endpoint,
+                    request_id=self.request_id,
+                )
+            return PrefillReady(
+                output_index=0,
+                kv_session=_kv_session(response.prefill_ready.kv_session),
+                usage=_usage(response.usage) if response.HasField("usage") else None,
             )
         return None
+
+
+def _kv_connector(info: server_pb2.ServerInfo) -> KvConnectorInfo | None:
+    if not info.HasField("kv_connector"):
+        return None
+    connector = info.kv_connector
+    return KvConnectorInfo(
+        enabled=connector.enabled,
+        transfer_backend=connector.transfer_backend,
+        local_endpoints=tuple(
+            KvEndpoint(host=endpoint.host, port=endpoint.port, protocol=endpoint.protocol)
+            for endpoint in connector.local_endpoints
+        ),
+        supported_protocols=tuple(connector.supported_protocols),
+        supports_remote_prefill=connector.supports_remote_prefill,
+        supports_decode_pull=connector.supports_decode_pull,
+        supports_abort_cleanup=connector.supports_abort_cleanup,
+        schema_version=connector.schema_version if connector.HasField("schema_version") else None,
+    )
 
 
 def _engine_info(info: server_pb2.ServerInfo) -> EngineInfo:
@@ -264,6 +356,8 @@ def _engine_info(info: server_pb2.ServerInfo) -> EngineInfo:
         else None,
         max_loras=capacity.max_loras if capacity.HasField("max_loras") else None,
         extra=struct_to_dict(info.extra) if info.HasField("extra") else {},
+        engine_role=_ENGINE_ROLES.get(info.engine_role, "unspecified"),
+        kv_connector=_kv_connector(info),
     )
 
 
@@ -342,7 +436,10 @@ class OpenEngineEngineClient:
         message = to_generate_request(request)
         stream = self._client.generate(message, metadata=dict(request.metadata))
         return EngineEventStream(
-            stream, endpoint=self.endpoint, logprobs=request.output_logprobs_top_n is not None
+            stream,
+            endpoint=self.endpoint,
+            logprobs=request.output_logprobs_top_n is not None,
+            prefill=request.request_type == REQUEST_TYPE_CONTEXT_ONLY,
         )
 
     async def abort(self, request_id: str) -> None:

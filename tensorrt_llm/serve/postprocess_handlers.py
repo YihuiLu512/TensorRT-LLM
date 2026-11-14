@@ -78,6 +78,20 @@ def _ctx_usage_from_outputs(outputs: List[Any]) -> Optional[UsageInfo]:
     return None
 
 
+def _response_disaggregated_params(output: Any) -> Any:
+    """The HTTP ``disaggregated_params`` of one output.
+
+    Params that carry ``openengine_handoff_attributes`` (an OpenEngine
+    context worker's handoff) give it to the HTTP field of that name.
+    """
+    params = to_disaggregated_params(output.disaggregated_params)
+    handoff_attributes = getattr(output.disaggregated_params,
+                                 "openengine_handoff_attributes", None)
+    if handoff_attributes is not None:
+        params.openengine_handoff_attributes = handoff_attributes
+    return params
+
+
 def _ctx_usage_for_postproc(args: PostprocArgs,
                             outputs: List[Any]) -> Optional[UsageInfo]:
     ctx_usage = args.ctx_usage
@@ -739,8 +753,7 @@ def chat_response_post_processor(
                                   content=text,
                                   reasoning_content=reasoning_text,
                                   tool_calls=tool_calls)
-        disaggregated_params = to_disaggregated_params(
-            output.disaggregated_params)
+        disaggregated_params = _response_disaggregated_params(output)
         if (disaggregated_params is not None and args.chat_template_kwargs
                 and args.reasoning_parser
                 and ReasoningParserFactory.resolves_thinking_from_prompt(
@@ -948,8 +961,7 @@ def completion_response_post_processor(
         text = output.text
         if args.echo:
             text = args.prompt + text
-        disaggregated_params = to_disaggregated_params(
-            output.disaggregated_params)
+        disaggregated_params = _response_disaggregated_params(output)
         choice = CompletionResponseChoice(
             text=text if args.detokenize else "",
             token_ids=None if args.detokenize else output.token_ids,

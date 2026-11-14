@@ -12,6 +12,7 @@ import pytest
 import torch
 from pydantic import BaseModel
 
+from tensorrt_llm.disaggregated_params import DisaggregatedParams
 from tensorrt_llm.grpc import openengine_conventions as conv
 from tensorrt_llm.kv_hints import KvHintsEnvelope
 from tensorrt_llm.llmapi.reasoning_parser import ReasoningParserFactory
@@ -668,10 +669,16 @@ def test_cache_salt_lora_media_and_disaggregation():
         (contracts.GenerateOptions(cache_salt="s"), "cache_salt"),
         (contracts.GenerateOptions(lora_name="a", lora_request=object()), "lora_request"),
         (contracts.GenerateOptions(lora_request=object()), "not registered"),
-        (contracts.GenerateOptions(disaggregated_params=object()), "disaggregated_params"),
     ]:
         with pytest.raises(ValueError, match=match):
             _one(caps=_caps("glm"), options=options)
+    disagg = DisaggregatedParams(request_type="context_only", disagg_request_id=1 << 41)
+    request = _one(
+        caps=_declare(_caps(), conv.CAP_REQ_DISAGG_REQUEST_ID),
+        options=contracts.GenerateOptions(disaggregated_params=disagg),
+    )
+    assert request.request_type == "context_only"
+    assert request.extra[conv.REQ_DISAGG_REQUEST_ID] == str(1 << 41)
 
 
 # --- the request-data contract --------------------------------------------------------------

@@ -36,6 +36,7 @@ from tensorrt_llm.grpc.openengine.bindings import generation_pb2, model_pb2
 from tensorrt_llm.grpc.openengine_conventions import (
     CAP_REQ_BEST_OF,
     CAP_REQ_CONVERSATION_ID,
+    CAP_REQ_DISAGG_REQUEST_ID,
     CAP_REQ_KV_HINTS,
     CAP_REQ_LOGIT_BIAS,
     CAP_REQ_SCHEDULING,
@@ -47,10 +48,15 @@ from tensorrt_llm.grpc.openengine_conventions import (
     REQ_BEST_OF,
     REQ_CONVERSATION_ID,
     REQ_DETOKENIZE,
+    REQ_DISAGG_REQUEST_ID,
     REQ_KV_HINTS,
     REQ_LOGIT_BIAS,
     REQ_SCHEDULING,
     REQ_THINKING_TOKEN_BUDGET,
+    REQUEST_TYPE_CONTEXT_AND_GENERATION,
+    REQUEST_TYPE_CONTEXT_ONLY,
+    REQUEST_TYPE_GENERATION_ONLY,
+    SCHEDULE_STYLE_GENERATION_FIRST,
     ExtraCapabilities,
     ModelCapabilities,
     parse_extra_capabilities,
@@ -504,6 +510,49 @@ def _check_options(
         raise _not_supported("cache_salt", options.cache_salt, engine_name)
 
 
+def _disaggregation(
+    params: Any, capabilities: ModelCapabilities, engine_name: str
+) -> tuple[str | None, dict[str, Any]]:
+    """The ``request_type`` and the ``extra`` entries of a request's disaggregated params.
+
+    A ``context_only`` request (the prefill call) sends its ``request_type``
+    and the caller's ``disagg_request_id``; a ``context_and_generation``
+    request sends its ``request_type``; a ``generation_only`` request (the
+    decode call) sends neither: its handoff goes in ``kv_session``, which the
+    facade sets. Only context-first scheduling is served.
+
+    Raises:
+        ValueError: The request type is unknown, the engine does not declare
+            ``disagg_request_id``, or the request asks for generation-first scheduling.
+    """
+    if params is None:
+        return None, {}
+    request_type = params.request_type
+    if request_type == REQUEST_TYPE_GENERATION_ONLY:
+        return None, {}
+    if request_type == REQUEST_TYPE_CONTEXT_AND_GENERATION:
+        return request_type, {}
+    if request_type != REQUEST_TYPE_CONTEXT_ONLY:
+        raise _not_supported("disaggregated_params.request_type", request_type, engine_name)
+    if params.schedule_style is not None and int(params.schedule_style) == (
+        SCHEDULE_STYLE_GENERATION_FIRST
+    ):
+        raise _not_supported(
+            "disaggregated_params.schedule_style",
+            "generation-first",
+            engine_name,
+            "only context-first scheduling is served",
+        )
+    extra: dict[str, Any] = {}
+    if params.disagg_request_id is not None:
+        if not capabilities.supports(CAP_REQ_DISAGG_REQUEST_ID):
+            raise _not_supported(
+                "disaggregated_params.disagg_request_id", params.disagg_request_id, engine_name
+            )
+        extra[REQ_DISAGG_REQUEST_ID] = str(int(params.disagg_request_id))
+    return request_type, extra
+
+
 def map_request(
     prompt_token_ids: list[int],
     sampling_params: SamplingParams,
@@ -523,7 +572,8 @@ def map_request(
     request gives them.
 
     ``priority``, ``trace_headers`` and ``scheduling_params.attention_dp_rank``
-    become metadata, which the caller adds (OE-META).
+    become metadata, which the caller adds (OE-META). For a ``generation_only``
+    request the caller also adds the ``kv_session`` of its handoff.
 
     Raises:
         ValueError: The request asks for something the engine cannot do, or
@@ -548,6 +598,10 @@ def map_request(
     )
     guided = _guided(sampling_params, capabilities, engine_name)
     extra = _extra(sampling_params, capabilities, options, engine_name)
+    request_type, disagg_extra = _disaggregation(
+        options.disaggregated_params, capabilities, engine_name
+    )
+    extra.update(disagg_extra)
 
     n = sampling_params.n
     if n < 1:
@@ -607,6 +661,7 @@ def map_request(
                 lora_name=options.lora_name,
                 model=capabilities.served_model_name,
                 extra=dict(extra),
+                request_type=request_type,
             )
         )
     return requests

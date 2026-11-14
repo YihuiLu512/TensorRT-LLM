@@ -27,7 +27,9 @@ with 501.
 from __future__ import annotations
 
 import asyncio
+import collections
 import concurrent.futures
+import contextvars
 import dataclasses
 import json
 import os
@@ -40,6 +42,7 @@ from pathlib import Path
 from typing import Any
 
 import grpc
+import msgspec
 
 from tensorrt_llm.grpc.openengine.bindings import error_pb2
 from tensorrt_llm.grpc.openengine_client import (
@@ -50,25 +53,41 @@ from tensorrt_llm.grpc.openengine_client import (
     OpenEngineRpcError,
 )
 from tensorrt_llm.grpc.openengine_conventions import (
+    BUCKET_AGGREGATED,
     CONVENTIONS_VERSION,
     CONVENTIONS_VERSION_KEY,
     META_PRIORITY,
     META_TARGET_DP_RANK,
     META_TRACEPARENT,
     META_TRACESTATE,
+    REQUEST_TYPE_CONTEXT_ONLY,
+    REQUEST_TYPE_GENERATION_ONLY,
     SERVE_COUNTER_DIR_ENV,
+    SERVE_COUNTER_HANDOFF_UNREGISTERED_ATTRIBUTES,
+    SERVE_COUNTER_HTTP_RECEIVED_BUCKETS,
+    SERVE_COUNTER_HTTP_REJECTED,
+    SERVE_COUNTER_PREFILL_READY_RECEIVED,
     CapabilityFormatError,
     compare_tokenizer_fingerprints,
     compute_tokenizer_fingerprint,
     conventions_version,
     encode_priority,
+    request_bucket,
 )
 from tensorrt_llm.inputs.data import prompt_inputs
 from tensorrt_llm.logger import logger
 from tensorrt_llm.sampling_params import SamplingParams
 
-from . import contracts
-from .engine_client import EngineInfo, EngineLoad, EngineRequest, ModelCapabilities, OutputFinished
+from . import contracts, handoff
+from .engine_client import (
+    EngineInfo,
+    EngineLoad,
+    EngineRequest,
+    ModelCapabilities,
+    OutputFinished,
+    PrefillReady,
+    TokenDelta,
+)
 from .engine_client_impl import EngineEventStream, OpenEngineEngineClient
 
 __all__ = [
@@ -123,6 +142,124 @@ UNSUPPORTED_ENDPOINTS: tuple[tuple[str, str], ...] = (
     ("POST", "/_control/kv_cache/truncate"),
     ("POST", "/_control/kv_cache/truncate_tokens"),
 )
+
+# The paths of the generation requests counted in http_received.* and http_rejected.
+GENERATION_PATHS = frozenset(
+    {"/v1/completions", "/v1/chat/completions", "/v1/responses", "/v1/messages"}
+)
+
+
+@dataclasses.dataclass
+class _HttpRequest:
+    """One generation HTTP request being served; ``sent`` once a Generate call of it was sent."""
+
+    sent: bool = False
+
+
+# The generation HTTP request the current task serves, set by _CountGenerationRequests.
+_HTTP_REQUEST: contextvars.ContextVar[_HttpRequest | None] = contextvars.ContextVar(
+    "openengine_http_request", default=None
+)
+
+
+class _DisaggProbe(msgspec.Struct):
+    request_type: Any = None
+
+
+class _BodyProbe(msgspec.Struct):
+    disaggregated_params: _DisaggProbe | None = None
+
+
+def _http_bucket(body: bytes, msgpack: bool) -> str:
+    """The request bucket of a generation request body, by its ``disaggregated_params.request_type``.
+
+    A body that cannot be read is counted as aggregated, as one without
+    ``disaggregated_params`` is.
+    """
+    try:
+        if msgpack:
+            probe = msgspec.msgpack.decode(body, type=_BodyProbe)
+        else:
+            probe = msgspec.json.decode(body, type=_BodyProbe)
+    except (msgspec.DecodeError, msgspec.ValidationError):
+        return BUCKET_AGGREGATED
+    params = probe.disaggregated_params
+    request_type = None if params is None else params.request_type
+    if request_type in (REQUEST_TYPE_CONTEXT_ONLY, REQUEST_TYPE_GENERATION_ONLY):
+        return request_type
+    return BUCKET_AGGREGATED
+
+
+class _CountGenerationRequests:
+    """ASGI middleware counting the generation requests a worker frontend receives (SV-DSG-13).
+
+    The counts are kept only with the counters of disaggregated serving
+    (:meth:`OpenEngineLLM._counts_disaggregated`).
+
+    Every ``POST`` to :data:`GENERATION_PATHS` counts once in
+    ``http_received.<bucket>``, whatever its answer, the bucket read from the
+    body's ``disaggregated_params.request_type``: once its body is read, so
+    before any refusal, or when its answer ends if the body was never read. A
+    request for which no Generate call was sent by the time its answer ends
+    also counts in ``http_rejected``. Both are counted before the answer's
+    last message goes out, so a client that has read the answer reads counts
+    that include it. Messages pass through unchanged.
+    """
+
+    def __init__(self, app: Any, facade: OpenEngineLLM) -> None:
+        self.app = app
+        self._facade = facade
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if (
+            scope["type"] != "http"
+            or scope.get("method") != "POST"
+            or scope.get("path") not in GENERATION_PATHS
+        ):
+            await self.app(scope, receive, send)
+            return
+        msgpack = dict(scope.get("headers") or ()).get(b"x-trtllm-msgpack") == b"1"
+        chunks: list[bytes] = []
+        request = _HttpRequest()
+        received = False
+        ended = False
+
+        def count_received() -> None:
+            nonlocal received
+            if not received:
+                received = True
+                bucket = _http_bucket(b"".join(chunks), msgpack)
+                self._facade._count(SERVE_COUNTER_HTTP_RECEIVED_BUCKETS[bucket])
+
+        def count_end() -> None:
+            nonlocal ended
+            if not ended:
+                ended = True
+                count_received()
+                if not request.sent:
+                    self._facade._count(SERVE_COUNTER_HTTP_REJECTED)
+
+        async def receive_counting() -> Any:
+            message = await receive()
+            if message.get("type") == "http.request":
+                chunks.append(message.get("body", b""))
+                if not message.get("more_body", False):
+                    count_received()
+            return message
+
+        async def send_counting(message: Any) -> None:
+            if message.get("type") == "http.response.body" and not message.get("more_body", False):
+                count_end()
+            await send(message)
+
+        token = _HTTP_REQUEST.set(request)
+        try:
+            await self.app(scope, receive_counting, send_counting)
+        finally:
+            _HTTP_REQUEST.reset(token)
+            # Counted already unless the answer did not end: the client left or the app raised.
+            count_end()
+
 
 _BAD_REQUEST_STATUSES = (grpc.StatusCode.INVALID_ARGUMENT, grpc.StatusCode.UNIMPLEMENTED)
 _UNAVAILABLE_STATUSES = (grpc.StatusCode.RESOURCE_EXHAUSTED, grpc.StatusCode.UNAVAILABLE)
@@ -730,16 +867,44 @@ class OpenEngineLLM:
             # The final count may go to a slow file system, so it is written off the loop.
             await asyncio.to_thread(self._close_counter)
 
-    def _record_sent(self, count: int) -> None:
-        """Count ``count`` more Generate calls.
+    def _counts_disaggregated(self) -> bool:
+        """Whether the counters of disaggregated serving are kept (SV-DSG-13).
 
-        The count is kept in memory; only calls counted after the counter is
-        closed write its file, on the calling thread.
+        They are when the engine has KV transfer enabled, as the engine reports
+        its own disaggregated counters only then; with any other engine the
+        frontend keeps ``generate_sent`` alone.
         """
+        if self._client is None:
+            return False
+        connector = self._client.server_info().kv_connector
+        return connector is not None and connector.enabled
+
+    def _record_sent(self, count: int, bucket: str | None = None) -> None:
+        """Count ``count`` more Generate calls, in ``generate_sent.<bucket>`` too when given.
+
+        The bucket is counted only with the counters of disaggregated serving
+        (:meth:`_counts_disaggregated`). The count is kept in memory; only
+        calls counted after the counter is closed write its file, on the
+        calling thread.
+        """
+        if bucket is not None and not self._counts_disaggregated():
+            bucket = None
         try:
-            self._counter.increment(count)
+            self._counter.increment(count, bucket=bucket)
         except OSError as error:
             logger.warning(f"Could not write the OpenEngine generate_sent count: {error}")
+
+    def _count(self, key: str, count: int = 1) -> None:
+        """Add ``count`` to the disaggregated serving counter ``key``, when they are kept.
+
+        See :meth:`_counts_disaggregated`; written as :meth:`_record_sent` writes.
+        """
+        if not self._counts_disaggregated():
+            return
+        try:
+            self._counter.add(key, count)
+        except OSError as error:
+            logger.warning(f"Could not write the OpenEngine {key} count: {error}")
 
     def _close_counter(self) -> None:
         try:
@@ -852,14 +1017,13 @@ class OpenEngineLLM:
     ) -> dict[str, Any]:
         """Tokenize a prompt; ``OpenAIServer`` calls this in its input-processing thread pool.
 
+        ``disaggregated_params`` is read by :meth:`generate_async`, which is
+        given it too.
+
         Returns:
             A token prompt to pass to :meth:`generate_async`; with media, it
             also holds them as the ``map_media`` slot mapped them.
         """
-        if disaggregated_params is not None:
-            raise ValueError(
-                "disaggregated_params is not supported when serving through an OpenEngine engine"
-            )
         prompt = prompt_inputs(inputs)
         sampling_params = sampling_params or SamplingParams()
         self._check_truncation(prompt, sampling_params)
@@ -909,17 +1073,46 @@ class OpenEngineLLM:
         prompt_token_ids: list[int],
         sampling_params: SamplingParams,
         options: contracts.GenerateOptions,
+        handoff_attributes: str | None = None,
     ) -> list[EngineRequest]:
+        """Map a request to its Generate calls.
+
+        A ``generation_only`` request's calls carry the ``kv_session``
+        encoded from its ``disaggregated_params`` and ``handoff_attributes``
+        (its ``openengine_handoff_attributes``), with the ``transfer_backend``
+        of the engine's KV connector.
+
+        Raises:
+            ValueError: The request cannot be mapped; ``handoff_attributes`` is
+                given to a request that is not ``generation_only``.
+        """
         client = self.client
         caps = client.model_info()
-        engine_name = client.server_info().engine_name
+        info = client.server_info()
+        params = options.disaggregated_params
+        generation_only = params is not None and params.request_type == REQUEST_TYPE_GENERATION_ONLY
+        if handoff_attributes is not None and not generation_only:
+            raise ValueError(
+                "disaggregated_params.openengine_handoff_attributes is only accepted on a "
+                "generation_only request"
+            )
         requests = contracts.map_request(
-            prompt_token_ids, sampling_params, caps, options, engine_name=engine_name
+            prompt_token_ids, sampling_params, caps, options, engine_name=info.engine_name
         )
         metadata = self._metadata(options, caps)
+        kv_session = None
+        if generation_only:
+            connector = info.kv_connector
+            kv_session = handoff.encode_kv_session(
+                params,
+                handoff_attributes,
+                "" if connector is None else connector.transfer_backend,
+            )
         for request in requests:
             # What the mapping set wins over the facade's defaults.
             request.metadata = {**metadata, **request.metadata}
+            if kv_session is not None:
+                request.kv_session = kv_session
         return requests
 
     def generate_async(
@@ -939,6 +1132,7 @@ class OpenEngineLLM:
         logit_bias: Any = None,
         reasoning_parser: str | None = _NOT_GIVEN,
         tokenizer: Any = _NOT_GIVEN,
+        openengine_handoff_attributes: str | None = None,
         _postproc_params: Any = None,
         **_ignored: Any,
     ) -> OpenEngineRequestOutput:
@@ -955,6 +1149,13 @@ class OpenEngineLLM:
         (:func:`.contracts.takes_request_data`); they go to ``map_request``.
         A caller that does not pass the reasoning parser or the tokenizer gets
         the facade's own, as ``LLM`` uses its own.
+
+        A request with ``disaggregated_params`` is one leg of a disaggregated
+        request: ``context_only`` maps to a prefill call and ends with the
+        handoff in the outputs' ``disaggregated_params``; ``generation_only``
+        maps to a decode call carrying the handoff (see :meth:`_map`).
+        ``openengine_handoff_attributes`` is the HTTP field of that name,
+        which ``OpenAIServer`` passes as request data.
 
         Raises:
             ValueError: The request asks for something the engine cannot do; reported as 400.
@@ -996,7 +1197,7 @@ class OpenEngineLLM:
         )
         if lora_request is None:
             requests: list[EngineRequest] | None = self._map(
-                prompt_token_ids, sampling_params, options
+                prompt_token_ids, sampling_params, options, openengine_handoff_attributes
             )
             prepare = None
         else:
@@ -1004,7 +1205,9 @@ class OpenEngineLLM:
             # first read. They are mapped now, under the name the registry returns for
             # a registered adapter, so a refusal comes before the adapter is registered.
             options.lora_name = getattr(lora_request, "lora_name", None)
-            mapped = self._map(prompt_token_ids, sampling_params, options)
+            mapped = self._map(
+                prompt_token_ids, sampling_params, options, openengine_handoff_attributes
+            )
             requests = None
 
             async def prepare() -> list[EngineRequest]:
@@ -1013,7 +1216,9 @@ class OpenEngineLLM:
                 if name == options.lora_name:
                     return mapped
                 options.lora_name = name
-                return self._map(prompt_token_ids, sampling_params, options)
+                return self._map(
+                    prompt_token_ids, sampling_params, options, openengine_handoff_attributes
+                )
 
         if os.environ.get(LOG_PROMPT_IDS_ENV) == "1":
             # Opt-in, for comparing prompt rendering with another server; the ids
@@ -1041,6 +1246,7 @@ class OpenEngineLLM:
             engine_name=engine_name,
             sampling_params=sampling_params,
             trace_headers=trace_headers,
+            disaggregated_params=disaggregated_params,
         )
 
     # -- Stats and events ----------------------------------------------------
@@ -1160,6 +1366,18 @@ class OpenEngineRequestOutput:
     ``chunks`` in ``outputs[0]._postprocess_result``; the last one is final.
     A final result cancels the calls still running as soon as it arrives, and
     at most :data:`MAX_BUFFERED_EVENTS` results wait for the reader.
+
+    A request with ``disaggregated_params`` gives them to :attr:`disaggregated_params`
+    and to each output, as ``LLM`` does. A context leg (a call with
+    ``request_type`` ``context_only``) holds its token events: when the call
+    ends with ``PrefillReady`` they are dropped, since the generation leg sends
+    the first token, and the output carries the handoff instead; when it ends
+    with a finish, the request ended on the context worker and they are
+    applied, as one event, before the finish. A call that has ended with
+    ``PrefillReady`` is not cancelled: the engine would drop the KV cache
+    handed off (the stream ignores a cancel after its last event anyway).
+    The non-streamed result of the pool, whose outputs carry only a handoff,
+    gets the request's params in each choice that has none.
     """
 
     def __init__(
@@ -1174,6 +1392,7 @@ class OpenEngineRequestOutput:
         engine_name: str,
         sampling_params: SamplingParams | None = None,
         trace_headers: Mapping[str, str] | None = None,
+        disaggregated_params: Any = None,
     ) -> None:
         self._facade = facade
         self._create_assembler = create_assembler
@@ -1196,7 +1415,14 @@ class OpenEngineRequestOutput:
         self.finished = False
         self.error: str | None = None
         self.context_logits = None
-        self.disaggregated_params = None
+        self.disaggregated_params = disaggregated_params
+        self._request_disaggregated_params = disaggregated_params
+        # The generation HTTP request served, told once a Generate call of it is sent.
+        self._http_request = _HTTP_REQUEST.get()
+        # Per context-leg call offset, the token events held per output of the call.
+        self._held_tokens: dict[int, dict[int, list[TokenDelta]]] = {}
+        # Events taken from the queue that are still to be applied, in order.
+        self._pending: collections.deque[tuple[int, Any]] = collections.deque()
         self._metrics_failed = False
         self._request_metrics: contracts.RequestMetrics | None = None
         try:
@@ -1219,6 +1445,14 @@ class OpenEngineRequestOutput:
         """Create the assembler and open the pool session for these calls."""
         engine_stop_texts = _engine_stop_texts(requests)
         self._assembler = self._create_assembler(engine_stop_texts)
+        offset = 0
+        for request in requests:
+            if request.request_type == REQUEST_TYPE_CONTEXT_ONLY:
+                self._held_tokens[offset] = {}
+            offset += request.num_sequences
+        if self._request_disaggregated_params is not None:
+            for output in self._assembler.outputs:
+                output.disaggregated_params = self._request_disaggregated_params
         # Per request output, its call's max_tokens, which the mapping may fill in or cap.
         max_tokens = [
             request.max_tokens for request in requests for _ in range(request.num_sequences)
@@ -1329,7 +1563,10 @@ class OpenEngineRequestOutput:
         for request in self._requests:
             stream = client.generate(request)
             self._streams.append(stream)
-            _keep(asyncio.create_task(self._pump(stream, offset)))
+            bucket = request_bucket(
+                has_kv_session=request.kv_session is not None, request_type=request.request_type
+            )
+            _keep(asyncio.create_task(self._pump(stream, offset, bucket)))
             offset += request.num_sequences
         self._open_calls = len(self._streams)
         if self._session is not None:
@@ -1340,15 +1577,16 @@ class OpenEngineRequestOutput:
             for stream in self._streams:
                 stream.cancel()
 
-    async def _pump(self, stream: EngineEventStream, offset: int) -> None:
+    async def _pump(self, stream: EngineEventStream, offset: int, bucket: str) -> None:
         """Read one call to its end into the queue.
 
-        The call is counted as sent when its first read returns an event, or
-        when reading it ends, provided the call was started (``stream.sent``),
-        whether or not the engine accepted it. The pump keeps reading after the
-        request finished, so a call the engine ends itself is closed by the
-        engine; ``stream.cancel()`` only takes effect before the engine's last
-        event.
+        The call is counted as sent, in ``generate_sent.<bucket>`` too, when
+        its first read returns an event, or when reading it ends, provided
+        the call was started (``stream.sent``), whether or not the engine
+        accepted it. A ``PrefillReady`` event is taken in when read (see
+        :meth:`_prefill_ready`). The pump keeps reading after the request
+        finished, so a call the engine ends itself is closed by the engine;
+        ``stream.cancel()`` only takes effect before the engine's last event.
         When the request holds :data:`MAX_BUFFERED_EVENTS` unread events, the
         pump cancels its call and hands the reader a 503 error.
         """
@@ -1360,11 +1598,15 @@ class OpenEngineRequestOutput:
             nonlocal counted
             if not counted and stream.sent:
                 counted = True
-                self._facade._record_sent(1)
+                self._facade._record_sent(1, bucket)
+                if self._http_request is not None:
+                    self._http_request.sent = True
 
         try:
             async for event in stream:
                 count()
+                if isinstance(event, PrefillReady):
+                    self._prefill_ready(event)
                 if queue.qsize() >= MAX_BUFFERED_EVENTS:
                     stream.cancel()
                     queue.put_nowait((offset, self._overflow_error()))
@@ -1381,6 +1623,49 @@ class OpenEngineRequestOutput:
             count()
             await stream.aclose()
         queue.put_nowait((offset, _END))
+
+    def _prefill_ready(self, event: PrefillReady) -> None:
+        """Take in a handoff: count it, and each attribute the conventions do not register in it.
+
+        :attr:`disaggregated_params` becomes the handoff, decoded as the
+        assembler decodes it.
+
+        Raises:
+            ValueError: The handoff cannot be decoded.
+        """
+        facade = self._facade
+        facade._count(SERVE_COUNTER_PREFILL_READY_RECEIVED)
+        unregistered = handoff.unregistered_attributes(event.kv_session)
+        if unregistered:
+            facade._count(SERVE_COUNTER_HANDOFF_UNREGISTERED_ATTRIBUTES, len(unregistered))
+            logger.warning(
+                f"The OpenEngine engine {self._engine_name!r} handed off attributes the "
+                f"conventions do not register, passed on unread: {', '.join(unregistered)}"
+            )
+        self.disaggregated_params = handoff.with_handoff_attributes(
+            *handoff.decode_kv_session(event.kv_session)
+        )
+
+    def _leg_events(self, offset: int, event: Any) -> list[Any]:
+        """The events to apply for ``event`` of the call at ``offset``, in order.
+
+        Every event of a call that is not a context leg; for a context leg, see
+        the class docstring.
+        """
+        held = self._held_tokens.get(offset)
+        if held is None:
+            return [event]
+        if isinstance(event, TokenDelta):
+            held.setdefault(event.output_index, []).append(event)
+            return []
+        if isinstance(event, PrefillReady):
+            held.clear()
+            return [event]
+        if isinstance(event, OutputFinished):
+            tokens = held.pop(event.output_index, None)
+            if tokens:
+                return [_joined(tokens), event]
+        return [event]
 
     def _cancel_calls(self) -> None:
         self._cancel_sent = True
@@ -1440,11 +1725,16 @@ class OpenEngineRequestOutput:
                 if cancelled is not None:
                     results.put_nowait(cancelled)
                     return
-                event = _shifted(item, offset) if offset and hasattr(item, "output_index") else item
-                if isinstance(event, OutputFinished):
-                    finished_outputs.add(event.output_index)
-                if not self._session_closed:
-                    session.send(event)
+                for leg_event in self._leg_events(offset, item):
+                    event = (
+                        _shifted(leg_event, offset)
+                        if offset and hasattr(leg_event, "output_index")
+                        else leg_event
+                    )
+                    if isinstance(event, (OutputFinished, PrefillReady)):
+                        finished_outputs.add(event.output_index)
+                    if not self._session_closed:
+                        session.send(event)
         except contracts.PostprocError as error:
             results.put_nowait(_postproc_failure(error))
         except Exception as error:
@@ -1505,12 +1795,29 @@ class OpenEngineRequestOutput:
             )
         if isinstance(item, BaseException):
             raise self._fail(item)
-        self.outputs[0]._postprocess_result = item.chunks
+        chunks = item.chunks
+        if item.is_final and self._request_disaggregated_params is not None:
+            chunks = self._with_request_params(chunks)
+        self.outputs[0]._postprocess_result = chunks
         if item.is_final:
             self.finished = True
             self._cancel_calls()
             self._finish_metrics()
         return self
+
+    def _with_request_params(self, chunks: Any) -> Any:
+        """A final pool result whose response choices without params get the request's.
+
+        Streamed chunks are text and carry no params, as without the pool.
+        """
+        from tensorrt_llm.serve.openai_protocol import to_disaggregated_params
+
+        for choice in getattr(chunks, "choices", None) or ():
+            if getattr(choice, "disaggregated_params", False) is None:
+                choice.disaggregated_params = to_disaggregated_params(
+                    self._request_disaggregated_params
+                )
+        return chunks
 
     def _measure(self, event: Any, offset: int) -> None:
         """Give the metrics recorder an event as it arrives; its failure does not fail the request."""
@@ -1616,7 +1923,17 @@ class OpenEngineRequestOutput:
             return await self._next_postprocessed()
         assert self._steps is not None
         while True:
-            offset, item = await self._queue.get()
+            if self._pending:
+                offset, item = self._pending.popleft()
+            else:
+                offset, item = await self._queue.get()
+                if item is not _END and not isinstance(item, BaseException):
+                    events = self._leg_events(offset, item)
+                    if not events:
+                        continue
+                    item = events[0]
+                    # Applied one at a time, so each is a step of its own.
+                    self._pending.extend((offset, event) for event in events[1:])
             if item is _END:
                 self._open_calls -= 1
                 if self._open_calls > 0:
@@ -1653,6 +1970,18 @@ class OpenEngineRequestOutput:
                 self._cancel_calls()
                 self._finish_metrics()
             return self
+
+
+def _joined(deltas: list[TokenDelta]) -> TokenDelta:
+    """One token event holding the tokens of ``deltas``, events of one output, in order."""
+    logprobs = None
+    if all(delta.logprobs is not None for delta in deltas):
+        logprobs = tuple(info for delta in deltas for info in delta.logprobs or ())
+    return TokenDelta(
+        output_index=deltas[0].output_index,
+        token_ids=tuple(token for delta in deltas for token in delta.token_ids),
+        logprobs=logprobs,
+    )
 
 
 def _ended_early(engine_name: str) -> OpenEngineServeError:
@@ -1759,7 +2088,10 @@ def adapt_server(server: Any, facade: OpenEngineLLM) -> None:
     - the app's shutdown closes the Generate counter: uvicorn raises the
       signal that stopped it again once the app has shut down, and a process
       with no handler of its own for that signal ends there, before the
-      launcher's ``aclose()`` runs.
+      launcher's ``aclose()`` runs;
+    - the generation requests are counted (:class:`_CountGenerationRequests`).
+      Middleware added afterwards runs first, so a request it answers itself
+      is not counted.
     """
     import contextlib
     import sys
@@ -1845,3 +2177,4 @@ def adapt_server(server: Any, facade: OpenEngineLLM) -> None:
         return create_error_response(message, err_type, status_code)
 
     server.create_error_response = create_status_error_response
+    app.add_middleware(_CountGenerationRequests, facade=facade)

@@ -31,6 +31,7 @@ from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 from transformers import PreTrainedTokenizerFast
 
+from tensorrt_llm.disaggregated_params import DisaggregatedParams
 from tensorrt_llm.grpc import openengine_conventions as conv
 from tensorrt_llm.sampling_params import GuidedDecodingParams, LogprobMode, SamplingParams
 from tensorrt_llm.scheduling_params import SchedulingParams
@@ -271,6 +272,8 @@ MAPPED_PROBES: dict[str, Probe] = {
     "ignore_eos": Probe({"ignore_eos": True}, landed=_first(lambda r: r.ignore_eos is True)),
 }
 
+DISAGG_PARAMS = DisaggregatedParams(request_type="context_only", disagg_request_id=(1 << 41) + 3)
+
 OPTION_PROBES: dict[str, Probe] = {
     "lora_request": Probe(
         options={"lora_request": object(), "lora_name": "a"},
@@ -312,6 +315,14 @@ OPTION_PROBES: dict[str, Probe] = {
         supported=_cap(conv.CAP_REQ_LOGIT_BIAS),
         landed=_first(lambda r: r.extra[conv.REQ_LOGIT_BIAS] == {"1": 2.0}),
     ),
+    "disaggregated_params": Probe(
+        options={"disaggregated_params": DISAGG_PARAMS},
+        supported=_cap(conv.CAP_REQ_DISAGG_REQUEST_ID),
+        landed=_first(
+            lambda r: r.request_type == "context_only"
+            and r.extra[conv.REQ_DISAGG_REQUEST_ID] == str(DISAGG_PARAMS.disagg_request_id)
+        ),
+    ),
 }
 # The facade turns these into metadata after map_request; the gRPC scan checks them.
 FACADE_MAPPED = {"priority", "trace_headers"}
@@ -345,7 +356,7 @@ REJECTED_VALUES = {
     "additional_model_outputs": ["x"],
     "_decoder_output_token_prefix": (1,),
 }
-REJECTED_OPTION_VALUES = {"disaggregated_params": object()}
+REJECTED_OPTION_VALUES: dict[str, Any] = {}
 SERVE_VALUES = {
     "detokenize": False,
     "add_special_tokens": False,
@@ -454,6 +465,8 @@ class SmallTokenizer:
 # generate_async takes neither: the facade resolves lora_name from lora_request
 # through the LoRA registry and media from the prompt through the map_media slot.
 GRPC_DERIVED = {"lora_name", "media"}
+# A context leg needs an engine with KV transfer; the CPU chain tests it end to end.
+GRPC_DISAGGREGATED = {"disaggregated_params"}
 # What the facade sends as gRPC metadata: (options, supported, check on the call).
 FACADE_PROBES = {
     "priority": (
@@ -553,7 +566,9 @@ def _over_grpc(profile, tmp_path, check, **facade_kwargs):
 
 
 @pytest.mark.parametrize("profile", GRPC_PROFILES)
-@pytest.mark.parametrize("name", sorted({**MAPPED_PROBES, **OPTION_PROBES}.keys() - GRPC_DERIVED))
+@pytest.mark.parametrize(
+    "name", sorted({**MAPPED_PROBES, **OPTION_PROBES}.keys() - GRPC_DERIVED - GRPC_DISAGGREGATED)
+)
 def test_over_grpc_the_engine_receives_what_the_mapping_sends(profile, name, tmp_path):
     probe = {**MAPPED_PROBES, **OPTION_PROBES}[name]
     options = {key: value for key, value in probe.options.items() if key not in GRPC_DERIVED}
@@ -714,9 +729,11 @@ def test_the_facade_names_every_keyword_the_server_passes():
     named = {name for name, p in parameters.items() if p.kind is not p.VAR_KEYWORD}
     assert _server_generate_async_keywords() - named == set()
     assert contracts.takes_request_data(object.__new__(OpenEngineLLM))
-    # Each keyword other than the prompt and the pool's own names a GenerateOptions field.
+    # Each keyword other than the prompt and the pool's own names a GenerateOptions
+    # field; openengine_handoff_attributes is the HTTP-only part of disaggregated_params.
     options = {f.name for f in dataclasses.fields(contracts.GenerateOptions)}
-    assert named - {"self", "inputs", "sampling_params", "_postproc_params"} <= options
+    own = {"self", "inputs", "sampling_params", "_postproc_params"}
+    assert named - own - {"openengine_handoff_attributes"} <= options
 
 
 def test_a_direct_caller_gets_the_facade_reasoning_parser_and_tokenizer(tmp_path):

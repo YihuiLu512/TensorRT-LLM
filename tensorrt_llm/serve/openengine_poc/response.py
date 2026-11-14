@@ -70,7 +70,15 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
-from .engine_client import EngineEvent, OutputFinished, PromptInfo, TokenDelta, TokenLogprob
+from . import handoff
+from .engine_client import (
+    EngineEvent,
+    OutputFinished,
+    PrefillReady,
+    PromptInfo,
+    TokenDelta,
+    TokenLogprob,
+)
 
 if TYPE_CHECKING:
     from tensorrt_llm.executor.result import CompletionOutput
@@ -114,6 +122,14 @@ class OpenEngineResponseAssembler:
     first usage it reports. The ``*_diff`` views of :attr:`outputs` cover the
     change made by the last :meth:`apply` that returned True, or by
     :meth:`finish_cancelled`.
+
+    A ``PrefillReady`` event ends its output with ``finish_reason`` ``length``,
+    as a context-only response of ``LLM`` ends, and sets the output's
+    ``disaggregated_params`` to the handoff it carries, decoded by
+    :func:`.handoff.decode_kv_session` with its
+    ``openengine_handoff_attributes`` kept on it
+    (:class:`.handoff.OpenEngineDisaggregatedParams`). Its text and tokens
+    are those received before it.
 
     See :func:`create_response_assembler` for the arguments.
     """
@@ -187,10 +203,12 @@ class OpenEngineResponseAssembler:
         """
         if isinstance(event, TokenDelta):
             return self._apply_tokens(event)
-        if isinstance(event, OutputFinished):
+        if isinstance(event, (OutputFinished, PrefillReady)):
             if event.usage is not None and not self._usage_seen:
                 self._usage_seen = True
                 self.cached_tokens = event.usage.cached_prompt_tokens or 0
+            if isinstance(event, PrefillReady):
+                return self._apply_prefill_ready(event)
             return self._apply_finished(event)
         if isinstance(event, PromptInfo):
             self._apply_prompt(event)
@@ -269,6 +287,17 @@ class OpenEngineResponseAssembler:
             output.stop_reason = event.stop_token_id
         elif event.stop_text is not None:
             output.stop_reason = event.stop_text
+        return True
+
+    def _apply_prefill_ready(self, event: PrefillReady) -> bool:
+        output = self.outputs[event.output_index]
+        if output.finish_reason is not None:
+            return False
+        params, attributes = handoff.decode_kv_session(event.kv_session)
+        self._start_step()
+        self._release_tokens(event.output_index, 0)
+        output.finish_reason = "length"
+        output.disaggregated_params = handoff.with_handoff_attributes(params, attributes)
         return True
 
     def _detokenizer(self, index: int) -> IncrementalDetokenizer | None:

@@ -167,7 +167,11 @@ GENERATE_OPTIONS: dict[str, FieldClass] = {
     "streaming": _serve("every Generate call streams; the handler decides", "row F-01+F-02"),
     "lora_request": _mapped("lora_name, once the LoRA registry resolves it", "LoRA"),
     "lora_name": _mapped("lora_name", "LoRA"),
-    "disaggregated_params": _rejected("this frontend does not map disaggregated requests"),
+    "disaggregated_params": _mapped(
+        "context_only: extra[request_type], extra[disagg_request_id]; "
+        "generation_only: kv.session, from the handoff the facade encodes",
+        "trtllm.request.disagg_request_id for a disagg_request_id",
+    ),
     "cache_salt": _mapped("kv.cache_salt", "supports_cache_salt"),
     "kv_hints": _mapped("extra[trtllm.kv_hints]", "trtllm.request.kv_hints"),
     "conversation_params": _mapped(

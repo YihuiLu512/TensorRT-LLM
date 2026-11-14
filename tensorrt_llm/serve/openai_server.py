@@ -1079,11 +1079,13 @@ class OpenAIServer(_VideoRoutesMixin):
 
         ``reasoning_parser`` and ``tokenizer`` are what the in-process path would
         build this request's thinking-budget processor from; they default to the
-        server's own.
+        server's own. ``openengine_handoff_attributes``, the HTTP field of that
+        name in the request's ``disaggregated_params``, which has no LLM-level
+        counterpart, is passed when set.
         """
         if not self._takes_request_data():
             return {}
-        return {
+        kwargs = {
             "logit_bias":
             getattr(request, "logit_bias", None),
             "reasoning_parser":
@@ -1092,6 +1094,12 @@ class OpenAIServer(_VideoRoutesMixin):
             "tokenizer":
             self.tokenizer if tokenizer is None else tokenizer,
         }
+        handoff_attributes = getattr(
+            getattr(request, "disaggregated_params", None),
+            "openengine_handoff_attributes", None)
+        if handoff_attributes is not None:
+            kwargs["openengine_handoff_attributes"] = handoff_attributes
+        return kwargs
 
     def _responses_request_data_kwargs(self, request: Any) -> Dict[str, Any]:
         """Request data of a Responses request: its parser and tokenizer as above."""
