@@ -1075,6 +1075,12 @@ class _EngineWait:
         except grpc.RpcError:
             pass
         if time.monotonic() > self._deadline:
+            if self._transceiver_deadline is not None:
+                raise ChainStartupError(
+                    f"engine at {self.endpoint} is SERVING but showed no KV cache transceiver "
+                    f"within {self.timeout:.0f} s; log {engine.log_path}:\n"
+                    f"{tail(engine.log_path)}"
+                )
             raise ChainStartupError(
                 f"engine at {self.endpoint} not SERVING within {self.timeout:.0f} s; log "
                 f"{engine.log_path}:\n{tail(engine.log_path)}"

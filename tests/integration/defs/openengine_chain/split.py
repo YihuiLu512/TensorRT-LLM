@@ -77,6 +77,16 @@ OPTIONS: Mapping[str, Option] = {
     "--port": Option(Side.HARNESS),
 }
 
+# Other names trtllm-serve accepts for options of the table; they split, and are read, as
+# the table's name.
+OPTION_ALIASES: Mapping[str, str] = {
+    "--tensor_parallel_size": "--tp_size",
+    "--pipeline_parallel_size": "--pp_size",
+    "--context_parallel_size": "--cp_size",
+    "--moe_expert_parallel_size": "--ep_size",
+    "--free_gpu_memory_fraction": "--kv_cache_free_gpu_memory_fraction",
+}
+
 CONFIG_OPTIONS = ("--config", "--extra_llm_api_options")
 
 # Options of a command line the chain cannot start at all, with the reason.
@@ -135,7 +145,8 @@ class SplitArgs:
 
 
 def _option_name(token: str) -> str:
-    return token.split("=", 1)[0]
+    name = token.split("=", 1)[0]
+    return OPTION_ALIASES.get(name, name)
 
 
 def _iter_options(args: Sequence[str], strict: bool = True):
@@ -551,13 +562,23 @@ def transceiver_runtime(config: Mapping[str, Any]) -> str:
     ``AUTO`` is ``auto``, which the configuration alone does not resolve:
     the engine takes the model's preferred runtime when the model declares
     one, and otherwise the Python runtime unless the configuration rules it
-    out.
+    out. A null runtime is the C++ one, except with
+    ``enable_pipelined_transfer`` and backend NIXL, where the engine takes the
+    Python one (any other backend is counted as not NIXL here).
     """
     transceiver = config.get("cache_transceiver_config") or {}
     runtime = transceiver.get("transceiver_runtime", DEFAULT_TRANSCEIVER_RUNTIME)
     if runtime == "auto":
         return "AUTO"
-    return "PYTHON" if runtime == "PYTHON" else "CPP"
+    if runtime == "PYTHON":
+        return "PYTHON"
+    if (
+        runtime is None
+        and transceiver.get("enable_pipelined_transfer")
+        and transceiver.get("backend") == "NIXL"
+    ):
+        return "PYTHON"
+    return "CPP"
 
 
 def attention_dp_ranks(config: Mapping[str, Any], args: Sequence[str]) -> int:
@@ -592,8 +613,14 @@ def _kv_events_template(
             "manager V2, which the C++ transceiver runtime cannot use"
         )
     transceiver = config.get("cache_transceiver_config") or {}
+    backend = transceiver.get("backend")
+    if runtime == "PYTHON" and backend != "NIXL":
+        raise ChainUnrunnableError(
+            "not runnable in the OpenEngine chain (DV-23): KV cache events need KV cache "
+            f"manager V2 and so the Python transceiver, which takes only NIXL, not {backend}"
+        )
     if runtime == "AUTO" and (
-        transceiver.get("backend") != "NIXL"
+        backend != "NIXL"
         or (
             "kv_transfer_timeout_ms" in transceiver
             and transceiver["kv_transfer_timeout_ms"] is None

@@ -410,6 +410,11 @@ def test_kv_events_publish_one_port_per_attention_dp_rank(tmp_path):
             [],
             "use_kv_cache_manager_v2 is false",
         ),
+        (
+            {"cache_transceiver_config": {"backend": "UCX", "transceiver_runtime": "PYTHON"}},
+            [],
+            "takes only NIXL, not UCX",
+        ),
         # auto falls back to the C++ transceiver for these, or the model's runtime cannot run.
         (
             {"cache_transceiver_config": {"backend": "UCX", "transceiver_runtime": "auto"}},
@@ -444,8 +449,7 @@ def test_kv_events_refuse_auto_when_the_environment_selects_another_backend(tmp_
         _engine_config(
             tmp_path, config, env={"TRTLLM_USE_UCX_KVCACHE": "1"}, ports=lambda count: 44000
         )
-    # A finite timeout keeps auto on the Python transceiver.
-    config["cache_transceiver_config"]["kv_transfer_timeout_ms"] = 1000
+    # Without that variable the backend is NIXL, and auto keeps the Python transceiver.
     engine = _engine_config(tmp_path, config, ports=lambda count: 44000)
     assert "kv_events_config" in engine["kv_cache_config"]
 
@@ -613,6 +617,18 @@ def test_moved_workers_on_one_gpu_refuse_a_set_of_the_whole_kv_cache_config(tmp_
     assert "kv_cache_config={free_gpu_memory_fraction: 0.9}" in workers.commands["context"]
 
 
+@pytest.mark.parametrize("strict", [True, False])
+def test_options_keep_their_other_names_and_count_as_the_table_names(tmp_path, strict):
+    cmd = ["trtllm-serve", "/m", "--free_gpu_memory_fraction", "0.8"]
+    workers, configs = _moved(tmp_path, cmd, strict=strict)
+    assert "--free_gpu_memory_fraction" not in workers.commands["context"]
+    assert configs["context"]["kv_cache_config"]["free_gpu_memory_fraction"] == pytest.approx(0.4)
+    args = ["--tensor_parallel_size", "2", "--pipeline_parallel_size=2"]
+    assert sp.parallel_size(args, strict) == 4
+    split = sp.split_args(args, rewrite_yaml=lambda path: path)
+    assert list(split.engine) == args and not list(split.frontend)
+
+
 def test_moved_command_line_without_a_chain_keeps_options_the_table_does_not_know(tmp_path):
     cmd = ["trtllm-serve", "/m", "--log_level", "info", "--port", "8000", "--trust_remote_code"]
     cmd += ["--metadata_server_config_file", "m.yaml"]
@@ -704,6 +720,12 @@ def test_default_backend_follows_the_legacy_environment_variables(tmp_path):
         # The model's preferred runtime, if it declares one, wins over the configuration.
         ({"transceiver_runtime": "auto", "backend": "UCX"}, "AUTO"),
         ({"transceiver_runtime": "auto", "kv_transfer_timeout_ms": None}, "AUTO"),
+        # Pipelined transfer makes the engine take the Python runtime for null with NIXL.
+        (
+            {"transceiver_runtime": None, "enable_pipelined_transfer": True, "backend": "NIXL"},
+            "PYTHON",
+        ),
+        ({"transceiver_runtime": None, "enable_pipelined_transfer": True, "backend": "UCX"}, "CPP"),
     ],
 )
 def test_transceiver_runtime(transceiver, runtime):

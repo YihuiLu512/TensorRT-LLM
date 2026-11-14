@@ -1,13 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-# WT-37 owes no feature row (pending_e2e.py lists none), so there are no entries. Its own
-# end-to-end checks, on 7d3fdc319bf0dcac9053daa05269fa41c88b5b1c, 1xB200 and 2xB200:
-# 1. Neither switch set, a sample of the R10 single-node B200 shards, compared entry by entry
-#    with records/WT-31/r10_results.tsv: test_disaggregated_single_gpu,
+# This work item owes no feature row (pending_e2e.py lists none), so there are no entries.
+# Its own end-to-end checks, on 7d3fdc319bf0dcac9053daa05269fa41c88b5b1c, 1xB200 and 2xB200:
+# 1. Neither switch set, a sample of the single-node B200 tests of
+#    records/WT-31/r10_results.tsv, compared entry by entry with it: test_disaggregated_single_gpu,
 #    test_disaggregated_cuda_graph, test_workers_kv_cache_events,
 #    test_worker_restart[http-round_robin], test_disagg_serving_perf_metrics.py::
 #    test_completion_metrics and TestQwen3_8B::test_nixl_backend passed;
-#    test_workers_kv_cache_aware_router_eviction failed with the R10 assertion (2016 < 1984).
+#    test_workers_kv_cache_aware_router_eviction failed with the recorded assertion (2016 < 1984).
 # 2. TRTLLM_TEST_OPENENGINE_TOPOLOGY=disagg without a chain: the aggregated
 #    test_e2e.py::test_trtllm_serve_top_logprobs[pytorch] moved to a context worker, a
 #    generation worker and a disaggregated server on one GPU passed three times out of three.

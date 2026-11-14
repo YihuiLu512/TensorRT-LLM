@@ -159,7 +159,12 @@ def _run_worker(
             # its runner sets PYTHONPATH.
             from openengine_chain.launch import launch_worker
 
-            process = launch_worker(cmd, env=env, sink=stdout)
+            try:
+                process = launch_worker(cmd, env=env, sink=stdout)
+            except BaseException:
+                if log_file is not None:
+                    log_file.close()
+                raise
         else:
             process = subprocess.Popen(cmd, env=env, stdout=stdout, stderr=stderr)
         return ProcessWrapper(
