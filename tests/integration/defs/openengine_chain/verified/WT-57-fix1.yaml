@@ -1,0 +1,133 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# End-to-end checks of the disaggregated chain (case-04, trtllm chain, B200; the workers share one
+# GPU for NT-198 and have one GPU each otherwise), three runs of each case on the chain and one on
+# the in-process workers. Each junit path is relative to the result directory of its runs, which the
+# work item's status file records. All runs listed are of the commit each entry names.
+# T21 (EG-08, recorded in WT-57.yaml) was run again on 8eb9fe90d5: it failed in 3 of 3 runs
+# without the chain (HTTP 400) and 3 of 3 on the chain (HTTP 500, chain proof ok), each time
+# with the generation worker's "RuntimeError: Caught exception during copyTask ensure batch --
+# can't move a missing task1" on the first LoRA request.
+# The comment above each entry tags each of its cases:
+# - ok: the chain proof holds.
+# - incomplete, failed or skipped, see below: the reason is given below the tags.
+entries:
+  # NT-098 ok
+  - row: DG-67
+    features:
+    - DG-67
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_harmony.py::test_harmony_chat_context_first
+    commit: 3e26834316fb65968bbcf188b97748aa741e4fd0
+    junit:
+    - b200-2g-ch-2ga-v2/b200-2g-ch-2ga-v2/job-5966836_0-r0/node0/results/e04/junit/inner-20261115T151250-1794726770762433887-247747-_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_harmony.py_test_harmony_chat_context_first_.xml
+    - b200-2g-ch-2ga-v2/b200-2g-ch-2ga-v2/job-5966836_1-r0/node0/results/e04/junit/inner-20261115T151610-1794726970808983900-620907-_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_harmony.py_test_harmony_chat_context_first_.xml
+    - b200-2g-ch-2ga-v2/b200-2g-ch-2ga-v2/job-5966836_2-r0/node0/results/e04/junit/inner-20261115T151545-1794726945417451176-619234-_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_harmony.py_test_harmony_chat_context_first_.xml
+    - b200-2g-t-2ga-v2/b200-2g-t-2ga-v2/job-5966835_0-r0/node0/results/e04/junit/inner-20261115T150358-1794726238072052708-232402-_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_harmony.py_test_harmony_chat_context_first_.xml
+    result: passed
+    chain_proof: ok
+  # NT-189 ok
+  - row: EG-01a
+    features:
+    - EG-01a
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_spec.py::test_mtp_on_the_generation_side_only
+    commit: 3e26834316fb65968bbcf188b97748aa741e4fd0
+    junit:
+    - b200-2g-ch-2ga-v2/b200-2g-ch-2ga-v2/job-5966836_0-r0/node0/results/e01/junit/inner-20261115T145631-1794725791008643934-218758-nittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_spec.py_test_mtp_on_the_generation_side_only_.xml
+    - b200-2g-ch-2ga-v2/b200-2g-ch-2ga-v2/job-5966836_1-r0/node0/results/e01/junit/inner-20261115T145810-1794725890592340705-578797-nittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_spec.py_test_mtp_on_the_generation_side_only_.xml
+    - b200-2g-ch-2ga-v2/b200-2g-ch-2ga-v2/job-5966836_2-r0/node0/results/e01/junit/inner-20261115T145820-1794725900951262149-579202-nittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_spec.py_test_mtp_on_the_generation_side_only_.xml
+    - b200-2g-t-2ga-v2/b200-2g-t-2ga-v2/job-5966835_0-r0/node0/results/e01/junit/inner-20261115T145455-1794725695899510410-212647-nittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_spec.py_test_mtp_on_the_generation_side_only_.xml
+    result: passed
+    chain_proof: ok
+  # NT-188 ok
+  - row: EG-01e
+    features:
+    - EG-01e
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_spec.py::test_dflash_output_is_the_same_on_both_forms
+    commit: 3e26834316fb65968bbcf188b97748aa741e4fd0
+    junit:
+    - b200-2g-ch-2ga-v2/b200-2g-ch-2ga-v2/job-5966836_0-r0/node0/results/e00/junit/inner-20261115T145058-1794725458960851496-193295-.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_spec.py_test_dflash_output_is_the_same_on_both_forms_.xml
+    - b200-2g-ch-2ga-v2/b200-2g-ch-2ga-v2/job-5966836_1-r0/node0/results/e00/junit/inner-20261115T145052-1794725452080104044-544149-.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_spec.py_test_dflash_output_is_the_same_on_both_forms_.xml
+    - b200-2g-ch-2ga-v2/b200-2g-ch-2ga-v2/job-5966836_2-r0/node0/results/e00/junit/inner-20261115T145050-1794725450726139048-544040-.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_spec.py_test_dflash_output_is_the_same_on_both_forms_.xml
+    - b200-2g-t-2ga-v2/b200-2g-t-2ga-v2/job-5966835_0-r0/node0/results/e00/junit/inner-20261115T145101-1794725461096559484-193406-.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_spec.py_test_dflash_output_is_the_same_on_both_forms_.xml
+    result: passed
+    chain_proof: ok
+  # NT-198 ok
+  - row: EG-16b
+    features:
+    - EG-16b
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_transceiver.py::test_kv_transfer_timeout_frees_the_context_side
+    commit: 3e26834316fb65968bbcf188b97748aa741e4fd0
+    junit:
+    - b200-1g-ch-1g-v2/b200-1g-ch-1g-v2/job-5966834_0-r0/node0/results/e00/junit/inner-20261115T145049-1794725449607023478-2131123-nittests_v2_unittest_llmapi_apps__test_openengine_disagg_transceiver.py_test_kv_transfer_timeout_frees_the_context_side_.xml
+    - b200-1g-ch-1g-v2/b200-1g-ch-1g-v2/job-5966834_1-r0/node0/results/e00/junit/inner-20261115T145012-1794725412129326709-2051325-nittests_v2_unittest_llmapi_apps__test_openengine_disagg_transceiver.py_test_kv_transfer_timeout_frees_the_context_side_.xml
+    - b200-1g-ch-1g-v2/b200-1g-ch-1g-v2/job-5966834_2-r0/node0/results/e00/junit/inner-20261115T144952-1794725392929558379-855313-nittests_v2_unittest_llmapi_apps__test_openengine_disagg_transceiver.py_test_kv_transfer_timeout_frees_the_context_side_.xml
+    - b200-1g-t-1g-v2/b200-1g-t-1g-v2/job-5966833_0-r0/node0/results/e00/junit/inner-20261115T145049-1794725449632461360-2131124-nittests_v2_unittest_llmapi_apps__test_openengine_disagg_transceiver.py_test_kv_transfer_timeout_frees_the_context_side_.xml
+    result: passed
+    chain_proof: ok
+  # NT-199 incomplete, see below
+  # NT-199: the test passes in both forms; the chain proof is incomplete in all 3 runs because
+  #   the generation role's count does not apply the case's cancels_calls expectation: the
+  #   cancelled generation leg never reaches the generation engine (orchestrator 2, engine 1)
+  - row: EG-16c
+    features:
+    - EG-16c
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_transceiver.py::test_cancel_during_transfer_is_the_same_on_both_forms
+    commit: 3e26834316fb65968bbcf188b97748aa741e4fd0
+    junit:
+    - b200-2g-ch-2gb-v2/b200-2g-ch-2gb-v2/job-5966842_0-r0/node0/results/e00/junit/inner-20261115T145107-1794725467676913211-3244378-ts_v2_unittest_llmapi_apps__test_openengine_disagg_transceiver.py_test_cancel_during_transfer_is_the_same_on_both_forms_.xml
+    - b200-2g-ch-2gb-v2/b200-2g-ch-2gb-v2/job-5966842_1-r0/node0/results/e00/junit/inner-20261115T145136-1794725496667059175-3774835-ts_v2_unittest_llmapi_apps__test_openengine_disagg_transceiver.py_test_cancel_during_transfer_is_the_same_on_both_forms_.xml
+    - b200-2g-ch-2gb-v2/b200-2g-ch-2gb-v2/job-5966842_2-r0/node0/results/e00/junit/inner-20261115T145136-1794725496392665488-3774763-ts_v2_unittest_llmapi_apps__test_openengine_disagg_transceiver.py_test_cancel_during_transfer_is_the_same_on_both_forms_.xml
+    - b200-2g-t-2gb-v2/b200-2g-t-2gb-v2/job-5966841_0-r0/node0/results/e00/junit/inner-20261115T145109-1794725469024427912-3244393-ts_v2_unittest_llmapi_apps__test_openengine_disagg_transceiver.py_test_cancel_during_transfer_is_the_same_on_both_forms_.xml
+    result: passed
+    chain_proof: incomplete
+  # NT-207 ok
+  - row: EG-31
+    features:
+    - EG-31
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_spec.py::test_eagle3_batch_slot_is_released_at_batch_size_one
+    commit: 3e26834316fb65968bbcf188b97748aa741e4fd0
+    junit:
+    - b200-2g-ch-2ga-v2/b200-2g-ch-2ga-v2/job-5966836_0-r0/node0/results/e02/junit/inner-20261115T150536-1794726337000528596-240075-_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_spec.py_test_eagle3_batch_slot_is_released_at_batch_size_one_.xml
+    - b200-2g-ch-2ga-v2/b200-2g-ch-2ga-v2/job-5966836_1-r0/node0/results/e02/junit/inner-20261115T150837-1794726517771935490-601755-_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_spec.py_test_eagle3_batch_slot_is_released_at_batch_size_one_.xml
+    - b200-2g-ch-2ga-v2/b200-2g-ch-2ga-v2/job-5966836_2-r0/node0/results/e02/junit/inner-20261115T150709-1794726429409396098-598454-_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_spec.py_test_eagle3_batch_slot_is_released_at_batch_size_one_.xml
+    - b200-2g-t-2ga-v2/b200-2g-t-2ga-v2/job-5966835_0-r0/node0/results/e02/junit/inner-20261115T145924-1794725964527038333-222556-_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_spec.py_test_eagle3_batch_slot_is_released_at_batch_size_one_.xml
+    result: passed
+    chain_proof: ok
+  # NT-202[UCX] ok, NT-202[MOONCAKE] failed, see below, NT-202[MPI] skipped, see below
+  # NT-202[MOONCAKE]: passed in 1 of 3 runs on the chain and failed in the 1 run without it
+  #   (jobs 5966842_0 passed, 5966842_1, 5966842_2 and 5966841_0 failed); on 8eb9fe90d5, with the
+  #   same transfer code, 2 of 3 on the chain and 1 of 1 without it (jobs 5964010_0 failed,
+  #   5964010_1, 5964010_2 and 5964009_0 passed). Every failure: an RDMA NIC of the node is
+  #   marked inactive, the generation leg's KV transfer fails (Transfer failed, status 6) and
+  #   the orchestrator answers 500. A known limitation that depends on the node's RDMA (UV-58)
+  # NT-202[MPI]: skipped (UV-57): with the MPI backend neither worker of two separate
+  #   trtllm-serve processes became ready (4 of 4 runs, both forms)
+  - row: EP-04+rest
+    features:
+    - EP-04
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_transceiver.py::test_cpp_runtime_backends[UCX]
+    - unittest/llmapi/apps/_test_openengine_disagg_transceiver.py::test_cpp_runtime_backends[MOONCAKE]
+    - unittest/llmapi/apps/_test_openengine_disagg_transceiver.py::test_cpp_runtime_backends[MPI]
+    commit: 3e26834316fb65968bbcf188b97748aa741e4fd0
+    junit:
+    - b200-2g-ch-2gb-v2/b200-2g-ch-2gb-v2/job-5966842_0-r0/node0/results/e01/junit/inner-20261115T145615-1794725775002743077-3274977-nittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_transceiver.py_test_cpp_runtime_backends_UCX_.xml
+    - b200-2g-ch-2gb-v2/b200-2g-ch-2gb-v2/job-5966842_0-r0/node0/results/e02/junit/inner-20261115T145842-1794725922172731918-3289995-nittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_transceiver.py_test_cpp_runtime_backends_MPI_.xml
+    - b200-2g-ch-2gb-v2/b200-2g-ch-2gb-v2/job-5966842_0-r0/node0/results/e03/junit/inner-20261115T145915-1794725955614733481-3291816-sts.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_transceiver.py_test_cpp_runtime_backends_MOONCAKE_.xml
+    - b200-2g-ch-2gb-v2/b200-2g-ch-2gb-v2/job-5966842_1-r0/node0/results/e01/junit/inner-20261115T145702-1794725822918115315-3813524-nittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_transceiver.py_test_cpp_runtime_backends_UCX_.xml
+    - b200-2g-ch-2gb-v2/b200-2g-ch-2gb-v2/job-5966842_1-r0/node0/results/e02/junit/inner-20261115T150009-1794726009520710021-3859489-nittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_transceiver.py_test_cpp_runtime_backends_MPI_.xml
+    - b200-2g-ch-2gb-v2/b200-2g-ch-2gb-v2/job-5966842_1-r0/node0/results/e03/junit/inner-20261115T150043-1794726043503809275-3871645-sts.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_transceiver.py_test_cpp_runtime_backends_MOONCAKE_.xml
+    - b200-2g-ch-2gb-v2/b200-2g-ch-2gb-v2/job-5966842_2-r0/node0/results/e01/junit/inner-20261115T145704-1794725824698721803-3814524-nittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_transceiver.py_test_cpp_runtime_backends_UCX_.xml
+    - b200-2g-ch-2gb-v2/b200-2g-ch-2gb-v2/job-5966842_2-r0/node0/results/e02/junit/inner-20261115T145931-1794725971926059299-3851801-nittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_transceiver.py_test_cpp_runtime_backends_MPI_.xml
+    - b200-2g-ch-2gb-v2/b200-2g-ch-2gb-v2/job-5966842_2-r0/node0/results/e03/junit/inner-20261115T150004-1794726004705303573-3857789-sts.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_transceiver.py_test_cpp_runtime_backends_MOONCAKE_.xml
+    - b200-2g-t-2gb-v2/b200-2g-t-2gb-v2/job-5966841_0-r0/node0/results/e01/junit/inner-20261115T145500-1794725700293469193-3267006-nittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_transceiver.py_test_cpp_runtime_backends_UCX_.xml
+    - b200-2g-t-2gb-v2/b200-2g-t-2gb-v2/job-5966841_0-r0/node0/results/e02/junit/inner-20261115T145619-1794725779141713867-3275157-nittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_transceiver.py_test_cpp_runtime_backends_MPI_.xml
+    - b200-2g-t-2gb-v2/b200-2g-t-2gb-v2/job-5966841_0-r0/node0/results/e03/junit/inner-20261115T145652-1794725812284538474-3277064-sts.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_transceiver.py_test_cpp_runtime_backends_MOONCAKE_.xml
+    result: failed
+    chain_proof: ok
