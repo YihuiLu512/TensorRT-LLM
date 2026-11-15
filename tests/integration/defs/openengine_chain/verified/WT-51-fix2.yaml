@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# End-to-end checks of the disaggregated chain (case-04, trtllm chain, B200, one GPU shared by
+# both workers). Each junit path is relative to the result directory of its run, which the work
+# item's status file records; each is the junit of the test inside the chain, which carries the
+# chain proof. Each case ran three times.
+entries:
+  # NT-080: chain proof ok in every run; the generation engine took no call and the context
+  # engine sent no PrefillReady.
+  - row: DG-16+WT-51-fix2
+    features:
+    - DG-16
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_handoff.py::test_ctx_finished_on_eos_skips_the_gen_leg
+    commit: b2bfb493d35b7641c2290d06ab06bf01ef5b1375
+    junit:
+    - b200-1g-r1-trtllm/b200-1g-r1-trtllm/job-5961517_0-r0/node0/results/e00/junit/inner-20261115T111641-1794712601368084536-2331972-py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_handoff.py_test_ctx_finished_on_eos_skips_the_gen_leg_.xml
+    - b200-1g-r1-trtllm/b200-1g-r1-trtllm/job-5961517_0-r0/node0/results/e02/junit/inner-20261115T112512-1794713112208752959-2352811-py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_handoff.py_test_ctx_finished_on_eos_skips_the_gen_leg_.xml
+    - b200-1g-r1-trtllm/b200-1g-r1-trtllm/job-5961517_0-r0/node0/results/e04/junit/inner-20261115T113124-1794713484670003155-2359330-py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_handoff.py_test_ctx_finished_on_eos_skips_the_gen_leg_.xml
+    result: passed
+    chain_proof: ok
+  # NT-179: chain proof ok in every run.
+  - row: DG-82+WT-51-fix2
+    features:
+    - DG-82
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_handoff.py::test_one_disagg_request_id_across_orchestrator_frontends_and_engines
+    commit: b2bfb493d35b7641c2290d06ab06bf01ef5b1375
+    junit:
+    - b200-1g-r1-trtllm/b200-1g-r1-trtllm/job-5961517_0-r0/node0/results/e01/junit/inner-20261115T112211-1794712931900663969-2348418-est_llmapi_apps__test_openengine_disagg_handoff.py_test_one_disagg_request_id_across_orchestrator_frontends_and_engines_.xml
+    - b200-1g-r1-trtllm/b200-1g-r1-trtllm/job-5961517_0-r0/node0/results/e03/junit/inner-20261115T112835-1794713315822174470-2357569-est_llmapi_apps__test_openengine_disagg_handoff.py_test_one_disagg_request_id_across_orchestrator_frontends_and_engines_.xml
+    - b200-1g-r1-trtllm/b200-1g-r1-trtllm/job-5961517_0-r0/node0/results/e05/junit/inner-20261115T113451-1794713691533858408-2361110-est_llmapi_apps__test_openengine_disagg_handoff.py_test_one_disagg_request_id_across_orchestrator_frontends_and_engines_.xml
+    result: passed
+    chain_proof: ok
