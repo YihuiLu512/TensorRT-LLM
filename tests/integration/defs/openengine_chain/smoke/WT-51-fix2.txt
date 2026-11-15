@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# One request through the orchestrator and both legs, its disagg_request_id in every record (a
+# context and a generation worker on one GPU).
+unittest/llmapi/apps/_test_openengine_disagg_handoff.py::test_one_disagg_request_id_across_orchestrator_frontends_and_engines
