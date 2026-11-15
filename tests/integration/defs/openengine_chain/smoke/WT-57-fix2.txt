@@ -1,0 +1,4 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# No entry. This work item's tests run on the chain as GPU jobs sized for each test;
+# verified/WT-57-fix2.yaml records those runs.

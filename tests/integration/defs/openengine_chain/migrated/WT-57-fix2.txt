@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+T23 unittest/llmapi/apps/_test_openai_chat_guided_decoding.py::test_json_schema
+T23 unittest/llmapi/apps/_test_openai_chat_guided_decoding.py::test_openai_compatible_json_schema
+T23 unittest/llmapi/apps/_test_openai_chat_guided_decoding.py::test_json_schema_user_profile
+T23 unittest/llmapi/apps/_test_openai_chat_guided_decoding.py::test_regex
+T23 unittest/llmapi/apps/_test_openai_chat_guided_decoding.py::test_ebnf
+T23 unittest/llmapi/apps/_test_openai_chat_guided_decoding.py::test_structural_tag
+T31 unittest/llmapi/apps/_test_openai_kv_cache_contamination.py::test_no_kv_cache_contamination_under_cancel
+T31 unittest/llmapi/apps/_test_openai_kv_cache_contamination.py::test_no_kv_cache_contamination_number_set_probe
+T32 unittest/llmapi/apps/_test_openai_multi_gpu.py::test_chat_tp2
+T32 unittest/llmapi/apps/_test_openai_multi_gpu.py::test_completion_tp2
+T32 unittest/llmapi/apps/_test_openai_multi_gpu.py::test_chat_streaming_tp2
