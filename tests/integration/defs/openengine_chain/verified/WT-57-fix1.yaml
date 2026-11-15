@@ -67,12 +67,13 @@ entries:
     chain_proof: ok
   # NT-199 incomplete, see below; in-process run passed (job 5966841_0)
   # NT-199: does not cover a cancel while the KV cache is in transfer. In all 3 runs on the
-  #   chain the generation worker front end refused the cancelled call, which never reached
-  #   the generation engine (that engine accepted 1 call, the later request's): the runs cover
-  #   a client that leaves once the context leg is done. The chain proof is incomplete in all
-  #   3 runs: the generation front end's count (2 requests received, 2 calls sent, 1 refused)
-  #   falls in the check that takes more handled calls than received requests for a split
-  #   request, and that check does not apply the case's cancels_calls expectation
+  #   chain the generation worker front end sent the generation leg's call and cancelled it when
+  #   the client left, before the generation engine received it (front end sent 2 calls, engine
+  #   received 1, the later request's): the runs cover a client that leaves once the context leg
+  #   is done. The chain proof is incomplete in all 3 runs: the cancelled call counts as both
+  #   sent and refused in the generation front end's count (2 requests received, 2 calls sent,
+  #   1 refused), which falls in the check that takes more handled calls than received requests
+  #   for a split request, and that check does not apply the case's cancels_calls expectation
   - row: EG-16c
     features:
     - EG-16c
@@ -105,8 +106,9 @@ entries:
   #   same transfer code, 2 of 3 on the chain and 1 of 1 without it (jobs 5964010_0 failed,
   #   5964010_1, 5964010_2 and 5964009_0 passed). In each failure the orchestrator answers 500;
   #   in the three on the chain, whose engine logs were kept, an RDMA NIC of the node is marked
-  #   inactive and the generation leg's KV transfer fails (Transfer failed, status 6). A known
-  #   limitation that depends on the node's RDMA (UV-58)
+  #   inactive and the generation leg's KV transfer fails (Transfer failed, status 6), a known
+  #   limitation that depends on the node's RDMA (UV-58); the in-process run kept no worker
+  #   logs, so the cause of its failure is not known
   # NT-202[MPI]: skipped in every run of this commit (UV-57): with the MPI backend the deployment
   #   of two separate trtllm-serve workers did not become ready (4 of 4 runs on 8eb9fe90d5, both
   #   forms)
