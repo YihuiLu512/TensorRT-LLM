@@ -54,6 +54,7 @@ The case-03 arms also take perf sanity's AgentX client, which they run as ds's
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import functools
 import importlib.util
@@ -3308,6 +3309,28 @@ def _stop_process_group(proc: subprocess.Popen, grace_s: float) -> None:
     proc.poll()
 
 
+def _exit_on_sigterm(signum: int, _frame: Any) -> None:
+    raise SystemExit(128 + signum)
+
+
+@contextlib.contextmanager
+def _sigterm_raises() -> Iterator[None]:
+    """Within the block, SIGTERM raises ``SystemExit`` (in the main thread only).
+
+    A child started in a session of its own is outside the reach of a signal sent to this
+    process's group; the caller's cleanup of that child then still runs when this process is
+    stopped with SIGTERM.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous = signal.signal(signal.SIGTERM, _exit_on_sigterm)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
 def run_ds_follower(
     cmd: Sequence[str],
     *,
@@ -3318,13 +3341,13 @@ def run_ds_follower(
     """Run a follower node of a multi-node ds instance until ``wait(proc)`` returns.
 
     ``wait`` is the worker's wait for the end of the benchmark. The follower's process group
-    is then stopped (:func:`_stop_process_group`, 60 s grace). Returns its exit code, or
-    ``None`` when it outlived the SIGKILL.
+    is then stopped (:func:`_stop_process_group`, 60 s grace), also when ``wait`` raises or
+    this process gets SIGTERM. Returns its exit code, or ``None`` when it outlived the SIGKILL.
 
     Raises:
         OSError: The follower cannot be started.
     """
-    with open(log_path, "w", encoding="utf-8") as sink:
+    with open(log_path, "w", encoding="utf-8") as sink, _sigterm_raises():
         proc = subprocess.Popen(
             list(cmd),
             env=dict(env),
@@ -3967,17 +3990,25 @@ def run_ds_agentx(argv: Sequence[str], environ: Mapping[str, str] | None = None)
     print(DS_CLIENT_LINE + json.dumps(settings, sort_keys=True), flush=True)
     url = f"http://{args.host}:{args.port}"
     grace = int(env.get("AGENTX_TIMEOUT_GRACE", "900"))
-    # A session of its own: on a timeout, aiperf and its workers stop with the script.
-    proc = subprocess.Popen(
-        ["bash", script, url, str(args.concurrency), str(duration), out_dir],
-        env=env,
-        start_new_session=True,
-    )
-    try:
-        returncode = proc.wait(timeout=duration + grace)
-    except subprocess.TimeoutExpired:
-        _stop_process_group(proc, 60)
-        raise ArmError(f"run_agentx.sh still ran {duration + grace} s after it started; stopped it")
+    # A session of its own: on a timeout, aiperf and its workers stop with the script. So
+    # they do when this process is stopped (SIGTERM, Ctrl-C), which they would otherwise
+    # outlive, being outside its process group.
+    with _sigterm_raises():
+        proc = subprocess.Popen(
+            ["bash", script, url, str(args.concurrency), str(duration), out_dir],
+            env=env,
+            start_new_session=True,
+        )
+        try:
+            returncode = proc.wait(timeout=duration + grace)
+        except subprocess.TimeoutExpired:
+            _stop_process_group(proc, 60)
+            raise ArmError(
+                f"run_agentx.sh still ran {duration + grace} s after it started; stopped it"
+            )
+        except BaseException:
+            _stop_process_group(proc, 60)
+            raise
     if returncode != 0:
         print(f"[ds-agentx] run_agentx.sh exited {returncode}; checking its export", flush=True)
     if not os.path.exists(export_path):

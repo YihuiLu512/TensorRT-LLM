@@ -77,7 +77,7 @@ def ds_reading():
         pytest.skip("needs a ds-engine checkout in TRTLLM_TEST_DS_ROOT")
     env = {**os.environ, "PYTHONPATH": str(Path(root) / "python")}
     done = subprocess.run(
-        [sys.executable, "-c", PROBE, json.dumps(SAMPLE), json.dumps(INVALID)],
+        [sys.executable, "-B", "-c", PROBE, json.dumps(SAMPLE), json.dumps(INVALID)],
         env=env,
         capture_output=True,
         text=True,
@@ -138,7 +138,7 @@ def test_ds_completion_response_leaves_out_an_absent_b64_prompt(ds_reading):
     # them), even as null.
     root = os.environ["TRTLLM_TEST_DS_ROOT"]
     done = subprocess.run(
-        [sys.executable, "-c", COMPLETION_PROBE],
+        [sys.executable, "-B", "-c", COMPLETION_PROBE],
         env={**os.environ, "PYTHONPATH": str(Path(root) / "python")},
         capture_output=True,
         text=True,
@@ -148,4 +148,6 @@ def test_ds_completion_response_leaves_out_an_absent_b64_prompt(ds_reading):
     dumps = json.loads(done.stdout.splitlines()[-1])
     assert "prompt_token_ids_b64" not in dumps["ids"]
     assert set(dumps["ids"]) <= _trtllm_class_fields("CompletionResponse")
+    assert set(dumps["ids"]["choices"][0]) <= _trtllm_class_fields("CompletionResponseChoice")
+    assert set(dumps["ids"]["usage"]) <= _trtllm_class_fields("UsageInfo")
     assert dumps["b64"]["prompt_token_ids_b64"] == "AQAAAA=="

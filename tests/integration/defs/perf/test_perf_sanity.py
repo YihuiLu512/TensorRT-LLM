@@ -5310,10 +5310,11 @@ class PerfSanityTestConfig:
                     arm, client.benchmark_client
                 )
                 if other_client or client.use_nv_sa_benchmark or accuracy:
+                    agentx = openengine_arms.takes_client(arm, AGENTX_BENCHMARK_CLIENT)
                     raise openengine_arms.ArmError(
                         f"{openengine_arms.ENV_ARM}={arm.name} measures benchmark_serving "
-                        f"clients only; client {client.name} uses another client or runs "
-                        "an accuracy test"
+                        f"clients{' and the AgentX client' if agentx else ''} only; client "
+                        f"{client.name} uses another client or runs an accuracy test"
                     )
 
         if self.runtime == GEN_ONLY_NO_CONTEXT_RUNTIME:

@@ -866,7 +866,7 @@ def test_run_ds_agentx_reports_in_benchmark_serving_format(arms, tmp_path, capfd
             "AIPERF_AGENTX_WARMUP_LEARN_FREEZE_FILE": None,
         },
     }
-    # The result carries the settings line (card ②).
+    # The result carries the settings line.
     doc = _result(arms, tmp_path, "E3-chain", output=BENCHMARK_OUTPUT + out)
     assert doc["ds_client"] == settings
     assert (
@@ -930,6 +930,65 @@ def test_run_ds_agentx_stops_every_process_of_a_late_run(arms, tmp_path):
         time.sleep(0.01)
     else:
         pytest.fail(f"run_agentx.sh's child is still running: {status}")
+
+
+def _wait_for(path, what):
+    for _ in range(2000):
+        if path.exists() and path.read_text().strip():
+            return int(path.read_text())
+        time.sleep(0.01)
+    pytest.fail(f"{what} did not start")
+
+
+def _assert_gone(pid, what):
+    status = Path(f"/proc/{pid}/status")
+    for _ in range(1000):
+        # Gone, or a zombie its new parent has not reaped yet.
+        if not status.exists() or "\nState:\tZ" in status.read_text():
+            return
+        time.sleep(0.01)
+    pytest.fail(f"{what} is still running: {status}")
+
+
+def test_ds_agentx_stopped_with_sigterm_stops_its_client(arms, tmp_path):
+    pid_file = tmp_path / "aiperf.pid"
+    root = _ds_root(tmp_path, None)
+    cmd = arms.arm_client_cmd(arms.DISAGG_ARMS["E3-native"], "agentx", AGENTX_CMD)
+    env = _agentx_env(tmp_path, root, FAKE_AGENTX_HANG=str(pid_file))
+    proc = subprocess.Popen(cmd + ["--host", "h", "--port", "9"], env=env)
+    try:
+        child = _wait_for(pid_file, "run_agentx.sh's child")
+        proc.terminate()
+        assert proc.wait(timeout=120) == 128 + 15
+    finally:
+        proc.kill()
+        proc.wait()
+    _assert_gone(child, "run_agentx.sh's child")
+
+
+def test_run_ds_follower_stopped_with_sigterm_stops_the_follower(arms, tmp_path):
+    pid_file = tmp_path / "follower.pid"
+    follower = (
+        f"import os, time; open({str(pid_file)!r}, 'w').write(str(os.getpid())); time.sleep(120)"
+    )
+    script = (
+        "import importlib.util, os, sys, time\n"
+        f"spec = importlib.util.spec_from_file_location('arms', {arms.__file__!r})\n"
+        "module = importlib.util.module_from_spec(spec)\n"
+        "sys.modules['arms'] = module\n"
+        "spec.loader.exec_module(module)\n"
+        f"module.run_ds_follower([sys.executable, '-c', {follower!r}], env=dict(os.environ),\n"
+        f"    log_path={str(tmp_path / 'f.log')!r}, wait=lambda proc: time.sleep(120))\n"
+    )
+    proc = subprocess.Popen([sys.executable, "-B", "-c", script])
+    try:
+        child = _wait_for(pid_file, "the follower")
+        proc.terminate()
+        assert proc.wait(timeout=120) == 128 + 15
+    finally:
+        proc.kill()
+        proc.wait()
+    _assert_gone(child, "the follower")
 
 
 def test_ds_agentx_command_line(arms, tmp_path):
