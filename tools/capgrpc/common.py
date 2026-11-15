@@ -29,7 +29,7 @@ from capcommon.exitcodes import CONFIG, OK, RUNTIME, STOPPED_EARLY, CapkitError,
 from capcommon.inject import InjectorSet, tier_report
 from capcommon.jsonio import write_json_stamped
 from capcommon.lifecycle import StopController, pin_self, read_port_file, read_stop_file
-from capcommon.lifecycle import write_ready_file
+from capcommon.lifecycle import inprocess_ready_info, write_ready_file
 from capcommon.runtree import RunTree
 from capcommon.snapshot import SlotRegistry, SnapshotWriter
 from capcommon.tiers import POST_SEQ, PRE_SEQ, TierTable
@@ -485,8 +485,8 @@ def worker_ready_info(rt, info):
 
 def write_inprocess_ready(rt, ready_file, info):
     write_ready_file(ready_file, rt.identity, rt.versions, affinity=rt.affinity, children=[],
-                     info={"tool": rt.tool, "workers": [worker_ready_info(rt, info)],
-                           "threads": rt.aux_threads})
+                     info=inprocess_ready_info(rt.tool, worker_ready_info(rt, info),
+                                               rt.aux_threads))
 
 
 def run_supervisor(args, common, n_workers, child_target, tool, slots, poll_s=0.02,

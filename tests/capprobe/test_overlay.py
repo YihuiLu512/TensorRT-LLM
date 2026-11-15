@@ -226,3 +226,75 @@ def test_real_image_to_baseline_range():
     assert len(py) == 37 and dele == []
     assert nonpy == ["tensorrt_llm/grpc/openengine/README.md"]  # needs --allow-unshipped
     assert not overlay.is_ancestor(tree, IMAGE_COMMIT, BASE_COMMIT)
+
+
+# ---- stub modules (errata B2B-11: D16, the S-FE script for S-PB's frontend mode) ---------------
+
+SFE_REL = "tests/unittest/grpc/openengine_client/fake_openengine.py"
+
+
+def _with_stub(w):
+    """fake_openengine.py at the base commit, with a different uncommitted working file in the
+    probe tree (what must not be exported). patchcheck refuses probe commits outside
+    tensorrt_llm/, so the probe branch itself never changes it."""
+    _amend_base(w, SFE_REL, "BASE = 1\n")
+    write(w["prod"], SFE_REL, "WORKING = 3\n")
+    return w
+
+
+@pytest.mark.parametrize("tier", ["P0", "P1"])
+def test_stub_module_is_the_base_blob(world, tier):
+    w = _with_stub(world)
+    exp = str(w["tmp"] / "export")
+    m = build(w, tier, export_dir=exp, stub_modules=[("sfe", SFE_REL)])
+    assert len(m["stub_modules"]) == 1
+    e = m["stub_modules"][0]
+    assert set(e) == {"key", "repo_path", "commit", "src", "sha256", "size"}
+    assert e["key"] == "sfe" and e["repo_path"] == SFE_REL and e["commit"] == w["base"]
+    assert e["src"] == os.path.join(exp, SFE_REL)  # export dir outside the capkit root here
+    with open(e["src"]) as f:
+        assert f.read() == "BASE = 1\n"
+    assert e["sha256"] == hashlib.sha256(b"BASE = 1\n").hexdigest() and e["size"] == 9
+    assert all(f["dst"] != SFE_REL for f in m["files"])  # never installed as package code
+    assert build(w, tier, export_dir=exp)["stub_modules"] == []
+
+
+@pytest.mark.parametrize("items,msg", [
+    (["sfe=%s" % SFE_REL, "sfe=%s" % SFE_REL], "given twice"),
+    (["nope=%s" % SFE_REL], "KEY=PATH"),
+    ([SFE_REL], "KEY=PATH"),
+])
+def test_stub_module_option_refusals(items, msg):
+    with pytest.raises(overlay.OverlayError, match=msg):
+        overlay.parse_stub_modules(items)
+
+
+@pytest.mark.parametrize("rel,msg", [
+    ("tensorrt_llm/a.py", "outside tensorrt_llm/"), ("/abs/x.py", "relative"),
+    ("tests/../x.py", "relative"), ("tests/x.txt", "\\.py"), ("tests/missing.py", "git"),
+])
+def test_stub_module_path_refusals(world, rel, msg):
+    with pytest.raises(overlay.OverlayError, match=msg):
+        build(world, "P0", stub_modules=[("sfe", rel)])
+
+
+def test_stub_module_needs_export_dir(world):
+    w = _with_stub(world)
+    with pytest.raises(overlay.OverlayError, match="needs --export-dir"):
+        build(w, "P1", stub_modules=[("sfe", SFE_REL)])
+
+
+def test_cli_stub_module(world, tmp_path):
+    w = _with_stub(world)
+    out = tmp_path / "m.json"
+    r = subprocess.run([sys.executable, "-m", "capprobe.overlay", "--probe-tree", w["prod"],
+                        "--image-commit", w["image"], "--base-commit", w["base"],
+                        "--capkit-root", w["cap"], "--capkit-sha", w["capsha"],
+                        "--packages", "capprobe,capcommon", "--out", str(out), "--tier", "P0",
+                        "--groups", "", "--export-dir", str(tmp_path / "exp"),
+                        "--stub-module", "sfe=%s" % SFE_REL],
+                       env=clean_env(), capture_output=True, text=True, timeout=120)
+    assert r.returncode == 0, r.stderr
+    assert "1 stub modules" in r.stdout
+    m = json.loads(out.read_text())
+    assert [e["key"] for e in m["stub_modules"]] == ["sfe"]

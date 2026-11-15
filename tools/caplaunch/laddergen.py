@@ -342,8 +342,10 @@ def packing(table_s, a):
     budget_s = ceil10(table_s + LAUNCH_OVERHEAD_S + BUDGET_PAD_S)
     plan = {"launches": [{"budget_s": budget_s}] * n, "kill_grace_s": a.kill_grace_s,
             "margin_s": a.margin_s}
+    # the calibration v2 scenarios declare no job inputs (scenario job_inputs, errata B2B-9)
     tb = submit.time_budget(plan, {"idle_window_s": a.idle_window_s,
-                                   "slurm_view_wait_s": a.slurm_view_wait_s})
+                                   "slurm_view_wait_s": a.slurm_view_wait_s},
+                            job_input_kinds=0)
     job_cond = n * (table_s + LAUNCH_OVERHEAD_S) + a.job_overhead_s_max
     out = {"launches_per_job": n, "table_s": table_s, "budget_s": budget_s,
            "time_budget_s": tb["total_s"], "time_limit_s": a.time_limit_s,

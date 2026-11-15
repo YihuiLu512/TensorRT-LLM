@@ -9,7 +9,8 @@
 # run: node-local dirs <base>/<user>-<job>-r<restart> -> overlay into site-packages
 #      (byte-verified) -> PYTHONPATH unset; import origins checked -> job/image/mounts/local-disk/
 #      gpu-idle files -> (srun --mpi=none: unset PMIX_* PMI_* SLURM_*) -> hardware profile ->
-#      env gate -> launches (capjobs.launches; it generates each launch's pin table on this node).
+#      env gate -> launches (capjobs.launches; it generates each launch's pin table and the job
+#      inputs its scenario declares on this node, after the gate).
 #      Any failed check: job-level STATE ENV_INVALID, exit 6, no measurement. A job submitted with
 #      --registered-hw-sha UNREGISTERED stops at the gate this way after writing the profile.
 # EXIT trap (both modes): sweep copy-back + verify of the node-local dirs this run owns, then

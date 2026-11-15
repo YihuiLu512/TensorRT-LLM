@@ -9,12 +9,13 @@ scenario's verbatim extra args; it never guesses arguments from module or role n
 import functools
 import importlib.util
 import os
-import re
 
+from capcommon import jobinputs
 from capcommon.exitcodes import ConfigError
 from capcommon.expect import validate_reconcile
 from capcommon.identity import EXPERIMENT_RE, ROLE_RE
 from capcommon.runtree import RunTree
+from capcommon.templates import PLACEHOLDER_RE, placeholders
 
 SCHEMA = "capkit.scenario/1"
 
@@ -41,8 +42,9 @@ def probe_proc_kinds():
 #   loop: --loop; tiers: --tier-table + --origin-ns; origin: --origin-ns only;
 #   snapshot: --shm-dir + --snapshot-interval-ms; shm_only: --shm-dir; ready: --ready-file;
 #   port: --port-file (capkit JSON port file); workers: --workers W;
-#   sidecar / canary: orchestrator-filled observer arguments.
-#   pin_table: --pin-table <launch tree>/raw/env/pin_table.json (the orchestrator's copy).
+#   sidecar / canary: orchestrator-filled observer arguments;
+#   pin_table: --pin-table <launch tree>/raw/env/pin_table.json (the orchestrator's copy);
+#   single: the tool runs one process only (scenario workers and expected_procs must be 1).
 # Not an argument group: role_fixed {role key: value} that validate_role requires of every role
 # running the tool (its measure_class must be one of the orchestrator's MONITOR_CLASSES when
 # given; asserted in orchestrator.py, which imports this module).
@@ -57,6 +59,9 @@ TOOL_TABLE = {
                          "port": True, "workers": True},
     "capselfcheck.relay": {"loop": True, "tiers": True, "snapshot": True, "ready": True,
                            "port": True, "workers": False},
+    # S-PB (errata B2B-3): takes --workers, which must be 1 (one process, expected_procs 1).
+    "capstubs.prebaked_server": {"loop": True, "tiers": True, "snapshot": True, "ready": True,
+                                 "port": True, "workers": True, "single": True},
     # --ready-file: INTERFACES 2.2 ("all long-lived processes"); optional in B4's parsers.
     "capenv.sidecar": {"origin": True, "shm_only": True, "sidecar": True, "ready": True},
     "capenv.canary": {"origin": True, "canary": True, "ready": True},
@@ -68,6 +73,8 @@ TOOL_TABLE = {
                                        "uses_grpc": False, "snapshots": "none"}},
     # E0(c) HTTP smoke client (this package); identity/--run-dir/--cpus only, no ready file.
     "caplaunch.httpprobe": {},
+    # caplaunch.smoke as a role (errata B2B-12): same arguments as httpprobe, no ready file.
+    "caplaunch.smoke": {},
 }
 # Flags the orchestrator owns; a scenario's extra args must not repeat them.
 MANAGED_FLAGS = ("--experiment", "--arm", "--launch-seq", "--job-id", "--restart-count",
@@ -103,27 +110,24 @@ READY_KINDS = ("capkit_ready", "plain_port_file", "report_addr", "http_get", "fi
 PORT_KINDS = ("plain_port_file", "report_addr", "none")
 TOP_KEYS = ("schema", "experiment", "name", "tier_table", "schedule", "prompts", "probe_tier",
             "probe_groups", "stop_grace_s", "stop_order", "reconcile", "roles", "dims",
-            "params_required", "note")
+            "params_required", "note", "job_inputs")
+TOP_KEYS_OPTIONAL = ("note", "job_inputs")
 DIMS_KEYS = ("tokenizer", "stub", "response_timing_switches", "interpretation", "log_sink")
 
-_PH_RE = re.compile(r"\{([a-z_]+)(?::([A-Za-z0-9_.-]+))?\}")
 PH_SIMPLE = ("run_dir", "raw", "nvidia_smi")
 PH_ROLE = ("port_file", "addr")  # reference another role (must be in start_after)
 PH_OWN = ("own",)  # own:port_file | own:report_addr | own:role
 OWN_KEYS = ("port_file", "report_addr", "role", "ready_file")
-INPUT_KEYS = ("tier_table", "schedule", "prompts")  # {input:X}: absolute path of a registered input
+# {input:X}: absolute path of a registered input, or of a job input (capcommon.jobinputs) the
+# scenario's job_inputs section declares (errata B2B-9)
+INPUT_KEYS = jobinputs.REGISTERED_INPUTS + tuple(jobinputs.KINDS)
 
 
 def _err(where, msg):
     raise ConfigError("scenario %s: %s" % (where, msg))
 
 
-def placeholders(text):
-    """[(name, arg)] of every {name[:arg]} placeholder in a string."""
-    return [(m.group(1), m.group(2)) for m in _PH_RE.finditer(text)]
-
-
-def _check_template(where, s, role_names, start_after, params):
+def _check_template(where, s, role_names, start_after, params, job_kinds=()):
     if not isinstance(s, str):
         _err(where, "template items must be strings, got %r" % (s,))
     for name, arg in placeholders(s):
@@ -142,20 +146,22 @@ def _check_template(where, s, role_names, start_after, params):
         if name == "own" and arg in OWN_KEYS:
             continue
         if name == "input" and arg in INPUT_KEYS:
+            if arg in jobinputs.KINDS and arg not in job_kinds:
+                _err(where, "{input:%s} needs %s in the scenario's job_inputs" % (arg, arg))
             continue
         _err(where, "unknown placeholder {%s%s}" % (name, "" if arg is None else ":" + arg))
 
 
-def _check_argv_items(where, items, role_names, start_after, params):
+def _check_argv_items(where, items, role_names, start_after, params, job_kinds=()):
     if not isinstance(items, list):
         _err(where, "must be a list")
     for it in items:
         if isinstance(it, dict):
             if set(it) != {"splice_json", "key"} or not isinstance(it["key"], str):
                 _err(where, "dict items must be exactly {splice_json, key}")
-            _check_template(where, it["splice_json"], role_names, start_after, params)
+            _check_template(where, it["splice_json"], role_names, start_after, params, job_kinds)
         else:
-            _check_template(where, it, role_names, start_after, params)
+            _check_template(where, it, role_names, start_after, params, job_kinds)
 
 
 def _check_readiness(where, lst, launcher, tool):
@@ -189,7 +195,7 @@ def _check_readiness(where, lst, launcher, tool):
     return kinds
 
 
-def validate_role(r, role_names, params):
+def validate_role(r, role_names, params, job_kinds=()):
     if not isinstance(r, dict):
         _err("roles", "each role must be an object")
     where = "role %s" % r.get("role")
@@ -267,6 +273,9 @@ def validate_role(r, role_names, params):
             _err(where, "capkit roles take their port file from the tool table, not 'port'")
         if r["workers"] > 1 and not tool.get("workers"):
             _err(where, "%s takes no --workers; workers must be 1" % r["module"])
+        if tool.get("single") and (r["workers"] != 1 or r["expected_procs"] != 1):
+            _err(where, "%s runs one process; workers and expected_procs must be 1"
+                 % r["module"])
         if tool.get("snapshot") and r["snapshots"] == "none":
             _err(where, "%s writes snapshots; snapshots must not be none" % r["module"])
         flat = [a for a in r["args"] if isinstance(a, str)]
@@ -292,10 +301,12 @@ def validate_role(r, role_names, params):
             _err(where, "port.host must be given explicitly")
         if set(port) - {"kind", "host"}:
             _err(where, "port has unknown keys")
-        _check_argv_items(where + " command", cmd, role_names, r["start_after"], params)
+        _check_argv_items(where + " command", cmd, role_names, r["start_after"], params,
+                          job_kinds)
     if "keep_numa_affinity_env" in r and not isinstance(r["keep_numa_affinity_env"], bool):
         _err(where, "keep_numa_affinity_env must be a bool")
-    _check_argv_items(where + " args", r["args"], role_names, r["start_after"], params)
+    _check_argv_items(where + " args", r["args"], role_names, r["start_after"], params,
+                      job_kinds)
     kinds = _check_readiness(where, r["readiness"], r["launcher"], tool)
     if r["launcher"] == "product":
         pk = r["port"]["kind"]
@@ -309,7 +320,7 @@ def validate_scenario(doc):
     table, see cross_check). Returns {role: role dict} in declaration order."""
     if not isinstance(doc, dict) or doc.get("schema") != SCHEMA:
         _err("top", "schema must be %s" % SCHEMA)
-    missing = [k for k in TOP_KEYS if k not in doc and k != "note"]
+    missing = [k for k in TOP_KEYS if k not in doc and k not in TOP_KEYS_OPTIONAL]
     extra = [k for k in doc if k not in TOP_KEYS]
     if missing or extra:
         _err("top", "keys missing=%s extra=%s" % (missing, extra))
@@ -340,9 +351,13 @@ def validate_scenario(doc):
     names = [r.get("role") if isinstance(r, dict) else None for r in roles]
     if len(set(names)) != len(names):
         _err("top", "role names must be unique")
+    job_kinds = ()
+    if "job_inputs" in doc:
+        jobinputs.validate_section(doc["job_inputs"], set(params))
+        job_kinds = tuple(jobinputs.kinds_of(doc))
     out = {}
     for r in roles:
-        out[r["role"]] = validate_role(r, set(names), set(params))
+        out[r["role"]] = validate_role(r, set(names), set(params), job_kinds)
         if r["launcher"] == "product" and r["probe_tier"] != doc["probe_tier"]:
             _err("role %s" % r["role"], "probe_tier differs from the launch probe_tier")
     if sorted(doc["stop_order"]) != sorted(names):
@@ -490,7 +505,8 @@ class ArgvContext:
         self.addr_of = addr_of  # role -> "host:port" (resolved when the role is ready)
         self.sidecar = sidecar  # {"roles_file", "out_dir", "logs_dir", "cpus_watch"}
         self.canary = canary  # {"out"}
-        self.inputs = inputs or {}  # {"tier_table"|"schedule"|"prompts": absolute path}
+        # {"tier_table"|"schedule"|"prompts"|<job input kind>: absolute path}
+        self.inputs = inputs or {}
         self.nvidia_smi = nvidia_smi  # orchestrator --nvidia-smi
 
 
@@ -517,7 +533,7 @@ def resolve(text, role, ctx, runtime=True):
                 return role
             return ctx.own_files[role][arg]
         raise ConfigError("unknown placeholder %s" % m.group(0))
-    return _PH_RE.sub(sub, text)
+    return PLACEHOLDER_RE.sub(sub, text)
 
 
 def _splice(item, role, ctx, runtime):

@@ -26,7 +26,7 @@ import shlex
 import subprocess
 import sys
 
-from capcommon import jobplan, ledger, policy
+from capcommon import jobinputs, jobplan, ledger, policy
 from capcommon.clock import wall_iso
 from capcommon.exitcodes import CONFIG, OK, RUNTIME, CapkitError, ConfigError
 from capcommon.hashing import is_git_sha, is_sha256_hex, sha256_bytes, sha256_file
@@ -407,9 +407,11 @@ def check_plan_argv(plan):
     """Parse each launch's caplaunch arguments with caplaunch's own parser (build_parser) the way
     the job will run them: the argv capjobs.launches builds (launch_argv: placeholders
     substituted, here with example values; identity, --run-dir, --pin-table and the other
-    appended arguments added), from after `-m caplaunch`. A missing required flag, an
-    abbreviation, an unknown flag or a value of the wrong type is refused here; in the job it
-    would make caplaunch exit 2 before starting any role."""
+    appended arguments added, one --job-input per kind the launch's scenario declares), from
+    after `-m caplaunch`. A missing required flag, an abbreviation, an unknown flag or a value of
+    the wrong type is refused here; in the job it would make caplaunch exit 2 before starting
+    any role. A scenario with a job_inputs key must pass capcommon.jobinputs.check_scenario
+    (in the job its launch would not run)."""
     from caplaunch.__main__ import build_parser  # noqa: PLC0415
 
     from .launches import launch_argv  # noqa: PLC0415
@@ -418,10 +420,18 @@ def check_plan_argv(plan):
         raise SubmitError(message)
 
     for ln in plan["launches"]:
+        doc = launchplan.load_scenario(ln)
+        kinds = []
+        if jobinputs.declares(doc):
+            try:
+                kinds = jobinputs.check_scenario(doc)
+            except ConfigError as e:
+                raise SubmitError("launch %d: %s" % (ln["launch_seq"], e)) from None
         argv = launch_argv(plan, ln, EXAMPLE_PLACEHOLDER_VALUES,
                            EXAMPLE_PLACEHOLDER_VALUES["JOB_ID"], 0, "/example/run",
                            "/example/overlay_manifest.json", "/example/nvidia-smi",
-                           "/example/env", "/example/pin_table.json")
+                           "/example/env", "/example/pin_table.json",
+                           {k: "/example/job_inputs/%s.json" % k for k in kinds})
         start = next((i + 2 for i in range(1, len(argv) - 1)
                       if argv[i:i + 2] == ["-m", "caplaunch"]), None)
         if start is None:
@@ -542,13 +552,22 @@ def prepare_submit(a, code_state_fn):
             "budget": budget, "image": image}
 
 
-def time_budget(plan, renv):
+def time_budget(plan, renv, job_input_kinds=None):
     """Every in-allocation wait that has a registered or planned bound: per launch budget_s +
-    kill_grace_s + margin_s and the pin-table generation bound, plus the gate's idle window and
-    the longest slurm_view wait."""
+    kill_grace_s + margin_s and the pin-table and job-input generation bounds
+    (launchplan.in_job_bound_s), plus the gate's idle window and the longest slurm_view wait.
+    job_input_kinds None: each launch's count is read from its scenario (argv --workdir /
+    --scenario); an int: every launch declares that many kinds (for plans without argv, such as
+    caplaunch.laddergen's packing check)."""
+    if job_input_kinds is None:
+        job_inputs_s = sum(launchplan.in_job_bound_s(ln) - launchplan.PINS_TIMEOUT_S
+                           for ln in plan["launches"])
+    else:
+        job_inputs_s = launchplan.JOB_INPUT_TIMEOUT_S * job_input_kinds * len(plan["launches"])
     parts = {"launches": sum(ln["budget_s"] + plan["kill_grace_s"] + plan["margin_s"]
                              for ln in plan["launches"]),
              "pin_tables_s": launchplan.PINS_TIMEOUT_S * len(plan["launches"]),
+             "job_inputs_s": job_inputs_s,
              "gate_idle_window_s": renv["idle_window_s"],
              "slurm_view_wait_s": renv["slurm_view_wait_s"]}
     return {"parts": parts, "total_s": sum(parts.values())}

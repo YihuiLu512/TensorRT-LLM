@@ -9,10 +9,10 @@
                         "--scenario", "02_e0/E0/register/x.scenario.json", ...]}]}
 
 The identity arguments (--experiment --arm --launch-seq --job-id --restart-count --register-sha
---role --run-dir), --overlay-manifest, --nvidia-smi, --job-env-dir and --pin-table are appended
-by capjobs.launches from the plan, the job's snapshot, job.env, the job dir, the pin table it
-generates on the node and the Slurm environment; a plan argv that contains any of them is
-rejected, so each has exactly one source.
+--role --run-dir), --overlay-manifest, --nvidia-smi, --job-env-dir, --pin-table and --job-input
+are appended by capjobs.launches from the plan, the job's snapshot, job.env, the job dir, the pin
+table and job inputs it generates on the node and the Slurm environment; a plan argv that
+contains any of them is rejected, so each has exactly one source.
 "job_arm" is the arm label written into job-level files (env/*.json) which belong to no single
 launch. "kill_grace_s" is how long a launch that overran budget_s gets after
 SIGTERM before its whole process tree is killed. check_kill_grace() refuses a plan whose
@@ -28,6 +28,7 @@ import json
 import os
 import re
 
+from capcommon import jobinputs
 from capcommon.exitcodes import ConfigError
 from capcommon.identity import ARM_RE, EXPERIMENT_RE, SHA256_RE
 
@@ -35,10 +36,13 @@ SCHEMA = "capkit.launch_plan/1"
 # Upper bound of one launch's pin-table generation in the job (capjobs.launches.pin_table): part
 # of every in-allocation time check (capjobs.launches before each launch, capjobs.submit's budget).
 PINS_TIMEOUT_S = 120
+# Upper bound of one job-input generator run (capjobs.jobinputs; errata B2B-9), counted per kind
+# the launch's scenario declares, in the same time checks.
+JOB_INPUT_TIMEOUT_S = 600
 PLACEHOLDERS = ("PY", "SNAP", "JOB_DIR", "SHM_ROOT", "LOCAL_ROOT", "JOB_ID", "RESTART_COUNT")
 RESERVED_FLAGS = ("--experiment", "--arm", "--launch-seq", "--job-id", "--restart-count",
                   "--register-sha", "--role", "--run-dir", "--overlay-manifest", "--nvidia-smi",
-                  "--job-env-dir", "--pin-table")
+                  "--job-env-dir", "--pin-table", "--job-input")
 _PH_RE = re.compile(r"\{([^{}]*)\}")
 
 
@@ -169,6 +173,12 @@ def load_scenario(ln):
             return json.load(f)
     except (OSError, ValueError) as e:
         raise PlanError("launch %d: scenario %s: %s" % (ln["launch_seq"], path, e))
+
+
+def in_job_bound_s(ln):
+    """Seconds one launch may spend in the job before its launcher starts: the pin-table bound
+    plus JOB_INPUT_TIMEOUT_S per job-input kind its scenario declares."""
+    return PINS_TIMEOUT_S + JOB_INPUT_TIMEOUT_S * len(jobinputs.kinds_of(load_scenario(ln)))
 
 
 def check_kill_grace(doc):

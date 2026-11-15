@@ -10,6 +10,11 @@
         [--allow-unshipped PATH]...  exact repo paths of non-Python files under tensorrt_llm/ that
                                      changed but are not installed package data (recorded)
         [--sites LIST]               P2 only: the subset of open-group sites this scenario passes
+        [--stub-module KEY=PATH]...  a stub script taken unchanged from the BASE commit (KEY in
+                                     STUB_MODULE_KEYS; PATH a repo path outside tensorrt_llm/,
+                                     e.g. sfe=tests/unittest/grpc/openengine_client/
+                                     fake_openengine.py); written to <export dir>/<PATH> and
+                                     listed under stub_modules (needs --export-dir at any tier)
 
 files = `git diff --name-only <image> <target>` restricted to tensorrt_llm/**.py, each with the
 sha256 and size of the TARGET COMMIT's blob; the file at `src` is verified to have exactly those
@@ -35,6 +40,9 @@ from . import sites as _sites
 SCHEMA = "capkit.overlay/1"
 TIERS = ("P0", "P1", "P2")
 REQUIRED_PACKAGES_PROBED = ("capprobe", "capcommon")
+# Stub scripts a manifest may carry (stub_modules): the key names what loads it. "sfe": S-FE's
+# fake_openengine.py, whose Control and Health capstubs.prebaked_server registers (--sfe-module).
+STUB_MODULE_KEYS = ("sfe",)
 
 
 class OverlayError(exitcodes.ConfigError):
@@ -124,8 +132,49 @@ def _capkit_files(capkit_root, capkit_sha, packages):
     return out
 
 
+def parse_stub_modules(items):
+    """[(key, repo path)] from KEY=PATH strings; each key at most once."""
+    out, keys = [], set()
+    for it in items or ():
+        key, sep, rel = it.partition("=")
+        if not sep or key not in STUB_MODULE_KEYS:
+            raise OverlayError("--stub-module %r: must be KEY=PATH with KEY in %s"
+                               % (it, list(STUB_MODULE_KEYS)))
+        if key in keys:
+            raise OverlayError("--stub-module %s given twice" % key)
+        keys.add(key)
+        out.append((key, rel))
+    return out
+
+
+def _stub_modules(probe_tree, base, specs, export_dir, capkit_root):
+    """stub_modules entries: each script's blob at the base commit, written unchanged to
+    <export_dir>/<repo path> (never read from the probe tree's working files, which may carry
+    probe patches)."""
+    if specs and not export_dir:
+        raise OverlayError("--stub-module needs --export-dir (the scripts are exported from the "
+                           "base commit's blobs)")
+    out = []
+    for key, rel in specs:
+        parts = rel.split("/")
+        if not rel or os.path.isabs(rel) or ".." in parts or "" in parts or "." in parts \
+                or not rel.endswith(".py") or parts[0] == "tensorrt_llm":
+            raise OverlayError("--stub-module %s=%s: must be a relative .py repo path outside "
+                               "tensorrt_llm/" % (key, rel))
+        blob = _git(probe_tree, "show", "%s:%s" % (base, rel), binary=True)
+        path = os.path.join(export_dir, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        jsonio.atomic_write_bytes(path, blob)
+        e = _entry(path, None, blob, capkit_root)
+        del e["dst"]
+        e.update({"key": key, "repo_path": rel, "commit": base})
+        out.append(e)
+    return out
+
+
 def build_manifest(tier, probe_tree, image_commit, base_commit, capkit_root, capkit_sha,
-                   packages, groups, export_dir=None, allow_unshipped=(), sites=None):
+                   packages, groups, export_dir=None, allow_unshipped=(), sites=None,
+                   stub_modules=()):
     """Return the manifest dict; raises OverlayError on every rule violation."""
     if tier not in TIERS:
         raise OverlayError("--tier must be one of %s" % (TIERS,))
@@ -199,6 +248,7 @@ def build_manifest(tier, probe_tree, image_commit, base_commit, capkit_root, cap
             path = os.path.join(probe_tree, rel)
         files.append(_entry(path, rel, blob, capkit_root))
     capkit_files = _capkit_files(capkit_root, capkit, packages)
+    stubs = _stub_modules(probe_tree, base, list(stub_modules), export_dir, capkit_root)
     if tier == "P2":
         open_sites = _sites.sites_for_groups(groups)
         if sites is None:
@@ -218,6 +268,7 @@ def build_manifest(tier, probe_tree, image_commit, base_commit, capkit_root, cap
             "target_commit": target, "image_is_ancestor_of_target": is_ancestor(
                 probe_tree, image, target),
             "groups": groups, "files": files, "capkit_packages": capkit_files,
+            "stub_modules": stubs,
             "capkit_code_sha": capkit, "non_python_changed": [],
             "unshipped_allowed": allowed, "sites": chosen, "sites_selection": selection,
             "patchcheck": None if patch_report is None else {
@@ -242,20 +293,23 @@ def main(argv=None):
     ap.add_argument("--export-dir", default=None)
     ap.add_argument("--allow-unshipped", action="append", default=[])
     ap.add_argument("--sites", default=None, help="P2 only: comma list of site ids")
+    ap.add_argument("--stub-module", action="append", default=[], metavar="KEY=PATH")
     args = ap.parse_args(argv)
     try:
         man = build_manifest(args.tier, args.probe_tree, args.image_commit, args.base_commit,
                              args.capkit_root, args.capkit_sha, _parse_list(args.packages),
                              _parse_list(args.groups), export_dir=args.export_dir,
                              allow_unshipped=args.allow_unshipped,
-                             sites=None if args.sites is None else _parse_list(args.sites))
+                             sites=None if args.sites is None else _parse_list(args.sites),
+                             stub_modules=parse_stub_modules(args.stub_module))
     except exitcodes.CapkitError as e:
         print("capprobe.overlay: %s" % e, file=sys.stderr)
         return e.exit_code
     data = (json.dumps(man, indent=1, sort_keys=True) + "\n").encode("utf-8")
     jsonio.atomic_write_bytes(args.out, data)
-    print("capprobe.overlay: wrote %s (%d tensorrt_llm files, %d capkit files, %d sites)"
-          % (args.out, len(man["files"]), len(man["capkit_packages"]), len(man["sites"])))
+    print("capprobe.overlay: wrote %s (%d tensorrt_llm files, %d capkit files, %d sites, "
+          "%d stub modules)" % (args.out, len(man["files"]), len(man["capkit_packages"]),
+                                len(man["sites"]), len(man["stub_modules"])))
     return exitcodes.OK
 
 

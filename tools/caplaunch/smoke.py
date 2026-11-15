@@ -10,6 +10,11 @@ the core budget of E4-E9 topologies from the pin table and sysfs topology, and t
 read a finished launch tree (uvicorn access-log lines; httpprobe empty-delta frames). The
 frontend + S-FE requests themselves run as a launch (scenario e0c-frontend-http.scenario.json).
 Statuses: PASS / FAIL / RECORDED (a reading, no verdict) / NOT_RUN (precondition missing).
+
+As a launch role (caplaunch TOOL_TABLE "caplaunch.smoke"; errata B2B-12) the orchestrator also
+passes --run-dir, --stop-grace-s and --cpus (recorded); --items limits the run to some item
+groups and --hold keeps the process alive after smoke.json is written until SIGTERM (readiness
+file_exists on it), as caplaunch.httpprobe does.
 """
 
 import argparse
@@ -18,15 +23,21 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import threading
 import time
 
 from capcommon.cli import add_identity_args
+from capcommon.identity import Identity
 from capcommon.jsonio import atomic_write_bytes, dumps
 
-SCHEMA = "capkit.smoke/1"
+SCHEMA = "capkit.smoke/2"  # /2: identity is an Identity object (argv in identity_argv)
 CONFIG_SCHEMA = "capkit.smoke_config/1"
+# item groups in run order (--items): env premises, D13 switchinterval, D14 loopback,
+# readability, E4-E9 core budget, launch-tree checks
+ITEM_GROUPS = ("env", "d13", "d14", "read", "cores", "tree")
 
 
 def _run(argv, timeout_s, env=None):
@@ -243,10 +254,22 @@ def main(argv=None):
     p = argparse.ArgumentParser(prog="python -m caplaunch.smoke", description=__doc__)
     add_identity_args(p)  # passed on to capenv.loopback (INTERFACES 2.1)
     p.add_argument("--config", required=True)
-    p.add_argument("--out", required=True, help="new directory for smoke.json and readings")
+    # --result-dir: the same option for the launch role (--out is an orchestrator-managed flag)
+    p.add_argument("--out", "--result-dir", dest="out", required=True,
+                   help="new directory for smoke.json and readings")
     p.add_argument("--param", action="append", default=[], metavar="KEY=VALUE")
     p.add_argument("--tree", default=None, help="a finished e0c-frontend-http launch tree")
+    p.add_argument("--items", default=",".join(ITEM_GROUPS),
+                   help="comma list of item groups to run, from %s" % ",".join(ITEM_GROUPS))
+    p.add_argument("--hold", action="store_true", help="stay alive until SIGTERM after writing")
+    p.add_argument("--run-dir", default=None, help="launch role: the launch tree (recorded)")
+    p.add_argument("--stop-grace-s", type=float, default=None, help="launch role (recorded)")
+    p.add_argument("--cpus", default=None, help="launch role (recorded)")
     a = p.parse_args(argv)
+    groups = [g for g in a.items.split(",") if g]
+    if not groups or len(set(groups)) != len(groups) or set(groups) - set(ITEM_GROUPS):
+        print("smoke: --items must be distinct names from %s" % (ITEM_GROUPS,), file=sys.stderr)
+        return 2
     with open(a.config) as f:
         cfg = json.load(f)
     if cfg.get("schema") != CONFIG_SCHEMA:
@@ -263,15 +286,29 @@ def main(argv=None):
     ident = ["--experiment", a.experiment, "--arm", a.arm, "--launch-seq", str(a.launch_seq),
              "--job-id", a.job_id, "--restart-count", str(a.restart_count),
              "--register-sha", a.register_sha, "--role", a.role]
-    items = (env_premises(cfg, P) + switchinterval(cfg, P) + d14_loopback(cfg, P, a.out, ident)
-             + readability(cfg, P) + core_budget(cfg, P) + tree_checks(cfg, a.tree))
+    done = threading.Event()
+    if a.hold:  # installed first: a stop during the items must not kill the process unwritten
+        signal.signal(signal.SIGTERM, lambda *_: done.set())
+    run = {"env": lambda: env_premises(cfg, P), "d13": lambda: switchinterval(cfg, P),
+           "d14": lambda: d14_loopback(cfg, P, a.out, ident), "read": lambda: readability(cfg, P),
+           "cores": lambda: core_budget(cfg, P), "tree": lambda: tree_checks(cfg, a.tree)}
+    items = [i for g in ITEM_GROUPS if g in groups for i in run[g]()]
     counts = {s: sum(1 for i in items if i["status"] == s)
               for s in ("PASS", "FAIL", "RECORDED", "NOT_RUN")}
-    doc = {"schema": SCHEMA, "identity": ident, "config": os.path.abspath(a.config), "params": P,
-           "tree": a.tree, "host": os.uname().nodename, "counts": counts, "items": items}
+    me = Identity(experiment=a.experiment, arm=a.arm, launch_seq=a.launch_seq, job_id=a.job_id,
+                  restart_count=a.restart_count, register_sha=a.register_sha, role=a.role,
+                  worker=a.worker).with_pid()
+    doc = {"schema": SCHEMA, "identity": me.to_dict(), "identity_argv": ident,
+           "config": os.path.abspath(a.config), "params": P, "tree": a.tree,
+           "host": os.uname().nodename, "item_groups": [g for g in ITEM_GROUPS if g in groups],
+           "role": {"run_dir": a.run_dir, "stop_grace_s": a.stop_grace_s, "cpus": a.cpus},
+           "counts": counts, "items": items}
     atomic_write_bytes(os.path.join(a.out, "smoke.json"), (dumps(doc) + "\n").encode())
     for i in items:
         print("%-9s %s" % (i["status"], i["id"]))
+    if a.hold:
+        while not done.wait(0.2):
+            pass
     return 4 if counts["FAIL"] else 0
 
 

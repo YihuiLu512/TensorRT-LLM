@@ -75,7 +75,7 @@
     "--step-delay",
     "{param:sfe_step_delay_s}",
     {
-     "splice_json": "{param:fingerprint_json}",
+     "splice_json": "{input:fingerprint}",
      "key": "sfe_args"
     }
    ],
@@ -89,7 +89,7 @@
     "kind": "plain_port_file",
     "host": "127.0.0.1"
    },
-   "note": "S-FE = tests/unittest/grpc/openengine_client/fake_openengine.py (CLI :1966-1984 at 2f22a98d6e; --port-file writes a plain port line, :2030-2034); fingerprint args from python -m capstubs.fingerprint, never hand-copied"
+   "note": "S-FE = tests/unittest/grpc/openengine_client/fake_openengine.py (CLI :1966-1984 at 2f22a98d6e; --port-file writes a plain port line, :2030-2034); fingerprint args from the job input fingerprint (python -m capstubs.fingerprint in the job after the gate), never hand-copied"
   },
   {
    "role": "frontend",
@@ -289,7 +289,6 @@
   "capload_pool_pick",
   "capload_pool_reset",
   "capload_pool_seed",
-  "fingerprint_json",
   "lag_period_us",
   "python",
   "sfe_max_context_length",
@@ -310,5 +309,17 @@
   "interpretation": "E0 round 1: method self-check / pilot; not a capacity result",
   "log_sink": "raw/logs on the node-local disk (orchestrator redirect)"
  },
- "note": "E0 (a): capload -> trtllm-serve --openengine-endpoint -> S-FE; sub-saturation tiers only. Reconcile has only the capload hop at P0 (no probe counters); block-count corrections are U-6 (E0 smoke)."
+ "note": "E0 (a): capload -> trtllm-serve --openengine-endpoint -> S-FE; sub-saturation tiers only. Reconcile has only the capload hop at P0 (no probe counters); block-count corrections are U-6 (E0 smoke).",
+ "job_inputs": {
+  "fingerprint": {
+   "args": [
+    "--tokenizer",
+    "{param:tokenizer_dir}",
+    "--trust-remote-code",
+    "false",
+    "--tokenizer-mode",
+    "auto"
+   ]
+  }
+ }
 }

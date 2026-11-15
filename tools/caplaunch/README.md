@@ -14,17 +14,18 @@ E0 配置生成器在 `configs/gen_e0_configs.py`。
 | `caplaunch.ready` | 就绪判据:`capkit_ready` / `plain_port_file` / `report_addr` / `http_get` / `file_exists`(可组合，全部满足才算就绪) |
 | `caplaunch.tiergen` | `python -m caplaunch.tiergen`:把档位表模板里的 `TBD:<名字>` 填成登记的数，生成并校验 `capkit.tiers/1`(可选同时写到达时刻表);取值为 null 只认登记的 null(`registered_nulls`,只限 `request_timeout_ns`,勘误 calib-v2-A7) |
 | `caplaunch.laddergen` | `python -m caplaunch.laddergen`:calibration v2 的档位表模板 + 取值 + `ladder.json`(按该期 e_c 核对装箱)、`--plan` 的 K_fit 表、`--job-plan` / `--plan-from` 的 `job_plan.tsv`(`INTERFACES.md` 勘误 calib-v2-A4;`c13pc`、`--request-timeout-ns`、V0-cal 的 `layout: one_each`:勘误 calib-v2-A7) |
-| `caplaunch.httpprobe` | E0(c) HTTP 冒烟客户端(作为场景里的 aux 角色运行):逐帧记录文本增量是否为空 |
-| `caplaunch.smoke` | `python -m caplaunch.smoke`:E0(c) 可行性冒烟各项，输出 `capkit.smoke/1`(PASS / FAIL / RECORDED / NOT_RUN) |
-| `configs/gen_e0_configs.py`(不在本包内) | `configs/e0/*.json` 的生成器(交付物是生成出的 JSON;改配置请改生成器，生成到新目录后 diff) |
+| `caplaunch.httpprobe` | E0(c) HTTP 冒烟客户端(作为场景里的 aux 角色运行):逐帧记录文本增量是否为空;可选 `--started-file`(发第一个请求前写，回答要等到原点之后的场景用它作就绪文件;INTERFACES 勘误 B2B-15) |
+| `caplaunch.smoke` | `python -m caplaunch.smoke`:E0(c) 可行性冒烟各项，输出 `capkit.smoke/2`(PASS / FAIL / RECORDED / NOT_RUN);也可作为场景里的 aux 角色(TOOL_TABLE `caplaunch.smoke`,参数同 httpprobe;`--items` 选项组、`--hold` 写完后等 SIGTERM、`--result-dir` 是 `--out` 的别名;INTERFACES 勘误 B2B-12) |
+| `configs/gen_e0_configs.py`、`configs/gen_e0s_configs.py`(不在本包内) | `configs/e0/*.json`、`configs/e0s/*.json` 的生成器(交付物是生成出的 JSON;改配置请改生成器，生成到新目录后 diff) |
 
 ## `python -m caplaunch` 参数
 
 身份参数(`capcommon.cli.add_identity_args`,`--role` 填 `launch`)外，以下全部必填，出处类的值可写 `none`(落 null):
 `--run-dir --workdir --register --scenario --pin-table --shm-dir --snapshot-interval-ms --origin-lead-ms
 --housekeeping-ms --kill-after-s --capkit-sha --probe-tree-sha --baseline-sha --snapshot-dir --image-path
---image-sha256 --hw-profile-sha --overlay-manifest --nvidia-smi --job-env-dir`;`--param KEY=VALUE` 可重复(场景 `params_required` 全部要给)。长选项只认完整拼写(`allow_abbrev=False`：`capjobs` 按完整拼写核对计划 argv)。
+--image-sha256 --hw-profile-sha --overlay-manifest --nvidia-smi --job-env-dir`;`--param KEY=VALUE` 可重复(场景 `params_required` 全部要给);`--job-input KIND=PATH` 可重复(场景 `job_inputs` 声明的每个种类恰好一个，见下)。长选项只认完整拼写(`allow_abbrev=False`：`capjobs` 按完整拼写核对计划 argv)。
 
+- `--job-input KIND=PATH`(INTERFACES 勘误 B2B-9):场景可选段 `job_inputs` 声明的作业输入(`fingerprint` / `request_bytes` / `prebaked`),由 `capjobs.launches` 在作业里生成(作业外用 `python -m capjobs.jobinputs`)。`PATH` 绝对路径;文件 schema 是该种类的;`PATH.record.json` 的种类、模块、`rc`、`out_sha256`、所用登记输入的 sha 都要对得上，否则退出码 3、不起进程。文件与记录拷进 `raw/env/job_inputs/`,角色参数里的 `{input:KIND}` 解析为这份拷贝;`launch.json` 的 `job_inputs` 记 relpath、sha256、record_sha256、模块与来源路径。
 - `--job-env-dir`:作业级 `env/` 目录(门禁结果、`gpu_idle.json` 等),其中的文件拷进 `raw/env/`;不是目录 ⇒ 起任何进程之前停止,NOT_RUN(`stop.json` reason `job_env_dir_missing`)。其中若有 `pin_table.json`,它必须与 `--pin-table` 字节相同，否则起任何进程之前退出码 3。
 
 - `--overlay-manifest`:作业级覆盖清单，原样拷进 `raw/env/overlay_manifest.json`,sha 记进 `launch.json` 的 `overlay_manifest`。文件不存在时只记录;但场景里有带 `probe_tier` 的角色时，启动在起任何进程之前停止,STATE 为 NOT_RUN(`stop.json` reason `overlay_manifest_missing`)。

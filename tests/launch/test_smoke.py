@@ -63,11 +63,45 @@ def test_httpprobe_counts_frames_and_empty_deltas(tmp_path):
         srv.shutdown()
         srv.server_close()
     assert rc == 0 and len(doc["results"]) == 2
+    assert os.listdir(str(tmp_path / "tree" / "raw")) == ["httpprobe.json"]  # no started file
     r = doc["results"][0]
     assert r["status"] == 200 and r["done_seen"] and not r["crlf_seen"]
     assert r["n_frames_excl_done"] == 4 == r["ssecounter"]["frames"]
     assert r["n_empty_text_frames"] == 1  # the "" delta; the usage-only frame has no choices
     assert [f.get("text_len") for f in r["frames"][:3]] == [1, 0, 1]
+
+
+def test_httpprobe_started_file_is_written_before_the_first_request(tmp_path):
+    """--started-file (readiness when the answers only come after the origin, errata B2B-13):
+    an identity-stamped file written before any request is sent; --result still follows the
+    answers. Without the flag nothing else is written (e0c unchanged)."""
+    started = tmp_path / "tree" / "raw" / "httpprobe.started.json"
+    seen = []
+
+    class _Check(_Sse):
+        def do_POST(self):  # noqa: N802
+            seen.append(started.exists())
+            super().do_POST()
+
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Check)
+    th = threading.Thread(target=srv.serve_forever, daemon=True)
+    th.start()
+    reqs = tmp_path / "reqs.json"
+    reqs.write_text(json.dumps([{"name": "c", "endpoint": "/v1/completions", "body": {}}]))
+    out = tmp_path / "tree" / "raw" / "httpprobe.json"
+    out.parent.mkdir(parents=True)
+    try:
+        rc = httpprobe.main(_ident() + ["--addr", "127.0.0.1:%d" % srv.server_address[1],
+                                        "--requests", str(reqs), "--timeout-s", "5",
+                                        "--result", str(out), "--started-file", str(started)])
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert rc == 0 and seen == [True]
+    doc = json.loads(started.read_text())
+    assert doc["schema"] == "capkit.httpprobe_started/1" and doc["n_requests"] == 1
+    assert doc["identity"]["role"] == "httpprobe" and doc["identity"]["pid"] == os.getpid()
+    assert json.loads(out.read_text())["results"][0]["status"] == 200
 
 
 def test_httpprobe_connection_refused_is_an_error(tmp_path):
@@ -161,3 +195,56 @@ def test_smoke_empty_delta_without_expected_count_is_not_run(tmp_path):
     out = str(tmp_path / "o")
     smoke.main(SID + ["--config", str(p), "--out", out, "--tree", str(tmp_path / "tree")])
     assert _items(out)["tree.empty_delta"]["status"] == "NOT_RUN"
+
+
+# ---- caplaunch.smoke as a launch role (errata B2B-12) --------------------------------------------
+
+def test_smoke_role_mode_runs_the_chosen_items_and_holds(tmp_path):
+    import signal  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+    import time  # noqa: PLC0415
+    cfg = tmp_path / "s.json"
+    cfg.write_text(json.dumps({"schema": smoke.CONFIG_SCHEMA,
+                               "import_probe": {"code": "import json", "timeout_s": 30}}))
+    out = tmp_path / "raw" / "smoke"
+    argv = [sys.executable, "-m", "caplaunch.smoke"] + SID + [
+        "--run-dir", str(tmp_path), "--stop-grace-s", "1.0", "--cpus", "0",
+        "--config", str(cfg), "--result-dir", str(out), "--items", "env",
+        "--param", "python=%s" % sys.executable, "--param", "cuda_compat_dir=%s" % tmp_path,
+        "--hold"]
+    env = dict(os.environ, PYTHONPATH=cf.TOOLS)
+    p = subprocess.Popen(argv, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    try:
+        end = time.monotonic() + 60
+        while not (out / "smoke.json").exists() and time.monotonic() < end:
+            time.sleep(0.05)
+        assert (out / "smoke.json").exists()
+        time.sleep(0.3)
+        assert p.poll() is None  # --hold: alive after writing
+        p.send_signal(signal.SIGTERM)
+        p.wait(timeout=10)
+    finally:
+        if p.poll() is None:
+            p.kill()
+    doc = json.loads((out / "smoke.json").read_text())
+    assert doc["item_groups"] == ["env"]
+    assert {i["id"].split(".")[0] for i in doc["items"]} == {"env"}
+    probe = [i for i in doc["items"] if i["id"] == "env.import_probe"][0]
+    assert probe["status"] == "PASS"
+    ident = doc["identity"]  # an identity object, as every file under raw/ carries
+    assert ident["role"] == "smoke" and ident["pid"] == p.pid and ident["job_id"] == "local-x"
+    assert doc["identity_argv"] == SID and doc["role"]["run_dir"] == str(tmp_path)
+    assert p.returncode in (0, 4)  # 4: env.compat_path FAIL (LD_LIBRARY_PATH not compat-first)
+
+
+def test_smoke_items_must_be_known_and_distinct(tmp_path):
+    cfg = tmp_path / "s.json"
+    cfg.write_text(json.dumps({"schema": smoke.CONFIG_SCHEMA}))
+    for bad in ("env,env", "nope", ""):
+        assert smoke.main(SID + ["--config", str(cfg), "--out", str(tmp_path / bad.replace(
+            ",", "_") / "o"), "--items", bad]) == 2
+    rc = smoke.main(SID + ["--config", str(cfg), "--out", str(tmp_path / "ok"), "--items",
+                           "d13,env"])
+    doc = json.loads((tmp_path / "ok" / "smoke.json").read_text())
+    assert doc["item_groups"] == ["env", "d13"]  # run order is fixed, not the --items order
+    assert rc in (0, 4)

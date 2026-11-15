@@ -66,6 +66,28 @@ def write_ready_file(path, identity, versions, affinity=None, children=None, inf
                                "affinity": affinity, "children": kids, "info": info or {}})
 
 
+def inprocess_ready_info(tool, worker, threads):
+    """The ready file `info` of an in-process tool (capgrpc.common.write_inprocess_ready): its
+    one worker entry (pid, worker, affinity, versions, aux_threads, info) under `workers`. Read
+    the tool's own info back with inprocess_tool_info."""
+    return {"tool": tool, "workers": [worker], "threads": threads}
+
+
+def inprocess_tool_info(ready_doc):
+    """(info, None): the tool info an in-process tool wrote (ready_doc info.workers[0].info,
+    see inprocess_ready_info); (None, why) when the ready file does not have exactly one worker
+    entry carrying an info object."""
+    workers = ((ready_doc or {}).get("info") or {}).get("workers")
+    if not isinstance(workers, list):
+        return None, "ready file has no info.workers list"
+    if len(workers) != 1:
+        return None, "ready file info.workers has %d entries, not 1" % len(workers)
+    info = workers[0].get("info") if isinstance(workers[0], dict) else None
+    if not isinstance(info, dict):
+        return None, "ready file info.workers[0].info is not an object"
+    return info, None
+
+
 def wait_ready_file(path, timeout_s, poll_s=0.05):
     _wait_for(path, timeout_s, poll_s)
     return read_json_stamped(path, READY_SCHEMA)

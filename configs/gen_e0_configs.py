@@ -58,8 +58,8 @@ DIMS = lambda stub, tok: {"tokenizer": tok, "stub": stub, "response_timing_switc
                           "interpretation": "E0 round 1: method self-check / pilot; not a capacity result",
                           "log_sink": "raw/logs on the node-local disk (orchestrator redirect)"}
 
-def scen(name, roles, stop_order, params, reconcile, stub, tok=None, note=""):
-    return {"schema": "capkit.scenario/1", "experiment": "E0", "name": name,
+def scen(name, roles, stop_order, params, reconcile, stub, tok=None, note="", job_inputs=None):
+    d = {"schema": "capkit.scenario/1", "experiment": "E0", "name": name,
             "tier_table": "%s/%s.tiers.json" % (REG, name),
             "schedule": "%s/%s.schedule.capbin" % (REG, name),
             "prompts": "%s/%s.prompts.json" % (REG, name),
@@ -67,6 +67,9 @@ def scen(name, roles, stop_order, params, reconcile, stub, tok=None, note=""):
             "probe_groups": [], "stop_grace_s": 10.0,
             "stop_order": stop_order, "reconcile": reconcile, "roles": roles,
             "params_required": sorted(set(params)), "dims": DIMS(stub, tok), "note": note}
+    if job_inputs:
+        d["job_inputs"] = job_inputs
+    return d
 
 # ---------------- (a) capload -> nullsse ----------------
 REQ_CHAIN = lambda a, b, bsrc: {"name": "requests", "kind": "requests", "gate": None,
@@ -100,6 +103,14 @@ w("e0a-nullsse.scenario.json", scen("e0a-nullsse", a1,
   note="E0 (a) second line: capload -> nullsse, sub-saturation tiers only"))
 
 # ---------------- (a) capload -> real new-arch frontend -> S-FE ----------------
+# The S-FE fingerprint arguments: a job input (capcommon.jobinputs) built in the job after the
+# gate by python -m capstubs.fingerprint (SEAMS SM-6). Its tokenizer settings are fixed to what
+# the frontend roles' argv implies: no --trust_remote_code (trtllm-serve's default false) and no
+# --config setting tokenizer_mode (auto). Change both together: a frontend role that gains
+# --trust_remote_code or a tokenizer_mode needs the same values here.
+FP_INPUT = {"fingerprint": {"args": ["--tokenizer", "{param:tokenizer_dir}",
+                                     "--trust-remote-code", "false",
+                                     "--tokenizer-mode", "auto"]}}
 recon_a2 = {"schema": "capkit.reconcile/1", "chains": [
     {"name": "requests", "kind": "requests", "gate": None, "include_usage": None,
      "hops": [{"role": "capload", "source": "summary.counts.ok", "scope": "tier"}],
@@ -112,12 +123,13 @@ a2 = [
           "--max-context-length", "{param:sfe_max_context_length}",
           "--tokens-per-step", "{param:sfe_tokens_per_step}",
           "--step-delay", "{param:sfe_step_delay_s}",
-          {"splice_json": "{param:fingerprint_json}", "key": "sfe_args"}],
+          {"splice_json": "{input:fingerprint}", "key": "sfe_args"}],
          command=["{param:python}", "{param:sfe_script}"],
          port={"kind": "plain_port_file", "host": "127.0.0.1"},
          note="S-FE = tests/unittest/grpc/openengine_client/fake_openengine.py (CLI :1966-1984 "
               "at 2f22a98d6e; --port-file writes a plain port line, :2030-2034); fingerprint args "
-              "from python -m capstubs.fingerprint, never hand-copied"),
+              "from the job input fingerprint (python -m capstubs.fingerprint in the job after "
+              "the gate), never hand-copied"),
     role("frontend", "product", "server", "under_test", True, "uvloop", True, "P0",
          [{"kind": "report_addr"},
           {"kind": "http_get", "path": "/health", "expect_status": 200, "timeout_s": 2.0}],
@@ -141,9 +153,10 @@ a2 = [
 w("e0a-frontend-sfe.scenario.json", scen("e0a-frontend-sfe", a2,
   ["capload", "frontend", "sfe", "sidecar", "canary"],
   ["python", "sfe_script", "sfe_model", "sfe_max_context_length", "sfe_tokens_per_step",
-   "sfe_step_delay_s", "fingerprint_json", "trtllm_serve", "tokenizer_dir"]
+   "sfe_step_delay_s", "trtllm_serve", "tokenizer_dir"]
   + CAPLOAD_PARAMS + OBS_PARAMS, recon_a2,
   "S-FE (fake_openengine.py, zero changes)", tok="TBD-by-registration (configs/tokenizers/<name>)",
+  job_inputs=FP_INPUT,
   note="E0 (a): capload -> trtllm-serve --openengine-endpoint -> S-FE; sub-saturation tiers "
        "only. Reconcile has only the capload hop at P0 (no probe counters); block-count "
        "corrections are U-6 (E0 smoke)."))
@@ -327,9 +340,10 @@ recon_c = recon_a2  # the verdicts of e0c come from caplaunch.smoke --tree
 w("e0c-frontend-http.scenario.json", scen("e0c-frontend-http", [sfe_c, fe_c, probe, cl_c],
   ["capload", "httpprobe", "frontend", "sfe"],
   ["python", "sfe_script", "sfe_model", "sfe_max_context_length", "sfe_tokens_per_step",
-   "sfe_step_delay_s", "fingerprint_json", "trtllm_serve", "tokenizer_dir",
+   "sfe_step_delay_s", "trtllm_serve", "tokenizer_dir",
    "httpprobe_requests_json", "httpprobe_timeout_s"] + CAPLOAD_PARAMS, recon_c,
   "S-FE (fake_openengine.py, zero changes)", tok="TBD-by-registration (configs/tokenizers/<name>)",
+  job_inputs=FP_INPUT,
   note="E0 (c): real tokenizer + frontend + S-FE answer /v1/completions and "
        "/v1/chat/completions; empty-delta frames recorded (X2 premise); access-log lines "
        "counted by caplaunch.smoke --tree. httpprobe is ready (its result written) before the "

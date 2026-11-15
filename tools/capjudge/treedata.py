@@ -12,6 +12,7 @@ import os
 from capcommon.capbin import CapbinError, read_capbin
 from capcommon.exitcodes import ConfigError
 from capcommon.jsonio import read_json, read_jsonl
+from capcommon.lifecycle import inprocess_tool_info
 from capcommon.snapshot import SnapshotError, read_snapshot_file
 
 from . import stats
@@ -309,6 +310,19 @@ class LaunchData:
                     out[pid] = rec
             return out, errors
         return self._get("versions", load)
+
+    def ready_doc(self, role):
+        """procs/ready/<role>.json (single-process role), or None."""
+        return self._get("ready_" + role, lambda: self._json(self.ctx.tree.ready_file(role)))
+
+    def ready_tool_info(self, role):
+        """(info, None): what the in-process tool of `role` reported in its ready file
+        (info.workers[0].info, capcommon.lifecycle.inprocess_tool_info); (None, why) when the
+        ready file is missing or not of that shape."""
+        doc = self.ready_doc(role)
+        if not isinstance(doc, dict):
+            return None, "no ready file"
+        return inprocess_tool_info(doc)
 
     @property
     def launch_end(self):

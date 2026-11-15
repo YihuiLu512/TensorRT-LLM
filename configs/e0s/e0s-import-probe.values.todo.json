@@ -1,0 +1,16 @@
+{
+ "schema": "capkit.tier_values/1",
+ "values": {
+  "arrival_seed": null,
+  "beat_ns": null,
+  "drain_max_wait_ns": null,
+  "gate_deadline_guard_ns": null,
+  "gate_max_snapshot_age_ns": null,
+  "gate_poll_ns": null,
+  "gate_settle_polls": null,
+  "hold_ns": null,
+  "max_tokens": null,
+  "rate_warmup": null,
+  "request_timeout_ns": null
+ }
+}
