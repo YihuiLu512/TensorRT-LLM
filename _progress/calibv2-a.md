@@ -160,3 +160,18 @@
   - 全量（HEAD 730f5ea7）：tests/jobs 281 passed、tests/launch 244 passed（短 TMPDIR，含 probe-tree 软链）、tests/judge 516 passed / 6 xfailed / 1 failed（即上面的篡改用例，8fb7ad93 已修，test_selftest.py 重跑 14 passed）；py_compile 221/0；fakebin.log 9 行（与之前相同，全是旧 e2e 的 simgate）。
   - 变异：r6（muts6.py，27 项）25 红，J07（layout 不核）、T07（tiergen 不核可空名字）补测试后 r6b 红，对照 r6c 全过；r6d（muts6b.py，按部分延后 8 项）7 红，S06（i_conflict 档 4 不列）把清单用例改为逐项相等后 r6e 红（清单用例与 test_generated_samples_pass 都红），对照 r6e 全过。
   - 未做（NOT RUN）：tests/judge 全量在 8fb7ad93 上没有整目录重跑（只重跑 test_selftest.py；两次提交之间只改 run_selftest.py 与 test_selftest.py）；laddergen --plan-from 没有 one_each（V0-cal 作业级补足丢 ≥ 2 个作业时补足作业可能同一配置两次，A7 第 6 条）；c13pc 保留基线档是推断（INFERRED，A7 第 4 条）。
+- 2026-11-15 12:58:09 全量验证（HEAD e7d6d0ce）开工：后台逐目录跑 tests（logs/v7，约 25 分钟），随后 selftest / py_compile / patchcheck / bash -n；同时重做 V0-cal / V0 档位表（laddergen one_each、s1-pc null 超时、c13pc）与 e0 作业路径 e2e。
+- 2026-11-15 13:16:20 v7 全部 10 个测试目录全过（judge 518 passed / 6 xfailed）；接着 selftest + py_compile，然后 e0 作业路径 e2e、w60 副本重判。
+- 2026-11-15 13:17:30 selftest 52 ran / errors []（deferred 5 个 I 样本）、py_compile 221/0；开跑 e0 作业路径 e2e（e0b-s1-single J9500021，覆盖清单 P0-e7d6d0ce，约 3～5 分钟）
+- 2026-11-15 13:19:47 e0b-s1-single J9500021：L0 VALID 拷回 222 文件，但判定 rc 10 VOID——drain-01 的 C11 RED（轮询 1.0/1.1 s 实际 1.143/1.284 s，t_pass 记实际时刻 1.284 s > 下一个计划点 1.2 s，判定器按 t_pass 重算出 3 个计划轮询、实际 2 个）。orchestrator / gate / C11 在 SB-A 未改（git diff fae19c43..HEAD 为空），属既有接缝、与负载相关；先跑 e0a-nullsse J9500022，再重跑 e0b J9500023 看是否复现。
+- 2026-11-15 13:21:30 e0b 重跑 J9500023 判定 rc 11、RED 0（C11 全 PASS）、无 INPUT_INVALID；e0a-nullsse J9500022 rc 11、RED 0。开跑 e0w60 J5940628:L2 新副本 v2 重判（replay/w60-e7d6d0ce，约 3 分钟）
+- 2026-11-15 13:25 SB-A 全量验证（代码 HEAD e7d6d0ce；本条只改进度日志），实测（MEASURED）：
+  - 测试目录逐个（logs/v7）：capcommon 200、capload 33、capprobe 159、envgate 71、grpc 53、jobs 281、nullsse 4、sidecar 5、launch 244、judge 518 passed + 6 xfailed（XFAIL_I_P2_13，strict）；无失败，launch 无偶发。
+  - selftest（logs/v7，--expect-samples 52）：EXIT 0，ran 52、errors []，deferred 5 个 I 样本（DEFERRED_P2_13）；py_compile 221/0；patchcheck --rev HEAD EXIT 0、PASS、violations []，探针树 HEAD 与 porcelain 前后不变；bash -n 3/0。
+  - V0-cal / V0 档位表（v0tables/r7，gen_v0_r7.py）：V0-cal 由 `laddergen --job-plan`（phase V0cal、layout one_each）生成并登记，4 个作业每个 4 配置各 1 次；cal 表 1474 s、time_budget 7610 s；s1-pc 表 request_timeout_ns = null，s1/s2/s4-fix = 60 s（660 s 表）；c13-pc 用 `--kind c13pc`（无过载档，表 460 s）；计时行 K 24 S 90 表 13264 s、time_budget 13940 s；10 个作业 submit --dry-run 全部 rc 0、维护门 pass，桩真提交全 rc 0。
+  - e0 作业路径 e2e（覆盖清单 P0-e7d6d0ce）：e0a-nullsse J9500022 L0 VALID、judge rc 11、RED 0、无 INPUT_INVALID；e0b-s1-single J9500021 L0 VALID 但判定 rc 10（drain-01 C11 RED：轮询迟到 > poll_ns，t_pass 记实际时刻，判定器按 t_pass 重算计划轮询多出 1 个；orchestrator / gate / C11 在 SB-A 未改，既有接缝），重跑 J9500023 judge rc 11、RED 0、C11 全 PASS、无 INPUT_INVALID。
+  - pilot2 d14（同一 E0 第一轮副本 replay/d14 在 HEAD 重跑）：rc 0，d14_softirq 与 environment 与 W/02_e0/E0/analysis/pilot.json（8e823f12）逐字相等，与 14f28710 产物全键相等；bootstrap（replay/boot 在 HEAD 重跑）rc 0，capkit.pilot/2 stage bootstrap，与 14f28710 产物全键相等，nullz.validate('pilot') 接受。
+  - e0w60 J5940628:L2 新副本 v2 重判（replay/w60-e7d6d0ce）：无崩溃，rc 10 VOID（tier 6 SM-18 的 C3/C5/C6 RED），唯一 NOT_RUN（t7）带原因，checks.tsv 的 NOT_RUN 行都有说明；verdicts 去掉时间戳后与 14f28710 副本相同。
+  - 沿用的旧证据：E1-0 d14 副本回放（replay/e1，14f28710）——14f28710..HEAD 只改了 caplaunch（laddergen、tiergen、README），capjudge / capcommon 没有任何 import 到 caplaunch，所以仍有效（INFERRED，按 import 闭包）。
+  - fakebin.log 18 行，全部是作业内 simgate 替身（exit 97）；无残留进程。
+  - 交主会话：C11 轮询迟到接缝（J9500021）是新的既有接缝，未改代码（不在 SB-A 范围，需定 t_pass 取计划时刻还是判定器容忍迟到）。
