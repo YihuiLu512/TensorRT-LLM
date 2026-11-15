@@ -120,3 +120,16 @@
   - fakebin.log 0 行；py_compile 本步改动文件 6/0。
   - 推断（INFERRED）：shift 条目按「全部入选」处理是否满足 P2-11 的一一对应取代，要到 SB-C 才能核。
   - 未做（NOT RUN）：第 21 条作业路径 e2e（本 worktree 没有 probe-tree 覆盖清单）；V2-b 区组段的缺额补足；tests/launch、tests/jobs、tests/capcommon 等目录（本步没改它们的代码）。
+- 2026-11-15 10:12:18 SB-A-5 续：补第 21 条作业路径 e2e（脚本在 _local/calibv2-a/e2e，从 wt-fix-sm1718 的 e2e 拷来改写：laddergen --kind e2e、v2 登记表与门产物、submit --dry-run 过 P2-08b 全部门、桩 ssh 与 statvfs；一个作业两次启动，L1 的 --hw-profile-sha 与 e0_d14 不符以得 INPUT_INVALID；预计作业约 55 分钟，后台跑）
+- 2026-11-15 10:18:02 第 21 条 e2e 正式跑（runs/e2e-J9400011，覆盖清单 ovl/P0-bc60637c，HEAD bc60637c）：build 试跑 runs/build-try1 已过 dry-run 全部门（scontrol+sinfo 桩、statvfs 桩）与真提交；作业两次启动各约 27 分钟、再判定，合计约 60～65 分钟，后台
+- 2026-11-15 10:35:23 区组缺额补足已实现（pilot2 shortfall 区组单位、laddergen --plan-from 区组条目）；test_pilot2 55 passed、test_laddergen 30 passed；跑变异 r5c（9 项 + 对照，约 4 分钟）
+- 2026-11-15 10:41:15 变异 r5c（mut/r5c/summary.txt）：9 项全部变红、对照 55+30 passed。两遍可满足性样本 v2_sat_overloaded_level_2p、v2_near_stable_level_2p 已生成进 samples/（make_samples 选项 two_pass；旧样本按新生成器重建后除时间戳外逐字节相同，抽查 v2_good、v2_sat_overloaded_level），run_selftest 加 levels 期望；INTERFACES 勘误 A5b 起草（e2e 结果待填）。等 e2e L0 结束后跑 tests/judge 全量。
+- 2026-11-15 10:46:50 提交 3a4ce547（区组缺额补足、两遍样本；判定器要求 tools/ 干净才写 code sha，未提交时各档 NOT_RUN——所以 e2e 判定前先提交）。L0 树的副本在 3a4ce547 上预判：VALID、级 0 STABLE、级 2 UNSTABLE、级 1 CONTRA。后台跑全量 tests/judge（约 8 分钟）
+- 2026-11-15 11:20 SB-A-5 续收尾（区组缺额补足、两遍可满足性样本、第 21 条 e2e），实测（MEASURED）：
+  - 第 21 条 e2e（_local/calibv2-a/e2e，runs/e2e-J9400011，check.py RESULT PASS）：laddergen e2e 22 档、表长 1610 s、全部 streams_c null；submit --dry-run 六道门全过（桩 scontrol+sinfo、桩 statvfs，不写 BUDGET），真提交 BUDGET 两行；作业 sbatch rc 0，L0、L1 都 VALID 拷回；L0 判定 rc 0、VALID，级 0 STABLE、级 2 UNSTABLE、级 1 CONTRA，b 19.13、T7 μ̂ 17.88；L1（画像 sha 与标定 environment 不符）判定 rc 13 INPUT_INVALID（calibration environment）。提交时代码 bc60637c，判定时 3a4ce547（tools/ 只差 pilot2.py、laddergen.py）。fakebin.log 3 行（作业内 simgate）。
+  - 区组缺额补足：test_pilot2 55 passed、test_laddergen 30 passed；变异 r5c 9 项全部变红、对照全过。
+  - 两遍样本：自测 52 个都跑了，errors 只来自 5 个 I 样本（P2-13，SB-C）；test_selftest 新用例（篡改两遍合成只让级期望变红）通过。
+  - 全量 tests/judge（a5r2，HEAD 3a4ce547）：9 failed / 510 passed——8 条是 5 个 I 样本（P2-13）、1 条是新用例的断言写错（ran 是 [名, rc] 对），已改，单跑通过（a5r4）。
+  - 全量 tests/launch（短 TMPDIR /tmp/a5l2）：2 failed / 217 passed，2 条 test_fingerprint 要 probe-tree（本 worktree 没有）。
+  - 附带：_local/calibv2-a/runt.sh、selftest.sh 的 EXIT 改为先存 $?（原来读的是 $(date) 的退出码）。
+  - 未做（NOT RUN）：tests/jobs、tests/capcommon 等（本次没改 capjobs、capcommon）；I 样本与 shift 一一对应取代仍属 SB-C。

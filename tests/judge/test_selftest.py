@@ -135,6 +135,6 @@ def test_level_expectations_are_read(tmp_path):
         reports[tag] = (q.returncode, json.loads(q.stdout))
     assert reports["clean"][0] == 0 and not reports["clean"][1]["errors"], reports["clean"]
     rc, rep = reports["tampered"]
-    assert rc == 1 and sorted(rep["ran"]) == LEVEL_SAMPLES, rep
+    assert rc == 1 and sorted(r[0] for r in rep["ran"]) == LEVEL_SAMPLES, rep
     assert rep["errors"] == ["v2_near_stable_level_2p: level 1 verdict 'UNSTABLE' != "
                              "expected 'STABLE'"], rep

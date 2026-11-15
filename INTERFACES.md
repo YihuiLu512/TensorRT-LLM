@@ -1523,18 +1523,36 @@ R2 自审（slug `capkit-b2judge-J17871`）发现的问题已直接改进本子�
    - 阈值 = max(r6 常量, 3 × 最大值)：`lag_z` 10、`lag_D` 10 000 000 ns、`count_z` 10.705、`ratio` 0.02、`c13_window` 0.10、`c13_launch_mean` 0.05。任一族读数个数为 0 ⇒ 3。环境（四个 sha + `judge_sha`）与 `experiment` 在全部输入树上必须唯一，否则 3。
    - 输出 `capkit.pilot/2`（`stage: bootstrap`）：`experiment`、`environment`、`d14`、`select`、`rule`（规则原文）、`register {relpath, sha256}`、`inputs[]`（`tree`、`judge_verdicts_sha256`、`config`（`arm_config`）、`node`（`raw/dims.json`，没有为 null）、`tiers_used`、`tiers_excluded`、`tree_excluded`）、`x_const`、`ratio_tol`（`min_per_request: 2`）、`c13_cap`，以及 `max_abs[族] = {value, tree, tier_seq（launch_mean 为 null）, key, n_readings, three_x_max, design_floor, bound_by: design_floor | data}`（下限 ≥ 3 × 最大值时为 `design_floor`）。产物被 `nullz` 接受，对任意配置与 regime 返回同一族值（测试第 40 条）。只改各档 X 结论时，产物除各输入的 `judge_verdicts_sha256`（它记的就是被改的文件）外逐字节不变。
 5. **`pilot2 shortfall`**（P2-09b，§4.5）：参数 `--workdir --list --register --plan（可多次：原段计划与其门后计划，含已登记的补足计划） --launches-per-job --phase --segment [--job-level-only] --out`。
-   - 拒收（3）：段内任一条目未结束（未提交、未 `ENDED`）；区组段（V2-b 的区组缺额补足本步未实现，见第 8 条）；列表文件不等于 `_select`；轮次（= 已有 `post_gate:shortfall` 计划数 + 1）> 2（N15）；登记表没有整数 `expected.shortfall_cap_jobs` 或没有 `arm_config`；某个有缺额的配置在原段没有臂。
+   - 拒收（3）：段内任一条目未结束（未提交、未 `ENDED`）；区组段（V2-b 的区组缺额补足本步未实现，见第 8 条；**已由勘误 calib-v2-A5b 第 1 条实现，区组段不再拒收**）；列表文件不等于 `_select`；轮次（= 已有 `post_gate:shortfall` 计划数 + 1）> 2（N15）；登记表没有整数 `expected.shortfall_cap_jobs` 或没有 `arm_config`；某个有缺额的配置在原段没有臂。
    - `q̂ = min(0.5, max(0.05, lost/ended))`，`ended` = 段内条目（作业）数，`lost` = 有不可用启动的条目数；补足数 = `stats.shortfall_topup(d, lost, ended)`。`--job-level-only`（V0-cal、V0）：`_select` 把 VOID 启动当可用，`lost` 只数作业级不可用（ENV_INVALID、CANCELLED、SUBMIT_FAILED、未跑完 / 没有判定结果），VOID 不算。
    - **上限**：本轮可用作业数 = `shortfall_cap_jobs` − 已有补足计划的条目数；作业数按 `laddergen --plan-from` 的装法算（钉节点与不钉节点分开、每作业 `--launches-per-job` 次）；按配置名顺序每个配置取能装下的最多启动数，有削减 ⇒ `capped: true`。
    - 臂 = 登记表 `arm_config` 在原段各条目的臂上取逆（一个配置只能有一个臂与一个 `pin` 值，否则 3）；`pin` 沿用原段。
    - 输出 `capkit.e0_params/1`（`stage: shortfall`）：`experiment`、`phase`、`segment`、`round`、`job_level_only`、`rule`、`register`、`plans[{relpath, sha256, post_gate_rule}]`、`q_hat {lost, ended, value}`、`by_config[单位] = {N, n_all_selected, usable, shortfall, topup, listed}`、`cap {shortfall_cap_jobs, prior_jobs, launches_per_job, jobs}`、`capped`、`items[{item_class: post_gate:shortfall, config, arm, launches, pin}]`（即 `laddergen --plan-from` 读的形状）、`select {selected, surplus_unused, unusable}`。产物不含任何时间戳与 `verdicts.json` 的 sha：只改 z、b、X 时逐字节不变。
 6. **判定器与自测样本**（P2-10，§3.5 第 22 条）：
    - **thresholds 阶段 pilot/2 的窗口核对**（新增，`inputs._check_threshold_window`，在按 ladder 定 regime 之后）：登记了 `stage: thresholds` 的 pilot/2 时，除 `ladder.json` 保持档外的每个负载档窗口必须等于它的 `window_ns`（其 `null_z` 键的 `L=`），否则 13（`register.calibration`）。bootstrap pilot/2 按族取值、没有窗口，不核。`make_samples` 的 `calib_v2` 新增 `window_s`（thresholds 的 `window_ns` 与键的 `L=`，缺省 60）。
-   - **已提交样本按 v2 缺省重新生成**（`samples/`，50 个；取代勘误 calib-v2-A3 第 9 条末句的「本步没有重新生成」）。新增 12 个 v2 样本：良品 `v2_good`；两个可满足性样本 `v2_sat_overloaded_level`（明显过载级 UNSTABLE）、`v2_near_stable`（近边界稳定档在内）——样本档位表每个负载只有一档，所以是单遍版，两遍合成由 `test_judge_levels.py` 覆盖；造坏各一：`v2_ladder_missing`、`v2_ladder_sha`、`v2_pilot1`、`v2_window`、`v2_d14_missing`（11，C13 第二半 NOT_RUN）、`v2_d14_env`、`v2_arm_config_missing`、`v2_near_boundary_tiers`、`v2_inline_thresholds`（其余都是 13）。`regime_nb_missing`、`regime_nb_good` 的期望改为 13（登记 `near_boundary_noise` 即拒收，勘误 calib-v2-A2 第 1 条）。全表见 `samples/README.md`。
+   - **已提交样本按 v2 缺省重新生成**（`samples/`，50 个；取代勘误 calib-v2-A3 第 9 条末句的「本步没有重新生成」）。新增 12 个 v2 样本：良品 `v2_good`；两个可满足性样本 `v2_sat_overloaded_level`（明显过载级 UNSTABLE）、`v2_near_stable`（近边界稳定档在内）——样本档位表每个负载只有一档，所以是单遍版，两遍合成由 `test_judge_levels.py` 覆盖（**两遍版样本已由勘误 calib-v2-A5b 第 2 条补上，样本数 52**）；造坏各一：`v2_ladder_missing`、`v2_ladder_sha`、`v2_pilot1`、`v2_window`、`v2_d14_missing`（11，C13 第二半 NOT_RUN）、`v2_d14_env`、`v2_arm_config_missing`、`v2_near_boundary_tiers`、`v2_inline_thresholds`（其余都是 13）。`regime_nb_missing`、`regime_nb_good` 的期望改为 13（登记 `near_boundary_noise` 即拒收，勘误 calib-v2-A2 第 1 条）。全表见 `samples/README.md`。
    - **已知不符**：模式 `P+X+I+V` 的 5 个 I 样本期望 I 定位成立；I1 改读 pilot/2 `i1_calibration` 属 P2-13（SB-C），之前 I 为 `NOT_RUN`，自测对它们报不符。场景臂良品树与「同一棵 V2-n 树按两种 mode 判」两项（第 22 条）同属 SB-C。
    - **V0 取消计数**（第 23 条）：`pilot2.v0_cancelled(rows, status_codes, start, end, stop)` 数 reqlog 中 `status_codes` 映射为 `grpc_CANCELLED`、完成时刻在 `[start, end)`（过载档与其后清空槽）且早于负载器停止时刻的请求；停止时刻及之后的取消不计。
 7. **测试**：`tests/judge/test_pilot2.py`（第 13、23、27、31、34、35、40 条；第 27、34 条读本机第一轮 15 棵树，W 不在时跳过；`samples/calibv2_real/e0_round1.pilot_inputs.tsv` 是 `pilot_inputs.tsv` 的副本，来源与 sha 见 `SOURCES.md`）。变异与实测记录在 `_progress/calibv2-a.md`。
-8. **本步没有做**：第 21 条作业路径 e2e（本机 fakebin，`capjobs.submit --dry-run` → `caplaunch` → 判定器）——需要探针树覆盖清单，本 worktree 没有 `probe-tree`；V2-b 区组段的缺额补足（`shortfall` 拒收区组段；`laddergen --plan-from` 也只写单启动条目）。
+8. **本步没有做**：第 21 条作业路径 e2e（本机 fakebin，`capjobs.submit --dry-run` → `caplaunch` → 判定器）——需要探针树覆盖清单，本 worktree 没有 `probe-tree`；V2-b 区组段的缺额补足（`shortfall` 拒收区组段；`laddergen --plan-from` 也只写单启动条目）。（**两项都已由勘误 calib-v2-A5b 完成：区组缺额补足见第 1 条，第 21 条 e2e 见第 3 条**。）
+
+#### calib-v2-A5b：V2-b 区组的缺额补足、两遍可满足性样本、第 21 条作业路径 e2e（2026-11-15）
+
+1. **区组缺额补足**（DESIGN-r7a P2-09b、§4.5；取代 A5 第 5 条「区组段拒收」与第 8 条的同一项）：
+   - `pilot2 shortfall` 接受含区组条目的段。单位沿用 `_select`：区组条目为比较 `cmp:<比较>`，其余为配置；缺额 d、`by_config[单位]` 同 A5 第 2 条。
+   - **q̂ 的计数单位**：区组算一项（两个作业合起来），非区组条目（作业）算一项；一项「丢失」= 其中任一启动不可用（`--job-level-only` 时只算作业级不可用，VOID 当可用）；区组两作业不在同一台已知节点上也是不可用（不是作业级）。同一段里既有区组又有单臂配置时，两类项合在一个 q̂ 里。
+   - **补足项**：比较单位的补足数 = `stats.shortfall_topup(d, lost, ended)` 个区组；条目形状 `{item_class: post_gate:shortfall, comparison, configs: [[配置, 臂], [配置, 臂]]（按配置名排序）, blocks, pin: true}`。臂 = 原段区组条目的臂去掉 `.<block_id>.<slot>` 后缀（`laddergen` 的区组臂命名）；后缀不符、一个区组不是两个不同配置、同一比较的区组配对不一致 ⇒ 3。
+   - **上限**：一个区组算 2 个作业（各装 1 次启动），与配置单位的作业数一起计入 `shortfall_cap_jobs`；按单位名顺序取能装下的最多数，有削减 ⇒ `capped`。
+   - **`laddergen --plan-from`**：先按原规则装配置条目（不钉、钉节点分开），再把区组条目写成区组：每个区组两个钉节点、各 1 次启动的作业，共用一个 `order`；区组号 `<比较>-b<规则><轮次><NN>`（如 `s1-vs-s2-bshortfall101`；轮次取门产物的 `round`，所以不会与原段的 `<比较>-bNN` 或前一轮重复；`_select` 按最后一个 `-b` 前的部分认比较）；两个 slot 的先后按登记种子 `seed_u(seed_base, 比较, 区组号, 0)`，与 `--job-plan` 相同；臂 `<臂>.<区组号>.<slot>`；`item_id` `<phase_id>-<规则>-<区组号>-s<slot>`。门产物里有区组条目却没有整数 `round` ≥ 1，或区组条目缺字段 / `pin` 不是 true ⇒ 3。
+   - 测试：`tests/judge/test_pilot2.py`（区组段的补足与 q̂、`--job-level-only`、每区组 2 个作业的上限、臂后缀不符 ⇒ 3、门产物 → `--plan-from` → 登记后补足区组排在原段之后入选）；`tests/launch/test_laddergen.py`（区组条目的 `order`、区组号、臂、种子决定的 slot 先后；五种畸形区组条目 ⇒ 3）。
+2. **两遍可满足性样本**（§3.5 第 22 条；补 A5 第 6 条的单遍版）：`make_samples` 新增选项 `two_pass`（档位表在清空档 5 之后接 down r40 档 6 与清空档 7，r40 级的两遍是档 4 与档 6；模拟里过载与滞后增长作用于两档；时间轴与 sidecar 行数随表长延长，不用该选项的样本内容不变——重新生成后除时间戳外逐字节相同）。新增样本 `v2_sat_overloaded_level_2p`（两遍都过载 ⇒ 档 4、6 UNSTABLE，级 1 UNSTABLE）与 `v2_near_stable_level_2p`（两遍都在内 ⇒ 级 1 STABLE），`expect.json` 新增 `levels`（按级号断言 `verdicts.json` 的 `levels[]`，`run_selftest` 读它）。样本数 52（`--expect-samples 52`）。`tests/judge/test_selftest.py` 新增：把两遍合成改成「两遍都在内 ⇒ UNSTABLE」时，档 verdict 不变、只有 `v2_near_stable_level_2p` 的级期望变红（证明 `levels` 期望被读）。
+3. **第 21 条作业路径 e2e**（本机 fakebin；脚本与记录在 worktree 的 `_local/calibv2-a/e2e/`，不入库）：`build.py` → 作业 → 判定 → `check.py`，一个作业两次启动（同一臂 `e0b-s1-single`、同一档位表；L0 的 `--hw-profile-sha` 等于标定文件的 `environment`，L1 换成另一个 sha）。
+   - **档位表**：`laddergen --kind e2e --phase V0`（e_c 0.30）、`--center-literal 19.09`（ĉ0）、S = 4 s、种子 `E0v2-e2e-local-20261115|s1|e2e|1`（u = 0.862）：基线 0.3 + 级 ρ ≈ {0.502, 1.002, 1.502}·ĉ0 上下两遍 + 3 斜率档，22 档、表长 1610 s；`tiergen` 展开后 sha 等于 `ladder.json` 的 `tier_table_sha256`；全部档 `streams_c = null`、`load_value = rate_rps`（R 轴）。非档位取值用 e0w60 的 e0b-s1 值（beat 4 ms、50 msg/流、relay 每 msg 忙等 1 ms、请求超时 60 s）。
+   - **登记表**（v2 形状）：`arm_config`、`files_by_arm`（含 `ladder`）、`calibration` = `samples/v2_good` 的 bootstrap pilot/2 与 `e0_d14.json`（只把 `environment` 换成 L0 的画像 sha 与假镜像 sha，pilot/2 的 `d14` 指向它）、`inline_thresholds` 为空、`judge.checks = [C3, C5, C6, C9, C10, C11, C13]`、`expected = {budget_id, job_budget 2, plan（已登记的 job_plan.tsv）, disk}`；另登记 `node_exclusions` 与 exclude 文件。
+   - **提交**：`capjobs.submit --dry-run` 走完 P2-08b 的六道门（桩 ssh 回答 `scontrol show reservation`（一条不重叠的维护预约，因而也查了 `sinfo`）与 `sinfo`，桩 `statvfs`），退出码 0、维护门 `pass`、不写 BUDGET.tsv；再用同样的桩真提交，BUDGET.tsv 得 `RESERVED` 与 `JOB_ID` 两行。
+   - **结果**（MEASURED，作业 J9400011，提交时代码 `bc60637c`，判定时代码 `3a4ce547`——两者在 `tools/` 下只差 `pilot2.py` 与 `laddergen.py`，判定器不用它们）：作业 sbatch 退出码 0（环境门禁替身记下真门禁退出码 6：本机没有 Slurm、画像未登记，与以往 e2e 同形），两次启动都 VALID 并拷回。L0 判定退出码 0，`launch_verdict = VALID`，启动级 C10、C13、C13-MEAN、GPU-IDLE 全 PASS；级 0（ρ 0.5）STABLE、级 2（ρ 1.5）UNSTABLE（两遍都过载）、级 1（ρ 1.0）CONTRA（X3 计数下降与滞后上升并存，靠近容量）；`boundary.b` = 19.13 rps（不截尾，`contra_inside`），T7 μ̂ = 17.88 rps。L1 判定退出码 13，`INPUT_INVALID`：`register.calibration[0]: calibration environment (hw …48bdc271…) != launch (hw …275bd857…)`。`fakebin.log` 只有作业里 simgate 的 3 行（exit 97 替身）。
+   - 限制：画像 sha 是脚本里定的合成值（本机作业的真实画像不登记）；镜像是 4 KB 的假文件；判定器的阈值来自合成 bootstrap 样本（r6 常量），不是 V0-cal 实测值。
+
 
 #### calib-v2 SB-A 收尾：本节各小节的总清单（DESIGN-r7a P2-10）
 
@@ -1549,12 +1567,13 @@ R2 自审（slug `capkit-b2judge-J17871`）发现的问题已直接改进本子�
 | `BUDGET.tsv` 与预算闸（按不同 `item_id` 计数） | A4 第 5 条 |
 | 三道提交门：并发 ≤ 8、盘空间、维护窗口 | A4 第 5 条 ④⑤⑥ |
 | 节点排除清单（`node_exclusions`、`--also-exclude`、最新一版核对） | A4 第 7、8 条 |
-| 缺额补足（`pilot2 shortfall`） | A5 第 5 条 |
+| 缺额补足（`pilot2 shortfall`） | A5 第 5 条；区组：A5b 第 1 条 |
 | 入选规则（`_select`：可用、登记顺序前 N、门后全部入选、补足排在原段之后） | A5 第 2 条 |
 | bootstrap pilot/2（`pilot2 bootstrap`、规则原文）；`inline_thresholds` 不再是阈值源（v2 登记表非空即 13） | A5 第 4 条；A2 第 5 条 |
 | `arm_threshold_config`（判定器取阈值只经它；`arm_config` 给配置） | A2 第 3 条（按臂 `ladder.json` 定 regime：第 4 条） |
 | `node_list` 与钉节点轮转 `pin-next`、`--expect-node`、`exclude --all-but` | A4 第 6～9 条 |
 | `remote.py` 白名单加 `sinfo`（`scancel` 仍不在内） | A4 第 10 条 |
+| 自测样本（含两遍可满足性样本）；第 21 条作业路径 e2e | A5 第 6 条；A5b 第 2、3 条 |
 
 ## 审阅记录（r2，2026-11-13）
 
