@@ -23,3 +23,9 @@ from
 |---|---|
 | `02_e0/E0/runs/w60/J5940628-r0-L1_e0a-nullsse-w60/raw/tiers/004_up-sub-hi/capload.w0.requests.capbin` | `03879caa60f43ae2f24fd6549c3fe932fb4bead8bed04d110d8b7c141301bfe6` |
 | `02_e0/E0/runs/w60/J5940628-r0-L1_e0a-nullsse-w60/raw/tiers/004_up-sub-hi/capload.w1.requests.capbin` | `585547bf8cdd64c1e19ee0b6d74adf9547271bff58d4785d36ac8907fef7d46f` |
+
+`plan_r4_S_fit_by_K.json` (used by `tests/launch/test_laddergen.py`, calib-v2 DESIGN-r7a 3.5
+test 12) is an extract, not a copy: the keys `S_fit_by_K`, `table_max_s` and
+`job_overhead_s_max_floor` of `02_e0/E0/analysis/calib-v2/r4/out/plan_r4.json` (sha256
+`551548b73e937c83ef4fe2d3b838fcc9aa9e23133ad1b8ae0964d097b38b6366`; written by `r4/plan_r4.py`),
+re-serialised with `json.dump(..., indent=1, sort_keys=True)`.

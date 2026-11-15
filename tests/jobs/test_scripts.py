@@ -485,6 +485,7 @@ printf '%%s\n' "$*" >> "%(calls)s"
 [[ $1 == -c ]] && { echo "%(purelib)s"; exit 0; }
 [[ $1 == -m && $2 == capjobs.copyback ]] && exit 1   # finalize keeps the node-local dirs
 [[ $1 == -m && $2 == capenv.gate ]] && exit "${FAKE_GATE_RC:-0}"
+[[ $1 == -m && $2 == capjobs.envfiles && $3 == job ]] && exit "${FAKE_JOB_RC:-0}"
 exit 0
 '''
 NVSMI_ROW = "0, GPU-0, 00000000:1B:00.0, NVIDIA B200, 183359, 0, 0, 580.1"
@@ -585,6 +586,38 @@ def test_inner_run_wires_registered_limits_into_profile_gate_and_launches(tmp_pa
     assert real_hwprofile.main(prof) == 0
     doc = json.load(open(jd / "env" / "hw_profile.json"))
     assert doc["profile"]["gpu_count"] == 1 and doc["profile"]["chassis_model"] == "DGXB200"
+
+
+@pytest.mark.parametrize("expect", ["", "umbriel-b200-012"])
+def test_inner_passes_the_expected_node_to_the_job_check(tmp_path, expect):
+    snap, calls, _ = run_snap(tmp_path, CAPJOBS_EXPECT_NODE=expect)
+    jd = tmp_path / "runs" / "J4242-r0"
+    jd.mkdir()
+    slurm_view_doc(jd)
+    r = subprocess.run(["bash", INNER, snap, str(jd), "run"], capture_output=True, text=True,
+                       env=slurm_env(tmp_path))
+    assert r.returncode == 0, (jd / "inner.run.log").read_text()
+    job = [ln.split(" ") for ln in calls.read_text().splitlines()
+           if ln.startswith("-m capjobs.envfiles job ")]
+    assert len(job) == 1 and flag(job[0], "--expect-node") == expect
+    assert flag(job[0], "--out") == str(jd / "job.json")
+
+
+def test_inner_wrong_node_is_env_invalid_before_any_measurement(tmp_path):
+    """calib-v2 P2-08a: the job check fails on another host (envfiles job exit 6) -> STATE
+    ENV_INVALID; no hardware profile, gate or launch runs."""
+    snap, calls, _ = run_snap(tmp_path, CAPJOBS_EXPECT_NODE="umbriel-b200-012")
+    jd = tmp_path / "runs" / "J4242-r0"
+    jd.mkdir()
+    slurm_view_doc(jd)
+    r = subprocess.run(["bash", INNER, snap, str(jd), "run"], capture_output=True, text=True,
+                       env=dict(slurm_env(tmp_path), FAKE_JOB_RC="6"))
+    assert r.returncode == 6
+    st = read_state(str(jd))[-1]
+    assert st[1] == "ENV_INVALID" and "umbriel-b200-012" in st[3]
+    text = calls.read_text()
+    for module in ("capenv.hwprofile", "capenv.gate", "capjobs.launches"):
+        assert module not in text, module
 
 
 def test_inner_without_workdir_is_env_invalid(tmp_path):

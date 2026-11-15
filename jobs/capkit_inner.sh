@@ -124,9 +124,12 @@ unset PYTHONPATH
 ef() { "$PY" -m capjobs.envfiles "$@" "${IDENT[@]}" --role jobs >> "$LOG" 2>&1; }
 ef imports --manifest "$SNAP/overlay_manifest.json" --dest "$PURELIB" \
     --out "$JOB_DIR/env/import_origin.json" || env_invalid "capkit packages not imported from $PURELIB"
+# job.json: snapshot verification and, for a pinned job, the expected node (submit --expect-node;
+# another host ends the job here, before any measurement)
 ef job --snap "$SNAP" --plan-id "$CAPJOBS_PLAN_ID" --node "${CAPJOBS_NODE:-unknown}" \
-    --deadline-epoch "$CAPJOBS_DEADLINE_EPOCH" --out "$JOB_DIR/job.json" \
-    || env_invalid "snapshot verification failed"
+    --deadline-epoch "$CAPJOBS_DEADLINE_EPOCH" --expect-node "${CAPJOBS_EXPECT_NODE:-}" \
+    --out "$JOB_DIR/job.json" \
+    || env_invalid "job check failed (snapshot or expected node ${CAPJOBS_EXPECT_NODE:-none})"
 ef image --check-file "$JOB_DIR/env/image_check.tsv" --out "$JOB_DIR/env/image.json" \
     || env_invalid "image check failed"
 [[ -n ${CAPJOBS_WORKDIR:-} ]] || env_invalid "job.env has no CAPJOBS_WORKDIR"

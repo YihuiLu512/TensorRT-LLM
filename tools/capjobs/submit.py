@@ -6,9 +6,11 @@ plan CONSTRAINTS section 2, RESOURCES sections 3-4).
     PYTHONPATH=<C>/tools:<C>/jobs python3.11 -m capjobs.submit <sub-command> ...
 
 Sub-commands: probe (the only path that runs `sbatch --test-only`), submit, reconcile-submit,
-local-record, slurm-view, jobstate, record-end, exclude, prep-tokenizer (the tokenizer copy, the
-only job that may mount a registered model dir read-only). See jobs/README.md. Nothing has a default resource value; every cluster command goes through
-capjobs.remote (ssh, allow-listed commands).
+local-record, slurm-view, jobstate, record-end, exclude, pin-next, prep-tokenizer (the tokenizer
+copy, the only job that may mount a registered model dir read-only). See jobs/README.md. Nothing
+has a default resource value; every cluster command goes through capjobs.remote (ssh,
+allow-listed commands). A register with an "expected" or "arm_config" section submits only a
+registered job-plan item through capjobs.budget's gates (INTERFACES erratum calib-v2-A4).
 """
 
 import argparse
@@ -23,13 +25,14 @@ import shlex
 import subprocess
 import sys
 
-from capcommon import ledger, policy
+from capcommon import jobplan, ledger, policy
 from capcommon.clock import wall_iso
 from capcommon.exitcodes import CONFIG, OK, RUNTIME, CapkitError, ConfigError
 from capcommon.hashing import is_git_sha, is_sha256_hex, sha256_bytes, sha256_file
 from capcommon.identity import ARM_RE, JOB_ID_RE
 
-from . import cdbexclude, jobstate, launchplan, remote, resources, slurmview, snapshot
+from . import (budget, cdbexclude, jobstate, launchplan, nodes, remote, resources, slurmview,
+               snapshot)
 
 PATH_RE = re.compile(r"^/[A-Za-z0-9._/@+-]*$")
 MODULE_RE = re.compile(r"^[a-z_][a-z0-9_]*(\.[a-z_][a-z0-9_]*)*$")
@@ -250,6 +253,7 @@ def resources_from_args(a):
         source = {"file": os.path.abspath(a.exclude_file),
                   "sha256": sha256_file(a.exclude_file)}
     else:
+        doc = None
         exclude = resources.normalize_exclude(a.exclude)
         source = {"literal": a.exclude}
     res = resources.validate({
@@ -257,6 +261,7 @@ def resources_from_args(a):
         "time": a.time, "mem": a.mem, "cpus_per_task": a.cpus_per_task, "gpus": a.gpus,
         "gpu_type": a.gpu_type, "job_name": a.job_name})
     res["exclude_source"] = source
+    res["exclude_doc"] = doc
     return res
 
 
@@ -506,6 +511,8 @@ def prepare_submit(a, code_state_fn):
     check_path(a.nvidia_smi, "--nvidia-smi")
     if a.min_local_free_bytes <= 0:
         raise SubmitError("--min-local-free-bytes must be > 0")
+    if a.expect_node is not None and not nodes.NODE_RE.match(a.expect_node):
+        raise SubmitError("bad --expect-node %r" % a.expect_node)
     includes = list(a.include or [])
     head, dirty = code_state_fn(code_root, ["jobs", "tools"] + includes)
     if not is_git_sha(head):
@@ -585,6 +592,8 @@ def _job_env(a, prep, plan_id, snap_dir):
         "CAPJOBS_COMPARABLE_FILE": prep["comparable"],
         "CAPJOBS_NVIDIA_SMI": a.nvidia_smi, "CAPJOBS_TIME_LIMIT_S": prep["res"]["time_s"],
         "CAPJOBS_CODE_SHA": prep["head"],
+        # the job's envfiles `job` check asserts the short host name when set (P2-08a)
+        "CAPJOBS_EXPECT_NODE": a.expect_node or "",
         # register.json "environment" (RS8: hard limits come from the register, never defaults)
         "CAPJOBS_MAX_ALLOC_GPUS": renv["gpus"], "CAPJOBS_IDLE_WINDOW_S": renv["idle_window_s"],
         "CAPJOBS_IDLE_BUSY_MAX_FRAC": renv["idle_busy_max_frac"],
@@ -595,6 +604,7 @@ def _job_env(a, prep, plan_id, snap_dir):
 
 def cmd_submit(a, runner, code_state_fn):
     prep = prepare_submit(a, code_state_fn)
+    gate = budget.gates(a, prep, get_runner(a, runner), a.dry_run)
     res = prep["res"]
     p = prep["paths"]
     plan_id = make_plan_id(a.experiment)
@@ -609,7 +619,10 @@ def cmd_submit(a, runner, code_state_fn):
                "code_head": prep["head"], "dirty": prep["dirty"],
                "snapshot_files": len(prep["file_plan"]), "exclude": res["exclude"],
                "register_environment": prep["register"]["environment"],
-               "time_budget": prep["budget"], "image": prep["image"]}
+               "time_budget": prep["budget"], "image": prep["image"],
+               "expect_node": a.expect_node,
+               "budget_gate": None if gate is None else {
+                   k: v for k, v in gate.items() if k != "budget_path"}}
     if a.dry_run:
         summary["dry_run"] = True
         summary["would_refuse_dirty"] = bool(prep["dirty"])
@@ -629,6 +642,8 @@ def cmd_submit(a, runner, code_state_fn):
     ledger_path = os.path.join(prep["workdir"], "submissions.tsv")
     common = {"plan_id": plan_id, "experiment": a.experiment}
     purpose = submission_purpose(a.registered_hw_sha)
+    if gate is not None:
+        ledger.budget_append(gate["budget_path"], budget.budget_row(gate, "RESERVED", plan_id))
     ledger.submissions_append(ledger_path, ledger_row(
         event="PLANNED", reason=purpose, arms=",".join(prep["arms"]), launches=a.launches,
         basis=a.basis,
@@ -663,6 +678,9 @@ def cmd_submit(a, runner, code_state_fn):
         return RUNTIME
     ledger.submissions_append(ledger_path, ledger_row(
         event="SUBMITTED", job_id=job_id, submitted_at=wall_iso(), **common))
+    if gate is not None:
+        ledger.budget_append(gate["budget_path"], budget.budget_row(gate, "JOB_ID", plan_id,
+                                                                    job_id))
     summary.update({"submitted": True, "job_id": job_id, "snapshot_sha256": snap_sha})
     emit(summary)
     return OK
@@ -754,6 +772,13 @@ def cmd_reconcile_submit(a, runner):
             event="SUBMITTED", job_id=a.job_id, submitted_at=cur["submitted_at"],
             reason=_one_line("%s; reconciled (%s): %s" % (
                 plan_purpose(ledger_path, a.plan_id), evidence, a.reason)), **common))
+        budget_path = os.path.join(workdir, budget.BUDGET_REL)
+        res_rows = [r for r in ledger.budget_rows(budget_path)
+                    if r["plan_id"] == a.plan_id and r["event"] == "RESERVED"]
+        if res_rows:  # a JOB_ID row never changes the budget count
+            ledger.budget_append(budget_path, dict(
+                {k: res_rows[-1][k] for k in ledger.BUDGET_COLUMNS if k != "event_at"},
+                event="JOB_ID", job_id=a.job_id))
         emit({"plan_id": a.plan_id, "job_id": a.job_id, "evidence": evidence})
         return OK
     sq = remote.run_remote(run, a.login_host, ["squeue", "-h", "--me", "-o", "%i %o"])
@@ -865,10 +890,59 @@ def cmd_record_end(a, runner):
     return OK
 
 
+def _exclude_all_but(a, runner, workdir, parts):
+    """--all-but: every node a live sinfo lists in the partitions except the target, which must
+    be in the registered node_list (P2-08a)."""
+    if a.node_list is None or not a.login_host or not a.ssh_timeout_s:
+        raise SubmitError("--all-but needs --node-list, --login-host and --ssh-timeout-s")
+    nl = nodes.node_list(workdir, a.node_list)
+    if a.all_but not in nl["nodes"]:
+        raise SubmitError("--all-but %s is not in the registered node_list %s"
+                          % (a.all_but, nl["relpath"]))
+    live, raw = nodes.sinfo_nodes(get_runner(a, runner), a.login_host, parts)
+    if a.all_but not in live:
+        raise SubmitError("--all-but %s is not in partitions %s (sinfo)" % (a.all_but, parts))
+    return {"schema": cdbexclude.RESULT_SCHEMA, "all_but": a.all_but,
+            "partitions": sorted(parts), "partition_nodes": sorted(live),
+            "exclude": sorted(set(live) - {a.all_but}),
+            "node_list": {"relpath": nl["relpath"], "sha256": nl["sha256"]},
+            "source": {"sinfo": [{"remote_argv": x["remote_argv"], "rc": x["rc"],
+                                  "stdout_sha256": sha256_bytes((x["stdout"] or "").encode())}
+                                 for x in raw]}}
+
+
 def cmd_exclude(a, runner):
+    parts = a.partition.split(",")
+    workdir = None if a.workdir is None else check_path(os.path.abspath(a.workdir), "--workdir")
+    if (a.all_but or a.also_exclude) and workdir is None:
+        raise SubmitError("--all-but / --also-exclude read REGISTRY.tsv: give --workdir")
+    also = None if a.also_exclude is None else nodes.node_exclusions(
+        workdir, a.also_exclude, require_latest=False)
+    if a.all_but is not None:
+        if also is not None and a.all_but in also["nodes"]:
+            raise SubmitError("--all-but %s is in node_exclusions %s" % (a.all_but,
+                                                                         also["relpath"]))
+        doc = _exclude_all_but(a, runner, workdir, parts)
+    else:
+        doc = _exclude_cdb(a, runner, parts)
+    if also is not None:
+        doc["exclude"] = sorted(set(doc["exclude"]) | set(also["nodes"]))
+        doc["also_exclude"] = {"relpath": also["relpath"], "sha256": also["sha256"],
+                               "version": also["version"], "nodes": sorted(also["nodes"])}
+    doc["computed_at"] = wall_iso()
+    with open(a.out, "x", encoding="utf-8") as f:
+        f.write(json.dumps(doc, indent=1, sort_keys=True) + "\n")
+    emit({"out": os.path.abspath(a.out), "exclude": doc["exclude"], "all_but": doc.get("all_but"),
+          "nodes_in_partitions": doc.get("nodes_in_partitions",
+                                         len(doc.get("partition_nodes") or []))})
+    return OK
+
+
+def _exclude_cdb(a, runner, parts):
+    if a.main_profile_spec is None:
+        raise SubmitError("--cdb-file / --live need --main-profile-spec")
     with open(a.main_profile_spec, "r", encoding="utf-8") as f:
         spec = json.load(f)
-    parts = a.partition.split(",")
     if a.cdb_file is not None:
         with open(a.cdb_file, "r", encoding="utf-8") as f:
             text = f.read()
@@ -892,12 +966,84 @@ def cmd_exclude(a, runner):
         source = {"live": remote_argv, "raw_out": os.path.abspath(a.raw_out)}
     doc = cdbexclude.compute_exclude(text, spec, parts)
     doc["source"] = source
-    doc["computed_at"] = wall_iso()
-    with open(a.out, "x", encoding="utf-8") as f:
-        f.write(json.dumps(doc, indent=1, sort_keys=True) + "\n")
-    emit({"out": os.path.abspath(a.out), "exclude": doc["exclude"],
-          "nodes_in_partitions": doc["nodes_in_partitions"],
-          "nodes_matching": len(doc["nodes_matching"])})
+    return doc
+
+
+def _snap_env_value(snap_dir, key):
+    """A CAPJOBS_* value from the plan's own job.env ('' when absent)."""
+    with open(os.path.join(snap_dir, "job.env"), "r", encoding="utf-8") as f:
+        for line in f:
+            if line.startswith("export %s=" % key):
+                vals = shlex.split(line.split("=", 1)[1])
+                return vals[0] if vals else ""
+    return ""
+
+
+def expect_node_of(workdir, plan_id):
+    """The --expect-node a submitted plan was given (its snapshot job.env); a job.json the job
+    already wrote must agree."""
+    cur = ledger.submissions_current(os.path.join(workdir, "submissions.tsv")).get(plan_id)
+    if cur is None or not cur["snapshot_dir"]:
+        raise SubmitError("plan %s has no submissions.tsv row with a snapshot" % plan_id)
+    node = _snap_env_value(cur["snapshot_dir"], "CAPJOBS_EXPECT_NODE")
+    if not node:
+        raise SubmitError("plan %s was submitted without --expect-node" % plan_id)
+    run_root = _snap_env_value(cur["snapshot_dir"], "CAPJOBS_RUN_ROOT")
+    if cur["job_id"] and run_root:
+        for p in sorted(glob.glob(os.path.join(run_root, "J%s-r*" % cur["job_id"], "job.json"))):
+            with open(p, "r", encoding="utf-8") as f:
+                jd = json.load(f)
+            if jd.get("plan_id") == plan_id and jd.get("expect_node") not in (None, node):
+                raise SubmitError("%s expect_node %r != job.env %r" % (p, jd.get("expect_node"),
+                                                                       node))
+    return node
+
+
+def cmd_pin_next(a, runner):
+    """The target node of the next pinned item of one comparison (DESIGN-r7a 4.5, P2-08a):
+    rotation of the registered node_list by sha256(seed_base|key|node); start after the node the
+    comparison's last RESERVED pinned item was given (a block's second slot takes its partner's
+    node); skip excluded, absent, down and drained nodes, each logged with its reason."""
+    workdir = check_path(os.path.abspath(a.workdir), "--workdir")
+    nl = nodes.node_list(workdir, a.node_list)
+    ex = nodes.node_exclusions(workdir, a.exclusions, require_latest=True)
+    items, plans = {}, []
+    for path in a.plan:
+        rel, sha = nodes.registered_path(workdir, path, "job_plan")
+        plans.append({"relpath": rel, "sha256": sha})
+        for it in jobplan.read(path):
+            if it["item_id"] in items:
+                raise SubmitError("item %s is in two of the --plan files" % it["item_id"])
+            items[it["item_id"]] = dict(it, plan=rel)
+    item = items.get(a.item)
+    if item is None or not item["pin"]:
+        raise SubmitError("--item %s is not a pinned item of the --plan files" % a.item)
+    rows = [r for r in ledger.budget_rows(os.path.join(workdir, budget.BUDGET_REL))
+            if r["event"] == "RESERVED" and r["item_id"] in items and items[r["item_id"]]["pin"]]
+    if any(r["item_id"] == a.item for r in rows):
+        raise SubmitError("item %s already has a RESERVED row" % a.item)
+    rec = {"t_wall": wall_iso(), "key": a.key, "item": a.item, "seed_base": a.seed_base,
+           "node_list": {"relpath": nl["relpath"], "sha256": nl["sha256"]},
+           "exclusions": {"relpath": ex["relpath"], "sha256": ex["sha256"]}, "plans": plans}
+    partner = [r for r in rows if item["block_id"] is not None
+               and items[r["item_id"]]["plan"] == item["plan"]
+               and items[r["item_id"]]["block_id"] == item["block_id"]]
+    if partner:
+        node = expect_node_of(workdir, partner[-1]["plan_id"])
+        rec.update({"previous": None, "chosen": node, "skipped": [],
+                    "rule": "block partner %s" % partner[-1]["item_id"]})
+    else:
+        prev = expect_node_of(workdir, rows[-1]["plan_id"]) if rows else None
+        live, _raw = nodes.sinfo_nodes(get_runner(a, runner), a.login_host,
+                                       a.partition.split(","), states=True)
+        node, skipped = nodes.pin_choice(nodes.rotation(nl["nodes"], a.seed_base, a.key), prev,
+                                         ex["nodes"], live)
+        rec.update({"previous": prev, "chosen": node, "skipped": skipped, "rule": "rotation"})
+    with open(a.log, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, sort_keys=True) + "\n")
+    emit(rec)
+    if rec["chosen"] is None:
+        raise SubmitError("no usable node in the rotation of %s (all skipped; logged)" % a.key)
     return OK
 
 
@@ -1065,6 +1211,11 @@ def build_parser():
     cp = p.add_mutually_exclusive_group(required=True)
     cp.add_argument("--comparable-file")
     cp.add_argument("--no-comparable", action="store_true")
+    p.add_argument("--expect-node", help="short host name the job must start on (else "
+                                         "ENV_INVALID before any measurement)")
+    p.add_argument("--plan-item", help="item_id of the registered job plan (gated registers)")
+    p.add_argument("--cluster-utc-offset", help="+HH:MM of the times scontrol prints (gated "
+                                                "registers: maintenance gate)")
     p.add_argument("--dry-run", action="store_true")
 
     p = sub.add_parser("reconcile-submit", help="close an UNKNOWN_SUBMIT plan from evidence")
@@ -1112,17 +1263,35 @@ def build_parser():
     p.add_argument("--status", required=True)
     p.add_argument("--reason", required=True)
 
-    p = sub.add_parser("exclude", help="compute --exclude from cdb output")
+    p = sub.add_parser("exclude", help="compute --exclude from cdb output, or every node but one")
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument("--cdb-file")
     src.add_argument("--live", action="store_true")
+    src.add_argument("--all-but", help="target node: exclude every other node a live sinfo "
+                                       "lists in --partition (needs --node-list)")
     p.add_argument("--cdb-query")
     p.add_argument("--raw-out")
     p.add_argument("--login-host")
     p.add_argument("--ssh-timeout-s", type=float)
-    p.add_argument("--main-profile-spec", required=True)
+    p.add_argument("--main-profile-spec", help="with --cdb-file / --live")
     p.add_argument("--partition", required=True)
+    p.add_argument("--workdir", help="<W> (REGISTRY.tsv) for --node-list / --also-exclude")
+    p.add_argument("--node-list", help="registered node_list the --all-but target must be in")
+    p.add_argument("--also-exclude", help="registered node_exclusions merged into the output")
     p.add_argument("--out", required=True)
+
+    p = sub.add_parser("pin-next", help="target node of the next pinned item of a comparison")
+    add_remote_args(p)
+    p.add_argument("--workdir", required=True)
+    p.add_argument("--node-list", required=True)
+    p.add_argument("--exclusions", required=True, help="latest registered node_exclusions")
+    p.add_argument("--key", required=True, help="comparison name")
+    p.add_argument("--seed-base", required=True)
+    p.add_argument("--plan", required=True, action="append",
+                   help="every registered job_plan.tsv of the comparison (repeatable)")
+    p.add_argument("--item", required=True, help="the pinned item about to be submitted")
+    p.add_argument("--partition", required=True)
+    p.add_argument("--log", required=True, help="<W>/02_e0/E0/cluster/pin_next.log")
 
     p = sub.add_parser("prep-tokenizer", help="tokenizer copy job (registered model dir, ro)")
     add_remote_args(p)
@@ -1167,6 +1336,8 @@ def main(argv=None, runner=None, code_state_fn=None):
             return cmd_record_end(a, runner)
         if a.cmd == "exclude":
             return cmd_exclude(a, runner)
+        if a.cmd == "pin-next":
+            return cmd_pin_next(a, runner)
         if a.cmd == "prep-tokenizer":
             return cmd_prep_tokenizer(a, runner)
     except CapkitError as e:

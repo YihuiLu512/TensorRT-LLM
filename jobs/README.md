@@ -7,7 +7,7 @@
 
 | 文件 | 在哪里跑 | 作用 |
 |---|---|---|
-| `tools/capjobs/submit.py` | agent VM（`python3.11`，只用标准库） | 唯一提交入口：`probe`、`submit`、`reconcile-submit`、`local-record`、`slurm-view`、`jobstate`、`record-end`、`exclude`、`prep-tokenizer` |
+| `tools/capjobs/submit.py` | agent VM（`python3.11`，只用标准库） | 唯一提交入口：`probe`、`submit`、`reconcile-submit`、`local-record`、`slurm-view`、`jobstate`、`record-end`、`exclude`、`pin-next`、`prep-tokenizer` |
 | `tools/capjobs/remote.py` | VM | ssh 命令构造与唯一执行点；远端命令白名单 `sbatch squeue sacct scontrol show cdb find`（没有 `scancel`） |
 | `tools/capjobs/resources.py` | VM | 资源参数校验与 sbatch 参数拼装（新写，不继承 WT-21 的资源段） |
 | `tools/capjobs/snapshot.py` | VM / 容器 | 不可变快照目录与 `MANIFEST.json`；`verify()` 在作业开头重算 |
@@ -47,7 +47,7 @@
   之后：建快照（只读）→ 写 `PLANNED` 行（`reason` 列是用途标记 `purpose=measurement` 或 `purpose=hw_profile_capture`）→ ssh `sbatch --parsable` → 写 `SUBMITTED` 行（作业号、`submitted_at`）。sbatch 明确报错（退出码不是 0、255，也不是 ssh 起不来或超时）写 `ENDED`/`SUBMIT_FAILED`；**结果不明**（ssh 超时或失败、sbatch 退出 0 却没有作业号）写 `NOTE` 行，`status` 为 `UNKNOWN_SUBMIT`（台账正式状态，只能出现在带 `submitted_at` 的 `NOTE` 行上；之后的 `SUBMITTED` / `ENDED` 行取代它）、`reason` 以用途标记开头、`submitted_at` 是这次 sbatch 的时刻：作业可能已经排队，计划保持打开，`record-end` 拒绝它，脚本不重投。两种情况退出码都是 4。
 - `reconcile-submit`：只处理 `UNKNOWN_SUBMIT` 的计划，由人在查过 squeue / sacct 之后调用，凭证据落状态：`--job-id J` 要求 `scontrol show job J` 的 `Command=` 恰为本计划快照里的 `jobs/capkit_job.sbatch`，或运行根下 `J<J>-r*/batch.tsv` 写着本计划号 → `SUBMITTED`（`submitted_at` 沿用 sbatch 的时刻）；`--not-submitted` 要求 `squeue -h --me -o '%i %o'` 退出 0 且没有一行含本计划快照目录、运行根下也没有写着本计划号的 `batch.tsv` → `ENDED`/`SUBMIT_FAILED`。证据不够就退出码 3，不写台账。
 - `local-record`：本机运行（作业号 `local-*`）的 `PLANNED` + `SUBMITTED` 两行，同样过五项断言、依据行与登记表检查。
-- `exclude`：`--cdb-file`（离线，如 `00_plan/cluster-probe/20261113/02d_cdb_b200.csv`）或 `--live`（经 ssh `cdb find`，原文先落 `--raw-out`）；`--main-profile-spec`（`capkit.cdb_main_profile/1`，显式列出画像字段与取值）；输出 `capkit.cdb_exclude/1`，`submit --exclude-file` 读它（分区必须与 `--partition` 相同）。给定分区里一台节点都没有 → 报错（NOT_RUN），没有一台符合主画像 → 报错（无阳性对照）。
+- `exclude`：`--cdb-file`（离线，如 `00_plan/cluster-probe/20261113/02d_cdb_b200.csv`）或 `--live`（经 ssh `cdb find`，原文先落 `--raw-out`）；`--main-profile-spec`（`capkit.cdb_main_profile/1`，显式列出画像字段与取值）；输出 `capkit.cdb_exclude/1`，`submit --exclude-file` 读它（分区必须与 `--partition` 相同）。给定分区里一台节点都没有 → 报错（NOT_RUN），没有一台符合主画像 → 报错（无阳性对照）。`--all-but <目标>`（经 ssh `sinfo` 现查分区全集减去目标）、`--also-exclude <已登记的 node_exclusions>`、子命令 `pin-next`（钉节点轮转），以及带 `expected` / `arm_config` 的登记表的六道提交门（`--plan-item`、`--cluster-utc-offset`、`--expect-node`、`BUDGET.tsv`）见 `INTERFACES.md` 勘误 calib-v2-A4。
 - `jobstate`：退出码 0 = ENDED（squeue 不再列出该作业，**并且** `sacct` 给出终态）、20 = 未结束、21 = 不知道（任一命令出错）。「不再列出」= `squeue -h -j J` 退出 0 且输出为空，或退出非 0 且 stderr 是 `Invalid job id specified`（作业已被 slurmctld 清出内存，此时只看 sacct）；其他 squeue 错误一律 21。
 - `record-end`：写 `ENDED` 行（`reason` 前面带上计划的用途标记）；集群作业必须先过 `jobstate` 的 ENDED 判据，`--status` 只能是 VALID / VOID / NOT_RUN / ENV_INVALID / CANCELLED；`UNKNOWN_SUBMIT` 的计划先走 `reconcile-submit`。
 - `slurm-view`：`scontrol show job`、`scontrol show node <NodeList>`、`squeue -h -w <node> -o '%i %u %T'` 原文与 sha 写进 `<作业目录>/env/slurm_view.json`；作业目录必须已存在（由作业建）。每项查询失败（rc ≠ 0 或 ssh 起不来 / 超时）就重试，最多 `--attempts` 次（缺省 3），第 k 次失败后等 `--retry-wait-s` × k 秒（缺省 2）；条目记 `attempts`、`retried_rcs` 与 `retried_stderr`（之前各次失败的 rc 与 stderr）。某项最后仍失败 ⇒ 后面的项不再查询（记 `attempts` 0，`stderr` 写 `not run: …`；第 1 项没给出单个节点时的第 2、3 项也这样记）、不写文件、退出码 4，标准输出的 `failed` 列出跑过且失败的项，调用方下一轮再调（作业最多等 `slurm_view_wait_s`）。最坏耗时与持续失败时证据在哪，见 INTERFACES 勘误「Fix SM-17 slurm-view ssh failures and SM-18 gRPC unrequested-call cancellation」第 1 条。

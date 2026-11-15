@@ -5,7 +5,8 @@
 Every cluster command is built as an argv list for the *remote* side first (so policy checks such
 as policy.check_test_only_argv see real tokens), then wrapped into an ssh argv whose last element
 is the shell-quoted remote command. The Runner is injectable: tests pass a stub and never execute
-ssh. Only read-only Slurm commands plus sbatch are allowed (plan CONSTRAINTS section 7).
+ssh. Only read-only Slurm commands (sinfo included) plus sbatch are allowed (plan CONSTRAINTS
+section 7).
 """
 
 import re
@@ -17,8 +18,9 @@ from capcommon.exitcodes import ConfigError
 HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,253}$")
 
 # First token of every remote command this package may run (CONSTRAINTS 7: front end only does
-# job management). scancel is deliberately absent: cancelling is a human decision.
-ALLOWED_REMOTE = ("sbatch", "squeue", "sacct", "scontrol", "cdb")
+# job management). scancel is deliberately absent: cancelling is a human decision. sinfo only
+# queries (exclude --all-but, pin-next; erratum calib-v2-A4), so its arguments are not limited.
+ALLOWED_REMOTE = ("sbatch", "squeue", "sacct", "scontrol", "cdb", "sinfo")
 SCONTROL_ALLOWED_SUB = ("show",)
 
 
