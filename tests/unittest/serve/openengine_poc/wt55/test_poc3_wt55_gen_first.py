@@ -118,6 +118,11 @@ def test_a_generation_first_prefill_without_a_disagg_request_id_is_refused():
 @pytest.mark.parametrize("generation_first", [True, False], ids=["declared", "undeclared"])
 def test_the_generation_leg_never_sends_schedule_style_in_extra(generation_first):
     # EX-DSG-7: schedule_style is a prefill-only extra key; the decode call has it in kv.session.
+    if not generation_first:
+        # SV-DSG-8: a generation-first decode call needs the engine to declare the capability.
+        with pytest.raises(ValueError, match=r"generation-first.*trtllm\.disagg\.generation_first"):
+            _map(_gen_first_gen_params(), _caps(generation_first=False))
+        return
     request = _map(_gen_first_gen_params(), _caps(generation_first=generation_first))
     assert request.request_type is None
     assert conv.REQ_SCHEDULE_STYLE not in request.extra
