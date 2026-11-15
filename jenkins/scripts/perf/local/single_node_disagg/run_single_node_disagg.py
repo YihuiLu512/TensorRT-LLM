@@ -92,9 +92,9 @@ PLUGIN_OPTION = f"-p {HARNESS_PACKAGE}.pytest_plugin"
 DISAGG_MODES = ("e2e", "gen_only")
 TIME_BREAKDOWN_MODIFIER = "time_breakdown"
 # No role runs under an MPI launcher here (a worker with several GPUs spawns its
-# MPI workers itself), so no role gets the launcher's MPI variables. The SLURM_
-# variables stay: every role names the address exchange directory after SLURM_JOB_ID.
-_MPI_ENV_PREFIXES = ("PMI", "OMPI_", "MPI_")
+# MPI workers itself), so no role gets the launcher's MPI or Slurm variables, as
+# slurm_run.sh clears them for a one-node job; every role then names its exchange directories "local".
+_MPI_ENV_PREFIXES = ("PMI", "OMPI_", "MPI_", "SLURM_")
 # State an earlier run leaves in a test's output directory.
 STALE_PATTERNS = (
     "hostnames-*",
@@ -255,7 +255,8 @@ def role_env(
     """The environment of ``role``'s pytest.
 
     Every role: ``DISAGG_SERVING_TYPE``, the config folder of the test, the
-    single-node switch and the run's tag, without the launcher's MPI variables.
+    single-node switch and the run's tag, without the launcher's MPI and Slurm
+    variables.
     A worker also gets its GPUs and the cluster's UCX variables (after clearing
     the ones the submit scripts clear); a ``gen_only`` generation worker gets
     the fill gate.
@@ -461,11 +462,15 @@ def supervise(
     A generation worker's pytest exiting touches its ``gen_server_<i>.done``.
     Once the benchmark's pytest exits, the other roles get ``after_benchmark_s``
     to finish; the roles still running then, or when ``timeout_s`` runs out,
-    are stopped (their whole session).
+    are stopped (their process groups). A role that fails before the benchmark
+    has written its status file stops the others at once. Roles still running
+    a while after being stopped are noted and left to the caller.
     """
     notes = []
     start = time.monotonic()
     benchmark_done = None
+    failed = None
+    stopped_at = None
     while True:
         now = time.monotonic()
         for run in runs:
@@ -476,10 +481,25 @@ def supervise(
                     touch(os.path.join(test_output_dir, f"gen_server_{run.role[4:]}.done"))
                 if run.role == "BENCHMARK":
                     benchmark_done = now
+                elif (
+                    run.returncode != 0
+                    and failed is None
+                    and not _benchmark_status(test_output_dir)
+                ):
+                    failed = run
         running = [run for run in runs if run.returncode is None]
         if not running:
             return notes
-        if now - start > timeout_s:
+        if stopped_at is not None:
+            if now - stopped_at > STOP_GRACE_S + _STOP_WAIT_S:
+                notes.append(f"still running after being stopped: {[r.role for r in running]}")
+                return notes
+            time.sleep(poll_s)
+            continue
+        if failed is not None:
+            reason = f"{failed.role} exited with {failed.returncode} before the benchmark"
+            failed = None
+        elif now - start > timeout_s:
             reason = f"the run took over {timeout_s:.0f}s"
         elif benchmark_done is not None and now - benchmark_done > after_benchmark_s:
             reason = f"still running {after_benchmark_s:.0f}s after the benchmark exited"
@@ -490,8 +510,20 @@ def supervise(
             notes.append(f"stopped {run.role}: {reason}")
             run.stopped = True
             stop_group(run.proc.pid, STOP_GRACE_S)
-        timeout_s = float("inf")
-        benchmark_done = None
+        stopped_at = time.monotonic()
+
+
+# How long a stopped role may take to exit after its SIGKILL.
+_STOP_WAIT_S = 60.0
+
+
+def _benchmark_status(test_output_dir: str) -> bool:
+    """Whether the benchmark has written a status file (its measured clients are over)."""
+    try:
+        names = os.listdir(test_output_dir)
+    except OSError:
+        return False
+    return any(fnmatch.fnmatch(name, "benchmark_status.*.txt") for name in names)
 
 
 def group_members(pgid: int) -> list[int]:
@@ -700,7 +732,10 @@ def _main(args: argparse.Namespace, environ: Mapping[str, str] | None) -> int:
             if run.proc is not None and run.proc.poll() is None:
                 run.stopped = True
                 stop_group(run.proc.pid, STOP_GRACE_S)
-                run.returncode = run.proc.wait()
+                try:
+                    run.returncode = run.proc.wait(timeout=_STOP_WAIT_S)
+                except subprocess.TimeoutExpired:
+                    report["notes"].append(f"{run.role} did not exit after SIGKILL")
                 run.ended = time.monotonic()
         time.sleep(SETTLE_S)
         leftover = tagged_pids(tag, exclude=(os.getpid(),))

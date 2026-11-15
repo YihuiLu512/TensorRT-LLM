@@ -35,6 +35,11 @@ def harness_path(tmp_path_factory):
         yield
     finally:
         sys.path.remove(str(directory))
+        # The modules loaded from that directory go too: later tests import their own.
+        for name, module in list(sys.modules.items()):
+            origin = getattr(module, "__dict__", {}).get("__file__")
+            if origin and origin.startswith(str(directory)):
+                del sys.modules[name]
 
 
 @pytest.fixture(scope="module")

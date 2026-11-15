@@ -253,7 +253,8 @@ def test_log_mirror_copies_what_the_source_gains(arms, tmp_path):
 @pytest.mark.parametrize(
     "name, env, expected",
     [
-        ("E4-chain", {}, True),
+        ("E4-chain", {}, False),
+        ("E4-chain", {"TRTLLM_PERF_SINGLE_NODE": "1"}, True),
         ("E4-base", {}, False),
         ("E4-base", {"TRTLLM_PERF_SINGLE_NODE": "1"}, True),
         ("E4-ctx", {}, False),
@@ -740,21 +741,6 @@ def test_orchestrator_pid_of_another_node_is_not_read(arms, tmp_path, monkeypatc
     assert arms._orchestrator_pid(str(tmp_path)) is None
 
 
-@pytest.mark.parametrize(
-    "env, expected",
-    [
-        ({"TRTLLM_PERF_ARM": "E4-chain"}, "gen_engine_3.log"),
-        ({"TRTLLM_PERF_ARM": "E4-ctx"}, "gen_server_3.log"),
-        ({"TRTLLM_PERF_ARM": "E4-chain", "TRTLLM_PERF_SINGLE_NODE": "1"}, "gen_server_3.log"),
-        ({"TRTLLM_PERF_ARM": "A-def"}, "gen_server_3.log"),
-        ({}, "gen_server_3.log"),
-    ],
-)
-def test_gen_log_name(arms, env, expected):
-    # Under srun the generation worker's own output owns gen_server_<i>.log.
-    assert arms.gen_log_name(3, env) == expected
-
-
 # ----------------------------------------------------------------------------- the reader's answers
 
 
@@ -856,3 +842,46 @@ def test_one_server_preparation_refuses_the_disagg_arms(arms, tmp_path, name):
     # The legacy serve perf tests start one server for whatever arm is selected.
     with pytest.raises(arms.ArmError, match="not one server"):
         arms.prepare_server(["trtllm-serve", "m"], arms.DISAGG_ARMS[name], str(tmp_path))
+
+
+def test_proof_block_counts_orphan_handoffs(arms, harness_path):
+    from openengine_chain import proof
+
+    accepted = proof.ENGINE_ACCEPTED_BUCKETS
+    sums = {
+        proof.CTX: {"counts": {proof.ENGINE_PREFILL_READY_SENT: 16}},
+        proof.GEN: {"counts": {accepted[proof.BUCKET_GENERATION_ONLY]: 14}},
+    }
+    block = arms._proof_block(sums, None, "ok", {}, [proof.CTX, proof.GEN], [])
+    assert (block["handoffs"], block["orphan_handoffs"]) == (16, 2)
+    one_leg = arms._proof_block(sums, None, "ok", {}, [proof.CTX], [])
+    assert one_leg["orphan_handoffs"] is None, "one leg alone cannot count orphans"
+
+
+def test_reading_carries_the_workers_clock(arms, tmp_path):
+    view = arms.role_view(arms.DISAGG_ARMS["E4-base"], "gen")
+    reader, _ = _reader(arms, view, tmp_path)
+    before = arms.time.time_ns()
+    doc = reader.read("ab12", 0, "before")
+    assert isinstance(doc["t_ns"], int) and before <= doc["t_ns"] <= arms.time.time_ns()
+
+
+def test_process_config_takes_the_last_option(arms, tmp_path):
+    import subprocess
+    import sys
+
+    first, last = tmp_path / "first.yaml", tmp_path / "last.yaml"
+    first.write_text(yaml.safe_dump({"which": "first"}))
+    last.write_text(yaml.safe_dump({"which": "last"}))
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)", "--config", str(first),
+         f"--extra_llm_api_options={last}"]
+    )  # fmt: skip
+    try:
+        deadline = arms.time.monotonic() + 10
+        while arms._process_config(proc.pid) is None and arms.time.monotonic() < deadline:
+            arms.time.sleep(0.05)
+        assert arms._process_config(proc.pid) == {"which": "last"}
+    finally:
+        proc.kill()
+        proc.wait()

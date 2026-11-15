@@ -382,9 +382,9 @@ def settled_counters(ctx: str, gen: str) -> dict[str, dict[str, int]]:
 
 
 def measure(ctx: str, gen: str, config: LoadConfig) -> LoadRun:
-    """Read both engines, run the load, read them again once their counters settle."""
+    """Read both engines, run the load, read them again; each read waits for the counters to settle."""
     info = {"ctx": dr.server_info(ctx), "gen": dr.server_info(gen)}
-    before = {"ctx": read_counters(ctx), "gen": read_counters(gen)}
+    before = settled_counters(ctx, gen)
     cpu = os.times()
     records, duration = run_load(ctx, gen, config)
     used = os.times()

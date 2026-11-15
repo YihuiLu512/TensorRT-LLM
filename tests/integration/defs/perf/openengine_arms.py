@@ -1534,9 +1534,9 @@ def kv_transfer_env(env: Mapping[str, str]) -> dict[str, str]:
 class LogMirror:
     """Copies what a log file gains to another file, as it grows.
 
-    Under :data:`ENV_SINGLE_NODE` or a chain, the generation worker's log
-    that perf sanity reads the engine's per-iteration lines from
-    (:func:`gen_log_name`) is written this way (see :func:`gen_log_source`).
+    Under :data:`ENV_SINGLE_NODE`, the generation worker's
+    ``gen_server_<i>.log`` that perf sanity reads the engine's per-iteration
+    lines from is written this way (see :func:`gen_log_source`).
     """
 
     def __init__(self, source: Callable[[], str | None], dest: str) -> None:
@@ -1580,31 +1580,14 @@ def gen_log_source(server: "ArmServer", server_log: str) -> Callable[[], str | N
 
 
 def mirrors_gen_log(view: Arm, environ: Mapping[str, str] | None = None) -> bool:
-    """Whether a generation worker writes its engine's output to its :func:`gen_log_name` itself."""
-    env = os.environ if environ is None else environ
-    return not view.in_process or env.get(ENV_SINGLE_NODE) == "1"
+    """Whether a generation worker writes its engine's output to ``gen_server_<i>.log`` itself.
 
-
-def gen_log_name(index: int | str, environ: Mapping[str, str] | None = None) -> str:
-    """The file, in the test's output directory, that holds generation worker ``index``'s engine lines.
-
-    ``gen_server_<i>.log``, except for a chained generation worker that no
-    :data:`ENV_SINGLE_NODE` driver runs: there an srun step writes the
-    worker's own output to ``gen_server_<i>.log``, without appending, while
-    the chain's engine logs elsewhere, so the worker copies the engine log to
-    ``gen_engine_<i>.log`` and no two writers share a file. Reads the arm's
-    name only (never raises), as the benchmark's log parsing needs.
+    Only under :data:`ENV_SINGLE_NODE`. Otherwise the worker's srun step
+    writes that file, without appending, so a second writer would overwrite
+    lines.
     """
     env = os.environ if environ is None else environ
-    arm = DISAGG_ARMS.get(env.get(ENV_ARM, ""))
-    if (
-        arm is not None
-        and arm.gen is not None
-        and not arm.gen.in_process
-        and env.get(ENV_SINGLE_NODE) != "1"
-    ):
-        return f"gen_engine_{index}.log"
-    return f"gen_server_{index}.log"
+    return env.get(ENV_SINGLE_NODE) == "1"
 
 
 _SPAWNED_MARK = "multiprocessing.spawn"
@@ -1617,6 +1600,10 @@ def _read_cmdline(pid: int) -> str | None:
             return f.read().replace(b"\0", b" ").decode("utf-8", "replace")
     except OSError:
         return None
+
+
+# Set by trtllm-llmapi-launch: the executor runs in the launcher's MPI ranks, not under the process.
+_SPAWN_PROXY_ENV = "TLLM_SPAWN_PROXY_PROCESS"
 
 
 def _process_argv(pid: int) -> list[str] | None:
@@ -1930,6 +1917,11 @@ class RoleReader:
         if env is None:
             notes.append(f"KV transfer: environment of process {pid} not readable; planned one")
             env = self.env
+        if env.get(_SPAWN_PROXY_ENV) == "1":
+            notes.append(
+                f"KV transfer: {_SPAWN_PROXY_ENV}=1, so the executor runs in the launcher's MPI "
+                "ranks, whose environment is not read"
+            )
         transceiver = config.get("cache_transceiver_config") or {}
         if not isinstance(transceiver, Mapping):
             transceiver = {}
@@ -2437,6 +2429,10 @@ def build_disagg_result(
     orch_cpu = None
     if ticks.get(PHASE_BEFORE) is not None and ticks.get(PHASE_AFTER) is not None:
         orch_cpu = (ticks[PHASE_AFTER] - ticks[PHASE_BEFORE]) / os.sysconf("SC_CLK_TCK")
+        if orch_cpu < 0:
+            # A process of its tree exited in between and took its ticks along.
+            notes.append("orchestrator CPU time not measured: its process tree lost processes")
+            orch_cpu = None
     client_cpu = None
     if PHASE_BEFORE in probe.client_cpu and PHASE_AFTER in probe.client_cpu:
         client_cpu = round(probe.client_cpu[PHASE_AFTER] - probe.client_cpu[PHASE_BEFORE], 3)
@@ -2457,16 +2453,16 @@ def build_disagg_result(
         key: _role_values_of(after, probe, lambda r, k=key: (r.get("kv_transfer") or {}).get(k))
         for key in ("backend", "runtime", "env")
     }
+    concurrency = _int_or_none(
+        option_value(client_cmd, "--max-concurrency") or option_value(client_cmd, "--concurrency")
+    )
     return {
         "case": probe.arm.case,
         "arm": probe.arm.name,
         "topology": probe.arm.topology,
         "test_id": test_id,
         "benchmark_mode": benchmark_mode,
-        "concurrency": _int_or_none(
-            option_value(client_cmd, "--max-concurrency")
-            or option_value(client_cmd, "--concurrency")
-        ),
+        "concurrency": concurrency,
         "dataset": dataset_kind(client_cmd),
         "run": run_number(env),
         "metrics": metrics,
@@ -2476,9 +2472,7 @@ def build_disagg_result(
         "client": {"cpu_s": client_cpu},
         "kv_transfer": kv_transfer,
         "chain_proof": proof_block,
-        "first_output": first_output_block(
-            probe, _int_or_none(option_value(client_cmd, "--max-concurrency"))
-        ),
+        "first_output": first_output_block(probe, concurrency),
         "alignment": {key: alignment[key] for key in DISAGG_ALIGNMENT_KEYS},
         "versions": {"trtllm": trtllm_sha(env), "ds": None},
         "nodes": sorted(

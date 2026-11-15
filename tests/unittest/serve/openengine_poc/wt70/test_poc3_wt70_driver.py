@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import subprocess
@@ -13,9 +14,6 @@ from pathlib import Path
 
 import pytest
 import yaml
-
-# The local submit script, whose fill gate the driver repeats.
-__extra_import_path__ = ["~/jenkins/scripts/perf/local"]
 
 pytestmark = pytest.mark.cpu_only
 
@@ -123,10 +121,13 @@ def test_role_env(driver, tmp_path, ucx):
         assert env["TRTLLM_PERF_SINGLE_NODE"] == "1" and env["DISAGG_CONFIG_FOLDER"] == str(
             tmp_path
         )
-        assert env["SLURM_JOB_ID"] == "77", "every role names the exchange directory after the job"
-        assert not {"PMIX_RANK", "PMI_SIZE", "OMPI_COMM_WORLD_SIZE", "PYTEST_CURRENT_TEST"} & set(
-            env
-        )
+        assert not {
+            "PMIX_RANK",
+            "PMI_SIZE",
+            "OMPI_COMM_WORLD_SIZE",
+            "SLURM_JOB_ID",
+            "PYTEST_CURRENT_TEST",
+        } & set(env)
     assert (
         envs["GEN_0"]["CUDA_VISIBLE_DEVICES"] == "0,1"
         and envs["CTX_0"]["CUDA_VISIBLE_DEVICES"] == "2"
@@ -151,8 +152,22 @@ def test_e2e_has_no_fill_gate(driver):
     assert "TLLM_BENCHMARK_REQ_QUEUES_SIZE" not in env
 
 
+def _local_submit():
+    """The local submit script, whose fill gate the driver repeats; loading it leaves sys.path as it was."""
+    saved = list(sys.path)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "wt70_local_submit", DRIVER.parent / "submit.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        sys.path[:] = saved
+    return module
+
+
 def test_fill_gate_matches_the_submit_script(driver, tmp_path):
-    import submit
+    submit = _local_submit()
 
     for gen in (
         {"max_batch_size": 8},
@@ -454,3 +469,21 @@ def test_driver_repeats_the_arms_module(driver, arms):
     assert driver.DISAGG_MODES == arms.DISAGG_ARM_MODES
     for config in ({}, {"tensor_parallel_size": 2, "pipeline_parallel_size": 2}):
         assert driver._parallel(config) == arms.parallel_gpus(config)
+
+
+def test_supervise_stops_the_others_when_a_role_fails_early(quick, tmp_path):
+    driver = quick
+    runs = [
+        driver.RoleRun("GEN_0", _script("import sys; sys.exit(3)"), str(tmp_path / "g.log"), ["0"]),
+        driver.RoleRun(
+            "BENCHMARK", _script("import time; time.sleep(600)"), str(tmp_path / "b.log"), None
+        ),
+    ]
+    for run in runs:
+        driver.start_role(run, dict(os.environ), str(tmp_path))
+    start = time.monotonic()
+    notes = driver.supervise(
+        runs, test_output_dir=str(tmp_path), timeout_s=600, after_benchmark_s=600, poll_s=0.1
+    )
+    assert notes == ["stopped BENCHMARK: GEN_0 exited with 3 before the benchmark"]
+    assert runs[1].stopped and time.monotonic() - start < 30
