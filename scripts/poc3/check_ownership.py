@@ -193,6 +193,7 @@ _NO_EVENTS_SUBSCRIPTION_TEST_WAS = "test_kv_cache_events_unsupported_raise_a_new
 _NO_EVENTS_SUBSCRIPTION_TEST = "test_kv_cache_events_unsupported_answer_no_events_each_call"
 _GENERATION_FIRST_TEST_WAS = "test_schedule_style_is_unimplemented_without_generation_first"
 _GENERATION_FIRST_TEST = "test_context_only_takes_a_generation_first_schedule_style"
+_GENERATION_LEG_TEST = "test_the_generation_leg_never_sends_schedule_style_in_extra"
 # The registry of lines check_invariants.py lets CS-20 add.
 INVARIANT_ADDITIONS = "scripts/poc3/invariant_additions.yaml"
 # Gate files only WT-30 and its fixes may change (see the module docstring).
@@ -567,6 +568,28 @@ OWNERSHIP: dict[str, list[Rule]] = {
         _exception(
             f"{POC_TESTS}/wt11/test_poc2_wt11_no_silent_drop.py",
             "CT-14 ③: disaggregated_params asserted as mapped instead of ValueError",
+        ),
+        # SV-DSG-8, which WT-51-fix2 makes: the undeclared case of WT-55's test of the generation
+        # leg asserts that the decode call of a generation-first request is refused.
+        _exception(
+            f"{POC_TESTS}/wt55/test_poc3_wt55_gen_first.py",
+            "SV-DSG-8 flip only: the undeclared case of"
+            f" {_GENERATION_LEG_TEST} asserts the refusal of the decode call",
+            item="WT-51-fix2",
+            changes=(
+                _change(
+                    _GENERATION_LEG_TEST,
+                    added=(
+                        "    if not generation_first:",
+                        "        # SV-DSG-8: a generation-first decode call needs the engine to"
+                        " declare the capability.",
+                        "        with pytest.raises(ValueError,"
+                        r' match=r"generation-first.*trtllm\.disagg\.generation_first"):',
+                        "            _map(_gen_first_gen_params(), _caps(generation_first=False))",
+                        "        return",
+                    ),
+                ),
+            ),
         ),
     ],
     "WT-52": _own(

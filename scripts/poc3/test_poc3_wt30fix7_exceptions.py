@@ -314,8 +314,9 @@ def test_every_exception_listing_its_changes_is_for_one_work_item():
         (f"{poc}/wt15/test_poc2_wt15_metrics.py", "WT-53-fix1"),
         (f"{oe}/test_disagg_control.py", "WT-55"),
         (f"{oe}/test_disagg_servicer.py", "WT-55"),
+        (f"{poc}/wt55/test_poc3_wt55_gen_first.py", "WT-51-fix2"),
     }
-    assert check_ownership.NAMED_FIXES == ["WT-53-fix1"]
+    assert check_ownership.NAMED_FIXES == ["WT-51-fix2", "WT-53-fix1"]
 
 
 def _others(item: str) -> list[str]:
