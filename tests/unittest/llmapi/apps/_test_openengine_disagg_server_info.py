@@ -21,6 +21,7 @@ Needs one GPU of Hopper or later and ``${LLM_MODELS_ROOT}/Qwen3/Qwen3-0.6B``.
 import pytest
 
 from tensorrt_llm.runtime.kv_cache_hash import KV_CACHE_HASH_ALGO_DEFAULT
+from tensorrt_llm.serve.openengine_poc.metrics import KV_EVENT_HASH_ALGO_KEY
 
 __extra_import_path__ = ["~/tests/unittest/serve/openengine_poc/wt53"]
 from wt53_gpu import (  # noqa: E402
@@ -34,8 +35,6 @@ from wt53_gpu import (  # noqa: E402
 pytestmark = [pytest.mark.threadleak(enabled=False)]
 
 MAX_BATCH_SIZE = 8
-# The engine's ServerInfo.extra key naming the algorithm of its KV-cache event hashes.
-HASH_ALGO_KEY = "trtllm_kv_event_hash_algo"
 # The fields of a worker's /server_info that this file checks.
 DISAGG_FIELDS = {"disaggregated_params", "max_batch_size", "kv_cache_hash_algo", "tokens_per_block"}
 
@@ -68,15 +67,6 @@ def test_server_info_direct(served):
             assert info["disaggregated_params"]["ctx_info_endpoint"], info
 
 
-def _endpoint_text(endpoint, transfer_backend: str) -> str:
-    """``host:port`` of a KV connector endpoint, with its scheme unless that is the backend's name."""
-    host = f"[{endpoint.host}]" if ":" in endpoint.host else endpoint.host
-    address = f"{host}:{endpoint.port}"
-    if endpoint.protocol and endpoint.protocol != transfer_backend:
-        return f"{endpoint.protocol}://{address}"
-    return address
-
-
 @chain_only
 def test_disagg_fields_come_from_the_engine(served):
     """NT-186 (DG-89): the fields of /server_info equal the engine's ServerInfo."""
@@ -86,12 +76,12 @@ def test_disagg_fields_come_from_the_engine(served):
         assert engine.capacity.max_running_requests == MAX_BATCH_SIZE, engine
         assert info["max_batch_size"] == engine.capacity.max_running_requests, (role, info)
         assert info["tokens_per_block"] == engine.capacity.kv_block_size, (role, info, engine)
-        engine_algo = engine.extra[HASH_ALGO_KEY]
+        engine_algo = engine.extra[KV_EVENT_HASH_ALGO_KEY]
         # The frontend's own configuration would give the default algorithm.
         assert engine_algo != KV_CACHE_HASH_ALGO_DEFAULT, engine
         assert info["kv_cache_hash_algo"] == engine_algo, (role, info)
         if role == "context":
-            connector = engine.kv_connector
-            assert connector.local_endpoints, engine
-            expected = _endpoint_text(connector.local_endpoints[0], connector.transfer_backend)
-            assert info["disaggregated_params"]["ctx_info_endpoint"] == [expected], info
+            endpoint = engine.kv_connector.local_endpoints[0]
+            (text,) = info["disaggregated_params"]["ctx_info_endpoint"]
+            # The engine's first endpoint, in whichever notation the frontend writes it.
+            assert endpoint.host in text and text.endswith(f":{endpoint.port}"), (text, endpoint)

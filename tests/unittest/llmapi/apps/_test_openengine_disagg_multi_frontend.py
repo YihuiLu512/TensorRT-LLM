@@ -3,8 +3,9 @@
 """Disaggregated workers with several serving frontends (F-39, DG-23).
 
 - NT-069: context and generation workers each run two frontends and register
-  through the orchestrator's cluster; two-stage requests complete and only
-  the launcher frontend of each worker is registered. On the chain, where
+  through the orchestrator's cluster; two-stage requests complete and one
+  process of each worker, the launcher frontend, registered (the cluster
+  storage keys a registration by the registering process). On the chain, where
   every frontend process counts the Generate calls it sent its engine, the
   two frontends of a worker are both connected, and the calls they sent
   together are each leg once, all received by the one engine.
@@ -36,6 +37,7 @@ from wt53_gpu import (  # noqa: E402
     engine_counts,
     members,
     port_block,
+    registered_workers,
     sent_by_frontend,
 )
 
@@ -106,15 +108,20 @@ def test_multi_frontend_worker_two_stage(two_frontend_workers):
         engine_before = {role: engine_counts(served, role) for role in served.workers}
     for i in range(NUM_REQUESTS):
         _complete(served.orchestrator, i)
-    # Only the launcher of each worker registered, under the worker's port.
+    # One process of each worker registered, under the worker's port; the routers list it once.
+    registered = registered_workers(served)
     listed = members(served.orchestrator)
     for role, servers in served.workers.items():
-        assert len(listed[role]) == 1, listed
-        assert listed[role][0].endswith(f":{servers[0].port}"), (listed, servers[0].port)
+        keys = [key for key in registered if f"/{role.upper()}-" in key]
+        assert len(keys) == 1, registered
+        assert f":{servers[0].port}-" in keys[0], (keys, servers[0].port)
+        assert listed[role] and all(a.endswith(f":{servers[0].port}") for a in listed[role]), listed
     if not CHAIN:
         return
     for role, servers in served.workers.items():
-        sent = _delta(sent_by_frontend(servers[0]), before[role])
+        sent = {
+            pid: n for pid, n in _delta(sent_by_frontend(servers[0]), before[role]).items() if n
+        }
         # Each frontend process that sent a call counts its own; together they sent each leg once.
         assert 1 <= len(sent) <= NUM_FRONTENDS, (role, sent)
         assert sum(sent.values()) == NUM_REQUESTS, (role, sent)

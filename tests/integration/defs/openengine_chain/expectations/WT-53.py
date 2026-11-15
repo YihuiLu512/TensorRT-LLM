@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""WT-53's tests: KV-cache-aware routing, conditional disaggregation and the worker readings.
+"""Tests of KV-cache-aware routing, conditional disaggregation and the worker readings.
 
 ``test_workers.py`` sends the legs to the worker frontends itself: the
 KV-cache-aware router tests send both legs (``direct_two_leg``), the eviction
@@ -15,14 +15,14 @@ entry.
 
 ``test_workers_kv_cache_events`` hashes the request with the default
 algorithm (``v1_block_key``) and looks for the hashes among the events'
-blocks; on the chain each event names the algorithm the engine declares in
+blocks; on the trtllm chain each event names the algorithm the engine declares in
 its ``GetServerInfo`` (``trtllm_kv_event_hash_algo``), which is another one,
 so the test cannot match a block. A router reads the algorithm from the events:
 ``_test_openengine_disagg_kv_aware.py::test_kv_cache_events_direct`` checks
 the chain's events that way.
 
-NT-055 and NT-186 read each worker frontend's ``/server_info`` and its
-engine's ``GetServerInfo``, which are not generation requests.
+NT-055 reads each worker frontend's ``/server_info``, and NT-186 also its
+engine's ``GetServerInfo``; neither is a generation request.
 """
 
 from openengine_chain.conventions import CHAIN_TRTLLM
@@ -113,6 +113,6 @@ EXPECTATIONS = [
         "WT-53",
         "_test_openengine_disagg_server_info.py::*",
         NO_ENGINE_TRAFFIC,
-        "reads /server_info and GetServerInfo only",
+        "reads /server_info, and GetServerInfo, only",
     ),
 ]

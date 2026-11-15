@@ -5,7 +5,7 @@
 The tests run on the in-process workers and, when
 ``TRTLLM_TEST_OPENENGINE_CHAIN`` selects a chain
 (``tests/integration/defs/openengine_chain``), on the OpenEngine chain, where
-each worker is a frontend and a TensorRT-LLM OpenEngine server; the readings
+each worker is a frontend and an OpenEngine engine; the readings
 of the engine (its ``GetServerInfo``, its Generate count, the requests its
 frontend sent it) exist only there.
 """
@@ -13,6 +13,7 @@ frontend sent it) exist only there.
 from __future__ import annotations
 
 import contextlib
+import copy
 import json
 import os
 import secrets
@@ -29,6 +30,7 @@ from test_common.http_utils import wait_for_endpoint_ready
 from utils.llm_data import llm_models_root
 
 from tensorrt_llm.grpc.openengine_conventions import SERVE_REQUEST_DUMP_DIR_ENV
+from tensorrt_llm.serve.disagg_auto_scaling import get_worker_key_prefix
 
 # For openengine_chain, imported where it is used.
 __extra_import_path__ = ["~/tests/integration/defs"]
@@ -104,13 +106,18 @@ class Cluster:
 
 
 def _merged(base: Mapping[str, Any], extra: Mapping[str, Any]) -> dict[str, Any]:
-    """``base`` updated with ``extra``, merging the values that are mappings on both sides."""
-    merged = dict(base)
+    """A copy of ``base`` updated with ``extra``, merging the values that are mappings on both sides.
+
+    Nothing in the result is shared with the arguments, so a consumer that
+    changes one section of a configuration (the orchestrator pops a router's
+    ``type``) does not change another.
+    """
+    merged = copy.deepcopy(dict(base))
     for key, value in extra.items():
         if isinstance(value, Mapping) and isinstance(merged.get(key), Mapping):
             merged[key] = _merged(merged[key], value)
         else:
-            merged[key] = value
+            merged[key] = copy.deepcopy(value)
     return merged
 
 
@@ -155,11 +162,11 @@ def cluster(
     orchestrator_port = pick_port()
     disagg_cluster = {"cluster_uri": f"http://localhost:{orchestrator_port}", "cluster_name": ""}
     base = _merged(
-        {"model": MODEL_NAME, "internal_request_auth_key": auth_key},
+        {"internal_request_auth_key": auth_key},
         worker_config() if config is None else config,
     )
     if register:
-        base["disagg_cluster"] = disagg_cluster
+        base["disagg_cluster"] = dict(disagg_cluster)
     logs: dict[str, str] = {}
     workers: dict[str, list[Any]] = {role: [] for role in ROLES}
     with contextlib.ExitStack() as stack:
@@ -336,9 +343,37 @@ def engine_counts(served: Cluster, role: str) -> list[int]:
     return [engine_received(server) for server in served.workers[role]]
 
 
-def chain_log(server: Any, side: str) -> str:
-    """The ``frontend`` or ``engine`` log of a chain worker."""
-    return Path(getattr(server._chain_handle, f"{side}_log")).read_text(errors="replace")
+def chain_log(server: Any, side: str, start: int = 0) -> str:
+    """The ``frontend`` or ``engine`` log of a chain worker, from byte ``start`` on."""
+    path = getattr(server._chain_handle, f"{side}_log")
+    assert path, f"the chain worker has no {side} log"
+    with open(path, "rb") as f:
+        f.seek(start)
+        return f.read().decode(errors="replace")
+
+
+def chain_log_size(server: Any, side: str) -> int:
+    """The size of a chain worker's ``frontend`` or ``engine`` log, to read on from with :func:`chain_log`."""
+    path = getattr(server._chain_handle, f"{side}_log")
+    assert path, f"the chain worker has no {side} log"
+    return os.path.getsize(path)
+
+
+def registered_workers(served: Cluster) -> list[str]:
+    """The keys the workers registered under in the orchestrator's cluster storage.
+
+    A key holds the registering process's id, so two frontends of one worker
+    that both registered would have two keys.
+    """
+    prefix = get_worker_key_prefix(served.orchestrator_config["disagg_cluster"]["cluster_name"])
+    response = requests.get(
+        served.orchestrator.url_for("get_prefix"),
+        params={"key_prefix": prefix, "keys_only": True},
+        timeout=REQUEST_TIMEOUT_S,
+    )
+    # The storage answers {"result": {key: ""}}, with 400 when nothing matched.
+    assert response.status_code == 200, response.text
+    return sorted(response.json()["result"])
 
 
 def pick_port() -> int:

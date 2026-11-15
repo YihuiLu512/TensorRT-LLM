@@ -10,8 +10,11 @@ Each test has clusters of its own, which run until the test has ended.
   with the algorithm the events name.
 - NT-081: two context and two generation workers behind ``kv_cache_aware``
   routers that learn the cached blocks from the workers' events only
-  (``track_routed_blocks: false``); requests sharing a prefix land on one
-  context worker.
+  (``track_routed_blocks: false``); after two warm-up requests, requests
+  sharing their prefix land on one context worker. A router reads a
+  worker's events when a request it routed there ends, so the second
+  warm-up request gives it a second read in case the first came before the
+  events.
 - NT-086: with ``conditional_disagg_config``, a request whose uncached part
   on the generation worker is short is prefilled there: the context worker
   gets no call and the generation worker serves the whole request. The
@@ -168,10 +171,11 @@ def routing_cluster(tmp_path):
 def test_kv_cache_aware_routing_hits_through_the_orchestrator(routing_cluster):
     """NT-081 (DG-19): requests sharing a prefix land on one context worker."""
     served = routing_cluster
+    for i in range(2):
+        _complete(served, f"{PREFIX} Warm-up {i}:")
+        time.sleep(ROUTER_POLL_S)
     before = engine_counts(served, "context") if CHAIN else None
-    _complete(served, f"{PREFIX} Question 0:")
-    time.sleep(ROUTER_POLL_S)
-    for i in range(1, NUM_REQUESTS):
+    for i in range(NUM_REQUESTS):
         _complete(served, f"{PREFIX} Question {i}:")
     if CHAIN:
         landed = [after - b for after, b in zip(engine_counts(served, "context"), before)]
