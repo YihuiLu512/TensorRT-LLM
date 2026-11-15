@@ -4,6 +4,7 @@
 
 import json
 import os
+import signal
 import stat
 import subprocess
 import sys
@@ -314,6 +315,11 @@ if a.mode == "usage":  # caplaunch's argparse refusing the argv (exit 2), nothin
     ap.error("the following arguments are required: --housekeeping-ms")
 if a.mode == "crash":  # an uncaught OSError while reading inputs (exit 1), nothing written
     open(os.path.join(a.workdir, "missing-register.json"))
+if a.mode == "presleep":  # still reading its inputs (no launch.json, no handler yet)
+    with open(os.environ["FAKE_LAUNCHER_PID"] + ".tmp", "w") as f:
+        f.write(str(os.getpid()))
+    os.rename(os.environ["FAKE_LAUNCHER_PID"] + ".tmp", os.environ["FAKE_LAUNCHER_PID"])
+    time.sleep(60)
 os.makedirs(os.path.join(a.run_dir, "raw", "tiers", "000_w"), exist_ok=True)
 with open(os.path.join(a.run_dir, "raw", "launch.json"), "w") as f:
     json.dump({"arm": a.arm, "seq": a.launch_seq, "role": a.role, "snap": a.snap,
@@ -815,6 +821,105 @@ def test_overlay_detects_readback_mismatch(tmp_path, monkeypatch):
     results, passed, expected = overlay.apply(doc, str(src), str(dest))
     assert not passed and expected == 2
     assert results[1]["problem"] == "read-back bytes differ" and results[0]["ok"]
+
+
+SELF_TERM = "import os, signal; os.kill(os.getpid(), signal.SIGTERM)"
+
+
+def exited_popen(monkeypatch):
+    """subprocess.Popen whose child has already exited when it is first polled: the order in
+    which Slurm's SIGTERM reaches a child and this process, made deterministic."""
+    real = subprocess.Popen
+
+    def popen(*args, **kw):
+        p = real(*args, **kw)
+        p.wait()
+        return p
+    monkeypatch.setattr(launches.subprocess, "Popen", popen)
+
+
+@pytest.mark.parametrize("code,flag,terminated", [
+    (SELF_TERM, "during_recheck", True),  # the signal reached the launcher first
+    (SELF_TERM, "never", False),          # killed by something else
+    ("raise SystemExit(3)", "before_exit", True),
+    ("raise SystemExit(5)", "before_exit", False),  # its own early stop: its STATE decides
+    ("pass", "before_exit", False),       # it finished: its record decides
+])
+def test_run_with_budget_checks_the_stop_flag_after_the_launcher_exits(tmp_path, monkeypatch,
+                                                                       code, flag, terminated):
+    """RS33 (R3 sweep): a launcher that exited non-zero (not 5) by the time the job's SIGTERM
+    is seen was stopped by it: terminated, so not a prestart config refusal; killed by SIGTERM,
+    it gets one poll period for the flag."""
+    monkeypatch.setattr(launches, "_TERMINATED", [])
+    exited_popen(monkeypatch)
+    if flag == "before_exit":
+        launches._TERMINATED.append(0.0)
+    slept = []
+
+    def sleep(s):
+        slept.append(s)
+        if flag == "during_recheck":
+            launches._TERMINATED.append(0.0)
+    rc, timed_out, term, _left = launches.run_with_budget(
+        [sys.executable, "-c", code], dict(os.environ), 30, 1, str(tmp_path / "o"),
+        str(tmp_path / "e"), sleep=sleep)
+    assert (timed_out, term) == (False, terminated), rc
+    assert slept == ([launches.POLL_S] if code == SELF_TERM else [])
+    assert launches.prestart_config_refusal(rc, timed_out, term, None, "err") == (
+        not terminated and rc != 0)
+
+
+@pytest.mark.parametrize("delivery", ["launcher_first", "launcher_first_late", "launcher_only"])
+def test_sigterm_to_the_launcher_before_launch_json_is_not_a_refusal(tmp_path, delivery):
+    """RS33 (R3 sweep): the job's SIGTERM reaching the launcher before capjobs.launches, while
+    it reads its inputs (no raw/launch.json yet), stops the launch: NOT_RUN terminated, not
+    config_refused, exit 0. The launcher killed by SIGTERM alone is still a refusal (exit 3)."""
+    a, plan, manifest = launch_env(tmp_path, ["presleep", "ok"])
+    pp, mp = tmp_path / "plan.json", tmp_path / "manifest.json"
+    pp.write_text(json.dumps(plan))
+    mp.write_text(json.dumps(manifest))
+    out = os.path.join(a.job_dir, "launches.json")
+    pid_file = tmp_path / "launcher.pid"
+    env = dict(os.environ, PYTHONPATH=os.path.join(CODE_ROOT, "tools"),
+               FAKE_LAUNCHER_PID=str(pid_file))
+    p = subprocess.Popen([sys.executable, "-B", "-m", "capjobs.launches", "--plan", str(pp),
+                          "--overlay-manifest", str(mp), "--nvidia-smi", a.nvidia_smi, "--snap",
+                          a.snap, "--job-dir", a.job_dir, "--local-root", a.local_root,
+                          "--shm-root", a.shm_root, "--run-root", a.run_root, "--job-id", "9",
+                          "--hw-profile", a.hw_profile,
+                          "--python", a.python, "--out", out, "--restart-count", "0",
+                          "--deadline-epoch", "1e12"], env=env)
+    launcher = None
+    try:
+        end = time.monotonic() + 30
+        while not pid_file.exists() and time.monotonic() < end and p.poll() is None:
+            time.sleep(0.05)
+        assert pid_file.exists(), "the launcher never started"
+        launcher = int(pid_file.read_text())
+        os.kill(launcher, signal.SIGTERM)
+        if delivery == "launcher_first_late":
+            _gone(launcher)
+            time.sleep(launches.POLL_S / 4)
+        if delivery != "launcher_only":
+            p.send_signal(signal.SIGTERM)
+        rc = p.wait(timeout=60)
+    finally:
+        if p.poll() is None:
+            p.kill()
+        if launcher is not None and not _gone(launcher, 0.5):
+            os.kill(launcher, signal.SIGKILL)
+    doc = json.load(open(out))
+    r0, r1 = doc["launches"]
+    assert r0["rc"] == -signal.SIGTERM, r0
+    if delivery == "launcher_only":
+        assert rc == 3 and r0["config_refused"] is True and r0["terminated"] is False, r0
+        assert (r0["status"], r1["status"]) == ("NOT_RUN", "VALID"), doc
+        return
+    assert rc == 0, doc
+    assert r0["status"] == "NOT_RUN" and r0["terminated"] is True, r0["reason"]
+    assert r0["config_refused"] is False and doc["config_refused"] == 0
+    assert r0["reason"].startswith("terminated"), r0["reason"]
+    assert r1["status"] == "NOT_RUN" and "SIGTERM" in r1["reason"]
 
 
 def test_sigterm_stops_launch_and_skips_the_rest(tmp_path):

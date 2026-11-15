@@ -20,7 +20,7 @@ from capcommon.hashing import sha256_bytes, sha256_file
 from conftest import CODE_ROOT
 
 from capjobs import jobinputs, launches, launchplan, overlay, snapshot, submit
-from test_container import launch_env
+from test_container import SELF_TERM, exited_popen, launch_env
 
 FAKEGEN = r'''
 import json, os, sys
@@ -202,10 +202,23 @@ def _gone(pid):
         return True
 
 
-def test_sigterm_during_a_generator_stops_it_and_writes_the_record(tmp_path, monkeypatch):
+def _wait_exited(pid, timeout_s=10):
+    """Until pid (a child of another process) has exited: a zombie or gone."""
+    end = time.monotonic() + timeout_s
+    while not _gone(pid) and time.monotonic() < end:
+        time.sleep(0.02)
+    assert _gone(pid)
+
+
+@pytest.mark.parametrize("delivery", ["parent", "group_first", "group_first_late"])
+def test_sigterm_during_a_generator_stops_it_and_writes_the_record(tmp_path, monkeypatch,
+                                                                   delivery):
     """RS4/RS7: the job's SIGTERM while a job-input generator runs (up to 600 s each) stops the
     generator's whole process group within the poll period; the launch is NOT_RUN (not
-    job_input_failed), the rest are skipped, and launches.json is written before KillWait."""
+    job_input_failed), the rest are skipped, and launches.json is written before KillWait.
+    RS33: the same holds when the signal reaches the generator and its child first, as Slurm's
+    proctrack/cgroup signals every process of the step (group_first: right before
+    capjobs.launches; group_first_late: once the generator has exited, a little later)."""
     pids = tmp_path / "gen.pids"
     monkeypatch.setenv("FAKEGEN_MOD", "capstubs.fingerprint")
     monkeypatch.setenv("FAKEGEN_MODE", "sleep")
@@ -229,6 +242,12 @@ def test_sigterm_during_a_generator_stops_it_and_writes_the_record(tmp_path, mon
         assert pids.exists(), "the generator never started"
         gen, kid = map(int, pids.read_text().split())
         t0 = time.monotonic()
+        if delivery != "parent":
+            for pid in (gen, kid):
+                os.kill(pid, signal.SIGTERM)
+        if delivery == "group_first_late":
+            _wait_exited(gen)
+            time.sleep(launches.POLL_S / 4)
         p.send_signal(signal.SIGTERM)
         assert p.wait(timeout=30) == 0
         assert time.monotonic() - t0 < launches.TERM_GRACE_S
@@ -291,6 +310,91 @@ def test_run_helper_timeout_kills_the_group(tmp_path):
     assert _gone(kid)
     assert launches.run_helper([sys.executable, "-c", "raise SystemExit(4)"],
                                timeout=30).returncode == 4
+
+
+@pytest.mark.parametrize("code,flag,want", [
+    (SELF_TERM, "during_recheck", "stop"),  # the signal reached the helper first
+    (SELF_TERM, "never", -signal.SIGTERM),  # killed by something else: its own failure
+    ("pass", "before_exit", "stop"),        # the job's stop wins over the helper's exit 0
+    ("raise SystemExit(7)", "before_exit", "stop"),
+    ("raise SystemExit(7)", "never", 7),    # a genuine failure: classified at once
+])
+def test_run_helper_checks_the_stop_flag_after_the_helper_exits(monkeypatch, code, flag, want):
+    """RS33: once the helper has exited, the job's stop flag comes before its exit code; a
+    helper killed by SIGTERM gets one poll period for the flag (the signal may reach it before
+    this process), any other exit is classified at once."""
+    monkeypatch.setattr(launches, "_TERMINATED", [])
+    exited_popen(monkeypatch)
+    if flag == "before_exit":
+        launches._TERMINATED.append(0.0)
+    slept = []
+
+    def sleep(s):
+        slept.append(s)
+        if flag == "during_recheck":
+            launches._TERMINATED.append(0.0)
+    argv = [sys.executable, "-c", code]
+    if want == "stop":
+        with pytest.raises(launches.JobTerminated):
+            launches.run_helper(argv, timeout=30, sleep=sleep)
+    else:
+        assert launches.run_helper(argv, timeout=30, sleep=sleep).returncode == want
+    assert slept == ([launches.POLL_S] if flag != "before_exit" and code == SELF_TERM else [])
+
+
+@pytest.mark.parametrize("stop_at,where,failed", [
+    ("capenv.pins", "pin table", "pin_table_failed"),
+    ("capstubs.fingerprint", "job inputs", "job_input_failed")])
+@pytest.mark.parametrize("job_signalled", [True, False])
+def test_helper_killed_by_the_jobs_sigterm_is_not_a_helper_failure(tmp_path, monkeypatch,
+                                                                   stop_at, where, failed,
+                                                                   job_signalled):
+    """RS33 through run_all, both helpers: a helper the job's SIGTERM killed before this process
+    saw the signal is NOT_RUN for the job's SIGTERM, neither failure flag set; the same exit
+    (-SIGTERM) without the job's SIGTERM stays that helper's failure."""
+    monkeypatch.setattr(launches, "_TERMINATED", [])
+    exited_popen(monkeypatch)
+    a, plan, manifest = jobinput_env(tmp_path, ("ok",))
+    real = launches.run_helper
+
+    def sleep(_s):
+        if job_signalled:
+            launches._TERMINATED.append(0.0)
+
+    def fake(argv, **kw):
+        if argv[2] != stop_at:
+            return real(argv, **kw)
+        return real([sys.executable, "-c", SELF_TERM], sleep=sleep, **kw)
+    monkeypatch.setattr(launches, "run_helper", fake)
+    r = launches.run_all(a, plan, manifest)[0]
+    assert r["status"] == "NOT_RUN" and r["ran"] is False, r
+    if job_signalled:
+        assert where in r["reason"] and "SIGTERM" in r["reason"], r["reason"]
+        assert not r.get("pin_table_failed") and not r.get("job_input_failed"), r
+    else:
+        assert r.get(failed) is True and "exit -15" in r["reason"], r
+
+
+def test_generator_failure_without_a_signal_exits_config(tmp_path, monkeypatch):
+    """RS33, the other side: a generator failing on its own is still job_input_failed and
+    capjobs.launches exits CONFIG (3)."""
+    monkeypatch.setattr(launches, "become_subreaper", lambda: False)  # not on pytest itself
+    monkeypatch.setattr(launches, "_TERMINATED", [])
+    monkeypatch.setenv("FAKEGEN_MOD", "capstubs.fingerprint")
+    monkeypatch.setenv("FAKEGEN_MODE", "fail")
+    a, plan, manifest = jobinput_env(tmp_path, ("ok",))
+    pp, mp = tmp_path / "plan.json", tmp_path / "manifest.json"
+    pp.write_text(json.dumps(plan))
+    mp.write_text(json.dumps(manifest))
+    out = os.path.join(a.job_dir, "launches.json")
+    assert launches.main(["--plan", str(pp), "--overlay-manifest", str(mp), "--nvidia-smi",
+                          a.nvidia_smi, "--snap", a.snap, "--hw-profile", a.hw_profile,
+                          "--job-dir", a.job_dir, "--local-root", a.local_root, "--shm-root",
+                          a.shm_root, "--run-root", a.run_root, "--job-id", "9", "--python",
+                          a.python, "--out", out, "--restart-count", "0",
+                          "--deadline-epoch", "1e12"]) == 3
+    doc = json.load(open(out))
+    assert doc["job_input_failed"] == 1 and "exit 7" in doc["launches"][0]["reason"]
 
 
 @pytest.mark.parametrize("case", ["missing_param", "output_exists", "input_unreadable"])

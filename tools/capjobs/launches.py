@@ -16,8 +16,9 @@ NOT_RUN, marked pin_table_failed: main then exits 3 as for config_refused); gene
 inputs its scenario declares (capjobs.jobinputs into <job dir>/job_inputs/<tree>/; a failure,
 or a job_inputs section or scenario key that fails capcommon.jobinputs.check_scenario,
 skips the launch as NOT_RUN, marked job_input_failed, exit 3 likewise); the job's SIGTERM while
-either helper runs kills it (run_helper) and skips the launch as NOT_RUN, neither flag set;
-otherwise run the plan's argv with
+either helper runs kills it (run_helper) and skips the launch as NOT_RUN, neither flag set, also
+when the job has the signal by the time the helper's exit is seen, whatever its exit code
+(stopped_after_exit); otherwise run the plan's argv with
 --overlay-manifest, --nvidia-smi, --job-env-dir <job dir>/env, --pin-table, one --job-input per
 generated kind and the identity arguments appended, under a budget_s timeout; kill
 whatever the launch left behind; copy <L>/runs/<tree> to <R>/<tree>; verify; chmod a-w raw/;
@@ -25,8 +26,9 @@ append STATE. Status of that STATE line:
   copy-back not verified -> VOID; a process survived SIGKILL -> VOID; budget exceeded (killed) ->
   VOID;
   stopped because the job itself got SIGTERM -> NOT_RUN (as the orchestrator records its own
-  signal stop); each of these only makes the launcher's own STATE worse, never better
-  (capcommon.runtree.worst_state: VALID < NOT_RUN < VOID < ENV_INVALID);
+  signal stop; also when the job has the signal by the time the launcher's exit, neither 0 nor
+  5, is seen: stopped_after_exit); each of these only makes the launcher's own STATE worse, never
+  better (capcommon.runtree.worst_state: VALID < NOT_RUN < VOID < ENV_INVALID);
   otherwise the launcher's own last STATE line in the tree (by "caplaunch") when it wrote one and
   its exit code agrees (0 or 5 for VALID) -> that status; disagreement -> VOID;
   no launcher STATE: a control/stop.json reason in NOT_RUN_STOPS with exit 5 -> NOT_RUN;
@@ -116,7 +118,7 @@ def launch_argv(plan, ln, values, job_id, restart_count, run_dir, overlay_manife
 
 class JobTerminated(Exception):
     """This job got SIGTERM while an in-job helper command (pin table, job input generator)
-    ran; the helper's process group has been stopped."""
+    ran: the helper's process group has been stopped, or the helper had already exited."""
 
 
 def _kill_group(p):
@@ -127,12 +129,24 @@ def _kill_group(p):
     p.wait()
 
 
+def stopped_after_exit(rc, sleep=time.sleep):
+    """Whether this job got SIGTERM by the time a child of it was seen to exit with rc. The
+    job's SIGTERM can reach the child before this process (Slurm's proctrack/cgroup signals
+    every process of the step), so for a child killed by SIGTERM the flag is checked again
+    after one poll period."""
+    if not _TERMINATED and rc == -signal.SIGTERM:
+        sleep(POLL_S)
+    return bool(_TERMINATED)
+
+
 def run_helper(argv, env=None, stdout=None, stderr=None, stdin=None, timeout=None,
                sleep=time.sleep, clock=time.monotonic):
     """subprocess.run for the in-job helper commands (pin table, job input generators), polled
     so that the job's SIGTERM is honoured while they run (within POLL_S): the helper gets its
     own session; on the timeout or this process's SIGTERM its whole process group is killed
     (SIGKILL, as subprocess.run kills on its timeout, so the in-job time bound is unchanged).
+    A helper found exited when the job already has the SIGTERM (stopped_after_exit) is a stop
+    too, whatever its exit code: the launch it was for is skipped either way.
     Returns CompletedProcess; raises subprocess.TimeoutExpired, or JobTerminated on SIGTERM."""
     p = subprocess.Popen(argv, env=env, stdout=stdout, stderr=stderr, stdin=stdin,
                          start_new_session=True)
@@ -140,6 +154,8 @@ def run_helper(argv, env=None, stdout=None, stderr=None, stdin=None, timeout=Non
     while True:
         rc = p.poll()
         if rc is not None:
+            if stopped_after_exit(rc, sleep):
+                raise JobTerminated("the job received SIGTERM")
             return subprocess.CompletedProcess(argv, rc)
         if _TERMINATED or (end is not None and clock() >= end):
             _kill_group(p)
@@ -314,17 +330,21 @@ def kill_leftovers(seen, grace_s, sleep=time.sleep, clock=time.monotonic):
     return sorted(recs.values(), key=lambda r: r["pid"])
 
 
-def run_with_budget(argv, env, budget_s, grace_s, out_path, err_path):
+def run_with_budget(argv, env, budget_s, grace_s, out_path, err_path, sleep=time.sleep):
     """(rc, timed_out, terminated, leftovers). timed_out: the launcher overran budget_s;
-    terminated: this process got SIGTERM while the launcher ran. Either way: SIGTERM to the
-    launcher's process group, SIGKILL after the grace; in every case the launch's remaining
-    descendants are killed afterwards."""
+    terminated: this process got SIGTERM while the launcher ran, or has it by the time the
+    launcher's exit, neither 0 nor 5 (those are decided by its own STATE and exit code), is seen
+    (stopped_after_exit). Overrun or SIGTERM while it runs: SIGTERM to the launcher's process
+    group, SIGKILL after the grace; in every case the launch's remaining descendants are killed
+    afterwards."""
     seen = {}
     terminated = False
     with open(out_path, "wb") as out, open(err_path, "wb") as err:
         p = subprocess.Popen(argv, env=env, stdout=out, stderr=err, start_new_session=True)
         rc = _wait_tracking(p, seen, budget_s)
         stopped = rc is None
+        if not stopped and rc not in (OK, STOPPED_EARLY) and stopped_after_exit(rc, sleep):
+            terminated = True
         if stopped:
             if _TERMINATED:
                 terminated = True

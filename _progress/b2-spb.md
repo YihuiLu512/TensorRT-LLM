@@ -200,3 +200,17 @@
 - e2e-spb-null 里 S-PB 每档 summary 的 `schedule_sha256` = launch.json 的时间表 sha（2089fe94…），`tier_attribution` = schedule。
 - fakebin.log 新增 9 行，都是真 capenv.gate 的 scontrol/squeue（替身 exit 97）；没碰集群。
 - 2026-11-15 02:31:09 R2 修复验证全部完成，记录进度并提交
+
+## C1-fix（R3 后用户裁决：修 C1 + C2，再审一轮 R4）
+
+- 2026-11-15 13:28:30 开始：读 R3 triage/compare，改 launches.run_helper / run_with_budget（RS33）与 prebaked_server 注册边界（C2）
+- 2026-11-15 13:32:24 代码与测试已写，先在未修代码上跑新测试（期望失败）做变异核对
+- 2026-11-15 13:36:12 launches 修复与变异核对完成（旧码 15 失败；M1 去复查 6 失败；M2 去 0/5 豁免 2 失败）；接着写 C2 测试
+- 2026-11-15 13:37:11 开始跑 tests/jobs 全目录（约 2–4 分钟），然后 tests/capstubs
+- 2026-11-15 13:40:23 probe-tree 软链移回 WT/probe-tree，重跑 tests/capstubs
+- 2026-11-15 13:45:35 C1-fix 完成：
+  - C1（RS33）：`launches.stopped_after_exit`：子进程退出后先看 `_TERMINATED`，rc == −SIGTERM 且未置位时等一个 POLL_S 再看。`run_helper`：已置位 ⇒ 不论退出码抛 JobTerminated。`run_with_budget`（R3 扫出的同类）：编排器退出码非 0、非 5 且已置位 ⇒ terminated（NOT_RUN，不记 config_refused）。
+  - C2：`frontend_control` 返回 register(server)，注册调用在同一 ConfigError 边界内（退出 3）。
+  - 测试：生成器 SIGTERM 三种投递（只给 launches / 先给生成器及其子进程 / 生成器退出后稍晚再给 launches）；run_helper 与 run_with_budget 的「标志先于退出码」单元（确定性：Popen 包装让子进程在首次轮询前退出）；run_all 两种辅助命令 × 是否收到作业信号；编排器写 launch.json 前被先杀（三种投递，只杀编排器的仍是 config_refused、退出 3）；生成器自身失败仍 job_input_failed、退出 3；S-PB 注册抛异常 ⇒ 退出 3。
+  - 变异：旧 launches.py 下 15 条新用例失败（行为类：group_first×2、launcher_first×2、run_all 两种辅助命令等）；M1 去掉复查 6 失败；M2 去掉 0/5 豁免 2 失败；旧 prebaked_server.py 下 register_raises 失败（_local/b2-spb/mut-c1/、logs/c1/）。
+  - tests/jobs 250 passed（logs/c1/full-jobs2.log）；tests/capstubs 94 passed（full-capstubs2.log；第一次因 WT/probe-tree 软链不在而 1 failed，移回后通过）；新信号用例连跑 4 次全过。fakebin.log 无新增（mtime 02:30）。probe-tree 软链已移回 _local/b2-spb/probe-tree.link。

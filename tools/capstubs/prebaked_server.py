@@ -198,9 +198,9 @@ def load_sfe_module(path):
 
 def frontend_control(args):
     """Frontend mode: load the --sfe-module file and build what S-PB serves from it. Returns
-    (sha256, S-FE argv, [(add_*_to_server, servicer)]). Its parser exiting is a rejection of
-    the S-FE options; any other exception from taking its entry points to taking the
-    registration functions is a ConfigError too (exit 3)."""
+    (sha256, S-FE argv, register(server)), register adding its Control and Health servicers to
+    the server. Its parser exiting is a rejection of the S-FE options; any other exception from
+    taking its entry points to registering the servicers is a ConfigError too (exit 3)."""
     mod, sha = load_sfe_module(args.sfe_module)
     sargv = sfe_argv(args)
     try:
@@ -214,7 +214,15 @@ def frontend_control(args):
     except Exception as e:  # noqa: BLE001 - whatever the S-FE setup raises, exit 3
         raise ConfigError("--sfe-module %s: S-FE setup with options %s failed: %s: %s"
                           % (args.sfe_module, sargv, type(e).__name__, e))
-    return sha, sargv, services
+
+    def register(server):
+        try:
+            for add, servicer in services:
+                add(servicer, server)
+        except (Exception, SystemExit) as e:  # noqa: BLE001 - whatever it raises, exit 3
+            raise ConfigError("--sfe-module %s: registering its servicers failed: %s: %s"
+                              % (args.sfe_module, type(e).__name__, e))
+    return sha, sargv, register
 
 
 class _Stream:
@@ -501,8 +509,8 @@ class PrebakedServer:
         stopper.on_stop(self.on_stop)
         server = make_server(reuseport=False)
         server.add_generic_rpc_handlers([_MethodHandler(self.pb.method, self.generate)])
-        for add, servicer in (self.control[2] if self.control is not None else []):
-            add(servicer, server)
+        if self.control is not None:
+            self.control[2](server)
         port = bind_server(server, args.host, args.port)
         await server.start()
         info = self.info(port)

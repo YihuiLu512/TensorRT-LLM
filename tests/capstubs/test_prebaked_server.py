@@ -455,12 +455,17 @@ def test_frontend_mode_refuses_options_the_sfe_parser_rejects(launch):
 
 @pytest.mark.parametrize("case,exc", [("no_entry_points", "AttributeError"),
                                       ("profile_raises", "ParseError"),
-                                      ("engine_raises", "RuntimeError")])
+                                      ("engine_raises", "RuntimeError"),
+                                      ("register_raises", "AttributeError")])
 def test_frontend_setup_failures_are_config_errors(launch, case, exc):
     """RS31: after the S-FE module is imported, taking its entry points, building the profile,
-    FakeEngine, _Control and _Health and taking the registration functions are one boundary:
-    any exception there is exit 3 naming the module and the exception type."""
-    if case == "no_entry_points":
+    FakeEngine, _Control and _Health and registering the servicers on the server are one
+    boundary: any exception there is exit 3 naming the module and the exception type."""
+    if case == "register_raises":  # R3-C2: the registration call itself
+        body = STANDIN.replace("def _add_control(servicer, server):\n",
+                               "def _add_control(servicer, server):\n"
+                               "    raise AttributeError('no attribute Abort')\n")
+    elif case == "no_entry_points":
         body = "X = 1\n"
     elif case == "profile_raises":
         body = STANDIN.replace("def _profile_from_args(args):\n",
@@ -481,4 +486,5 @@ def test_frontend_setup_failures_are_config_errors(launch, case, exc):
     assert launch.wait_exit("spb", 30) == 3, launch.stderr("spb")
     err = launch.stderr("spb")
     assert str(mod) in err and exc in err and "Traceback" not in err, err
+    assert ("registering its servicers" in err) == (case == "register_raises"), err
     assert not os.path.exists(launch.tree.port_file("spb"))
