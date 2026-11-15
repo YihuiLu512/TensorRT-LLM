@@ -232,6 +232,8 @@ def test_shipped_tables_name_each_test_that_cancels_calls():
         "_test_openai_misc.py::test_request_cancellation[*",
         "_test_openengine_disagg_gen_first.py::test_gen_first_cancel_closes_both_legs",
         "_test_openengine_disagg_transceiver.py::test_cancel_during_transfer_is_the_same_on_both_forms",
+        "_test_openengine_ds_disagg_cancel.py::test_abort_stages[*",
+        "_test_openengine_ds_disagg_cancel.py::test_parked_kv_timeout_and_orphans",
     ]
 
 
