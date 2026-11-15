@@ -251,6 +251,10 @@ def _sites(role):
     real = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(real)
     LOADGEN_SITES = real.LOADGEN_SITES
+    if role["launcher"] == "product":  # capprobe: every injection site takes every probe mode
+        info = sc._probe_sites()
+        return {s: info["inject_modes"] for s, kind in info["inject_sites"].items()
+                if kind in role["proc_kinds"]}
     m = role["module"]
     if m in ("capgrpc.load", "capgrpc.oe_sink"):
         return {s: ("busy", "sleep") for s in GRPC_SITES if s != "drop.msg"}
@@ -259,13 +263,18 @@ def _sites(role):
 
 
 V_SITE = {"vrdr": ("reader", "recv.msg"), "vstub": (None, "send.msg"),
-          "vsrv": ("snl", "send.msg"), "vload": ("capload", "recv.chunk")}
+          "vsrv": ("snl", "send.msg"), "vload": ("capload", "recv.chunk"),
+          "vf2": ("frontend", "F2"), "vf4": ("frontend", "F4")}
+PRODUCT_V = ("vf2", "vf4")  # product-side (capprobe) V arms, errata FT1-18
 
 
 def test_intervention_arms_are_their_base_arm_plus_one_injection():
     """V arms (card E2 / E3 / E4 'V'): the base arm's scenario and template with exactly one
     launch-level busy delta at the named end; the site exists in that tool (an unknown site
-    exits 3 at start-up). Doubling arms (k2c, w2) change only the load role's process count."""
+    exits 3 at start-up). A product-side V arm (FT1-18) also moves the launch and the frontend
+    to probe tier P1 with snapshots all, and nothing else; its site is a capprobe injection
+    site the frontend's process kinds pass. Doubling arms (k2c, w2) change only the load
+    role's process count."""
     n = 0
     for s, a in ALL:
         v = a.rsplit("-", 1)[-1]
@@ -275,6 +284,18 @@ def test_intervention_arms_are_their_base_arm_plus_one_injection():
         base = a[:-(len(v) + 1)]
         doc, bdoc = _scen(s, a), _scen(s, base)
         t, bt = _tpl(s, a), _tpl(s, base)
+        if v in PRODUCT_V:
+            assert (doc["probe_tier"], bdoc["probe_tier"], doc["probe_groups"]) == ("P1", "P0",
+                                                                                   []), a
+            fe, bfe = _roles(doc)["frontend"], _roles(bdoc)["frontend"]
+            assert (fe["probe_tier"], fe["snapshots"]) == ("P1", "all"), a
+            assert (bfe["probe_tier"], bfe["snapshots"]) == ("P0", "none"), a
+            bdoc = json.loads(json.dumps(bdoc))
+            bdoc["probe_tier"] = "P1"
+            _roles(bdoc)["frontend"].update(probe_tier="P1", snapshots="all")
+            per_arm = ("name", "note", "tier_table", "schedule", "prompts")  # path = arm name
+            assert {k: x for k, x in doc.items() if k not in per_arm} == \
+                {k: x for k, x in bdoc.items() if k not in per_arm}, a
         assert doc["roles"] == bdoc["roles"], a
         assert doc.get("job_inputs") == bdoc.get("job_inputs"), a
         assert {k: x for k, x in t.items() if k not in ("name", "note", "launch_inject")} == \
@@ -286,7 +307,7 @@ def test_intervention_arms_are_their_base_arm_plus_one_injection():
         assert spec == {"role": role_ or stub, "site": site, "mode": "busy",
                         "delta_ns": "TBD:delta_ns"}, a
         assert "busy" in _sites(_roles(doc)[spec["role"]])[site], a
-    assert n == 12
+    assert n == 14
     for s, a, base, load in (("e2a", "e2a-spb-k2c-mc", "e2a-spb-kc-mc", "reader"),
                              ("e2a", "e2a-snl-k2c-mc", "e2a-snl-kc-mc", "reader"),
                              ("e3", "e3a-snl-k2c-mc", "e3a-snl-kc-mc", "reader"),
@@ -361,7 +382,8 @@ def test_e4_frontend_main_tier_and_stub_tokenizer_settings():
             assert _opt(args, "--num_postprocess_workers") == "0", a
             pool = int(_opt(args, "--num_input_processor_workers"))
             assert fe["cpus_needed"] >= 1 + pool + 1, a
-            assert fe["measure_class"] == "under_test" and fe["probe_tier"] == "P0", a
+            assert fe["measure_class"] == "under_test", a
+            assert fe["probe_tier"] == ("P1" if a.endswith(("-vf2", "-vf4")) else "P0"), a
             cl = rs["capload"]
             assert _opt(cl["args"], "--model") == "{param:tokenizer_dir}", a
             assert cl["workers"] == (2 * W_HTTP if "-w2-" in a else W_HTTP), a
@@ -377,7 +399,7 @@ def test_e4_frontend_main_tier_and_stub_tokenizer_settings():
             assert "--server-module" not in sa, a  # the product's server module
         if "reader" in rs:
             assert doc["job_inputs"]["request_bytes"]["args"][-1] == "{param:tokenizer_dir}"
-    assert n == 11
+    assert n == 13
 
 
 def test_direct_arms_name_one_model_for_stub_and_request_bytes():

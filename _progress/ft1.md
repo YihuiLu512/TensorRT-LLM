@@ -67,3 +67,12 @@
 - E4 臂与 e0s-snl-frontend 的前端角色与 E0 已登记的 e0s-spb-frontend 写法相同（只差端点与 --num_input_processor_workers），后者在集群上已过门禁与作业输入（02_e0/E0/supp/notes.md），所以场景层面应能起；真前端连 S-NL 的启动检查仍未知。
 ### NOT RUN
 - E4 全部臂、e0s-snl-frontend（需要真 trtllm-serve 与真产品模块，本机不能 import）；e2a/e3 的 kc 形态读 S-PB、oe_sink generate-stream 档、R 轴读 S-NL 的作业路径 e2e（同类组合已跑过代表臂）；真 pb2 / 真 server 模块上的任何运行。
+- 2026-11-16 02:26:22 FT1-inj 开始：读完 R4-2 拒绝、capprobe 注入（F2/F4 已在探针补丁里，可经 CAPPROBE_INJECT 打开）、编排器 _role_env/_snapshot_procs、E4 生成器；方案：档位表 launch_inject 指名产品角色 = 登记，cross_check 校验，编排器据此设 CAPPROBE_INJECT，探针树不改（约 60 分钟写代码）
+- 2026-11-16 02:34:25 FT1-inj 首跑 test_product_inject + test_probe_env + 新的 launch e2e（约 2 分钟）
+- 2026-11-16 02:35:45 FT1-inj 跑 test_e2a_e3_e4_configs（生成器加 e4b-mc-vf2/vf4，约 1 分钟）
+- 2026-11-16 02:37:07 FT1-inj 变异 T1–T16 串行（后台，约 8 分钟）
+- 2026-11-16 02:47:08 FT1-inj 跑 tests/launch 全目录（临时软链 WT/probe-tree，约 5 分钟）
+- 2026-11-16 02:50:49 FT1-inj 跑 tests/capprobe 全目录（约 3 分钟）
+- 2026-11-16 02:51:39 FT1-inj 跑 tests/jobs 全目录（约 5 分钟）
+- 2026-11-16 02:53:36 FT1-inj 跑 tests/capstubs 全目录（约 4 分钟）
+- 2026-11-16 02:55:21 FT1-inj 重跑 tests/capstubs（上次缺 probe-tree 软链，属环境；约 4 分钟）

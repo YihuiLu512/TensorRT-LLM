@@ -22,10 +22,11 @@
 | `e4b-nb-mc`、`e4b-nb-r` | E4 卡的第一步：粗扫找到平台后，在平台下方最近的稳定档上重复启动，量真前端的近边界噪声（模板只有 1 个 `up` 档） |
 | `e4b-weak-<轴>`、`e4bp-weak-<轴>` | 弱读者检验：同一个桩（与对应前端臂逐字段相同的角色），读者换成 `capgrpc.load` 单连接；按前端的边界档登记。这些臂另有作业输入 `request_bytes`（`--model {param:tokenizer_dir}`）与 `messages` 链 |
 | `e4b-w2-mc` | 负载源翻倍（`capload` 2W） |
-| `e4b-mc-vstub`、`e4b-mc-vload` | V 的「另一端注入不动」：δ 注在 S-PB 的 `send.msg`、`capload` 的 `recv.chunk`。前端 F2 / F4 位点的注入属 FT1-inj，这里没有 |
+| `e4b-mc-vstub`、`e4b-mc-vload` | V 的「另一端注入不动」：δ 注在 S-PB 的 `send.msg`、`capload` 的 `recv.chunk` |
+| `e4b-mc-vf2`、`e4b-mc-vf4` | V 的被测端（产品侧注入，INTERFACES 勘误 FT1-18）：δ 由 capprobe 注在前端的 F2（`GenerateStream._read`，每读一条 gRPC 消息）或 F4（每请求队列出队，每个事件项）。相对 `e4b-mc`，除臂名、说明与按臂名取的登记路径外只改三处：启动与前端角色的 `probe_tier` 为 `P1`、前端 `snapshots` 为 `all`、档位表多一条 `launch_inject`。作业的覆盖清单必须是 P1（探针补丁、不开组），所以这两臂不能与 P0 的臂同一作业；探针补丁本身的开销（P1 − P0）按设计稿 §2.4 另行评估 |
 
 阴性对照（桩节拍很低时积压读数在零附近）读阶梯的低档。快轨不做的 E4 项（4a、4c、K 轴、L 轴文本长 prompt、互扰档、陪跑阳性、chat 对照、1 核敏感性、`--random-ids`）见快轨计划第 4 节。
 
 ## 未核对
 
-本机只做了结构校验、档位表展开与 `cross_check`。真前端连 S-PB / S-NL、`--num_input_processor_workers` 在镜像加覆盖后的实际行为、前端在负载下实际可运行的线程数、前端是否把 `max_tokens` 截短（R 轴 `max_tokens` 1 没有对应的预制流时 S-PB 会拒绝）都要靠 E0 补充冒烟与 E4 自身的冒烟确认。
+本机只做了结构校验、档位表展开与 `cross_check`（`vf2` / `vf4` 另有本机的编排器端到端：替身产品进程里真 capprobe 的心跳逐窗可读，勘误 FT1-20）。真前端里 F2 / F4 的注入与心跳要靠集群冒烟确认。真前端连 S-PB / S-NL、`--num_input_processor_workers` 在镜像加覆盖后的实际行为、前端在负载下实际可运行的线程数、前端是否把 `max_tokens` 截短（R 轴 `max_tokens` 1 没有对应的预制流时 S-PB 会拒绝）都要靠 E0 补充冒烟与 E4 自身的冒烟确认。

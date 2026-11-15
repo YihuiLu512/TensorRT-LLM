@@ -11,6 +11,7 @@ import pytest
 
 import conftest as cf
 from capcommon.runtree import read_state
+from capcommon.snapshot import read_snapshot_file
 from caplaunch import procfs
 
 TIER_FILES = ("000_warmup-0", "001_drain-1", "002_up-2", "003_drain-3", "004_down-4",
@@ -21,8 +22,9 @@ def _gate():
     return cf.gate([("nullsse", "backlog.active_streams"), ("capload", "backlog.inflight")])
 
 
-def _launch(tmp_path, roles, tdoc=None, lead_ms=2500, overlay=None, shm=None, job_env_dir=None):
-    wd = cf.make_workdir(tmp_path, tdoc or cf.tier_doc(_gate()), roles)
+def _launch(tmp_path, roles, tdoc=None, lead_ms=2500, overlay=None, shm=None, job_env_dir=None,
+            probe_tier="P0"):
+    wd = cf.make_workdir(tmp_path, tdoc or cf.tier_doc(_gate()), roles, probe_tier=probe_tier)
     T = os.path.join(str(tmp_path), "T")
     r = cf.run_launch(cf.launch_argv(wd, T, shm or os.path.join(str(tmp_path), "shm"),
                                      lead_ms=lead_ms, overlay=overlay, job_env_dir=job_env_dir))
@@ -261,6 +263,73 @@ def test_entry_rule_recorded_is_the_injected_one_from_the_first_roles_write(tmp_
         procs = json.loads(line)["procs"]
         seen += [p for p in procs if p["role"] == "product" and p["discovered_via"] == "launched"]
     assert seen and all(p.get("probe_entry") == rule for p in seen), seen
+    _no_leftovers(T)
+
+
+INJ_DELTA_NS = 200_000
+LOAD_TIERS = ("000_warmup-0", "002_up-2", "004_down-4")
+
+
+def _p1_overlay(tmp_path):
+    p = os.path.join(str(tmp_path), "overlay_p1.json")
+    with open(p, "w") as f:
+        json.dump({"schema": "capkit.overlay/1", "tier": "P1", "groups": [], "files": [],
+                   "capkit_packages": [], "capkit_code_sha": cf.ZERO_SHA,
+                   "target_commit": "d" * 40, "sites": {}}, f)
+    return p
+
+
+@pytest.mark.parametrize("inject", [True, False], ids=["registered", "absent"])
+def test_product_side_injection_reaches_capprobe_with_heartbeat_in_every_window(tmp_path,
+                                                                                inject):
+    """FT1-18 end to end with the real orchestrator and the real capprobe in a product-like
+    process passing F2 and F4: the launch_inject entry naming the product role is the process's
+    injection (launch.json probe_inject, snapshot meta), the process writes snapshots, the
+    orchestrator copies them at every window edge, and the heartbeat slots show a busy-wait at
+    F2 on every pass (applied == hits, applied_ns >= applied x delta) and passes without a spec
+    at F4. Absent (negative control): same P1 launch without the entry, no snapshot at all."""
+    roles = cf.default_roles(product_args=["--probe-sites", "F2,F4", "--probe-every-ms", "5"],
+                             with_observers=False)
+    for rr in roles:
+        if rr["role"] == "product":
+            rr.update(probe_tier="P1", snapshots="all", proc_kinds=["frontend_openengine"])
+    tdoc = cf.tier_doc(_gate())
+    spec = {"role": "product", "site": "F2", "mode": "busy", "delta_ns": INJ_DELTA_NS}
+    tdoc["launch_inject"] = [spec] if inject else []
+    shm = os.path.join(str(tmp_path), "shm")
+    r, T = _launch(tmp_path, roles, tdoc=tdoc, overlay=_p1_overlay(tmp_path), shm=shm,
+                   probe_tier="P1")
+    assert r.returncode == 0, r.stderr[-3000:]
+    assert [s[1] for s in read_state(T)] == ["VALID"]
+    L = _j(T, "raw", "launch.json")
+    want = [{"site": "F2", "mode": "busy", "every_n": 1, "phase": 0, "where": "inline",
+             "delta_ns": INJ_DELTA_NS, "role": "product"}]
+    assert L["probe_inject"] == ({"product": want} if inject else {})
+    [prod] = [p for p in _j(T, "raw", "procs", "roles.json")["procs"] if p["role"] == "product"]
+    pid = prod["pid"]
+    shm_files = [n for _d, _s, fs in os.walk(shm) for n in fs if n == "%d.bin" % pid]
+    for d in TIER_FILES:
+        t = _j(T, "raw", "tiers", d, "tier.json")
+        assert [c for c in t["snapshot_copies"] if c.get("snapshot_missing")] == []
+        mine = sorted(c["which"] for c in t["snapshot_copies"] if c["pid"] == pid)
+        assert mine == (["wend", "wstart"] if inject else []), (d, mine)
+    if not inject:
+        assert shm_files == []
+        _no_leftovers(T)
+        return
+    assert len(shm_files) == 1
+    for d in LOAD_TIERS:
+        sd = os.path.join(T, "raw", "tiers", d, "snapshots")
+        a, b = (read_snapshot_file(os.path.join(sd, "product.%d.%s.bin" % (pid, w)))
+                for w in ("wstart", "wend"))
+        assert b.meta["probe"]["inject"] == [{k: v for k, v in want[0].items() if k != "role"}]
+        assert b.meta["probe"]["tier"] == "P1" and b.meta["probe"]["groups"] == []
+        dv = {k: b.values[k] - a.values[k] for k in b.values if k.startswith("inject.")}
+        assert dv["inject.F2.hits"] > 10, (d, dv)
+        assert dv["inject.F2.applied"] == dv["inject.F2.hits"], (d, dv)
+        assert dv["inject.F2.applied_ns"] >= dv["inject.F2.applied"] * INJ_DELTA_NS, (d, dv)
+        assert dv["inject.F4.hits"] > 10 and dv["inject.F4.applied"] == 0, (d, dv)
+        assert not any(k.startswith("count.") for k in b.values)  # P1: no probe group
     _no_leftovers(T)
 
 

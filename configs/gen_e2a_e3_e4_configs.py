@@ -203,14 +203,15 @@ def capload(workers):
                      "name (the tokenizer dir it was given)" % (workers, workers))
 
 
-def frontend(stub):
+def frontend(stub, probe_tier="P0"):
     """The real new-arch trtllm-serve frontend as E0 launched it (configs/e0 e0a-frontend-sfe):
     one frontend, postproc pool off; plus --num_input_processor_workers at its default, written
-    so the pool size is an explicit condition (card E4)."""
-    return role("frontend", "product", "server", "under_test", True, "uvloop", True, "P0",
+    so the pool size is an explicit condition (card E4). probe_tier P1 (the probe patch, no
+    group) only for the product-side V arms; capprobe then writes snapshots (errata FT1-18)."""
+    return role("frontend", "product", "server", "under_test", True, "uvloop", True, probe_tier,
                 [{"kind": "report_addr"},
                  {"kind": "http_get", "path": "/health", "expect_status": 200,
-                  "timeout_s": 2.0}], [], "none",
+                  "timeout_s": 2.0}], [], "none" if probe_tier == "P0" else "all",
                 ["{param:tokenizer_dir}", "--host", "127.0.0.1", "--port", "0",
                  "--report_addr", "{own:report_addr}", "--openengine-endpoint",
                  "{addr:%s}" % stub, "--num_serve_frontends", "1",
@@ -261,11 +262,13 @@ def msg_chain(stub):
 
 def scen(exp, name, roles, stop_order, chains, stub_desc, note, job_inputs=None, tok=None):
     reg = REG[exp]
+    tiers = {r["probe_tier"] for r in roles if r["launcher"] == "product"}
+    assert len(tiers) <= 1, tiers
     d = {"schema": "capkit.scenario/1", "experiment": exp, "name": name,
          "tier_table": "%s/%s.tiers.json" % (reg, name),
          "schedule": "%s/%s.schedule.capbin" % (reg, name),
          "prompts": "%s/%s.prompts.json" % (reg, name),
-         "probe_tier": "P0" if any(r["launcher"] == "product" for r in roles) else None,
+         "probe_tier": tiers.pop() if tiers else None,
          "probe_groups": [], "stop_grace_s": 10.0, "stop_order": stop_order,
          "reconcile": {"schema": "capkit.reconcile/1", "chains": chains}, "roles": roles,
          "params_required": sorted(_params([roles, job_inputs or {}], set())),
@@ -373,7 +376,11 @@ V_NOTE = {"vrdr": "V: busy delta at the reader's recv.msg (every message)",
           "vstub": "V: busy delta at the stub's send.msg (every message)",
           "vsrv": "V: busy delta at S-NL's send.msg, on the servicer's event loop (every "
                   "message)",
-          "vload": "V: busy delta at capload's recv.chunk (every chunk)"}
+          "vload": "V: busy delta at capload's recv.chunk (every chunk)",
+          "vf2": "V: busy delta at the frontend's F2 (GenerateStream._read, every gRPC message "
+                 "read; capprobe CAPPROBE_INJECT); P1 overlay",
+          "vf4": "V: busy delta at the frontend's F4 (per-request queue dequeue, every event "
+                 "item; capprobe CAPPROBE_INJECT); P1 overlay"}
 
 
 def direct_inputs(stub):
@@ -492,9 +499,16 @@ def fe_inputs(stub, reader=False):
 def e4(stub, shape, tag="", v=None, workers=W_HTTP, n=LADDER, extra=""):
     """capload -> the real frontend (main tier) -> one stub."""
     name = "e4%s%s-%s%s" % ("b" if stub == "spb" else "bp", tag, shape, "-" + v if v else "")
-    roles = [fe_stub(stub), frontend(stub), capload(workers)] + observers("capload")
+    product_v = v in ("vf2", "vf4")
+    roles = [fe_stub(stub), frontend(stub, "P1" if product_v else "P0"),
+             capload(workers)] + observers("capload")
     inject = {None: [], "vstub": [inj(stub, "send.msg")],
-              "vload": [inj("capload", "recv.chunk")]}[v]
+              "vload": [inj("capload", "recv.chunk")],
+              "vf2": [inj("frontend", "F2")], "vf4": [inj("frontend", "F4")]}[v]
+    if product_v:
+        extra += ("; product-side V: the frontend runs the probe patch (overlay P1, no probe "
+                  "group) and capprobe busy-waits at %s; the job's overlay manifest must be P1, "
+                  "so these arms never share a job with the P0 arms" % v[1:].upper())
     arm("E4", name,
         scen("E4", name, roles, ["capload", "frontend", stub, "sidecar", "canary"],
              [req_chain(("capload", "summary.counts.ok"),
@@ -541,6 +555,8 @@ for _shape in ("mc", "r"):
 e4("spb", "mc", tag="-w2", workers=2 * W_HTTP, extra="; load source doubled")
 e4("spb", "mc", v="vstub")
 e4("spb", "mc", v="vload")
+e4("spb", "mc", v="vf2")
+e4("spb", "mc", v="vf4")
 
 
 # ---------------- values checklists (fill, then python -m caplaunch.tiergen) ----------------
