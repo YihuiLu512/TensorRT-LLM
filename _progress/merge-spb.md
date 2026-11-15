@@ -27,9 +27,11 @@
 | # | 问题 | 处理 |
 |---|---|---|
 | S1 | main 的 SM-18 修复把 `capgrpc.common.make_server(reuseport, max_unrequested_s)` 的第二个参数改为必填，并在 INTERFACES「Fix SM-17 … SM-18 …」第 2 条最后一项写明「S-PB（2B）尚未合入 main，合入后起进程时 TypeError，必须照此改」。2B 的 `capstubs.prebaked_server` 仍是 `make_server(reuseport=False)`，文本自动合并，不改就起不来 | 照 `capselfcheck.relay` 的做法改 S-PB：`add_server_args`（可选 `--max-unrequested-s`）、`main()` 里在读档位表后 `resolve_max_unrequested`、`make_server(reuseport=False, max_unrequested_s=…)`，就绪文件自报与每档 summary 写 `grpc_server_options`。测试：`tests/capstubs/test_prebaked_server.py` 端到端用例加三项断言（缺省来源、两项条数上限、每档与就绪一致），启动拒绝用例加 `max_unrequested_zero`。文档：`tools/capstubs/README.md` 参数与输出、INTERFACES SM-18 那一项改为指向 M-SPB-1、B2B-3 的 S-PB 行加参数、新增勘误 M-SPB-1 |
-- 2026-11-15 23:58:52 合并提交 0b8816b4db1fb45666f78dd661656f579fa5c55f；开跑全量验证 `MAINV_WT=<WT> fullv_all.sh merge-spb 52`（12 个测试目录 + selftest 52 + patchcheck + py_compile + bash -n，约 30 分钟，后台）。
+- 2026-11-15 23:58:52 合并提交（初版 0b8816b4，后经 S2 修复修订为本提交）；开跑全量验证 r1 `MAINV_WT=<WT> fullv_all.sh merge-spb 52`（12 个测试目录 + selftest 52 + patchcheck + py_compile + bash -n，约 30 分钟，后台）。
 - 2026-11-16 00:08:26 全量验证 tests/jobs 6 failed：SB-A 的 `laddergen.packing` 用只有 `budget_s` 的合成计划调 `submit.time_budget`，2B 的 time_budget 要从每个启动的 argv 读场景算作业输入时限 ⇒ KeyError 'argv'。真语义冲突（S2），修复中；全量验证在后台继续跑完其余目录。
 
 | # | 问题 | 处理 |
 |---|---|---|
 | S2 | 全量验证 tests/jobs 的 `test_v0_tables_fit` 6 例 KeyError 'argv'：main（SB-A）的 `caplaunch.laddergen.packing` 用只有 `budget_s` 的合成计划调 `capjobs.submit.time_budget`；2B 让 `time_budget` 经 `launchplan.in_job_bound_s` 从每个启动 argv 读场景、加 `job_inputs_s`。两边文本都没冲突 | `time_budget(plan, renv, job_input_kinds=None)`：None 照旧读场景（提交端不变）；整数则每个启动按这么多种类计。`laddergen.packing` 传 0（v2 标定场景都不声明 `job_inputs`），`packing` 段（进 `ladder.json`）的键与数值与合入前相同，没加新键以免改变 `ladder.json` 字节。测试：`tests/jobs/test_job_inputs.py::test_in_job_bound_counts_each_declared_kind` 加显式计数的三条断言；`test_v0_tables_fit` 覆盖 laddergen 路径。INTERFACES 新增 M-SPB-2 |
+- 2026-11-16 00:11:53 r1 在 tests/judge 处中止（S2 修复改了代码，r1 前 7 个目录跑的是旧合并提交：capcommon 203、capload 33、capprobe 171、capstubs 95、envgate 111、grpc 56 全过，jobs 6 failed = S2）。S2 修复并入合并提交 91c6e683；开跑全量验证 r2（logs/merge-spb/r2，约 30 分钟，后台）。
+- 2026-11-16 r2 全量验证（HEAD 91c6e683b37705755ee2a530ecb2f136ba465c5a，logs/merge-spb/r2/summary.txt）全绿，首跑即过、无重跑：capcommon 203、capload 33、capprobe 171、capstubs 95、envgate 111、grpc 56、jobs 346、judge 542 + 6 xfailed、launch 322、nullsse 4、sidecar 5；selftest ran 52 / errors 0 / deferred 5（DEFERRED_P2_13，与 main v2 相同）；patchcheck PASS（7 位点 / 8 处，0 violations）；py_compile 239/0；bash -n 3/0；fakebin.log 0 行。
