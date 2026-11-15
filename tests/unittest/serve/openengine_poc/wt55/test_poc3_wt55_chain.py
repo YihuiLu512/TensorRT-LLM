@@ -44,20 +44,22 @@ PROMPT = "He llo"
 CTX_RECEIVED = SERVE_COUNTER_HTTP_RECEIVED_BUCKETS[BUCKET_CONTEXT_ONLY]
 
 
-def _profiles(generation_first: bool, ctx_endpoints: tuple) -> dict:
+def _profiles(ctx_generation_first: bool, ctx_endpoints: tuple) -> dict:
+    """The generation engine always declares generation-first; the context engine as given."""
     profiles = {}
     for role in ("context", "generation"):
         endpoints = ctx_endpoints if role == "context" else ()
+        declared = ctx_generation_first if role == "context" else True
         profiles[role] = disagg_profile(
             "trtllm-like",
             kv_connector=FakeKvConnector(local_endpoints=endpoints),
-            capabilities={CAP_DISAGG_GENERATION_FIRST: generation_first},
+            capabilities={CAP_DISAGG_GENERATION_FIRST: declared},
         )
     return profiles
 
 
 def _chain(
-    directory, generation_first: bool, ctx_endpoints: tuple = (CTX_ENDPOINT,)
+    directory, ctx_generation_first: bool, ctx_endpoints: tuple = (CTX_ENDPOINT,)
 ) -> CpuDisaggChain:
     config = directory / "frontend.yaml"
     config.write_text(yaml.safe_dump({"cache_transceiver_config": {"backend": "DEFAULT"}}))
@@ -65,7 +67,7 @@ def _chain(
     return CpuDisaggChain(
         directory,
         "trtllm",
-        profiles=_profiles(generation_first, ctx_endpoints),
+        profiles=_profiles(ctx_generation_first, ctx_endpoints),
         frontend_args={"context": args, "generation": args},
         orchestrator_config={"schedule_style": "generation_first"},
     )
@@ -73,7 +75,7 @@ def _chain(
 
 @pytest.fixture(scope="module")
 def chain(tmp_path_factory):
-    with _chain(tmp_path_factory.mktemp("chain-gen-first"), generation_first=True) as chain:
+    with _chain(tmp_path_factory.mktemp("chain-gen-first"), ctx_generation_first=True) as chain:
         yield chain
 
 
@@ -173,7 +175,7 @@ def _context_leg(chain) -> requests.Response:
 
 
 def test_a_context_engine_without_generation_first_is_not_sent_the_prefill(tmp_path):
-    with _chain(tmp_path, generation_first=False) as chain:
+    with _chain(tmp_path, ctx_generation_first=False) as chain:
         rejected, _, _ = _through_orchestrator(chain)
         # The orchestrator retries the context leg; the frontend refuses every attempt.
         assert rejected >= 1
@@ -184,7 +186,7 @@ def test_a_context_engine_without_generation_first_is_not_sent_the_prefill(tmp_p
 
 
 def test_a_context_engine_naming_no_local_endpoint_is_not_sent_the_prefill(tmp_path):
-    with _chain(tmp_path, generation_first=True, ctx_endpoints=()) as chain:
+    with _chain(tmp_path, ctx_generation_first=True, ctx_endpoints=()) as chain:
         rejected, _, _ = _through_orchestrator(chain)
         assert rejected >= 1
         assert _calls(chain.ctx.engine, BUCKET_CONTEXT_ONLY) == []

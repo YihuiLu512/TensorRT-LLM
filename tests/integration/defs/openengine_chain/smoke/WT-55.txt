@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Generation-first through the disaggregated server, with chunked prefill and pipelined KV transfer,
+# against context-first on workers without pipelined transfer (all four workers on one GPU);
+# about 350 s on 1xB200 on the trtllm chain.
+unittest/llmapi/apps/_test_openengine_disagg_gen_first.py::test_pipelined_transfer_with_chunked_prefill
