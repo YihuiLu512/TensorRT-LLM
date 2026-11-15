@@ -14,9 +14,11 @@ attention DP, so on the chain their engines check the signed parent id
   chain the context engines declare that they check the hint and none
   refuses it.
 - NT-084: with ``subagent_affinity_scope: both`` (a second orchestrator) the
-  requests succeed; on the chain the generation frontend accepts the signed
-  hint and does not send it to its engine, which serves context requests
-  only with one.
+  requests succeed. On the chain this is the evidence that the generation
+  frontend did not send the hint to its engine: the engine refuses a
+  generation call that carries one ("supported on context requests only"),
+  which would fail the request; the hint travels as gRPC metadata, which the
+  frontend's request dumps do not hold. Neither engine logs a refusal.
 
 Needs one GPU of Hopper or later and ``${LLM_MODELS_ROOT}/Qwen3/Qwen3-0.6B``.
 """
@@ -24,7 +26,7 @@ Needs one GPU of Hopper or later and ``${LLM_MODELS_ROOT}/Qwen3/Qwen3-0.6B``.
 import pytest
 import requests
 
-__extra_import_path__ = ["~/tests/integration/defs", "~/tests/unittest/serve/openengine_poc/wt53"]
+__extra_import_path__ = ["~/tests/unittest/serve/openengine_poc/wt53"]
 from wt53_gpu import (  # noqa: E402
     CHAIN,
     MODEL_NAME,
@@ -114,13 +116,18 @@ def test_subagent_affinity_scope_context(served):
     _assert_no_refusal(served.workers["context"])
 
 
-def test_subagent_affinity_scope_both_is_not_forwarded_to_the_gen_engine(served, tmp_path):
-    """NT-084 (DG-22, DG-35): with scope both the generation leg succeeds and its engine gets no hint."""
+@pytest.fixture
+def scope_both(served, tmp_path):
     log_path = tmp_path / "output_orchestrator_scope_both.log"
     with another_orchestrator(
         served, log_path, orchestrator={"subagent_affinity_scope": "both"}
     ) as orchestrator:
-        _family(orchestrator.url_root, "parent-both")
+        yield orchestrator
+
+
+def test_subagent_affinity_scope_both_is_not_forwarded_to_the_gen_engine(served, scope_both):
+    """NT-084 (DG-22, DG-35): with scope both the generation leg succeeds and its engine gets no hint."""
+    _family(scope_both.url_root, "parent-both")
     if CHAIN:
         _assert_no_refusal(served.workers["generation"])
         _assert_no_refusal(served.workers["context"])

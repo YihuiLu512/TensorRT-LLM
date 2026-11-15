@@ -1,18 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""What the GPU tests of WT-53 share: a disaggregated cluster on one GPU and its readings.
+"""A disaggregated cluster on one GPU and its readings, for GPU tests through the orchestrator.
 
-The tests are ``tests/unittest/llmapi/apps/_test_openengine_disagg_*.py`` of the
-second batch (``kv_aware``, ``subagent_affinity``, ``multi_frontend``,
-``server_info``, ``admission``). They run on the in-process workers and, when
+The tests run on the in-process workers and, when
 ``TRTLLM_TEST_OPENENGINE_CHAIN`` selects a chain
 (``tests/integration/defs/openengine_chain``), on the OpenEngine chain, where
 each worker is a frontend and a TensorRT-LLM OpenEngine server; the readings
 of the engine (its ``GetServerInfo``, its Generate count, the requests its
 frontend sent it) exist only there.
-
-A test file imports this module after naming both directories in its
-``__extra_import_path__``: this one and ``tests/integration/defs``.
 """
 
 from __future__ import annotations
@@ -20,9 +15,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import random
 import secrets
-import socket
 import time
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -35,8 +28,10 @@ import torch
 from test_common.http_utils import wait_for_endpoint_ready
 from utils.llm_data import llm_models_root
 
-from tensorrt_llm._utils import get_free_ports
 from tensorrt_llm.grpc.openengine_conventions import SERVE_REQUEST_DUMP_DIR_ENV
+
+# For openengine_chain, imported where it is used.
+__extra_import_path__ = ["~/tests/integration/defs"]
 
 CHAIN = os.environ.get("TRTLLM_TEST_OPENENGINE_CHAIN", "none") not in ("", "none")
 chain_only = pytest.mark.skipif(
@@ -80,12 +75,13 @@ class Cluster:
 
     orchestrator: Any
     workers: dict[str, list[Any]]
-    auth_key: str
+    # The key and the environment are left out of the repr, which a failed assertion prints.
+    auth_key: str = field(repr=False)
     dump_dir: Path
     logs: dict[str, str] = field(default_factory=dict)
     # The orchestrator's configuration and every process's environment, for another orchestrator.
-    orchestrator_config: dict[str, Any] = field(default_factory=dict)
-    env: dict[str, str] = field(default_factory=dict)
+    orchestrator_config: dict[str, Any] = field(default_factory=dict, repr=False)
+    env: dict[str, str] = field(default_factory=dict, repr=False)
 
     @property
     def ctx(self) -> Any:
@@ -147,7 +143,7 @@ def cluster(
     ``dump_dir/<role>-<i>`` (on the chain).
     """
     # The calling test's package (tests/unittest/llmapi/apps), imported under this name by pytest.
-    from llmapi.apps.openai_server import RemoteDisaggOpenAIServer, RemoteOpenAIServer
+    from llmapi.apps.openai_server import RemoteOpenAIServer
 
     needs_gpu()
     model = model_dir()
@@ -156,7 +152,7 @@ def cluster(
     auth_key = secrets.token_hex(32)
     dump_dir = workdir / "requests"
     process_env = {**os.environ, "UCX_NET_DEVICES": "lo", **(env or {})}
-    (orchestrator_port,) = get_free_ports(1)
+    orchestrator_port = pick_port()
     disagg_cluster = {"cluster_uri": f"http://localhost:{orchestrator_port}", "cluster_name": ""}
     base = _merged(
         {"model": MODEL_NAME, "internal_request_auth_key": auth_key},
@@ -206,19 +202,12 @@ def cluster(
             disagg_config["disagg_cluster"] = disagg_cluster
         logs["orchestrator"] = str(workdir / "output_orchestrator.log")
         server = stack.enter_context(
-            RemoteDisaggOpenAIServer(
-                ctx_servers=[],
-                gen_servers=[],
-                port=orchestrator_port,
-                env=process_env,
-                llmapi_launch=False,
-                disagg_config=disagg_config,
-                log_path=logs["orchestrator"],
-            )
+            _orchestrator(orchestrator_port, process_env, disagg_config, logs["orchestrator"])
         )
-        for worker in (w for role in ROLES for w in workers[role]):
-            worker.wait_for_server(timeout=ENGINE_READY_TIMEOUT_S)
-        wait_for_endpoint_ready(server.url_root + "/health")
+        if register:
+            for worker in (w for role in ROLES for w in workers[role]):
+                worker.wait_for_server(timeout=ENGINE_READY_TIMEOUT_S)
+        _wait_ready(server)
         result = Cluster(server, workers, auth_key, dump_dir, logs, disagg_config, process_env)
         wait_for_members(result, counts)
         yield result
@@ -268,11 +257,45 @@ def engine_received(server: Any) -> int:
     return proof.engine_received(server._chain_handle)
 
 
-def sent_requests(served: Cluster, role: str, index: int = 0) -> list[dict[str, Any]]:
-    """The GenerateRequests a chain worker's frontend sent its engine, as JSON, oldest first."""
+def sent_names(served: Cluster, role: str, index: int = 0) -> set[str]:
+    """The names of the GenerateRequests a chain worker's frontend has written so far."""
     directory = served.dump_dir / f"{role}-{index}"
-    paths = sorted(directory.glob("*.json"), key=lambda p: p.stat().st_mtime_ns)
-    return [json.loads(path.read_text()) for path in paths]
+    return {path.name for path in directory.glob("*.json")}
+
+
+def sent_since(
+    served: Cluster, role: str, before: set[str], index: int = 0
+) -> list[dict[str, Any]]:
+    """The GenerateRequests a chain worker's frontend sent its engine since ``before``, as JSON.
+
+    A file is named after the call's request id, so ``before`` is
+    :func:`sent_names` taken before the requests were sent.
+    """
+    directory = served.dump_dir / f"{role}-{index}"
+    names = sorted(sent_names(served, role, index) - before)
+    return [json.loads((directory / name).read_text()) for name in names]
+
+
+def _orchestrator(port: int, env: Mapping[str, str], config: Mapping[str, Any], log_path: str):
+    from llmapi.apps.openai_server import RemoteDisaggOpenAIServer
+
+    return RemoteDisaggOpenAIServer(
+        ctx_servers=[],
+        gen_servers=[],
+        port=port,
+        env=dict(env),
+        llmapi_launch=False,
+        disagg_config=dict(config),
+        log_path=log_path,
+        wait_ready=False,
+    )
+
+
+def _wait_ready(server: Any) -> None:
+    """Wait for an orchestrator's ``/health``, failing at once if its process exits."""
+    wait_for_endpoint_ready(
+        server.url_for("health"), timeout=ENGINE_READY_TIMEOUT_S, server_proc=server.proc
+    )
 
 
 @contextlib.contextmanager
@@ -288,9 +311,7 @@ def another_orchestrator(
     Its configuration is ``served``'s with ``orchestrator`` added and
     ``servers`` added to the server sections by role; it is not a cluster.
     """
-    from llmapi.apps.openai_server import RemoteDisaggOpenAIServer
-
-    (port,) = get_free_ports(1)
+    port = pick_port()
     config = {k: v for k, v in served.orchestrator_config.items() if k != "disagg_cluster"}
     config["port"] = port
     for role, key in zip(ROLES, ("context_servers", "generation_servers")):
@@ -298,16 +319,8 @@ def another_orchestrator(
         section = _merged(config[key], {"num_instances": len(urls), "urls": urls})
         config[key] = _merged(section, (servers or {}).get(role, {}))
     config = _merged(config, orchestrator or {})
-    with RemoteDisaggOpenAIServer(
-        ctx_servers=[],
-        gen_servers=[],
-        port=port,
-        env=served.env,
-        llmapi_launch=False,
-        disagg_config=config,
-        log_path=str(log_path),
-    ) as server:
-        wait_for_endpoint_ready(server.url_root + "/health")
+    with _orchestrator(port, served.env, config, str(log_path)) as server:
+        _wait_ready(server)
         yield server
 
 
@@ -328,20 +341,15 @@ def chain_log(server: Any, side: str) -> str:
     return Path(getattr(server._chain_handle, f"{side}_log")).read_text(errors="replace")
 
 
-def _bindable(port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        try:
-            sock.bind(("localhost", port))
-        except OSError:
-            return False
-    return True
+def pick_port() -> int:
+    """A port for a process a test starts, picked as the chain harness picks its own and kept off them."""
+    from openengine_chain import launch
+
+    return launch.pick_port()
 
 
-def port_with_free_strides(strides: Sequence[int], count: int) -> int:
-    """A port P below the ephemeral range with P + s * (i + 1) free for each stride s and i < count."""
-    low = 20000
-    for port in random.sample(range(low, low + 10000), 200):
-        wanted = [port] + [port + s * (i + 1) for s in strides for i in range(count)]
-        if all(_bindable(p) for p in wanted):
-            return port
-    raise RuntimeError(f"no port with free affinity ports for strides {strides}")
+def port_block(count: int) -> int:
+    """The first of ``count`` consecutive free ports, picked and kept as :func:`pick_port`'s."""
+    from openengine_chain import launch
+
+    return launch._free_port_block(count)

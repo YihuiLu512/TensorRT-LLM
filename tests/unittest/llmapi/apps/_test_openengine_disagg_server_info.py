@@ -6,14 +6,14 @@ A context and a generation worker serve KV-cache events and are started with
 ``--max_batch_size``, which on the chain only the engine gets; neither test
 sends a generation request.
 
-- NT-055: each worker answers ``/server_info`` with the fields a router reads.
-- NT-186 (chain only): the fields a router sizes and hashes blocks with come
-  from the engine's ``GetServerInfo``, not from the frontend's own
-  configuration: ``max_batch_size`` is the engine's (the frontend was not
-  given the option), ``kv_cache_hash_algo`` the algorithm the engine declares
-  for its KV-cache events (the frontend's own configuration gives the default
-  one), ``tokens_per_block`` the engine's block size, and the context worker's
-  ``ctx_info_endpoint`` the first endpoint of the engine's KV connector.
+- NT-055: each worker answers ``/server_info`` with ``DISAGG_FIELDS``.
+- NT-186 (chain only): those fields equal what the engine's
+  ``GetServerInfo`` reports: ``max_batch_size`` (the frontend was not given
+  the option), ``kv_cache_hash_algo`` (the frontend's own configuration gives
+  the default algorithm), ``tokens_per_block``, and the context worker's
+  ``ctx_info_endpoint``, the first endpoint of the engine's KV connector.
+  The first two tell the engine's value from the frontend's; the frontend
+  and the engine share ``tokens_per_block`` here.
 
 Needs one GPU of Hopper or later and ``${LLM_MODELS_ROOT}/Qwen3/Qwen3-0.6B``.
 """
@@ -22,7 +22,7 @@ import pytest
 
 from tensorrt_llm.runtime.kv_cache_hash import KV_CACHE_HASH_ALGO_DEFAULT
 
-__extra_import_path__ = ["~/tests/integration/defs", "~/tests/unittest/serve/openengine_poc/wt53"]
+__extra_import_path__ = ["~/tests/unittest/serve/openengine_poc/wt53"]
 from wt53_gpu import (  # noqa: E402
     chain_only,
     cluster,
@@ -36,8 +36,8 @@ pytestmark = [pytest.mark.threadleak(enabled=False)]
 MAX_BATCH_SIZE = 8
 # The engine's ServerInfo.extra key naming the algorithm of its KV-cache event hashes.
 HASH_ALGO_KEY = "trtllm_kv_event_hash_algo"
-# What a router reads from a worker's /server_info.
-ROUTER_FIELDS = {"disaggregated_params", "max_batch_size", "kv_cache_hash_algo", "tokens_per_block"}
+# The fields of a worker's /server_info that this file checks.
+DISAGG_FIELDS = {"disaggregated_params", "max_batch_size", "kv_cache_hash_algo", "tokens_per_block"}
 
 
 @pytest.fixture(scope="module")
@@ -58,10 +58,10 @@ def served(tmp_path_factory):
 
 
 def test_server_info_direct(served):
-    """NT-055 (F-06): each worker answers /server_info with the fields a router reads."""
+    """NT-055 (F-06): each worker answers /server_info with DISAGG_FIELDS."""
     for role, servers in served.workers.items():
         info = server_info(servers[0])
-        assert ROUTER_FIELDS <= info.keys(), (role, info)
+        assert DISAGG_FIELDS <= info.keys(), (role, info)
         assert info["max_batch_size"] == MAX_BATCH_SIZE, (role, info)
         assert info["tokens_per_block"] > 0, (role, info)
         if role == "context":
@@ -79,7 +79,7 @@ def _endpoint_text(endpoint, transfer_backend: str) -> str:
 
 @chain_only
 def test_disagg_fields_come_from_the_engine(served):
-    """NT-186 (DG-89): /server_info takes the router's fields from the engine's ServerInfo."""
+    """NT-186 (DG-89): the fields of /server_info equal the engine's ServerInfo."""
     for role, servers in served.workers.items():
         info = server_info(servers[0])
         engine = engine_server_info(servers[0])
