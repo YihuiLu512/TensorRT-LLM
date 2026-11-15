@@ -1,0 +1,28 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# End-to-end checks of the disaggregated perf harness (case-04, B200, one node, a context worker
+# on one GPU and a generation worker on another). The single-node driver
+# (jenkins/scripts/perf/local/single_node_disagg) starts every role. Each junit path is relative
+# to the result directory of its run, which the work item's status file records; the benchmark
+# role's junit belongs to the run whose result file carries the merged chain proof.
+# PU-01 (PS-12 and PS-13, each run with and without the chain switch) is a card check and owes
+# no row. PS-12 passed both ways, with the chain proof holding on the chain. PS-13 passed
+# without the switch and was skipped on the chain, as expectations/WT-54.py has it: its
+# kv_cache_transfer_start and kv_cache_transfer_end assertions read the generation worker's perf
+# record, which only the engine measures.
+entries:
+  # PU-02, arm E4-chain, three runs: CH-1 to CH-5 hold on both legs; CH-6 holds with the
+  # disaggregated server's members taken from the urls of its YAML (static URL form). Arm
+  # E4-base passed three runs as well (no chain, so no chain proof).
+  - row: DG-27+PU-02
+    features:
+    - DG-27
+    cases:
+    - perf/test_perf_sanity.py::test_e2e[disagg-e2e-b200_qwen3-0.6b-bf16_1k256_con16_ctx1_tp1_gen1_tp1_eplb0_mtp0_ccb-DEFAULT]
+    commit: cb626faddf463ef67f4c8348a5ec85deb45d5721
+    junit:
+    - pu02-5967978-r0/pu02/E4-chain/r1/single-node/disagg-e2e-b200_qwen3-0.6b-bf16_1k256_con16_ctx1_tp1_gen1_tp1_eplb0_mtp0_ccb-DEFAULT/results-benchmark.xml
+    - pu02-5967978-r0/pu02/E4-chain/r2/single-node/disagg-e2e-b200_qwen3-0.6b-bf16_1k256_con16_ctx1_tp1_gen1_tp1_eplb0_mtp0_ccb-DEFAULT/results-benchmark.xml
+    - pu02-5967978-r0/pu02/E4-chain/r3/single-node/disagg-e2e-b200_qwen3-0.6b-bf16_1k256_con16_ctx1_tp1_gen1_tp1_eplb0_mtp0_ccb-DEFAULT/results-benchmark.xml
+    result: passed
+    chain_proof: ok
