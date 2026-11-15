@@ -3374,6 +3374,24 @@ class OrchestratorPlan:
     env: dict[str, str]
 
 
+def b64_prompt_ids_off(arm: Arm | None, completions_client: bool) -> bool:
+    """Whether ``arm``'s trtllm-serve disaggregated server runs without ``gen_tokids_ctxbytes``.
+
+    It does in front of dsv4-serve's context workers when a client calls ``/v1/completions``:
+    there dsv4-serve returns the prompt as ``prompt_token_ids_b64``, which trtllm-serve's
+    ``CompletionResponse`` does not take, while the chain's trtllm-serve front ends return
+    the token id list, which the server then reads in both arms.
+    """
+    return (
+        arm is not None
+        and arm.case == CASE_DS
+        and arm.topology == TOPOLOGY_DISAGG
+        and arm.orchestrator == ORCHESTRATOR_TRTLLM
+        and role_arm(arm, ROLE_CTX).ds_http
+        and completions_client
+    )
+
+
 def prepare_orchestrator(
     arm: Arm,
     cmd: Sequence[str],
@@ -3381,13 +3399,17 @@ def prepare_orchestrator(
     hostname: str,
     env: Mapping[str, str],
     environ: Mapping[str, str] | None = None,
+    *,
+    completions_client: bool = False,
 ) -> OrchestratorPlan:
     """The disaggregated server of a case-03 arm; other arms keep ``cmd`` and ``env``.
 
     An aligned arm writes :data:`DS_ALIGNED_ORCHESTRATOR` into the server's YAML
-    (``config_path``, rewritten in place, so that the result reads what the server read). The
-    native arms' server is dsv4-serve's: it gets a port chosen in advance, written into the
-    YAML. Its environment is :func:`ds_orchestrator_env`'s.
+    (``config_path``, rewritten in place, so that the result reads what the server read), and
+    ``gen_tokids_ctxbytes: false`` when :func:`b64_prompt_ids_off` (``completions_client``:
+    a client of the server calls ``/v1/completions``). The native arms' server is
+    dsv4-serve's: it gets a port chosen in advance, written into the YAML. Its environment is
+    :func:`ds_orchestrator_env`'s.
 
     Raises:
         ArmError: As :func:`ds_orchestrator_command` raises, or the YAML is not a mapping.
@@ -3403,6 +3425,8 @@ def prepare_orchestrator(
         raise ArmError(f"{config_path} must hold a mapping, got {type(config).__name__}")
     if arm.aligned:
         config.update(DS_ALIGNED_ORCHESTRATOR)
+    if b64_prompt_ids_off(arm, completions_client):
+        config[_B64_PROMPT_IDS_KEY] = False
     port = None
     tokens = list(cmd)
     if arm.orchestrator == ORCHESTRATOR_DS:
@@ -3502,6 +3526,14 @@ def ds_instance_reading(
     }
 
 
+# The orchestrator setting that has the context workers return the prompt in base64.
+_B64_PROMPT_IDS_KEY = "gen_tokids_ctxbytes"
+_B64_PROMPT_IDS_NOTE = (
+    "case-03: trtllm-serve's disaggregated server ran with gen_tokids_ctxbytes false: on "
+    "/v1/completions dsv4-serve's context workers would return prompt_token_ids_b64, which "
+    "trtllm-serve's CompletionResponse does not take; the chain's front ends return the token "
+    "id list there, as these workers then do"
+)
 # The blocks only a case-03 disaggregated result holds, on top of DISAGG_RESULT_KEYS.
 DS_RESULT_KEYS = ("ds_instances", "ds_alignment", "ds_client")
 _DS_ORCH_KEYS = (
@@ -3583,6 +3615,12 @@ def add_ds_blocks(
         ),
     }
     doc["ds_client"] = _client_settings(output)
+    if (
+        probe.arm.orchestrator == ORCHESTRATOR_TRTLLM
+        and role_arm(probe.arm, ROLE_CTX).ds_http
+        and config.get(_B64_PROMPT_IDS_KEY) is False
+    ):
+        doc["notes"].append(_B64_PROMPT_IDS_NOTE)
     for line in output.splitlines():
         if line.startswith(DS_TOKENS_LINE):
             doc["notes"].append(

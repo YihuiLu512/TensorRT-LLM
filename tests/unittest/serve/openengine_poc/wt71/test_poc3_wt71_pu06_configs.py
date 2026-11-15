@@ -89,3 +89,13 @@ def test_pu06_config(driver, arms, concurrency):
             worker_gpus=dict(plan.gpus),
             gpus_per_node=config["hardware"]["gpus_per_node"],
         )
+
+
+@pytest.mark.parametrize("chain, wt", [("ds", "WT-71"), ("trtllm", "WT-70"), ("glm", None)])
+def test_workers_in_a_chain_prove_their_own_leg(harness_path, chain, wt):
+    # Each worker's pytest proves its own leg; the benchmark's judges both (cross_node).
+    import openengine_chain.expectations as ex
+
+    nodeid = f"perf/test_perf_sanity.py::test_e2e[disagg-e2e-{STEM.format(8)}]"
+    found = [e for e in ex.applicable(ex.load(), nodeid, chain) if e.kind == ex.LEG_EXPECT]
+    assert [(e.wt, e.leg) for e in found] == ([(wt, ex.CROSS_NODE)] if wt else [])

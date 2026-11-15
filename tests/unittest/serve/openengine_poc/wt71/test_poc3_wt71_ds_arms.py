@@ -173,15 +173,34 @@ ORCHESTRATOR = {
 DISAGG_CMD = ["trtllm-serve", "disaggregated", "-c", "<config>", "-t", "600", "-r", "600"]
 
 
-def _orchestrator(arms, tmp_path, name, env, monkeypatch):
+def _orchestrator(arms, tmp_path, name, env, monkeypatch, completions_client=False):
     monkeypatch.setattr(arms, "free_port", lambda host: 43210)
     config = tmp_path / "server_config.0.yaml"
     config.write_text(yaml.safe_dump(ORCHESTRATOR))
     cmd = [*DISAGG_CMD, "--report_addr", str(tmp_path / "addr")]
     plan = arms.prepare_orchestrator(
-        arms.DISAGG_ARMS[name], cmd, str(config), "node-a", env, environ=DS_ENV
+        arms.DISAGG_ARMS[name],
+        cmd,
+        str(config),
+        "node-a",
+        env,
+        environ=DS_ENV,
+        completions_client=completions_client,
     )
     return plan, cmd, yaml.safe_load(config.read_text())
+
+
+@pytest.mark.parametrize("name", ["E3-native", "E3-native-al", "E3-mid", "E3-chain", "E4-chain"])
+@pytest.mark.parametrize("completions_client", [True, False])
+def test_b64_prompt_ids_off_only_for_mid_on_completions(
+    arms, tmp_path, monkeypatch, name, completions_client
+):
+    # trtllm-serve's CompletionResponse takes no prompt_token_ids_b64, which dsv4-serve's
+    # context workers return on /v1/completions when asked.
+    _, _, written = _orchestrator(arms, tmp_path, name, {}, monkeypatch, completions_client)
+    off = name == "E3-mid" and completions_client
+    assert arms.b64_prompt_ids_off(arms.DISAGG_ARMS[name], completions_client) is off
+    assert written["gen_tokids_ctxbytes"] is (not off)
 
 
 @pytest.mark.parametrize("name", ["E3-native", "E3-native-al"])
@@ -644,6 +663,16 @@ def test_case03_result_matches_schema(arms, tmp_path, name):
 def test_case03_result_refuses_unaligned_values(arms, tmp_path, name, kwargs, message):
     doc = _result(arms, tmp_path, name, **kwargs)
     assert any(message in e for e in arms.validate_disagg_result(doc)), doc["ds_alignment"]
+
+
+@pytest.mark.parametrize("name", ["E3-mid", "E3-chain"])
+def test_case03_result_notes_b64_prompt_ids_off(arms, tmp_path, name):
+    doc = _result(arms, tmp_path, name, orchestrator={"gen_tokids_ctxbytes": False})
+    assert doc["ds_alignment"]["orchestrator"]["gen_tokids_ctxbytes"] is False
+    assert doc["alignment"]["gen_tokids_ctxbytes"] is False
+    noted = any("gen_tokids_ctxbytes false" in n for n in doc["notes"])
+    assert noted is (name == "E3-mid")
+    assert not any("gen_tokids_ctxbytes false" in n for n in _result(arms, tmp_path, name)["notes"])
 
 
 def test_case03_direct_result_holds_no_ds_blocks(arms, tmp_path):

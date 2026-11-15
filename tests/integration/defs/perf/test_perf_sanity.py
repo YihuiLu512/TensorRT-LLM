@@ -3997,6 +3997,13 @@ class DisaggTestCmds(NamedTuple):
                         os.path.join(self.test_output_dir, f"server_config.{server_idx}.yaml"),
                         self.hostname,
                         disagg_env,
+                        # benchmark_serving calls /v1/completions unless its backend is
+                        # openai-chat; the AgentX client calls /v1/chat/completions.
+                        completions_client=any(
+                            client.benchmark_client != AGENTX_BENCHMARK_CLIENT
+                            and client.backend != "openai-chat"
+                            for client in self.client_configs.get(server_idx, [])
+                        ),
                     )
                     disagg_cmd, disagg_env = list(orchestrator.cmd), orchestrator.env
                     if orchestrator.port is not None:
