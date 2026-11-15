@@ -169,10 +169,9 @@ def test_deferred_list_is_the_five_i_samples_of_the_table():
     assert sorted(_deferred_list()) == ["i_conflict", "i_reader_slow", "i_reader_slow_real_pins",
                                         "i_server_slow", "sat_spin_thread_same_process"]
     assert set(_deferred_list()) <= set(make_samples.SAMPLES)
-    for name, parts in _deferred_list().items():
-        assert set(parts) >= {"tier_localisation", "grade"}, name
-        assert set(parts) - {"tier_localisation", "grade"} <= (
-            {"tier_verdicts.4"} if name == "i_conflict" else set()), name
+    for name, parts in _deferred_list().items():  # i_conflict: UNDETERMINED at tier 4 needs I
+        assert sorted(parts) == sorted(["tier_localisation", "grade"] + (
+            ["tier_verdicts.4"] if name == "i_conflict" else [])), name
 
 
 def test_deferred_sample_is_reported_apart_and_does_not_fail_the_runner(tmp_path):

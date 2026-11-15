@@ -153,3 +153,10 @@
 - 2026-11-15 12:22:34 后台跑变异 r6（mut/muts6.py，27 项 + 对照，逐个串行，约 5 分钟）；同时写 INTERFACES calib-v2-A7
 - 2026-11-15 12:31:17 提交 730f5ea7；变异 r6 27 项（S01～S05、J01～J08、T01～T10、C01～C03）中 25 项红，J07、T07 补测试后 r6b 红，对照 r6c 全过。后台逐个跑 tests/judge（约 8 分钟）、tests/jobs、tests/launch 与 selftest（52）
 - 2026-11-15 12:44:32 全量（HEAD 730f5ea7）：tests/judge 1 failed / 516 passed / 6 xfailed——X2 篡改用例只在 I 样本档 4 上变红，整份延后后失去信号；改为按样本只延后依赖 I 的期望部分（I 定位、等级；i_conflict 另有档 4 判定）。tests/jobs 281 passed、tests/launch 244 passed、selftest 52 ran / errors []、py_compile 221/0。
+- 2026-11-15 12:58 SB-A-6-verify-gaps 收尾（提交 730f5ea7、8fb7ad93 与本次；勘误 calib-v2-A7），实测（MEASURED）：
+  - (a) I 样本：6 条用例 xfail(strict)（test_analysis 2、test_intervene 2、test_calib 参数化 2；全量里 6 xfailed）；run_selftest 的 DEFERRED_P2_13 按样本只延后依赖 I 的期望部分（I 定位、等级；i_conflict 另加档 4 判定）。第一版整份延后让 X2 篡改用例失去信号（tests/judge 1 failed，logs/a6v），改为按部分延后后 test_selftest.py 14 passed（logs/a6w，344 s）。selftest（logs/a6v，--expect-samples 52）：ran 52、errors []，deferred 段列 5 个样本（4/6/9/7/8 条不符）。
+  - (b) laddergen --job-plan：spec 新增 layout（mixed | one_each）与 phase；V0cal 必须 one_each，每作业每配置各 1 次、作业内顺序按种子；不带 phase 的混装确会让同一配置在一个作业里出现两次（测试断言）。
+  - (c) --request-timeout-ns {null,<ns>}（pc 必填）、基础模板超时必须是 TBD、基础取值 null 拒收、登记的 null（registered_nulls，仅 request_timeout_ns）tiergen 接受；kind c13pc（pc 去掉过载档）；tests/jobs/test_v0_tables_fit.py：pc null / pc 60 s / c13pc × 1、2 次一作业，submit --dry-run 在生成的 time_budget_s 处 rc 0、少 1 s rc 3。
+  - 全量（HEAD 730f5ea7）：tests/jobs 281 passed、tests/launch 244 passed（短 TMPDIR，含 probe-tree 软链）、tests/judge 516 passed / 6 xfailed / 1 failed（即上面的篡改用例，8fb7ad93 已修，test_selftest.py 重跑 14 passed）；py_compile 221/0；fakebin.log 9 行（与之前相同，全是旧 e2e 的 simgate）。
+  - 变异：r6（muts6.py，27 项）25 红，J07（layout 不核）、T07（tiergen 不核可空名字）补测试后 r6b 红，对照 r6c 全过；r6d（muts6b.py，按部分延后 8 项）7 红，S06（i_conflict 档 4 不列）把清单用例改为逐项相等后 r6e 红（清单用例与 test_generated_samples_pass 都红），对照 r6e 全过。
+  - 未做（NOT RUN）：tests/judge 全量在 8fb7ad93 上没有整目录重跑（只重跑 test_selftest.py；两次提交之间只改 run_selftest.py 与 test_selftest.py）；laddergen --plan-from 没有 one_each（V0-cal 作业级补足丢 ≥ 2 个作业时补足作业可能同一配置两次，A7 第 6 条）；c13pc 保留基线档是推断（INFERRED，A7 第 4 条）。
