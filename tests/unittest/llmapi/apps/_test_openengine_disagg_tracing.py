@@ -15,7 +15,9 @@ frontend.
   generation worker that carry the request's sampling options and prompt
   length. The orchestrator and both workers each make spans, so the count of
   all spans of the request is not 1 as for an aggregated server; how many each
-  process makes is not asserted.
+  process makes is not asserted. The orchestrator does not send the trace
+  context on to the workers, in-process as on the chain, so the workers'
+  spans are not asserted to be in the request's trace.
 """
 
 import threading
@@ -81,7 +83,6 @@ class _TraceCollector:
 
 @pytest.fixture(scope="module")
 def collectors():
-    pytest.importorskip("opentelemetry.proto.collector.trace.v1")
     started = {}
     try:
         for where in ("orchestrator", "context", "generation"):

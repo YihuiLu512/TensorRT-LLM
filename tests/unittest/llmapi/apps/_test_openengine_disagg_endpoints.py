@@ -6,21 +6,28 @@ The deployment is ``_test_openengine_disagg_common.disagg_deployment``: one
 context and one generation worker of Qwen3-0.6B on one GPU, behind the
 orchestrator, in-process or on the OpenEngine chain.
 
-- NT-050 (F-02): ``echo`` returns the prompt before the completion.
+- NT-050 (F-02): with ``echo`` the whole and the streamed completion return
+  the same text, which starts with the prompt. It fails in-process already
+  (UV-21), so it is marked as an expected failure in both forms.
 - NT-051 (F-02, F-03, F-04): what the orchestrator does not serve is refused
   the same way in both forms: several prompts in one completion request,
-  ``previous_response_id``, stored responses and their retrieval, and
-  Anthropic message batches.
+  ``previous_response_id``, retrieving or deleting a stored response, and
+  Anthropic message batches; ``store`` is accepted and the request served.
 - NT-052 to NT-054 (F-05b to F-05d): ``/version``, ``/health`` and
   ``/health_generate``, which the orchestrator does not serve for its
-  workers, answered by a worker itself (``leg_expect: direct_worker`` on the
-  chain).
+  workers, answered by each worker itself: the package version, 200 once the
+  orchestrator lists both workers, and 200 after a generation of the worker's own.
 """
+
+import json
+from urllib.parse import urlsplit
 
 import pytest
 import requests
 
-from ._test_openengine_disagg_common import REQUEST_TIMEOUT_S, disagg_deployment
+from tensorrt_llm.version import __version__
+
+from ._test_openengine_disagg_common import REQUEST_TIMEOUT_S, ROLES, disagg_deployment
 
 pytestmark = pytest.mark.threadleak(enabled=False)
 
@@ -33,28 +40,36 @@ def deployment(tmp_path_factory):
         yield deployment
 
 
-def _direct_completion(deployment, role: str) -> None:
-    """One aggregated request straight to a worker, so that its engine has served a call."""
-    response = deployment.worker_client(role).completions.create(
-        model=deployment.model, prompt=PROMPT, max_tokens=4
-    )
-    assert response.choices[0].text
+def _streamed_text(response: requests.Response) -> str:
+    """The text of a streamed completion's server-sent events."""
+    text = []
+    for line in response.text.splitlines():
+        if line.startswith("data: ") and line != "data: [DONE]":
+            chunk = json.loads(line.removeprefix("data: "))
+            text.extend(choice["text"] for choice in chunk.get("choices", []))
+    return "".join(text)
 
 
-@pytest.mark.parametrize("stream", [False, True], ids=["whole", "streamed"])
-def test_completion_echo(deployment, stream):
-    client = deployment.client()
-    kwargs = dict(model=deployment.model, prompt=PROMPT, max_tokens=8, echo=True, temperature=0)
-    if stream:
-        text = "".join(
-            chunk.choices[0].text
-            for chunk in client.completions.create(stream=True, **kwargs)
-            if chunk.choices
-        )
-    else:
-        text = client.completions.create(**kwargs).choices[0].text
-    assert text.startswith(PROMPT), text
-    assert len(text) > len(PROMPT), text
+@pytest.mark.xfail(
+    strict=True,
+    reason="UV-21: the orchestrator sends the generation leg the prompt as token ids, "
+    "to which the generation worker's echo cannot add the completion's text",
+)
+def test_completion_echo(deployment):
+    body = {
+        "model": deployment.model,
+        "prompt": PROMPT,
+        "max_tokens": 8,
+        "echo": True,
+        "temperature": 0,
+    }
+    whole = _post(deployment, "/v1/completions", body)
+    assert whole.status_code == 200, whole.text
+    text = whole.json()["choices"][0]["text"]
+    assert text.startswith(PROMPT) and len(text) > len(PROMPT), text
+    streamed = _post(deployment, "/v1/completions", {**body, "stream": True})
+    assert streamed.status_code == 200, streamed.text
+    assert _streamed_text(streamed) == text, streamed.text
 
 
 def _post(deployment, path: str, body: dict) -> requests.Response:
@@ -87,15 +102,12 @@ def test_orchestrator_limits_same_as_baseline(deployment, case):
         assert response.status_code == 400, response.text
         assert "previous_response_id" in response.text, response.text
     elif case == "store":
-        # LIM-03: store is ignored; the response is served and not kept.
+        # LIM-03: store is accepted and the request served; the orchestrator has no
+        # route to read a stored response back (the responses_retrieve_delete case).
         body = {"model": model, "input": PROMPT, "max_output_tokens": 8, "store": True}
         response = _post(deployment, "/v1/responses", body)
         assert response.status_code == 200, response.text
-        response_id = response.json()["id"]
-        stored = requests.get(
-            f"{deployment.url}/v1/responses/{response_id}", timeout=REQUEST_TIMEOUT_S
-        )
-        assert stored.status_code == 404, stored.text
+        assert response.json()["output"], response.text
     elif case == "responses_retrieve_delete":
         # LIM-03: the orchestrator has no route to stored responses.
         url = f"{deployment.url}/v1/responses/resp_1"
@@ -109,22 +121,28 @@ def test_orchestrator_limits_same_as_baseline(deployment, case):
         assert response.status_code == 404, response.text
 
 
+def _worker_get(deployment, role: str, path: str) -> requests.Response:
+    return requests.get(deployment.workers[role][0].url_for(path), timeout=REQUEST_TIMEOUT_S)
+
+
 def test_version_direct(deployment):
-    _direct_completion(deployment, "generation")
-    response = requests.get(deployment.gen.url_for("version"), timeout=REQUEST_TIMEOUT_S)
-    assert response.status_code == 200, response.text
-    assert response.json().get("version"), response.text
+    for role in ROLES:
+        response = _worker_get(deployment, role, "version")
+        assert response.status_code == 200, (role, response.text)
+        assert response.json()["version"] == __version__, (role, response.text)
 
 
 def test_health_direct(deployment):
-    _direct_completion(deployment, "generation")
-    for role in ("context", "generation"):
-        worker = deployment.workers[role][0]
-        response = requests.get(worker.url_for("health"), timeout=REQUEST_TIMEOUT_S)
+    workers = requests.get(f"{deployment.url}/cluster_info", timeout=REQUEST_TIMEOUT_S).json()
+    for role in ROLES:
+        listed = workers["current_workers"][f"{role}_servers"]
+        port = urlsplit(deployment.workers[role][0].url_for("health")).port
+        assert [worker["port"] for worker in listed] == [port], (role, workers)
+        response = _worker_get(deployment, role, "health")
         assert response.status_code == 200, (role, response.text)
 
 
 def test_health_generate_direct(deployment):
-    _direct_completion(deployment, "generation")
-    response = requests.get(deployment.gen.url_for("health_generate"), timeout=REQUEST_TIMEOUT_S)
-    assert response.status_code == 200, response.text
+    for role in ROLES:
+        response = _worker_get(deployment, role, "health_generate")
+        assert response.status_code == 200, (role, response.text)

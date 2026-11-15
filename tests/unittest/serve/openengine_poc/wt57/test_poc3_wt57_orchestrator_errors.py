@@ -8,12 +8,6 @@ or fails a leg, the worker frontend answers with its own status and message,
 and the orchestrator passes both on without the worker's address. After a
 failed context leg no generation leg is sent. The orchestrator here has no
 retries, so each leg is tried once (retries: ``test_poc3_wt57_orchestrator_retry``).
-
-NT-011 (DG-43, ``CppExecutorError`` stops the orchestrator) is not written:
-the orchestrator holds no executor, and nothing on its request path raises
-``CppExecutorError`` (only ``openai_server.py``, the worker, does). DG-43 is
-shown by the R10 / R11 comparison and the unchanged orchestrator files
-(DQ-02).
 """
 
 from __future__ import annotations
@@ -39,8 +33,12 @@ def chain(tmp_path_factory):
 )
 @pytest.mark.parametrize(
     "code, status",
-    [(grpc.StatusCode.INVALID_ARGUMENT, 400), (grpc.StatusCode.INTERNAL, 500)],
-    ids=["refused", "failed"],
+    [
+        (grpc.StatusCode.INVALID_ARGUMENT, 400),
+        (grpc.StatusCode.FAILED_PRECONDITION, 500),
+        (grpc.StatusCode.INTERNAL, 500),
+    ],
+    ids=["refused", "precondition", "failed"],
 )
 @pytest.mark.parametrize("role", ["context", "generation"])
 def test_worker_frontend_error_passes_through_the_orchestrator(chain, role, code, status, path):

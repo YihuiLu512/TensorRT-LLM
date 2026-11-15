@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""The disaggregated deployment the WT-57 ``_test_openengine_disagg_*`` files start (no tests here).
+"""The disaggregated deployment of the ``_test_openengine_disagg_*`` test files (no tests here).
 
 :func:`disagg_deployment` starts context and generation workers, each a
 ``trtllm-serve`` with ``--server_role``, and an orchestrator that they
@@ -10,12 +10,16 @@ in-process (the baseline form); with it, the chain harness
 (``tests/integration/defs/openengine_chain``) starts each worker as a worker
 frontend and a TensorRT-LLM OpenEngine server. The workers share the visible
 GPUs, so one GPU serves both legs of the default small model.
+
+:func:`legs` reads back, on the chain, the two GenerateRequests of a request
+from the directory a deployment started with :data:`DUMP_ENV` names.
 """
 
 from __future__ import annotations
 
 import contextlib
 import dataclasses
+import json
 import os
 import secrets
 from collections.abc import Iterator, Mapping, Sequence
@@ -28,14 +32,15 @@ import torch
 from test_common.http_utils import wait_for_endpoint_ready
 
 from tensorrt_llm._utils import get_free_ports
+from tensorrt_llm.grpc import openengine_conventions as conv
 
 from ..test_llm import get_model_path
 from .openai_server import RemoteDisaggOpenAIServer, RemoteOpenAIServer
 
 CHAIN = os.environ.get("TRTLLM_TEST_OPENENGINE_CHAIN", "none") not in ("", "none")
-chain_only = pytest.mark.skipif(
-    not CHAIN, reason="checks the OpenEngine chain; set TRTLLM_TEST_OPENENGINE_CHAIN"
-)
+# Set in a deployment's ``env``: on the chain each worker frontend writes every
+# GenerateRequest it sends to this directory.
+DUMP_ENV = conv.SERVE_REQUEST_DUMP_DIR_ENV
 MODEL_NAME = "Qwen3/Qwen3-0.6B"
 ENGINE_READY_TIMEOUT_S = 1200
 REQUEST_TIMEOUT_S = 120
@@ -58,8 +63,7 @@ def needs_gpu() -> None:
 
 def model_path(name: str = MODEL_NAME) -> str:
     path = get_model_path(name)
-    if not os.path.isdir(path):
-        pytest.skip(f"{name} is not under LLM_MODELS_ROOT")
+    assert os.path.isdir(path), f"{name} is not under LLM_MODELS_ROOT"
     return path
 
 
@@ -69,7 +73,6 @@ class Deployment:
 
     orchestrator: RemoteDisaggOpenAIServer
     workers: dict[str, list[RemoteOpenAIServer]]
-    logs: dict[str, list[str]]
     model: str
 
     @property
@@ -97,10 +100,6 @@ class Deployment:
             api_key="tensorrt_llm",
             timeout=REQUEST_TIMEOUT_S,
         )
-
-    def log(self, role: str, index: int = 0) -> str:
-        path = Path(self.logs[role][index])
-        return path.read_text(errors="replace") if path.exists() else ""
 
 
 @contextlib.contextmanager
@@ -137,13 +136,10 @@ def disagg_deployment(
     }
     # The workers run on this host: loopback is the only TCP device UCX needs.
     process_env = {**os.environ, "UCX_NET_DEVICES": "lo", **(env or {})}
-    logs: dict[str, list[str]] = {role: [] for role in ROLES}
     with contextlib.ExitStack() as stack:
         workers: dict[str, list[RemoteOpenAIServer]] = {role: [] for role in ROLES}
         for role in ROLES:
             for index in range(counts[role]):
-                log = str(directory / f"{role}_{index}.log")
-                logs[role].append(log)
                 args = ["--server_role", role, *worker_args, *(role_args or {}).get(role, ())]
                 workers[role].append(
                     stack.enter_context(
@@ -153,7 +149,7 @@ def disagg_deployment(
                             env=process_env,
                             cli_args=args,
                             extra_config=config,
-                            log_path=log,
+                            log_path=str(directory / f"{role}_{index}.log"),
                             wait=False,
                         )
                     )
@@ -172,10 +168,43 @@ def disagg_deployment(
                     **(orchestrator_config or {}),
                 },
                 log_path=str(directory / "orchestrator.log"),
+                # Its /health answers 200 only once workers have registered: wait for
+                # the workers first, which raises as soon as one of them exits.
+                wait_ready=False,
             )
         )
         for role in ROLES:
             for worker in workers[role]:
                 worker.wait_for_server(timeout=ENGINE_READY_TIMEOUT_S)
-        wait_for_endpoint_ready(orchestrator.url_root + "/health")
-        yield Deployment(orchestrator, workers, logs, model)
+        wait_for_endpoint_ready(orchestrator.url_root + "/health", server_proc=orchestrator.proc)
+        yield Deployment(orchestrator, workers, model)
+
+
+def dump_names(dump_dir: Path) -> set[str]:
+    """The GenerateRequests written to ``dump_dir`` so far; pass it to :func:`legs`."""
+    return {path.name for path in dump_dir.glob("*.json")}
+
+
+def legs(dump_dir: Path, before: set[str]) -> tuple[dict, dict]:
+    """The context and generation GenerateRequests of the one request sent since ``before``.
+
+    The context leg is the one whose ``extra.request_type`` is ``context_only``,
+    the generation leg the one with ``kv.session``; both name one ``disagg_request_id``.
+    """
+    dumps = [
+        json.loads(path.read_text())
+        for path in sorted(dump_dir.glob("*.json"))
+        if path.name not in before
+    ]
+    ctx = [
+        d
+        for d in dumps
+        if d.get("extra", {}).get(conv.REQ_REQUEST_TYPE) == conv.REQUEST_TYPE_CONTEXT_ONLY
+    ]
+    gen = [d for d in dumps if "session" in d.get("kv", {})]
+    assert len(ctx) == 1 and len(gen) == 1 and len(dumps) == 2, dumps
+    [prefill], [decode] = ctx, gen
+    ctx_id = conv.as_int(prefill["extra"][conv.REQ_DISAGG_REQUEST_ID])
+    gen_id = conv.as_int(decode["kv"]["session"]["attributes_struct"]["disagg_request_id"])
+    assert ctx_id is not None and ctx_id == gen_id, (prefill, decode)
+    return prefill, decode

@@ -11,152 +11,52 @@ run them on.
 - NT-078 (F-47a, F-47b): workers started with ``enable_resource_governor`` in
   their configuration, or with ``--enable_sleep_mode``. In-process they start
   and the deployment serves. On the chain each worker frontend refuses to
-  start and its log says why; the test leaves the startup error to propagate,
-  for the chain's ``startup_rejected`` expectation to judge.
+  start; the test leaves the startup error to propagate, for the chain's
+  ``startup_rejected`` expectation to judge, which also looks for the reason
+  in the worker frontend's log. The chain harness has no side to put
+  ``--enable_sleep_mode`` on, so the chain's expectations skip that case.
 - NT-079 (F-47c): ``/start_profile`` and ``/stop_profile`` sent to each worker
   itself. In-process the worker starts and stops profiling; on the chain the
   worker frontend answers 501 for its OpenEngine engine.
 """
 
-import contextlib
-import os
 import secrets
-from collections.abc import Iterator, Mapping, Sequence
-from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
 import pytest
 import requests
-from test_common.http_utils import wait_for_endpoint_ready
 
-from tensorrt_llm._utils import get_free_ports
-
-from ._test_openengine_disagg_common import (
-    BASE_WORKER_CONFIG,
-    CHAIN,
-    ENGINE_READY_TIMEOUT_S,
-    MODEL_NAME,
-    REQUEST_TIMEOUT_S,
-    ROLES,
-    Deployment,
-    disagg_deployment,
-    model_path,
-    needs_gpu,
-)
-from .openai_server import RemoteDisaggOpenAIServer, RemoteOpenAIServer
+from ._test_openengine_disagg_common import CHAIN, REQUEST_TIMEOUT_S, ROLES, disagg_deployment
 
 pytestmark = pytest.mark.threadleak(enabled=False)
 
 PROMPT = "The capital of France is"
-# Per option: the workers' extra command line, configuration and environment, and
-# what the worker frontend's log says when it refuses to start.
+# Per option: the workers' extra command line, configuration and environment.
 OPS_OPTIONS: Mapping[str, Mapping[str, Any]] = {
-    "resource_governor": {
-        "worker_config": {"enable_resource_governor": True},
-        "refusal": "enable_resource_governor is not supported",
-    },
+    "resource_governor": {"worker_config": {"enable_resource_governor": True}},
     "sleep_mode": {
         "worker_args": ("--enable_sleep_mode",),
         # Sleep mode refuses to start without the key that guards its endpoints.
         "env": {"TRTLLM_RUNTIME_CONTROL_API_KEY": secrets.token_hex(16)},
-        "refusal": "--openengine-endpoint cannot be combined with --enable_sleep_mode",
     },
 }
 
 
-@contextlib.contextmanager
-def _deployment_whose_workers_may_exit(
-    directory: Path,
-    *,
-    worker_args: Sequence[str] = (),
-    worker_config: Mapping[str, Any] | None = None,
-    env: Mapping[str, str] | None = None,
-) -> Iterator[Deployment]:
-    """The deployment ``disagg_deployment`` starts, waiting for the workers before the orchestrator.
-
-    ``disagg_deployment`` waits for the orchestrator's ``/health``, which turns 200 only once
-    workers have registered, so a worker that exits at startup would hold it until its
-    two-hour start limit. Here the orchestrator starts without that wait, and a worker that
-    exits raises ``RuntimeError`` as soon as it is waited for.
-    """
-    needs_gpu()
-    path = model_path(MODEL_NAME)
-    ports = get_free_ports(1 + len(ROLES))
-    disagg_port, worker_ports = ports[0], iter(ports[1:])
-    cluster = {"cluster_uri": f"http://localhost:{disagg_port}", "cluster_name": ""}
-    auth_key = secrets.token_hex(32)
-    config = {
-        **BASE_WORKER_CONFIG,
-        "model": MODEL_NAME,
-        "disagg_cluster": cluster,
-        "internal_request_auth_key": auth_key,
-        **(worker_config or {}),
-    }
-    process_env = {**os.environ, "UCX_NET_DEVICES": "lo", **(env or {})}
-    logs = {role: [str(directory / f"{role}_0.log")] for role in ROLES}
-    with contextlib.ExitStack() as stack:
-        orchestrator = stack.enter_context(
-            RemoteDisaggOpenAIServer(
-                ctx_servers=[],
-                gen_servers=[],
-                port=disagg_port,
-                env=process_env,
-                disagg_config={
-                    "hostname": "localhost",
-                    "port": disagg_port,
-                    "disagg_cluster": cluster,
-                    "internal_request_auth_key": auth_key,
-                },
-                log_path=str(directory / "orchestrator.log"),
-                wait_ready=False,
-            )
-        )
-        workers = {
-            role: [
-                stack.enter_context(
-                    RemoteOpenAIServer(
-                        path,
-                        port=next(worker_ports),
-                        env=process_env,
-                        cli_args=["--server_role", role, *worker_args],
-                        extra_config=config,
-                        log_path=logs[role][0],
-                        wait=False,
-                    )
-                )
-            ]
-            for role in ROLES
-        }
-        for role in ROLES:
-            workers[role][0].wait_for_server(timeout=ENGINE_READY_TIMEOUT_S)
-        wait_for_endpoint_ready(orchestrator.url_root + "/health")
-        yield Deployment(orchestrator, workers, logs, MODEL_NAME)
-
-
-def _logs(directory: Path) -> str:
-    return "".join(path.read_text(errors="replace") for path in sorted(directory.glob("*_0.log")))
-
-
 @pytest.mark.parametrize("option", sorted(OPS_OPTIONS))
 def test_ops_options_startup_rejected(tmp_path, option):
-    settings = OPS_OPTIONS[option]
-    kwargs = {
-        key: settings[key] for key in ("worker_args", "worker_config", "env") if key in settings
-    }
+    kwargs = OPS_OPTIONS[option]
     if not CHAIN:
-        with _deployment_whose_workers_may_exit(tmp_path, **kwargs) as deployment:
+        with disagg_deployment(tmp_path, **kwargs) as deployment:
             response = deployment.client().completions.create(
                 model=deployment.model, prompt=PROMPT, max_tokens=4
             )
             assert response.choices[0].text
         return
-    try:
-        with _deployment_whose_workers_may_exit(tmp_path, **kwargs):
-            pytest.fail(f"the worker frontends started with {option}")
-    except RuntimeError:
-        assert settings["refusal"] in _logs(tmp_path), f"no worker log names {option}"
-        # The chain's startup_rejected expectation passes the test on this error.
-        raise
+    # A worker frontend that exits makes the deployment raise RuntimeError, which the
+    # chain's startup_rejected expectation turns into a pass.
+    with disagg_deployment(tmp_path, **kwargs):
+        pytest.fail(f"the worker frontends started with {option}")
 
 
 @pytest.fixture(scope="module")

@@ -4,7 +4,9 @@
 
 The deployment is ``_test_openengine_disagg_common.disagg_deployment`` (Qwen3-0.6B,
 one context and one generation worker on one GPU), in-process or on the
-OpenEngine chain; the same test runs in both forms and expects the same answer.
+OpenEngine chain, with ``max_retries: 0`` so that the orchestrator sends a
+refused request once; the same test runs in both forms and expects the same
+answer.
 
 - NT-097 (DG-63, LIM-04): a chat request with ``tool_choice="required"`` is
   refused by the context worker while it prepares the chat request, and the
@@ -40,7 +42,9 @@ REFUSAL = "tool_choice='required' is not supported for this model."
 
 @pytest.fixture(scope="module")
 def deployment(tmp_path_factory):
-    with disagg_deployment(tmp_path_factory.mktemp("disagg_baseline_limits")) as deployment:
+    with disagg_deployment(
+        tmp_path_factory.mktemp("disagg_baseline_limits"), orchestrator_config={"max_retries": 0}
+    ) as deployment:
         yield deployment
 
 

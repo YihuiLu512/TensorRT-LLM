@@ -4,9 +4,10 @@
 
 The deployment is ``_test_openengine_disagg_common.disagg_deployment`` (Qwen3-0.6B,
 one context and one generation worker on one GPU), in-process or on the
-OpenEngine chain. Whether the orchestrator sent a request to a worker is read
-from its own per-role counters (``ctx_total_requests``, ``gen_total_requests``
-on ``/prometheus/metrics``), which both forms have.
+OpenEngine chain, with ``max_retries: 0``: the orchestrator sends a refused
+request once, not again. Whether the orchestrator sent a request to a worker
+is read from its own per-role counters (``ctx_total_requests``,
+``gen_total_requests`` on ``/prometheus/metrics``), which both forms have.
 
 - NT-093 (DG-41): a request the context worker refuses comes back from the
   orchestrator with the worker's status and message, as ``{"detail": ...}``,
@@ -38,7 +39,9 @@ _SENT = re.compile(r"^(ctx|gen)_total_requests_total(?:\{[^}]*\})?\s+(\S+)\s*$",
 
 @pytest.fixture(scope="module")
 def deployment(tmp_path_factory):
-    with disagg_deployment(tmp_path_factory.mktemp("disagg_errors")) as deployment:
+    with disagg_deployment(
+        tmp_path_factory.mktemp("disagg_errors"), orchestrator_config={"max_retries": 0}
+    ) as deployment:
         yield deployment
 
 

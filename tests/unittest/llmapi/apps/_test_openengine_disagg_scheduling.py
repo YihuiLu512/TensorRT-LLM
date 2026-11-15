@@ -6,8 +6,8 @@ The deployments are ``_test_openengine_disagg_common.disagg_deployment``
 (Qwen3-0.6B, one context and one generation worker on one GPU), in-process or
 on the OpenEngine chain. Each request goes through the orchestrator, so the
 context and the generation leg each make one Generate call. On the chain the
-worker front ends write every GenerateRequest they send to
-``TRTLLM_OPENENGINE_REQUEST_DUMP_DIR``; the dumps show what each engine got.
+tests read the two legs' GenerateRequests
+(``_test_openengine_disagg_common.legs``).
 
 - NT-074 (F-44a): a request with ``priority`` is served by engines that order
   their waiting requests by priority; on the chain both engines declare
@@ -21,7 +21,6 @@ worker front ends write every GenerateRequest they send to
   served; on the chain both legs' GenerateRequests carry the same id.
 """
 
-import json
 from pathlib import Path
 
 import grpc
@@ -31,14 +30,21 @@ import requests
 from tensorrt_llm.grpc import openengine_conventions as conv
 from tensorrt_llm.grpc.openengine.bindings import model_pb2, openengine_pb2_grpc, server_pb2
 
-from ._test_openengine_disagg_common import CHAIN, REQUEST_TIMEOUT_S, ROLES, disagg_deployment
+from ._test_openengine_disagg_common import (
+    CHAIN,
+    DUMP_ENV,
+    REQUEST_TIMEOUT_S,
+    ROLES,
+    disagg_deployment,
+    dump_names,
+    legs,
+)
 
 pytestmark = pytest.mark.threadleak(enabled=False)
 
 PROMPT = "The capital of France is"
 QUESTION = [{"role": "user", "content": "What is 1 + 1?"}]
 NO_THINKING = {"chat_template_kwargs": {"enable_thinking": False}}
-DUMP_ENV = conv.SERVE_REQUEST_DUMP_DIR_ENV
 # The Generate calls each role's engine accepts for one disaggregated request.
 BUCKETS = {"context": conv.BUCKET_CONTEXT_ONLY, "generation": conv.BUCKET_GENERATION_ONLY}
 AGENT_TYPE = "planner"
@@ -74,7 +80,8 @@ def deployment(tmp_path_factory, dump_dir):
         yield deployment
 
 
-@pytest.fixture(scope="module")
+# Function-scoped, and its test runs first: it stops before the module's deployment starts.
+@pytest.fixture
 def agent_tree_deployment(tmp_path_factory, dump_dir):
     with disagg_deployment(
         tmp_path_factory.mktemp("disagg_agent_tree"),
@@ -114,31 +121,6 @@ def _accepted_by_role(deployment) -> dict[str, int]:
     return {role: _accepted(endpoints[role], BUCKETS[role]) for role in ROLES}
 
 
-def _dump_names(dump_dir: Path) -> set[str]:
-    return {path.name for path in dump_dir.glob("*.json")}
-
-
-def _legs(dump_dir: Path, before: set[str]) -> tuple[dict, dict]:
-    """The context and generation GenerateRequests of the one request sent since ``before``."""
-    dumps = [
-        json.loads(path.read_text())
-        for path in sorted(dump_dir.glob("*.json"))
-        if path.name not in before
-    ]
-    ctx = [
-        d
-        for d in dumps
-        if d.get("extra", {}).get(conv.REQ_REQUEST_TYPE) == conv.REQUEST_TYPE_CONTEXT_ONLY
-    ]
-    gen = [d for d in dumps if "session" in d.get("kv", {})]
-    assert len(ctx) == 1 and len(gen) == 1 and len(dumps) == 2, dumps
-    [prefill], [decode] = ctx, gen
-    ctx_id = conv.as_int(prefill["extra"][conv.REQ_DISAGG_REQUEST_ID])
-    gen_id = conv.as_int(decode["kv"]["session"]["attributes_struct"]["disagg_request_id"])
-    assert ctx_id is not None and ctx_id == gen_id, (prefill, decode)
-    return prefill, decode
-
-
 def _post(deployment, path: str, body: dict) -> requests.Response:
     return requests.post(
         f"{deployment.url}/{path}",
@@ -149,7 +131,7 @@ def _post(deployment, path: str, body: dict) -> requests.Response:
 
 def _send(deployment, dump_dir: Path, path: str, body: dict) -> tuple[dict, dict] | None:
     """Send ``body`` through the orchestrator; on the chain, the two legs' GenerateRequests."""
-    before = _dump_names(dump_dir)
+    before = dump_names(dump_dir)
     accepted = _accepted_by_role(deployment) if CHAIN else None
     response = _post(deployment, path, body)
     assert response.status_code == 200, response.text
@@ -159,7 +141,32 @@ def _send(deployment, dump_dir: Path, path: str, body: dict) -> tuple[dict, dict
     after = _accepted_by_role(deployment)
     for role in ROLES:
         assert after[role] == accepted[role] + 1, (role, accepted, after)
-    return _legs(dump_dir, before)
+    return legs(dump_dir, before)
+
+
+def test_agent_hierarchy_reaches_both_engines(agent_tree_deployment, dump_dir):
+    deployment = agent_tree_deployment
+    if CHAIN:
+        for role, endpoint in _engine_endpoints(deployment).items():
+            assert _capabilities(endpoint).supports(conv.CAP_REQ_SCHEDULING), role
+    sent_legs = _send(
+        deployment,
+        dump_dir,
+        "v1/chat/completions",
+        {
+            "messages": QUESTION,
+            "max_completion_tokens": 8,
+            "agent_hierarchy": [[AGENT_TYPE, 1]],
+            **NO_THINKING,
+        },
+    )
+    if sent_legs is not None:
+        for leg in sent_legs:
+            scheduling = leg["extra"].get(conv.REQ_SCHEDULING, {})
+            hierarchy = [
+                (kind, conv.as_int(node)) for kind, node in scheduling.get("agent_hierarchy", [])
+            ]
+            assert hierarchy == [(AGENT_TYPE, 1)], leg
 
 
 def test_priority_reaches_both_engines(deployment, dump_dir):
@@ -173,7 +180,7 @@ def test_priority_reaches_both_engines(deployment, dump_dir):
 
 def test_conversation_id_reaches_both_engines(deployment, dump_dir):
     conversation_id = "nt076-conversation"
-    legs = _send(
+    sent_legs = _send(
         deployment,
         dump_dir,
         "v1/completions",
@@ -183,31 +190,6 @@ def test_conversation_id_reaches_both_engines(deployment, dump_dir):
             "conversation_params": {"conversation_id": conversation_id},
         },
     )
-    if legs is not None:
-        for leg in legs:
+    if sent_legs is not None:
+        for leg in sent_legs:
             assert leg["extra"].get(conv.REQ_CONVERSATION_ID) == conversation_id, leg
-
-
-def test_agent_hierarchy_reaches_both_engines(agent_tree_deployment, dump_dir):
-    deployment = agent_tree_deployment
-    if CHAIN:
-        for role, endpoint in _engine_endpoints(deployment).items():
-            assert _capabilities(endpoint).supports(conv.CAP_REQ_SCHEDULING), role
-    legs = _send(
-        deployment,
-        dump_dir,
-        "v1/chat/completions",
-        {
-            "messages": QUESTION,
-            "max_completion_tokens": 8,
-            "agent_hierarchy": [[AGENT_TYPE, 1]],
-            **NO_THINKING,
-        },
-    )
-    if legs is not None:
-        for leg in legs:
-            scheduling = leg["extra"].get(conv.REQ_SCHEDULING, {})
-            hierarchy = [
-                (kind, conv.as_int(node)) for kind, node in scheduling.get("agent_hierarchy", [])
-            ]
-            assert hierarchy == [(AGENT_TYPE, 1)], leg

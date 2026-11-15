@@ -12,14 +12,27 @@ reasoning to stop in time.
 - NT-067 (F-29): through the orchestrator, a request with a thinking budget on
   each of the four endpoints that take one (chat, completions, responses and
   Anthropic messages) gets reasoning of at most the budget plus the tokens of
-  the reasoning end marker.
+  the reasoning end marker; on the chain both legs' GenerateRequests carry the
+  budget (``_test_openengine_disagg_common.legs``).
 """
+
+from pathlib import Path
 
 import pytest
 import requests
 from transformers import AutoTokenizer
 
-from ._test_openengine_disagg_common import REQUEST_TIMEOUT_S, disagg_deployment, model_path
+from tensorrt_llm.grpc import openengine_conventions as conv
+
+from ._test_openengine_disagg_common import (
+    CHAIN,
+    DUMP_ENV,
+    REQUEST_TIMEOUT_S,
+    disagg_deployment,
+    dump_names,
+    legs,
+    model_path,
+)
 
 pytestmark = pytest.mark.threadleak(enabled=False)
 
@@ -33,9 +46,16 @@ MAX_TOKENS = 128
 
 
 @pytest.fixture(scope="module")
-def deployment(tmp_path_factory):
+def dump_dir(tmp_path_factory) -> Path:
+    return tmp_path_factory.mktemp("disagg_reasoning_dumps")
+
+
+@pytest.fixture(scope="module")
+def deployment(tmp_path_factory, dump_dir):
     with disagg_deployment(
-        tmp_path_factory.mktemp("disagg_reasoning"), worker_args=["--reasoning_parser", "qwen3"]
+        tmp_path_factory.mktemp("disagg_reasoning"),
+        worker_args=["--reasoning_parser", "qwen3"],
+        env={DUMP_ENV: str(dump_dir)},
     ) as deployment:
         yield deployment
 
@@ -112,8 +132,13 @@ def _reasoning(deployment, tokenizer, endpoint: str) -> str:
 
 
 @pytest.mark.parametrize("endpoint", ["chat", "completions", "responses", "anthropic"])
-def test_thinking_token_budget(deployment, tokenizer, endpoint):
+def test_thinking_token_budget(deployment, dump_dir, tokenizer, endpoint):
+    before = dump_names(dump_dir)
     reasoning = _reasoning(deployment, tokenizer, endpoint)
     assert reasoning, f"no reasoning from {endpoint}"
     budget = ANTHROPIC_BUDGET if endpoint == "anthropic" else THINKING_BUDGET
     assert _token_count(tokenizer, reasoning) <= _limit(tokenizer, budget), reasoning
+    if CHAIN:
+        for leg in legs(dump_dir, before):
+            sent = leg.get("extra", {}).get(conv.REQ_THINKING_TOKEN_BUDGET, {})
+            assert conv.as_int(sent.get("budget")) == budget, leg

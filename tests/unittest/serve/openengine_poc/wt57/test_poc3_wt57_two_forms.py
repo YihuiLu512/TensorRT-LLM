@@ -3,9 +3,9 @@
 """The facade refuses a logits processor whatever the leg of the request (EG-17), on CPU.
 
 NT-170: a logits processor is a Python callable, which no OpenEngine request
-can carry. The facade's request mapping refuses it with the same error for an
-aggregated request and for each leg of a disaggregated one, before any
-Generate call. EG-17 has no end-to-end test: neither form's HTTP entry point
+can carry. The facade's request mapping refuses it, naming the option and
+the engine, for an aggregated request and for each leg of a disaggregated
+one, before any Generate call. EG-17 has no end-to-end test: neither form's HTTP entry point
 can take a callable.
 """
 

@@ -8,7 +8,9 @@ reasoning parser that takes its mode from the rendered prompt
 or ``</think>``. Only the context worker renders the prompt; it sends the
 mode it read in ``disaggregated_params.resolved_thinking``, the orchestrator
 puts it in the generation leg, and the generation worker parses the output
-in that mode. The unit side of the contract is
+in that mode. The mode travels in that HTTP field only, not in the KV
+session the engines get or the handoff attributes relayed for them. The unit
+side of the contract is
 ``unittest/llmapi/apps/test_reasoning_prompt_resolution.py``.
 """
 
@@ -60,6 +62,10 @@ def test_resolved_thinking_travels_from_ctx_to_gen(chain, kwargs, thinking):
     params = gen_legs[-1]["disaggregated_params"]
     assert params["request_type"] == "generation_only"
     assert params["resolved_thinking"] is thinking
+    # An HTTP field between the worker frontends: it does not ride in the KV session
+    # the engines exchange, nor in the handoff attributes relayed for them.
+    assert "resolved_thinking" not in chain.gen.engine.requests[-1].kv.session.attributes_struct
+    assert "resolved_thinking" not in (params.get("openengine_handoff_attributes") or {})
 
     # The generation worker parsed the output in the relayed mode: with no
     # closing marker in the output, thinking on makes all of it reasoning.

@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""The CPU disaggregated chain as the WT-57 tests start it.
+"""The CPU disaggregated chain as the tests of this directory start it.
 
 :func:`start_chain` starts a :class:`cpu_disagg_chain.CpuDisaggChain` whose
 worker frontends keep ``cache_transceiver_config`` in their YAML (without it
