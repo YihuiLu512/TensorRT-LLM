@@ -1,0 +1,1493 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# End-to-end checks of the disaggregated chain (case-04, trtllm chain, B200; one GPU shared by the
+# context and generation workers), three runs of each case. Each junit path is relative to the
+# result directory of its runs, which the work item's status file records; cpu-*.xml is the CPU
+# run of the entry's commit.
+# Migrated tests (T-n, XD-701, XD-702) ran twice on f9db4b62a53abb2f93ce64fd82b25119f20a1cfd and
+# once on 6e8e37a558af91cbac26c4625051eabb1fc57563, XD-022 three times on the former. An entry with
+# runs on more than one commit names the latest: between those commits, no file a case of the
+# entry runs from changed (for the new GPU tests, nor their shared deployment module).
+# The comment above each entry tags each of its cases:
+# - ok: the chain proof holds.
+# - cpu: a CPU test, in which no chain runs.
+# - direct: two engines hand off to each other with no worker front end; the case runs without a
+#   chain, and the chain proof does not apply.
+# - inner: the case runs a test file; the counts are of that file's tests over all runs.
+# - failed, see below: the reason is given below the tags.
+# Generated from the junit files; result and chain_proof are over all runs listed.
+entries:
+  # T2 inner 6 failed, 42 passed
+  # T2: test_chat_streaming fails the same way without the chain (topology form): its
+  #   streamed logprobs differ from the non-streamed ones
+  - row: F-01+rest
+    features:
+    - F-01
+    cases:
+    - unittest/llmapi/apps/_test_openai_chat.py::test_chat_streaming
+    - unittest/llmapi/apps/_test_openai_chat.py::test_custom_role
+    - unittest/llmapi/apps/_test_openai_chat.py::test_multi_turn_dialogue
+    - unittest/llmapi/apps/_test_openai_chat.py::test_single_chat_session
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e03/junit/inner-20261115T132027-1794720027885540054-1462679-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_custom_role_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e04/junit/inner-20261115T133157-1794720717378653587-1527530-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_single_chat_session_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e03/junit/inner-20261115T132311-1794720191340968482-258830-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_custom_role_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e04/junit/inner-20261115T133404-1794720844901636675-319987-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_single_chat_session_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e02/junit/inner-20261115T131711-1794719831267735815-1797130-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_chat_streaming_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e03/junit/inner-20261115T132830-1794720510095358496-1843209-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_multi_turn_dialogue_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e02/junit/inner-20261115T131640-1794719800583017663-223607-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_chat_streaming_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e03/junit/inner-20261115T132752-1794720472551009961-284394-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_multi_turn_dialogue_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e03/junit/inner-20261115T212803-1794749283025892432-1207991-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_custom_role_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e04/junit/inner-20261115T214031-1794750031418736358-1281193-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_single_chat_session_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e02/junit/inner-20261115T212110-1794748870439756694-2259803-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_chat_streaming_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e03/junit/inner-20261115T213211-1794749531271288583-2311061-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_multi_turn_dialogue_.xml
+    result: failed
+    chain_proof: ok
+  # T1 inner 6 failed, 24 passed, NT-050 see below, NT-051 ok
+  # T1: test_completion_logprobs_streaming fails the same way without the chain
+  #   (topology form): its streamed logprobs differ from the non-streamed ones
+  # NT-050: xfail (strict): the disaggregated server does not support echo, in the
+  #   in-process form as well (F-02, UV-21)
+  - row: F-02+rest
+    features:
+    - F-02
+    cases:
+    - unittest/llmapi/apps/_test_openai_completions.py::test_completion_logprobs
+    - unittest/llmapi/apps/_test_openai_completions.py::test_completion_logprobs_streaming
+    - unittest/llmapi/apps/_test_openai_completions.py::test_completion_streaming
+    - unittest/llmapi/apps/_test_openai_completions.py::test_detokenize_single
+    - unittest/llmapi/apps/_test_openai_completions.py::test_single_completion
+    - unittest/llmapi/apps/_test_openengine_disagg_endpoints.py::test_completion_echo
+    - unittest/llmapi/apps/_test_openengine_disagg_endpoints.py::test_orchestrator_limits_same_as_baseline
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e00/junit/inner-20261115T125906-1794718746577313616-1352535-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e01/junit/inner-20261115T130818-1794719298980598126-1402249-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_streaming_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e02/junit/inner-20261115T131423-1794719663970943909-1431873-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_single_completion_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e00/junit/inner-20261115T130214-1794718934184849485-113686-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e01/junit/inner-20261115T131114-1794719474879529149-190005-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_streaming_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e02/junit/inner-20261115T131721-1794719841520172594-228450-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_single_completion_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e00/junit/inner-20261115T130141-1794718901665908618-1724150-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_streaming_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e01/junit/inner-20261115T131104-1794719464242627769-1769674-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_detokenize_single_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e00/junit/inner-20261115T130214-1794718934888633588-113722-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_streaming_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e01/junit/inner-20261115T131100-1794719460527279449-186219-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_detokenize_single_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e00/junit/inner-20261115T210713-1794748033633447331-1053950-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e01/junit/inner-20261115T211553-1794748553377690090-1135953-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_streaming_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e02/junit/inner-20261115T212157-1794748917261591532-1169911-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_single_completion_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e00/junit/inner-20261115T210630-1794747990319238613-2205799-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_streaming_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e01/junit/inner-20261115T211510-1794748510890899212-2225643-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_detokenize_single_.xml
+    - b200-1g-r2-nt-chain-a-s1/b200-1g-r2-nt-chain-a-s1/job-5973439_0-r0/node0/results/e00/junit/inner-20261115T210800-1794748080305411710-1295914-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_endpoints.py_test_completion_echo_.xml
+    - b200-1g-r2-nt-chain-a-s2/b200-1g-r2-nt-chain-a-s2/job-5973444_0-r0/node0/results/e00/junit/inner-20261115T210713-1794748033110901643-1687729-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_endpoints.py_test_completion_echo_.xml
+    - b200-1g-r2-nt-chain-a-s3/b200-1g-r2-nt-chain-a-s3/job-5973449_0-r0/node0/results/e00/junit/inner-20261115T210712-1794748032980169688-1053930-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_endpoints.py_test_completion_echo_.xml
+    - b200-1g-r2-nt-chain-b-s1/b200-1g-r2-nt-chain-b-s1/job-5973441_0-r0/node0/results/e00/junit/inner-20261115T210800-1794748080272779287-1295918-y_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_endpoints.py_test_orchestrator_limits_same_as_baseline_.xml
+    - b200-1g-r2-nt-chain-b-s2/b200-1g-r2-nt-chain-b-s2/job-5973446_0-r0/node0/results/e00/junit/inner-20261115T210713-1794748033054593808-1687725-y_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_endpoints.py_test_orchestrator_limits_same_as_baseline_.xml
+    - b200-1g-r2-nt-chain-b-s3/b200-1g-r2-nt-chain-b-s3/job-5973451_0-r0/node0/results/e00/junit/inner-20261115T210713-1794748033616458565-1053948-y_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_endpoints.py_test_orchestrator_limits_same_as_baseline_.xml
+    result: failed
+    chain_proof: ok
+  # T29 inner 48 passed, NT-051 ok
+  - row: F-03
+    features:
+    - F-03
+    cases:
+    - unittest/llmapi/apps/_test_openai_responses.py::test_chat
+    - unittest/llmapi/apps/_test_openai_responses.py::test_reasoning
+    - unittest/llmapi/apps/_test_openai_responses.py::test_reasoning_effort
+    - unittest/llmapi/apps/_test_openai_responses.py::test_streaming
+    - unittest/llmapi/apps/_test_openengine_disagg_endpoints.py::test_orchestrator_limits_same_as_baseline
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e17/junit/inner-20261115T150022-1794726022040424716-1757888-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_chat_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e18/junit/inner-20261115T151619-1794726979692178387-1849564-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_reasoning_effort_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e17/junit/inner-20261115T150522-1794726322688349296-594958-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_chat_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e18/junit/inner-20261115T151929-1794727169120452168-628000-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_reasoning_effort_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e17/junit/inner-20261115T151900-1794727140987642236-2117347-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_reasoning_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e18/junit/inner-20261115T153530-1794728130848962944-2144610-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_streaming_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e17/junit/inner-20261115T151309-1794726789863901123-612057-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_reasoning_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e18/junit/inner-20261115T152758-1794727678418223231-637369-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_streaming_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e17/junit/inner-20261115T230653-1794755213584954168-1458088-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_chat_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e18/junit/inner-20261115T232107-1794756067409962473-1467803-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_reasoning_effort_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e17/junit/inner-20261115T231700-1794755820288612718-2477102-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_reasoning_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e18/junit/inner-20261115T233251-1794756771126424324-2484475-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_streaming_.xml
+    - b200-1g-r2-nt-chain-b-s1/b200-1g-r2-nt-chain-b-s1/job-5973441_0-r0/node0/results/e00/junit/inner-20261115T210800-1794748080272779287-1295918-y_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_endpoints.py_test_orchestrator_limits_same_as_baseline_.xml
+    - b200-1g-r2-nt-chain-b-s2/b200-1g-r2-nt-chain-b-s2/job-5973446_0-r0/node0/results/e00/junit/inner-20261115T210713-1794748033054593808-1687725-y_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_endpoints.py_test_orchestrator_limits_same_as_baseline_.xml
+    - b200-1g-r2-nt-chain-b-s3/b200-1g-r2-nt-chain-b-s3/job-5973451_0-r0/node0/results/e00/junit/inner-20261115T210713-1794748033616458565-1053948-y_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_endpoints.py_test_orchestrator_limits_same_as_baseline_.xml
+    result: passed
+    chain_proof: ok
+  # T30 inner 27 passed, NT-051 ok
+  - row: F-04
+    features:
+    - F-04
+    cases:
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_a_real_tool_call_is_parsed_not_leaked_as_text
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_count_tokens_accounts_for_the_whole_prompt
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_count_tokens_grows_with_the_prompt
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_invalid_request_returns_an_anthropic_error
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_messages_non_streaming
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_messages_streaming_reaches_message_stop
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_streaming_and_non_streaming_agree_on_shape
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_tool_choice_any_is_rejected_with_a_clear_reason
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_tool_definitions_and_tool_result_round_trip
+    - unittest/llmapi/apps/_test_openengine_disagg_endpoints.py::test_orchestrator_limits_same_as_baseline
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e19/junit/inner-20261115T153130-1794727890641180291-1895808-y_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_a_real_tool_call_is_parsed_not_leaked_as_text_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e20/junit/inner-20261115T153446-1794728086045408174-1898697-unittests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_count_tokens_grows_with_the_prompt_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e21/junit/inner-20261115T153745-1794728265763320951-1901856-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_messages_non_streaming_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e22/junit/inner-20261115T154059-1794728459942354325-1909378-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_streaming_and_non_streaming_agree_on_shape_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e23/junit/inner-20261115T154410-1794728650323827142-1916455-.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_tool_definitions_and_tool_result_round_trip_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e19/junit/inner-20261115T153402-1794728042632261413-641973-y_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_a_real_tool_call_is_parsed_not_leaked_as_text_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e20/junit/inner-20261115T153710-1794728230462088857-644911-unittests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_count_tokens_grows_with_the_prompt_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e21/junit/inner-20261115T154019-1794728419109577167-647670-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_messages_non_streaming_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e22/junit/inner-20261115T154317-1794728597093023693-650782-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_streaming_and_non_streaming_agree_on_shape_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e23/junit/inner-20261115T154611-1794728771533190388-654100-.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_tool_definitions_and_tool_result_round_trip_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e19/junit/inner-20261115T155025-1794729025534803472-2190095-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_count_tokens_accounts_for_the_whole_prompt_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e20/junit/inner-20261115T155337-1794729217759585306-2198026-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_invalid_request_returns_an_anthropic_error_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e21/junit/inner-20261115T155647-1794729407518541744-2209422-ests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_messages_streaming_reaches_message_stop_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e22/junit/inner-20261115T155954-1794729594907548298-2217500-test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_tool_choice_any_is_rejected_with_a_clear_reason_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e19/junit/inner-20261115T154300-1794728580975500784-650132-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_count_tokens_accounts_for_the_whole_prompt_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e20/junit/inner-20261115T154607-1794728767053771989-654053-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_invalid_request_returns_an_anthropic_error_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e21/junit/inner-20261115T154917-1794728957423923160-657471-ests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_messages_streaming_reaches_message_stop_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e22/junit/inner-20261115T155213-1794729133199436842-661287-test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_tool_choice_any_is_rejected_with_a_clear_reason_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e19/junit/inner-20261115T233540-1794756940395095567-1473568-y_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_a_real_tool_call_is_parsed_not_leaked_as_text_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e20/junit/inner-20261115T233837-1794757117212917147-1476803-unittests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_count_tokens_grows_with_the_prompt_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e21/junit/inner-20261115T234130-1794757290163297674-1478697-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_messages_non_streaming_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e22/junit/inner-20261115T234432-1794757472208594662-1481884-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_streaming_and_non_streaming_agree_on_shape_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e23/junit/inner-20261115T234744-1794757664651062244-1483698-.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_tool_definitions_and_tool_result_round_trip_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e19/junit/inner-20261115T234814-1794757694307357907-2490731-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_count_tokens_accounts_for_the_whole_prompt_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e20/junit/inner-20261115T235119-1794757879168641706-2492608-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_invalid_request_returns_an_anthropic_error_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e21/junit/inner-20261115T235430-1794758070035636139-2494459-ests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_messages_streaming_reaches_message_stop_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e22/junit/inner-20261115T235745-1794758265029870859-2496354-test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_tool_choice_any_is_rejected_with_a_clear_reason_.xml
+    - b200-1g-r2-nt-chain-b-s1/b200-1g-r2-nt-chain-b-s1/job-5973441_0-r0/node0/results/e00/junit/inner-20261115T210800-1794748080272779287-1295918-y_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_endpoints.py_test_orchestrator_limits_same_as_baseline_.xml
+    - b200-1g-r2-nt-chain-b-s2/b200-1g-r2-nt-chain-b-s2/job-5973446_0-r0/node0/results/e00/junit/inner-20261115T210713-1794748033054593808-1687725-y_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_endpoints.py_test_orchestrator_limits_same_as_baseline_.xml
+    - b200-1g-r2-nt-chain-b-s3/b200-1g-r2-nt-chain-b-s3/job-5973451_0-r0/node0/results/e00/junit/inner-20261115T210713-1794748033616458565-1053948-y_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_endpoints.py_test_orchestrator_limits_same_as_baseline_.xml
+    result: passed
+    chain_proof: ok
+  # T6 inner 1 in error, 17 passed
+  # T6: the with_beam_search parameters expect the worker front ends to refuse to start
+  #   (expectations/WT-11.py: the chain has no beam search), so they carry no chain proof.
+  #   test_version[with_beam_search] was in error in one run: the expected refusal
+  #   happened, then the harness found engine processes that survived SIGKILL
+  #   (intermittent); it passed in the other runs
+  - row: F-05a+rest
+    features:
+    - F-05a
+    cases:
+    - unittest/llmapi/apps/_test_openai_misc.py::test_health
+    - unittest/llmapi/apps/_test_openai_misc.py::test_model
+    - unittest/llmapi/apps/_test_openai_misc.py::test_version
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e07/junit/inner-20261115T135111-1794721871097778401-1565677-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_model_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e07/junit/inner-20261115T135424-1794722064145767709-405730-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_model_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e06/junit/inner-20261115T134824-1794721704483042114-1903180-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_health_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e07/junit/inner-20261115T135316-1794721996002805740-1913058-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_version_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e06/junit/inner-20261115T134548-1794721548738356626-371872-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_health_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e07/junit/inner-20261115T135039-1794721839212314331-390652-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_version_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e07/junit/inner-20261115T215812-1794751092566277814-1342033-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_model_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e06/junit/inner-20261115T214950-1794750590085089004-2385598-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_health_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e07/junit/inner-20261115T215428-1794750868174933750-2395911-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_version_.xml
+    result: failed
+    chain_proof: incomplete
+  # NT-052 ok
+  - row: F-05b+rest
+    features:
+    - F-05b
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_endpoints.py::test_version_direct
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-r2-nt-chain-a-s1/b200-1g-r2-nt-chain-a-s1/job-5973439_0-r0/node0/results/e01/junit/inner-20261115T211704-1794748624240217264-1324639-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_endpoints.py_test_version_direct_.xml
+    - b200-1g-r2-nt-chain-a-s2/b200-1g-r2-nt-chain-a-s2/job-5973444_0-r0/node0/results/e01/junit/inner-20261115T211234-1794748354642111202-1738634-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_endpoints.py_test_version_direct_.xml
+    - b200-1g-r2-nt-chain-a-s3/b200-1g-r2-nt-chain-a-s3/job-5973449_0-r0/node0/results/e01/junit/inner-20261115T211217-1794748337036296399-1113949-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_endpoints.py_test_version_direct_.xml
+    result: passed
+    chain_proof: ok
+  # NT-053 ok
+  - row: F-05c+rest
+    features:
+    - F-05c
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_endpoints.py::test_health_direct
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-r2-nt-chain-b-s1/b200-1g-r2-nt-chain-b-s1/job-5973441_0-r0/node0/results/e01/junit/inner-20261115T211747-1794748667688485436-1326832-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_endpoints.py_test_health_direct_.xml
+    - b200-1g-r2-nt-chain-b-s2/b200-1g-r2-nt-chain-b-s2/job-5973446_0-r0/node0/results/e01/junit/inner-20261115T211215-1794748335965830936-1737109-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_endpoints.py_test_health_direct_.xml
+    - b200-1g-r2-nt-chain-b-s3/b200-1g-r2-nt-chain-b-s3/job-5973451_0-r0/node0/results/e01/junit/inner-20261115T211224-1794748344995042629-1114176-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_endpoints.py_test_health_direct_.xml
+    result: passed
+    chain_proof: ok
+  # NT-054 see below
+  # NT-054: the test sends /health_generate to each worker itself; each worker front end
+  #   makes one engine call that no request through the disaggregated server accounts for,
+  #   so CH-5 reads incomplete on both legs
+  - row: F-05d
+    features:
+    - F-05d
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_endpoints.py::test_health_generate_direct
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-r2-nt-chain-a-s1/b200-1g-r2-nt-chain-a-s1/job-5973439_0-r0/node0/results/e02/junit/inner-20261115T212457-1794749097345226840-1339444-st_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_endpoints.py_test_health_generate_direct_.xml
+    - b200-1g-r2-nt-chain-a-s2/b200-1g-r2-nt-chain-a-s2/job-5973444_0-r0/node0/results/e02/junit/inner-20261115T211533-1794748533149685517-1752629-st_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_endpoints.py_test_health_generate_direct_.xml
+    - b200-1g-r2-nt-chain-a-s3/b200-1g-r2-nt-chain-a-s3/job-5973449_0-r0/node0/results/e02/junit/inner-20261115T211546-1794748546536375125-1135701-st_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_endpoints.py_test_health_generate_direct_.xml
+    result: passed
+    chain_proof: incomplete
+  # NT-056 ok, NT-214 ok, T2 inner 6 failed, 42 passed
+  # T2: test_chat_streaming fails the same way without the chain (topology form): its
+  #   streamed logprobs differ from the non-streamed ones
+  - row: F-07
+    features:
+    - F-07
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_inputs.py::test_chat_template_kwargs
+    - unittest/llmapi/apps/_test_openengine_disagg_inputs.py::test_request_chat_template_gate
+    - unittest/llmapi/apps/_test_openai_chat.py::test_chat_streaming
+    - unittest/llmapi/apps/_test_openai_chat.py::test_custom_role
+    - unittest/llmapi/apps/_test_openai_chat.py::test_multi_turn_dialogue
+    - unittest/llmapi/apps/_test_openai_chat.py::test_single_chat_session
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e03/junit/inner-20261115T132027-1794720027885540054-1462679-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_custom_role_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e04/junit/inner-20261115T133157-1794720717378653587-1527530-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_single_chat_session_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e03/junit/inner-20261115T132311-1794720191340968482-258830-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_custom_role_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e04/junit/inner-20261115T133404-1794720844901636675-319987-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_single_chat_session_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e02/junit/inner-20261115T131711-1794719831267735815-1797130-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_chat_streaming_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e03/junit/inner-20261115T132830-1794720510095358496-1843209-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_multi_turn_dialogue_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e02/junit/inner-20261115T131640-1794719800583017663-223607-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_chat_streaming_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e03/junit/inner-20261115T132752-1794720472551009961-284394-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_multi_turn_dialogue_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e03/junit/inner-20261115T212803-1794749283025892432-1207991-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_custom_role_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e04/junit/inner-20261115T214031-1794750031418736358-1281193-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_single_chat_session_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e02/junit/inner-20261115T212110-1794748870439756694-2259803-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_chat_streaming_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e03/junit/inner-20261115T213211-1794749531271288583-2311061-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_multi_turn_dialogue_.xml
+    - b200-1g-r2-nt-chain-b-s1/b200-1g-r2-nt-chain-b-s1/job-5973441_0-r0/node0/results/e02/junit/inner-20261115T212533-1794749133938692938-1341472-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_inputs.py_test_chat_template_kwargs_.xml
+    - b200-1g-r2-nt-chain-b-s1/b200-1g-r2-nt-chain-b-s1/job-5973441_0-r0/node0/results/e17/junit/inner-20261115T232140-1794756100533600955-1471317-t_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_inputs.py_test_request_chat_template_gate_.xml
+    - b200-1g-r2-nt-chain-b-s2/b200-1g-r2-nt-chain-b-s2/job-5973446_0-r0/node0/results/e02/junit/inner-20261115T211515-1794748515258178642-1751278-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_inputs.py_test_chat_template_kwargs_.xml
+    - b200-1g-r2-nt-chain-b-s2/b200-1g-r2-nt-chain-b-s2/job-5973446_0-r0/node0/results/e17/junit/inner-20261115T220223-1794751343766836780-1927624-t_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_inputs.py_test_request_chat_template_gate_.xml
+    - b200-1g-r2-nt-chain-b-s3/b200-1g-r2-nt-chain-b-s3/job-5973451_0-r0/node0/results/e02/junit/inner-20261115T211546-1794748546506260994-1135699-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_inputs.py_test_chat_template_kwargs_.xml
+    - b200-1g-r2-nt-chain-b-s3/b200-1g-r2-nt-chain-b-s3/job-5973451_0-r0/node0/results/e17/junit/inner-20261115T220749-1794751669904111568-1371342-t_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_inputs.py_test_request_chat_template_gate_.xml
+    result: failed
+    chain_proof: ok
+  # T1 inner 6 failed, 24 passed, T8 inner 15 failed, 12 passed
+  # T1: test_completion_logprobs_streaming fails the same way without the chain
+  #   (topology form): its streamed logprobs differ from the non-streamed ones
+  # T8: the five named tool choice tests fail the same way without the chain (topology
+  #   form)
+  - row: F-08
+    features:
+    - F-08
+    cases:
+    - unittest/llmapi/apps/_test_openai_completions.py::test_completion_logprobs
+    - unittest/llmapi/apps/_test_openai_completions.py::test_completion_logprobs_streaming
+    - unittest/llmapi/apps/_test_openai_completions.py::test_completion_streaming
+    - unittest/llmapi/apps/_test_openai_completions.py::test_detokenize_single
+    - unittest/llmapi/apps/_test_openai_completions.py::test_single_completion
+    - unittest/llmapi/apps/_test_openai_tool_call.py::test_named_tool_choice_forces_function_call
+    - unittest/llmapi/apps/_test_openai_tool_call.py::test_named_tool_choice_missing_function_returns_400
+    - unittest/llmapi/apps/_test_openai_tool_call.py::test_named_tool_choice_streaming
+    - unittest/llmapi/apps/_test_openai_tool_call.py::test_named_tool_choice_with_prompt_token_ids_b64_is_rejected
+    - unittest/llmapi/apps/_test_openai_tool_call.py::test_named_tool_choice_with_response_format_is_rejected
+    - unittest/llmapi/apps/_test_openai_tool_call.py::test_tool_choice_auto_unchanged
+    - unittest/llmapi/apps/_test_openai_tool_call.py::test_tool_choice_none_unchanged
+    - unittest/llmapi/apps/_test_openai_tool_call.py::test_tool_parser
+    - unittest/llmapi/apps/_test_openai_tool_call.py::test_tool_parser_streaming
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e00/junit/inner-20261115T125906-1794718746577313616-1352535-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e01/junit/inner-20261115T130818-1794719298980598126-1402249-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_streaming_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e02/junit/inner-20261115T131423-1794719663970943909-1431873-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_single_completion_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e09/junit/inner-20261115T140023-1794722423606735702-1600741-ittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_forces_function_call_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e10/junit/inner-20261115T140345-1794722625910297143-1618082-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_streaming_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e11/junit/inner-20261115T140711-1794722831562324095-1634927-est_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_with_response_format_is_rejected_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e12/junit/inner-20261115T141044-1794723044452611195-1647057-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_tool_choice_none_unchanged_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e13/junit/inner-20261115T141456-1794723296361868928-1658845-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_tool_parser_streaming_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e00/junit/inner-20261115T130214-1794718934184849485-113686-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e01/junit/inner-20261115T131114-1794719474879529149-190005-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_streaming_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e02/junit/inner-20261115T131721-1794719841520172594-228450-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_single_completion_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e09/junit/inner-20261115T140354-1794722634848634232-443880-ittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_forces_function_call_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e10/junit/inner-20261115T140729-1794722849410956109-452743-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_streaming_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e11/junit/inner-20261115T141050-1794723050318364330-462601-est_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_with_response_format_is_rejected_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e12/junit/inner-20261115T141414-1794723254979954189-469112-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_tool_choice_none_unchanged_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e13/junit/inner-20261115T141739-1794723459471268440-474816-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_tool_parser_streaming_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e00/junit/inner-20261115T130141-1794718901665908618-1724150-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_streaming_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e01/junit/inner-20261115T131104-1794719464242627769-1769674-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_detokenize_single_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e09/junit/inner-20261115T140244-1794722564944306624-1930528-py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_missing_function_returns_400_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e10/junit/inner-20261115T140721-1794722841856283976-1937156-nittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_with_prompt_token_ids_b64_is_rejected_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e11/junit/inner-20261115T141054-1794723054362401008-1953023-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_tool_choice_auto_unchanged_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e12/junit/inner-20261115T141514-1794723314371866471-1964165-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_tool_parser_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e00/junit/inner-20261115T130214-1794718934888633588-113722-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_streaming_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e01/junit/inner-20261115T131100-1794719460527279449-186219-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_detokenize_single_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e09/junit/inner-20261115T135954-1794722394925994586-429191-py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_missing_function_returns_400_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e10/junit/inner-20261115T140321-1794722601720575694-442158-nittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_with_prompt_token_ids_b64_is_rejected_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e11/junit/inner-20261115T140648-1794722808317243191-450451-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_tool_choice_auto_unchanged_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e12/junit/inner-20261115T141010-1794723010708763507-460094-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_tool_parser_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e00/junit/inner-20261115T210713-1794748033633447331-1053950-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e01/junit/inner-20261115T211553-1794748553377690090-1135953-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_streaming_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e02/junit/inner-20261115T212157-1794748917261591532-1169911-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_single_completion_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e09/junit/inner-20261115T220744-1794751664700299029-1371271-ittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_forces_function_call_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e10/junit/inner-20261115T221117-1794751877165751483-1379169-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_streaming_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e11/junit/inner-20261115T221438-1794752078878947757-1386279-est_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_with_response_format_is_rejected_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e12/junit/inner-20261115T221759-1794752279026323181-1391074-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_tool_choice_none_unchanged_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e13/junit/inner-20261115T222132-1794752492328506828-1395458-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_tool_parser_streaming_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e00/junit/inner-20261115T210630-1794747990319238613-2205799-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_streaming_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e01/junit/inner-20261115T211510-1794748510890899212-2225643-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_detokenize_single_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e09/junit/inner-20261115T220406-1794751446533698808-2437163-py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_missing_function_returns_400_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e10/junit/inner-20261115T220723-1794751643855747822-2439301-nittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_with_prompt_token_ids_b64_is_rejected_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e11/junit/inner-20261115T221147-1794751907721144909-2441557-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_tool_choice_auto_unchanged_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e12/junit/inner-20261115T221509-1794752109697793747-2443391-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_tool_parser_.xml
+    result: failed
+    chain_proof: incomplete
+  # NT-057 ok
+  # NT-057: with Qwen3 both add_special_tokens values give the same tokens, so this
+  #   assertion cannot tell whether the option is forwarded; accepted as it is
+  - row: F-09
+    features:
+    - F-09
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_inputs.py::test_truncate_and_add_special_tokens
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-r2-nt-chain-a-s1/b200-1g-r2-nt-chain-a-s1/job-5973439_0-r0/node0/results/e03/junit/inner-20261115T213220-1794749540754918874-1352916-ttests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_inputs.py_test_truncate_and_add_special_tokens_.xml
+    - b200-1g-r2-nt-chain-a-s2/b200-1g-r2-nt-chain-a-s2/job-5973444_0-r0/node0/results/e03/junit/inner-20261115T211809-1794748689469368202-1766534-ttests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_inputs.py_test_truncate_and_add_special_tokens_.xml
+    - b200-1g-r2-nt-chain-a-s3/b200-1g-r2-nt-chain-a-s3/job-5973449_0-r0/node0/results/e03/junit/inner-20261115T211905-1794748745620136563-1155857-ttests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_inputs.py_test_truncate_and_add_special_tokens_.xml
+    result: passed
+    chain_proof: ok
+  # NT-059 ok
+  - row: F-11
+    features:
+    - F-11
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_sampling.py::test_sampling_knobs_reach_both_legs
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-r2-nt-chain-b-s1/b200-1g-r2-nt-chain-b-s1/job-5973441_0-r0/node0/results/e03/junit/inner-20261115T213334-1794749614108344481-1356078-tests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_sampling.py_test_sampling_knobs_reach_both_legs_.xml
+    - b200-1g-r2-nt-chain-b-s2/b200-1g-r2-nt-chain-b-s2/job-5973446_0-r0/node0/results/e03/junit/inner-20261115T211749-1794748669446042548-1763862-tests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_sampling.py_test_sampling_knobs_reach_both_legs_.xml
+    - b200-1g-r2-nt-chain-b-s3/b200-1g-r2-nt-chain-b-s3/job-5973451_0-r0/node0/results/e03/junit/inner-20261115T211906-1794748746123963967-1155861-tests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_sampling.py_test_sampling_knobs_reach_both_legs_.xml
+    result: passed
+    chain_proof: ok
+  # NT-060 ok
+  # NT-060: in an earlier round of three chain runs (on
+  #   6e8e37a558af91cbac26c4625051eabb1fc57563, same test file) one run was in error
+  #   before the test: the disaggregated server could not bind the port picked for it
+  #   (held in TIME_WAIT); the other two passed with the chain proof holding
+  - row: F-12
+    features:
+    - F-12
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_sampling.py::test_seed_reproducible
+    commit: 5694f8f03d7ca732aabfb4487b7d7d5125d28e4a
+    junit:
+    - b200-1g-r3-chain-s1/b200-1g-r3-chain-s1/job-5977744_0-r0/node0/results/e02/junit/inner-20261116T013053-1794763853598658282-1667735-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_sampling.py_test_seed_reproducible_.xml
+    - b200-1g-r3-chain-s2/b200-1g-r3-chain-s2/job-5977746_0-r0/node0/results/e02/junit/inner-20261116T012952-1794763792011995397-1666091-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_sampling.py_test_seed_reproducible_.xml
+    - b200-1g-r3-chain-s3/b200-1g-r3-chain-s3/job-5977748_0-r0/node0/results/e02/junit/inner-20261116T011557-1794762957921816439-2590218-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_sampling.py_test_seed_reproducible_.xml
+    result: passed
+    chain_proof: ok
+  # NT-061 ok
+  - row: F-13
+    features:
+    - F-13
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_sampling.py::test_penalties
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-r2-nt-chain-b-s1/b200-1g-r2-nt-chain-b-s1/job-5973441_0-r0/node0/results/e04/junit/inner-20261115T214117-1794750077558513173-1367767-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_sampling.py_test_penalties_.xml
+    - b200-1g-r2-nt-chain-b-s2/b200-1g-r2-nt-chain-b-s2/job-5973446_0-r0/node0/results/e04/junit/inner-20261115T212042-1794748842340483886-1778208-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_sampling.py_test_penalties_.xml
+    - b200-1g-r2-nt-chain-b-s3/b200-1g-r2-nt-chain-b-s3/job-5973451_0-r0/node0/results/e04/junit/inner-20261115T212227-1794748947336991416-1175740-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_sampling.py_test_penalties_.xml
+    result: passed
+    chain_proof: ok
+  # T1 inner 6 failed, 24 passed
+  # T1: test_completion_logprobs_streaming fails the same way without the chain
+  #   (topology form): its streamed logprobs differ from the non-streamed ones
+  - row: F-14+rest
+    features:
+    - F-14
+    cases:
+    - unittest/llmapi/apps/_test_openai_completions.py::test_completion_logprobs
+    - unittest/llmapi/apps/_test_openai_completions.py::test_completion_logprobs_streaming
+    - unittest/llmapi/apps/_test_openai_completions.py::test_completion_streaming
+    - unittest/llmapi/apps/_test_openai_completions.py::test_detokenize_single
+    - unittest/llmapi/apps/_test_openai_completions.py::test_single_completion
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e00/junit/inner-20261115T125906-1794718746577313616-1352535-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e01/junit/inner-20261115T130818-1794719298980598126-1402249-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_streaming_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e02/junit/inner-20261115T131423-1794719663970943909-1431873-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_single_completion_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e00/junit/inner-20261115T130214-1794718934184849485-113686-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e01/junit/inner-20261115T131114-1794719474879529149-190005-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_streaming_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e02/junit/inner-20261115T131721-1794719841520172594-228450-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_single_completion_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e00/junit/inner-20261115T130141-1794718901665908618-1724150-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_streaming_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e01/junit/inner-20261115T131104-1794719464242627769-1769674-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_detokenize_single_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e00/junit/inner-20261115T130214-1794718934888633588-113722-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_streaming_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e01/junit/inner-20261115T131100-1794719460527279449-186219-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_detokenize_single_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e00/junit/inner-20261115T210713-1794748033633447331-1053950-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e01/junit/inner-20261115T211553-1794748553377690090-1135953-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_streaming_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e02/junit/inner-20261115T212157-1794748917261591532-1169911-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_single_completion_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e00/junit/inner-20261115T210630-1794747990319238613-2205799-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_streaming_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e01/junit/inner-20261115T211510-1794748510890899212-2225643-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_detokenize_single_.xml
+    result: failed
+    chain_proof: ok
+  # NT-062 ok
+  - row: F-15
+    features:
+    - F-15
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_sampling.py::test_min_tokens
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-r2-nt-chain-a-s1/b200-1g-r2-nt-chain-a-s1/job-5973439_0-r0/node0/results/e05/junit/inner-20261115T214718-1794750438613612542-1377247-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_sampling.py_test_min_tokens_.xml
+    - b200-1g-r2-nt-chain-a-s2/b200-1g-r2-nt-chain-a-s2/job-5973444_0-r0/node0/results/e05/junit/inner-20261115T212430-1794749070574112638-1798122-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_sampling.py_test_min_tokens_.xml
+    - b200-1g-r2-nt-chain-a-s3/b200-1g-r2-nt-chain-a-s3/job-5973449_0-r0/node0/results/e05/junit/inner-20261115T212553-1794749153192245997-1194383-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_sampling.py_test_min_tokens_.xml
+    result: passed
+    chain_proof: ok
+  # T5 inner 6 passed
+  - row: F-16+rest
+    features:
+    - F-16
+    cases:
+    - unittest/llmapi/apps/_test_trtllm_serve_top_logprobs.py::test_chat_completion_top5_logprobs
+    - unittest/llmapi/apps/_test_trtllm_serve_top_logprobs.py::test_completion_top5_logprobs
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e06/junit/inner-20261115T134703-1794721623845259355-1561006-st_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_trtllm_serve_top_logprobs.py_test_completion_top5_logprobs_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e06/junit/inner-20261115T134952-1794721792050825358-386761-st_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_trtllm_serve_top_logprobs.py_test_completion_top5_logprobs_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e05/junit/inner-20261115T134348-1794721428812416119-1887855-ittests.py_test_unittests_v2_unittest_llmapi_apps__test_trtllm_serve_top_logprobs.py_test_chat_completion_top5_logprobs_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e05/junit/inner-20261115T134215-1794721335882697504-356875-ittests.py_test_unittests_v2_unittest_llmapi_apps__test_trtllm_serve_top_logprobs.py_test_chat_completion_top5_logprobs_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e06/junit/inner-20261115T215447-1794750887766999479-1330950-st_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_trtllm_serve_top_logprobs.py_test_completion_top5_logprobs_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e05/junit/inner-20261115T214619-1794750379384424668-2370977-ittests.py_test_unittests_v2_unittest_llmapi_apps__test_trtllm_serve_top_logprobs.py_test_chat_completion_top5_logprobs_.xml
+    result: passed
+    chain_proof: ok
+  # XD-701 inner 24 passed, NT-063 failed
+  # NT-063: [whole] passed; [streamed] failed in each run (in-process form: passed in each
+  #   run). On the chain the client got 15 chunks: 14 with text '' and no finish_reason,
+  #   then one with text '', finish_reason 'stop' and stop_reason ' Paris'. In-process the
+  #   context leg ends the request and the client gets no chunk. Both end on the stop word
+  #   with no text; the chain's stream differs (chain defect candidate)
+  - row: F-17
+    features:
+    - F-17
+    cases:
+    - unittest/llmapi/apps/_test_openengine_wt12.py::test_detokenize_options
+    - unittest/llmapi/apps/_test_openengine_wt12.py::test_stop_string_variants
+    - unittest/llmapi/apps/_test_openengine_disagg_sampling.py::test_stop_word_on_first_token
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e24/junit/inner-20261115T154724-1794728844213611902-1942741-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_wt12.py_test_stop_string_variants_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e24/junit/inner-20261115T154909-1794728949031431118-657398-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_wt12.py_test_stop_string_variants_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e23/junit/inner-20261115T160300-1794729780077108756-2223952-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_wt12.py_test_detokenize_options_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e23/junit/inner-20261115T155515-1794729315463896614-662869-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_wt12.py_test_detokenize_options_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e24/junit/inner-20261115T235046-1794757846525108933-1485494-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_wt12.py_test_stop_string_variants_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e23/junit/inner-20261116T000046-1794758446532586250-2498191-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_wt12.py_test_detokenize_options_.xml
+    - b200-1g-r2-nt-chain-b-s1/b200-1g-r2-nt-chain-b-s1/job-5973441_0-r0/node0/results/e05/junit/inner-20261115T214903-1794750543074703043-1381045-t_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_sampling.py_test_stop_word_on_first_token_.xml
+    - b200-1g-r2-nt-chain-b-s2/b200-1g-r2-nt-chain-b-s2/job-5973446_0-r0/node0/results/e05/junit/inner-20261115T212423-1794749063284063226-1796375-t_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_sampling.py_test_stop_word_on_first_token_.xml
+    - b200-1g-r2-nt-chain-b-s3/b200-1g-r2-nt-chain-b-s3/job-5973451_0-r0/node0/results/e05/junit/inner-20261115T212615-1794749175724013398-1197024-t_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_sampling.py_test_stop_word_on_first_token_.xml
+    result: failed
+    chain_proof: ok
+  # XD-701 inner 24 passed
+  - row: F-18
+    features:
+    - F-18
+    cases:
+    - unittest/llmapi/apps/_test_openengine_wt12.py::test_detokenize_options
+    - unittest/llmapi/apps/_test_openengine_wt12.py::test_stop_string_variants
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e24/junit/inner-20261115T154724-1794728844213611902-1942741-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_wt12.py_test_stop_string_variants_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e24/junit/inner-20261115T154909-1794728949031431118-657398-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_wt12.py_test_stop_string_variants_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e23/junit/inner-20261115T160300-1794729780077108756-2223952-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_wt12.py_test_detokenize_options_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e23/junit/inner-20261115T155515-1794729315463896614-662869-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_wt12.py_test_detokenize_options_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e24/junit/inner-20261115T235046-1794757846525108933-1485494-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_wt12.py_test_stop_string_variants_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e23/junit/inner-20261116T000046-1794758446532586250-2498191-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_wt12.py_test_detokenize_options_.xml
+    result: passed
+    chain_proof: ok
+  # T5 inner 6 passed, T1 inner 6 failed, 24 passed
+  # T1: test_completion_logprobs_streaming fails the same way without the chain
+  #   (topology form): its streamed logprobs differ from the non-streamed ones
+  - row: F-20
+    features:
+    - F-20
+    cases:
+    - unittest/llmapi/apps/_test_trtllm_serve_top_logprobs.py::test_chat_completion_top5_logprobs
+    - unittest/llmapi/apps/_test_trtllm_serve_top_logprobs.py::test_completion_top5_logprobs
+    - unittest/llmapi/apps/_test_openai_completions.py::test_completion_logprobs
+    - unittest/llmapi/apps/_test_openai_completions.py::test_completion_logprobs_streaming
+    - unittest/llmapi/apps/_test_openai_completions.py::test_completion_streaming
+    - unittest/llmapi/apps/_test_openai_completions.py::test_detokenize_single
+    - unittest/llmapi/apps/_test_openai_completions.py::test_single_completion
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e00/junit/inner-20261115T125906-1794718746577313616-1352535-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e01/junit/inner-20261115T130818-1794719298980598126-1402249-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_streaming_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e02/junit/inner-20261115T131423-1794719663970943909-1431873-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_single_completion_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e06/junit/inner-20261115T134703-1794721623845259355-1561006-st_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_trtllm_serve_top_logprobs.py_test_completion_top5_logprobs_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e00/junit/inner-20261115T130214-1794718934184849485-113686-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e01/junit/inner-20261115T131114-1794719474879529149-190005-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_streaming_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e02/junit/inner-20261115T131721-1794719841520172594-228450-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_single_completion_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e06/junit/inner-20261115T134952-1794721792050825358-386761-st_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_trtllm_serve_top_logprobs.py_test_completion_top5_logprobs_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e00/junit/inner-20261115T130141-1794718901665908618-1724150-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_streaming_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e01/junit/inner-20261115T131104-1794719464242627769-1769674-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_detokenize_single_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e05/junit/inner-20261115T134348-1794721428812416119-1887855-ittests.py_test_unittests_v2_unittest_llmapi_apps__test_trtllm_serve_top_logprobs.py_test_chat_completion_top5_logprobs_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e00/junit/inner-20261115T130214-1794718934888633588-113722-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_streaming_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e01/junit/inner-20261115T131100-1794719460527279449-186219-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_detokenize_single_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e05/junit/inner-20261115T134215-1794721335882697504-356875-ittests.py_test_unittests_v2_unittest_llmapi_apps__test_trtllm_serve_top_logprobs.py_test_chat_completion_top5_logprobs_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e00/junit/inner-20261115T210713-1794748033633447331-1053950-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e01/junit/inner-20261115T211553-1794748553377690090-1135953-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_streaming_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e02/junit/inner-20261115T212157-1794748917261591532-1169911-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_single_completion_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e06/junit/inner-20261115T215447-1794750887766999479-1330950-st_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_trtllm_serve_top_logprobs.py_test_completion_top5_logprobs_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e00/junit/inner-20261115T210630-1794747990319238613-2205799-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_streaming_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e01/junit/inner-20261115T211510-1794748510890899212-2225643-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_detokenize_single_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e05/junit/inner-20261115T214619-1794750379384424668-2370977-ittests.py_test_unittests_v2_unittest_llmapi_apps__test_trtllm_serve_top_logprobs.py_test_chat_completion_top5_logprobs_.xml
+    result: failed
+    chain_proof: ok
+  # T3 inner 3 passed, T4 inner 3 passed
+  - row: F-22
+    features:
+    - F-22
+    cases:
+    - unittest/llmapi/apps/_test_openai_completions.py::test_completion_with_logit_bias_effect
+    - unittest/llmapi/apps/_test_openai_chat.py::test_chat_completion_with_logit_bias_effect
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e05/junit/inner-20261115T134246-1794721366971717609-1555822-st_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_chat_completion_with_logit_bias_effect_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e05/junit/inner-20261115T134532-1794721532721604925-370269-st_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_chat_completion_with_logit_bias_effect_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e04/junit/inner-20261115T133938-1794721178895249391-1876249-_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_with_logit_bias_effect_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e04/junit/inner-20261115T133854-1794721134455804303-341354-_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_with_logit_bias_effect_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e05/junit/inner-20261115T215121-1794750681311945029-1319175-st_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_chat_completion_with_logit_bias_effect_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e04/junit/inner-20261115T214300-1794750180487372704-2358188-_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_with_logit_bias_effect_.xml
+    result: passed
+    chain_proof: ok
+  # XD-701 inner 24 passed, T1 inner 6 failed, 24 passed
+  # T1: test_completion_logprobs_streaming fails the same way without the chain
+  #   (topology form): its streamed logprobs differ from the non-streamed ones
+  - row: F-24
+    features:
+    - F-24
+    cases:
+    - unittest/llmapi/apps/_test_openengine_wt12.py::test_detokenize_options
+    - unittest/llmapi/apps/_test_openengine_wt12.py::test_stop_string_variants
+    - unittest/llmapi/apps/_test_openai_completions.py::test_completion_logprobs
+    - unittest/llmapi/apps/_test_openai_completions.py::test_completion_logprobs_streaming
+    - unittest/llmapi/apps/_test_openai_completions.py::test_completion_streaming
+    - unittest/llmapi/apps/_test_openai_completions.py::test_detokenize_single
+    - unittest/llmapi/apps/_test_openai_completions.py::test_single_completion
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e00/junit/inner-20261115T125906-1794718746577313616-1352535-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e01/junit/inner-20261115T130818-1794719298980598126-1402249-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_streaming_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e02/junit/inner-20261115T131423-1794719663970943909-1431873-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_single_completion_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e24/junit/inner-20261115T154724-1794728844213611902-1942741-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_wt12.py_test_stop_string_variants_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e00/junit/inner-20261115T130214-1794718934184849485-113686-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e01/junit/inner-20261115T131114-1794719474879529149-190005-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_streaming_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e02/junit/inner-20261115T131721-1794719841520172594-228450-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_single_completion_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e24/junit/inner-20261115T154909-1794728949031431118-657398-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_wt12.py_test_stop_string_variants_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e00/junit/inner-20261115T130141-1794718901665908618-1724150-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_streaming_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e01/junit/inner-20261115T131104-1794719464242627769-1769674-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_detokenize_single_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e23/junit/inner-20261115T160300-1794729780077108756-2223952-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_wt12.py_test_detokenize_options_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e00/junit/inner-20261115T130214-1794718934888633588-113722-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_streaming_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e01/junit/inner-20261115T131100-1794719460527279449-186219-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_detokenize_single_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e23/junit/inner-20261115T155515-1794729315463896614-662869-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_wt12.py_test_detokenize_options_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e00/junit/inner-20261115T210713-1794748033633447331-1053950-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e01/junit/inner-20261115T211553-1794748553377690090-1135953-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_streaming_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e02/junit/inner-20261115T212157-1794748917261591532-1169911-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_single_completion_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e24/junit/inner-20261115T235046-1794757846525108933-1485494-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_wt12.py_test_stop_string_variants_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e00/junit/inner-20261115T210630-1794747990319238613-2205799-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_completion_logprobs_streaming_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e01/junit/inner-20261115T211510-1794748510890899212-2225643-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_completions.py_test_detokenize_single_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e23/junit/inner-20261116T000046-1794758446532586250-2498191-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_wt12.py_test_detokenize_options_.xml
+    result: failed
+    chain_proof: ok
+  # T7 inner 15 passed, 3 skipped, T29 inner 48 passed
+  # T7: the with_beam_search parameters expect the worker front ends to refuse to start
+  #   (expectations/WT-11.py), so they carry no chain proof; test_reasoning_parser skips one
+  #   of its parameters itself
+  - row: F-27
+    features:
+    - F-27
+    cases:
+    - unittest/llmapi/apps/_test_openai_reasoning.py::test_reasoning_parser
+    - unittest/llmapi/apps/_test_openai_reasoning.py::test_reasoning_parser_streaming
+    - unittest/llmapi/apps/_test_openai_responses.py::test_chat
+    - unittest/llmapi/apps/_test_openai_responses.py::test_reasoning
+    - unittest/llmapi/apps/_test_openai_responses.py::test_reasoning_effort
+    - unittest/llmapi/apps/_test_openai_responses.py::test_streaming
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e08/junit/inner-20261115T135538-1794722138362831537-1579804-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_reasoning.py_test_reasoning_parser_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e17/junit/inner-20261115T150022-1794726022040424716-1757888-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_chat_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e18/junit/inner-20261115T151619-1794726979692178387-1849564-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_reasoning_effort_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e08/junit/inner-20261115T135912-1794722352271113979-424893-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_reasoning.py_test_reasoning_parser_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e17/junit/inner-20261115T150522-1794726322688349296-594958-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_chat_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e18/junit/inner-20261115T151929-1794727169120452168-628000-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_reasoning_effort_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e08/junit/inner-20261115T135806-1794722286612876522-1922278-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_reasoning.py_test_reasoning_parser_streaming_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e17/junit/inner-20261115T151900-1794727140987642236-2117347-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_reasoning_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e18/junit/inner-20261115T153530-1794728130848962944-2144610-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_streaming_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e08/junit/inner-20261115T135537-1794722137421392331-411171-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_reasoning.py_test_reasoning_parser_streaming_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e17/junit/inner-20261115T151309-1794726789863901123-612057-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_reasoning_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e18/junit/inner-20261115T152758-1794727678418223231-637369-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_streaming_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e08/junit/inner-20261115T220300-1794751380699240318-1357522-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_reasoning.py_test_reasoning_parser_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e17/junit/inner-20261115T230653-1794755213584954168-1458088-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_chat_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e18/junit/inner-20261115T232107-1794756067409962473-1467803-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_reasoning_effort_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e08/junit/inner-20261115T215918-1794751158417748848-2422493-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_reasoning.py_test_reasoning_parser_streaming_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e17/junit/inner-20261115T231700-1794755820288612718-2477102-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_reasoning_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e18/junit/inner-20261115T233251-1794756771126424324-2484475-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_streaming_.xml
+    result: passed
+    chain_proof: incomplete
+  # XD-022 ok, T8 inner 15 failed, 12 passed, T30 inner 27 passed
+  # T8: the five named tool choice tests fail the same way without the chain (topology
+  #   form)
+  - row: F-28
+    features:
+    - F-28
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_chat_completion_tool_calls
+    - unittest/llmapi/apps/_test_openai_tool_call.py::test_named_tool_choice_forces_function_call
+    - unittest/llmapi/apps/_test_openai_tool_call.py::test_named_tool_choice_missing_function_returns_400
+    - unittest/llmapi/apps/_test_openai_tool_call.py::test_named_tool_choice_streaming
+    - unittest/llmapi/apps/_test_openai_tool_call.py::test_named_tool_choice_with_prompt_token_ids_b64_is_rejected
+    - unittest/llmapi/apps/_test_openai_tool_call.py::test_named_tool_choice_with_response_format_is_rejected
+    - unittest/llmapi/apps/_test_openai_tool_call.py::test_tool_choice_auto_unchanged
+    - unittest/llmapi/apps/_test_openai_tool_call.py::test_tool_choice_none_unchanged
+    - unittest/llmapi/apps/_test_openai_tool_call.py::test_tool_parser
+    - unittest/llmapi/apps/_test_openai_tool_call.py::test_tool_parser_streaming
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_a_real_tool_call_is_parsed_not_leaked_as_text
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_count_tokens_accounts_for_the_whole_prompt
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_count_tokens_grows_with_the_prompt
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_invalid_request_returns_an_anthropic_error
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_messages_non_streaming
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_messages_streaming_reaches_message_stop
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_streaming_and_non_streaming_agree_on_shape
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_tool_choice_any_is_rejected_with_a_clear_reason
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_tool_definitions_and_tool_result_round_trip
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-extra-chain-s1/b200-1g-extra-chain-s1/job-5968636_0-r0/node0/results/e00/outer-junit.xml
+    - b200-1g-extra-chain-s2/b200-1g-extra-chain-s2/job-5968637_0-r0/node0/results/e00/outer-junit.xml
+    - b200-1g-extra-chain-s3/b200-1g-extra-chain-s3/job-5968638_0-r0/node0/results/e00/outer-junit.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e09/junit/inner-20261115T140023-1794722423606735702-1600741-ittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_forces_function_call_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e10/junit/inner-20261115T140345-1794722625910297143-1618082-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_streaming_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e11/junit/inner-20261115T140711-1794722831562324095-1634927-est_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_with_response_format_is_rejected_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e12/junit/inner-20261115T141044-1794723044452611195-1647057-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_tool_choice_none_unchanged_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e13/junit/inner-20261115T141456-1794723296361868928-1658845-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_tool_parser_streaming_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e19/junit/inner-20261115T153130-1794727890641180291-1895808-y_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_a_real_tool_call_is_parsed_not_leaked_as_text_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e20/junit/inner-20261115T153446-1794728086045408174-1898697-unittests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_count_tokens_grows_with_the_prompt_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e21/junit/inner-20261115T153745-1794728265763320951-1901856-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_messages_non_streaming_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e22/junit/inner-20261115T154059-1794728459942354325-1909378-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_streaming_and_non_streaming_agree_on_shape_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e23/junit/inner-20261115T154410-1794728650323827142-1916455-.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_tool_definitions_and_tool_result_round_trip_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e09/junit/inner-20261115T140354-1794722634848634232-443880-ittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_forces_function_call_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e10/junit/inner-20261115T140729-1794722849410956109-452743-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_streaming_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e11/junit/inner-20261115T141050-1794723050318364330-462601-est_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_with_response_format_is_rejected_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e12/junit/inner-20261115T141414-1794723254979954189-469112-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_tool_choice_none_unchanged_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e13/junit/inner-20261115T141739-1794723459471268440-474816-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_tool_parser_streaming_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e19/junit/inner-20261115T153402-1794728042632261413-641973-y_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_a_real_tool_call_is_parsed_not_leaked_as_text_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e20/junit/inner-20261115T153710-1794728230462088857-644911-unittests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_count_tokens_grows_with_the_prompt_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e21/junit/inner-20261115T154019-1794728419109577167-647670-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_messages_non_streaming_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e22/junit/inner-20261115T154317-1794728597093023693-650782-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_streaming_and_non_streaming_agree_on_shape_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e23/junit/inner-20261115T154611-1794728771533190388-654100-.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_tool_definitions_and_tool_result_round_trip_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e09/junit/inner-20261115T140244-1794722564944306624-1930528-py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_missing_function_returns_400_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e10/junit/inner-20261115T140721-1794722841856283976-1937156-nittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_with_prompt_token_ids_b64_is_rejected_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e11/junit/inner-20261115T141054-1794723054362401008-1953023-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_tool_choice_auto_unchanged_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e12/junit/inner-20261115T141514-1794723314371866471-1964165-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_tool_parser_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e19/junit/inner-20261115T155025-1794729025534803472-2190095-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_count_tokens_accounts_for_the_whole_prompt_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e20/junit/inner-20261115T155337-1794729217759585306-2198026-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_invalid_request_returns_an_anthropic_error_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e21/junit/inner-20261115T155647-1794729407518541744-2209422-ests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_messages_streaming_reaches_message_stop_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e22/junit/inner-20261115T155954-1794729594907548298-2217500-test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_tool_choice_any_is_rejected_with_a_clear_reason_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e09/junit/inner-20261115T135954-1794722394925994586-429191-py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_missing_function_returns_400_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e10/junit/inner-20261115T140321-1794722601720575694-442158-nittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_with_prompt_token_ids_b64_is_rejected_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e11/junit/inner-20261115T140648-1794722808317243191-450451-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_tool_choice_auto_unchanged_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e12/junit/inner-20261115T141010-1794723010708763507-460094-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_tool_parser_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e19/junit/inner-20261115T154300-1794728580975500784-650132-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_count_tokens_accounts_for_the_whole_prompt_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e20/junit/inner-20261115T154607-1794728767053771989-654053-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_invalid_request_returns_an_anthropic_error_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e21/junit/inner-20261115T154917-1794728957423923160-657471-ests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_messages_streaming_reaches_message_stop_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e22/junit/inner-20261115T155213-1794729133199436842-661287-test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_tool_choice_any_is_rejected_with_a_clear_reason_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e09/junit/inner-20261115T220744-1794751664700299029-1371271-ittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_forces_function_call_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e10/junit/inner-20261115T221117-1794751877165751483-1379169-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_streaming_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e11/junit/inner-20261115T221438-1794752078878947757-1386279-est_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_with_response_format_is_rejected_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e12/junit/inner-20261115T221759-1794752279026323181-1391074-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_tool_choice_none_unchanged_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e13/junit/inner-20261115T222132-1794752492328506828-1395458-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_tool_parser_streaming_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e19/junit/inner-20261115T233540-1794756940395095567-1473568-y_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_a_real_tool_call_is_parsed_not_leaked_as_text_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e20/junit/inner-20261115T233837-1794757117212917147-1476803-unittests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_count_tokens_grows_with_the_prompt_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e21/junit/inner-20261115T234130-1794757290163297674-1478697-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_messages_non_streaming_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e22/junit/inner-20261115T234432-1794757472208594662-1481884-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_streaming_and_non_streaming_agree_on_shape_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e23/junit/inner-20261115T234744-1794757664651062244-1483698-.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_tool_definitions_and_tool_result_round_trip_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e09/junit/inner-20261115T220406-1794751446533698808-2437163-py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_missing_function_returns_400_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e10/junit/inner-20261115T220723-1794751643855747822-2439301-nittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_named_tool_choice_with_prompt_token_ids_b64_is_rejected_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e11/junit/inner-20261115T221147-1794751907721144909-2441557-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_tool_choice_auto_unchanged_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e12/junit/inner-20261115T221509-1794752109697793747-2443391-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_tool_call.py_test_tool_parser_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e19/junit/inner-20261115T234814-1794757694307357907-2490731-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_count_tokens_accounts_for_the_whole_prompt_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e20/junit/inner-20261115T235119-1794757879168641706-2492608-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_invalid_request_returns_an_anthropic_error_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e21/junit/inner-20261115T235430-1794758070035636139-2494459-ests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_messages_streaming_reaches_message_stop_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e22/junit/inner-20261115T235745-1794758265029870859-2496354-test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_tool_choice_any_is_rejected_with_a_clear_reason_.xml
+    result: failed
+    chain_proof: incomplete
+  # NT-067 ok
+  - row: F-29
+    features:
+    - F-29
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_reasoning.py::test_thinking_token_budget
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-r2-nt-chain-a-s1/b200-1g-r2-nt-chain-a-s1/job-5973439_0-r0/node0/results/e06/junit/inner-20261115T215452-1794750892238692331-1388994-est_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_reasoning.py_test_thinking_token_budget_.xml
+    - b200-1g-r2-nt-chain-a-s2/b200-1g-r2-nt-chain-a-s2/job-5973444_0-r0/node0/results/e06/junit/inner-20261115T212755-1794749275168849833-1814227-est_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_reasoning.py_test_thinking_token_budget_.xml
+    - b200-1g-r2-nt-chain-a-s3/b200-1g-r2-nt-chain-a-s3/job-5973449_0-r0/node0/results/e06/junit/inner-20261115T212921-1794749361687032766-1217277-est_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_reasoning.py_test_thinking_token_budget_.xml
+    result: passed
+    chain_proof: ok
+  # T2 inner 6 failed, 42 passed
+  # T2: test_chat_streaming fails the same way without the chain (topology form): its
+  #   streamed logprobs differ from the non-streamed ones
+  - row: F-34+rest
+    features:
+    - F-34
+    cases:
+    - unittest/llmapi/apps/_test_openai_chat.py::test_chat_streaming
+    - unittest/llmapi/apps/_test_openai_chat.py::test_custom_role
+    - unittest/llmapi/apps/_test_openai_chat.py::test_multi_turn_dialogue
+    - unittest/llmapi/apps/_test_openai_chat.py::test_single_chat_session
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e03/junit/inner-20261115T132027-1794720027885540054-1462679-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_custom_role_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e04/junit/inner-20261115T133157-1794720717378653587-1527530-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_single_chat_session_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e03/junit/inner-20261115T132311-1794720191340968482-258830-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_custom_role_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e04/junit/inner-20261115T133404-1794720844901636675-319987-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_single_chat_session_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e02/junit/inner-20261115T131711-1794719831267735815-1797130-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_chat_streaming_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e03/junit/inner-20261115T132830-1794720510095358496-1843209-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_multi_turn_dialogue_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e02/junit/inner-20261115T131640-1794719800583017663-223607-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_chat_streaming_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e03/junit/inner-20261115T132752-1794720472551009961-284394-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_multi_turn_dialogue_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e03/junit/inner-20261115T212803-1794749283025892432-1207991-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_custom_role_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e04/junit/inner-20261115T214031-1794750031418736358-1281193-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_single_chat_session_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e02/junit/inner-20261115T212110-1794748870439756694-2259803-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_chat_streaming_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e03/junit/inner-20261115T213211-1794749531271288583-2311061-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_multi_turn_dialogue_.xml
+    result: failed
+    chain_proof: ok
+  # XD-702 inner 3 passed
+  - row: F-35
+    features:
+    - F-35
+    cases:
+    - unittest/llmapi/apps/_test_openengine_wt03_cache_salt.py::test_cache_salt_prevents_reuse_by_cached_tokens
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e24/junit/inner-20261115T160601-1794729961454394354-2229876-t_unittests_v2_unittest_llmapi_apps__test_openengine_wt03_cache_salt.py_test_cache_salt_prevents_reuse_by_cached_tokens_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e24/junit/inner-20261115T155815-1794729495062685503-664694-t_unittests_v2_unittest_llmapi_apps__test_openengine_wt03_cache_salt.py_test_cache_salt_prevents_reuse_by_cached_tokens_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e24/junit/inner-20261116T000350-1794758630405977010-2500315-t_unittests_v2_unittest_llmapi_apps__test_openengine_wt03_cache_salt.py_test_cache_salt_prevents_reuse_by_cached_tokens_.xml
+    result: passed
+    chain_proof: ok
+  # NT-068 ok, T2 inner 6 failed, 42 passed
+  # T2: test_chat_streaming fails the same way without the chain (topology form): its
+  #   streamed logprobs differ from the non-streamed ones
+  - row: F-38
+    features:
+    - F-38
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_ops.py::test_postproc_pool_on_gen_worker_frontend
+    - unittest/llmapi/apps/_test_openai_chat.py::test_chat_streaming
+    - unittest/llmapi/apps/_test_openai_chat.py::test_custom_role
+    - unittest/llmapi/apps/_test_openai_chat.py::test_multi_turn_dialogue
+    - unittest/llmapi/apps/_test_openai_chat.py::test_single_chat_session
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e03/junit/inner-20261115T132027-1794720027885540054-1462679-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_custom_role_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e04/junit/inner-20261115T133157-1794720717378653587-1527530-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_single_chat_session_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e03/junit/inner-20261115T132311-1794720191340968482-258830-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_custom_role_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e04/junit/inner-20261115T133404-1794720844901636675-319987-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_single_chat_session_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e02/junit/inner-20261115T131711-1794719831267735815-1797130-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_chat_streaming_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e03/junit/inner-20261115T132830-1794720510095358496-1843209-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_multi_turn_dialogue_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e02/junit/inner-20261115T131640-1794719800583017663-223607-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_chat_streaming_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e03/junit/inner-20261115T132752-1794720472551009961-284394-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_multi_turn_dialogue_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e03/junit/inner-20261115T212803-1794749283025892432-1207991-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_custom_role_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e04/junit/inner-20261115T214031-1794750031418736358-1281193-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_single_chat_session_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e02/junit/inner-20261115T212110-1794748870439756694-2259803-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_chat_streaming_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e03/junit/inner-20261115T213211-1794749531271288583-2311061-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_multi_turn_dialogue_.xml
+    - b200-1g-r2-nt-chain-b-s1/b200-1g-r2-nt-chain-b-s1/job-5973441_0-r0/node0/results/e06/junit/inner-20261115T215655-1794751015461874223-1393675-ests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_ops.py_test_postproc_pool_on_gen_worker_frontend_.xml
+    - b200-1g-r2-nt-chain-b-s2/b200-1g-r2-nt-chain-b-s2/job-5973446_0-r0/node0/results/e06/junit/inner-20261115T212733-1794749253487489759-1812503-ests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_ops.py_test_postproc_pool_on_gen_worker_frontend_.xml
+    - b200-1g-r2-nt-chain-b-s3/b200-1g-r2-nt-chain-b-s3/job-5973451_0-r0/node0/results/e06/junit/inner-20261115T212913-1794749353932912512-1217028-ests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_ops.py_test_postproc_pool_on_gen_worker_frontend_.xml
+    result: failed
+    chain_proof: ok
+  # T9 inner 30 failed, 60 passed, NT-070 ok
+  # T9: the two streaming terminate cases fail the same way without the chain (topology
+  #   form). The three non-streaming terminate cases pass their own assertions but fail the
+  #   chain proof: the post-processor ends the request on the context leg, the generation
+  #   leg gets no call, and one hand-off is left orphaned (follow-ups: the harness's
+  #   gen_zero_ok allows no orphan; the disaggregated server does not reclaim the hand-off)
+  - row: F-40
+    features:
+    - F-40
+    cases:
+    - unittest/llmapi/apps/_test_openai_post_processor.py::test_chat_non_streaming
+    - unittest/llmapi/apps/_test_openai_post_processor.py::test_chat_streaming
+    - unittest/llmapi/apps/_test_openai_post_processor.py::test_completions_detokenize_false_does_not_bypass_hook
+    - unittest/llmapi/apps/_test_openai_post_processor.py::test_completions_non_streaming
+    - unittest/llmapi/apps/_test_openai_post_processor.py::test_completions_streaming
+    - unittest/llmapi/apps/_test_openengine_disagg_ops.py::test_post_processor_hook_state_per_leg
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e14/junit/inner-20261115T141828-1794723508941645102-1662668-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_post_processor.py_test_chat_streaming_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e15/junit/inner-20261115T143432-1794724472954218169-1677409-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_post_processor.py_test_completions_non_streaming_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e14/junit/inner-20261115T142104-1794723664434900814-482445-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_post_processor.py_test_chat_streaming_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e15/junit/inner-20261115T143741-1794724661260314295-513039-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_post_processor.py_test_completions_non_streaming_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e13/junit/inner-20261115T141836-1794723516292182208-1974136-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_post_processor.py_test_chat_non_streaming_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e14/junit/inner-20261115T143532-1794724532350255207-2016183-unittests_v2_unittest_llmapi_apps__test_openai_post_processor.py_test_completions_detokenize_false_does_not_bypass_hook_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e15/junit/inner-20261115T145207-1794725527982946808-2055528-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_post_processor.py_test_completions_streaming_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e13/junit/inner-20261115T141331-1794723211269339170-467402-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_post_processor.py_test_chat_non_streaming_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e14/junit/inner-20261115T142949-1794724189957544725-499031-unittests_v2_unittest_llmapi_apps__test_openai_post_processor.py_test_completions_detokenize_false_does_not_bypass_hook_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e15/junit/inner-20261115T144543-1794725143610553150-526025-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_post_processor.py_test_completions_streaming_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e14/junit/inner-20261115T222459-1794752699858540006-1400354-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_post_processor.py_test_chat_streaming_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e15/junit/inner-20261115T224123-1794753683950540050-1422467-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_post_processor.py_test_completions_non_streaming_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e13/junit/inner-20261115T221837-1794752317347684518-2445302-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_post_processor.py_test_chat_non_streaming_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e14/junit/inner-20261115T223501-1794753301533989338-2454041-unittests_v2_unittest_llmapi_apps__test_openai_post_processor.py_test_completions_detokenize_false_does_not_bypass_hook_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e15/junit/inner-20261115T225105-1794754265682535960-2465953-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_post_processor.py_test_completions_streaming_.xml
+    - b200-1g-r2-nt-chain-a-s1/b200-1g-r2-nt-chain-a-s1/job-5973439_0-r0/node0/results/e07/junit/inner-20261115T220235-1794751355199547571-1401710-ittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_ops.py_test_post_processor_hook_state_per_leg_.xml
+    - b200-1g-r2-nt-chain-a-s2/b200-1g-r2-nt-chain-a-s2/job-5973444_0-r0/node0/results/e07/junit/inner-20261115T213147-1794749507548581549-1832939-ittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_ops.py_test_post_processor_hook_state_per_leg_.xml
+    - b200-1g-r2-nt-chain-a-s3/b200-1g-r2-nt-chain-a-s3/job-5973449_0-r0/node0/results/e07/junit/inner-20261115T213316-1794749596983073786-1239805-ittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_ops.py_test_post_processor_hook_state_per_leg_.xml
+    result: failed
+    chain_proof: incomplete
+  # NT-071 ok
+  - row: F-42a
+    features:
+    - F-42a
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_metrics.py::test_metrics_snapshot_direct
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-r2-nt-chain-b-s1/b200-1g-r2-nt-chain-b-s1/job-5973441_0-r0/node0/results/e07/junit/inner-20261115T220434-1794751474358760557-1405249-est_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_metrics.py_test_metrics_snapshot_direct_.xml
+    - b200-1g-r2-nt-chain-b-s2/b200-1g-r2-nt-chain-b-s2/job-5973446_0-r0/node0/results/e07/junit/inner-20261115T213042-1794749442883317301-1828371-est_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_metrics.py_test_metrics_snapshot_direct_.xml
+    - b200-1g-r2-nt-chain-b-s3/b200-1g-r2-nt-chain-b-s3/job-5973451_0-r0/node0/results/e07/junit/inner-20261115T213254-1794749574487229005-1234982-est_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_metrics.py_test_metrics_snapshot_direct_.xml
+    result: passed
+    chain_proof: ok
+  # NT-072 ok
+  - row: F-42b
+    features:
+    - F-42b
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_metrics.py::test_prometheus_direct
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-r2-nt-chain-a-s1/b200-1g-r2-nt-chain-a-s1/job-5973439_0-r0/node0/results/e08/junit/inner-20261115T221013-1794751813098670935-1413615-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_metrics.py_test_prometheus_direct_.xml
+    - b200-1g-r2-nt-chain-a-s2/b200-1g-r2-nt-chain-a-s2/job-5973444_0-r0/node0/results/e08/junit/inner-20261115T213438-1794749678227888664-1847202-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_metrics.py_test_prometheus_direct_.xml
+    - b200-1g-r2-nt-chain-a-s3/b200-1g-r2-nt-chain-a-s3/job-5973449_0-r0/node0/results/e08/junit/inner-20261115T213617-1794749777872848853-1258194-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_metrics.py_test_prometheus_direct_.xml
+    result: passed
+    chain_proof: ok
+  # NT-074 ok
+  - row: F-44a
+    features:
+    - F-44a
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_scheduling.py::test_priority_reaches_both_engines
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-r2-nt-chain-b-s1/b200-1g-r2-nt-chain-b-s1/job-5973441_0-r0/node0/results/e08/junit/inner-20261115T221157-1794751917388013234-1418168-ests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_scheduling.py_test_priority_reaches_both_engines_.xml
+    - b200-1g-r2-nt-chain-b-s2/b200-1g-r2-nt-chain-b-s2/job-5973446_0-r0/node0/results/e08/junit/inner-20261115T213412-1794749652742553318-1844767-ests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_scheduling.py_test_priority_reaches_both_engines_.xml
+    - b200-1g-r2-nt-chain-b-s3/b200-1g-r2-nt-chain-b-s3/job-5973451_0-r0/node0/results/e08/junit/inner-20261115T213624-1794749784412412523-1258330-ests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_scheduling.py_test_priority_reaches_both_engines_.xml
+    result: passed
+    chain_proof: ok
+  # NT-075 ok
+  - row: F-44b
+    features:
+    - F-44b
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_scheduling.py::test_agent_hierarchy_reaches_both_engines
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-r2-nt-chain-a-s1/b200-1g-r2-nt-chain-a-s1/job-5973439_0-r0/node0/results/e09/junit/inner-20261115T221752-1794752272153414309-1428388-_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_scheduling.py_test_agent_hierarchy_reaches_both_engines_.xml
+    - b200-1g-r2-nt-chain-a-s2/b200-1g-r2-nt-chain-a-s2/job-5973444_0-r0/node0/results/e09/junit/inner-20261115T213755-1794749875772131034-1862953-_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_scheduling.py_test_agent_hierarchy_reaches_both_engines_.xml
+    - b200-1g-r2-nt-chain-a-s3/b200-1g-r2-nt-chain-a-s3/job-5973449_0-r0/node0/results/e09/junit/inner-20261115T213923-1794749963937642379-1274078-_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_scheduling.py_test_agent_hierarchy_reaches_both_engines_.xml
+    result: passed
+    chain_proof: ok
+  # NT-076 ok
+  - row: F-44c
+    features:
+    - F-44c
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_scheduling.py::test_conversation_id_reaches_both_engines
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-r2-nt-chain-b-s1/b200-1g-r2-nt-chain-b-s1/job-5973441_0-r0/node0/results/e09/junit/inner-20261115T221938-1794752378507562844-1430739-_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_scheduling.py_test_conversation_id_reaches_both_engines_.xml
+    - b200-1g-r2-nt-chain-b-s2/b200-1g-r2-nt-chain-b-s2/job-5973446_0-r0/node0/results/e09/junit/inner-20261115T213710-1794749830868519846-1859716-_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_scheduling.py_test_conversation_id_reaches_both_engines_.xml
+    - b200-1g-r2-nt-chain-b-s3/b200-1g-r2-nt-chain-b-s3/job-5973451_0-r0/node0/results/e09/junit/inner-20261115T213952-1794749992703493337-1276468-_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_scheduling.py_test_conversation_id_reaches_both_engines_.xml
+    result: passed
+    chain_proof: ok
+  # NT-077 ok
+  - row: F-45
+    features:
+    - F-45
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_tracing.py::test_tracing_spans
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-r2-nt-chain-a-s1/b200-1g-r2-nt-chain-a-s1/job-5973439_0-r0/node0/results/e10/junit/inner-20261115T222139-1794752499129982192-1433389-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_tracing.py_test_tracing_spans_.xml
+    - b200-1g-r2-nt-chain-a-s2/b200-1g-r2-nt-chain-a-s2/job-5973444_0-r0/node0/results/e10/junit/inner-20261115T214017-1794750017535631119-1871075-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_tracing.py_test_tracing_spans_.xml
+    - b200-1g-r2-nt-chain-a-s3/b200-1g-r2-nt-chain-a-s3/job-5973449_0-r0/node0/results/e10/junit/inner-20261115T214145-1794750105629950019-1287345-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_tracing.py_test_tracing_spans_.xml
+    result: passed
+    chain_proof: ok
+  # T21 inner 3 failed, T22 inner 3 failed
+  # T21: fails without the chain as well (topology form): the first LoRA request fails
+  #   on the generation worker (HTTP 400 without the chain, 500 on the chain)
+  # T22: fails without the chain as well (topology form), as T21
+  - row: F-46
+    features:
+    - F-46
+    cases:
+    - unittest/llmapi/apps/_test_openai_lora.py
+    - unittest/llmapi/apps/_test_trtllm_serve_lora.py::test_trtllm_serve_lora_completion
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e16/junit/inner-20261115T145049-1794725449084910715-1731640-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_lora.py_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e16/junit/inner-20261115T145556-1794725756679024912-568428-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_lora.py_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e16/junit/inner-20261115T150817-1794726497468639252-2099378-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_trtllm_serve_lora.py_test_trtllm_serve_lora_completion_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e16/junit/inner-20261115T150345-1794726225778119548-591135-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_trtllm_serve_lora.py_test_trtllm_serve_lora_completion_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e16/junit/inner-20261115T225730-1794754650630349194-1446243-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_lora.py_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e16/junit/inner-20261115T230725-1794755245518555216-2474519-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_trtllm_serve_lora.py_test_trtllm_serve_lora_completion_.xml
+    result: failed
+    chain_proof: ok
+  # NT-078 see below
+  # NT-078: [resource_governor] the worker front ends refuse to start (startup_rejected);
+  #   no chain serves, so the chain proof reads incomplete. [sleep_mode] skipped on the
+  #   chain: the harness has no side to put --enable_sleep_mode on. In-process, sleep mode
+  #   runs with the UCX cache transceiver: with NIXL, registering the KV cache memory of
+  #   sleep mode fails and both workers exit at startup (product defect candidate); with UCX
+  #   both parameters passed in each of three in-process runs
+  - row: F-47a
+    features:
+    - F-47a
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_unsupported_ops.py::test_ops_options_startup_rejected
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-r2-nt-chain-b-s1/b200-1g-r2-nt-chain-b-s1/job-5973441_0-r0/node0/results/e10/junit/inner-20261115T222653-1794752813662874607-1437717-.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_unsupported_ops.py_test_ops_options_startup_rejected_.xml
+    - b200-1g-r2-nt-chain-b-s2/b200-1g-r2-nt-chain-b-s2/job-5973446_0-r0/node0/results/e10/junit/inner-20261115T214002-1794750002464993814-1870125-.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_unsupported_ops.py_test_ops_options_startup_rejected_.xml
+    - b200-1g-r2-nt-chain-b-s3/b200-1g-r2-nt-chain-b-s3/job-5973451_0-r0/node0/results/e10/junit/inner-20261115T214309-1794750189141037891-1290761-.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_unsupported_ops.py_test_ops_options_startup_rejected_.xml
+    result: passed
+    chain_proof: incomplete
+  # NT-078 see below
+  # NT-078: [resource_governor] the worker front ends refuse to start (startup_rejected);
+  #   no chain serves, so the chain proof reads incomplete. [sleep_mode] skipped on the
+  #   chain: the harness has no side to put --enable_sleep_mode on. In-process, sleep mode
+  #   runs with the UCX cache transceiver: with NIXL, registering the KV cache memory of
+  #   sleep mode fails and both workers exit at startup (product defect candidate); with UCX
+  #   both parameters passed in each of three in-process runs
+  - row: F-47b
+    features:
+    - F-47b
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_unsupported_ops.py::test_ops_options_startup_rejected
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-r2-nt-chain-b-s1/b200-1g-r2-nt-chain-b-s1/job-5973441_0-r0/node0/results/e10/junit/inner-20261115T222653-1794752813662874607-1437717-.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_unsupported_ops.py_test_ops_options_startup_rejected_.xml
+    - b200-1g-r2-nt-chain-b-s2/b200-1g-r2-nt-chain-b-s2/job-5973446_0-r0/node0/results/e10/junit/inner-20261115T214002-1794750002464993814-1870125-.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_unsupported_ops.py_test_ops_options_startup_rejected_.xml
+    - b200-1g-r2-nt-chain-b-s3/b200-1g-r2-nt-chain-b-s3/job-5973451_0-r0/node0/results/e10/junit/inner-20261115T214309-1794750189141037891-1290761-.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_unsupported_ops.py_test_ops_options_startup_rejected_.xml
+    result: passed
+    chain_proof: incomplete
+  # NT-079 ok
+  - row: F-47c
+    features:
+    - F-47c
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_unsupported_ops.py::test_profile_endpoints_refused_direct
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-r2-nt-chain-a-s1/b200-1g-r2-nt-chain-a-s1/job-5973439_0-r0/node0/results/e11/junit/inner-20261115T222928-1794752968576749347-1440696-test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_unsupported_ops.py_test_profile_endpoints_refused_direct_.xml
+    - b200-1g-r2-nt-chain-a-s2/b200-1g-r2-nt-chain-a-s2/job-5973444_0-r0/node0/results/e11/junit/inner-20261115T214345-1794750225944071512-1879967-test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_unsupported_ops.py_test_profile_endpoints_refused_direct_.xml
+    - b200-1g-r2-nt-chain-a-s3/b200-1g-r2-nt-chain-a-s3/job-5973449_0-r0/node0/results/e11/junit/inner-20261115T214508-1794750308845021673-1297523-test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_unsupported_ops.py_test_profile_endpoints_refused_direct_.xml
+    result: passed
+    chain_proof: ok
+  # T30 inner 27 passed
+  - row: DG-05
+    features:
+    - DG-05
+    cases:
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_a_real_tool_call_is_parsed_not_leaked_as_text
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_count_tokens_accounts_for_the_whole_prompt
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_count_tokens_grows_with_the_prompt
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_invalid_request_returns_an_anthropic_error
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_messages_non_streaming
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_messages_streaming_reaches_message_stop
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_streaming_and_non_streaming_agree_on_shape
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_tool_choice_any_is_rejected_with_a_clear_reason
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_tool_definitions_and_tool_result_round_trip
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e19/junit/inner-20261115T153130-1794727890641180291-1895808-y_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_a_real_tool_call_is_parsed_not_leaked_as_text_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e20/junit/inner-20261115T153446-1794728086045408174-1898697-unittests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_count_tokens_grows_with_the_prompt_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e21/junit/inner-20261115T153745-1794728265763320951-1901856-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_messages_non_streaming_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e22/junit/inner-20261115T154059-1794728459942354325-1909378-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_streaming_and_non_streaming_agree_on_shape_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e23/junit/inner-20261115T154410-1794728650323827142-1916455-.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_tool_definitions_and_tool_result_round_trip_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e19/junit/inner-20261115T153402-1794728042632261413-641973-y_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_a_real_tool_call_is_parsed_not_leaked_as_text_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e20/junit/inner-20261115T153710-1794728230462088857-644911-unittests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_count_tokens_grows_with_the_prompt_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e21/junit/inner-20261115T154019-1794728419109577167-647670-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_messages_non_streaming_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e22/junit/inner-20261115T154317-1794728597093023693-650782-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_streaming_and_non_streaming_agree_on_shape_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e23/junit/inner-20261115T154611-1794728771533190388-654100-.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_tool_definitions_and_tool_result_round_trip_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e19/junit/inner-20261115T155025-1794729025534803472-2190095-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_count_tokens_accounts_for_the_whole_prompt_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e20/junit/inner-20261115T155337-1794729217759585306-2198026-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_invalid_request_returns_an_anthropic_error_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e21/junit/inner-20261115T155647-1794729407518541744-2209422-ests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_messages_streaming_reaches_message_stop_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e22/junit/inner-20261115T155954-1794729594907548298-2217500-test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_tool_choice_any_is_rejected_with_a_clear_reason_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e19/junit/inner-20261115T154300-1794728580975500784-650132-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_count_tokens_accounts_for_the_whole_prompt_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e20/junit/inner-20261115T154607-1794728767053771989-654053-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_invalid_request_returns_an_anthropic_error_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e21/junit/inner-20261115T154917-1794728957423923160-657471-ests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_messages_streaming_reaches_message_stop_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e22/junit/inner-20261115T155213-1794729133199436842-661287-test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_tool_choice_any_is_rejected_with_a_clear_reason_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e19/junit/inner-20261115T233540-1794756940395095567-1473568-y_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_a_real_tool_call_is_parsed_not_leaked_as_text_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e20/junit/inner-20261115T233837-1794757117212917147-1476803-unittests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_count_tokens_grows_with_the_prompt_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e21/junit/inner-20261115T234130-1794757290163297674-1478697-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_messages_non_streaming_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e22/junit/inner-20261115T234432-1794757472208594662-1481884-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_streaming_and_non_streaming_agree_on_shape_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e23/junit/inner-20261115T234744-1794757664651062244-1483698-.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_tool_definitions_and_tool_result_round_trip_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e19/junit/inner-20261115T234814-1794757694307357907-2490731-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_count_tokens_accounts_for_the_whole_prompt_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e20/junit/inner-20261115T235119-1794757879168641706-2492608-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_invalid_request_returns_an_anthropic_error_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e21/junit/inner-20261115T235430-1794758070035636139-2494459-ests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_messages_streaming_reaches_message_stop_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e22/junit/inner-20261115T235745-1794758265029870859-2496354-test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_tool_choice_any_is_rejected_with_a_clear_reason_.xml
+    result: passed
+    chain_proof: ok
+  # T6 inner 1 in error, 17 passed
+  # T6: the with_beam_search parameters expect the worker front ends to refuse to start
+  #   (expectations/WT-11.py: the chain has no beam search), so they carry no chain proof.
+  #   test_version[with_beam_search] was in error in one run: the expected refusal
+  #   happened, then the harness found engine processes that survived SIGKILL
+  #   (intermittent); it passed in the other runs
+  - row: DG-07
+    features:
+    - DG-07
+    cases:
+    - unittest/llmapi/apps/_test_openai_misc.py::test_health
+    - unittest/llmapi/apps/_test_openai_misc.py::test_model
+    - unittest/llmapi/apps/_test_openai_misc.py::test_version
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e07/junit/inner-20261115T135111-1794721871097778401-1565677-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_model_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e07/junit/inner-20261115T135424-1794722064145767709-405730-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_model_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e06/junit/inner-20261115T134824-1794721704483042114-1903180-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_health_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e07/junit/inner-20261115T135316-1794721996002805740-1913058-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_version_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e06/junit/inner-20261115T134548-1794721548738356626-371872-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_health_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e07/junit/inner-20261115T135039-1794721839212314331-390652-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_version_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e07/junit/inner-20261115T215812-1794751092566277814-1342033-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_model_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e06/junit/inner-20261115T214950-1794750590085089004-2385598-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_health_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e07/junit/inner-20261115T215428-1794750868174933750-2395911-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_version_.xml
+    result: failed
+    chain_proof: incomplete
+  # T6 inner 1 in error, 17 passed
+  # T6: the with_beam_search parameters expect the worker front ends to refuse to start
+  #   (expectations/WT-11.py: the chain has no beam search), so they carry no chain proof.
+  #   test_version[with_beam_search] was in error in one run: the expected refusal
+  #   happened, then the harness found engine processes that survived SIGKILL
+  #   (intermittent); it passed in the other runs
+  - row: DG-09
+    features:
+    - DG-09
+    cases:
+    - unittest/llmapi/apps/_test_openai_misc.py::test_health
+    - unittest/llmapi/apps/_test_openai_misc.py::test_model
+    - unittest/llmapi/apps/_test_openai_misc.py::test_version
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e07/junit/inner-20261115T135111-1794721871097778401-1565677-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_model_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e07/junit/inner-20261115T135424-1794722064145767709-405730-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_model_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e06/junit/inner-20261115T134824-1794721704483042114-1903180-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_health_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e07/junit/inner-20261115T135316-1794721996002805740-1913058-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_version_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e06/junit/inner-20261115T134548-1794721548738356626-371872-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_health_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e07/junit/inner-20261115T135039-1794721839212314331-390652-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_version_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e07/junit/inner-20261115T215812-1794751092566277814-1342033-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_model_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e06/junit/inner-20261115T214950-1794750590085089004-2385598-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_health_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e07/junit/inner-20261115T215428-1794750868174933750-2395911-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_version_.xml
+    result: failed
+    chain_proof: incomplete
+  # NT-002 cpu
+  - row: DG-11
+    features:
+    - DG-11
+    cases:
+    - unittest/serve/openengine_poc/wt50/test_poc3_wt50_worker_registration.py::test_worker_frontend_registers_over_http_storage
+    commit: 5694f8f03d7ca732aabfb4487b7d7d5125d28e4a
+    junit:
+    - cpu-r7-wt57.xml
+    result: passed
+    chain_proof: incomplete
+  # T2 inner 6 failed, 42 passed
+  # T2: test_chat_streaming fails the same way without the chain (topology form): its
+  #   streamed logprobs differ from the non-streamed ones
+  - row: DG-13+rest
+    features:
+    - DG-13
+    cases:
+    - unittest/llmapi/apps/_test_openai_chat.py::test_chat_streaming
+    - unittest/llmapi/apps/_test_openai_chat.py::test_custom_role
+    - unittest/llmapi/apps/_test_openai_chat.py::test_multi_turn_dialogue
+    - unittest/llmapi/apps/_test_openai_chat.py::test_single_chat_session
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e03/junit/inner-20261115T132027-1794720027885540054-1462679-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_custom_role_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e04/junit/inner-20261115T133157-1794720717378653587-1527530-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_single_chat_session_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e03/junit/inner-20261115T132311-1794720191340968482-258830-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_custom_role_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e04/junit/inner-20261115T133404-1794720844901636675-319987-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_single_chat_session_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e02/junit/inner-20261115T131711-1794719831267735815-1797130-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_chat_streaming_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e03/junit/inner-20261115T132830-1794720510095358496-1843209-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_multi_turn_dialogue_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e02/junit/inner-20261115T131640-1794719800583017663-223607-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_chat_streaming_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e03/junit/inner-20261115T132752-1794720472551009961-284394-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_multi_turn_dialogue_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e03/junit/inner-20261115T212803-1794749283025892432-1207991-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_custom_role_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e04/junit/inner-20261115T214031-1794750031418736358-1281193-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_single_chat_session_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e02/junit/inner-20261115T212110-1794748870439756694-2259803-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_chat_streaming_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e03/junit/inner-20261115T213211-1794749531271288583-2311061-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_chat.py_test_multi_turn_dialogue_.xml
+    result: failed
+    chain_proof: ok
+  # T29 inner 48 passed
+  - row: DG-15
+    features:
+    - DG-15
+    cases:
+    - unittest/llmapi/apps/_test_openai_responses.py::test_chat
+    - unittest/llmapi/apps/_test_openai_responses.py::test_reasoning
+    - unittest/llmapi/apps/_test_openai_responses.py::test_reasoning_effort
+    - unittest/llmapi/apps/_test_openai_responses.py::test_streaming
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e17/junit/inner-20261115T150022-1794726022040424716-1757888-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_chat_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e18/junit/inner-20261115T151619-1794726979692178387-1849564-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_reasoning_effort_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e17/junit/inner-20261115T150522-1794726322688349296-594958-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_chat_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e18/junit/inner-20261115T151929-1794727169120452168-628000-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_reasoning_effort_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e17/junit/inner-20261115T151900-1794727140987642236-2117347-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_reasoning_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e18/junit/inner-20261115T153530-1794728130848962944-2144610-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_streaming_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e17/junit/inner-20261115T151309-1794726789863901123-612057-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_reasoning_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e18/junit/inner-20261115T152758-1794727678418223231-637369-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_streaming_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e17/junit/inner-20261115T230653-1794755213584954168-1458088-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_chat_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e18/junit/inner-20261115T232107-1794756067409962473-1467803-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_reasoning_effort_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e17/junit/inner-20261115T231700-1794755820288612718-2477102-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_reasoning_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e18/junit/inner-20261115T233251-1794756771126424324-2484475-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_responses.py_test_streaming_.xml
+    result: passed
+    chain_proof: ok
+  # NT-082 ok
+  - row: DG-20
+    features:
+    - DG-20
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_routing.py::test_conversation_id_from_body_and_headers_sticks_to_one_ctx_worker
+    commit: 5694f8f03d7ca732aabfb4487b7d7d5125d28e4a
+    junit:
+    - b200-1g-r3-chain-s1/b200-1g-r3-chain-s1/job-5977744_0-r0/node0/results/e00/junit/inner-20261116T010629-1794762389691254502-1607876-test_llmapi_apps__test_openengine_disagg_routing.py_test_conversation_id_from_body_and_headers_sticks_to_one_ctx_worker_.xml
+    - b200-1g-r3-chain-s2/b200-1g-r3-chain-s2/job-5977746_0-r0/node0/results/e00/junit/inner-20261116T010628-1794762388609240703-1607857-test_llmapi_apps__test_openengine_disagg_routing.py_test_conversation_id_from_body_and_headers_sticks_to_one_ctx_worker_.xml
+    - b200-1g-r3-chain-s3/b200-1g-r3-chain-s3/job-5977748_0-r0/node0/results/e00/junit/inner-20261116T010528-1794762328779196197-2579276-test_llmapi_apps__test_openengine_disagg_routing.py_test_conversation_id_from_body_and_headers_sticks_to_one_ctx_worker_.xml
+    result: passed
+    chain_proof: ok
+  # NT-082 ok
+  - row: DG-21
+    features:
+    - DG-21
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_routing.py::test_conversation_id_from_body_and_headers_sticks_to_one_ctx_worker
+    commit: 5694f8f03d7ca732aabfb4487b7d7d5125d28e4a
+    junit:
+    - b200-1g-r3-chain-s1/b200-1g-r3-chain-s1/job-5977744_0-r0/node0/results/e00/junit/inner-20261116T010629-1794762389691254502-1607876-test_llmapi_apps__test_openengine_disagg_routing.py_test_conversation_id_from_body_and_headers_sticks_to_one_ctx_worker_.xml
+    - b200-1g-r3-chain-s2/b200-1g-r3-chain-s2/job-5977746_0-r0/node0/results/e00/junit/inner-20261116T010628-1794762388609240703-1607857-test_llmapi_apps__test_openengine_disagg_routing.py_test_conversation_id_from_body_and_headers_sticks_to_one_ctx_worker_.xml
+    - b200-1g-r3-chain-s3/b200-1g-r3-chain-s3/job-5977748_0-r0/node0/results/e00/junit/inner-20261116T010528-1794762328779196197-2579276-test_llmapi_apps__test_openengine_disagg_routing.py_test_conversation_id_from_body_and_headers_sticks_to_one_ctx_worker_.xml
+    result: passed
+    chain_proof: ok
+  # NT-088 ok
+  - row: DG-34+rest
+    features:
+    - DG-34
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_internal_auth.py::test_gen_worker_frontend_rejects_a_forged_generation_only_request
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-r2-nt-chain-a-s1/b200-1g-r2-nt-chain-a-s1/job-5973439_0-r0/node0/results/e12/junit/inner-20261115T223651-1794753411420881559-1444536-_llmapi_apps__test_openengine_disagg_internal_auth.py_test_gen_worker_frontend_rejects_a_forged_generation_only_request_.xml
+    - b200-1g-r2-nt-chain-a-s2/b200-1g-r2-nt-chain-a-s2/job-5973444_0-r0/node0/results/e12/junit/inner-20261115T214657-1794750417872754749-1888082-_llmapi_apps__test_openengine_disagg_internal_auth.py_test_gen_worker_frontend_rejects_a_forged_generation_only_request_.xml
+    - b200-1g-r2-nt-chain-a-s3/b200-1g-r2-nt-chain-a-s3/job-5973449_0-r0/node0/results/e12/junit/inner-20261115T214822-1794750502951876236-1307705-_llmapi_apps__test_openengine_disagg_internal_auth.py_test_gen_worker_frontend_rejects_a_forged_generation_only_request_.xml
+    result: passed
+    chain_proof: ok
+  # NT-088 ok
+  - row: DG-37+rest
+    features:
+    - DG-37
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_internal_auth.py::test_gen_worker_frontend_rejects_a_forged_generation_only_request
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-r2-nt-chain-a-s1/b200-1g-r2-nt-chain-a-s1/job-5973439_0-r0/node0/results/e12/junit/inner-20261115T223651-1794753411420881559-1444536-_llmapi_apps__test_openengine_disagg_internal_auth.py_test_gen_worker_frontend_rejects_a_forged_generation_only_request_.xml
+    - b200-1g-r2-nt-chain-a-s2/b200-1g-r2-nt-chain-a-s2/job-5973444_0-r0/node0/results/e12/junit/inner-20261115T214657-1794750417872754749-1888082-_llmapi_apps__test_openengine_disagg_internal_auth.py_test_gen_worker_frontend_rejects_a_forged_generation_only_request_.xml
+    - b200-1g-r2-nt-chain-a-s3/b200-1g-r2-nt-chain-a-s3/job-5973449_0-r0/node0/results/e12/junit/inner-20261115T214822-1794750502951876236-1307705-_llmapi_apps__test_openengine_disagg_internal_auth.py_test_gen_worker_frontend_rejects_a_forged_generation_only_request_.xml
+    result: passed
+    chain_proof: ok
+  # NT-093 ok, NT-010 cpu
+  - row: DG-41
+    features:
+    - DG-41
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_errors.py::test_worker_frontend_4xx_passes_through_the_orchestrator
+    - unittest/serve/openengine_poc/wt57/test_poc3_wt57_orchestrator_errors.py::test_worker_frontend_error_passes_through_the_orchestrator
+    commit: 5694f8f03d7ca732aabfb4487b7d7d5125d28e4a
+    junit:
+    - b200-1g-r2-nt-chain-b-s1/b200-1g-r2-nt-chain-b-s1/job-5973441_0-r0/node0/results/e12/junit/inner-20261115T224018-1794753618505928124-1446976-ests_v2_unittest_llmapi_apps__test_openengine_disagg_errors.py_test_worker_frontend_4xx_passes_through_the_orchestrator_.xml
+    - b200-1g-r2-nt-chain-b-s2/b200-1g-r2-nt-chain-b-s2/job-5973446_0-r0/node0/results/e12/junit/inner-20261115T214618-1794750378940296395-1886119-ests_v2_unittest_llmapi_apps__test_openengine_disagg_errors.py_test_worker_frontend_4xx_passes_through_the_orchestrator_.xml
+    - b200-1g-r2-nt-chain-b-s3/b200-1g-r2-nt-chain-b-s3/job-5973451_0-r0/node0/results/e12/junit/inner-20261115T214954-1794750594862749582-1312933-ests_v2_unittest_llmapi_apps__test_openengine_disagg_errors.py_test_worker_frontend_4xx_passes_through_the_orchestrator_.xml
+    - cpu-r7-wt57.xml
+    result: passed
+    chain_proof: incomplete
+  # T30 inner 27 passed, NT-094 ok
+  - row: DG-42
+    features:
+    - DG-42
+    cases:
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_a_real_tool_call_is_parsed_not_leaked_as_text
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_count_tokens_accounts_for_the_whole_prompt
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_count_tokens_grows_with_the_prompt
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_invalid_request_returns_an_anthropic_error
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_messages_non_streaming
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_messages_streaming_reaches_message_stop
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_streaming_and_non_streaming_agree_on_shape
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_tool_choice_any_is_rejected_with_a_clear_reason
+    - unittest/llmapi/apps/_test_anthropic_messages.py::test_tool_definitions_and_tool_result_round_trip
+    - unittest/llmapi/apps/_test_openengine_disagg_errors.py::test_orchestrator_rejects_an_invalid_body_before_any_worker
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e19/junit/inner-20261115T153130-1794727890641180291-1895808-y_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_a_real_tool_call_is_parsed_not_leaked_as_text_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e20/junit/inner-20261115T153446-1794728086045408174-1898697-unittests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_count_tokens_grows_with_the_prompt_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e21/junit/inner-20261115T153745-1794728265763320951-1901856-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_messages_non_streaming_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e22/junit/inner-20261115T154059-1794728459942354325-1909378-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_streaming_and_non_streaming_agree_on_shape_.xml
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e23/junit/inner-20261115T154410-1794728650323827142-1916455-.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_tool_definitions_and_tool_result_round_trip_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e19/junit/inner-20261115T153402-1794728042632261413-641973-y_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_a_real_tool_call_is_parsed_not_leaked_as_text_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e20/junit/inner-20261115T153710-1794728230462088857-644911-unittests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_count_tokens_grows_with_the_prompt_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e21/junit/inner-20261115T154019-1794728419109577167-647670-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_messages_non_streaming_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e22/junit/inner-20261115T154317-1794728597093023693-650782-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_streaming_and_non_streaming_agree_on_shape_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e23/junit/inner-20261115T154611-1794728771533190388-654100-.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_tool_definitions_and_tool_result_round_trip_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e19/junit/inner-20261115T155025-1794729025534803472-2190095-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_count_tokens_accounts_for_the_whole_prompt_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e20/junit/inner-20261115T155337-1794729217759585306-2198026-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_invalid_request_returns_an_anthropic_error_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e21/junit/inner-20261115T155647-1794729407518541744-2209422-ests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_messages_streaming_reaches_message_stop_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e22/junit/inner-20261115T155954-1794729594907548298-2217500-test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_tool_choice_any_is_rejected_with_a_clear_reason_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e19/junit/inner-20261115T154300-1794728580975500784-650132-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_count_tokens_accounts_for_the_whole_prompt_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e20/junit/inner-20261115T154607-1794728767053771989-654053-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_invalid_request_returns_an_anthropic_error_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e21/junit/inner-20261115T154917-1794728957423923160-657471-ests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_messages_streaming_reaches_message_stop_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e22/junit/inner-20261115T155213-1794729133199436842-661287-test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_tool_choice_any_is_rejected_with_a_clear_reason_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e19/junit/inner-20261115T233540-1794756940395095567-1473568-y_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_a_real_tool_call_is_parsed_not_leaked_as_text_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e20/junit/inner-20261115T233837-1794757117212917147-1476803-unittests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_count_tokens_grows_with_the_prompt_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e21/junit/inner-20261115T234130-1794757290163297674-1478697-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_messages_non_streaming_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e22/junit/inner-20261115T234432-1794757472208594662-1481884-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_streaming_and_non_streaming_agree_on_shape_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e23/junit/inner-20261115T234744-1794757664651062244-1483698-.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_tool_definitions_and_tool_result_round_trip_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e19/junit/inner-20261115T234814-1794757694307357907-2490731-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_count_tokens_accounts_for_the_whole_prompt_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e20/junit/inner-20261115T235119-1794757879168641706-2492608-s.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_invalid_request_returns_an_anthropic_error_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e21/junit/inner-20261115T235430-1794758070035636139-2494459-ests.py_test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_messages_streaming_reaches_message_stop_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e22/junit/inner-20261115T235745-1794758265029870859-2496354-test_unittests_v2_unittest_llmapi_apps__test_anthropic_messages.py_test_tool_choice_any_is_rejected_with_a_clear_reason_.xml
+    - b200-1g-r2-nt-chain-a-s1/b200-1g-r2-nt-chain-a-s1/job-5973439_0-r0/node0/results/e13/junit/inner-20261115T224425-1794753865073079009-1449892-s_v2_unittest_llmapi_apps__test_openengine_disagg_errors.py_test_orchestrator_rejects_an_invalid_body_before_any_worker_.xml
+    - b200-1g-r2-nt-chain-a-s2/b200-1g-r2-nt-chain-a-s2/job-5973444_0-r0/node0/results/e13/junit/inner-20261115T215020-1794750620518487064-1896543-s_v2_unittest_llmapi_apps__test_openengine_disagg_errors.py_test_orchestrator_rejects_an_invalid_body_before_any_worker_.xml
+    - b200-1g-r2-nt-chain-a-s3/b200-1g-r2-nt-chain-a-s3/job-5973449_0-r0/node0/results/e13/junit/inner-20261115T215152-1794750712760569985-1321470-s_v2_unittest_llmapi_apps__test_openengine_disagg_errors.py_test_orchestrator_rejects_an_invalid_body_before_any_worker_.xml
+    result: passed
+    chain_proof: ok
+  # NT-012 cpu, NT-095 ok
+  - row: DG-45
+    features:
+    - DG-45
+    cases:
+    - unittest/serve/openengine_poc/wt57/test_poc3_wt57_orchestrator_retry.py::test_ctx_retry_sends_a_new_disagg_request_id_to_the_engine
+    - unittest/llmapi/apps/_test_openengine_disagg_retry.py::test_request_survives_a_lost_ctx_worker_with_a_new_id
+    commit: 5694f8f03d7ca732aabfb4487b7d7d5125d28e4a
+    junit:
+    - b200-1g-r3-chain-s1/b200-1g-r3-chain-s1/job-5977744_0-r0/node0/results/e01/junit/inner-20261116T011921-1794763161575726121-1653462-nittests_v2_unittest_llmapi_apps__test_openengine_disagg_retry.py_test_request_survives_a_lost_ctx_worker_with_a_new_id_.xml
+    - b200-1g-r3-chain-s2/b200-1g-r3-chain-s2/job-5977746_0-r0/node0/results/e01/junit/inner-20261116T011847-1794763127949310404-1651851-nittests_v2_unittest_llmapi_apps__test_openengine_disagg_retry.py_test_request_survives_a_lost_ctx_worker_with_a_new_id_.xml
+    - b200-1g-r3-chain-s3/b200-1g-r3-chain-s3/job-5977748_0-r0/node0/results/e01/junit/inner-20261116T011203-1794762723465634467-2587439-nittests_v2_unittest_llmapi_apps__test_openengine_disagg_retry.py_test_request_survives_a_lost_ctx_worker_with_a_new_id_.xml
+    - cpu-r7-wt57.xml
+    result: passed
+    chain_proof: incomplete
+  # NT-013 cpu
+  - row: DG-46+rest
+    features:
+    - DG-46
+    cases:
+    - unittest/serve/openengine_poc/wt57/test_poc3_wt57_orchestrator_retry.py::test_gen_leg_retry_rules_hold_with_worker_frontends
+    commit: 5694f8f03d7ca732aabfb4487b7d7d5125d28e4a
+    junit:
+    - cpu-r7-wt57.xml
+    result: passed
+    chain_proof: incomplete
+  # NT-013 cpu
+  - row: DG-47+rest
+    features:
+    - DG-47
+    cases:
+    - unittest/serve/openengine_poc/wt57/test_poc3_wt57_orchestrator_retry.py::test_gen_leg_retry_rules_hold_with_worker_frontends
+    commit: 5694f8f03d7ca732aabfb4487b7d7d5125d28e4a
+    junit:
+    - cpu-r7-wt57.xml
+    result: passed
+    chain_proof: incomplete
+  # NT-014 cpu
+  - row: DG-49+rest
+    features:
+    - DG-49
+    cases:
+    - unittest/serve/openengine_poc/wt57/test_poc3_wt57_orchestrator_retry.py::test_no_retry_env_disables_retries
+    commit: 5694f8f03d7ca732aabfb4487b7d7d5125d28e4a
+    junit:
+    - cpu-r7-wt57.xml
+    result: passed
+    chain_proof: incomplete
+  # NT-015 cpu
+  - row: DG-50+rest
+    features:
+    - DG-50
+    cases:
+    - unittest/serve/openengine_poc/wt57/test_poc3_wt57_orchestrator_retry.py::test_request_timeout_cuts_the_worker_request
+    commit: 5694f8f03d7ca732aabfb4487b7d7d5125d28e4a
+    junit:
+    - cpu-r7-wt57.xml
+    result: passed
+    chain_proof: incomplete
+  # NT-097 ok
+  - row: DG-63
+    features:
+    - DG-63
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_baseline_limits.py::test_tool_choice_required_is_rejected_like_the_baseline
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-r2-nt-chain-a-s1/b200-1g-r2-nt-chain-a-s1/job-5973439_0-r0/node0/results/e14/junit/inner-20261115T225204-1794754324934019471-1454396-unittest_llmapi_apps__test_openengine_disagg_baseline_limits.py_test_tool_choice_required_is_rejected_like_the_baseline_.xml
+    - b200-1g-r2-nt-chain-a-s2/b200-1g-r2-nt-chain-a-s2/job-5973444_0-r0/node0/results/e14/junit/inner-20261115T215254-1794750774442694018-1902956-unittest_llmapi_apps__test_openengine_disagg_baseline_limits.py_test_tool_choice_required_is_rejected_like_the_baseline_.xml
+    - b200-1g-r2-nt-chain-a-s3/b200-1g-r2-nt-chain-a-s3/job-5973449_0-r0/node0/results/e14/junit/inner-20261115T215456-1794750896228617370-1331185-unittest_llmapi_apps__test_openengine_disagg_baseline_limits.py_test_tool_choice_required_is_rejected_like_the_baseline_.xml
+    result: passed
+    chain_proof: ok
+  # T7 inner 15 passed, 3 skipped, NT-016 cpu
+  # T7: the with_beam_search parameters expect the worker front ends to refuse to start
+  #   (expectations/WT-11.py), so they carry no chain proof; test_reasoning_parser skips one
+  #   of its parameters itself
+  - row: DG-65
+    features:
+    - DG-65
+    cases:
+    - unittest/llmapi/apps/_test_openai_reasoning.py::test_reasoning_parser
+    - unittest/llmapi/apps/_test_openai_reasoning.py::test_reasoning_parser_streaming
+    - unittest/serve/openengine_poc/wt57/test_poc3_wt57_resolved_thinking.py::test_resolved_thinking_travels_from_ctx_to_gen
+    commit: 5694f8f03d7ca732aabfb4487b7d7d5125d28e4a
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e08/junit/inner-20261115T135538-1794722138362831537-1579804-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_reasoning.py_test_reasoning_parser_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e08/junit/inner-20261115T135912-1794722352271113979-424893-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_reasoning.py_test_reasoning_parser_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e08/junit/inner-20261115T135806-1794722286612876522-1922278-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_reasoning.py_test_reasoning_parser_streaming_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e08/junit/inner-20261115T135537-1794722137421392331-411171-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_reasoning.py_test_reasoning_parser_streaming_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e08/junit/inner-20261115T220300-1794751380699240318-1357522-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_reasoning.py_test_reasoning_parser_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e08/junit/inner-20261115T215918-1794751158417748848-2422493-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_reasoning.py_test_reasoning_parser_streaming_.xml
+    - cpu-r7-wt57.xml
+    result: passed
+    chain_proof: incomplete
+  # NT-099 ok, T6 inner 1 in error, 17 passed
+  # T6: the with_beam_search parameters expect the worker front ends to refuse to start
+  #   (expectations/WT-11.py: the chain has no beam search), so they carry no chain proof.
+  #   test_version[with_beam_search] was in error in one run: the expected refusal
+  #   happened, then the harness found engine processes that survived SIGKILL
+  #   (intermittent); it passed in the other runs
+  - row: DG-80
+    features:
+    - DG-80
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_orchestrator.py::test_request_model_name_is_passed_through
+    - unittest/llmapi/apps/_test_openai_misc.py::test_health
+    - unittest/llmapi/apps/_test_openai_misc.py::test_model
+    - unittest/llmapi/apps/_test_openai_misc.py::test_version
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e07/junit/inner-20261115T135111-1794721871097778401-1565677-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_model_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e07/junit/inner-20261115T135424-1794722064145767709-405730-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_model_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e06/junit/inner-20261115T134824-1794721704483042114-1903180-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_health_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e07/junit/inner-20261115T135316-1794721996002805740-1913058-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_version_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e06/junit/inner-20261115T134548-1794721548738356626-371872-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_health_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e07/junit/inner-20261115T135039-1794721839212314331-390652-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_version_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e07/junit/inner-20261115T215812-1794751092566277814-1342033-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_model_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e06/junit/inner-20261115T214950-1794750590085089004-2385598-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_health_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e07/junit/inner-20261115T215428-1794750868174933750-2395911-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_misc.py_test_version_.xml
+    - b200-1g-r2-nt-chain-b-s1/b200-1g-r2-nt-chain-b-s1/job-5973441_0-r0/node0/results/e14/junit/inner-20261115T225856-1794754736928759280-1457928-est_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_orchestrator.py_test_request_model_name_is_passed_through_.xml
+    - b200-1g-r2-nt-chain-b-s2/b200-1g-r2-nt-chain-b-s2/job-5973446_0-r0/node0/results/e14/junit/inner-20261115T215315-1794750795236707835-1904271-est_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_orchestrator.py_test_request_model_name_is_passed_through_.xml
+    - b200-1g-r2-nt-chain-b-s3/b200-1g-r2-nt-chain-b-s3/job-5973451_0-r0/node0/results/e14/junit/inner-20261115T215822-1794751102695375404-1342230-est_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_orchestrator.py_test_request_model_name_is_passed_through_.xml
+    result: failed
+    chain_proof: incomplete
+  # XD-702 inner 3 passed
+  - row: EG-04
+    features:
+    - EG-04
+    cases:
+    - unittest/llmapi/apps/_test_openengine_wt03_cache_salt.py::test_cache_salt_prevents_reuse_by_cached_tokens
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e24/junit/inner-20261115T160601-1794729961454394354-2229876-t_unittests_v2_unittest_llmapi_apps__test_openengine_wt03_cache_salt.py_test_cache_salt_prevents_reuse_by_cached_tokens_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e24/junit/inner-20261115T155815-1794729495062685503-664694-t_unittests_v2_unittest_llmapi_apps__test_openengine_wt03_cache_salt.py_test_cache_salt_prevents_reuse_by_cached_tokens_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e24/junit/inner-20261116T000350-1794758630405977010-2500315-t_unittests_v2_unittest_llmapi_apps__test_openengine_wt03_cache_salt.py_test_cache_salt_prevents_reuse_by_cached_tokens_.xml
+    result: passed
+    chain_proof: ok
+  # T21 inner 3 failed
+  # T21: fails without the chain as well (topology form): the first LoRA request fails
+  #   on the generation worker (HTTP 400 without the chain, 500 on the chain)
+  - row: EG-08
+    features:
+    - EG-08
+    cases:
+    - unittest/llmapi/apps/_test_openai_lora.py
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e16/junit/inner-20261115T145049-1794725449084910715-1731640-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_lora.py_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e16/junit/inner-20261115T145556-1794725756679024912-568428-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_lora.py_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e16/junit/inner-20261115T225730-1794754650630349194-1446243-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openai_lora.py_.xml
+    result: failed
+    chain_proof: ok
+  # NT-193 ok, NT-194 ok, XD-701 inner 24 passed
+  - row: EG-11
+    features:
+    - EG-11
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_stopping.py::test_first_token_eos_ends_on_the_context_leg
+    - unittest/llmapi/apps/_test_openengine_disagg_stopping.py::test_min_tokens_counts_across_both_legs
+    - unittest/llmapi/apps/_test_openengine_wt12.py::test_detokenize_options
+    - unittest/llmapi/apps/_test_openengine_wt12.py::test_stop_string_variants
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-mig-chain-a-s1/b200-1g-mig-chain-a-s1/job-5964455_0-r0/node0/results/e24/junit/inner-20261115T154724-1794728844213611902-1942741-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_wt12.py_test_stop_string_variants_.xml
+    - b200-1g-mig-chain-a-s3/b200-1g-mig-chain-a-s3/job-5964473_0-r0/node0/results/e24/junit/inner-20261115T154909-1794728949031431118-657398-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_wt12.py_test_stop_string_variants_.xml
+    - b200-1g-mig-chain-b-s1/b200-1g-mig-chain-b-s1/job-5964459_0-r0/node0/results/e23/junit/inner-20261115T160300-1794729780077108756-2223952-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_wt12.py_test_detokenize_options_.xml
+    - b200-1g-mig-chain-b-s3/b200-1g-mig-chain-b-s3/job-5964477_0-r0/node0/results/e23/junit/inner-20261115T155515-1794729315463896614-662869-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_wt12.py_test_detokenize_options_.xml
+    - b200-1g-r2-mig-chain-a-s2/b200-1g-r2-mig-chain-a-s2/job-5973454_0-r0/node0/results/e24/junit/inner-20261115T235046-1794757846525108933-1485494-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_wt12.py_test_stop_string_variants_.xml
+    - b200-1g-r2-mig-chain-b-s2/b200-1g-r2-mig-chain-b-s2/job-5973456_0-r0/node0/results/e23/junit/inner-20261116T000046-1794758446532586250-2498191-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_wt12.py_test_detokenize_options_.xml
+    - b200-1g-r2-nt-chain-a-s1/b200-1g-r2-nt-chain-a-s1/job-5973439_0-r0/node0/results/e15/junit/inner-20261115T225935-1794754775419328389-1458911-test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_stopping.py_test_first_token_eos_ends_on_the_context_leg_.xml
+    - b200-1g-r2-nt-chain-a-s2/b200-1g-r2-nt-chain-a-s2/job-5973444_0-r0/node0/results/e15/junit/inner-20261115T215524-1794750924203713131-1909618-test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_stopping.py_test_first_token_eos_ends_on_the_context_leg_.xml
+    - b200-1g-r2-nt-chain-a-s3/b200-1g-r2-nt-chain-a-s3/job-5973449_0-r0/node0/results/e15/junit/inner-20261115T215752-1794751072959897791-1339669-test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_stopping.py_test_first_token_eos_ends_on_the_context_leg_.xml
+    - b200-1g-r2-nt-chain-b-s1/b200-1g-r2-nt-chain-b-s1/job-5973441_0-r0/node0/results/e15/junit/inner-20261115T230634-1794755194256428480-1462343-s.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_stopping.py_test_min_tokens_counts_across_both_legs_.xml
+    - b200-1g-r2-nt-chain-b-s2/b200-1g-r2-nt-chain-b-s2/job-5973446_0-r0/node0/results/e15/junit/inner-20261115T215630-1794750990694526875-1912411-s.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_stopping.py_test_min_tokens_counts_across_both_legs_.xml
+    - b200-1g-r2-nt-chain-b-s3/b200-1g-r2-nt-chain-b-s3/job-5973451_0-r0/node0/results/e15/junit/inner-20261115T220130-1794751290677150861-1351404-s.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_stopping.py_test_min_tokens_counts_across_both_legs_.xml
+    result: passed
+    chain_proof: ok
+  # NT-195 ok
+  - row: EG-12
+    features:
+    - EG-12
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_mapping.py::test_sampling_knobs_reach_both_engines
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-r2-nt-chain-a-s1/b200-1g-r2-nt-chain-a-s1/job-5973439_0-r0/node0/results/e16/junit/inner-20261115T230704-1794755224012641884-1463328-sts.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_mapping.py_test_sampling_knobs_reach_both_engines_.xml
+    - b200-1g-r2-nt-chain-a-s2/b200-1g-r2-nt-chain-a-s2/job-5973444_0-r0/node0/results/e16/junit/inner-20261115T215820-1794751100199655680-1917180-sts.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_mapping.py_test_sampling_knobs_reach_both_engines_.xml
+    - b200-1g-r2-nt-chain-a-s3/b200-1g-r2-nt-chain-a-s3/job-5973449_0-r0/node0/results/e16/junit/inner-20261115T220119-1794751279313745636-1351111-sts.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_mapping.py_test_sampling_knobs_reach_both_engines_.xml
+    result: passed
+    chain_proof: ok
+  # NT-196 ok
+  - row: EG-15
+    features:
+    - EG-15
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_streaming.py::test_first_chunk_does_not_wait_for_stream_interval
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-r2-nt-chain-b-s1/b200-1g-r2-nt-chain-b-s1/job-5973441_0-r0/node0/results/e16/junit/inner-20261115T231357-1794755637421381191-1466553-ittests_v2_unittest_llmapi_apps__test_openengine_disagg_streaming.py_test_first_chunk_does_not_wait_for_stream_interval_.xml
+    - b200-1g-r2-nt-chain-b-s2/b200-1g-r2-nt-chain-b-s2/job-5973446_0-r0/node0/results/e16/junit/inner-20261115T215949-1794751189360248438-1920863-ittests_v2_unittest_llmapi_apps__test_openengine_disagg_streaming.py_test_first_chunk_does_not_wait_for_stream_interval_.xml
+    - b200-1g-r2-nt-chain-b-s3/b200-1g-r2-nt-chain-b-s3/job-5973451_0-r0/node0/results/e16/junit/inner-20261115T220428-1794751468176076649-1361090-ittests_v2_unittest_llmapi_apps__test_openengine_disagg_streaming.py_test_first_chunk_does_not_wait_for_stream_interval_.xml
+    result: passed
+    chain_proof: ok
+  # NT-041 direct
+  - row: EG-22a
+    features:
+    - EG-22a
+    cases:
+    - unittest/grpc/openengine/_test_direct_handoff.py::test_two_engines_complete_a_handoff
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-r2-nt041-none-s1/b200-1g-r2-nt041-none-s1/job-5973442_0-r0/node0/results/e00/junit/inner-20261115T210712-1794748032652070442-1687726-est_unittests.py_test_unittests_v2_unittest_grpc_openengine__test_direct_handoff.py_test_two_engines_complete_a_handoff_.xml
+    - b200-1g-r2-nt041-none-s2/b200-1g-r2-nt041-none-s2/job-5973447_0-r0/node0/results/e00/junit/inner-20261115T210711-1794748031561008827-1687690-est_unittests.py_test_unittests_v2_unittest_grpc_openengine__test_direct_handoff.py_test_two_engines_complete_a_handoff_.xml
+    - b200-1g-r2-nt041-none-s3/b200-1g-r2-nt041-none-s3/job-5973452_0-r0/node0/results/e00/junit/inner-20261115T210712-1794748032321159673-1053918-est_unittests.py_test_unittests_v2_unittest_grpc_openengine__test_direct_handoff.py_test_two_engines_complete_a_handoff_.xml
+    result: passed
+    chain_proof: incomplete
+  # NT-206 ok
+  - row: EG-30
+    features:
+    - EG-30
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_capacity.py::test_context_capacity_waits_for_generation
+    commit: 6e8e37a558af91cbac26c4625051eabb1fc57563
+    junit:
+    - b200-1g-r2-nt-chain-a-s1/b200-1g-r2-nt-chain-a-s1/job-5973439_0-r0/node0/results/e17/junit/inner-20261115T231458-1794755698518130215-1468206-y_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_capacity.py_test_context_capacity_waits_for_generation_.xml
+    - b200-1g-r2-nt-chain-a-s2/b200-1g-r2-nt-chain-a-s2/job-5973444_0-r0/node0/results/e17/junit/inner-20261115T220129-1794751289721444718-1925211-y_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_capacity.py_test_context_capacity_waits_for_generation_.xml
+    - b200-1g-r2-nt-chain-a-s3/b200-1g-r2-nt-chain-a-s3/job-5973449_0-r0/node0/results/e17/junit/inner-20261115T220458-1794751498346769910-1363972-y_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_capacity.py_test_context_capacity_waits_for_generation_.xml
+    result: passed
+    chain_proof: ok
