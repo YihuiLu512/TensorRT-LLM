@@ -195,6 +195,7 @@ _GENERATION_FIRST_TEST_WAS = "test_schedule_style_is_unimplemented_without_gener
 _GENERATION_FIRST_TEST = "test_context_only_takes_a_generation_first_schedule_style"
 _GENERATION_LEG_TEST = "test_the_generation_leg_never_sends_schedule_style_in_extra"
 _CANCELS_CALLS_TEST = "test_shipped_tables_name_each_test_that_cancels_calls"
+_ARM_TABLE_TEST = "test_disagg_arm_table"
 # The registry of lines check_invariants.py lets CS-20 add.
 INVARIANT_ADDITIONS = "scripts/poc3/invariant_additions.yaml"
 # Gate files only WT-30 and its fixes may change (see the module docstring).
@@ -1123,6 +1124,33 @@ OWNERSHIP: dict[str, list[Rule]] = {
         ),
         _shared(f"{PERF}/test_perf_sanity.py", "append only: CP-07 the client restriction"),
         _shared("python/dsv4_serve/protocol.py", "CD-09: the four DisaggregatedParams fields", DS),
+        # WT-71 appends the case-03 arms to DISAGG_ARMS (N102), so WT-70's test of the arm table
+        # has to expect them, each arm with its own case.
+        _exception(
+            f"{POC_TESTS}/wt70/test_poc3_wt70_arms.py",
+            "N102 only: the E3 arms added to EXPECTED_DISAGG_ARMS, and the case expected per arm"
+            f" in {_ARM_TABLE_TEST}",
+            item="WT-71",
+            changes=(
+                _change(
+                    "EXPECTED_DISAGG_ARMS",
+                    added=(
+                        "    # The case-03 arms (the ds engine), after the case-04 ones.",
+                        '    "E3-native": ("disagg", ("none", None, None), ("none", None, None)),',
+                        '    "E3-native-al": ("disagg", ("none", 1, None), ("none", 1, None)),',
+                        '    "E3-mid": ("disagg", ("none", 1, None), ("none", 1, None)),',
+                        '    "E3-chain": ("disagg", ("ds", 1, None), ("ds", 1, None)),',
+                        '    "E3-chain-lean": ("disagg", ("ds", 1, 0), ("ds", 1, 0)),',
+                        '    "E3-direct": ("direct", None, None),',
+                    ),
+                ),
+                _change(
+                    _ARM_TABLE_TEST,
+                    ('            "case-04",',),
+                    ('            "case-03" if name.startswith("E3-") else "case-04",',),
+                ),
+            ),
+        ),
     ],
     "WT-72": [],
     "WT-73": [],

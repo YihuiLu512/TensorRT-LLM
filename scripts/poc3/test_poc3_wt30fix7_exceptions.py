@@ -316,6 +316,7 @@ def test_every_exception_listing_its_changes_is_for_one_work_item():
         (f"{oe}/test_disagg_servicer.py", "WT-55"),
         (f"{poc}/wt55/test_poc3_wt55_gen_first.py", "WT-51-fix2"),
         (f"{check_ownership.CHAIN}/tests/test_expectations.py", "WT-55-fix1"),
+        (f"{poc}/wt70/test_poc3_wt70_arms.py", "WT-71"),
     }
     assert check_ownership.NAMED_FIXES == ["WT-51-fix2", "WT-53-fix1", "WT-55-fix1"]
 
