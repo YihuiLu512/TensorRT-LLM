@@ -3782,7 +3782,7 @@ class DisaggTestCmds(NamedTuple):
         node_rank = None
         if openengine_arms.is_ds_engine_role(arm, role) and configs_for_idx is not None:
             node_rank = openengine_arms.ds_node_rank(
-                plan.config, configs_for_idx[2].hardware.get("gpus_per_node", 0)
+                plan, configs_for_idx[2].hardware.get("gpus_per_node", 0)
             )
         if node_rank:
             follower_log = os.path.join(
@@ -5245,7 +5245,7 @@ class PerfSanityTestConfig:
         # benchmark_serving clients only (no accuracy run), results never uploaded.
         arm = openengine_arms.selected_arm()
         if arm is not None and arm.topology != openengine_arms.TOPOLOGY_AGG:
-            # The disaggregated arms (case-04) take e2e and gen_only disaggregated cases.
+            # The disaggregated arms (case-04, case-03) take e2e and gen_only disaggregated cases.
             disagg_config = (
                 self.server_configs[0][2]
                 if self.runtime in DISAGG_CONFIG_RUNTIMES and self.server_configs

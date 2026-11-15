@@ -22,7 +22,7 @@ EXPECTED_DISAGG_ARMS = {
     "E4-chain-lean": ("disagg", ("trtllm", 1, 0), ("trtllm", 1, 0)),
     "E4-direct": ("direct", None, None),
     # The case-03 arms (the ds engine), after the case-04 ones.
-    "E3-native": ("disagg", ("none", 1, None), ("none", 1, None)),
+    "E3-native": ("disagg", ("none", None, None), ("none", None, None)),
     "E3-native-al": ("disagg", ("none", 1, None), ("none", 1, None)),
     "E3-mid": ("disagg", ("none", 1, None), ("none", 1, None)),
     "E3-chain": ("disagg", ("ds", 1, None), ("ds", 1, None)),

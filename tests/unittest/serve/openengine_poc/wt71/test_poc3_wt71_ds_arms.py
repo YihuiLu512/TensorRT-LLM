@@ -45,9 +45,16 @@ def test_case03_arms(arms):
         assert (arm.case, arm.topology, arm.glm_http) == ("case-03", "disagg", False)
     assert table["E3-direct"].topology == "direct"
     native = _fields(table["E3-native"])
-    # E3-native-al changes only the alignment; E3-mid only the disaggregated server;
-    # E3-chain only the workers (chain ds instead of dsv4-serve's own HTTP).
-    assert {k for k, v in _fields(table["E3-native-al"]).items() if native[k] != v} == {"aligned"}
+    # E3-native-al changes only the alignment (one front end per worker); E3-mid only the
+    # disaggregated server; E3-chain only the workers (chain ds instead of dsv4-serve's HTTP).
+    assert {k for k, v in _fields(table["E3-native-al"]).items() if native[k] != v} == {
+        "aligned",
+        "ctx",
+        "gen",
+    }
+    for role in ("ctx", "gen"):
+        # E3-native keeps the deployment's front-end count.
+        assert arms.role_arm(table["E3-native"], role) == arms.RoleArm("none", None, None, True)
     aligned = _fields(table["E3-native-al"])
     assert {k for k, v in _fields(table["E3-mid"]).items() if aligned[k] != v} == {"orchestrator"}
     mid = _fields(table["E3-mid"])
@@ -56,7 +63,7 @@ def test_case03_arms(arms):
         "ctx",
         "gen",
     }
-    for name in ("E3-native", "E3-native-al", "E3-mid"):
+    for name in ("E3-native-al", "E3-mid"):
         for role in ("ctx", "gen"):
             settings = arms.role_arm(table[name], role)
             assert (settings.chain, settings.ds_http, settings.frontends) == ("none", True, 1)
@@ -113,7 +120,8 @@ def test_native_worker_runs_dsv4_serve(arms, tmp_path, monkeypatch, name, role, 
     assert tokens[:4] == ["python3", "-m", "dsv4_serve", "/models/ds"]
     assert tokens[-2:] == ["--server_role", server_role]
     written = yaml.safe_load(Path(tokens[tokens.index("--config") + 1]).read_text())
-    assert written["num_serve_frontends"] == 1
+    # E3-native keeps the deployment's front-end count; the aligned arms run one.
+    assert written.get("num_serve_frontends") == (None if name == "E3-native" else 1)
     assert {k: written[k] for k in WORKER_CONFIG} == WORKER_CONFIG
     view = arms.role_view(arms.DISAGG_ARMS[name], role)
     # Port 0 and --report_addr, which dsv4-serve's worker honours with one front end.
@@ -126,6 +134,17 @@ def test_native_worker_needs_the_ds_command(arms, tmp_path, monkeypatch):
         arms.prepare_worker(
             _worker_cmd(tmp_path), arms.DISAGG_ARMS["E3-native"], "ctx", str(tmp_path / "o")
         )
+
+
+def test_native_worker_keeps_the_deployments_front_ends(arms, tmp_path, monkeypatch):
+    monkeypatch.setenv("TRTLLM_TEST_DS_SERVE_CMD", "python3 -m dsv4_serve")
+    config = tmp_path / "worker.yaml"
+    config.write_text(yaml.safe_dump({**WORKER_CONFIG, "num_serve_frontends": 4}))
+    cmd = ["trtllm-serve", "/models/ds", "--config", str(config)]
+    plan = arms.prepare_worker(cmd, arms.DISAGG_ARMS["E3-native"], "gen", str(tmp_path / "o"))
+    assert plan.config["num_serve_frontends"] == 4
+    plan = arms.prepare_worker(cmd, arms.DISAGG_ARMS["E3-native-al"], "gen", str(tmp_path / "a"))
+    assert plan.config["num_serve_frontends"] == 1
 
 
 def test_chain_worker_keeps_trtllm_serve(arms, tmp_path, monkeypatch):
@@ -224,6 +243,10 @@ def test_case03_worker_may_span_whole_nodes(arms):
         arms.check_disagg_case(arms.DISAGG_ARMS["E3-chain"], **_case(worker_gpus={"gen": 6}))
 
 
+def _tp_plan(arms, tp, *cli):
+    return arms.ServerPlan(("trtllm-serve", "/m", *cli), {"tensor_parallel_size": tp})
+
+
 @pytest.mark.parametrize(
     "tp, env, rank",
     [
@@ -232,17 +255,38 @@ def test_case03_worker_may_span_whole_nodes(arms):
         (16, {"SLURM_PROCID": "3"}, 3),
         (16, {"SLURM_NODEID": "2", "SLURM_PROCID": "3"}, 2),
         (16, {"DSV4_NODE_RANK": "1", "SLURM_NODEID": "2"}, 1),
+        (16, {"SLURM_NODEID": "1", "SLURM_STEP_TASKS_PER_NODE": "1(x4)"}, 1),
+        # This node's GPUs are CUDA_VISIBLE_DEVICES's, as dsv4-serve counts them.
+        (4, {"CUDA_VISIBLE_DEVICES": "0,1", "SLURM_NODEID": "1"}, 1),
+        (8, {"CUDA_VISIBLE_DEVICES": "0,1,2,3,4,5,6,7"}, None),
     ],
 )
 def test_ds_node_rank(arms, tp, env, rank):
-    assert arms.ds_node_rank({"tensor_parallel_size": tp}, 4, env) == rank
+    assert arms.ds_node_rank(_tp_plan(arms, tp), 4, env) == rank
 
 
-def test_ds_node_rank_refuses(arms):
-    with pytest.raises(arms.ArmError, match="does not fill"):
-        arms.ds_node_rank({"tensor_parallel_size": 6}, 4, {})
-    with pytest.raises(arms.ArmError, match="not a node rank"):
-        arms.ds_node_rank({"tensor_parallel_size": 8}, 4, {"SLURM_NODEID": "x"})
+def test_ds_node_rank_reads_the_command_line_and_only_tensor_parallelism(arms):
+    plan = _tp_plan(arms, 2, "--tp_size", "8")
+    assert arms.ds_node_rank(plan, 4, {"SLURM_NODEID": "1"}) == 1
+    pipeline = arms.ServerPlan(
+        ("trtllm-serve", "/m"), {"tensor_parallel_size": 4, "pipeline_parallel_size": 2}
+    )
+    assert arms.ds_node_rank(pipeline, 4, {}) is None
+
+
+@pytest.mark.parametrize(
+    "tp, env, message",
+    [
+        (6, {}, "does not fill"),
+        (8, {"SLURM_NODEID": "x"}, "not a node rank"),
+        # dsv4-serve fails on an empty DSV4_NODE_RANK too.
+        (8, {"DSV4_NODE_RANK": "", "SLURM_NODEID": "1"}, "not a node rank"),
+        (8, {"SLURM_STEP_TASKS_PER_NODE": "4(x2)"}, "one task per node"),
+    ],
+)
+def test_ds_node_rank_refuses(arms, tp, env, message):
+    with pytest.raises(arms.ArmError, match=message):
+        arms.ds_node_rank(_tp_plan(arms, tp), 4, env)
 
 
 def test_ds_follower_command(arms):
@@ -265,6 +309,36 @@ def test_run_ds_follower_stops_it_after_the_wait(arms, tmp_path):
         wait=lambda proc: seen.append(proc.poll()),
     )
     assert seen == [None] and code is not None and code != 0
+
+
+def test_run_ds_follower_stops_the_processes_it_started(arms, tmp_path):
+    pid_file = tmp_path / "child.pid"
+    script = (
+        "import subprocess, sys, time; "
+        "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)']); "
+        f"open({str(pid_file)!r}, 'w').write(str(child.pid)); time.sleep(120)"
+    )
+
+    def wait(proc):
+        for _ in range(500):
+            if pid_file.exists() and pid_file.read_text():
+                return
+            time.sleep(0.01)
+
+    arms.run_ds_follower(
+        [sys.executable, "-c", script],
+        env=dict(os.environ),
+        log_path=str(tmp_path / "f.log"),
+        wait=wait,
+    )
+    status = Path(f"/proc/{int(pid_file.read_text())}/status")
+    for _ in range(500):
+        # Gone, or a zombie its new parent has not reaped yet.
+        if not status.exists() or "\nState:\tZ" in status.read_text():
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail(f"the follower's child is still running: {status}")
 
 
 def _layout(layout):
@@ -326,6 +400,10 @@ def test_ds_instance_reading_reads_the_running_process(arms, tmp_path):
             sys.executable,
             "-c",
             "import time; time.sleep(30)",
+            "--tp_size",
+            "4",
+            "--kv_cache_free_gpu_memory_fraction",
+            "0.7",
             "--config",
             str(config),
             "--max_batch_size",
@@ -346,9 +424,14 @@ def test_ds_instance_reading_reads_the_running_process(arms, tmp_path):
         proc.kill()
         proc.wait()
     assert notes == []
-    # The command line wins over the configuration file, as dsv4-serve reads them.
+    # The command line wins over the configuration file, as dsv4-serve reads them, under
+    # either of its names.
     assert reading["params"]["max_batch_size"] == 16
-    assert reading["params"]["tensor_parallel_size"] == 2
+    assert reading["params"]["tensor_parallel_size"] == 4
+    assert reading["params"]["kv_cache_config"] == {
+        "enable_block_reuse": True,
+        "free_gpu_memory_fraction": 0.7,
+    }
     assert reading["params"]["speculative_config"] == WORKER_CONFIG["speculative_config"]
     assert reading["params"]["moe_expert_parallel_size"] is None
     assert reading["env"] == {"DSV4_TOKCACHE_ENTRIES": "1024"}
@@ -423,6 +506,10 @@ def _reading(worker, instance):
     }
 
 
+# A deployment's disaggregated-server variables, as the test gives them to every role.
+DEPLOYED_ENV = {"DSV4_PROXY_LOAD_ROUTE": "1", "DSV4_PROXY_WORKERS": "4"}
+
+
 def _result(arms, tmp_path, name, *, instance=INSTANCE, orchestrator=None, env=None, output=None):
     probe = arms.DisaggRunProbe(
         arms.DISAGG_ARMS[name], str(tmp_path), ("CTX_0", "GEN_0"), "http://127.0.0.1:1", "s1", 0
@@ -445,7 +532,8 @@ def _result(arms, tmp_path, name, *, instance=INSTANCE, orchestrator=None, env=N
         test_id="disagg-e2e-gb300_ds",
         benchmark_mode="e2e",
         orchestrator_config=str(config),
-        orchestrator_env=env if env is not None else {"DSV4_PROXY_WORKERS": "1"},
+        # What the benchmark's process has: the test's environment for the server.
+        orchestrator_env=env if env is not None else DEPLOYED_ENV,
         environ={"TRTLLM_PERF_RUN": "1", "TRTLLM_PERF_DS_SHA": "e5e5da9"},
     )
 
@@ -469,6 +557,19 @@ def test_case03_result_matches_schema(arms, tmp_path, name):
     assert orch["gen_strip_message_history"] is True and orch["gen_tokids_ctxbytes"] is True
     if arm.aligned:
         assert {k: orch[k] for k in arms.DS_ALIGNED_ORCHESTRATOR} == arms.DS_ALIGNED_ORCHESTRATOR
+    # The server's environment, derived as prepare_orchestrator gives it to the server.
+    expected_env = (
+        {"DSV4_PROXY_LOAD_ROUTE": None, "DSV4_PROXY_WORKERS": "1"}
+        if name == "E3-native-al"
+        else {
+            "DSV4_PROXY_LOAD_ROUTE": "1",
+            "DSV4_PROXY_WORKERS": "4",
+        }
+    )
+    assert doc["ds_alignment"]["orchestrator_env"] == {
+        **expected_env,
+        "DSV4_PROXY_FE_AFFINITY": None,
+    }
     assert doc["ds_client"] is None
     assert any("accepts cache_transceiver_config.backend but ignores it" in n for n in doc["notes"])
     # dsv4-serve's workers serve their own HTTP: no chain proof.
@@ -480,16 +581,24 @@ def test_case03_result_matches_schema(arms, tmp_path, name):
     [
         ("E3-native-al", {"orchestrator": {"max_retries": 1}}, "max_retries must be 3"),
         ("E3-chain", {"orchestrator": {"server_keep_alive_timeout": 10}}, "keep_alive_timeout"),
-        (
-            "E3-native-al",
-            {"env": {"DSV4_PROXY_LOAD_ROUTE": "1", "DSV4_PROXY_WORKERS": "1"}},
-            "load",
-        ),
-        ("E3-native-al", {"env": {}}, "one ds proxy"),
     ],
 )
 def test_case03_result_refuses_unaligned_values(arms, tmp_path, name, kwargs, message):
     doc = _result(arms, tmp_path, name, **kwargs)
+    assert any(message in e for e in arms.validate_disagg_result(doc)), doc["ds_alignment"]
+
+
+@pytest.mark.parametrize(
+    "env, message",
+    [
+        ({"DSV4_PROXY_LOAD_ROUTE": "1", "DSV4_PROXY_WORKERS": "1"}, "load"),
+        ({}, "one ds proxy"),
+        (None, "must be objects"),
+    ],
+)
+def test_case03_validator_refuses_an_unaligned_server_env(arms, tmp_path, env, message):
+    doc = _result(arms, tmp_path, "E3-native-al")
+    doc["ds_alignment"]["orchestrator_env"] = env
     assert any(message in e for e in arms.validate_disagg_result(doc)), doc["ds_alignment"]
 
 
@@ -553,10 +662,14 @@ def test_arm_client_cmd(arms):
     assert arms.arm_client_cmd(None, "agentx", AGENTX_CMD) == AGENTX_CMD
 
 
-def test_arm_client_cmd_refuses_options_ds_does_not_take(arms):
+def test_arm_client_cmd_refuses_what_ds_does_not_take(arms):
     with pytest.raises(arms.ArmError, match="not --max-output-tokens"):
         arms.arm_client_cmd(
             arms.DISAGG_ARMS["E3-native"], "agentx", AGENTX_CMD + ["--max-output-tokens", "1"]
+        )
+    with pytest.raises(arms.ArmError, match="not other_traces"):
+        arms.arm_client_cmd(
+            arms.DISAGG_ARMS["E3-native"], "agentx", AGENTX_CMD[:-1] + ["other_traces"]
         )
 
 
@@ -598,6 +711,8 @@ def _ds_root(tmp_path, export):
         'echo "$@" > "$4/args.txt"\n'
         'echo "MODEL=$MODEL WARM=$AGENTX_WARMUP_PER_LANE" >> "$4/args.txt"\n'
         f'[ -f {source} ] && cp {source} "$4/profile_export_aiperf.json"\n'
+        # FAKE_AGENTX_HANG: start a child that outlives the script's own wait, then hang.
+        'if [ -n "${FAKE_AGENTX_HANG:-}" ]; then sleep 120 & echo $! > "$FAKE_AGENTX_HANG"; wait; fi\n'
         "exit 3\n"
     )
     return root
@@ -609,7 +724,6 @@ def _agentx_env(tmp_path, root, **extra):
         "TRTLLM_TEST_DS_ROOT": str(root),
         "TRTLLM_PERF_DS_SHA": "e5e5da9",
         "TRTLLM_AGENTX_ARTIFACT_DIR": str(tmp_path / "agentx.0.0"),
-        "AGENTX_DURATION": "60",
         **extra,
     }
 
@@ -619,11 +733,24 @@ AGENTX_ARGV = ["--model", "/models/m", "--concurrency", "8", "--host", "h", "--p
 
 def test_run_ds_agentx_reports_in_benchmark_serving_format(arms, tmp_path, capfd):
     root = _ds_root(tmp_path, EXPORT)
-    env = _agentx_env(tmp_path, root, AIPERF_AGENTX_WARMUP_LEARN_REQUESTS="64")
+    # The lane's own values (the in-tree AgentX lane's 1800 s and no warmup) are replaced.
+    env = _agentx_env(
+        tmp_path,
+        root,
+        AIPERF_AGENTX_WARMUP_LEARN_REQUESTS="64",
+        AGENTX_DURATION="1800",
+        AGENTX_WARMUP_PER_LANE="0",
+    )
+    out_dir = tmp_path / "agentx.0.0" / "concurrency_8"
+    out_dir.mkdir(parents=True)
+    (out_dir / "profile_export_aiperf.json").write_text("{}")  # an earlier run's
     assert arms.run_ds_agentx(AGENTX_ARGV, env) == 0
     out = capfd.readouterr().out
-    args = (tmp_path / "agentx.0.0" / "args.txt").read_text().splitlines()
-    assert args == [f"http://h:9 8 60 {tmp_path / 'agentx.0.0'}", "MODEL=/models/m WARM=3"]
+    args = (out_dir / "args.txt").read_text().splitlines()
+    assert args == [f"http://h:9 8 3600 {out_dir}", "MODEL=/models/m WARM=3"]
+    assert "removing the export of an earlier run" in out
+    assert "replace the lane's {'AGENTX_DURATION': '1800', 'AGENTX_WARMUP_PER_LANE': '0'}" in out
+    assert "run_agentx.sh exited 3; checking its export" in out
     arms.check_benchmark_output(out)
     assert "Total generated tokens: 30000" in out
     assert "Output token throughput (tok/s):         500.00" in out
@@ -632,11 +759,10 @@ def test_run_ds_agentx_reports_in_benchmark_serving_format(arms, tmp_path, capfd
     assert settings == {
         "client": "ds dev/run_agentx.sh",
         "ds_sha": "e5e5da9",
-        "window_s": 60,
+        "window_s": 3600,
         "warmup_per_lane": 3,
         "extra_args": "",
-        "dataset_requested": "semianalysis_cc_traces_weka_062126",
-        "dataset_used": "semianalysis_cc_traces_weka_062126",
+        "dataset": "semianalysis_cc_traces_weka_062126",
         "warmup_learning": {
             "AIPERF_AGENTX_WARMUP_LEARN_REQUESTS": "64",
             "AIPERF_AGENTX_WARMUP_LEARN_MAX_TOKENS": None,
@@ -652,6 +778,12 @@ def test_run_ds_agentx_reports_in_benchmark_serving_format(arms, tmp_path, capfd
 def test_total_output_tokens_prefers_the_count(arms):
     export = {**EXPORT, "output_token_count": {"unit": "tokens", "sum": 29871}}
     assert arms._total_output_tokens(export) == (29871, "output_token_count.sum")
+    # A per-request mean is not the run's total.
+    per_request = {**EXPORT, "output_token_count": {"unit": "tokens", "avg": 250}}
+    assert arms._total_output_tokens(per_request) == (
+        30000,
+        "output_token_throughput.avg x benchmark_duration.avg",
+    )
     assert arms._total_output_tokens({}) == (None, None)
 
 
@@ -659,7 +791,7 @@ def test_total_output_tokens_prefers_the_count(arms):
     "export, setup, error, message",
     [
         (EXPORT, "no_root", "ArmError", "needs TRTLLM_TEST_DS_ROOT"),
-        (EXPORT, "stale", "ArmError", "exists from an earlier run"),
+        (EXPORT, "dataset", "ArmError", "not the lane's dataset other_traces"),
         (None, None, "ArmError", "exited 3 and wrote no"),
         ({**EXPORT, "metadata": {"submission_valid": False}}, None, "RuntimeError", "submission_valid=false"),
     ],
@@ -669,12 +801,30 @@ def test_run_ds_agentx_refuses(arms, tmp_path, export, setup, error, message):
     env = _agentx_env(tmp_path, root)
     if setup == "no_root":
         env["TRTLLM_TEST_DS_ROOT"] = str(tmp_path / "missing")
-    if setup == "stale":
-        (tmp_path / "agentx.0.0").mkdir()
-        (tmp_path / "agentx.0.0" / "profile_export_aiperf.json").write_text("{}")
+    argv = AGENTX_ARGV + (["--dataset", "other_traces"] if setup == "dataset" else [])
     exc = arms.ArmError if error == "ArmError" else RuntimeError
     with pytest.raises(exc, match=message):
+        arms.run_ds_agentx(argv, env)
+
+
+def test_run_ds_agentx_stops_every_process_of_a_late_run(arms, tmp_path):
+    pid_file = tmp_path / "aiperf.pid"
+    # A one-second limit: the 3600 s window plus a grace of -3599 s.
+    env = _agentx_env(
+        tmp_path,
+        _ds_root(tmp_path, None),
+        AGENTX_TIMEOUT_GRACE="-3599",
+        FAKE_AGENTX_HANG=str(pid_file),
+    )
+    with pytest.raises(arms.ArmError, match="still ran 1 s"):
         arms.run_ds_agentx(AGENTX_ARGV, env)
+    status = Path(f"/proc/{int(pid_file.read_text())}/status")
+    for _ in range(500):
+        if not status.exists() or "\nState:\tZ" in status.read_text():
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail(f"run_agentx.sh's child is still running: {status}")
 
 
 def test_ds_agentx_command_line(arms, tmp_path):
@@ -688,3 +838,27 @@ def test_ds_agentx_command_line(arms, tmp_path):
     assert arms.DS_CLIENT_LINE in done.stdout and "Total generated tokens: 30000" in done.stdout
     usage = subprocess.run(cmd[:2], env=env, capture_output=True, text=True, timeout=120)
     assert usage.returncode == 2 and "usage" in usage.stderr
+
+
+NO_REUSE = {"enable_block_reuse": False}
+
+
+@pytest.mark.parametrize(
+    "argv, key, value",
+    [
+        (["--enable_attention_dp", "--max_batch_size", "8"], "enable_attention_dp", True),
+        (["--max_batch_size", "8"], "enable_attention_dp", False),
+        (["--ep_size", "4"], "moe_expert_parallel_size", 4),
+        (["--moe_expert_parallel_size=2", "--ep_size", "4"], "moe_expert_parallel_size", 4),
+        (["--free_gpu_memory_fraction", "0.3"], "kv_cache_config", {**NO_REUSE, "free_gpu_memory_fraction": 0.3}),
+        (["--max_batch_size"], "max_batch_size", 32),
+    ],
+)  # fmt: skip
+def test_ds_param_reads_dsv4_serves_options(arms, argv, key, value):
+    config = {
+        "enable_attention_dp": False,
+        "max_batch_size": 32,
+        "kv_cache_config": {"enable_block_reuse": False},
+    }
+    assert arms._ds_param(argv, config, key) == value
+    assert config["kv_cache_config"] == {"enable_block_reuse": False}

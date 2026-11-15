@@ -62,6 +62,7 @@ import os
 import random
 import re
 import shlex
+import signal
 import socket
 import subprocess
 import sys
@@ -145,8 +146,9 @@ class Arm:
 
     Attributes:
         name: The value of ``TRTLLM_PERF_ARM``.
-        case: ``case-02`` (TRT-LLM engine) or ``case-01`` (glm engine).
-        chain: ``none``, ``trtllm`` or ``glm``.
+        case: ``case-02`` (TRT-LLM engine) or ``case-01`` (glm engine) for one server;
+            ``case-04`` (TRT-LLM engine) or ``case-03`` (ds engine) for a disaggregated test.
+        chain: ``none``, ``trtllm``, ``glm`` or ``ds``.
         glm_http: Serve with the glm server's own HTTP front end instead of trtllm-serve.
         frontends: ``num_serve_frontends`` the arm sets, or ``None`` to keep the test's.
         postprocess_workers: ``num_postprocess_workers`` the arm sets, or ``None`` to keep the test's.
@@ -399,14 +401,17 @@ DISAGG_ARMS: dict[str, Arm] = {
 }
 
 # case-03: the ds-engine (TH-DSG-6). The native arms run dsv4-serve's own workers behind
-# its own disaggregated server (form K, $DS/dev/test_disagg.sh); E3-native-al writes the
-# orchestrator values of DS_ALIGNED_ORCHESTRATOR, as do the arms with trtllm-serve's
-# disaggregated server. On layout N-0 (PU-06), test_disagg.sh sets no other switch that
-# E3-native-al changes, so there the two native arms are one group.
+# its own disaggregated server (form K). E3-native keeps the deployment's front-end count and
+# disaggregated-server variables; E3-native-al runs one front end per worker and one ds proxy
+# process without load routing, and writes the orchestrator values of DS_ALIGNED_ORCHESTRATOR,
+# as do the arms with trtllm-serve's disaggregated server. On layout N-0 (PU-06,
+# $DS/dev/test_disagg.sh) the deployment sets none of the switches E3-native-al changes, so
+# there the two native arms are one group.
 CASE_DS = "case-03"
 CHAIN_DS = "ds"
 ORCHESTRATOR_TRTLLM = "trtllm"
 ORCHESTRATOR_DS = "ds"
+_DS_HTTP = RoleArm(CHAIN_NONE, None, None, True)
 _DS_HTTP_1F = RoleArm(CHAIN_NONE, 1, None, True)
 _DS_CHAIN_1F = RoleArm(CHAIN_DS, 1, None)
 _DS_CHAIN_LEAN = RoleArm(CHAIN_DS, 1, 0)
@@ -422,8 +427,8 @@ DISAGG_ARMS.update(
                 None,
                 None,
                 TOPOLOGY_DISAGG,
-                _DS_HTTP_1F,
-                _DS_HTTP_1F,
+                _DS_HTTP,
+                _DS_HTTP,
                 ORCHESTRATOR_DS,
             ),
             Arm(
@@ -1535,7 +1540,8 @@ def check_disagg_case(
     """Refuse a perf sanity test a disaggregated arm cannot run.
 
     A disaggregated arm takes the ``e2e`` and ``gen_only`` modes of a
-    disaggregated test whose workers each fit on one node, without the time
+    disaggregated test whose workers each fit on one node (a case-03 worker may take whole
+    nodes, :func:`ds_spans_nodes`), without the time
     breakdown, DWDP or ``numactl``: the chain starts its engine and front end
     with a ``trtllm-serve`` command line and cannot split one that a
     ``numactl`` prefix starts, and both arms of a comparison start the same way.
@@ -1586,8 +1592,10 @@ def prepare_worker(cmd: Sequence[str], arm: Arm, role: str, out_dir: str) -> Ser
     (``ds_http``) runs dsv4-serve with the same options and ``--server_role``.
 
     Raises:
-        ArmError: As :func:`prepare_server` raises, or the command line gives
-            its own ``--server_role``.
+        ArmError: As :func:`prepare_server` raises, the command line gives
+            its own ``--server_role``, or a native ds worker has no
+            ``TRTLLM_TEST_DS_SERVE_CMD``.
+        ValueError: A native ds worker's command line is not a ``trtllm-serve`` one.
     """
     view = role_view(arm, role)
     plan = prepare_server(cmd, view, out_dir)
@@ -3186,28 +3194,50 @@ def ds_spans_nodes(arm: Arm, gpus: int, gpus_per_node: int) -> bool:
     )
 
 
-def ds_node_rank(
-    config: Mapping[str, Any], local_gpus: int, environ: Mapping[str, str] | None = None
-) -> int | None:
-    """This node's rank in a multi-node ds instance of ``config``; ``None`` for one node.
+def _step_tasks_per_node(environ: Mapping[str, str]) -> list[int]:
+    """Tasks per node of the Slurm step this process runs in (``SLURM_STEP_TASKS_PER_NODE``)."""
+    counts = []
+    for part in environ.get("SLURM_STEP_TASKS_PER_NODE", "").split(","):
+        count = part.strip().split("(", 1)[0]
+        if count.isdigit():
+            counts.append(int(count))
+    return counts
 
-    The rules are dsv4-serve's: more GPUs than ``local_gpus`` make the instance multi-node,
-    and the rank is ``DSV4_NODE_RANK``, else ``SLURM_NODEID``, else ``SLURM_PROCID``. The
-    instance's step starts one task per node; rank 0 leads and serves, the others follow.
+
+def ds_node_rank(
+    plan: ServerPlan, local_gpus: int, environ: Mapping[str, str] | None = None
+) -> int | None:
+    """This node's rank in a multi-node ds instance of ``plan``; ``None`` for one node.
+
+    The rules are dsv4-serve's: a ``tensor_parallel_size`` larger than this node's GPUs
+    (``CUDA_VISIBLE_DEVICES``, else ``local_gpus``) makes the instance multi-node, and the
+    rank is ``DSV4_NODE_RANK``, else ``SLURM_NODEID``, else ``SLURM_PROCID``. Each node of
+    the instance runs one task of the worker's step: rank 0 leads and serves, the others
+    follow.
 
     Raises:
-        ArmError: The instance's GPUs are not a multiple of ``local_gpus``, or the rank is
-            not a non-negative integer.
+        ArmError: The instance's GPUs are not a multiple of this node's, the step runs more
+            than one task on a node, or the rank is not a non-negative integer.
     """
     env = os.environ if environ is None else environ
-    gpus = parallel_gpus(config)
-    if local_gpus <= 0 or gpus <= local_gpus:
+    visible = env.get("CUDA_VISIBLE_DEVICES")
+    if visible is not None and visible.strip():
+        local_gpus = len([gpu for gpu in visible.split(",") if gpu.strip()])
+    tp = _as_int(_ds_param(plan.cmd, plan.config, "tensor_parallel_size"))
+    tp = tp if isinstance(tp, int) and tp > 0 else 1
+    if local_gpus <= 0 or tp <= local_gpus:
         return None
-    if gpus % local_gpus:
-        raise ArmError(f"a ds instance of {gpus} GPUs does not fill nodes of {local_gpus} GPUs")
+    if tp % local_gpus:
+        raise ArmError(f"a ds instance of {tp} GPUs does not fill nodes of {local_gpus} GPUs")
+    tasks = _step_tasks_per_node(env)
+    if any(count > 1 for count in tasks):
+        raise ArmError(
+            "a multi-node ds instance runs one process per node: its worker step must run one "
+            f"task per node, not SLURM_STEP_TASKS_PER_NODE={env['SLURM_STEP_TASKS_PER_NODE']}"
+        )
     for name in _DS_NODE_RANK_ENV:
         value = env.get(name)
-        if value is not None and value != "":
+        if value is not None:
             if not value.isdigit():
                 raise ArmError(f"{name}={value!r} is not a node rank")
             return int(value)
@@ -3232,6 +3262,25 @@ def ds_follower_command(plan: ServerPlan, environ: Mapping[str, str] | None = No
     return ds_http_command(tokens, environ)
 
 
+def _stop_process_group(proc: subprocess.Popen, grace_s: float) -> None:
+    """Stop ``proc``, started in a session of its own, and every process of its group.
+
+    SIGTERM to the group, SIGKILL to it after ``grace_s`` seconds if ``proc`` is still running.
+    """
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(proc.pid, sig)
+        except ProcessLookupError:
+            break
+        try:
+            proc.wait(timeout=grace_s)
+            break
+        except subprocess.TimeoutExpired:
+            continue
+    if proc.poll() is None:
+        proc.wait(timeout=grace_s)
+
+
 def run_ds_follower(
     cmd: Sequence[str],
     *,
@@ -3241,25 +3290,45 @@ def run_ds_follower(
 ) -> int | None:
     """Run a follower node of a multi-node ds instance until ``wait(proc)`` returns.
 
-    ``wait`` is the worker's wait for the end of the benchmark. The follower is then stopped
-    (SIGTERM, SIGKILL after 60 s). Returns its exit code.
+    ``wait`` is the worker's wait for the end of the benchmark. The follower's process group
+    is then stopped (SIGTERM, SIGKILL after 60 s), so that no process it started is left.
+    Returns its exit code.
 
     Raises:
         OSError: The follower cannot be started.
     """
     with open(log_path, "w", encoding="utf-8") as sink:
-        proc = subprocess.Popen(list(cmd), env=dict(env), stdout=sink, stderr=subprocess.STDOUT)
+        proc = subprocess.Popen(
+            list(cmd),
+            env=dict(env),
+            stdout=sink,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
         try:
             wait(proc)
         finally:
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=60)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=60)
+            _stop_process_group(proc, 60)
     return proc.returncode
+
+
+def ds_orchestrator_env(arm: Arm | None, env: Mapping[str, str]) -> dict[str, str]:
+    """The disaggregated server's environment under ``arm``, from the one the test gives it.
+
+    The aligned native arm runs dsv4-serve's disaggregated server as one process without its
+    load router; other arms keep ``env``. A pure function of ``env``, so that the benchmark's
+    process, which writes the result, derives what the server's process ran with.
+    """
+    out = dict(env)
+    if (
+        arm is not None
+        and arm.case == CASE_DS
+        and arm.orchestrator == ORCHESTRATOR_DS
+        and arm.aligned
+    ):
+        out.pop(ENV_DS_PROXY_LOAD_ROUTE, None)
+        out[ENV_DS_PROXY_WORKERS] = "1"
+    return out
 
 
 @dataclass(frozen=True)
@@ -3291,15 +3360,14 @@ def prepare_orchestrator(
     An aligned arm writes :data:`DS_ALIGNED_ORCHESTRATOR` into the server's YAML
     (``config_path``, rewritten in place, so that the result reads what the server read). The
     native arms' server is dsv4-serve's: it gets a port chosen in advance, written into the
-    YAML. The aligned native arm also runs without dsv4-serve's load router and with one
-    server process.
+    YAML. Its environment is :func:`ds_orchestrator_env`'s.
 
     Raises:
         ArmError: As :func:`ds_orchestrator_command` raises, or the YAML is not a mapping.
         OSError: The YAML cannot be read or written.
         yaml.YAMLError: The YAML cannot be parsed.
     """
-    out_env = dict(env)
+    out_env = ds_orchestrator_env(arm, env)
     if arm.case != CASE_DS or arm.topology != TOPOLOGY_DISAGG:
         return OrchestratorPlan(tuple(cmd), None, out_env)
     with open(config_path, encoding="utf-8") as f:
@@ -3314,9 +3382,6 @@ def prepare_orchestrator(
         tokens = ds_orchestrator_command(tokens, environ)
         port = free_port(hostname)
         config["port"] = port
-        if arm.aligned:
-            out_env.pop(ENV_DS_PROXY_LOAD_ROUTE, None)
-            out_env[ENV_DS_PROXY_WORKERS] = "1"
     with open(config_path, "w", encoding="utf-8") as f:
         yaml.safe_dump(config, f, sort_keys=False)
     return OrchestratorPlan(tuple(tokens), port, out_env)
@@ -3329,6 +3394,38 @@ def _ds_env_split(env: Mapping[str, str]) -> tuple[dict[str, str], dict[str, str
         if key.startswith(_DS_ENV_PREFIX):
             (log_only if key.startswith(_DS_LOG_ONLY_ENV) else shared)[key] = value
     return shared, log_only
+
+
+# dsv4-serve's other names for the instance parameters' options, and its flag options.
+_DS_PARAM_OPTIONS = {
+    "tensor_parallel_size": ("--tensor_parallel_size", "--tp_size"),
+    "moe_expert_parallel_size": ("--moe_expert_parallel_size", "--ep_size"),
+}
+_DS_FLAG_PARAMS = ("enable_attention_dp",)
+_DS_KV_FRACTION_OPTIONS = ("--free_gpu_memory_fraction", "--kv_cache_free_gpu_memory_fraction")
+
+
+def _ds_param(argv: Sequence[str], config: Mapping[str, Any], key: str) -> Any:
+    """Instance parameter ``key`` as dsv4-serve reads it: its option in ``argv``, else ``config``."""
+    if key in _DS_FLAG_PARAMS:
+        return True if f"--{key}" in argv else config.get(key)
+    if key == "kv_cache_config":
+        value = copy.deepcopy(config.get(key))
+        fraction = None
+        for name in _DS_KV_FRACTION_OPTIONS:
+            found = [item for item in _option_values(argv, name) if item[1] is not None]
+            if found and (fraction is None or found[-1][0] > fraction[0]):
+                fraction = found[-1]
+        if fraction is not None:
+            value = dict(value) if isinstance(value, Mapping) else {}
+            value["free_gpu_memory_fraction"] = yaml.safe_load(fraction[1])
+        return value
+    found = []
+    for name in _DS_PARAM_OPTIONS.get(key, (f"--{key}",)):
+        found += [item for item in _option_values(argv, name) if item[1] is not None]
+    if found:
+        return yaml.safe_load(max(found)[1])
+    return config.get(key)
 
 
 def ds_instance_reading(
@@ -3356,10 +3453,7 @@ def ds_instance_reading(
     if run_env is None:
         notes.append(f"ds instance: environment of process {pid} not readable; planned one")
         run_env = env
-    params = {}
-    for key in DS_INSTANCE_PARAMS:
-        value = option_value(argv, f"--{key}")
-        params[key] = yaml.safe_load(value) if value is not None else config.get(key)
+    params = {key: _ds_param(argv, config, key) for key in DS_INSTANCE_PARAMS}
     shared, log_only = _ds_env_split(run_env)
     # DK-13: the warning exists only with DSV4_GEN_OVERLAP=1, and the engine log is not read.
     overlap_warning = False if run_env.get(ENV_DS_GEN_OVERLAP) != "1" else None
@@ -3428,9 +3522,12 @@ def add_ds_blocks(
 ) -> None:
     """Add a case-03 result's blocks: each role's ds instance, the aligned settings, the client.
 
-    Also fills in the orchestrator's kind and the ds-engine commit, and notes what
-    ``kv_transfer.backend`` means for the ds engine.
+    ``orchestrator_env`` is the environment the test gives the disaggregated server; the
+    server's own is derived from it (:func:`ds_orchestrator_env`). Also fills in the
+    orchestrator's kind and the ds-engine commit, and notes what ``kv_transfer.backend``
+    means for the ds engine.
     """
+    server_env = ds_orchestrator_env(probe.arm, orchestrator_env)
     after = probe.readings.get(PHASE_AFTER, {})
     doc["ds_instances"] = _role_values_of(after, probe, lambda r: r.get("ds_instance"))
     try:
@@ -3443,7 +3540,7 @@ def add_ds_blocks(
     doc["ds_alignment"] = {
         "orchestrator": {key: config.get(key) for key in _DS_ORCH_KEYS},
         "orchestrator_env": {
-            key: orchestrator_env.get(key)
+            key: server_env.get(key)
             for key in (ENV_DS_PROXY_LOAD_ROUTE, ENV_DS_PROXY_WORKERS, ENV_DS_PROXY_FE_AFFINITY)
         },
         "frontend": _role_values_of(
@@ -3475,8 +3572,10 @@ def validate_ds_blocks(doc: Mapping[str, Any], arm: Arm | None) -> list[str]:
     alignment = doc["ds_alignment"]
     if not isinstance(alignment, dict) or set(alignment) != set(_DS_ALIGNMENT_KEYS):
         errors.append(f"ds_alignment must hold exactly {list(_DS_ALIGNMENT_KEYS)}")
+    elif not all(isinstance(alignment[key], dict) for key in ("orchestrator", "orchestrator_env")):
+        errors.append("ds_alignment.orchestrator and orchestrator_env must be objects")
     elif arm is not None and arm.aligned:
-        orch = alignment["orchestrator"] or {}
+        orch = alignment["orchestrator"]
         for key, value in DS_ALIGNED_ORCHESTRATOR.items():
             if orch.get(key) != value:
                 errors.append(f"ds_alignment.orchestrator.{key} must be {value} for arm {arm.name}")
@@ -3547,7 +3646,8 @@ class DsLayout:
 
 
 _NODE_GPUS = "0,1,2,3"
-# Context instances of the mid layout ($DS/dev/agentx_deploy.sh mid; PU-08's middle row has 2).
+# Context instances of the mid layout: PU-08's middle row has 2 (agentx_deploy.sh's CTX_N=2;
+# the script's own default is 3).
 DS_MID_CTX_DEFAULT = 2
 
 
@@ -3558,10 +3658,12 @@ def ds_layout(
     ctx_instances: int | None = None,
     client_node: str | int | None = None,
 ) -> DsLayout:
-    """Where each ds instance of a case-03 layout runs, as ``$DS/dev/agentx_deploy.sh`` places it.
+    """Where each ds instance of a case-03 layout runs, as ds's deployment scripts place it.
 
-    Layouts: ``n0`` (PU-06: context DEP2 on GPUs 0-1 and generation TP2 on GPUs 2-3 of one
-    node), ``mini`` (PU-07: context DEP2 on node 0, generation TP4 on node 1) and ``mid``
+    For a job body that starts the instances itself; the single-node driver assigns GPUs
+    its own way. Layouts: ``n0`` (PU-06, ``$DS/dev/test_disagg.sh``: context DEP2 on GPUs 0-1
+    and generation TP2 on GPUs 2-3 of one node), and as ``$DS/dev/agentx_deploy.sh`` places
+    them, ``mini`` (PU-07: context DEP2 on node 0, generation TP4 on node 1) and ``mid``
     (PU-08: ``ctx_instances`` context DEP2, two per node, then one generation DEP16 on four
     nodes). The disaggregated server and the client run on node 0; ``client_node="last"``
     gives them the last node to themselves, an index puts them on that node.
@@ -3619,9 +3721,9 @@ def ds_layout(
 AGENTX_CLIENT = "agentx"
 # The trace corpus $DS/dev/run_agentx.sh replays (it takes no dataset argument).
 DS_AGENTX_DATASET = "semianalysis_cc_traces_weka_062126"
-# The client settings all case-03 arms share (03_perf-tests.md §3.3, PU-08), unless the lane's
-# client environment sets them.
-DS_AGENTX_DEFAULTS = {
+# The client settings all case-03 arms share (03_perf-tests.md §3.3, PU-08); they replace the
+# lane's own values.
+DS_AGENTX_SETTINGS = {
     "AGENTX_DURATION": "3600",
     "AGENTX_WARMUP_PER_LANE": "3",
     "AGENTX_EXTRA_ARGS": "",
@@ -3657,7 +3759,8 @@ def arm_client_cmd(arm: Arm | None, benchmark_client: str, cmd: Sequence[str]) -
     becomes this module's ``ds-agentx`` command with the same options; the others are kept.
 
     Raises:
-        ArmError: The AgentX command line gives an option the ds client does not take.
+        ArmError: The AgentX command line gives an option the ds client does not take, or a
+            dataset other than the one it replays.
     """
     tokens = list(cmd)
     if not (takes_client(arm, benchmark_client) and benchmark_client == AGENTX_CLIENT):
@@ -3673,6 +3776,11 @@ def arm_client_cmd(arm: Arm | None, benchmark_client: str, cmd: Sequence[str]) -
                 f"--dataset, not {name}"
             )
         options[name] = value
+    if options.get("--dataset", DS_AGENTX_DATASET) != DS_AGENTX_DATASET:
+        raise ArmError(
+            f"arm {arm.name}: the ds AgentX client replays {DS_AGENTX_DATASET}, not "
+            f"{options['--dataset']}"
+        )
     out = [sys.executable, os.path.abspath(__file__), DS_AGENTX_COMMAND]
     for name in ("--model", "--concurrency", "--dataset"):
         if name in options:
@@ -3691,10 +3799,11 @@ def _agentx_client_module() -> types.ModuleType:
 
 def _total_output_tokens(export: Mapping[str, Any]) -> tuple[int | None, str | None]:
     """The run's output token count from an aiperf export, and how it was obtained."""
+    # output_token_count is per request: only its sum is the run's total.
     for field_name in ("total_output_tokens", "output_token_count"):
         entry = export.get(field_name)
         if isinstance(entry, Mapping):
-            for stat in ("sum", "total", "avg"):
+            for stat in ("sum", "total"):
                 if _is_number(entry.get(stat)):
                     return int(entry[stat]), f"{field_name}.{stat}"
     rate = export.get("output_token_throughput")
@@ -3712,15 +3821,19 @@ def run_ds_agentx(argv: Sequence[str], environ: Mapping[str, str] | None = None)
     """The AgentX client of the case-03 arms: ``$TRTLLM_TEST_DS_ROOT/dev/run_agentx.sh``.
 
     Runs ds's client (aiperf with ds's warmup-learning patch when
-    ``AIPERF_AGENTX_WARMUP_LEARN_REQUESTS`` is set) against ``--host``/``--port`` for
-    ``AGENTX_DURATION`` seconds, writing its records to ``TRTLLM_AGENTX_ARTIFACT_DIR``; then
-    checks aiperf's export as perf/agentx_client.py does and prints its metrics in
-    benchmark_serving's format, the total output token count, and one line of the client's
-    settings (:data:`DS_CLIENT_LINE`) for the result. Returns 0, or raises.
+    ``AIPERF_AGENTX_WARMUP_LEARN_REQUESTS`` is set) against ``--host``/``--port`` with
+    :data:`DS_AGENTX_SETTINGS`, writing its records to ``concurrency_<C>`` under
+    ``TRTLLM_AGENTX_ARTIFACT_DIR`` (an export an earlier run left there is removed first,
+    as perf/agentx_client.py does); then checks aiperf's export as agentx_client.py does and
+    prints its metrics in benchmark_serving's format, the total output token count, and one
+    line of the client's settings (:data:`DS_CLIENT_LINE`) for the result. Returns 0, or
+    raises.
 
     Raises:
         ArmError: The ds checkout, its script or the artifact directory is missing, the
-            artifact directory already holds an export, or the run wrote none.
+            dataset is not the one run_agentx.sh replays, the run outlived its duration plus
+            ``AGENTX_TIMEOUT_GRACE`` seconds (its processes are stopped), or it wrote no
+            export.
         RuntimeError: The export shows an incomplete or failed run (agentx_client.py's checks).
     """
     import argparse
@@ -3730,19 +3843,32 @@ def run_ds_agentx(argv: Sequence[str], environ: Mapping[str, str] | None = None)
         parser.add_argument(name, required=True)
     parser.add_argument("--dataset", default=DS_AGENTX_DATASET)
     args = parser.parse_args(list(argv))
+    if args.dataset != DS_AGENTX_DATASET:
+        raise ArmError(
+            f"run_agentx.sh replays {DS_AGENTX_DATASET}, not the lane's dataset {args.dataset}"
+        )
     env = dict(os.environ if environ is None else environ)
-    for key, value in DS_AGENTX_DEFAULTS.items():
-        env.setdefault(key, value)
+    replaced = {
+        key: env[key]
+        for key, value in DS_AGENTX_SETTINGS.items()
+        if key in env and env[key] != value
+    }
+    if replaced:
+        print(f"[ds-agentx] the case-03 arms replace the lane's {replaced}", flush=True)
+    env.update(DS_AGENTX_SETTINGS)
     root = env.get(ENV_DS_ROOT, "")
     script = os.path.join(root, "dev", "run_agentx.sh")
     if not root or not os.path.isfile(script):
         raise ArmError(f"the ds AgentX client needs {ENV_DS_ROOT} with dev/run_agentx.sh")
-    out_dir = env.get(ENV_AGENTX_ARTIFACT_DIR, "")
-    if not out_dir:
+    parent = env.get(ENV_AGENTX_ARTIFACT_DIR, "")
+    if not parent:
         raise ArmError(f"the ds AgentX client needs {ENV_AGENTX_ARTIFACT_DIR}")
+    out_dir = os.path.abspath(os.path.join(parent, f"concurrency_{args.concurrency}"))
+    os.makedirs(out_dir, exist_ok=True)
     export_path = os.path.join(out_dir, "profile_export_aiperf.json")
     if os.path.exists(export_path):
-        raise ArmError(f"{export_path} exists from an earlier run; use a new artifact directory")
+        print(f"[ds-agentx] removing the export of an earlier run: {export_path}", flush=True)
+        os.remove(export_path)
     env["MODEL"] = args.model
     duration = int(env["AGENTX_DURATION"])
     settings = {
@@ -3751,20 +3877,27 @@ def run_ds_agentx(argv: Sequence[str], environ: Mapping[str, str] | None = None)
         "window_s": duration,
         "warmup_per_lane": int(env["AGENTX_WARMUP_PER_LANE"]),
         "extra_args": env["AGENTX_EXTRA_ARGS"],
-        "dataset_requested": args.dataset,
-        "dataset_used": DS_AGENTX_DATASET,
+        "dataset": DS_AGENTX_DATASET,
         "warmup_learning": {key: env.get(key) for key in _AGENTX_LEARN_ENV},
     }
     print(DS_CLIENT_LINE + json.dumps(settings, sort_keys=True), flush=True)
     url = f"http://{args.host}:{args.port}"
     grace = int(env.get("AGENTX_TIMEOUT_GRACE", "3600"))
-    completed = subprocess.run(
+    # A session of its own: on a timeout, aiperf and its workers stop with the script.
+    proc = subprocess.Popen(
         ["bash", script, url, str(args.concurrency), str(duration), out_dir],
         env=env,
-        timeout=duration + grace,
+        start_new_session=True,
     )
+    try:
+        returncode = proc.wait(timeout=duration + grace)
+    except subprocess.TimeoutExpired:
+        _stop_process_group(proc, 60)
+        raise ArmError(f"run_agentx.sh still ran {duration + grace} s after it started; stopped it")
+    if returncode != 0:
+        print(f"[ds-agentx] run_agentx.sh exited {returncode}; checking its export", flush=True)
     if not os.path.exists(export_path):
-        raise ArmError(f"run_agentx.sh exited {completed.returncode} and wrote no {export_path}")
+        raise ArmError(f"run_agentx.sh exited {returncode} and wrote no {export_path}")
     with open(export_path, encoding="utf-8") as f:
         export = json.load(f)
     client = _agentx_client_module()

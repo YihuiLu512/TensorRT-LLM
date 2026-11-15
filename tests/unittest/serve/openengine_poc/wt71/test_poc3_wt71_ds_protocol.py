@@ -27,7 +27,7 @@ PROBE = """
 import json, sys
 from dsv4_serve.protocol import DisaggregatedParams
 from pydantic import ValidationError
-fields = sorted(DisaggregatedParams.model_fields)
+fields = list(DisaggregatedParams.model_fields)
 sample = json.loads(sys.argv[1])
 params = DisaggregatedParams.model_validate(sample)
 rejected = []
@@ -49,21 +49,24 @@ SAMPLE = {
 }
 INVALID = [
     {"remote_tail_start": -1},
-    {"multimodal_positions": [-1]},
-    {"multimodal_lengths": [0]},
+    {"multimodal_positions": [-1, 12]},
+    {"multimodal_lengths": [0, 4]},
+    # trtllm-serve's cross-field check of the spans.
+    {"multimodal_lengths": [4]},
+    {"multimodal_lengths": None},
     {"not_a_field": 1},
 ]
 
 
-def _trtllm_fields() -> set[str]:
+def _trtllm_fields() -> list[str]:
     tree = ast.parse(TRTLLM_PROTOCOL.read_text())
     for node in tree.body:
         if isinstance(node, ast.ClassDef) and node.name == "DisaggregatedParams":
-            return {
+            return [
                 item.target.id
                 for item in node.body
                 if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name)
-            }
+            ]
     raise AssertionError(f"no DisaggregatedParams in {TRTLLM_PROTOCOL}")
 
 
@@ -89,15 +92,16 @@ def ds_reading():
 OPENENGINE_ONLY = {"openengine_handoff_attributes"}
 
 
-def test_ds_takes_every_trtllm_field(ds_reading):
+def test_ds_takes_every_trtllm_field_in_its_order(ds_reading):
     trtllm = _trtllm_fields()
     assert {
         "remote_tail_start",
         "multimodal_positions",
         "multimodal_lengths",
         "orig_elapsed_s",
-    } <= trtllm
-    assert trtllm - OPENENGINE_ONLY - set(ds_reading["fields"]) == set()
+    } <= set(trtllm)
+    # dsv4-serve keeps trtllm-serve's field order, so that both serialize alike.
+    assert ds_reading["fields"] == [name for name in trtllm if name not in OPENENGINE_ONLY]
 
 
 def test_ds_validates_them_as_trtllm_does(ds_reading):
