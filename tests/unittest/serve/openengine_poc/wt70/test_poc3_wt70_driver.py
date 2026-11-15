@@ -215,9 +215,17 @@ def test_stale_state(driver, tmp_path):
 
 def test_check_arm(driver):
     arms = driver.load_arms(str(REPO / "tests" / "integration" / "defs")).DISAGG_ARMS
-    assert driver.check_arm({"TRTLLM_PERF_ARM": "E4-chain"}, arms) == "E4-chain"
+    chain = "TRTLLM_TEST_OPENENGINE_CHAIN"
+    assert driver.check_arm({"TRTLLM_PERF_ARM": "E4-chain", chain: "trtllm"}, arms) == "E4-chain"
+    assert driver.check_arm({"TRTLLM_PERF_ARM": "E4-base"}, arms) == "E4-base"
     for env in ({}, {"TRTLLM_PERF_ARM": "E4-direct"}, {"TRTLLM_PERF_ARM": "A-def"}):
         with pytest.raises(driver.DriverError, match="E4-base, E4-base-lean, E4-chain"):
+            driver.check_arm(env, arms)
+    for env, want in (
+        ({"TRTLLM_PERF_ARM": "E4-chain"}, "set to 'trtllm'; it is ''"),
+        ({"TRTLLM_PERF_ARM": "E4-base", chain: "trtllm"}, "unset; it is 'trtllm'"),
+    ):
+        with pytest.raises(driver.DriverError, match=f"needs {chain} {want}"):
             driver.check_arm(env, arms)
 
 

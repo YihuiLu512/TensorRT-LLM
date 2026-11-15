@@ -2794,14 +2794,19 @@ def read_first_output(directory: str) -> dict[str, dict[str, list[int]]]:
     for name in names:
         if not name.endswith(".jsonl"):
             continue
-        with open(os.path.join(directory, name), encoding="utf-8") as f:
-            for line in f:
-                try:
-                    record = json.loads(line)
-                    probe, request_id, t_ns = record["probe"], record["request_id"], record["t_ns"]
-                except (ValueError, KeyError, TypeError):
-                    continue
-                found.setdefault(probe, {}).setdefault(str(request_id), []).append(int(t_ns))
+        try:
+            with open(os.path.join(directory, name), encoding="utf-8") as f:
+                lines = f.readlines()
+        except (OSError, ValueError):
+            continue
+        for line in lines:
+            try:
+                record = json.loads(line)
+                probe, request_id = record["probe"], record["request_id"]
+                t_ns = int(record["t_ns"])
+            except (ValueError, KeyError, TypeError):
+                continue
+            found.setdefault(probe, {}).setdefault(str(request_id), []).append(t_ns)
     return found
 
 
@@ -2826,9 +2831,11 @@ def first_output_gaps(
     """The first-output gap (front end received - engine sent) of the calls sent in ``window``.
 
     A call counts when both probes recorded it exactly once and the engine sent
-    its first output inside ``window``; the ``first_wave`` calls the engine sent
-    first are summarized apart from the rest. ``window`` may also map a call's
-    id to the window of the clock that call's timestamps use.
+    its first output inside ``window``; a call the engine sent inside ``window``
+    that either probe did not record exactly once is ``unmatched``. The
+    ``first_wave`` calls the engine sent first are summarized apart from the
+    rest. ``window`` may also map a call's id to the window of the clock that
+    call's timestamps use.
     """
     sent = records.get(ENGINE_FIRST_OUTPUT_PROBE, {})
     received = records.get(FRONTEND_FIRST_OUTPUT_PROBE, {})
@@ -2836,10 +2843,10 @@ def first_output_gaps(
     unmatched = 0
     for request_id, times in sent.items():
         bounds = window(request_id) if callable(window) else window
-        if len(times) != 1 or bounds is None or not bounds[0] <= times[0] <= bounds[1]:
+        if not times or bounds is None or not bounds[0] <= times[0] <= bounds[1]:
             continue
         other = received.get(request_id, ())
-        if len(other) != 1:
+        if len(times) != 1 or len(other) != 1:
             unmatched += 1
             continue
         joined.append((times[0], (other[0] - times[0]) / 1e6))

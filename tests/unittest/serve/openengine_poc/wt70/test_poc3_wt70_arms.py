@@ -598,10 +598,22 @@ def test_first_output_gaps(arms):
         },
     }  # fmt: skip
     gaps = arms.first_output_gaps(records, (5 * ms, 20 * ms), first_wave=2)
-    assert (gaps["calls"], gaps["unmatched"]) == (4, 1)
+    # "lost" has no front-end record and "twice" two engine records: both are unmatched.
+    assert (gaps["calls"], gaps["unmatched"]) == (4, 2)
     assert gaps["first_wave"] == {"count": 2, "median_ms": 2.0, "p99_ms": 2.0, "max_ms": 2.0}
     assert gaps["rest"] == {"count": 2, "median_ms": 4.0, "p99_ms": 4.0, "max_ms": 4.0}
     assert arms.first_output_gaps(records, None, 2)["calls"] == 0
+
+
+def test_read_first_output_skips_what_it_cannot_read(arms, tmp_path):
+    probe = arms.ENGINE_FIRST_OUTPUT_PROBE
+    _write_probe(tmp_path, probe, [("a", 10)])
+    with (tmp_path / f"{probe}-host-1.jsonl").open("a") as f:
+        f.write(f'{{"probe": "{probe}", "request_id": "b", "t_ns": "late"}}\n')
+        f.write(f'{{"probe": "{probe}", "request_id": "c", "t_ns": 12.0}}\n')
+    (tmp_path / "unreadable.jsonl").mkdir()
+    assert arms.read_first_output(str(tmp_path)) == {probe: {"a": [10], "c": [12]}}
+    assert arms.read_first_output(str(tmp_path / "missing")) == {}
 
 
 def test_first_output_block_reads_each_chained_worker(arms, tmp_path):

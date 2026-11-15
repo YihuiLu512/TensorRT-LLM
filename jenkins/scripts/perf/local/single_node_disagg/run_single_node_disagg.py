@@ -305,7 +305,8 @@ def check_arm(env: Mapping[str, str], arms: Mapping) -> str:
     """The disaggregated arm ``TRTLLM_PERF_ARM`` names.
 
     Raises:
-        DriverError: It is unset, unknown or not a disaggregated arm.
+        DriverError: It is unset, unknown or not a disaggregated arm, or
+            ``TRTLLM_TEST_OPENENGINE_CHAIN`` is not what the arm needs.
     """
     name = env.get(ENV_ARM, "")
     disagg = sorted(n for n, arm in arms.items() if arm.topology == DISAGG_TOPOLOGY)
@@ -313,6 +314,12 @@ def check_arm(env: Mapping[str, str], arms: Mapping) -> str:
         raise DriverError(
             f"{ENV_ARM}={name!r}: the driver runs the disaggregated arms {', '.join(disagg)}"
         )
+    # The roles' pytest checks this too, but only after every role has started.
+    expected = "" if arms[name].in_process else arms[name].chain
+    chain = env.get(ENV_CHAIN, "")
+    if chain != expected:
+        want = f"set to {expected!r}" if expected else "unset"
+        raise DriverError(f"{ENV_ARM}={name} needs {ENV_CHAIN} {want}; it is {chain!r}")
     return name
 
 
