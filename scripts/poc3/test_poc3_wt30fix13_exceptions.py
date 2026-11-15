@@ -47,8 +47,7 @@ ADDED = [
     '        "_test_openengine_ds_disagg_cancel.py::test_abort_stages[*",',
     '        "_test_openengine_ds_disagg_cancel.py::test_parked_kv_timeout_and_orphans",',
 ]
-# The line the exception for WT-55-fix1 allows. Sorted, it comes before WT-62's lines: once it is in
-# without them, it is the last entry of the list and they go after it.
+# The line the exception for WT-55-fix1 allows. Sorted, it comes before WT-62's lines.
 FIX = "WT-55-fix1"
 FIX_ADDED = [
     '        "_test_openengine_disagg_gen_first.py::test_gen_first_cancel_closes_both_legs",'
@@ -129,6 +128,7 @@ def test_the_exception_lists_exactly_the_lines():
         ("WT-38", "shared"),
         (ITEM, "exception"),
         (FIX, "exception"),
+        ("WT-57-fix1", "exception"),
     ]
 
 
@@ -175,8 +175,8 @@ def test_wt55_fix1_may_add_its_line_before_the_lines_of_wt62(tmp_path, capsys):
     assert found == 0, out
 
 
-# Each exception allows its own work item its own lines only: neither may add the other's lines,
-# nor both sets at once.
+# The exceptions for WT-62 and WT-55-fix1 allow each its own work item its own lines only: neither
+# may add the other's lines, nor both sets at once.
 @pytest.mark.parametrize(
     "task, added",
     [
@@ -201,7 +201,8 @@ def test_neither_work_item_may_add_the_lines_of_the_other(tmp_path, capsys, task
     _refused(*_check(tmp_path, capsys, base, _after(base, ANCHOR, added), task))
 
 
-# Work items with no rule for PATH: WT-62's fixes, the item WT-55-fix1 fixes and another fix of it.
+# Work items no rule allows to change PATH: WT-62's fixes, the item WT-55-fix1 fixes and another
+# fix of it.
 OTHERS = ["WT-62-fix1", "WT-62-fix2", "WT-62-fix3", "WT-55", "WT-55-fix2"]
 
 
@@ -209,7 +210,9 @@ OTHERS = ["WT-62-fix1", "WT-62-fix2", "WT-62-fix3", "WT-55", "WT-55-fix2"]
 def test_no_other_work_item_may_add_the_lines(tmp_path, capsys, task):
     base = _show(BASE)
     found, out = _check(tmp_path, capsys, base, _after(base, ANCHOR, ADDED), task)
-    assert found == 1 and f"OUT OF BOUNDS  {PATH}  (owned by WT-38, {ITEM}, {FIX})" in out, out
+    assert (
+        found == 1 and f"OUT OF BOUNDS  {PATH}  (owned by WT-38, {ITEM}, {FIX}, WT-57-fix1)" in out
+    ), out
 
 
 # The ways the lines can differ from the ones allowed: one of them alone, the two swapped, a
@@ -319,4 +322,4 @@ def test_the_lines_cannot_be_added_again_once_wt62_has_landed(tmp_path, capsys, 
     if task == ITEM:
         assert f"OUT OF BOUNDS  {PATH}  (the exception for {ITEM} is spent" in out
     else:
-        assert f"OUT OF BOUNDS  {PATH}  (owned by WT-38, {ITEM}, {FIX})" in out
+        assert f"OUT OF BOUNDS  {PATH}  (owned by WT-38, {ITEM}, {FIX}, WT-57-fix1)" in out

@@ -32,7 +32,7 @@ TEST = "test_shipped_tables_name_each_test_that_cancels_calls"
 # with the line added after ANCHOR, as WT-55-fix1 changes it.
 BASE = "0f71f2e5bd5e2e32234cffc73a8c5ccbe26dd885"
 HEAD_BLOB = "aff399791e41f257316291b5bdc20072f82bd9c2"
-# The last entry of TEST's list, and the line that goes after it.
+# The last entry of TEST's list at BASE, and the line that goes after it.
 ANCHOR = '        "_test_openai_misc.py::test_request_cancellation[*",'
 ADDED = ['        "_test_openengine_disagg_gen_first.py::test_gen_first_cancel_closes_both_legs",']
 
@@ -104,6 +104,7 @@ def test_the_exception_lists_exactly_the_line():
         ("WT-38", "shared"),
         ("WT-62", "exception"),
         (ITEM, "exception"),
+        ("WT-57-fix1", "exception"),
     ]
 
 
@@ -130,7 +131,9 @@ OTHERS = ["WT-55", "WT-55-fix2", "WT-55-fix3"]
 def test_no_other_work_item_may_add_the_line(tmp_path, capsys, task):
     base = _show(BASE)
     found, out = _check(tmp_path, capsys, base, _after(base, ANCHOR, ADDED), task)
-    assert found == 1 and f"OUT OF BOUNDS  {PATH}  (owned by WT-38, WT-62, {ITEM})" in out, out
+    assert (
+        found == 1 and f"OUT OF BOUNDS  {PATH}  (owned by WT-38, WT-62, {ITEM}, WT-57-fix1)" in out
+    ), out
 
 
 # The ways the line can differ from the one allowed: a broader match, another test of the same
@@ -253,4 +256,4 @@ def test_the_line_cannot_be_added_again_once_wt55_fix1_has_landed(tmp_path, caps
     if task == ITEM:
         assert f"OUT OF BOUNDS  {PATH}  (the exception for {ITEM} is spent" in out
     else:
-        assert f"OUT OF BOUNDS  {PATH}  (owned by WT-38, WT-62, {ITEM})" in out
+        assert f"OUT OF BOUNDS  {PATH}  (owned by WT-38, WT-62, {ITEM}, WT-57-fix1)" in out

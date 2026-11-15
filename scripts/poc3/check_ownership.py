@@ -1088,7 +1088,25 @@ OWNERSHIP: dict[str, list[Rule]] = {
         _shared(f"{CHAIN}/launch.py", "CT-08: _engine_prefix"),
     ],
     # The domains of §6.3 of 02_functional-tests.md; the files other items own are excluded below.
-    "WT-57": _own(f"{APPS}/_test_openengine_disagg_*.py"),
+    "WT-57": _own(f"{APPS}/_test_openengine_disagg_*.py")
+    + [
+        # WT-57-fix1 registers NT-199 as a test that cancels calls; the harness test that lists
+        # every such test names it too.
+        _exception(
+            f"{CHAIN}/tests/test_expectations.py",
+            f"N123 only: name NT-199 among the tests that cancel calls in {_CANCELS_CALLS_TEST}",
+            item="WT-57-fix1",
+            changes=(
+                _change(
+                    _CANCELS_CALLS_TEST,
+                    added=(
+                        '        "_test_openengine_disagg_transceiver.py::'
+                        'test_cancel_during_transfer_is_the_same_on_both_forms",',
+                    ),
+                ),
+            ),
+        ),
+    ],
     "WT-60": [],
     "WT-61": [],
     "WT-62": _own(
