@@ -818,6 +818,9 @@ def test_role_reader_reads_the_running_process_transfer_settings(arms, tmp_path)
         env={"UCX_TLS": "cuda_ipc", "PATH": "/usr/bin"},
     )
     try:
+        deadline = arms.time.monotonic() + 10
+        while arms._process_config(proc.pid) is None and arms.time.monotonic() < deadline:
+            arms.time.sleep(0.05)
         view = arms.role_view(arms.DISAGG_ARMS["E4-chain"], "gen")
         reader, _ = _reader(arms, view, tmp_path, env={"UCX_TLS": "tcp"})
         reader.server.handle = SimpleNamespace(engine=proc)
