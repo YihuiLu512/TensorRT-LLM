@@ -13,3 +13,17 @@
 - 2026-11-16 00:16:44 FT1-snl 变异 M0–M6 串行（约 5 分钟）
 - 2026-11-16 00:22:52 提交 907a2e30（S-NL 代码与测试；变异 M1–M9 全被抓，M7 为等价变异已换 M7b）。开跑作业路径 e2e：覆盖清单按 HEAD 生成，e2e-snl-full / e2e-snl-mono / e0a-nullsse 回归（各约 2–3 分钟）
 - 2026-11-16 00:32:56 跑 tests/capstubs 全目录（约 2–3 分钟），之后 tests/launch（约 5 分钟）；建测试用软链 WT/probe-tree（结束后改名移到 _local/ft1/probe-tree.link）
+- 2026-11-16 00:41:10 提交 e9584185（Control 推理探针、勘误 FT1-1～7）；tests/capstubs 128 passed、tests/launch 230 passed、tests/jobs 250 passed；M10（去掉 TOOL_TABLE 行）被抓。按新 HEAD 重跑作业路径 e2e（e2e-snl-full、e2e-snl-mono、e0a-nullsse，约 6 分钟）
+- 2026-11-16 作业路径 e2e（HEAD e9584185，覆盖清单 _local/ft1/e2e/ovl/P0-e9584185）：e2e-snl-full J9300011、e2e-snl-mono J9300012、e0a-nullsse J9300013 全部 submit rc 0、L0 VALID、judge rc 11（NOT_RUN）、0 RED、无 INPUT_INVALID；fakebin.log 只有真 capenv.gate 的 scontrol/squeue（替身 exit 97）。
+
+## FT1-snl 结果
+
+### MEASURED（本机，命令与日志在 _local/ft1/logs、_local/ft1/mut、_local/ft1/e2e/runs）
+- tests/capstubs 128 passed（logs/v1-capstubs.log）；tests/launch 230 passed（v1-launch.log）；tests/jobs 250 passed（v1-jobs.log）；之后改动只涉及 S-NL 探针路径，test_null_llm_server.py 与 test_nullllm.py 已重跑通过（s4/s5/u3）。
+- 变异（mut/summary.txt）：M1 节拍模式退化为一次入队、M2 不计 yielded、M3 不打 send.msg、M4 一次取多项、M5 不打 beat.step、M6 去掉包装核对、M7b 节拍器提前醒、M8 short 失效、M9 不截断、M10 去掉 TOOL_TABLE 行——全部被测试抓到；M7（首项偏移）是等价变异（product 闸门 offs[0] 恒为 0）。
+- 作业路径 e2e：e2e-snl-full（capgrpc.load 2 进程、openengine 请求字节 → S-NL full + snl_double）逐档 streams_accepted = drain ok（合计 1550）、msgs_yielded = drain msgs（合计 32550），C3/C5/C9/C10/C11/P-PIDS/P-SENT/RECORDS PASS；e2e-snl-mono（metronome-only）VALID，C3/P-SENT NOT_RUN（没有负载角色，预期）；e0a-nullsse 回归 VALID。
+### INFERRED
+- 产品 OpenEngineServer 的构造路径会经过 server 模块里的 OpenEngineInferenceServicer 名字（读探针树 server.py:146 附近），所以子类替换在真产品上应当生效；启动时的「恰好实例化一次」核对会在不生效时退出 3。
+### NOT RUN
+- 真 tensorrt_llm（真 servicer / _format_result / Control 启动检查 / ModelLoader 加载 tokenizer）跑在 NullLlm 上：本机无法 import，属 E0 补充冒烟（勘误 FT1-6①）。
+- raw 请求格式读 S-NL：真 servicer 要求非空且唯一的 request_id，原始格式不适用（勘误 FT1-1）；只测了「无 request_id 被拒」。
