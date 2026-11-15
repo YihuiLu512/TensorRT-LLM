@@ -1,0 +1,98 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# End-to-end checks of the disaggregated chain (case-04, trtllm chain, B200; one GPU shared by all
+# workers of NT-091 and NT-200, four or eight GPUs for the XD cases). NT-091 and NT-200 ran three
+# times on the commit their first entries name, and once on an earlier commit with the same tests
+# (before a rebase); the XD cases ran once, on that earlier commit. Each junit path is relative to
+# the result directory of its run, which the work item's status file records.
+# The comment above each entry tags each of its cases:
+# - ok: the chain proof holds.
+# - failed: the case failed, for the reason given below the tags.
+# Result and chain_proof are over all runs listed.
+entries:
+  # NT-091 ok: CH-2 equal on both legs (2 calls each) in every run, under the cancels_calls
+  # expectation. Only the generation engine's KV-cache blocks are checked; the test's docstring
+  # says why the context engine's are not.
+  - row: DG-39b
+    features:
+    - DG-39b
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_gen_first.py::test_gen_first_cancel_closes_both_legs
+    commit: cfc800e1c042fb0ea4f91f0314292d70a7c1577c
+    junit:
+    - b200-1g-n1-trtllm-final/b200-1g-n1-trtllm-final/job-5972814_0-r0/node0/results/e00/junit/
+    - b200-1g-n1-trtllm-final/b200-1g-n1-trtllm-final/job-5972814_1-r0/node0/results/e00/junit/
+    - b200-1g-n1-trtllm-final/b200-1g-n1-trtllm-final/job-5972814_2-r0/node0/results/e00/junit/
+    result: passed
+    chain_proof: ok
+  # NT-091 ok: the run on the earlier commit
+  - row: DG-39b
+    features:
+    - DG-39b
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_gen_first.py::test_gen_first_cancel_closes_both_legs
+    commit: e7e37d774d3674d957cb55a0efdcf887885d6d9e
+    junit:
+    - b200-1g-n1-trtllm/b200-1g-n1-trtllm/job-5966567_0-r0/node0/results/e00/junit/
+    result: passed
+    chain_proof: ok
+  # XD-215 ok (no_reuse, block_reuse), XD-207 ok (noadp-mtp0), XD-227 ok, XD-015 ok, XD-016 ok
+  - row: DG-81
+    features:
+    - DG-81
+    cases:
+    - accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_gen_first[no_reuse]
+    - accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_gen_first[block_reuse]
+    - accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_gen_first[noadp-mtp0]
+    - accuracy/test_disaggregated_serving.py::TestDeepSeekV4Flash::test_gen_first
+    - disaggregated/test_disaggregated.py::test_disaggregated_overlap_gen_first[ctx_pp1]
+    - disaggregated/test_disaggregated.py::test_disaggregated_overlap_gen_first[ctx_pp4]
+    commit: e7e37d774d3674d957cb55a0efdcf887885d6d9e
+    junit:
+    - b200-4g-f-a/b200-4g-f-a/job-5966569_0-r0/node0/results/e00/outer-junit.xml
+    - b200-4g-f-a/b200-4g-f-a/job-5966569_0-r0/node0/results/e01/outer-junit.xml
+    - b200-4g-f-b/b200-4g-f-b/job-5966570_0-r0/node0/results/e00/outer-junit.xml
+    - b200-4g-f-a/b200-4g-f-a/job-5966569_0-r0/node0/results/e02/outer-junit.xml
+    - b200-8g-f/b200-8g-f/job-5966571_0-r0/node0/results/e00/outer-junit.xml
+    - b200-8g-f/b200-8g-f/job-5966571_0-r0/node0/results/e01/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-207 failed (adp-mtp2), chain proof ok
+  # XD-207: failed: GSM8K 64.10 passes its threshold; the acceptance-length check then finds no
+  #   iteration with speculative-decoding stats in the generation worker's /metrics
+  - row: DG-81
+    features:
+    - DG-81
+    cases:
+    - accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_gen_first[adp-mtp2]
+    commit: e7e37d774d3674d957cb55a0efdcf887885d6d9e
+    junit:
+    - b200-4g-f-b/b200-4g-f-b/job-5966570_0-r0/node0/results/e01/outer-junit.xml
+    result: failed
+    chain_proof: ok
+  # NT-200 ok: the context-first request the pipelined context worker refuses is retried once by
+  # the disaggregated server (CH-5 counts the retry); the generation engine's KV-transfer records
+  # are in the junit property ch8_kv_transfers (CH-8, supplementary)
+  - row: EG-20
+    features:
+    - EG-20
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_gen_first.py::test_pipelined_transfer_with_chunked_prefill
+    commit: cfc800e1c042fb0ea4f91f0314292d70a7c1577c
+    junit:
+    - b200-1g-n1-trtllm-final/b200-1g-n1-trtllm-final/job-5972814_0-r0/node0/results/e01/junit/
+    - b200-1g-n1-trtllm-final/b200-1g-n1-trtllm-final/job-5972814_1-r0/node0/results/e01/junit/
+    - b200-1g-n1-trtllm-final/b200-1g-n1-trtllm-final/job-5972814_2-r0/node0/results/e01/junit/
+    result: passed
+    chain_proof: ok
+  # NT-200 ok: the run on the earlier commit
+  - row: EG-20
+    features:
+    - EG-20
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_gen_first.py::test_pipelined_transfer_with_chunked_prefill
+    commit: e7e37d774d3674d957cb55a0efdcf887885d6d9e
+    junit:
+    - b200-1g-n1-trtllm/b200-1g-n1-trtllm/job-5966567_0-r0/node0/results/e01/junit/
+    result: passed
+    chain_proof: ok
