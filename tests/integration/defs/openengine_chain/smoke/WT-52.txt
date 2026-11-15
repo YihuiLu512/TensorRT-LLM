@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# A disaggregated server and two workers with roles, each an engine plus a worker front end, on one
+# GPU: streamed and unstreamed requests give the same tokens, the first one once.
+unittest/llmapi/apps/_test_openengine_disagg_first_token.py::test_stream_and_non_stream_token_sequences_agree
