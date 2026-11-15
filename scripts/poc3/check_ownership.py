@@ -194,6 +194,7 @@ _NO_EVENTS_SUBSCRIPTION_TEST = "test_kv_cache_events_unsupported_answer_no_event
 _GENERATION_FIRST_TEST_WAS = "test_schedule_style_is_unimplemented_without_generation_first"
 _GENERATION_FIRST_TEST = "test_context_only_takes_a_generation_first_schedule_style"
 _GENERATION_LEG_TEST = "test_the_generation_leg_never_sends_schedule_style_in_extra"
+_CANCELS_CALLS_TEST = "test_shipped_tables_name_each_test_that_cancels_calls"
 # The registry of lines check_invariants.py lets CS-20 add.
 INVARIANT_ADDITIONS = "scripts/poc3/invariant_additions.yaml"
 # Gate files only WT-30 and its fixes may change (see the module docstring).
@@ -1059,6 +1060,22 @@ OWNERSHIP: dict[str, list[Rule]] = {
                 ),
             ),
             renames=((_GENERATION_FIRST_TEST_WAS, _GENERATION_FIRST_TEST),),
+        ),
+        # WT-55-fix1 registers NT-091 as a test that cancels calls (DG-39b); the harness test that
+        # lists every such test names it too.
+        _exception(
+            f"{CHAIN}/tests/test_expectations.py",
+            f"N96 only: name NT-091 among the tests that cancel calls in {_CANCELS_CALLS_TEST}",
+            item="WT-55-fix1",
+            changes=(
+                _change(
+                    _CANCELS_CALLS_TEST,
+                    added=(
+                        '        "_test_openengine_disagg_gen_first.py::'
+                        'test_gen_first_cancel_closes_both_legs",',
+                    ),
+                ),
+            ),
         ),
     ],
     "WT-56": _own(
