@@ -143,6 +143,27 @@ def disagg_deployment(
     # The workers run on this host: loopback is the only TCP device UCX needs.
     process_env = {**os.environ, "UCX_NET_DEVICES": "lo", **(env or {})}
     with contextlib.ExitStack() as stack:
+        # The orchestrator starts first, so its port is taken while the workers start;
+        # its /health answers 200 only once workers have registered, so it waits for
+        # them as long as a worker may take to start.
+        orchestrator = stack.enter_context(
+            RemoteDisaggOpenAIServer(
+                ctx_servers=[],
+                gen_servers=[],
+                port=disagg_port,
+                env=process_env,
+                disagg_config={
+                    "hostname": "localhost",
+                    "port": disagg_port,
+                    "disagg_cluster": cluster,
+                    "internal_request_auth_key": auth_key,
+                    **(orchestrator_config or {}),
+                },
+                log_path=str(directory / "orchestrator.log"),
+                wait_ready=False,
+                server_start_timeout=ENGINE_READY_TIMEOUT_S,
+            )
+        )
         workers: dict[str, list[RemoteOpenAIServer]] = {role: [] for role in ROLES}
         for role in ROLES:
             for index in range(counts[role]):
@@ -160,31 +181,26 @@ def disagg_deployment(
                         )
                     )
                 )
-        orchestrator = stack.enter_context(
-            RemoteDisaggOpenAIServer(
-                ctx_servers=[],
-                gen_servers=[],
-                port=disagg_port,
-                env=process_env,
-                disagg_config={
-                    "hostname": "localhost",
-                    "port": disagg_port,
-                    "disagg_cluster": cluster,
-                    "internal_request_auth_key": auth_key,
-                    **(orchestrator_config or {}),
-                },
-                log_path=str(directory / "orchestrator.log"),
-                # Its /health answers 200 only once workers have registered: wait for
-                # the workers first, which raises as soon as one of them exits.
-                wait_ready=False,
+        try:
+            # A worker that exits makes its wait raise at once.
+            for role in ROLES:
+                for worker in workers[role]:
+                    worker.wait_for_server(timeout=ENGINE_READY_TIMEOUT_S)
+            wait_for_endpoint_ready(
+                orchestrator.url_root + "/health", server_proc=orchestrator.proc
             )
-        )
-        for role in ROLES:
-            for worker in workers[role]:
-                worker.wait_for_server(timeout=ENGINE_READY_TIMEOUT_S)
-        wait_for_endpoint_ready(orchestrator.url_root + "/health", server_proc=orchestrator.proc)
-        _wait_until_listed(orchestrator.url_root, counts)
+            _wait_until_listed(orchestrator.url_root, counts)
+        except Exception:
+            _print_log_tails(directory)
+            raise
         yield Deployment(orchestrator, workers, model)
+
+
+def _print_log_tails(directory: Path, lines: int = 60) -> None:
+    """Print the end of each log in ``directory``, for a deployment that did not start."""
+    for log in sorted(directory.glob("*.log")):
+        tail = log.read_text(errors="replace").splitlines()[-lines:]
+        print(f"----- {log} (last {len(tail)} lines) -----", *tail, sep="\n")
 
 
 def _wait_until_listed(url: str, counts: Mapping[str, int]) -> None:

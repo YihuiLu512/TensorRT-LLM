@@ -27,7 +27,13 @@ from typing import Any
 import pytest
 import requests
 
-from ._test_openengine_disagg_common import CHAIN, REQUEST_TIMEOUT_S, ROLES, disagg_deployment
+from ._test_openengine_disagg_common import (
+    BASE_WORKER_CONFIG,
+    CHAIN,
+    REQUEST_TIMEOUT_S,
+    ROLES,
+    disagg_deployment,
+)
 
 pytestmark = pytest.mark.threadleak(enabled=False)
 
@@ -37,6 +43,14 @@ OPS_OPTIONS: Mapping[str, Mapping[str, Any]] = {
     "resource_governor": {"worker_config": {"enable_resource_governor": True}},
     "sleep_mode": {
         "worker_args": ("--enable_sleep_mode",),
+        # Sleep mode runs on the V1 KV cache manager, which needs the C++ cache transceiver.
+        "worker_config": {
+            "cache_transceiver_config": {"backend": "DEFAULT", "transceiver_runtime": "CPP"},
+            "kv_cache_config": {
+                **BASE_WORKER_CONFIG["kv_cache_config"],
+                "use_kv_cache_manager_v2": False,
+            },
+        },
         # Sleep mode refuses to start without the key that guards its endpoints.
         "env": {"TRTLLM_RUNTIME_CONTROL_API_KEY": secrets.token_hex(16)},
     },

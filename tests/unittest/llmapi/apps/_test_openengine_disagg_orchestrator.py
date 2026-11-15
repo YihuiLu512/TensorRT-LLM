@@ -7,9 +7,8 @@ one context and one generation worker on one GPU), in-process or on the
 OpenEngine chain. The two workers serve the model under different
 ``--served_model_name`` values, and the client names it differently again.
 
-- NT-099 (DG-80): a chat answer, whole or streamed, names the model the client
-  asked for, not either worker's served name; a whole completion names the
-  generation worker's served name instead, in-process as on the chain;
+- NT-099 (DG-80): a chat answer, whole or streamed, and a whole completion name
+  the model the client asked for, not either worker's served name;
   ``/v1/models`` through the orchestrator lists the context worker's served
   name.
 """
@@ -54,7 +53,7 @@ def test_request_model_name_is_passed_through(deployment):
     completion = client.completions.create(
         model=asked, prompt="1 + 1 =", max_tokens=4, temperature=0.0
     )
-    assert completion.model == SERVED_NAMES["generation"]
+    assert completion.model == asked
     assert completion.choices[0].text
 
     assert [model.id for model in client.models.list().data] == [SERVED_NAMES["context"]]

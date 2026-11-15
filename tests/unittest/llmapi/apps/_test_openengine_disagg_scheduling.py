@@ -47,12 +47,15 @@ QUESTION = [{"role": "user", "content": "What is 1 + 1?"}]
 NO_THINKING = {"chat_template_kwargs": {"enable_thinking": False}}
 # The Generate calls each role's engine accepts for one disaggregated request.
 BUCKETS = {"context": conv.BUCKET_CONTEXT_ONLY, "generation": conv.BUCKET_GENERATION_ONLY}
-AGENT_TYPE = "planner"
+# One of the node types the C++ agent tree registers; an unknown name stops the workers
+# from starting.
+AGENT_TYPE = "AgentDeepResearch"
 # Read only by the agent-tree policy, which the C++ capacity scheduler installs for
 # a V1 KV cache manager; the engine declares trtllm.request.scheduling only with
-# attention DP as well.
+# attention DP as well. A V1 KV cache manager needs the C++ cache transceiver.
 AGENT_TREE_CONFIG = {
     "enable_attention_dp": True,
+    "cache_transceiver_config": {"backend": "DEFAULT", "transceiver_runtime": "CPP"},
     "reorder_policy_config": {
         "policy_name": "AgentTree",
         "policy_args": {"agent_types": [AGENT_TYPE]},
