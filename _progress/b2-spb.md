@@ -214,3 +214,39 @@
   - 测试：生成器 SIGTERM 三种投递（只给 launches / 先给生成器及其子进程 / 生成器退出后稍晚再给 launches）；run_helper 与 run_with_budget 的「标志先于退出码」单元（确定性：Popen 包装让子进程在首次轮询前退出）；run_all 两种辅助命令 × 是否收到作业信号；编排器写 launch.json 前被先杀（三种投递，只杀编排器的仍是 config_refused、退出 3）；生成器自身失败仍 job_input_failed、退出 3；S-PB 注册抛异常 ⇒ 退出 3。
   - 变异：旧 launches.py 下 15 条新用例失败（行为类：group_first×2、launcher_first×2、run_all 两种辅助命令等）；M1 去掉复查 6 失败；M2 去掉 0/5 豁免 2 失败；旧 prebaked_server.py 下 register_raises 失败（_local/b2-spb/mut-c1/、logs/c1/）。
   - tests/jobs 250 passed（logs/c1/full-jobs2.log）；tests/capstubs 94 passed（full-capstubs2.log；第一次因 WT/probe-tree 软链不在而 1 failed，移回后通过）；新信号用例连跑 4 次全过。fakebin.log 无新增（mtime 02:30）。probe-tree 软链已移回 _local/b2-spb/probe-tree.link。
+- 2026-11-15 13:48:33 开始 C1-fix 后全量验证 v4（HEAD 0e7decf1；fullv2.sh v4 25，约 15–20 分钟），之后跑三个作业路径 e2e（覆盖清单 P0-0e7decf1）
+- 2026-11-15 14:02:32 v4 全量验证完（全绿：11 目录、selftest 25、patchcheck PASS、py_compile 204/0、bash -n 3/0）；开跑作业路径 e2e e2e-spb-null J9200041（覆盖清单 P0-0e7decf1，约 2–3 分钟）
+- 2026-11-15 14:04:23 e2e-spb-null J9200041：submit rc 0、L0 VALID、judge rc 11、0 RED、无 INPUT_INVALID、C10 PASS 5/5、判定表与 J9200031 逐行相同；开跑回归 e0a-nullsse J9200042 与 e0b-s1-single J9200043（串行，各约 2 分钟）
+
+## C1-fix 全量验证 v4（HEAD 0e7decf1；`fullv2.sh v4 25`，短 TMPDIR = ~/tmp/20261114-capkit-sm1718/b2-spb/v4）
+
+| 项 | 结果 |
+|---|---|
+| tests/capcommon | 193 passed |
+| tests/capload | 33 passed |
+| tests/capprobe | 171 passed |
+| tests/capstubs | 94 passed |
+| tests/envgate | 71 passed |
+| tests/grpc | 39 passed |
+| tests/jobs | 250 passed |
+| tests/judge | 98 passed |
+| tests/launch | 227 passed |
+| tests/nullsse | 4 passed |
+| tests/sidecar | 5 passed |
+| selftest --package capjudge --expect-samples 25 | EXIT=0，ran 25，errors [] |
+| patchcheck --rev HEAD（探针树只读） | PASS，7 位点 / 8 处，0 violations |
+| py_compile | 204 / 0 |
+| bash -n | 3 / 0 |
+
+日志：`_local/b2-spb/logs/v4/`。全部首跑即过，无重跑。
+
+### 作业路径 e2e（覆盖清单 e2e/ovl/P0-0e7decf1，37 个产品文件 sha 与 f7225c26 版相同；launch.json 的 capkit_sha = 0e7decf1…）
+
+| 场景 | 作业 | submit | launches | judge | RED | INPUT_INVALID | C10 |
+|---|---|---|---|---|---|---|---|
+| e2e-spb-null（capgrpc.load --request-format openengine 读者打 S-PB，pb2 = oe_double） | J9200041 | rc 0 | L0 VALID | rc 11（NOT_RUN：C1/C6/C7/C13） | 0 | 0 | PASS 5/5 |
+| e0a-nullsse | J9200042 | rc 0 | L0 VALID | rc 11 | 0 | 0 | PASS 8/8 |
+| e0b-s1-single | J9200043 | rc 0 | L0 VALID | rc 11 | 0 | 0 | PASS 5/5 |
+
+- 三个场景判定表（档、检查、结论三列）与 R2 那一轮（J920003[123]）逐行相同。
+- fakebin.log 新增 9 行，都是真 capenv.gate 的 scontrol/squeue（替身 exit 97）；测试阶段无新增；没碰集群。输出存 e2e/runs/*-J920004[123].out。probe-tree 软链已移回 _local/b2-spb/probe-tree.link。
