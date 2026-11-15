@@ -107,3 +107,45 @@ def test_ds_takes_every_trtllm_field_in_its_order(ds_reading):
 def test_ds_validates_them_as_trtllm_does(ds_reading):
     assert ds_reading["dump"] == {**SAMPLE, "return_prompt_token_ids_b64": False}
     assert ds_reading["rejected"] == INVALID
+
+
+COMPLETION_PROBE = """
+import json
+from dsv4_serve.protocol import CompletionResponse, CompletionResponseChoice, UsageInfo
+def dump(**extra):
+    choice = CompletionResponseChoice(index=0, text="")
+    usage = UsageInfo(prompt_tokens=3, completion_tokens=1, total_tokens=4)
+    return CompletionResponse(model="m", choices=[choice], usage=usage, **extra).model_dump()
+print(json.dumps({"ids": dump(prompt_token_ids=[1, 2, 3]), "b64": dump(prompt_token_ids_b64="AQAAAA==")}))
+"""
+
+
+def _trtllm_class_fields(name: str) -> set[str]:
+    tree = ast.parse(TRTLLM_PROTOCOL.read_text())
+    for node in tree.body:
+        if isinstance(node, ast.ClassDef) and node.name == name:
+            return {
+                item.target.id
+                for item in node.body
+                if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name)
+            }
+    raise AssertionError(f"no {name} in {TRTLLM_PROTOCOL}")
+
+
+def test_ds_completion_response_leaves_out_an_absent_b64_prompt(ds_reading):
+    # trtllm-serve's disaggregated server parses a context worker's completion response with its
+    # own CompletionResponse, which refuses keys it does not have (prompt_token_ids_b64 among
+    # them), even as null.
+    root = os.environ["TRTLLM_TEST_DS_ROOT"]
+    done = subprocess.run(
+        [sys.executable, "-c", COMPLETION_PROBE],
+        env={**os.environ, "PYTHONPATH": str(Path(root) / "python")},
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert done.returncode == 0, done.stderr
+    dumps = json.loads(done.stdout.splitlines()[-1])
+    assert "prompt_token_ids_b64" not in dumps["ids"]
+    assert set(dumps["ids"]) <= _trtllm_class_fields("CompletionResponse")
+    assert dumps["b64"]["prompt_token_ids_b64"] == "AQAAAA=="
