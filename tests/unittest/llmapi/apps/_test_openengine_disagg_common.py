@@ -100,13 +100,6 @@ class Deployment:
             timeout=REQUEST_TIMEOUT_S,
         )
 
-    def worker_client(self, role: str, index: int = 0) -> openai.OpenAI:
-        return openai.OpenAI(
-            base_url=self.workers[role][index].url_for("v1"),
-            api_key="tensorrt_llm",
-            timeout=REQUEST_TIMEOUT_S,
-        )
-
 
 @contextlib.contextmanager
 def disagg_deployment(
@@ -129,8 +122,7 @@ def disagg_deployment(
     needs_gpu()
     path = model_path(model)
     counts = {role: (counts or {}).get(role, 1) for role in ROLES}
-    ports = get_free_ports(1 + sum(counts.values()))
-    disagg_port, worker_ports = ports[0], iter(ports[1:])
+    [disagg_port] = get_free_ports(1)
     cluster = {"cluster_uri": f"http://localhost:{disagg_port}", "cluster_name": ""}
     auth_key = secrets.token_hex(32)
     config = {
@@ -143,46 +135,45 @@ def disagg_deployment(
     # The workers run on this host: loopback is the only TCP device UCX needs.
     process_env = {**os.environ, "UCX_NET_DEVICES": "lo", **(env or {})}
     with contextlib.ExitStack() as stack:
-        # The orchestrator starts first, so its port is taken while the workers start;
-        # its /health answers 200 only once workers have registered, so it waits for
-        # them as long as a worker may take to start.
-        orchestrator = stack.enter_context(
-            RemoteDisaggOpenAIServer(
-                ctx_servers=[],
-                gen_servers=[],
-                port=disagg_port,
-                env=process_env,
-                disagg_config={
-                    "hostname": "localhost",
-                    "port": disagg_port,
-                    "disagg_cluster": cluster,
-                    "internal_request_auth_key": auth_key,
-                    **(orchestrator_config or {}),
-                },
-                log_path=str(directory / "orchestrator.log"),
-                wait_ready=False,
-                server_start_timeout=ENGINE_READY_TIMEOUT_S,
+        try:
+            # The orchestrator starts first, so its port is taken while the workers start.
+            orchestrator = stack.enter_context(
+                RemoteDisaggOpenAIServer(
+                    ctx_servers=[],
+                    gen_servers=[],
+                    port=disagg_port,
+                    env=process_env,
+                    disagg_config={
+                        "hostname": "localhost",
+                        "port": disagg_port,
+                        "disagg_cluster": cluster,
+                        "internal_request_auth_key": auth_key,
+                        **(orchestrator_config or {}),
+                    },
+                    log_path=str(directory / "orchestrator.log"),
+                    wait_ready=False,
+                )
             )
-        )
-        workers: dict[str, list[RemoteOpenAIServer]] = {role: [] for role in ROLES}
-        for role in ROLES:
-            for index in range(counts[role]):
-                args = ["--server_role", role, *worker_args, *(role_args or {}).get(role, ())]
-                workers[role].append(
-                    stack.enter_context(
-                        RemoteOpenAIServer(
-                            path,
-                            port=next(worker_ports),
-                            env=process_env,
-                            cli_args=args,
-                            extra_config=config,
-                            log_path=str(directory / f"{role}_{index}.log"),
-                            wait=False,
+            # Each worker picks its own port: on the chain, a worker frontend whose port
+            # is taken before it binds then restarts on another one.
+            workers: dict[str, list[RemoteOpenAIServer]] = {role: [] for role in ROLES}
+            for role in ROLES:
+                for index in range(counts[role]):
+                    args = ["--server_role", role, *worker_args, *(role_args or {}).get(role, ())]
+                    workers[role].append(
+                        stack.enter_context(
+                            RemoteOpenAIServer(
+                                path,
+                                env=process_env,
+                                cli_args=args,
+                                extra_config=config,
+                                log_path=str(directory / f"{role}_{index}.log"),
+                                wait=False,
+                            )
                         )
                     )
-                )
-        try:
-            # A worker that exits makes its wait raise at once.
+            # A worker that exits makes its wait raise at once. The orchestrator's /health
+            # answers 200 only once workers have registered.
             for role in ROLES:
                 for worker in workers[role]:
                     worker.wait_for_server(timeout=ENGINE_READY_TIMEOUT_S)

@@ -6,8 +6,9 @@ NT-010: the CPU chain (``cpu_disagg_chain``) runs the real orchestrator in
 front of two real worker frontends on fake engines. When an engine refuses
 or fails a leg, the worker frontend answers with its own status and message,
 and the orchestrator passes both on without the worker's address. After a
-failed context leg no generation leg is sent. The orchestrator here has no
-retries, so each leg is tried once (retries: ``test_poc3_wt57_orchestrator_retry``).
+failed context leg no generation leg is sent. The orchestrator here has
+``max_retries: 0``, so a leg the worker answers with an error is tried once
+(retries: ``test_poc3_wt57_orchestrator_retry``).
 """
 
 from __future__ import annotations

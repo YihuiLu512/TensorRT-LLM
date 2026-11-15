@@ -139,8 +139,9 @@ def test_min_tokens(deployment):
 
 @pytest.mark.parametrize("stream", [False, True], ids=["whole", "streamed"])
 def test_stop_word_on_first_token(deployment, stream):
-    # With max_tokens=1 a disaggregated request still returns the generation leg's token
-    # after the context leg's, so the text holds two tokens; the logprobs name the first.
+    # Observed in both forms: with max_tokens=1 the text of a disaggregated request holds
+    # a second token after the context leg's first, so the first token is read from the
+    # logprobs.
     first = _complete(deployment, GREEDY_PROMPT, temperature=0.0, max_tokens=1, logprobs=1)
     word = first.choices[0].logprobs.tokens[0]
     assert word.strip(), "the first token must have text to stop on"

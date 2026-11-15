@@ -108,13 +108,15 @@ def _refused_by_the_frontend(chain, code, status) -> None:
 
 def _frontend_unreachable(directory) -> None:
     with start_chain(directory) as chain:
-        before = _gen_retries(chain)
+        before, before_calls = _gen_retries(chain), calls(chain)
         chain.gen.process.stop()
         response = chain.complete(prompt=PROMPT, max_tokens=4)
         assert response.status_code >= 500, response.text
         # One retry (the default max_retries), to the same unreachable frontend.
         assert _gen_retries(chain) - before == 1
-        assert calls(chain) == {"context": 1, "generation": 0}
+        after = calls(chain)
+        assert after["context"] - before_calls["context"] == 1
+        assert after["generation"] - before_calls["generation"] == 0
 
 
 def _streamed_chunks(response: requests.Response) -> list[dict]:
