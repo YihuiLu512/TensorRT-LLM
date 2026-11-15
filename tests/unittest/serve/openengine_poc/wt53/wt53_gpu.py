@@ -77,7 +77,7 @@ class Cluster:
 
     orchestrator: Any
     workers: dict[str, list[Any]]
-    # The key and the environment are left out of this object's repr.
+    # The key, the orchestrator's configuration and the environment are left out of the repr.
     auth_key: str = field(repr=False)
     dump_dir: Path
     logs: dict[str, str] = field(default_factory=dict)

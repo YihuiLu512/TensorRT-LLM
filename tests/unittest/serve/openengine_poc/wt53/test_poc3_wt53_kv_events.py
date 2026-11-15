@@ -464,34 +464,42 @@ def test_published_signed_block_hashes_match_the_ones_a_router_computes():
     router = SimpleNamespace(_tokens_per_block=tokens_per_block)
     (hashes,) = BlockHashMixin._compute_block_hashes(router, [tokens], HASH_ALGO)
     published = [_signed(h) for h in hashes]
-    # The check needs hashes that differ when read as signed: some do, at least one negative.
-    assert any(h < 0 for h in published) and published != hashes, hashes
-    block_size = tokens_per_block
+    # Each field below is given a hash the engine publishes as negative.
+    negative = [i for i, h in enumerate(published) if h < 0]
+    assert len(negative) >= 2, hashes
+    parent, evicted = negative[0], negative[-1]
     batch = [
         1.0,
         [
             {
                 "type": "BlockStored",
-                "block_hashes": published[1:],
-                "parent_block_hash": published[0],
-                "token_ids": tokens[block_size : len(hashes) * block_size],
-                "block_size": block_size,
+                "block_hashes": published,
+                "parent_block_hash": published[parent],
+                "token_ids": tokens[: len(hashes) * tokens_per_block],
+                "block_size": tokens_per_block,
                 "medium": "GPU",
             },
-            {"type": "BlockRemoved", "block_hashes": published[-1:]},
+            {"type": "BlockRemoved", "block_hashes": [published[evicted]]},
         ],
     ]
     stored, removed = metrics_module.to_in_process_events(
         batch, first_event_id=0, hash_algo=HASH_ALGO, attention_dp_rank=None
     )
-    assert [b["block_hash"] for b in stored["data"]["blocks"]] == hashes[1:]
-    assert stored["data"]["parent_hash"] == hashes[0]
-    assert removed["data"]["block_hashes"] == hashes[-1:]
+    assert [b["block_hash"] for b in stored["data"]["blocks"]] == hashes
+    assert stored["data"]["parent_hash"] == hashes[parent]
+    assert removed["data"]["block_hashes"] == [hashes[evicted]]
 
     state = KvCacheAwareServerState("worker:1", tokens_per_block=tokens_per_block)
     state.update_with_events([stored])
-    matched = asyncio.run(state.matched_tokens([hashes[1:]], HASH_ALGO))
-    assert matched == (len(hashes) - 1) * tokens_per_block
+    assert asyncio.run(state.matched_tokens([hashes], HASH_ALGO)) == len(hashes) * tokens_per_block
     state.update_with_events([removed])
-    matched = asyncio.run(state.matched_tokens([hashes[1:]], HASH_ALGO))
-    assert matched == (len(hashes) - 2) * tokens_per_block
+    assert asyncio.run(state.matched_tokens([hashes], HASH_ALGO)) == evicted * tokens_per_block
+
+
+def test_hashes_that_are_not_negative_64_bit_integers_are_kept():
+    batch = [1.0, [{"type": "BlockRemoved", "block_hashes": [5, 2**63, "ab", True, -(2**63) - 1]}]]
+    (removed,) = metrics_module.to_in_process_events(
+        batch, first_event_id=0, hash_algo=HASH_ALGO, attention_dp_rank=None
+    )
+    kept = removed["data"]["block_hashes"]
+    assert kept == [5, 2**63, "ab", True, -(2**63) - 1] and kept[3] is True

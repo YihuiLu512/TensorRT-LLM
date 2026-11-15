@@ -4,8 +4,8 @@
 
 Two context workers and a generation worker behind an orchestrator that
 routes by conversation and reads the parent session from
-``X-Dynamo-Parent-Session-ID``. The context workers run conversation-aware
-attention DP, so on the chain their engines check the signed parent id
+``X-Dynamo-Parent-Session-ID``. The workers run conversation-aware attention
+DP, so on the chain their engines check the signed parent id
 (``tensorrt_llm/grpc/openengine/affinity.py``); the key is the cluster's
 ``internal_request_auth_key``, which every worker frontend and engine gets.
 
@@ -17,7 +17,8 @@ attention DP, so on the chain their engines check the signed parent id
   it leaves it out only when the engine does not declare the check, when the
   call has no conversation id, or when the parent id is not printable ASCII.
 - NT-084: with ``subagent_affinity_scope: both`` (a second orchestrator) the
-  requests succeed. On the chain this is the evidence that the generation
+  requests succeed. On the chain, where the generation engine also declares
+  that it checks the hint, this is the evidence that the generation
   frontend did not send the hint to its engine: the engine refuses a
   generation call that carries one ("supported on context requests only"),
   which would fail the request; the hint travels as gRPC metadata, which the
@@ -54,6 +55,10 @@ SUPPORTS_AFFINITY_KEY = "trtllm_supports_subagent_affinity"
 # What a frontend logs when its engine does not declare that it checks the hint.
 NOT_DECLARED_LOG = f"does not declare {SUPPORTS_AFFINITY_KEY}"
 REFUSED_LOGS = ("Subagent affinity", "subagent affinity authentication")
+CONVERSATION_ADP = {
+    "enable_attention_dp": True,
+    "attention_dp_config": {"kv_cache_routing_conversation_affinity": True},
+}
 
 
 @pytest.fixture(scope="module")
@@ -61,12 +66,7 @@ def served(tmp_path_factory):
     with cluster(
         tmp_path_factory.mktemp("subagent_affinity"),
         counts={"context": 2},
-        role_config={
-            "context": {
-                "enable_attention_dp": True,
-                "attention_dp_config": {"kv_cache_routing_conversation_affinity": True},
-            }
-        },
+        role_config={role: CONVERSATION_ADP for role in ("context", "generation")},
         orchestrator={
             "conversation_affinity_header_for_subagents": PARENT_HEADER,
             "subagent_affinity_scope": "context",
@@ -155,5 +155,7 @@ def test_subagent_affinity_scope_both_is_not_forwarded_to_the_gen_engine(served,
     sizes = _log_sizes(served) if CHAIN else None
     _family(scope_both.url_root, "parent-both")
     if CHAIN:
+        (gen,) = served.workers["generation"]
+        assert engine_server_info(gen).extra[SUPPORTS_AFFINITY_KEY] is True
         _assert_no_refusal(served.workers["generation"], sizes)
         _assert_no_refusal(served.workers["context"], sizes)

@@ -625,7 +625,8 @@ def to_in_process_events(
     ``uuid`` beside it when it has one. All blocks cleared, which has no
     in-process counterpart, becomes ``{"type": "all_blocks_cleared"}``.
     Block hashes, which the engine publishes as signed 64-bit integers, are
-    given as the unsigned 64-bit integers in-process gives and a router computes.
+    given as the unsigned 64-bit integers in-process gives and a router
+    computes: a negative one becomes its two's-complement value, others stay.
 
     Raises:
         TypeError, ValueError, KeyError, AttributeError, IndexError, OverflowError:
@@ -650,9 +651,6 @@ def to_in_process_events(
             entry["attention_dp_rank"] = attention_dp_rank
         entries.append(entry)
     return entries
-
-
-_U64_MASK = 0xFFFF_FFFF_FFFF_FFFF
 
 
 def _event_data(event: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -692,16 +690,21 @@ def _stored(event: Mapping[str, Any]) -> dict[str, Any]:
                 ],
             }
         )
-    parent = event.get("parent_block_hash")
-    parent = None if parent is None else _unsigned_hash(parent)
+    parent = _unsigned_hash(event.get("parent_block_hash"))
     return {"type": "stored", "parent_hash": parent, "blocks": blocks}
 
 
-def _unsigned_hash(block_hash: int) -> int:
-    return block_hash & _U64_MASK
+def _unsigned_hash(block_hash: Any) -> Any:
+    if (
+        isinstance(block_hash, int)
+        and not isinstance(block_hash, bool)
+        and -(2**63) <= block_hash < 0
+    ):
+        return block_hash + 2**64
+    return block_hash
 
 
-def _unsigned_hashes(block_hashes: Sequence[int] | None) -> list[int]:
+def _unsigned_hashes(block_hashes: Sequence[Any] | None) -> list[Any]:
     return [_unsigned_hash(block_hash) for block_hash in block_hashes or []]
 
 
