@@ -138,3 +138,68 @@ def test_level_expectations_are_read(tmp_path):
     assert rc == 1 and sorted(r[0] for r in rep["ran"]) == LEVEL_SAMPLES, rep
     assert rep["errors"] == ["v2_near_stable_level_2p: level 1 verdict 'UNSTABLE' != "
                              "expected 'STABLE'"], rep
+
+
+# ---- samples deferred to P2-13 (INTERFACES erratum calib-v2-A7) ---------------------------------
+
+def _deferred_list():
+    sys.path.insert(0, SAMPLES)
+    try:
+        import run_selftest
+    finally:
+        sys.path.remove(SAMPLES)
+    return run_selftest.DEFERRED_P2_13
+
+
+def _gen_only(tmp_path, *names):
+    out = tmp_path / "samples"
+    p = subprocess.run([sys.executable, os.path.join(SAMPLES, "make_samples.py"), "--out",
+                        str(out)] + [x for n in names for x in ("--only", n)],
+                       capture_output=True, text=True, timeout=300, check=False)
+    assert p.returncode == 0, p.stderr
+    return out
+
+
+def test_deferred_list_is_the_five_i_samples_of_the_table():
+    sys.path.insert(0, SAMPLES)
+    try:
+        import make_samples
+    finally:
+        sys.path.remove(SAMPLES)
+    assert sorted(_deferred_list()) == ["i_conflict", "i_reader_slow", "i_reader_slow_real_pins",
+                                        "i_server_slow", "sat_spin_thread_same_process"]
+    assert set(_deferred_list()) <= set(make_samples.SAMPLES)
+
+
+def test_deferred_sample_is_reported_apart_and_does_not_fail_the_runner(tmp_path):
+    out = _gen_only(tmp_path, "i_server_slow")
+    p = _runner(str(out), TOOLS, tmp_path, 1)
+    rep = json.loads(p.stdout)
+    assert p.returncode == 0 and rep["errors"] == [], rep
+    assert rep["ran"] == [["i_server_slow", 0]]
+    assert any("I status='NOT_RUN' != expected 'LOCALIZED'" in e
+               for e in rep["deferred"]["i_server_slow"]), rep
+
+
+def test_deferred_sample_with_a_wrong_exit_code_is_still_an_error(tmp_path):
+    out = _gen_only(tmp_path, "i_server_slow")
+    ep = out / "i_server_slow" / "expect.json"
+    exp = json.loads(ep.read_text())
+    exp["exit_code"] = 3
+    ep.write_text(json.dumps(exp))
+    p = _runner(str(out), TOOLS, tmp_path, 1)
+    rep = json.loads(p.stdout)
+    assert p.returncode == 1 and rep["errors"] == ["i_server_slow: exit 0 != expected 3"], rep
+
+
+def test_deferred_sample_that_matches_its_expectation_fails_the_runner(tmp_path):
+    """The list cannot rot: a listed sample whose whole expectation holds is an error (here the
+    good sample under a deferred name)."""
+    out = _gen_only(tmp_path, "good")
+    os.rename(str(out / "good"), str(out / "i_conflict"))
+    p = _runner(str(out), TOOLS, tmp_path, 1)
+    rep = json.loads(p.stdout)
+    assert p.returncode == 1, rep
+    assert rep["errors"] == ["i_conflict: listed in DEFERRED_P2_13 but matches its expectation; "
+                             "remove it from the list"], rep
+    assert rep["deferred"] == {"i_conflict": []}

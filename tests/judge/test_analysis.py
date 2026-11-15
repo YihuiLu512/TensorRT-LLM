@@ -11,7 +11,7 @@ import sys
 
 import pytest
 
-from conftest import SAMPLES, TOOLS, judge_mod
+from conftest import SAMPLES, TOOLS, XFAIL_I_P2_13, judge_mod
 
 B = judge_mod("boundary")
 S = judge_mod("scaling")
@@ -227,6 +227,7 @@ def _run(mod, *args):
                           capture_output=True, text=True, timeout=300, check=False)
 
 
+@XFAIL_I_P2_13
 def test_boundary_cli_writes_product_and_record(tmp_path):
     W, tree = _judged(tmp_path, "i_server_slow")
     lst = tmp_path / "trees.txt"
@@ -250,6 +251,7 @@ def test_boundary_cli_writes_product_and_record(tmp_path):
     assert p2.returncode == 3 and "exists" in p2.stderr
 
 
+@XFAIL_I_P2_13
 def test_boundary_keeps_the_judges_t4_next_to_the_cut_interval(tmp_path):
     W, tree = _judged(tmp_path, "i_reader_slow")  # tier 4 localised to the load source
     lst = tmp_path / "trees.txt"

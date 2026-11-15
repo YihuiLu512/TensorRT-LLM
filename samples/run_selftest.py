@@ -17,6 +17,12 @@ caplaunch / capjobs recorded before it). Plus:
     target file (positive control of the sabotage), then assert the expected RED.
 Exit code 0 only if every assertion holds and at least one sample ran; --expect-samples is
 required and must equal the number of sample dirs (with expect.json) under --samples.
+
+DEFERRED_P2_13 lists the samples whose final expectation needs the I threshold source of
+calibration v2 (pilot/2 i1_calibration, DESIGN-r7a P2-13, sub-batch SB-C; INTERFACES erratum
+calib-v2-A7). Such a sample still runs and its exit code is still asserted; its other
+mismatches go to the report's `deferred` section instead of `errors`. A listed sample that
+matches its whole expectation is an error, so the list has to shrink when P2-13 lands.
 """
 
 import argparse
@@ -30,6 +36,8 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXED_CODE_SHA = "b" * 40
+DEFERRED_P2_13 = ("i_conflict", "i_reader_slow", "i_reader_slow_real_pins", "i_server_slow",
+                  "sat_spin_thread_same_process")
 
 
 def sha(p):
@@ -130,8 +138,22 @@ def copy_sample(src, tmp, name):
     return dst
 
 
+def _deferred_compare(name, exp, rc, tree, errs, deferred):
+    """compare() for a DEFERRED_P2_13 sample: exit-code mismatches stay errors, the rest is
+    reported under `deferred`; no mismatch at all is an error (the list would rot)."""
+    mine = []
+    compare(name, exp, rc, tree, mine)
+    exit_prefix = "%s: exit " % name
+    errs.extend(e for e in mine if e.startswith(exit_prefix))
+    rest = [e for e in mine if not e.startswith(exit_prefix)]
+    deferred[name] = rest
+    if not mine:
+        errs.append("%s: listed in DEFERRED_P2_13 but matches its expectation; remove it from "
+                    "the list" % name)
+
+
 def run(args):
-    errs, ran = [], []
+    errs, ran, deferred = [], [], {}
     names = sorted(n for n in os.listdir(args.samples)
                    if os.path.isfile(os.path.join(args.samples, n, "expect.json")))
     if len(names) != args.expect_samples:
@@ -147,13 +169,18 @@ def run(args):
             if os.listdir(tree):
                 errs.append("%s: tree is not empty" % name)
         rc, err = run_judge(args, W, tree)
-        compare(name, exp, rc, tree, errs)
+        if name in DEFERRED_P2_13:
+            _deferred_compare(name, exp, rc, tree, errs, deferred)
+        else:
+            compare(name, exp, rc, tree, errs)
         ran.append((name, rc))
         if exp["exit_code"] == 13:
             _input_invalid_extras(args, name, W, tree, errs)
         if name == "good":
             _good_extras(args, W, tree, tmp, errs)
-    print(json.dumps({"ran": ran, "errors": errs, "tmp": tmp}, indent=1))
+    print(json.dumps({"ran": ran, "errors": errs, "deferred": deferred,
+                      "deferred_rule": "DEFERRED_P2_13 (INTERFACES calib-v2-A7)", "tmp": tmp},
+                     indent=1))
     if not ran:
         errs.append("no sample ran")
     return 0 if not errs else 1

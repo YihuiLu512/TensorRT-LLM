@@ -4,18 +4,22 @@
 (calib-v2 DESIGN-r7a 3.1 P2-07, 3.2, 3.4, 4.1, 4.2, 4.5; INTERFACES erratum calib-v2-A4).
 
 Four modes (exactly one):
-  --kind {ladder,refine,bracket,hold,null,pc,e2e,cal}
+  --kind {ladder,refine,bracket,hold,null,pc,c13pc,e2e,cal}
       one launch: a tier-table template + values file for caplaunch.tiergen (expanded and
       validated here with tiergen.expand; tiergen.py and capcommon/tiers.py are not changed) and
       the launch's ladder.json (capkit.ladder/1). The centre comes only from a registered
       e0_params file (--center, --center-key); --center-literal is for the V0 / V0-cal / V1-a1
       prior centre and is recorded as center_source. Drain slots follow DESIGN 4.1 with the
       phase's registered e_c; the table must fit the 4.1 job condition and capjobs' time budget,
-      otherwise nothing is written.
+      otherwise nothing is written. --request-timeout-ns {null,<int ns>} sets the table's
+      request_timeout_ns through the values file (null is written as a registered null that
+      tiergen accepts); without it the value comes from --base-values. --kind pc needs it.
   --plan
       the K_fit table of DESIGN 2.7 / 4.1 (the conservative r4 model: every level at the top rho).
   --job-plan <spec>
-      job_plan.tsv of one segment: planned then surplus items, mixed by the registered seed.
+      job_plan.tsv of one segment: planned then surplus items, mixed by the registered seed
+      (layout "mixed"), or with layout "one_each" every job running every configuration once
+      in seed order (V0-cal, DESIGN 4.2).
   --plan-from <registered gate product>
       job_plan.tsv of the post-gate items a registered gate product lists (never a replace item;
       launch items and V2-b blocks of a shortfall product).
@@ -36,9 +40,17 @@ from capcommon.identity import ARM_RE
 
 from . import tiergen
 
-KINDS = ("ladder", "refine", "bracket", "hold", "null", "pc", "e2e", "cal")
+KINDS = ("ladder", "refine", "bracket", "hold", "null", "pc", "c13pc", "e2e", "cal")
 # --center-literal: V0 / V0-cal (c0, DESIGN 3.1 P2-07, 4.2) and the V1-a1 prior (no e0_params key)
-LITERAL_CENTER_KINDS = ("ladder", "pc", "e2e", "cal", "bracket")
+LITERAL_CENTER_KINDS = ("ladder", "pc", "c13pc", "e2e", "cal", "bracket")
+# kinds whose table must say its request timeout explicitly (s1-pc null, s*-fix 60 s; DESIGN 4.2)
+TIMEOUT_REQUIRED_KINDS = ("pc",)
+TIMEOUT_NAME = "request_timeout_ns"
+TIMEOUT_TBD = "TBD:" + TIMEOUT_NAME
+# --job-plan layouts: "mixed" (seed-mixed launches cut into jobs) and "one_each" (DESIGN 4.2
+# V0-cal: every job runs every configuration exactly once, in seed order)
+LAYOUTS = ("mixed", "one_each")
+ONE_EACH_PHASES = ("V0cal",)
 # e0_params stage that registers each centre key (DESIGN 3.2)
 CENTER_KEY_STAGE = {"c1": "bracket", "c_hat": "capacity", "c_b": "recenter", "c_n": "settle",
                     "c_lad": "ladder"}
@@ -203,6 +215,9 @@ def tier_sequence(a, u):
         seq = base + [_load("over", "up", PC_OVER_RHO, S, "slope")] \
             + [_load("sub%d" % (i + 1), "down", BASE_RHO, S, "cal", pass_=i + 1)
                for i in range(2)]
+    elif a.kind == "c13pc":  # DESIGN 4.2 c13-pc: the pc table without the overload tier
+        seq = base + [_load("sub%d" % (i + 1), "down", BASE_RHO, S, "cal", pass_=i + 1)
+                      for i in range(2)]
     elif a.kind == "e2e":
         h = a.h
         seq = base + _levels([r + h * u for r in E2E_RHOS], 2, S) + _slopes()
@@ -220,10 +235,24 @@ def _tbd(label, field):
     return "TBD:%s_%s" % (label.replace("-", "_").replace(".", "_"), field)
 
 
-def build_template(base, base_values, name, seq, center, e_c, bracket):
-    """(template, values, drain slots {drain label: s}) for tiergen.expand."""
+def parse_timeout(text):
+    """--request-timeout-ns: "null" (no registered timeout) or a decimal int > 0."""
+    if text == "null":
+        return None
+    if not (text.isascii() and text.isdigit() and int(text) > 0):
+        raise LadderError("--request-timeout-ns must be null or an int > 0, got %r" % text)
+    return int(text)
+
+
+def build_template(base, base_values, name, seq, center, e_c, bracket, timeout=()):
+    """(template, values, drain slots {drain label: s}) for tiergen.expand. timeout: () = take
+    request_timeout_ns from base_values, else (value,) with value None or an int > 0."""
     if base.get("schema") != tiergen.TEMPLATE_SCHEMA:
         raise LadderError("--base-template must be %s" % tiergen.TEMPLATE_SCHEMA)
+    if base.get(TIMEOUT_NAME) != TIMEOUT_TBD:
+        raise LadderError("--base-template %s must be %r: the timeout comes from "
+                          "--request-timeout-ns or --base-values, not a literal in the template "
+                          "(got %r)" % (TIMEOUT_NAME, TIMEOUT_TBD, base.get(TIMEOUT_NAME)))
     tpl = {k: base[k] for k in ("schema", "experiment", "arrival", "request_timeout_ns",
                                 "default_gate", "launch_inject") if k in base}
     tpl["name"] = name
@@ -256,10 +285,16 @@ def build_template(base, base_values, name, seq, center, e_c, bracket):
                       "rate_rps": add(lab, "rate_rps", t["rho"] * center)})
         drain(lab, t["rho"], t["ramp_s"] + t["window_s"] + t["tail_s"])
     tpl["tiers"] = tiers
+    if timeout:
+        values[TIMEOUT_NAME] = timeout[0]
     used = tiergen.tbd_names(tpl)
     for k in sorted(used - set(values)):
         if k not in base_values:
             raise LadderError("--base-values has no value for %r" % k)
+        if base_values[k] is None:
+            raise LadderError("--base-values %r is null (an unfilled checklist?); a table without "
+                              "a request timeout is asked for with --request-timeout-ns null"
+                              % k)
         values[k] = base_values[k]
     return tpl, values, slots
 
@@ -365,17 +400,25 @@ def generate(a):
         u, sha = seed_u(a.seed_base, a.config, a.block_id, a.slot)
         seed = {"base": a.seed_base, "block_id": a.block_id, "slot": a.slot, "sha": sha}
     seq, h = tier_sequence(a, 0.0 if u is None else u)
+    if a.request_timeout_ns is None and a.kind in TIMEOUT_REQUIRED_KINDS:
+        raise LadderError("--kind %s needs --request-timeout-ns (null or ns; DESIGN 4.2 s1-pc / "
+                          "s*-fix)" % a.kind)
+    timeout = () if a.request_timeout_ns is None else (parse_timeout(a.request_timeout_ns),)
     base = _read_json(a.base_template)
     bvals = _read_json(a.base_values)
     if bvals.get("schema") != tiergen.VALUES_SCHEMA or not isinstance(bvals.get("values"), dict):
         raise LadderError("--base-values must be %s" % tiergen.VALUES_SCHEMA)
     tpl, values, slots = build_template(base, bvals["values"], a.name, seq, center, e_c,
-                                        a.kind == "bracket")
+                                        a.kind == "bracket", timeout)
     doc = tiergen.expand(tpl, values)  # TierTable validation (exit 3 on any violation)
     table_s = doc["tiers"][-1]["start_ns"] / NS + doc["tiers"][-1]["window_ns"] / NS
     pack = packing(table_s, a)
     tpl_b = _json_bytes(tpl)
-    val_b = _json_bytes({"schema": tiergen.VALUES_SCHEMA, "values": values})
+    vdoc = {"schema": tiergen.VALUES_SCHEMA, "values": values}
+    nulls = sorted(k for k, v in values.items() if v is None)
+    if nulls:  # only the request timeout can be null here (build_template)
+        vdoc[tiergen.REGISTERED_NULLS_KEY] = nulls
+    val_b = _json_bytes(vdoc)
     tiers_b = (json.dumps(doc, sort_keys=True, indent=1) + "\n").encode("utf-8")  # = tiergen's
     by_label = {t["label"]: t["seq"] for t in doc["tiers"]}
     lad = {"schema": LADDER_SCHEMA, "kind": a.kind, "phase": a.phase, "config": a.config,
@@ -490,6 +533,25 @@ def _pack(tokens, per_job, seed_base, tag):
     return [[(c, arm) for c, arm, _ in flat[i:i + per_job]] for i in range(0, len(flat), per_job)]
 
 
+def _one_each(tokens, per_job, seed_base, tag):
+    """tokens [(config, arm, n)] -> n jobs, each running every configuration exactly once in the
+    order of sha256(seed_base|tag|one_each|job|config|arm) (DESIGN 4.2 V0-cal)."""
+    if len({c for c, _a, _n in tokens}) != len(tokens) \
+            or len({arm for _c, arm, _n in tokens}) != len(tokens):
+        raise LadderError("layout one_each needs distinct configs and arms")
+    counts = {n for _c, _a, n in tokens}
+    if len(counts) > 1:
+        raise LadderError("layout one_each needs the same %s count for every config, got %s"
+                          % (tag, sorted((c, n) for c, _a, n in tokens)))
+    if per_job != len(tokens):
+        raise LadderError("layout one_each needs launches_per_job = the number of configs (%d), "
+                          "got %r" % (len(tokens), per_job))
+    n = counts.pop() if counts else 0
+    return [[(c, arm) for c, arm, _n in sorted(
+        tokens, key=lambda x, j=j: _mix_key(seed_base, tag, "one_each", j, x[0], x[1]))]
+        for j in range(n)]
+
+
 def _job_item(job, item_class, pin):
     arms, counts = [], {}
     for c, arm in job:
@@ -509,6 +571,14 @@ def job_plan_items(spec):
         raise LadderError("spec needs phase_id and seed_base")
     if not isinstance(spec.get("pin", False), bool):
         raise LadderError("spec pin must be true or false")
+    layout, phase = spec.get("layout", "mixed"), spec.get("phase")
+    if layout not in LAYOUTS:
+        raise LadderError("spec layout must be one of %s" % (LAYOUTS,))
+    if phase is not None and phase not in PHASES:
+        raise LadderError("spec phase must be one of %s" % (PHASES,))
+    if phase in ONE_EACH_PHASES and layout != "one_each":
+        raise LadderError("phase %s needs layout one_each: every job runs every configuration "
+                          "exactly once (DESIGN 4.2)" % phase)
     units = {"planned": [], "surplus": []}
     toks = {"planned": [], "surplus": []}
     for c in spec.get("configs") or []:
@@ -521,9 +591,14 @@ def job_plan_items(spec):
                 raise LadderError("spec %s count must be an int >= 0" % cls)
             toks[cls].append((c["config"], c["arm"], n))
     for cls in units:
-        for job in _pack(toks[cls], spec.get("launches_per_job"), sb, cls):
-            units[cls].append(("job", _mix_key(sb, cls, *[x for p in job for x in p]),
-                               [_job_item(job, cls, spec.get("pin", False))]))
+        if layout == "one_each":
+            jobs = _one_each(toks[cls], spec.get("launches_per_job"), sb, cls)
+        else:
+            jobs = _pack(toks[cls], spec.get("launches_per_job"), sb, cls)
+        for j, job in enumerate(jobs):
+            key = _mix_key(sb, cls, *[x for p in job for x in p]) if layout == "mixed" \
+                else _mix_key(sb, cls, "one_each", j)
+            units[cls].append(("job", key, [_job_item(job, cls, spec.get("pin", False))]))
     for b in spec.get("blocks") or []:
         cmp_ = b.get("comparison") if isinstance(b, dict) else None
         pair = b.get("configs") if isinstance(b, dict) else None
@@ -661,6 +736,8 @@ def build_parser():
     p.add_argument("--center", help="registered e0_params file")
     p.add_argument("--center-key", choices=sorted(CENTER_KEY_STAGE))
     p.add_argument("--center-literal", type=float)
+    p.add_argument("--request-timeout-ns", metavar="{null,NS}",
+                   help="the table's request_timeout_ns: null (a registered null) or ns > 0")
     p.add_argument("--settle-s", type=float)
     p.add_argument("--K", type=int)
     p.add_argument("--span-half", type=float)

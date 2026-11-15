@@ -13,7 +13,7 @@ import sys
 from types import SimpleNamespace as NS
 
 import pytest
-from conftest import SAMPLES, TOOLS, judge_mod
+from conftest import SAMPLES, TOOLS, XFAIL_I_P2_13, judge_mod
 
 from capcommon.inject import InjectSpec  # noqa: E402
 
@@ -540,6 +540,7 @@ def _intervene(tmp_path, W, trees, out="v.json"):
     return p, o
 
 
+@XFAIL_I_P2_13
 def test_intervene_cli_on_a_judged_control_launch(tmp_path):
     W, tree, p = _judge_sample(tmp_path, "i_server_slow")
     assert p.returncode == 0, p.stderr
@@ -554,6 +555,7 @@ def test_intervene_cli_on_a_judged_control_launch(tmp_path):
     assert p2.returncode == 3 and "exists" in p2.stderr
 
 
+@XFAIL_I_P2_13
 def test_load_launch_uses_the_interval_cut_at_the_tool_limit(tmp_path):
     W, tree, p = _judge_sample(tmp_path, "i_reader_slow")
     assert p.returncode == 0, p.stderr

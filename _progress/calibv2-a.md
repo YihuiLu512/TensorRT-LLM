@@ -148,3 +148,6 @@
   - laddergen V0-cal / V0（v0tables/r6）：V0-cal 4 个配置 cal 表 1474 s、4 次一作业 time_budget 7610 s；V0 s1-pc / fix / c13-pc（pc）660 s、e2e 1872 s、计时行 K 24 S 90 表 13264 s、time_budget 13940 s；10 个作业 submit --dry-run 全部 rc 0、维护门 pass，桩真提交也全 rc 0。
   - e0w60 J5940628:L2 副本 v2 重判（replay/w60）：无崩溃，rc 10 VOID（tier 6 的 SM-18 取消，C3/C5/C6 RED，与原判同因），级 0、1 STABLE，唯一 NOT_RUN（t7）带原因。
   - 未修（交主会话）：① laddergen --job-plan 对 V0-cal 按种子混装出 {s1:2,…} 的作业，DESIGN §4.2 写的是每作业每配置各 1 次（本次手写计划）；② s1-pc 的 request_timeout null 只能靠基模板写字面 null（laddergen 无选项）；③ c13-pc 的表（两档 0.3、无过载）没有对应 kind，用 pc 表代测时长；④ 5 个 I 样本属 P2-13（SB-C）。
+- 2026-11-15 12:15:36 SB-A-6-verify-gaps 开工（HEAD 27c597aa）：读完 DESIGN-r7a §3.4/§4.1/§4.2、ERRATA-after-r7a E1/E2、STATUS 12:07 决定、laddergen/tiergen/run_selftest 与 8 条失败用例。计划：(a) 8 条 I 样本用例 xfail(strict) 拆分到参数级、run_selftest 加 P2-13 延后清单；(b) --job-plan 加 layout one_each（V0cal 强制）；(c) --request-timeout-ns（null 为登记的 null、tiergen 认 registered_nulls）与 kind c13pc；(d) INTERFACES calib-v2-A7。
+- 2026-11-15 12:21:11 代码与测试初稿完成（laddergen 54 passed、test_v0_tables_fit 6 passed）；跑 judge 的 xfail 用例与 selftest 新用例（约 3～5 分钟）
+- 2026-11-15 12:22:34 后台跑变异 r6（mut/muts6.py，27 项 + 对照，逐个串行，约 5 分钟）；同时写 INTERFACES calib-v2-A7

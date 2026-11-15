@@ -13,7 +13,7 @@ import sys
 from types import SimpleNamespace as NS
 
 import pytest
-from conftest import C, PKG, SAMPLES, TOOLS
+from conftest import C, PKG, SAMPLES, TOOLS, XFAIL_I_P2_13
 
 if TOOLS not in sys.path:
     sys.path.insert(0, TOOLS)
@@ -634,8 +634,9 @@ def test_loadgen_band_builder_uses_stable_tiers_only(tmp_path):
     assert "4" in d["inputs"][0]["tiers_excluded"]
 
 
-@pytest.mark.parametrize("name, censored, role", [("i_reader_slow", False, "capload"),
-                                                  ("i_server_slow", True, "nullsse")])
+@pytest.mark.parametrize("name, censored, role", [
+    pytest.param("i_reader_slow", False, "capload", marks=XFAIL_I_P2_13),
+    pytest.param("i_server_slow", True, "nullsse", marks=XFAIL_I_P2_13)])
 def test_loadgen_band_maximum_is_measured_only_when_the_role_was_localised(tmp_path, name,
                                                                            censored, role):
     W, tree = _judged(tmp_path, name)

@@ -8,6 +8,10 @@ shape; every number E0 must pick itself is a string "TBD:<name>". A values file
 write while any TBD remains, computes seq / start_ns / drain defaults / load_value, and
 validates the result with capcommon.tiers.TierTable (INTERFACES.md 3.2). Optionally it also
 writes the arrival schedule (capcommon.schedule.write_schedule).
+
+A null value is an unfilled checklist entry and is refused, except a registered null: a name
+of NULLABLE_VALUES listed in the values file's "registered_nulls" whose value is null
+(caplaunch.laddergen --request-timeout-ns null; INTERFACES erratum calib-v2-A7).
 """
 
 import argparse
@@ -26,6 +30,23 @@ TOP_COPY = ("experiment", "name", "arrival", "axis", "request_timeout_ns", "defa
             "launch_inject")
 LOAD_DEFAULTS = ("max_tokens", "tokens_per_msg", "stream_interval", "beat_ns", "prompt_set",
                  "ramp_ns", "tail_ns", "streams_c")
+REGISTERED_NULLS_KEY = "registered_nulls"
+NULLABLE_VALUES = ("request_timeout_ns",)
+
+
+def unset_values(vals):
+    """Names whose null is not a registered null; raises on a malformed registered_nulls."""
+    values = vals["values"]
+    reg = vals.get(REGISTERED_NULLS_KEY, [])
+    if not isinstance(reg, list) or len(set(map(str, reg))) != len(reg):
+        raise ConfigError("%s must be a list of distinct names" % REGISTERED_NULLS_KEY)
+    for k in reg:
+        if k not in NULLABLE_VALUES:
+            raise ConfigError("%s: %r cannot be null (only %s)" % (REGISTERED_NULLS_KEY, k,
+                                                                  NULLABLE_VALUES))
+        if k not in values or values[k] is not None:
+            raise ConfigError("%s lists %r but its value is not null" % (REGISTERED_NULLS_KEY, k))
+    return sorted(k for k, v in values.items() if v is None and k not in reg)
 
 
 def substitute(obj, values, missing):
@@ -134,7 +155,7 @@ def main(argv=None):
             vals = json.load(f)
         if vals.get("schema") != VALUES_SCHEMA or not isinstance(vals.get("values"), dict):
             raise ConfigError("values file must be %s with a values object" % VALUES_SCHEMA)
-        unset = sorted(k for k, v in vals["values"].items() if v is None)
+        unset = unset_values(vals)
         if unset:  # a *.values.todo.json checklist not yet filled in
             raise ConfigError("values still null: %s" % unset)
         doc = expand(template, vals["values"])

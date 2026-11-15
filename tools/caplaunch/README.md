@@ -12,8 +12,8 @@ E0 配置生成器在 `configs/gen_e0_configs.py`。
 | `caplaunch.orchestrator` | 主循环：起进程(taskset 绑核、独立进程组、launch 标记 env)、就绪、origin、档位边界事件、清空门、窗口扫描、停止与残留核验、收尾文件 |
 | `caplaunch.procfs` | /proc 读取：starttime、子孙进程、标记扫描(`/proc/*/environ`)、线程清单与识别规则、网卡计数 |
 | `caplaunch.ready` | 就绪判据:`capkit_ready` / `plain_port_file` / `report_addr` / `http_get` / `file_exists`(可组合，全部满足才算就绪) |
-| `caplaunch.tiergen` | `python -m caplaunch.tiergen`:把档位表模板里的 `TBD:<名字>` 填成登记的数，生成并校验 `capkit.tiers/1`(可选同时写到达时刻表) |
-| `caplaunch.laddergen` | `python -m caplaunch.laddergen`:calibration v2 的档位表模板 + 取值 + `ladder.json`(按该期 e_c 核对装箱)、`--plan` 的 K_fit 表、`--job-plan` / `--plan-from` 的 `job_plan.tsv`(`INTERFACES.md` 勘误 calib-v2-A4) |
+| `caplaunch.tiergen` | `python -m caplaunch.tiergen`:把档位表模板里的 `TBD:<名字>` 填成登记的数，生成并校验 `capkit.tiers/1`(可选同时写到达时刻表);取值为 null 只认登记的 null(`registered_nulls`,只限 `request_timeout_ns`,勘误 calib-v2-A7) |
+| `caplaunch.laddergen` | `python -m caplaunch.laddergen`:calibration v2 的档位表模板 + 取值 + `ladder.json`(按该期 e_c 核对装箱)、`--plan` 的 K_fit 表、`--job-plan` / `--plan-from` 的 `job_plan.tsv`(`INTERFACES.md` 勘误 calib-v2-A4;`c13pc`、`--request-timeout-ns`、V0-cal 的 `layout: one_each`:勘误 calib-v2-A7) |
 | `caplaunch.httpprobe` | E0(c) HTTP 冒烟客户端(作为场景里的 aux 角色运行):逐帧记录文本增量是否为空 |
 | `caplaunch.smoke` | `python -m caplaunch.smoke`:E0(c) 可行性冒烟各项，输出 `capkit.smoke/1`(PASS / FAIL / RECORDED / NOT_RUN) |
 | `configs/gen_e0_configs.py`(不在本包内) | `configs/e0/*.json` 的生成器(交付物是生成出的 JSON;改配置请改生成器，生成到新目录后 diff) |

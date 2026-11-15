@@ -259,7 +259,8 @@ def test_cal_kind_tier_order_as_v0_cal(w, tmp_path):
     ("hold", ("--settle-s", "30", "--seed-base", "E0v2-V1b", "--block-id", "A0001", "--slot", "1"),
      "V1b"),
     ("null", ("--settle-s", "90", "--rho-top", "0.98"), "V2n"),
-    ("pc", ("--settle-s", "4"), "V0"),
+    ("pc", ("--settle-s", "4", "--request-timeout-ns", "null"), "V0"),
+    ("c13pc", ("--settle-s", "4"), "V0"),
     ("e2e", ("--settle-s", "30", "--seed-base", "E0v2-V0", "--block-id", "e1", "--slot", "1"),
      "V0")])
 def test_every_kind_generates_a_table_the_judge_reads(w, tmp_path, kind, extra, phase):
@@ -293,6 +294,8 @@ def test_every_kind_generates_a_table_the_judge_reads(w, tmp_path, kind, extra, 
         assert round(lad["levels"][-1]["rho"], 3) == 1.709
     if kind == "pc":
         assert [s["rho"] for s in lad["slope"]] == [1.5] and len(lad["cal"]) == 2
+    if kind == "c13pc":
+        assert lad["slope"] == [] and lad["levels"] == [] and len(lad["cal"]) == 2
     if kind == "e2e":
         assert [round(lv["rho"] - lad["h"] * lad["u"], 9) for lv in lad["levels"]] == [
             0.5, 1.0, 1.5]
@@ -442,3 +445,192 @@ def test_job_plan_format_has_no_replace_class():
     with pytest.raises(jobplan.JobPlanError, match="share an order"):
         jobplan.validate([dict(it, item_class="planned"),
                           dict(it, item_class="planned", item_id="V0-0002")])
+
+
+# ---- V0 tables of DESIGN 4.2: s1-pc / s*-fix request timeout, c13-pc (erratum calib-v2-A7) ------
+
+PC = ("--settle-s", "4")
+
+
+def _write(w, kind, *extra, **kw):
+    out = os.path.join(w.root, "o-%s-%d" % (kind, len(os.listdir(w.root))))
+    os.mkdir(out)
+    assert L.main(argv(w, kind, out, *extra, **kw)) == 0
+    name = kw.get("name", "t-" + kind)
+    return out, name
+
+
+def _tiergen(out, name):
+    tt = os.path.join(out, name + ".tiers.json")
+    rc = tiergen.main(["--template", os.path.join(out, name + ".tiers.template.json"),
+                       "--values", os.path.join(out, name + ".values.json"), "--out", tt])
+    return rc, tt
+
+
+def test_pc_null_timeout_is_a_registered_null_tiergen_accepts(w):
+    out, name = _write(w, "pc", *PC, "--request-timeout-ns", "null")
+    tpl = json.load(open(os.path.join(out, name + ".tiers.template.json")))
+    vals = json.load(open(os.path.join(out, name + ".values.json")))
+    assert tpl["request_timeout_ns"] == "TBD:request_timeout_ns"
+    assert vals["values"]["request_timeout_ns"] is None
+    assert vals["registered_nulls"] == ["request_timeout_ns"]
+    rc, tt = _tiergen(out, name)
+    assert rc == 0 and TierTable.load(tt).request_timeout_ns is None
+    lad = json.load(open(os.path.join(out, name + ".ladder.json")))
+    assert sha256_file(tt) == lad["tier_table_sha256"]
+
+
+def test_pc_fix_timeout_is_written_as_a_value(w):
+    out, name = _write(w, "pc", *PC, "--request-timeout-ns", str(60 * 10 ** 9))
+    vals = json.load(open(os.path.join(out, name + ".values.json")))
+    assert vals["values"]["request_timeout_ns"] == 60 * 10 ** 9 and "registered_nulls" not in vals
+    rc, tt = _tiergen(out, name)
+    assert rc == 0 and TierTable.load(tt).request_timeout_ns == 60 * 10 ** 9
+
+
+@pytest.mark.parametrize("extra", [(), ("--request-timeout-ns", "0"),
+                                   ("--request-timeout-ns", "-5"),
+                                   ("--request-timeout-ns", "None"),
+                                   ("--request-timeout-ns", "6e10")])
+def test_pc_needs_an_explicit_valid_timeout(w, tmp_path, extra):
+    with pytest.raises(L.LadderError, match="request-timeout-ns"):
+        L.generate(ns(w, "pc", w.root, *PC, *extra))
+
+
+def test_other_kinds_take_the_timeout_from_base_values_and_refuse_a_null_there(w, tmp_path):
+    vals = gen(w, "c13pc", *PC)[3]
+    assert vals["request_timeout_ns"] == 60 * 10 ** 9
+    bv = tmp_path / "null.values.json"
+    bv.write_text(json.dumps({"schema": tiergen.VALUES_SCHEMA,
+                              "values": dict(BASE_VALUES, request_timeout_ns=None)}))
+    w2 = types.SimpleNamespace(root=w.root, w=w.w, base_values=str(bv))
+    with pytest.raises(L.LadderError, match="is null"):
+        L.generate(ns(w2, "c13pc", w.root, *PC))
+    vals = gen(w2, "c13pc", *PC, "--request-timeout-ns", "null")[3]
+    assert vals["request_timeout_ns"] is None
+
+
+@pytest.mark.parametrize("literal", [None, 60 * 10 ** 9])
+def test_a_literal_timeout_in_the_base_template_is_refused(w, tmp_path, literal):
+    tpl = json.load(open(TEMPLATE))
+    tpl["request_timeout_ns"] = literal
+    p = tmp_path / "literal.tiers.template.json"
+    p.write_text(json.dumps(tpl))
+    a = ns(w, "pc", w.root, *PC, "--request-timeout-ns", "null")
+    a.base_template = str(p)
+    with pytest.raises(L.LadderError, match="not a literal"):
+        L.generate(a)
+
+
+@pytest.mark.parametrize("vals,reg", [
+    ({"request_timeout_ns": None}, None),  # an unfilled checklist entry
+    # registers a name that cannot be null (the timeout's own null is registered)
+    ({"request_timeout_ns": None, "beat_ns": None}, ["request_timeout_ns", "beat_ns"]),
+    ({"request_timeout_ns": 5}, ["request_timeout_ns"]),  # registered but not null
+    ({"request_timeout_ns": None}, "request_timeout_ns"),  # not a list
+    ({"request_timeout_ns": None}, ["request_timeout_ns", "request_timeout_ns"])])
+def test_tiergen_accepts_only_a_registered_null_timeout(w, vals, reg):
+    out, name = _write(w, "pc", *PC, "--request-timeout-ns", "null")
+    vp = os.path.join(out, name + ".values.json")
+    doc = json.load(open(vp))
+    doc["values"].update(vals)
+    if reg is None:
+        del doc["registered_nulls"]
+    else:
+        doc["registered_nulls"] = reg
+    with open(vp, "w") as f:
+        json.dump(doc, f)
+    rc, tt = _tiergen(out, name)
+    assert rc == 3 and not os.path.exists(tt)
+
+
+def test_c13pc_is_the_pc_table_without_the_overload_tier(w, tmp_path):
+    _f, summary, _t, _v, lad, doc = gen(w, "c13pc", *PC)
+    _fp, summary_pc, _tp, _vp, lad_pc, doc_pc = gen(w, "pc", *PC, "--request-timeout-ns", "null")
+    loads = [t for t in doc["tiers"] if t["kind"] in ("up", "down")]
+    assert [round(t["load_value"] / C0, 6) for t in loads] == [0.3, 0.3, 0.3]
+    assert [t["kind"] for t in loads] == ["up", "down", "down"]
+    assert [t["label"] for t in doc["tiers"]] == ["warmup", "d01", "base", "d02", "sub1", "d03",
+                                                  "sub2", "d04"]
+    assert all(t["ramp_ns"] == 8 * 10 ** 9 for t in loads)
+    assert [(c["rho"], c["pass"]) for c in lad["cal"]] == [(0.3, 1), (0.3, 2)]
+    assert lad["baseline_seq"] == loads[0]["seq"] and lad["kind"] == "c13pc"
+    assert all(v == 60 for v in lad["drain_rule"]["slot_s_by_seq"].values())
+    labels_pc = [t["label"] for t in doc_pc["tiers"]]
+    assert "over" in labels_pc and "over" not in [t["label"] for t in doc["tiers"]]
+    assert summary["table_s"] < summary_pc["table_s"]
+    judge_accepts(lad, doc, str(tmp_path))
+
+
+# ---- V0-cal job plan (DESIGN 4.2: every job runs every configuration exactly once) ------------
+
+V0CAL_SPEC = {"schema": L.SPEC_SCHEMA, "phase_id": "V0cal-A", "phase": "V0cal",
+              "layout": "one_each", "seed_base": "E0v2-V0cal-20261115", "launches_per_job": 4,
+              "pin": False,
+              "configs": [{"config": c, "arm": a, "planned": 4} for c, a in (
+                  ("s1@1ms", "s1"), ("s1-uvloop", "s1uv"), ("s2", "s2"), ("s4", "s4"))]}
+
+
+def _spec(**over):
+    return dict(json.loads(json.dumps(V0CAL_SPEC)), **over)
+
+
+def test_v0cal_job_plan_runs_every_configuration_once_per_job(tmp_path):
+    items = L.job_plan_items(_spec())
+    assert items == L.job_plan_items(_spec())
+    assert len(items) == 4 and [it["order"] for it in items] == [1, 2, 3, 4]
+    for it in items:
+        assert it["launches"] == 4 and it["item_class"] == "planned" and not it["pin"]
+        assert it["config_counts"] == {"s1@1ms": 1, "s1-uvloop": 1, "s2": 1, "s4": 1}
+        assert sorted(it["arms"]) == ["s1", "s1uv", "s2", "s4"]
+    assert len({tuple(it["arms"]) for it in items}) > 1  # the launch order follows the seed
+    other = L.job_plan_items(_spec(seed_base="E0v2-V0cal-other"))
+    assert [it["arms"] for it in other] != [it["arms"] for it in items]
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps(_spec()))
+    out = tmp_path / "plan.tsv"
+    assert L.main(["--job-plan", str(spec), "--out", str(out)]) == 0
+    assert jobplan.read(str(out)) == items
+
+
+def test_v0cal_phase_refuses_the_mixed_layout_which_doubles_a_config(tmp_path):
+    with pytest.raises(L.LadderError, match="one_each"):
+        L.job_plan_items(_spec(layout="mixed"))
+    spec = _spec()
+    del spec["layout"]
+    with pytest.raises(L.LadderError, match="one_each"):
+        L.job_plan_items(spec)
+    del spec["phase"]  # without the phase the seed-mixed layout may put a config twice in a job
+    mixed = L.job_plan_items(spec)
+    assert any(max(it["config_counts"].values()) > 1 for it in mixed)
+
+
+@pytest.mark.parametrize("over,match", [
+    ({"launches_per_job": 3}, "launches_per_job"),
+    ({"layout": "round_robin", "phase": None}, "spec layout must be"),
+    ({"layout": "mixed", "phase": "V9"}, "spec phase must be"),
+    ({"configs": V0CAL_SPEC["configs"][:3] + [dict(V0CAL_SPEC["configs"][3], planned=3)]},
+     "same planned count"),
+    ({"configs": V0CAL_SPEC["configs"][:3] + [dict(V0CAL_SPEC["configs"][0], arm="s1b")],
+      }, "distinct")])
+def test_one_each_refusals(over, match):
+    with pytest.raises(L.LadderError, match=match):
+        L.job_plan_items(_spec(**over))
+
+
+def test_tiergen_registered_nulls_rule_by_itself():
+    ok = {"values": {"request_timeout_ns": None, "beat_ns": 1}, "registered_nulls":
+          ["request_timeout_ns"]}
+    assert tiergen.unset_values(ok) == []
+    assert tiergen.unset_values({"values": {"request_timeout_ns": None}}) == ["request_timeout_ns"]
+    for bad, match in (
+            ({"values": {"beat_ns": None}, "registered_nulls": ["beat_ns"]}, "cannot be null"),
+            ({"values": {"request_timeout_ns": 1}, "registered_nulls": ["request_timeout_ns"]},
+             "not null"),
+            ({"values": {}, "registered_nulls": ["request_timeout_ns"]}, "not null"),
+            ({"values": {"request_timeout_ns": None}, "registered_nulls": "request_timeout_ns"},
+             "list"),
+            ({"values": {"request_timeout_ns": None},
+              "registered_nulls": ["request_timeout_ns"] * 2}, "distinct")):
+        with pytest.raises(tiergen.ConfigError, match=match):
+            tiergen.unset_values(bad)
