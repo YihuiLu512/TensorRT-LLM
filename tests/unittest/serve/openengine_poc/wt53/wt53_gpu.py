@@ -3,11 +3,11 @@
 """A disaggregated cluster on one GPU and its readings, for GPU tests through the orchestrator.
 
 The tests run on the in-process workers and, when
-``TRTLLM_TEST_OPENENGINE_CHAIN`` selects a chain
+``TRTLLM_TEST_OPENENGINE_CHAIN`` selects the TensorRT-LLM chain
 (``tests/integration/defs/openengine_chain``), on the OpenEngine chain, where
-each worker is a frontend and an OpenEngine engine; the readings
+each worker is a frontend and a TensorRT-LLM OpenEngine engine; the readings
 of the engine (its ``GetServerInfo``, its Generate count, the requests its
-frontend sent it) exist only there.
+frontend sent it) are checked only there.
 """
 
 from __future__ import annotations
@@ -32,12 +32,13 @@ from utils.llm_data import llm_models_root
 from tensorrt_llm.grpc.openengine_conventions import SERVE_REQUEST_DUMP_DIR_ENV
 from tensorrt_llm.serve.disagg_auto_scaling import get_worker_key_prefix
 
-# For openengine_chain, imported where it is used.
+# For openengine_chain.
 __extra_import_path__ = ["~/tests/integration/defs"]
+from openengine_chain.conventions import CHAIN_TRTLLM, ENV_CHAIN  # noqa: E402
 
-CHAIN = os.environ.get("TRTLLM_TEST_OPENENGINE_CHAIN", "none") not in ("", "none")
+CHAIN = os.environ.get(ENV_CHAIN) == CHAIN_TRTLLM
 chain_only = pytest.mark.skipif(
-    not CHAIN, reason="reads the OpenEngine engine; runs on the chain only"
+    not CHAIN, reason="reads the TensorRT-LLM OpenEngine engine; runs on that chain only"
 )
 MODEL_SUBDIR = os.path.join("Qwen3", "Qwen3-0.6B")
 MODEL_NAME = "Qwen3/Qwen3-0.6B"

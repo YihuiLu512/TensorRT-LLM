@@ -18,12 +18,14 @@ DP, so on the chain their engines check the signed parent id
   call has no conversation id, or when the parent id is not printable ASCII.
 - NT-084: with ``subagent_affinity_scope: both`` (a second orchestrator) the
   requests succeed. The generation engine also declares that it checks the
-  hint, so its frontend cannot leave the hint out for the engine not
-  declaring it, and the engine refuses a generation call that carries one
-  ("supported on context requests only"), which would fail the request. On
-  the chain the requests succeeding is the evidence that the generation
-  frontend did not send the hint; the hint travels as gRPC metadata, which
-  the frontend's request dumps do not hold. Neither engine logs a refusal.
+  hint, the generation calls carry a conversation id and the parent ids are
+  ASCII, so of the frontend's grounds for leaving the hint out (NT-083) only
+  the call not being a context call is left; the engine refuses a generation
+  call that carries the hint ("supported on context requests only"), which
+  would fail the request. On the chain the requests succeeding is then the
+  evidence that the generation frontend did not send the hint; the hint
+  travels as gRPC metadata, which the frontend's request dumps do not hold.
+  Neither engine logs a refusal.
 
 Needs one GPU of Hopper or later and ``${LLM_MODELS_ROOT}/Qwen3/Qwen3-0.6B``.
 """
@@ -153,10 +155,16 @@ def scope_both(served, tmp_path):
 
 def test_subagent_affinity_scope_both_is_not_forwarded_to_the_gen_engine(served, scope_both):
     """NT-084 (DG-22, DG-35): with scope both the generation leg succeeds and its engine gets no hint."""
-    sizes = _log_sizes(served) if CHAIN else None
+    if CHAIN:
+        sizes = _log_sizes(served)
+        names = sent_names(served, "generation")
     _family(scope_both.url_root, "parent-both")
     if CHAIN:
         (gen,) = served.workers["generation"]
         assert engine_server_info(gen).extra[SUPPORTS_AFFINITY_KEY] is True
+        calls = sent_since(served, "generation", names)
+        assert len(calls) == 1 + NUM_CHILDREN, len(calls)
+        for call in calls:
+            assert call.get("extra", {}).get(REQ_CONVERSATION_ID), call
         _assert_no_refusal(served.workers["generation"], sizes)
         _assert_no_refusal(served.workers["context"], sizes)

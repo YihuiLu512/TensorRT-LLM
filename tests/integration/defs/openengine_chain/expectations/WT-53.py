@@ -3,7 +3,8 @@
 """Tests of KV-cache-aware routing, conditional disaggregation and the worker readings.
 
 ``test_workers.py`` sends the legs to the worker frontends itself: the
-KV-cache-aware router tests send both legs (``direct_two_leg``), the eviction
+KV-cache-aware router tests and ``test_workers_kv_cache_events`` send both
+legs (``direct_two_leg``), the eviction
 test sends aggregated requests to the generation worker only, and the
 conditional test sends the legs itself or, when most of the prompt is the
 previous round's, the whole request to the generation worker
@@ -17,7 +18,10 @@ entry.
 algorithm (``v1_block_key``) and looks for the hashes among the events'
 blocks; on the trtllm chain each event names the algorithm the engine declares in
 its ``GetServerInfo`` (``trtllm_kv_event_hash_algo``), which is another one,
-so the test cannot match a block. A router reads the algorithm from the events:
+so the test cannot match a block. ``test_workers_kv_cache_aware_router_eviction``
+keeps each event's ``event_id`` and ``data`` only (``query_kv_cache_events``),
+which leaves out the algorithm the event names, so its router hashes the request with the default algorithm and
+matches no block either. A router reads the algorithm from the events:
 ``_test_openengine_disagg_kv_aware.py::test_kv_cache_events_direct`` checks
 the chain's events that way.
 
@@ -75,6 +79,15 @@ EXPECTATIONS = [
     Expectation(
         "WT-53",
         "test_workers.py::test_workers_kv_cache_aware_router_eviction",
+        SKIP,
+        "keeps each event's id and data only, which leaves out the hash algorithm the engine's "
+        "events name, so its router hashes the request with the default algorithm (v1_block_key) and "
+        "matches no block",
+        chains=(CHAIN_TRTLLM,),
+    ),
+    Expectation(
+        "WT-53",
+        "test_workers.py::test_workers_kv_cache_aware_router_eviction",
         LEG_EXPECT,
         "the test sends aggregated requests to the generation worker frontend itself",
         leg=DIRECT_WORKER,
@@ -108,11 +121,13 @@ EXPECTATIONS = [
         LEG_EXPECT,
         _CONDITIONAL,
         leg=CTX_ZERO_OK,
+        chains=(CHAIN_TRTLLM,),
     ),
     Expectation(
         "WT-53",
         "_test_openengine_disagg_server_info.py::*",
         NO_ENGINE_TRAFFIC,
         "reads /server_info, and GetServerInfo, only",
+        chains=(CHAIN_TRTLLM,),
     ),
 ]
