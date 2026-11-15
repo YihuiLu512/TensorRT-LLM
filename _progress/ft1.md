@@ -76,3 +76,20 @@
 - 2026-11-16 02:51:39 FT1-inj 跑 tests/jobs 全目录（约 5 分钟）
 - 2026-11-16 02:53:36 FT1-inj 跑 tests/capstubs 全目录（约 4 分钟）
 - 2026-11-16 02:55:21 FT1-inj 重跑 tests/capstubs（上次缺 probe-tree 软链，属环境；约 4 分钟）
+- 2026-11-16 02:58:46 FT1-inj 作业路径 e2e：按 HEAD 5831c009 生成覆盖清单；e0a-nullsse 回归 + e3b-ees-mc-vstub（capkit 一侧 V 注入回归）（约 10 分钟）
+
+## FT1-inj 结果
+
+- 评估结论：可以在本步安全实现。capprobe 的探针补丁里 F2、F4 本来就带注入（`CAPPROBE_INJECT`，busy / sleep / miscount，心跳槽 `inject.<位点>.*`），缺的只是编排器下的登记与放行（R4-2 一直拒绝）。探针树不改。
+- 代码（提交 5831c009）：`caplaunch.scenario`（`product_inject_specs`、`product_writes_snapshots(角色, 档位表)`、`cross_check` 的产品侧注入核对，capprobe 的注入位点与模式按路径从 `capprobe/sites.py` 读）；`caplaunch.orchestrator`（被指名的产品角色设 `CAPPROBE_INJECT`，应拷快照名单带档位表，`launch.json` 的 `probe_inject`）；生成器加 `e4b-mc-vf2`、`e4b-mc-vf4`；文档：INTERFACES 勘误 FT1-18～FT1-20 与正文 / 旧勘误 9 处指向注，`configs/e4/README.md`、`tools/caplaunch/README.md`、`tools/capprobe/README.md`。
+- E3-3a 的被测端 V 就是 S-NL 的 `send.msg`（servicer 循环上、每条响应），已有模板 `e3a-snl-kc-mc-vsrv`，本步不另做。
+### MEASURED（本机；日志在 _local/ft1/logs、_local/ft1/mut-inj、_local/ft1/e2e/runs）
+- tests/launch 全目录 396 passed（inj-launch，临时软链 WT/probe-tree，跑完改名为 _local/ft1/probe-tree.link-inj1）；tests/capprobe 171 passed（inj-capprobe）；tests/jobs 250 passed（inj-jobs）；tests/capstubs 159 passed（inj-capstubs2；第一次 inj-capstubs 因缺 probe-tree 软链 26 error + 1 failed，属环境，补软链后重跑，软链改名为 probe-tree.link-inj2）。
+- 变异 T1～T15、T16b 全部被抓到；T16（注入位点表混入 lag 安装点）第一次没被抓到，补了 `Lfe` 反例后 T16b 被抓到（mut-inj/summary.txt；mut-inj/aborted-py36/ 是误用系统 python3.6 的空跑，未施测）。
+- 编排器端到端（tests/launch，真 capprobe）：有登记时三个负载档 F2 心跳 applied = hits（> 10）、applied_ns ≥ applied × 200 µs，F4 只计 hits；窗口两端都有产品进程快照副本；无登记时无快照。
+- 作业路径 e2e（覆盖清单 ovl/P0-5831c009）：e0a-nullsse J9300041、e3b-ees-mc-vstub J9300042 均 L0 VALID、judge rc 11、0 RED、无 INPUT_INVALID；`launch.json` 的 `probe_inject` 为 `{}`。
+- 对 tests/launch 留下的产品注入树直接跑 capjudge：INPUT_INVALID（submissions.tsv 没有该作业，本地树不是作业树），不能当判定器验证（logs/inj-judge-launchtree.log）。
+### INFERRED
+- 真前端里 F2 / F4 的守卫调用与替身里的写法相同（`if _capprobe.ON_F2: _capprobe.F2()`，patchcheck 核对过行号），所以只要 P1 覆盖装好、`CAPPROBE_ENTRY` 匹配，注入与心跳的行为应与本机一致。
+### NOT RUN
+- 带产品角色的 P1 作业路径 e2e（本机作业路径没有产品前端的替身）；真 `trtllm-serve` 上的 F2 / F4 注入；判定器对产品侧心跳的核对与 V 判读（属 2E）。E4 的 V 在 2E 之前只能人工按勘误 FT1-18 读心跳，核对不了的报「P+X+I，V 未运行」。

@@ -1207,6 +1207,7 @@ E0 作业 5933747 的 L0（`e0a-nullsse`）启动 VALID、数据完整，判定�
      3. R 轴的每请求位点（H1）同样可以这样登记，但快轨模板只有 M 轴的 F2、F4 两臂。
      4. 快轨没有单列「P1、无注入」的参照臂：V 臂的边界移动与 P0 的 `e4b-mc` 比时混着探针补丁本身的开销，登记时按默认决策补一个 P1 参照副本或写明这一点。
      5. 作业路径（`capjobs.submit` → `jobs/capkit_inner.sh` → `caplaunch` → `capjudge`）上带产品角色的 P1 启动【未运行】：本机作业路径 e2e 没有产品前端的替身。
+20. **验证**：`tests/launch/test_product_inject.py`（`cross_check` 接受的五种登记；拒绝的每条规则各一个反例：P0、`snapshots` 非 `all`、非注入位点（含 capprobe 的 lag 安装点 `Lfe`）、`drop` / `short`、没有 `count` 组的 `miscount`、进程类不符、某档 `inject` 指名产品角色；capkit 角色的注入不受影响；`product_writes_snapshots` 的全部取值）；`tests/launch/test_probe_env.py`（产品角色的 `CAPPROBE_INJECT` 用 capprobe 自己的解析器读回与登记相同、capkit 角色和无登记时没有；应拷快照名单按「P2 或有登记」）；`tests/launch/test_launch_e2e.py` 新增一例（真编排器 + 替身产品进程里的真 capprobe，按守卫写法每 5 ms 经过 F2、F4：有登记时 `launch.json` 的 `probe_inject`、快照元数据的注入规格、每档窗口两端都有该进程的快照副本，三个负载档的心跳 F2 `applied = hits`、`applied_ns ≥ applied × δ`，F4 只计 `hits`；无登记的阴性对照：没有任何快照）；`tests/launch/test_e2a_e3_e4_configs.py`（`vf2` / `vf4` 相对基线只差探针档、`snapshots` 与一条注入，位点是前端进程类经过的 capprobe 注入位点）。变异 T1～T15、T16b 全部被测试抓到（`_local/ft1/mut-inj/summary.txt`，不入库；T16 未被抓到，补了 `Lfe` 反例后换成 T16b）。作业路径 e2e：`e0a-nullsse`、`e3b-ees-mc-vstub` 回归 VALID、判定器 0 RED、无 INPUT_INVALID；带产品角色的 P1 作业路径【未运行】（第 19 条第 5 项）。
 
 ## 审阅记录（r2，2026-11-13）
 
