@@ -60,6 +60,9 @@ TOOL_TABLE = {
     # S-NL (errata FT1-1): one process like S-PB; every mode binds a port (metronome-only too).
     "capstubs.null_llm_server": {"loop": True, "tiers": True, "snapshot": True, "ready": True,
                                  "port": True, "workers": True, "single": True},
+    # oe_sink (errata FT1-8): capgrpc.load's reader in one process; no port file.
+    "capgrpc.oe_sink": {"loop": True, "tiers": True, "snapshot": True, "ready": True,
+                        "port": False, "workers": True, "single": True},
     # --ready-file: INTERFACES 2.2 ("all long-lived processes"); optional in B4's parsers.
     "capenv.sidecar": {"origin": True, "shm_only": True, "sidecar": True, "ready": True},
     "capenv.canary": {"origin": True, "canary": True, "ready": True},

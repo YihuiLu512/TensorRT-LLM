@@ -27,3 +27,10 @@
 ### NOT RUN
 - 真 tensorrt_llm（真 servicer / _format_result / Control 启动检查 / ModelLoader 加载 tokenizer）跑在 NullLlm 上：本机无法 import，属 E0 补充冒烟（勘误 FT1-6①）。
 - raw 请求格式读 S-NL：真 servicer 要求非空且唯一的 request_id，原始格式不适用（勘误 FT1-1）；只测了「无 request_id 被拒」。
+- 2026-11-16 00:50:23 FT1-sink 开始：读完快轨计划、E3 卡 3b、产品客户端 client/stream/engine_client_impl；试做「探针树真客户端文件 + 合成包」的本地替身（约 10 分钟）
+- 2026-11-16 01:00:31 FT1-sink：loader 重构（共用读者参数、--planned-msgs、连接钩子、begin/end_request）完成，开始写 capgrpc/oe_sink.py（约 30 分钟）
+- 2026-11-16 01:04:55 FT1-sink 首跑 tests/capstubs/test_oe_sink.py（约 2–3 分钟）
+- 2026-11-16 01:07:59 跑 tests/grpc 全目录（loader 重构回归，约 3–5 分钟）
+- 2026-11-16 01:09:59 跑 tests/capstubs 全目录（约 4 分钟）
+- 2026-11-16 01:12:59 跑 tests/launch 全目录（约 5 分钟）
+- 2026-11-16 01:17:22 FT1-sink 变异 S0–S17 串行（后台，约 10 分钟）

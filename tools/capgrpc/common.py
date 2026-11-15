@@ -149,6 +149,23 @@ async def wait_channels_ready(channels, deadline_ns):
         raise CapkitError("channels not ready %.3fs before the origin" % timeout)
 
 
+# ---- product self-report -------------------------------------------------------------------------
+
+def product_versions():
+    """Which tensorrt_llm (version, file) and protobuf implementation this process imported; the
+    tools that import product code (S-NL, capgrpc.oe_sink) write it into their self-report."""
+    trt = sys.modules.get("tensorrt_llm")
+    try:
+        from google.protobuf.internal import api_implementation  # noqa: PLC0415
+        pb_impl = api_implementation.Type()
+    except ImportError:
+        pb_impl = None
+    return {"tensorrt_llm": None if trt is None else {
+                "version": getattr(trt, "__version__", None),
+                "file": getattr(trt, "__file__", None)},
+            "protobuf_impl": pb_impl}
+
+
 # ---- per-process runtime ------------------------------------------------------------------------
 
 class TierCursor:

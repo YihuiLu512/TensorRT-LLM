@@ -8,6 +8,7 @@
 |---|---|
 | `python -m capgrpc.load` | 多进程 `grpc.aio` 开环负载器；`--stamped` 时作排空端 |
 | `python -m capgrpc.reqbytes raw …` / `openengine …` | 生成请求字节文件（`capkit.reqbytes/1`）；`openengine` 子命令只在装了产品包的容器里能用，导入失败退出码 3 |
+| `python -m capgrpc.oe_sink` | 经产品 OpenEngine 客户端类读流的开环驱动（设计稿 E3 卡 3b 的 `oe_sink.py`；INTERFACES 勘误 FT1-8～FT1-12），见文末一节 |
 | `capgrpc.common` | 三个 gRPC 工具共用的运行时（原始字节的通用处理器、通道、端口预留、`ToolRuntime`、多进程监督者）；`capgrpc.nullgrpc`、`capselfcheck.relay` 都 import 它 |
 
 ## 参数（§11 之外新增的都是可选参数）
@@ -22,6 +23,7 @@
 | `--request-bytes PATH` | `openengine` / `raw` 格式必需（`reqbytes` 生成的文件） |
 | `--max-msg-records-per-worker N` | `msgs` 记录容量；`capkit` 格式下不给就按时间表与 `expect.msgs_per_request` 精确算出 |
 | `--lag-records-capacity N` | 事件循环延迟的逐样本记录（缺省 0 = 只有直方图） |
+| `--planned-msgs` | 不盖戳的流（S-PB、S-NL）也算消息层滞后：计划时刻由时间表推出（`capgrpc.msgplan`，勘误 FT1-9）；与 `--stamped` 互斥，`raw` 格式不可用，要给 `--max-msg-records-per-worker` |
 
 `--request-format`：`capkit`（`wire.GRPC_REQ` 头 + prompt 字节，每请求现拼头部）、`openengine`（请求字节文件里的 `GenerateRequest` 模板前面拼上 `request_id` 字段：protobuf 解析把串接的序列化合并，所以发送路径上不建 protobuf 对象）、`raw`（新增取值：每请求同一段字节，没有请求号）。请求超时只读档位表的 `request_timeout_ns`，**从计划时刻起算**（发送时剩余时间 < 1 ms 时按 1 ms 发）；超时记 `timeout_registered`。请求处理中抛出的非 gRPC 异常（客户端自身故障）记 `client_error`（`class_hint = unclassified`），首次出现打印到标准错误。
 
@@ -59,3 +61,13 @@
 1. 包名：第一批写在 `capload_grpc`、`nullgrpc`、`selfcheck` 三个包里（任务分配的目录）；集成时已按 §1.1 改成 `capgrpc`（含子包 `capgrpc.nullgrpc`）与 `capselfcheck`。
 2. `--request-format` 多一个取值 `raw`；`openengine` 第一批就实现了（依赖请求字节文件）。
 3. 进程数：监督者 + W 个 worker（`expected_procs = W + 1`）。
+
+## `python -m capgrpc.oe_sink`（E3-3b 的客户端侧驱动）
+
+`LoadWorker` / `RequestPlan` 的子类：时间表、档、发送滞后、`requests` / `msgs` 记录与每档 summary 与 `capgrpc.load` 同结构，判定器当负载角色读。契约见 INTERFACES 勘误 FT1-8～FT1-12，这里只列用法。
+
+- 单进程、一条 channel。读者参数与 `capgrpc.load` 完全相同（`loader.add_reader_args`），另加 `--tier {generate-stream,engine-event-stream}`、`--connect {product,channel}`（必填）、`--control-timeout-s`、`--slow-read-us N`。弱读者对照 = 同一组参数的 `capgrpc.load --in-process --workers 1 --channels-per-worker 1`：场景里换读者只换模块名并去掉这几个参数。
+- `--tier generate-stream`：`OpenEngineClient.generate` → `GenerateStream`；`--tier engine-event-stream`：`OpenEngineEngineClient.generate(EngineRequest)`（另加两次 dataclass ↔ protobuf 转换）。
+- `--connect product` 走客户端自己的 `connect()`，对端要答 Control（S-PB 前端模式、S-NL）；`--connect channel` 不发 Control 调用，可读只服务 Generate 的 S-PB。
+- 产品模块只在容器里有：导入失败退出码 3（「container only」），导入了什么写进就绪文件与每档 summary 的 `imported`。本机测试用 `tests/capstubs/oe_product.py` 把探针树里产品客户端文件原样拼成一个最小的 `tensorrt_llm` 包。
+- `recv.msg` 的 `busy` / `sleep` 阻塞整个事件循环；`--slow-read-us` 只让每条流读完一项后 `asyncio.sleep`（E3「读者慢」已知样本）。

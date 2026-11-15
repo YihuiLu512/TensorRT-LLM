@@ -53,7 +53,7 @@ from capcommon.tiers import POST_SEQ, TierTable
 
 from capgrpc import inject_slot_decls
 from capgrpc.common import (ToolRuntime, bind_server, combine_launch_specs, make_server,
-                            write_inprocess_ready)
+                            product_versions, write_inprocess_ready)
 
 from .nullllm import CURRENT_RPC, TOKEN_SOURCES, NullArgs, NullLlm
 from .prebaked import SHORT_SITE, decimal_request_id, shorted, uniform_msg_shape
@@ -224,19 +224,10 @@ def load_product(module_name):
     if not inspect.isasyncgenfunction(getattr(servicer_cls, "Generate", None)):
         raise ConfigError("%s.%s.Generate is not an async generator function; S-NL cannot wrap "
                           "it" % (module_name, SERVICER_CLASS))
-    trt = sys.modules.get("tensorrt_llm")
-    try:
-        from google.protobuf.internal import api_implementation  # noqa: PLC0415
-        pb_impl = api_implementation.Type()
-    except ImportError:
-        pb_impl = None
     report = {"server_module": module_name, "server_module_file": getattr(mod, "__file__", None),
               "server_class": "%s.%s" % (server_cls.__module__, server_cls.__qualname__),
-              "servicer_class": "%s.%s" % (servicer_cls.__module__, servicer_cls.__qualname__),
-              "tensorrt_llm": None if trt is None else {
-                  "version": getattr(trt, "__version__", None),
-                  "file": getattr(trt, "__file__", None)},
-              "protobuf_impl": pb_impl}
+              "servicer_class": "%s.%s" % (servicer_cls.__module__, servicer_cls.__qualname__)}
+    report.update(product_versions())
     return mod, report
 
 
