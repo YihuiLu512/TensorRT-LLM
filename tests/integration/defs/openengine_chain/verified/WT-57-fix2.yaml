@@ -1,0 +1,457 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# End-to-end checks of existing multi-GPU disaggregated tests on the disaggregated chain (case-04,
+# trtllm chain, B200; 2, 4 or 8 GPUs per node as each test needs), three runs of each case. The
+# runs tested 0f71f2e5bd5e2e32234cffc73a8c5ccbe26dd885,
+# which has none of this work item's files; no expectation in expectations/WT-57-fix2.py applies
+# to a case listed here. Each junit path is relative to the result directory of its runs, which
+# the work item's status file records; runs that a node fault stopped are left out.
+# An entry lists the cases whose three runs passed; the comment above it names each of them with
+# "ok" (the chain proof holds), and each other case of the row with the reason it is not listed.
+# A row's cases follow the parameter limits of the plan (02_functional-tests.md): EG-01a+WT-57-fix2
+# takes XD-205's mtp_nextn=2 parameters, EG-03 and F-31 XD-221's block_reuse=True parameter, and
+# F-31 XD-205's mtp_nextn=2 parameters; other parameters are not named in that row's comment.
+# For T23, T31 and T32 the cases are the functions migrated/WT-57-fix2.txt lists; the comment also
+# gives the results of the same tests without the chain (T) and the jobs of those runs, which are
+# not under junit as they have no chain proof.
+# The cases expectations/WT-57-fix2.py skips were run again at
+# 03773b32bcc4e550db9429f05b05ed70e189378c (b200-8g-r2-skip, three runs): each was
+# skipped by its entry there, with the reason text that commit had.
+# Rows this work item owed but does not list, as none of their cases (within those limits) can pass
+# on the trtllm chain: F-31, EG-01f, EG-14e+rest, EG-26, F-09+WT-57-fix2 and F-30+rest, whose B200
+# cases expectations/WT-57-fix2.py skips there (they read the speculative decoding stats,
+# kv_cache_size or the acceptance length of each response, none of which a worker front end
+# reports; DV-05 and DV-06, DV-06 signed off in U35),
+# except F-31's XD-221[mtp_nextn=3-block_reuse=True-use_py_transceiver=True], which runs out of
+# GPU memory for the KV cache at startup with or without the chain; and DG-34+rest+WT-57-fix2
+# (XD-312, skipped there by expectations/WT-54.py). R14 settles these seven rows (U36).
+# In the first run of each case the skipped
+# speculative decoding tests passed their accuracy checks before the read that fails: XD-203 MMLU
+# 71.25 and GSM8K 65.01 (job 5966942_0); XD-205[mtp_nextn=2-overlap_scheduler=False] MMLU 71.13
+# and GSM8K 64.25, [mtp_nextn=2-overlap_scheduler=True] MMLU 71.17 and GSM8K 64.56 (job
+# 5966943_0); XD-228 GSM8K 95.15 (job 5966943_0); XD-231 GSM8K 96.97 (job 5966944_0).
+# Not run here: the Hopper cases of the rows this work item owed (hopper_cases in
+# scripts/poc3/feature_deps.yaml; XD-042's expectation included), left to the integration rounds.
+entries:
+  # XD-062 ok
+  - row: F-20+WT-57-fix2
+    features:
+    - F-20
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_logprobs_serving
+    commit: 0f71f2e5bd5e2e32234cffc73a8c5ccbe26dd885
+    junit:
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_0-r0/node0/results/e06/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_1-r0/node0/results/e06/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_2-r0/node0/results/e06/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-206 [xgrammar-mtp_nextn=2] ok, XD-206 [xgrammar-mtp_nextn=0] ok, XD-073 ok, T23
+  #   test_ebnf[openai/gpt-oss-120b] ok (T: 3 of 3 passed), T23
+  #   test_json_schema[openai/gpt-oss-120b] ok (T: 3 of 3 passed), T23
+  #   test_json_schema_user_profile[openai/gpt-oss-120b] ok (T: 3 of 3 passed), T23
+  #   test_openai_compatible_json_schema[openai/gpt-oss-120b] ok (T: 3 of 3 passed), T23
+  #   test_regex[openai/gpt-oss-120b] ok (T: 3 of 3 passed), T23
+  #   test_structural_tag[openai/gpt-oss-120b] ok (T: 3 of 3 passed), T runs without the chain: jobs
+  #   5969642_0, 5969642_1, 5969642_2
+  # XD-074: its test body passed in all 3 runs; in 1 of them the harness failed the case at
+  #   shutdown, as a process of the engine survived SIGKILL
+  # T23 [zai-org/GLM-5-FP8] (each of the six functions): not run: the harness finds the parameter
+  #   needs 16 GPUs in the disaggregated form
+  - row: F-23
+    features:
+    - F-23
+    cases:
+    - accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_guided_decoding[xgrammar-mtp_nextn=2]
+    - accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_guided_decoding[xgrammar-mtp_nextn=0]
+    - disaggregated/test_disaggregated.py::test_disaggregated_mixed_stress_test[req120-conc64-qwen3_32b_fp8_mixed_stress]
+    - unittest/llmapi/apps/_test_openai_chat_guided_decoding.py::test_ebnf[openai/gpt-oss-120b]
+    - unittest/llmapi/apps/_test_openai_chat_guided_decoding.py::test_json_schema[openai/gpt-oss-120b]
+    - unittest/llmapi/apps/_test_openai_chat_guided_decoding.py::test_json_schema_user_profile[openai/gpt-oss-120b]
+    - unittest/llmapi/apps/_test_openai_chat_guided_decoding.py::test_openai_compatible_json_schema[openai/gpt-oss-120b]
+    - unittest/llmapi/apps/_test_openai_chat_guided_decoding.py::test_regex[openai/gpt-oss-120b]
+    - unittest/llmapi/apps/_test_openai_chat_guided_decoding.py::test_structural_tag[openai/gpt-oss-120b]
+    commit: 0f71f2e5bd5e2e32234cffc73a8c5ccbe26dd885
+    junit:
+    - b200-2g-r1-mig-t23-chain/b200-2g-r1-mig-t23-chain/job-5966946_0-r0/node0/results/e00/output/results-sub-unittests-unittest-llmapi-apps-_test_openai_chat_guided_decoding.py.xml
+    - b200-2g-r1-mig-t23-chain/b200-2g-r1-mig-t23-chain/job-5966946_1-r0/node0/results/e00/output/results-sub-unittests-unittest-llmapi-apps-_test_openai_chat_guided_decoding.py.xml
+    - b200-2g-r1-mig-t23-chain/b200-2g-r1-mig-t23-chain/job-5966946_2-r0/node0/results/e00/output/results-sub-unittests-unittest-llmapi-apps-_test_openai_chat_guided_decoding.py.xml
+    - b200-2g-r1-xd-2g-a/b200-2g-r1-xd-2g-a/job-5966939_0-r0/node0/results/e06/outer-junit.xml
+    - b200-2g-r1-xd-2g-a/b200-2g-r1-xd-2g-a/job-5966939_0-r0/node0/results/e07/outer-junit.xml
+    - b200-2g-r1-xd-2g-a/b200-2g-r1-xd-2g-a/job-5966939_1-r0/node0/results/e06/outer-junit.xml
+    - b200-2g-r1-xd-2g-a/b200-2g-r1-xd-2g-a/job-5966939_1-r0/node0/results/e07/outer-junit.xml
+    - b200-2g-r1-xd-2g-a/b200-2g-r1-xd-2g-a/job-5966939_2-r0/node0/results/e06/outer-junit.xml
+    - b200-2g-r1-xd-2g-a/b200-2g-r1-xd-2g-a/job-5966939_2-r0/node0/results/e07/outer-junit.xml
+    - b200-8g-r1-xd-8g-c/b200-8g-r1-xd-8g-c/job-5966944_0-r0/node0/results/e04/outer-junit.xml
+    - b200-8g-r1-xd-8g-c/b200-8g-r1-xd-8g-c/job-5966944_1-r0/node0/results/e04/outer-junit.xml
+    - b200-8g-r1b-xd-8g-c/b200-8g-r1b-xd-8g-c/job-5969643_0-r0/node0/results/e04/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-225 ok, XD-011 ok, XD-029 ok, XD-030 ok, XD-031 ok, XD-032 ok, XD-033 ok, XD-034 ok, T31
+  #   test_no_kv_cache_contamination_under_cancel ok (T: 3 of 3 passed), T32
+  #   test_chat_streaming_tp2[pytorch-extra_options] ok (T: 3 of 3 passed), T32
+  #   test_completion_tp2[pytorch-extra_options] ok (T: 3 of 3 passed), T runs without the chain:
+  #   jobs 5966947_0, 5966947_1, 5966947_2, 5966949_0, 5969644_0, 5969644_1
+  # XD-203: skip: expectations/WT-57-fix2.py skips it on the trtllm chain (speculative decoding
+  #   stats); in these runs it failed only at that read
+  # T31 test_no_kv_cache_contamination_number_set_probe: its test body passed in all 3 runs; in 1 of
+  #   them the chain proof failed (CH-2 on the context leg: front end sent 161, engine received
+  #   162), and in the other 2 it held
+  # T32 test_chat_streaming_tp2[pytorch-no_extra_options]: error: the servers run out of GPU memory
+  #   at startup, in the form without the chain as well
+  # T32 test_chat_tp2[pytorch-extra_options]: failed: completion_tokens is 2 where the test expects
+  #   1, in the form without the chain as well
+  # T32 test_chat_tp2[pytorch-no_extra_options]: error: the servers run out of GPU memory at
+  #   startup, in the form without the chain as well
+  # T32 test_completion_tp2[pytorch-no_extra_options]: error: the servers run out of GPU memory at
+  #   startup, in the form without the chain as well
+  - row: F-32
+    features:
+    - F-32
+    cases:
+    - accuracy/test_disaggregated_serving.py::TestGLM52NVFP4::test_nvfp4_nixl[cache_mgr_v2]
+    - disaggregated/test_disaggregated.py::test_disaggregated_multi_gpu
+    - disaggregated/test_disaggregated.py::test_disaggregated_ctxpp2_genpp2
+    - disaggregated/test_disaggregated.py::test_disaggregated_ctxtp2_genpp2
+    - disaggregated/test_disaggregated.py::test_disaggregated_ctxpp2_gentp2
+    - disaggregated/test_disaggregated.py::test_disaggregated_ctxtp2pp2_gentp2pp2
+    - disaggregated/test_disaggregated.py::test_disaggregated_ctxpp4_genpp4
+    - disaggregated/test_disaggregated.py::test_disaggregated_ctxpp4_gentp4
+    - unittest/llmapi/apps/_test_openai_kv_cache_contamination.py::test_no_kv_cache_contamination_under_cancel
+    - unittest/llmapi/apps/_test_openai_multi_gpu.py::test_chat_streaming_tp2[pytorch-extra_options]
+    - unittest/llmapi/apps/_test_openai_multi_gpu.py::test_completion_tp2[pytorch-extra_options]
+    commit: 0f71f2e5bd5e2e32234cffc73a8c5ccbe26dd885
+    junit:
+    - b200-4g-r1-mig-t32-chain/b200-4g-r1-mig-t32-chain/job-5966948_0-r0/node0/results/e00/output/results-sub-unittests-unittest-llmapi-apps-_test_openai_multi_gpu.py.xml
+    - b200-4g-r1-mig-t32-chain/b200-4g-r1-mig-t32-chain/job-5966948_1-r0/node0/results/e00/output/results-sub-unittests-unittest-llmapi-apps-_test_openai_multi_gpu.py.xml
+    - b200-4g-r1-mig-t32-chain/b200-4g-r1-mig-t32-chain/job-5966948_2-r0/node0/results/e00/output/results-sub-unittests-unittest-llmapi-apps-_test_openai_multi_gpu.py.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_0-r0/node0/results/e08/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_0-r0/node0/results/e10/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_1-r0/node0/results/e08/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_1-r0/node0/results/e10/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_2-r0/node0/results/e08/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_2-r0/node0/results/e10/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_0-r0/node0/results/e07/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_0-r0/node0/results/e08/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_1-r0/node0/results/e07/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_1-r0/node0/results/e08/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_2-r0/node0/results/e07/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_2-r0/node0/results/e08/outer-junit.xml
+    - b200-8g-r1-mig-t31-chain/b200-8g-r1-mig-t31-chain/job-5966950_0-r0/node0/results/e00/output/results-sub-unittests-unittest-llmapi-apps-_test_openai_kv_cache_contamination.py.xml
+    - b200-8g-r1-xd-8g-a/b200-8g-r1-xd-8g-a/job-5966942_0-r0/node0/results/e07/outer-junit.xml
+    - b200-8g-r1-xd-8g-a/b200-8g-r1-xd-8g-a/job-5966942_1-r0/node0/results/e07/outer-junit.xml
+    - b200-8g-r1-xd-8g-a/b200-8g-r1-xd-8g-a/job-5966942_2-r0/node0/results/e07/outer-junit.xml
+    - b200-8g-r1-xd-8g-b/b200-8g-r1-xd-8g-b/job-5966943_0-r0/node0/results/e01/outer-junit.xml
+    - b200-8g-r1-xd-8g-b/b200-8g-r1-xd-8g-b/job-5966943_0-r0/node0/results/e08/outer-junit.xml
+    - b200-8g-r1-xd-8g-b/b200-8g-r1-xd-8g-b/job-5966943_0-r0/node0/results/e09/outer-junit.xml
+    - b200-8g-r1-xd-8g-b/b200-8g-r1-xd-8g-b/job-5966943_1-r0/node0/results/e01/outer-junit.xml
+    - b200-8g-r1-xd-8g-b/b200-8g-r1-xd-8g-b/job-5966943_1-r0/node0/results/e08/outer-junit.xml
+    - b200-8g-r1-xd-8g-b/b200-8g-r1-xd-8g-b/job-5966943_1-r0/node0/results/e09/outer-junit.xml
+    - b200-8g-r1-xd-8g-b/b200-8g-r1-xd-8g-b/job-5966943_2-r0/node0/results/e01/outer-junit.xml
+    - b200-8g-r1-xd-8g-b/b200-8g-r1-xd-8g-b/job-5966943_2-r0/node0/results/e08/outer-junit.xml
+    - b200-8g-r1-xd-8g-b/b200-8g-r1-xd-8g-b/job-5966943_2-r0/node0/results/e09/outer-junit.xml
+    - b200-8g-r1b-mig-t31-chain/b200-8g-r1b-mig-t31-chain/job-5969645_0-r0/node0/results/e00/output/results-sub-unittests-unittest-llmapi-apps-_test_openai_kv_cache_contamination.py.xml
+    - b200-8g-r1b-mig-t31-chain/b200-8g-r1b-mig-t31-chain/job-5969645_1-r0/node0/results/e00/output/results-sub-unittests-unittest-llmapi-apps-_test_openai_kv_cache_contamination.py.xml
+    result: passed
+    chain_proof: ok
+  # XD-105 ok
+  - row: DG-11+WT-57-fix2
+    features:
+    - DG-11
+    cases:
+    - disaggregated/test_auto_scaling.py::test_service_discovery[http-round_robin]
+    commit: 0f71f2e5bd5e2e32234cffc73a8c5ccbe26dd885
+    junit:
+    - b200-8g-r1-xd-8g-a/b200-8g-r1-xd-8g-a/job-5966942_0-r0/node0/results/e08/outer-junit.xml
+    - b200-8g-r1-xd-8g-a/b200-8g-r1-xd-8g-a/job-5966942_1-r0/node0/results/e08/outer-junit.xml
+    - b200-8g-r1-xd-8g-a/b200-8g-r1-xd-8g-a/job-5966942_2-r0/node0/results/e08/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-008 ok
+  - row: DG-20+WT-57-fix2
+    features:
+    - DG-20
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_router[conversation]
+    commit: 0f71f2e5bd5e2e32234cffc73a8c5ccbe26dd885
+    junit:
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_0-r0/node0/results/e10/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_1-r0/node0/results/e10/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_2-r0/node0/results/e10/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-057 ok, XD-058 ok
+  # XD-208 [True]: failed: the engine runs out of GPU memory for the KV cache at startup; without
+  #   the chain it fails the same way (R10)
+  # XD-208 [False]: failed: the engine runs out of GPU memory for the KV cache at startup; without
+  #   the chain it fails the same way (R10)
+  - row: DG-67+WT-57-fix2
+    features:
+    - DG-67
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_gpt_oss_120b_harmony[gpt_oss/gpt-oss-120b]
+    - disaggregated/test_disaggregated.py::test_disaggregated_gpt_oss_20b_kv_cache_aware[gpt_oss/gpt-oss-20b]
+    commit: 0f71f2e5bd5e2e32234cffc73a8c5ccbe26dd885
+    junit:
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_0-r0/node0/results/e03/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_1-r0/node0/results/e03/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_2-r0/node0/results/e03/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_0-r0/node0/results/e09/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_1-r0/node0/results/e09/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_2-r0/node0/results/e09/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-225 ok
+  # XD-205 [mtp_nextn=2-overlap_scheduler=False]: skip: expectations/WT-57-fix2.py skips it on the
+  #   trtllm chain (speculative decoding stats); in these runs it failed only at that read
+  # XD-205 [mtp_nextn=2-overlap_scheduler=True]: skip: expectations/WT-57-fix2.py skips it on the
+  #   trtllm chain (speculative decoding stats); in these runs it failed only at that read
+  - row: EG-01a+WT-57-fix2
+    features:
+    - EG-01a
+    cases:
+    - accuracy/test_disaggregated_serving.py::TestGLM52NVFP4::test_nvfp4_nixl[cache_mgr_v2]
+    commit: 0f71f2e5bd5e2e32234cffc73a8c5ccbe26dd885
+    junit:
+    - b200-8g-r1-xd-8g-b/b200-8g-r1-xd-8g-b/job-5966943_0-r0/node0/results/e01/outer-junit.xml
+    - b200-8g-r1-xd-8g-b/b200-8g-r1-xd-8g-b/job-5966943_1-r0/node0/results/e01/outer-junit.xml
+    - b200-8g-r1-xd-8g-b/b200-8g-r1-xd-8g-b/job-5966943_2-r0/node0/results/e01/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-059 ok
+  # XD-210 [overlap_scheduler=True]: failed: the engine runs out of GPU memory for the KV cache at
+  #   startup; without the chain it fails the same way (R10)
+  # XD-210 [overlap_scheduler=False]: failed: the engine runs out of GPU memory for the KV cache at
+  #   startup; without the chain it fails the same way (R10)
+  # XD-231: skip: expectations/WT-57-fix2.py skips it on the trtllm chain (speculative decoding
+  #   stats); in these runs it failed only at that read
+  - row: EG-01b
+    features:
+    - EG-01b
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_qwen3_32b_fp8[Qwen3/Qwen3-32B-FP8]
+    commit: 0f71f2e5bd5e2e32234cffc73a8c5ccbe26dd885
+    junit:
+    - b200-8g-r1-xd-8g-c/b200-8g-r1-xd-8g-c/job-5966944_0-r0/node0/results/e02/outer-junit.xml
+    - b200-8g-r1-xd-8g-c/b200-8g-r1-xd-8g-c/job-5966944_1-r0/node0/results/e02/outer-junit.xml
+    - b200-8g-r1b-xd-8g-c/b200-8g-r1b-xd-8g-c/job-5969643_0-r0/node0/results/e02/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-212 [False-False] ok, XD-212 [True-False] ok, XD-212 [False-True] ok, XD-212 [True-True] ok,
+  #   XD-217 ok, XD-215 [block_reuse] ok, XD-215 [no_reuse] ok, XD-224 [no_reuse] ok, XD-224
+  #   [prefix_cache_offsets] ok
+  # XD-221 [mtp_nextn=3-block_reuse=True-use_py_transceiver=True]: failed: the engine runs out of
+  #   GPU memory for the KV cache at startup; without the chain it fails the same way (R10)
+  # XD-224 [prefix_cache]: failed: the engine runs out of GPU memory for the KV cache at startup;
+  #   without the chain it fails the same way (R10)
+  - row: EG-03
+    features:
+    - EG-03
+    cases:
+    - accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype[False-False]
+    - accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype[True-False]
+    - accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype[False-True]
+    - accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype[True-True]
+    - accuracy/test_disaggregated_serving.py::TestQwen3_5_4B::test_mismatched_block_reuse
+    - accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_gen_first[block_reuse]
+    - accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_gen_first[no_reuse]
+    - accuracy/test_disaggregated_serving.py::TestQwen3_8_Flash_Next::test_fp8_nixl_python[no_reuse]
+    - accuracy/test_disaggregated_serving.py::TestQwen3_8_Flash_Next::test_fp8_nixl_python[prefix_cache_offsets]
+    commit: 0f71f2e5bd5e2e32234cffc73a8c5ccbe26dd885
+    junit:
+    - b200-2g-r1-xd-2g-a/b200-2g-r1-xd-2g-a/job-5966939_0-r0/node0/results/e00/outer-junit.xml
+    - b200-2g-r1-xd-2g-a/b200-2g-r1-xd-2g-a/job-5966939_0-r0/node0/results/e01/outer-junit.xml
+    - b200-2g-r1-xd-2g-a/b200-2g-r1-xd-2g-a/job-5966939_0-r0/node0/results/e02/outer-junit.xml
+    - b200-2g-r1-xd-2g-a/b200-2g-r1-xd-2g-a/job-5966939_0-r0/node0/results/e03/outer-junit.xml
+    - b200-2g-r1-xd-2g-a/b200-2g-r1-xd-2g-a/job-5966939_0-r0/node0/results/e04/outer-junit.xml
+    - b200-2g-r1-xd-2g-a/b200-2g-r1-xd-2g-a/job-5966939_1-r0/node0/results/e00/outer-junit.xml
+    - b200-2g-r1-xd-2g-a/b200-2g-r1-xd-2g-a/job-5966939_1-r0/node0/results/e01/outer-junit.xml
+    - b200-2g-r1-xd-2g-a/b200-2g-r1-xd-2g-a/job-5966939_1-r0/node0/results/e02/outer-junit.xml
+    - b200-2g-r1-xd-2g-a/b200-2g-r1-xd-2g-a/job-5966939_1-r0/node0/results/e03/outer-junit.xml
+    - b200-2g-r1-xd-2g-a/b200-2g-r1-xd-2g-a/job-5966939_1-r0/node0/results/e04/outer-junit.xml
+    - b200-2g-r1-xd-2g-a/b200-2g-r1-xd-2g-a/job-5966939_2-r0/node0/results/e00/outer-junit.xml
+    - b200-2g-r1-xd-2g-a/b200-2g-r1-xd-2g-a/job-5966939_2-r0/node0/results/e01/outer-junit.xml
+    - b200-2g-r1-xd-2g-a/b200-2g-r1-xd-2g-a/job-5966939_2-r0/node0/results/e02/outer-junit.xml
+    - b200-2g-r1-xd-2g-a/b200-2g-r1-xd-2g-a/job-5966939_2-r0/node0/results/e03/outer-junit.xml
+    - b200-2g-r1-xd-2g-a/b200-2g-r1-xd-2g-a/job-5966939_2-r0/node0/results/e04/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_0-r0/node0/results/e02/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_0-r0/node0/results/e05/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_1-r0/node0/results/e02/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_1-r0/node0/results/e05/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_2-r0/node0/results/e02/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_2-r0/node0/results/e05/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_0-r0/node0/results/e01/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_0-r0/node0/results/e02/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_1-r0/node0/results/e01/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_1-r0/node0/results/e02/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_2-r0/node0/results/e01/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_2-r0/node0/results/e02/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-062 ok
+  - row: EG-10a
+    features:
+    - EG-10a
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_logprobs_serving
+    commit: 0f71f2e5bd5e2e32234cffc73a8c5ccbe26dd885
+    junit:
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_0-r0/node0/results/e06/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_1-r0/node0/results/e06/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_2-r0/node0/results/e06/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-043 ok, XD-053 ok, XD-222 ok, XD-220 ok, XD-224 [no_reuse] ok, XD-224 [prefix_cache_offsets]
+  #   ok, XD-226 ok, XD-229 ok
+  # XD-224 [prefix_cache]: failed: the engine runs out of GPU memory for the KV cache at startup;
+  #   without the chain it fails the same way (R10)
+  # XD-060: skip: expectations/WT-57-fix2.py skips it on the trtllm chain (kv_cache_size and
+  #   avg_decoded_tokens_per_iter)
+  # XD-061: skip: expectations/WT-57-fix2.py skips it on the trtllm chain (kv_cache_size and
+  #   avg_decoded_tokens_per_iter)
+  # XD-010: failed on the chain proof alone in all 3 runs: no expectation is registered for it, and
+  #   under the two-leg rule CH-3 (the context worker the generation-only benchmark starts gets no
+  #   call) and CH-4 (0 hand-offs sent, 50 taken) fail; the proof's single_side rule would still
+  #   fail CH-3
+  - row: EG-13
+    features:
+    - EG-13
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_attention_dp_overlap[DeepSeek-V3-Lite-fp8]
+    - disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_bf16_empty_batch[DeepSeek-V3-Lite-bf16]
+    - accuracy/test_disaggregated_serving.py::TestNemotron3Super120B::test_ctx_dp2_gen_tp4
+    - accuracy/test_disaggregated_serving.py::TestKimiK25::test_nvfp4
+    - accuracy/test_disaggregated_serving.py::TestQwen3_8_Flash_Next::test_fp8_nixl_python[no_reuse]
+    - accuracy/test_disaggregated_serving.py::TestQwen3_8_Flash_Next::test_fp8_nixl_python[prefix_cache_offsets]
+    - accuracy/test_disaggregated_serving.py::TestDeepSeekV4Flash::test_auto_dtype
+    - accuracy/test_disaggregated_serving.py::TestDeepSeekV4FlashBase::test_auto_dtype
+    commit: 0f71f2e5bd5e2e32234cffc73a8c5ccbe26dd885
+    junit:
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_0-r0/node0/results/e00/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_1-r0/node0/results/e00/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_2-r0/node0/results/e00/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_0-r0/node0/results/e00/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_0-r0/node0/results/e01/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_0-r0/node0/results/e02/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_0-r0/node0/results/e03/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_0-r0/node0/results/e05/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_1-r0/node0/results/e00/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_1-r0/node0/results/e01/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_1-r0/node0/results/e02/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_1-r0/node0/results/e03/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_1-r0/node0/results/e05/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_2-r0/node0/results/e00/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_2-r0/node0/results/e01/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_2-r0/node0/results/e02/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_2-r0/node0/results/e03/outer-junit.xml
+    - b200-4g-r1-xd-4g-b/b200-4g-r1-xd-4g-b/job-5966941_2-r0/node0/results/e05/outer-junit.xml
+    - b200-8g-r1-xd-8g-c/b200-8g-r1-xd-8g-c/job-5966944_0-r0/node0/results/e01/outer-junit.xml
+    - b200-8g-r1-xd-8g-c/b200-8g-r1-xd-8g-c/job-5966944_0-r0/node0/results/e06/outer-junit.xml
+    - b200-8g-r1-xd-8g-c/b200-8g-r1-xd-8g-c/job-5966944_1-r0/node0/results/e01/outer-junit.xml
+    - b200-8g-r1-xd-8g-c/b200-8g-r1-xd-8g-c/job-5966944_1-r0/node0/results/e06/outer-junit.xml
+    - b200-8g-r1b-xd-8g-c/b200-8g-r1b-xd-8g-c/job-5969643_0-r0/node0/results/e01/outer-junit.xml
+    - b200-8g-r1b-xd-8g-c/b200-8g-r1b-xd-8g-c/job-5969643_0-r0/node0/results/e06/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-205 [mtp_nextn=0-overlap_scheduler=False] ok, XD-205 [mtp_nextn=0-overlap_scheduler=True] ok
+  # XD-205 [mtp_nextn=2-overlap_scheduler=False]: skip: expectations/WT-57-fix2.py skips it on the
+  #   trtllm chain (speculative decoding stats); in these runs it failed only at that read
+  # XD-205 [mtp_nextn=2-overlap_scheduler=True]: skip: expectations/WT-57-fix2.py skips it on the
+  #   trtllm chain (speculative decoding stats); in these runs it failed only at that read
+  - row: EG-18+rest
+    features:
+    - EG-18
+    cases:
+    - accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype[mtp_nextn=0-overlap_scheduler=False]
+    - accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype[mtp_nextn=0-overlap_scheduler=True]
+    commit: 0f71f2e5bd5e2e32234cffc73a8c5ccbe26dd885
+    junit:
+    - b200-8g-r1-xd-8g-a/b200-8g-r1-xd-8g-a/job-5966942_0-r0/node0/results/e02/outer-junit.xml
+    - b200-8g-r1-xd-8g-a/b200-8g-r1-xd-8g-a/job-5966942_1-r0/node0/results/e02/outer-junit.xml
+    - b200-8g-r1-xd-8g-a/b200-8g-r1-xd-8g-a/job-5966942_2-r0/node0/results/e02/outer-junit.xml
+    - b200-8g-r1-xd-8g-c/b200-8g-r1-xd-8g-c/job-5966944_0-r0/node0/results/e05/outer-junit.xml
+    - b200-8g-r1-xd-8g-c/b200-8g-r1-xd-8g-c/job-5966944_1-r0/node0/results/e05/outer-junit.xml
+    - b200-8g-r1b-xd-8g-c/b200-8g-r1b-xd-8g-c/job-5969643_0-r0/node0/results/e05/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-017 ok, XD-040 ok, XD-211 ok, XD-223 ok, XD-226 ok
+  # XD-209: failed: the engine runs out of GPU memory for the KV cache at startup; without the chain
+  #   it fails the same way (R10)
+  # XD-230: skip: the test needs more GPU memory than a B200 has (R10 skips it the same way)
+  - row: EG-22a+WT-57-fix2
+    features:
+    - EG-22a
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_overlap_transceiver_runtime_python
+    - disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_fp8_nixl[DeepSeek-V3-Lite-fp8]
+    - accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_nixl_backend
+    - accuracy/test_disaggregated_serving.py::TestQwen3NextInstruct::test_auto_dtype[use_py_transceiver=True]
+    - accuracy/test_disaggregated_serving.py::TestDeepSeekV4Flash::test_auto_dtype
+    commit: 0f71f2e5bd5e2e32234cffc73a8c5ccbe26dd885
+    junit:
+    - b200-2g-r1-xd-2g-a/b200-2g-r1-xd-2g-a/job-5966939_0-r0/node0/results/e05/outer-junit.xml
+    - b200-2g-r1-xd-2g-a/b200-2g-r1-xd-2g-a/job-5966939_1-r0/node0/results/e05/outer-junit.xml
+    - b200-2g-r1-xd-2g-a/b200-2g-r1-xd-2g-a/job-5966939_2-r0/node0/results/e05/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_0-r0/node0/results/e00/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_0-r0/node0/results/e01/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_0-r0/node0/results/e09/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_1-r0/node0/results/e00/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_1-r0/node0/results/e01/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_1-r0/node0/results/e09/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_2-r0/node0/results/e00/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_2-r0/node0/results/e01/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_2-r0/node0/results/e09/outer-junit.xml
+    - b200-8g-r1-xd-8g-c/b200-8g-r1-xd-8g-c/job-5966944_0-r0/node0/results/e03/outer-junit.xml
+    - b200-8g-r1-xd-8g-c/b200-8g-r1-xd-8g-c/job-5966944_1-r0/node0/results/e03/outer-junit.xml
+    - b200-8g-r1b-xd-8g-c/b200-8g-r1b-xd-8g-c/job-5969643_0-r0/node0/results/e03/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-018 ok
+  - row: EG-24
+    features:
+    - EG-24
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_context_first_bf16_ownership
+    commit: 0f71f2e5bd5e2e32234cffc73a8c5ccbe26dd885
+    junit:
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_0-r0/node0/results/e07/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_1-r0/node0/results/e07/outer-junit.xml
+    - b200-4g-r1-xd-4g-a/b200-4g-r1-xd-4g-a/job-5966940_2-r0/node0/results/e07/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-221 [mtp_nextn=0-block_reuse=False-use_py_transceiver=True] ok, XD-072 ok
+  # XD-221 [mtp_nextn=3-block_reuse=True-use_py_transceiver=True]: failed: the engine runs out of
+  #   GPU memory for the KV cache at startup; without the chain it fails the same way (R10)
+  # XD-003: failed: the test puts the source tree on PYTHONPATH, and a tree without built bindings
+  #   fails to import (R10: not runnable)
+  - row: EG-27
+    features:
+    - EG-27
+    cases:
+    - accuracy/test_disaggregated_serving.py::TestNemotron3Super120B::test_auto_dtype[mtp_nextn=0-block_reuse=False-use_py_transceiver=True]
+    - disaggregated/test_disaggregated.py::test_disaggregated_mamba_conc_greater_than_mbs[NVIDIA-Nemotron-3-Super-120B-A12B-FP8]
+    commit: 0f71f2e5bd5e2e32234cffc73a8c5ccbe26dd885
+    junit:
+    - b200-8g-r1-xd-8g-b/b200-8g-r1-xd-8g-b/job-5966943_0-r0/node0/results/e02/outer-junit.xml
+    - b200-8g-r1-xd-8g-b/b200-8g-r1-xd-8g-b/job-5966943_0-r0/node0/results/e07/outer-junit.xml
+    - b200-8g-r1-xd-8g-b/b200-8g-r1-xd-8g-b/job-5966943_1-r0/node0/results/e02/outer-junit.xml
+    - b200-8g-r1-xd-8g-b/b200-8g-r1-xd-8g-b/job-5966943_1-r0/node0/results/e07/outer-junit.xml
+    - b200-8g-r1-xd-8g-b/b200-8g-r1-xd-8g-b/job-5966943_2-r0/node0/results/e02/outer-junit.xml
+    - b200-8g-r1-xd-8g-b/b200-8g-r1-xd-8g-b/job-5966943_2-r0/node0/results/e07/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-221 [mtp_nextn=0-block_reuse=False-use_py_transceiver=True] ok
+  # XD-221 [mtp_nextn=3-block_reuse=True-use_py_transceiver=True]: failed: the engine runs out of
+  #   GPU memory for the KV cache at startup; without the chain it fails the same way (R10)
+  - row: EP-09+rest
+    features:
+    - EP-09
+    cases:
+    - accuracy/test_disaggregated_serving.py::TestNemotron3Super120B::test_auto_dtype[mtp_nextn=0-block_reuse=False-use_py_transceiver=True]
+    commit: 0f71f2e5bd5e2e32234cffc73a8c5ccbe26dd885
+    junit:
+    - b200-8g-r1-xd-8g-b/b200-8g-r1-xd-8g-b/job-5966943_0-r0/node0/results/e02/outer-junit.xml
+    - b200-8g-r1-xd-8g-b/b200-8g-r1-xd-8g-b/job-5966943_1-r0/node0/results/e02/outer-junit.xml
+    - b200-8g-r1-xd-8g-b/b200-8g-r1-xd-8g-b/job-5966943_2-r0/node0/results/e02/outer-junit.xml
+    result: passed
+    chain_proof: ok

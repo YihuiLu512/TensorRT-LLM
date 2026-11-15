@@ -3,13 +3,12 @@
 """Chain expectations for existing multi-GPU disaggregated tests.
 
 On the trtllm chain the engine keeps its iteration stats, and a worker front
-end's ``/metrics`` has no speculative decoding stats. The ``_SPEC_STATS``
-entries skip accuracy tests that read those stats from the generation worker's
-``/metrics`` after their accuracy evaluation (DV-06). The ``_DEEPSEEK_V41``
-entries skip DeepSeek-V4.1 GSM8K tests, which read ``kv_cache_size`` from the
-generation worker's perf record (DV-05) and the acceptance length
-(``avg_decoded_tokens_per_iter``) of each GSM8K response (DV-06); a worker front
-end reports neither.
+end's ``/metrics`` has no speculative decoding stats. Each test a ``_SPEC_STATS``
+entry skips reads those stats from the generation worker's ``/metrics`` after its
+accuracy evaluation (DV-06). The ``_DEEPSEEK_V41`` entries skip the DeepSeek-V4.1
+GSM8K tests, which read ``kv_cache_size`` from the generation worker's perf
+record (DV-05) and the acceptance length (``avg_decoded_tokens_per_iter``) of
+each GSM8K response (DV-06); a worker front end reports neither.
 
 ``test_disaggregated_deepseek_v3_lite_fp8_attention_dp_gen_only`` runs the
 generation-only benchmark mode with no context worker, so only the generation
@@ -23,8 +22,8 @@ _SERVING = "test_disaggregated_serving.py::"
 _DISAGG = "test_disaggregated.py::"
 
 _SPEC_STATS = (
-    "reads the speculative decoding stats from the generation worker's /metrics, which a worker "
-    "front end does not have: the engine keeps its iteration stats"
+    "reads the speculative decoding stats from the generation worker's /metrics; a worker front "
+    "end's /metrics has none, as the engine keeps its iteration stats"
 )
 _DEEPSEEK_V41 = (
     "reads kv_cache_size from the generation worker's perf record and avg_decoded_tokens_per_iter "
