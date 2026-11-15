@@ -1,0 +1,108 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# PU-06 (case-03, layout N-0): DeepSeek-V4.1-Flash NVFP4, context DEP2 + generation TP2 on one
+# node of 4 GB300 GPUs, ISL/OSL 8192/1024, random token ids, concurrency 32 (160 requests).
+# The worker settings are those of the ds-engine's dev/test_disagg.sh (tests/configs/
+# disagg_ctx_dep2.yaml, disagg_gen_tp2.yaml) and its proxy configuration (disagg_local.yaml); the
+# arms E3-native, E3-native-al, E3-mid and E3-chain (perf/openengine_arms.py) run this one file.
+# Every worker pins the accepted draft length (2.51 of 5). Run it with the single-node driver:
+#   run_single_node_disagg.py --config-dir <this directory> \
+#     disagg-e2e-gb300_deepseek-v41-flash-nvfp4-dspark5_8k1k_con32_ctx1_dep2_gen1_tp2_ccb-NIXL
+metadata:
+  model_name: deepseek_v41_flash_nvfp4_dspark
+  precision: nvfp4
+  model_dir_name: DeepSeek-V4.1-Flash-NVFP4
+  supported_gpus:
+  - GB300
+  script_file: disaggr_torch.slurm
+  benchmark_type: 8k1k
+slurm:
+  script_file: disaggr_torch.slurm
+  partition: <partition>
+  account: <account>
+  job_time: 02:00:00
+  job_name: unified-benchmark
+  extra_args: --gres=gpu:4
+  numa_bind: false
+benchmark:
+  mode: e2e
+  use_nv_sa_benchmark: false
+  multi_round: 5
+  benchmark_ratio: 0.0
+  streaming: true
+  concurrency_list: '32'
+  input_length: 8192
+  output_length: 1024
+  dataset_file: ''
+hardware:
+  gpus_per_node: 4
+  num_ctx_servers: 1
+  num_gen_servers: 1
+environment:
+  container_mount: <container_mount>
+  container_image: <container_image>
+  model_path: <model_path>
+  trtllm_repo: ''
+  build_wheel: false
+  work_dir: <full_path_to_work_dir>
+  worker_env_var: TLLM_SPEC_DECODE_FORCE_NUM_ACCEPTED_TOKENS=2.51
+  server_env_var: ''
+profiling:
+  nsys_on: false
+ctx_router_config:
+  type: conversation
+server_config_extra:
+  gen_strip_message_history: true
+  gen_tokids_ctxbytes: true
+worker_config:
+  gen:
+    max_batch_size: 32
+    max_num_tokens: 8192
+    max_seq_len: 32768
+    tensor_parallel_size: 2
+    pipeline_parallel_size: 1
+    context_parallel_size: 1
+    enable_attention_dp: false
+    custom_tokenizer: deepseek_v41
+    enable_tokenization_cache: true
+    speculative_config:
+      decoding_type: DSpark
+      max_draft_len: 5
+    kv_cache_config:
+      enable_block_reuse: false
+      free_gpu_memory_fraction: 0.5
+    cache_transceiver_config:
+      backend: NIXL
+  ctx:
+    max_batch_size: 32
+    max_num_tokens: 8192
+    max_seq_len: 32768
+    tensor_parallel_size: 2
+    pipeline_parallel_size: 1
+    context_parallel_size: 1
+    enable_attention_dp: true
+    attention_dp_config:
+      kv_cache_routing_conversation_affinity: true
+    custom_tokenizer: deepseek_v41
+    enable_tokenization_cache: true
+    speculative_config:
+      decoding_type: DSpark
+      max_draft_len: 5
+    kv_cache_config:
+      enable_block_reuse: true
+      free_gpu_memory_fraction: 0.5
+    cache_transceiver_config:
+      backend: NIXL

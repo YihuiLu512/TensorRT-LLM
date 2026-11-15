@@ -21,6 +21,13 @@ EXPECTED_DISAGG_ARMS = {
     "E4-base-lean": ("disagg", ("none", 1, 0), ("none", 1, 0)),
     "E4-chain-lean": ("disagg", ("trtllm", 1, 0), ("trtllm", 1, 0)),
     "E4-direct": ("direct", None, None),
+    # The case-03 arms (the ds engine), after the case-04 ones.
+    "E3-native": ("disagg", ("none", 1, None), ("none", 1, None)),
+    "E3-native-al": ("disagg", ("none", 1, None), ("none", 1, None)),
+    "E3-mid": ("disagg", ("none", 1, None), ("none", 1, None)),
+    "E3-chain": ("disagg", ("ds", 1, None), ("ds", 1, None)),
+    "E3-chain-lean": ("disagg", ("ds", 1, 0), ("ds", 1, 0)),
+    "E3-direct": ("direct", None, None),
 }
 POC2_ARMS = ["A-def", "A-1f", "A-1f0", "B-s1", "B-full", "C-http", "C-s1", "C-full"]
 WORKER_CONFIG = {
@@ -45,7 +52,7 @@ def test_disagg_arm_table(arms):
     for name, (topology, ctx, gen) in EXPECTED_DISAGG_ARMS.items():
         arm = arms.DISAGG_ARMS[name]
         assert (arm.case, arm.topology, _role(arm.ctx), _role(arm.gen)) == (
-            "case-04",
+            "case-03" if name.startswith("E3-") else "case-04",
             topology,
             ctx,
             gen,

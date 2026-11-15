@@ -3778,6 +3778,33 @@ class DisaggTestCmds(NamedTuple):
             worker_cfg = configs_for_idx[0] if is_ctx else configs_for_idx[1]
         view = openengine_arms.role_view(arm, role)
         plan = openengine_arms.prepare_worker(server_cmd, arm, role, self.test_output_dir)
+        # A node other than the first of a multi-node ds instance only follows (CP-11).
+        node_rank = None
+        if openengine_arms.is_ds_engine_role(arm, role) and configs_for_idx is not None:
+            node_rank = openengine_arms.ds_node_rank(
+                plan.config, configs_for_idx[2].hardware.get("gpus_per_node", 0)
+            )
+        if node_rank:
+            follower_log = os.path.join(
+                self.test_output_dir,
+                f"ds-follower.{self.disagg_serving_type}.{server_idx}.node{node_rank}.log",
+            )
+            follower_env = copy.deepcopy(os.environ)
+            if worker_cfg is not None:
+                follower_env.update(worker_cfg.to_env())
+            print_info(f"Starting node {node_rank} of {self.disagg_serving_type} as a ds follower")
+            returncode = openengine_arms.run_ds_follower(
+                openengine_arms.ds_follower_command(plan),
+                env=follower_env,
+                log_path=follower_log,
+                wait=lambda proc: self.wait_for_benchmark_ready(
+                    benchmark_status_file, server_proc=proc, server_log=follower_log
+                ),
+            )
+            print_info(
+                f"ds follower node {node_rank} of {self.disagg_serving_type} exited {returncode}"
+            )
+            return
         hostname_file = self._hostname_file(server_idx)
         if openengine_arms.worker_needs_port(view, plan):
             worker_port = openengine_arms.free_port(self.hostname)
@@ -3961,6 +3988,22 @@ class DisaggTestCmds(NamedTuple):
                 if configs_for_idx is not None:
                     _, _, disagg_cfg = configs_for_idx
                     disagg_env.update(to_env_dict(disagg_cfg.server_env_var))
+                orchestrator_arm = openengine_arms.disagg_arm(openengine_arms.selected_arm())
+                if orchestrator_arm is not None:
+                    # A case-03 arm's server: aligned values, or dsv4-serve's on a port chosen here.
+                    orchestrator = openengine_arms.prepare_orchestrator(
+                        orchestrator_arm,
+                        disagg_cmd,
+                        os.path.join(self.test_output_dir, f"server_config.{server_idx}.yaml"),
+                        self.hostname,
+                        disagg_env,
+                    )
+                    disagg_cmd, disagg_env = list(orchestrator.cmd), orchestrator.env
+                    if orchestrator.port is not None:
+                        publish_addr_file(disagg_addr_path, self.hostname, orchestrator.port)
+                    print_info(
+                        f"Perf arm {orchestrator_arm.name}: disagg server cmd is {disagg_cmd}"
+                    )
                 with open(disagg_server_file_path, "w") as disagg_server_ctx:
                     disagg_server_proc = subprocess.Popen(
                         disagg_cmd,
@@ -5253,7 +5296,11 @@ class PerfSanityTestConfig:
         if arm is not None:
             for client in (c for cs in self.server_client_configs.values() for c in cs):
                 accuracy = client.accuracy_config and client.accuracy_config.enable_accuracy_test
-                if client.benchmark_client or client.use_nv_sa_benchmark or accuracy:
+                # The case-03 arms also take the AgentX client (ds's, openengine_arms.run_ds_agentx).
+                other_client = client.benchmark_client and not openengine_arms.takes_client(
+                    arm, client.benchmark_client
+                )
+                if other_client or client.use_nv_sa_benchmark or accuracy:
                     raise openengine_arms.ArmError(
                         f"{openengine_arms.ENV_ARM}={arm.name} measures benchmark_serving "
                         f"clients only; client {client.name} uses another client or runs "
@@ -5361,6 +5408,9 @@ class PerfSanityTestConfig:
             client_cmds[server_idx] = []
             for client_config in self.server_client_configs[server_idx]:
                 client_cmd = client_config.to_cmd()
+                client_cmd = openengine_arms.arm_client_cmd(
+                    openengine_arms.selected_arm(), client_config.benchmark_client, client_cmd
+                )
                 client_cmds[server_idx].append(client_cmd)
 
         disagg_config = self.server_configs[0][2]

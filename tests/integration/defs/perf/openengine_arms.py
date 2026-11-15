@@ -42,6 +42,14 @@ Environment variables:
   subdirectory; unset, they go next to the test's own logs.
 - ``TRTLLM_TEST_GLM_SERVE_CMD``: the glm server's command prefix, for the
   case-01 arms.
+- ``TRTLLM_TEST_DS_SERVE_CMD``: dsv4-serve's command prefix, for the case-03 arms
+  (``E3-*`` of :data:`DISAGG_ARMS`).
+- ``TRTLLM_TEST_DS_ROOT``: the ds-engine checkout, whose commit the case-03 results
+  record and whose ``dev/run_agentx.sh`` the case-03 arms' AgentX client runs;
+  ``TRTLLM_PERF_DS_SHA`` gives the commit instead.
+
+The case-03 arms also take perf sanity's AgentX client, which they run as ds's
+(``python openengine_arms.py ds-agentx``, :func:`run_ds_agentx`).
 """
 
 from __future__ import annotations
@@ -56,6 +64,7 @@ import re
 import shlex
 import socket
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -106,14 +115,17 @@ class RoleArm:
     """What a disaggregated arm sets for the workers of one role.
 
     Attributes:
-        chain: ``none`` (an in-process ``trtllm-serve`` worker) or ``trtllm``.
+        chain: ``none`` (an in-process ``trtllm-serve`` worker), ``trtllm`` or ``ds``.
         frontends: ``num_serve_frontends`` the arm sets, or ``None`` to keep the test's.
         postprocess_workers: ``num_postprocess_workers`` the arm sets, or ``None`` to keep the test's.
+        ds_http: With chain ``none``: the worker is ``dsv4-serve`` serving HTTP itself
+            (``TRTLLM_TEST_DS_SERVE_CMD`` replaces ``trtllm-serve``).
     """
 
     chain: str
     frontends: int | None
     postprocess_workers: int | None
+    ds_http: bool = False
 
     @property
     def in_process(self) -> bool:
@@ -143,6 +155,9 @@ class Arm:
             for the direct replay tool, which perf sanity does not run.
         ctx: The context workers' settings of a ``disagg`` arm.
         gen: The generation workers' settings of a ``disagg`` arm.
+        orchestrator: The disaggregated server of a ``disagg`` arm: ``trtllm``
+            (``trtllm-serve disaggregated``) or ``ds`` (``dsv4-serve disaggregated``).
+        aligned: A case-03 arm whose disaggregated server gets :data:`DS_ALIGNED_ORCHESTRATOR`.
     """
 
     name: str
@@ -154,6 +169,8 @@ class Arm:
     topology: str = "agg"
     ctx: RoleArm | None = None
     gen: RoleArm | None = None
+    orchestrator: str = "trtllm"
+    aligned: bool = False
 
     @property
     def in_process(self) -> bool:
@@ -380,6 +397,92 @@ DISAGG_ARMS: dict[str, Arm] = {
         Arm("E4-direct", CASE_DISAGG, CHAIN_TRTLLM, False, None, None, TOPOLOGY_DIRECT),
     )
 }
+
+# case-03: the ds-engine (TH-DSG-6). The native arms run dsv4-serve's own workers behind
+# its own disaggregated server (form K, $DS/dev/test_disagg.sh); E3-native-al writes the
+# orchestrator values of DS_ALIGNED_ORCHESTRATOR, as do the arms with trtllm-serve's
+# disaggregated server. On layout N-0 (PU-06), test_disagg.sh sets no other switch that
+# E3-native-al changes, so there the two native arms are one group.
+CASE_DS = "case-03"
+CHAIN_DS = "ds"
+ORCHESTRATOR_TRTLLM = "trtllm"
+ORCHESTRATOR_DS = "ds"
+_DS_HTTP_1F = RoleArm(CHAIN_NONE, 1, None, True)
+_DS_CHAIN_1F = RoleArm(CHAIN_DS, 1, None)
+_DS_CHAIN_LEAN = RoleArm(CHAIN_DS, 1, 0)
+DISAGG_ARMS.update(
+    {
+        arm.name: arm
+        for arm in (
+            Arm(
+                "E3-native",
+                CASE_DS,
+                CHAIN_NONE,
+                False,
+                None,
+                None,
+                TOPOLOGY_DISAGG,
+                _DS_HTTP_1F,
+                _DS_HTTP_1F,
+                ORCHESTRATOR_DS,
+            ),
+            Arm(
+                "E3-native-al",
+                CASE_DS,
+                CHAIN_NONE,
+                False,
+                None,
+                None,
+                TOPOLOGY_DISAGG,
+                _DS_HTTP_1F,
+                _DS_HTTP_1F,
+                ORCHESTRATOR_DS,
+                True,
+            ),
+            Arm(
+                "E3-mid",
+                CASE_DS,
+                CHAIN_NONE,
+                False,
+                None,
+                None,
+                TOPOLOGY_DISAGG,
+                _DS_HTTP_1F,
+                _DS_HTTP_1F,
+                ORCHESTRATOR_TRTLLM,
+                True,
+            ),
+            Arm(
+                "E3-chain",
+                CASE_DS,
+                CHAIN_DS,
+                False,
+                None,
+                None,
+                TOPOLOGY_DISAGG,
+                _DS_CHAIN_1F,
+                _DS_CHAIN_1F,
+                ORCHESTRATOR_TRTLLM,
+                True,
+            ),
+            Arm(
+                "E3-chain-lean",
+                CASE_DS,
+                CHAIN_DS,
+                False,
+                None,
+                None,
+                TOPOLOGY_DISAGG,
+                _DS_CHAIN_LEAN,
+                _DS_CHAIN_LEAN,
+                ORCHESTRATOR_TRTLLM,
+                True,
+            ),
+            # The direct replay tool against two ds OpenEngine servers; perf sanity refuses it.
+            Arm("E3-direct", CASE_DS, CHAIN_DS, False, None, None, TOPOLOGY_DIRECT),
+        )
+    }
+)
 
 
 def all_arms() -> dict[str, Arm]:
@@ -1463,6 +1566,8 @@ def check_disagg_case(
             "command line starts with numactl, and both arms must start the same way"
         )
     for role, gpus in worker_gpus.items():
+        if ds_spans_nodes(arm, gpus, gpus_per_node):
+            continue
         if gpus_per_node and gpus > gpus_per_node:
             raise ArmError(
                 f"{where}: a {role} worker takes {gpus} GPUs, more than one node's "
@@ -1477,7 +1582,8 @@ def prepare_worker(cmd: Sequence[str], arm: Arm, role: str, out_dir: str) -> Ser
     :func:`prepare_server` writes it. A worker in the chain also gets
     ``--server_role``, by which the chain harness starts a disaggregated
     worker's engine and front end (the in-process worker of the comparison
-    keeps the test's command line, which has none).
+    keeps the test's command line, which has none). A native ds worker
+    (``ds_http``) runs dsv4-serve with the same options and ``--server_role``.
 
     Raises:
         ArmError: As :func:`prepare_server` raises, or the command line gives
@@ -1492,6 +1598,9 @@ def prepare_worker(cmd: Sequence[str], arm: Arm, role: str, out_dir: str) -> Ser
         )
     if not view.in_process:
         tokens += [SERVER_ROLE_OPTION, _SERVER_ROLE_VALUES[role]]
+    if role_arm(arm, role).ds_http:
+        # dsv4-serve takes its role from --server_role, as $DS/dev/test_disagg.sh gives it.
+        tokens = ds_http_command(tokens + [SERVER_ROLE_OPTION, _SERVER_ROLE_VALUES[role]])
     return ServerPlan(cmd=tuple(tokens), config=plan.config)
 
 
@@ -1859,6 +1968,8 @@ class RoleReader:
             "leg": None,
             "notes": notes,
         }
+        if self.view.case == CASE_DS:
+            doc["ds_instance"] = ds_instance_reading(self.server, self.plan, self.env, notes)
         accepted = self.env.get(ENV_SPEC_DECODE_ACCEPTED)
         if accepted and doc["alignment"]["spec_decode_force_accepted"] is None:
             notes.append(f"{ENV_SPEC_DECODE_ACCEPTED}={accepted!r} is not a number")
@@ -2456,7 +2567,7 @@ def build_disagg_result(
     concurrency = _int_or_none(
         option_value(client_cmd, "--max-concurrency") or option_value(client_cmd, "--concurrency")
     )
-    return {
+    doc = {
         "case": probe.arm.case,
         "arm": probe.arm.name,
         "topology": probe.arm.topology,
@@ -2481,6 +2592,16 @@ def build_disagg_result(
         "job_id": env.get("SLURM_JOB_ID") or None,
         "notes": notes,
     }
+    if probe.arm.case == CASE_DS:
+        add_ds_blocks(
+            doc,
+            probe,
+            output=output,
+            orchestrator_config=orchestrator_config,
+            orchestrator_env=orchestrator_env,
+            environ=env,
+        )
+    return doc
 
 
 def _role_values_of(
@@ -2571,9 +2692,11 @@ def validate_disagg_result(doc: Any) -> list[str]:
     """Problems with a disaggregated arm's result document; empty when it matches the schema."""
     if not isinstance(doc, dict):
         return [f"result is a {type(doc).__name__}, not an object"]
-    if set(doc) != set(DISAGG_RESULT_KEYS):
-        missing = sorted(set(DISAGG_RESULT_KEYS) - set(doc))
-        extra = sorted(set(doc) - set(DISAGG_RESULT_KEYS))
+    # A case-03 result also holds DS_RESULT_KEYS (validate_ds_blocks).
+    keys = set(DISAGG_RESULT_KEYS) | (set(DS_RESULT_KEYS) if doc.get("case") == CASE_DS else set())
+    if set(doc) != keys:
+        missing = sorted(keys - set(doc))
+        extra = sorted(set(doc) - keys)
         return [f"keys: missing {missing}, unexpected {extra}"]
     errors: list[str] = []
     arm = DISAGG_ARMS.get(doc["arm"])
@@ -2646,6 +2769,8 @@ def validate_disagg_result(doc: Any) -> list[str]:
         errors.append("job_id must be a string or null")
     if not isinstance(doc["notes"], list) or not all(isinstance(n, str) for n in doc["notes"]):
         errors.append("notes must be a list of strings")
+    if doc["case"] == CASE_DS:
+        errors += validate_ds_blocks(doc, arm)
     return errors
 
 
@@ -2933,3 +3058,736 @@ def _validate_first_output(block: Any, arm: Arm | None) -> list[str]:
             ):
                 errors.append(f"first_output.{role}.{group} values must be numbers or null")
     return errors
+
+
+# ----------------------------------------------------------------------------- case-03 (ds-engine)
+
+# dsv4-serve's command prefix (for example ``python3 -m dsv4_serve``), the same variable the
+# chain harness's ``ds`` chain starts its engine with.
+ENV_DS_SERVE_CMD = "TRTLLM_TEST_DS_SERVE_CMD"
+# The ds-engine checkout: its commit goes into the result, and the AgentX client runs its
+# ``dev/run_agentx.sh``.
+ENV_DS_ROOT = "TRTLLM_TEST_DS_ROOT"
+# The ds-engine commit written to the result when the checkout is not a git work tree.
+ENV_DS_SHA = "TRTLLM_PERF_DS_SHA"
+# Orchestrator values that differ between dsv4-serve's and trtllm-serve's disaggregated servers
+# by default (03_perf-tests.md §3.3): the aligned arms write dsv4-serve's defaults for both, so
+# the values are the same whichever server reads them.
+DS_ALIGNED_ORCHESTRATOR = {"max_retries": 3, "server_keep_alive_timeout": 600}
+# dsv4-serve's disaggregated-server variables: the aligned native arm does not route new
+# conversations by load (trtllm-serve has no such router) and runs one server process, the
+# number trtllm-serve's disaggregated server runs under perf sanity.
+ENV_DS_PROXY_LOAD_ROUTE = "DSV4_PROXY_LOAD_ROUTE"
+ENV_DS_PROXY_WORKERS = "DSV4_PROXY_WORKERS"
+ENV_DS_PROXY_FE_AFFINITY = "DSV4_PROXY_FE_AFFINITY"
+# Instance parameters of a ds worker that the aligned arms must share (03_perf-tests.md §3.3).
+DS_INSTANCE_PARAMS = (
+    "tensor_parallel_size",
+    "moe_expert_parallel_size",
+    "enable_attention_dp",
+    "attention_dp_config",
+    "max_batch_size",
+    "max_num_tokens",
+    "max_seq_len",
+    "kv_cache_config",
+    "speculative_config",
+    "custom_tokenizer",
+)
+# Settings of the serving front end in front of a ds engine (the chain's worker front end, or
+# dsv4-serve's own HTTP front end) that §3.3 lists.
+DS_FRONTEND_SETTINGS = (
+    "num_serve_frontends",
+    "enable_tokenization_cache",
+    "serve_frontend_affinity_port_stride",
+)
+_DS_ENV_PREFIX = "DSV4_"
+# ds variables that only choose what the engine logs; they need not match across arms.
+_DS_LOG_ONLY_ENV = ("DSV4_STEP_LOG", "DSV4_XFER_PROF", "DSV4_TOKCACHE_VERIFY", "DSV4_REQ_LOG")
+# The ds engine ignores DSV4_GEN_OVERLAP=1 on a context instance, with block reuse or under
+# DSV4_SCHED_PIPE, and logs a warning then (04_baseline-and-gaps.md DK-13).
+ENV_DS_GEN_OVERLAP = "DSV4_GEN_OVERLAP"
+# Node rank of a multi-node ds instance, as dsv4-serve reads it ($DS/python/dsv4_serve/cli.py _multinode).
+_DS_NODE_RANK_ENV = ("DSV4_NODE_RANK", "SLURM_NODEID", "SLURM_PROCID")
+
+
+def ds_command_prefix(environ: Mapping[str, str] | None = None) -> list[str]:
+    """dsv4-serve's command prefix from ``TRTLLM_TEST_DS_SERVE_CMD``.
+
+    Raises:
+        ArmError: The variable is unset or empty.
+    """
+    env = os.environ if environ is None else environ
+    prefix = shlex.split(env.get(ENV_DS_SERVE_CMD, ""))
+    if not prefix:
+        raise ArmError(f"the case-03 arms need {ENV_DS_SERVE_CMD}, dsv4-serve's command prefix")
+    return prefix
+
+
+def ds_http_command(tokens: Sequence[str], environ: Mapping[str, str] | None = None) -> list[str]:
+    """A ``trtllm-serve`` worker command line as dsv4-serve's: the same model and options.
+
+    dsv4-serve takes trtllm-serve's options and warns about the configuration keys it ignores.
+
+    Raises:
+        ArmError: ``TRTLLM_TEST_DS_SERVE_CMD`` is unset.
+        ValueError: The command line is not a ``trtllm-serve`` one.
+    """
+    from openengine_chain.split import parse_serve_command
+
+    command = parse_serve_command(list(tokens))
+    return ds_command_prefix(environ) + [command.model] + list(command.args)
+
+
+def ds_orchestrator_command(
+    tokens: Sequence[str], environ: Mapping[str, str] | None = None
+) -> list[str]:
+    """A ``trtllm-serve disaggregated ...`` command line as dsv4-serve's, without ``--report_addr``.
+
+    dsv4-serve's disaggregated server takes the same subcommand and options but does not
+    publish its address; :func:`prepare_orchestrator` gives it a port chosen in advance.
+
+    Raises:
+        ArmError: ``TRTLLM_TEST_DS_SERVE_CMD`` is unset, or the command line is not
+            ``trtllm-serve disaggregated``.
+    """
+    tokens = list(tokens)
+    if tokens[:2] != ["trtllm-serve", "disaggregated"]:
+        raise ArmError(f"not a 'trtllm-serve disaggregated' command line: {tokens[:2]}")
+    args: list[str] = []
+    skip = False
+    for token in tokens[2:]:
+        if skip:
+            skip = False
+        elif token == "--report_addr":
+            skip = True
+        elif not token.startswith("--report_addr="):
+            args.append(token)
+    return ds_command_prefix(environ) + ["disaggregated"] + args
+
+
+def is_ds_engine_role(arm: Arm, role: str) -> bool:
+    """Whether ``role``'s workers of ``arm`` run the ds engine (natively or in the chain)."""
+    settings = role_arm(arm, role)
+    return settings.ds_http or settings.chain == CHAIN_DS
+
+
+def ds_spans_nodes(arm: Arm, gpus: int, gpus_per_node: int) -> bool:
+    """Whether a case-03 worker of ``gpus`` GPUs runs as one multi-node ds instance.
+
+    dsv4-serve runs an instance larger than a node as one process per node (CP-11): the
+    workers of a case-03 arm may take whole nodes.
+    """
+    return (
+        arm.case == CASE_DS
+        and arm.topology == TOPOLOGY_DISAGG
+        and gpus_per_node > 0
+        and gpus > gpus_per_node
+        and gpus % gpus_per_node == 0
+    )
+
+
+def ds_node_rank(
+    config: Mapping[str, Any], local_gpus: int, environ: Mapping[str, str] | None = None
+) -> int | None:
+    """This node's rank in a multi-node ds instance of ``config``; ``None`` for one node.
+
+    The rules are dsv4-serve's: more GPUs than ``local_gpus`` make the instance multi-node,
+    and the rank is ``DSV4_NODE_RANK``, else ``SLURM_NODEID``, else ``SLURM_PROCID``. The
+    instance's step starts one task per node; rank 0 leads and serves, the others follow.
+
+    Raises:
+        ArmError: The instance's GPUs are not a multiple of ``local_gpus``, or the rank is
+            not a non-negative integer.
+    """
+    env = os.environ if environ is None else environ
+    gpus = parallel_gpus(config)
+    if local_gpus <= 0 or gpus <= local_gpus:
+        return None
+    if gpus % local_gpus:
+        raise ArmError(f"a ds instance of {gpus} GPUs does not fill nodes of {local_gpus} GPUs")
+    for name in _DS_NODE_RANK_ENV:
+        value = env.get(name)
+        if value is not None and value != "":
+            if not value.isdigit():
+                raise ArmError(f"{name}={value!r} is not a node rank")
+            return int(value)
+    return 0
+
+
+def ds_follower_command(plan: ServerPlan, environ: Mapping[str, str] | None = None) -> list[str]:
+    """The command of a follower node of a multi-node ds instance.
+
+    A follower runs dsv4-serve with the leader's options; dsv4-serve sees its node rank and
+    only loads its part of the model and follows the leader's steps. It serves neither HTTP
+    nor gRPC, so a chain worker's follower is the same command as a native one's.
+
+    Raises:
+        ArmError: ``TRTLLM_TEST_DS_SERVE_CMD`` is unset.
+        ValueError: The plan's command line is neither trtllm-serve's nor dsv4-serve's.
+    """
+    tokens = list(plan.cmd)
+    prefix = ds_command_prefix(environ)
+    if tokens[: len(prefix)] == prefix:
+        return tokens
+    return ds_http_command(tokens, environ)
+
+
+def run_ds_follower(
+    cmd: Sequence[str],
+    *,
+    env: Mapping[str, str],
+    log_path: str,
+    wait: Callable[[Any], None],
+) -> int | None:
+    """Run a follower node of a multi-node ds instance until ``wait(proc)`` returns.
+
+    ``wait`` is the worker's wait for the end of the benchmark. The follower is then stopped
+    (SIGTERM, SIGKILL after 60 s). Returns its exit code.
+
+    Raises:
+        OSError: The follower cannot be started.
+    """
+    with open(log_path, "w", encoding="utf-8") as sink:
+        proc = subprocess.Popen(list(cmd), env=dict(env), stdout=sink, stderr=subprocess.STDOUT)
+        try:
+            wait(proc)
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=60)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    proc.wait(timeout=60)
+    return proc.returncode
+
+
+@dataclass(frozen=True)
+class OrchestratorPlan:
+    """How a disaggregated arm starts its disaggregated server.
+
+    Attributes:
+        cmd: The command line.
+        port: The port chosen in advance (for dsv4-serve, which does not publish its
+            address); ``None`` when the server publishes it through ``--report_addr``.
+        env: The server's environment.
+    """
+
+    cmd: tuple[str, ...]
+    port: int | None
+    env: dict[str, str]
+
+
+def prepare_orchestrator(
+    arm: Arm,
+    cmd: Sequence[str],
+    config_path: str,
+    hostname: str,
+    env: Mapping[str, str],
+    environ: Mapping[str, str] | None = None,
+) -> OrchestratorPlan:
+    """The disaggregated server of a case-03 arm; other arms keep ``cmd`` and ``env``.
+
+    An aligned arm writes :data:`DS_ALIGNED_ORCHESTRATOR` into the server's YAML
+    (``config_path``, rewritten in place, so that the result reads what the server read). The
+    native arms' server is dsv4-serve's: it gets a port chosen in advance, written into the
+    YAML. The aligned native arm also runs without dsv4-serve's load router and with one
+    server process.
+
+    Raises:
+        ArmError: As :func:`ds_orchestrator_command` raises, or the YAML is not a mapping.
+        OSError: The YAML cannot be read or written.
+        yaml.YAMLError: The YAML cannot be parsed.
+    """
+    out_env = dict(env)
+    if arm.case != CASE_DS or arm.topology != TOPOLOGY_DISAGG:
+        return OrchestratorPlan(tuple(cmd), None, out_env)
+    with open(config_path, encoding="utf-8") as f:
+        config = yaml.safe_load(f) or {}
+    if not isinstance(config, dict):
+        raise ArmError(f"{config_path} must hold a mapping, got {type(config).__name__}")
+    if arm.aligned:
+        config.update(DS_ALIGNED_ORCHESTRATOR)
+    port = None
+    tokens = list(cmd)
+    if arm.orchestrator == ORCHESTRATOR_DS:
+        tokens = ds_orchestrator_command(tokens, environ)
+        port = free_port(hostname)
+        config["port"] = port
+        if arm.aligned:
+            out_env.pop(ENV_DS_PROXY_LOAD_ROUTE, None)
+            out_env[ENV_DS_PROXY_WORKERS] = "1"
+    with open(config_path, "w", encoding="utf-8") as f:
+        yaml.safe_dump(config, f, sort_keys=False)
+    return OrchestratorPlan(tuple(tokens), port, out_env)
+
+
+def _ds_env_split(env: Mapping[str, str]) -> tuple[dict[str, str], dict[str, str]]:
+    """The ``DSV4_*`` variables of ``env``: (those the arms share, those that only choose logging)."""
+    shared, log_only = {}, {}
+    for key, value in sorted(env.items()):
+        if key.startswith(_DS_ENV_PREFIX):
+            (log_only if key.startswith(_DS_LOG_ONLY_ENV) else shared)[key] = value
+    return shared, log_only
+
+
+def ds_instance_reading(
+    server: "ArmServer", plan: ServerPlan, env: Mapping[str, str], notes: list[str]
+) -> dict[str, Any]:
+    """A ds worker's instance parameters, ds variables and front-end settings, as it runs.
+
+    Read from ``/proc`` of the process running the ds engine (a chain worker's engine, else
+    the worker's server): the configuration file and options on its command line and its
+    environment; the planned ones stand in, with a note, for what ``/proc`` does not give.
+    The front-end settings come from the worker's planned configuration.
+    """
+    handle = server.handle
+    process = handle.engine if handle is not None else server.proc
+    pid = process.pid if process is not None else None
+    config = _process_config(pid) if pid is not None else None
+    if config is None:
+        notes.append(f"ds instance: no configuration file read from process {pid}; planned one")
+        config = plan.config
+    argv = _process_argv(pid) if pid is not None else None
+    if argv is None:
+        notes.append(f"ds instance: command line of process {pid} not readable; planned one")
+        argv = list(plan.cmd)
+    run_env = _process_environ(pid) if pid is not None else None
+    if run_env is None:
+        notes.append(f"ds instance: environment of process {pid} not readable; planned one")
+        run_env = env
+    params = {}
+    for key in DS_INSTANCE_PARAMS:
+        value = option_value(argv, f"--{key}")
+        params[key] = yaml.safe_load(value) if value is not None else config.get(key)
+    shared, log_only = _ds_env_split(run_env)
+    # DK-13: the warning exists only with DSV4_GEN_OVERLAP=1, and the engine log is not read.
+    overlap_warning = False if run_env.get(ENV_DS_GEN_OVERLAP) != "1" else None
+    if overlap_warning is None:
+        notes.append(
+            f"ds instance: {ENV_DS_GEN_OVERLAP}=1; whether the engine ignored it is not read"
+        )
+    return {
+        "params": params,
+        "env": shared,
+        "log_only_env": log_only,
+        "gen_overlap_ignored_warning": overlap_warning,
+        "frontend": {key: plan.config.get(key) for key in DS_FRONTEND_SETTINGS},
+    }
+
+
+# The blocks only a case-03 result holds, on top of DISAGG_RESULT_KEYS.
+DS_RESULT_KEYS = ("ds_instances", "ds_alignment", "ds_client")
+_DS_ORCH_KEYS = (
+    "max_retries",
+    "server_keep_alive_timeout",
+    "gen_strip_message_history",
+    "gen_tokids_ctxbytes",
+    "conversation_affinity_header_for_subagents",
+    "subagent_affinity_scope",
+    "frontend_affinity",
+)
+_DS_ALIGNMENT_KEYS = ("orchestrator", "orchestrator_env", "frontend")
+_DS_KV_NOTE = (
+    "case-03: dsv4-serve accepts cache_transceiver_config.backend but ignores it; the ds engine "
+    "moves the KV cache over its own NVLink fabric transfer, so kv_transfer.backend is the "
+    "configured value only"
+)
+# The line the AgentX wrapper (run_ds_agentx) prints with the client's settings.
+DS_CLIENT_LINE = "[ds-agentx] settings "
+
+
+def ds_sha(environ: Mapping[str, str] | None = None) -> str | None:
+    """The ds-engine commit: ``TRTLLM_PERF_DS_SHA``, else the HEAD of ``TRTLLM_TEST_DS_ROOT``."""
+    env = os.environ if environ is None else environ
+    if env.get(ENV_DS_SHA):
+        return env[ENV_DS_SHA]
+    root = env.get(ENV_DS_ROOT)
+    return _git_head(root) if root else None
+
+
+def _client_settings(output: str) -> dict[str, Any] | None:
+    for line in output.splitlines():
+        if line.startswith(DS_CLIENT_LINE):
+            try:
+                value = json.loads(line[len(DS_CLIENT_LINE) :])
+            except json.JSONDecodeError:
+                return None
+            return value if isinstance(value, dict) else None
+    return None
+
+
+def add_ds_blocks(
+    doc: dict[str, Any],
+    probe: "DisaggRunProbe",
+    *,
+    output: str,
+    orchestrator_config: str,
+    orchestrator_env: Mapping[str, str],
+    environ: Mapping[str, str] | None = None,
+) -> None:
+    """Add a case-03 result's blocks: each role's ds instance, the aligned settings, the client.
+
+    Also fills in the orchestrator's kind and the ds-engine commit, and notes what
+    ``kv_transfer.backend`` means for the ds engine.
+    """
+    after = probe.readings.get(PHASE_AFTER, {})
+    doc["ds_instances"] = _role_values_of(after, probe, lambda r: r.get("ds_instance"))
+    try:
+        with open(orchestrator_config, encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+    except (OSError, yaml.YAMLError):
+        config = {}
+    if not isinstance(config, Mapping):
+        config = {}
+    doc["ds_alignment"] = {
+        "orchestrator": {key: config.get(key) for key in _DS_ORCH_KEYS},
+        "orchestrator_env": {
+            key: orchestrator_env.get(key)
+            for key in (ENV_DS_PROXY_LOAD_ROUTE, ENV_DS_PROXY_WORKERS, ENV_DS_PROXY_FE_AFFINITY)
+        },
+        "frontend": _role_values_of(
+            after, probe, lambda r: (r.get("ds_instance") or {}).get("frontend")
+        ),
+    }
+    doc["ds_client"] = _client_settings(output)
+    doc["orch"]["kind"] = probe.arm.orchestrator
+    doc["versions"]["ds"] = ds_sha(environ)
+    doc["notes"].append(_DS_KV_NOTE)
+
+
+def validate_ds_blocks(doc: Mapping[str, Any], arm: Arm | None) -> list[str]:
+    """Problems with the case-03 blocks of a result (:data:`DS_RESULT_KEYS`)."""
+    errors = []
+    instances = doc["ds_instances"]
+    if not isinstance(instances, dict) or set(instances) != set(WORKER_ROLES):
+        errors.append("ds_instances must hold ctx and gen")
+    else:
+        for role, value in instances.items():
+            parts = value if isinstance(value, list) else [value]
+            for part in parts:
+                if part is not None and (
+                    not isinstance(part, dict)
+                    or set(part)
+                    != {"params", "env", "log_only_env", "gen_overlap_ignored_warning", "frontend"}
+                ):
+                    errors.append(f"ds_instances.{role} must be null or a ds instance reading")
+    alignment = doc["ds_alignment"]
+    if not isinstance(alignment, dict) or set(alignment) != set(_DS_ALIGNMENT_KEYS):
+        errors.append(f"ds_alignment must hold exactly {list(_DS_ALIGNMENT_KEYS)}")
+    elif arm is not None and arm.aligned:
+        orch = alignment["orchestrator"] or {}
+        for key, value in DS_ALIGNED_ORCHESTRATOR.items():
+            if orch.get(key) != value:
+                errors.append(f"ds_alignment.orchestrator.{key} must be {value} for arm {arm.name}")
+        if arm.orchestrator == ORCHESTRATOR_DS:
+            env = alignment["orchestrator_env"] or {}
+            if env.get(ENV_DS_PROXY_LOAD_ROUTE) not in (None, "0"):
+                errors.append(f"arm {arm.name} must not route by load ({ENV_DS_PROXY_LOAD_ROUTE})")
+            if env.get(ENV_DS_PROXY_WORKERS) != "1":
+                errors.append(f"arm {arm.name} must run one ds proxy process")
+    if doc["ds_client"] is not None and not isinstance(doc["ds_client"], dict):
+        errors.append("ds_client must be an object or null")
+    if arm is not None and isinstance(doc.get("orch"), dict):
+        if doc["orch"].get("kind") != arm.orchestrator:
+            errors.append(f"orch.kind must be arm {arm.name}'s {arm.orchestrator!r}")
+    return errors
+
+
+def compare_ds_instances(first: Mapping[str, Any], second: Mapping[str, Any]) -> list[str]:
+    """Differences between two case-03 results' ds instances (parameters and shared variables).
+
+    E3-native-al and E3-chain must have none (03_perf-tests.md §3.3); the variables that
+    only choose logging are not compared. A role without a reading is a difference.
+    """
+    differences = []
+    for role in WORKER_ROLES:
+        a = (first.get("ds_instances") or {}).get(role)
+        b = (second.get("ds_instances") or {}).get(role)
+        if not isinstance(a, dict) or not isinstance(b, dict):
+            differences.append(f"{role}: no single ds instance reading on both sides")
+            continue
+        for part in ("params", "env"):
+            left, right = a.get(part) or {}, b.get(part) or {}
+            for key in sorted(set(left) | set(right)):
+                if left.get(key) != right.get(key):
+                    differences.append(
+                        f"{role}.{part}.{key}: {left.get(key)!r} != {right.get(key)!r}"
+                    )
+    return differences
+
+
+# ----------------------------------------------------------------------------- case-03 layouts (CP-11)
+
+
+@dataclass(frozen=True)
+class DsInstance:
+    """One ds instance of a layout.
+
+    Attributes:
+        worker: Its perf sanity role, ``CTX_<i>`` or ``GEN_<i>``.
+        nodes: Its nodes; the first leads (serves), the others follow.
+        gpus: ``CUDA_VISIBLE_DEVICES`` on each of its nodes.
+        tp: Its ``tensor_parallel_size`` (all its GPUs).
+    """
+
+    worker: str
+    nodes: tuple[str, ...]
+    gpus: str
+    tp: int
+
+
+@dataclass(frozen=True)
+class DsLayout:
+    """The ds instances of a layout and the node of the disaggregated server and the client."""
+
+    name: str
+    instances: tuple[DsInstance, ...]
+    orchestrator_node: str
+
+
+_NODE_GPUS = "0,1,2,3"
+# Context instances of the mid layout ($DS/dev/agentx_deploy.sh mid; PU-08's middle row has 2).
+DS_MID_CTX_DEFAULT = 2
+
+
+def ds_layout(
+    name: str,
+    nodes: Sequence[str],
+    *,
+    ctx_instances: int | None = None,
+    client_node: str | int | None = None,
+) -> DsLayout:
+    """Where each ds instance of a case-03 layout runs, as ``$DS/dev/agentx_deploy.sh`` places it.
+
+    Layouts: ``n0`` (PU-06: context DEP2 on GPUs 0-1 and generation TP2 on GPUs 2-3 of one
+    node), ``mini`` (PU-07: context DEP2 on node 0, generation TP4 on node 1) and ``mid``
+    (PU-08: ``ctx_instances`` context DEP2, two per node, then one generation DEP16 on four
+    nodes). The disaggregated server and the client run on node 0; ``client_node="last"``
+    gives them the last node to themselves, an index puts them on that node.
+
+    Raises:
+        ArmError: The layout is unknown, or ``nodes`` has too few nodes for it.
+    """
+    pool = list(nodes)
+    orchestrator = pool[0] if pool else ""
+    if client_node == "last":
+        if len(pool) < 2:
+            raise ArmError("client_node='last' needs a node besides the instances'")
+        orchestrator = pool.pop()
+    elif isinstance(client_node, int):
+        if not 0 <= client_node < len(pool):
+            raise ArmError(f"client_node {client_node} is not one of the {len(pool)} nodes")
+        orchestrator = pool[client_node]
+
+    def need(count: int) -> None:
+        if len(pool) < count:
+            raise ArmError(f"layout {name} needs {count} instance nodes, got {len(pool)}")
+
+    instances: list[DsInstance] = []
+    if name == "n0":
+        need(1)
+        instances = [
+            DsInstance("CTX_0", (pool[0],), "0,1", 2),
+            DsInstance("GEN_0", (pool[0],), "2,3", 2),
+        ]
+    elif name == "mini":
+        need(2)
+        instances = [
+            DsInstance("CTX_0", (pool[0],), "0,1", 2),
+            DsInstance("GEN_0", (pool[1],), _NODE_GPUS, 4),
+        ]
+    elif name == "mid":
+        count = DS_MID_CTX_DEFAULT if ctx_instances is None else ctx_instances
+        if count < 1:
+            raise ArmError(f"layout mid needs at least one context instance, got {count}")
+        ctx_nodes = (count + 1) // 2
+        need(ctx_nodes + 4)
+        for i in range(count):
+            gpus = "0,1" if i % 2 == 0 else "2,3"
+            instances.append(DsInstance(f"CTX_{i}", (pool[i // 2],), gpus, 2))
+        instances.append(
+            DsInstance("GEN_0", tuple(pool[ctx_nodes : ctx_nodes + 4]), _NODE_GPUS, 16)
+        )
+    else:
+        raise ArmError(f"unknown case-03 layout {name!r}; expected n0, mini or mid")
+    return DsLayout(name, tuple(instances), orchestrator)
+
+
+# ----------------------------------------------------------------------------- AgentX client (CP-07)
+
+AGENTX_CLIENT = "agentx"
+# The trace corpus $DS/dev/run_agentx.sh replays (it takes no dataset argument).
+DS_AGENTX_DATASET = "semianalysis_cc_traces_weka_062126"
+# The client settings all case-03 arms share (03_perf-tests.md §3.3, PU-08), unless the lane's
+# client environment sets them.
+DS_AGENTX_DEFAULTS = {
+    "AGENTX_DURATION": "3600",
+    "AGENTX_WARMUP_PER_LANE": "3",
+    "AGENTX_EXTRA_ARGS": "",
+}
+_AGENTX_LEARN_ENV = (
+    "AIPERF_AGENTX_WARMUP_LEARN_REQUESTS",
+    "AIPERF_AGENTX_WARMUP_LEARN_MAX_TOKENS",
+    "AIPERF_AGENTX_WARMUP_LEARN_FREEZE_FILE",
+)
+ENV_AGENTX_ARTIFACT_DIR = "TRTLLM_AGENTX_ARTIFACT_DIR"
+DS_AGENTX_COMMAND = "ds-agentx"
+
+
+def takes_client(arm: Arm | None, benchmark_client: str) -> bool:
+    """Whether ``arm`` measures a client of ``benchmark_client`` (``""`` is benchmark_serving).
+
+    The case-03 arms also take the AgentX client, which they run as :func:`run_ds_agentx`.
+    """
+    if not benchmark_client:
+        return True
+    return (
+        arm is not None
+        and arm.case == CASE_DS
+        and arm.topology == TOPOLOGY_DISAGG
+        and benchmark_client == AGENTX_CLIENT
+    )
+
+
+def arm_client_cmd(arm: Arm | None, benchmark_client: str, cmd: Sequence[str]) -> list[str]:
+    """The client command line under ``arm``: an AgentX client of a case-03 arm runs ds's client.
+
+    perf sanity's AgentX command (``agentx_client.py --model M --concurrency C --dataset D``)
+    becomes this module's ``ds-agentx`` command with the same options; the others are kept.
+
+    Raises:
+        ArmError: The AgentX command line gives an option the ds client does not take.
+    """
+    tokens = list(cmd)
+    if not (takes_client(arm, benchmark_client) and benchmark_client == AGENTX_CLIENT):
+        return tokens
+    options = {}
+    rest = tokens[2:]
+    if len(rest) % 2:
+        raise ArmError(f"cannot read the AgentX command line {tokens}")
+    for name, value in zip(rest[::2], rest[1::2]):
+        if name not in ("--model", "--concurrency", "--dataset"):
+            raise ArmError(
+                f"arm {arm.name}: the ds AgentX client takes --model, --concurrency and "
+                f"--dataset, not {name}"
+            )
+        options[name] = value
+    out = [sys.executable, os.path.abspath(__file__), DS_AGENTX_COMMAND]
+    for name in ("--model", "--concurrency", "--dataset"):
+        if name in options:
+            out += [name, options[name]]
+    return out
+
+
+def _agentx_client_module() -> types.ModuleType:
+    """perf/agentx_client.py, whose checks and report format perf sanity reads."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "agentx_client.py")
+    spec = importlib.util.spec_from_file_location("perf_agentx_client", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _total_output_tokens(export: Mapping[str, Any]) -> tuple[int | None, str | None]:
+    """The run's output token count from an aiperf export, and how it was obtained."""
+    for field_name in ("total_output_tokens", "output_token_count"):
+        entry = export.get(field_name)
+        if isinstance(entry, Mapping):
+            for stat in ("sum", "total", "avg"):
+                if _is_number(entry.get(stat)):
+                    return int(entry[stat]), f"{field_name}.{stat}"
+    rate = export.get("output_token_throughput")
+    duration = export.get("benchmark_duration")
+    if isinstance(rate, Mapping) and isinstance(duration, Mapping):
+        if _is_number(rate.get("avg")) and _is_number(duration.get("avg")):
+            return (
+                int(round(rate["avg"] * duration["avg"])),
+                "output_token_throughput.avg x benchmark_duration.avg",
+            )
+    return None, None
+
+
+def run_ds_agentx(argv: Sequence[str], environ: Mapping[str, str] | None = None) -> int:
+    """The AgentX client of the case-03 arms: ``$TRTLLM_TEST_DS_ROOT/dev/run_agentx.sh``.
+
+    Runs ds's client (aiperf with ds's warmup-learning patch when
+    ``AIPERF_AGENTX_WARMUP_LEARN_REQUESTS`` is set) against ``--host``/``--port`` for
+    ``AGENTX_DURATION`` seconds, writing its records to ``TRTLLM_AGENTX_ARTIFACT_DIR``; then
+    checks aiperf's export as perf/agentx_client.py does and prints its metrics in
+    benchmark_serving's format, the total output token count, and one line of the client's
+    settings (:data:`DS_CLIENT_LINE`) for the result. Returns 0, or raises.
+
+    Raises:
+        ArmError: The ds checkout, its script or the artifact directory is missing, the
+            artifact directory already holds an export, or the run wrote none.
+        RuntimeError: The export shows an incomplete or failed run (agentx_client.py's checks).
+    """
+    import argparse
+
+    parser = argparse.ArgumentParser(prog=f"openengine_arms.py {DS_AGENTX_COMMAND}")
+    for name in ("--model", "--concurrency", "--host", "--port"):
+        parser.add_argument(name, required=True)
+    parser.add_argument("--dataset", default=DS_AGENTX_DATASET)
+    args = parser.parse_args(list(argv))
+    env = dict(os.environ if environ is None else environ)
+    for key, value in DS_AGENTX_DEFAULTS.items():
+        env.setdefault(key, value)
+    root = env.get(ENV_DS_ROOT, "")
+    script = os.path.join(root, "dev", "run_agentx.sh")
+    if not root or not os.path.isfile(script):
+        raise ArmError(f"the ds AgentX client needs {ENV_DS_ROOT} with dev/run_agentx.sh")
+    out_dir = env.get(ENV_AGENTX_ARTIFACT_DIR, "")
+    if not out_dir:
+        raise ArmError(f"the ds AgentX client needs {ENV_AGENTX_ARTIFACT_DIR}")
+    export_path = os.path.join(out_dir, "profile_export_aiperf.json")
+    if os.path.exists(export_path):
+        raise ArmError(f"{export_path} exists from an earlier run; use a new artifact directory")
+    env["MODEL"] = args.model
+    duration = int(env["AGENTX_DURATION"])
+    settings = {
+        "client": "ds dev/run_agentx.sh",
+        "ds_sha": ds_sha(env),
+        "window_s": duration,
+        "warmup_per_lane": int(env["AGENTX_WARMUP_PER_LANE"]),
+        "extra_args": env["AGENTX_EXTRA_ARGS"],
+        "dataset_requested": args.dataset,
+        "dataset_used": DS_AGENTX_DATASET,
+        "warmup_learning": {key: env.get(key) for key in _AGENTX_LEARN_ENV},
+    }
+    print(DS_CLIENT_LINE + json.dumps(settings, sort_keys=True), flush=True)
+    url = f"http://{args.host}:{args.port}"
+    grace = int(env.get("AGENTX_TIMEOUT_GRACE", "3600"))
+    completed = subprocess.run(
+        ["bash", script, url, str(args.concurrency), str(duration), out_dir],
+        env=env,
+        timeout=duration + grace,
+    )
+    if not os.path.exists(export_path):
+        raise ArmError(f"run_agentx.sh exited {completed.returncode} and wrote no {export_path}")
+    with open(export_path, encoding="utf-8") as f:
+        export = json.load(f)
+    client = _agentx_client_module()
+    client.check_run_health(export)
+    client.report_metrics(export)
+    tokens, source = _total_output_tokens(export)
+    if tokens is not None:
+        print(f"Total generated tokens: {tokens}", flush=True)
+        print(f"[ds-agentx] total generated tokens from {source}", flush=True)
+    return 0
+
+
+def main(argv: Sequence[str]) -> int:
+    """``openengine_arms.py ds-agentx ...``: see :func:`run_ds_agentx`."""
+    if not argv or argv[0] != DS_AGENTX_COMMAND:
+        print(
+            f"usage: openengine_arms.py {DS_AGENTX_COMMAND} --model M --concurrency C "
+            "--host H --port P [--dataset D]",
+            file=sys.stderr,
+        )
+        return 2
+    return run_ds_agentx(argv[1:])
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
