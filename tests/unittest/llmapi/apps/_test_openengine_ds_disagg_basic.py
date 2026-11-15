@@ -17,8 +17,8 @@ GPUs 2-3):
   :func:`ds_disagg_chain` starts it through the chain harness.
 
 A pytest session serves one form: the chain when ``TRTLLM_TEST_OPENENGINE_CHAIN=ds``, form K
-when the variable is unset (:func:`session_form`). A test shared by the two forms (``K+链`` in
-the plan) runs once in each session. Both forms take the ds-engine command from
+when the variable is unset (:func:`session_form`). A test shared by the two forms runs once in
+each session. Both forms take the ds-engine command from
 ``TRTLLM_TEST_DS_SERVE_CMD`` (for example ``python3 -m dsv4_serve``, with the ds-engine's
 ``python`` directory on ``PYTHONPATH``), the engine options :data:`ENGINE_ARGS` and the
 per-role configurations :data:`CONTEXT_CONFIG` and :data:`GENERATION_CONFIG` (DSpark speculative
@@ -106,9 +106,10 @@ class Group:
 
     ``context`` and ``generation`` are merged over :data:`CONTEXT_CONFIG` and
     :data:`GENERATION_CONFIG` key by key (a ``None`` value drops the key); ``env`` adds
-    environment variables to each role's ds engine (form K: the ds worker); ``front`` adds keys to
-    the disaggregated server's configuration (form K: the ds proxy's); ``engine_args`` replaces
-    :data:`ENGINE_ARGS`.
+    environment variables to each role's worker process (the chain: the ``trtllm-serve`` command
+    the harness splits into a front end and a ds engine; form K: the ds worker); ``front`` adds
+    keys to the disaggregated server's configuration (form K: the ds proxy's); ``engine_args``
+    replaces :data:`ENGINE_ARGS`.
     """
 
     context: Mapping[str, object] = field(default_factory=dict)
@@ -344,11 +345,22 @@ class Served:
     engines: Mapping[str, str] = field(default_factory=dict)
     servers: Mapping[str, object] = field(default_factory=dict)
     native: DsNative | None = None
+    _clients: dict = field(default_factory=dict, repr=False, compare=False)
 
     def client(self, url: str | None = None):
+        """The OpenAI client of ``url`` (default: :attr:`url`), one per URL."""
         import openai
 
-        return openai.OpenAI(api_key=DUMMY_API_KEY, base_url=f"{url or self.url}/v1", max_retries=0)
+        base = f"{url or self.url}/v1"
+        if base not in self._clients:
+            self._clients[base] = openai.OpenAI(api_key=DUMMY_API_KEY, base_url=base, max_retries=0)
+        return self._clients[base]
+
+    def close_clients(self) -> None:
+        """Close the clients :meth:`client` made."""
+        for client in self._clients.values():
+            client.close()
+        self._clients.clear()
 
     @property
     def chain(self) -> bool:
@@ -369,12 +381,11 @@ def session_form(env: Mapping[str, str] | None = None) -> str:
 
 @pytest.fixture(scope="module")
 def model_path() -> str:
-    from ..test_llm import get_model_path
+    from ..test_llm import get_model_path, llm_models_root
 
-    try:
-        path = get_model_path(MODEL_DIR)
-    except TypeError:  # llm_models_root() found no models root
+    if llm_models_root() is None:
         pytest.skip("no models root: set LLM_MODELS_ROOT")
+    path = get_model_path(MODEL_DIR)
     assert os.path.isdir(path), f"{path} is not a directory"
     return path
 
@@ -424,6 +435,19 @@ def wait_registered(
         time.sleep(1)
 
 
+def wait_healthy(url: str, timeout: float = REGISTER_TIMEOUT_S) -> None:
+    """Wait until ``{url}/health`` answers 200."""
+    deadline = time.monotonic() + timeout
+    status = None
+    while True:
+        with contextlib.suppress(requests.RequestException):
+            status = requests.get(f"{url}/health", timeout=10).status_code
+            if status == 200:
+                return
+        assert time.monotonic() < deadline, f"{url}/health answers {status} after {timeout:.0f} s"
+        time.sleep(1)
+
+
 @contextlib.contextmanager
 def ds_disagg_chain(model: str, workdir: str | os.PathLike, group: Group = DEFAULT_GROUP):
     """The chain on layout N-0: the orchestrator and the two workers, registered, as :class:`Served`.
@@ -465,11 +489,15 @@ def ds_disagg_chain(model: str, workdir: str | os.PathLike, group: Group = DEFAU
             port=disagg_port,
             disagg_config=front,
             log_path=str(workdir / "output_orchestrator.log"),
+            # Its /health answers 503 until both workers register; RemoteOpenAIServer's own wait
+            # has no time limit for a non-200 answer.
+            wait_ready=False,
         ) as orchestrator:
             for server in (ctx, gen):
                 server.wait_for_server(timeout=NATIVE_READY_TIMEOUT_S)
             url = f"http://localhost:{disagg_port}"
             wait_registered(url, {"context": 1, "generation": 1})
+            wait_healthy(url)
             engines = {
                 role: server._chain_handle.engine_endpoint
                 for role, server in (("context", ctx), ("generation", gen))
@@ -495,13 +523,28 @@ def start_form(form: str, model: str, workdir: str | os.PathLike, group: Group =
     ds = ds_command()
     if not ds:
         pytest.skip(f"form K needs {ENV_DS_SERVE_CMD}")
-    with DsNative(ds, model, workdir=str(Path(workdir) / "k"), group=group) as native:
+    native = _start_native(ds, model, Path(workdir), group)
+    try:
         yield Served(
             native.url,
             form=FORM_K,
             workers={role: native.worker_url(role) for role in ROLES},
             native=native,
         )
+    finally:
+        native.stop()
+
+
+def _start_native(ds: Sequence[str], model: str, workdir: Path, group: Group) -> DsNative:
+    """Form K, entered; started once more on new ports if a port it chose was taken meanwhile."""
+    for attempt in (1, 2):
+        native = DsNative(ds, model, workdir=str(workdir / f"k{attempt}"), group=group)
+        try:
+            return native.__enter__()
+        except RuntimeError as error:
+            if attempt == 2 or "address already in use" not in str(error).lower():
+                raise
+    raise AssertionError("not reached")
 
 
 class Groups:
@@ -539,6 +582,7 @@ class Groups:
             stack.close()
             self._failed.append((group, error))
             raise
+        stack.callback(served.close_clients)
         self._stack, self._group, self._served = stack, group, served
         return served
 
@@ -801,9 +845,8 @@ def test_worker_frontend_endpoints_direct(metrics_served, endpoint, record_prope
     """NT-106 (F-05b, F-05c, F-06, F-42a, F-42b, F-43, DG-89): each worker front end's endpoints.
 
     The workers return per-request perf metrics, which mounts ``/prometheus/metrics``. In
-    ``/server_info`` each field the ds engine's ``ServerInfo`` reports (the batch size, the KV
-    block size, the context engine's KV endpoint) must equal it; the fields it does not report
-    are recorded in the ``server_info_from_frontend`` property. ``/metrics`` holds snapshots
+    ``/server_info`` the batch size, the KV block size and the context worker's KV endpoint must
+    be the ones the ds engine reports in its ``ServerInfo``. ``/metrics`` holds snapshots
     derived from ``GetLoad`` only (DV-18); ``/kv_cache_events`` is read once and recorded (the
     ds engine has no KV events).
     """
@@ -821,7 +864,7 @@ def test_worker_frontend_endpoints_direct(metrics_served, endpoint, record_prope
         if endpoint == "version":
             assert response.json().get("version"), response.text
         elif endpoint == "server_info":
-            _check_server_info(served, role, response.json(), record_property)
+            _check_server_info(served, role, response.json())
         elif endpoint == "metrics":
             snapshots = response.json()
             assert isinstance(snapshots, list), response.text[:2000]
@@ -832,26 +875,27 @@ def test_worker_frontend_endpoints_direct(metrics_served, endpoint, record_prope
             record_property(f"kv_cache_events_{role}", f"{events.status_code} {events.text[:200]}")
 
 
-def _check_server_info(served: Served, role: str, info: dict, record_property) -> None:
-    """DG-89: ``/server_info`` against the ``role`` ds engine's ``ServerInfo``."""
+def _check_server_info(served: Served, role: str, info: dict) -> None:
+    """DG-89: the KV fields of ``/server_info`` are the ``role`` ds engine's ``ServerInfo`` ones."""
     engine = engine_server_info(served.engines[role])
-    assert int(info["tokens_per_block"]) > 0, info
-    from_frontend = []
-    if engine.capacity.max_running_requests:
-        assert info["max_batch_size"] == engine.capacity.max_running_requests, (info, engine)
-    else:
-        from_frontend.append("max_batch_size")
-    if engine.capacity.kv_block_size:
-        assert info["tokens_per_block"] == engine.capacity.kv_block_size, (info, engine)
-    else:
-        from_frontend.append("tokens_per_block")
+    problems = []
+    if info.get("max_batch_size") != engine.capacity.max_running_requests:
+        problems.append("max_batch_size differs from the engine's max_running_requests")
+    if not engine.capacity.kv_block_size:
+        problems.append("the engine reports no kv_block_size")
+    elif info.get("tokens_per_block") != engine.capacity.kv_block_size:
+        problems.append("tokens_per_block differs from the engine's kv_block_size")
     if role == "context":
-        (text,) = info["disaggregated_params"]["ctx_info_endpoint"]
         endpoints = engine.kv_connector.local_endpoints
-        if endpoints:
+        params = info.get("disaggregated_params") or {}
+        texts = params.get("ctx_info_endpoint") or []
+        if not endpoints:
+            problems.append("the engine reports no KV endpoint")
+        elif len(texts) != 1:
+            problems.append("ctx_info_endpoint is not one endpoint")
+        else:
             # The engine's first endpoint, in whichever notation the front end writes it.
             first = endpoints[0]
-            assert first.host in text and text.endswith(f":{first.port}"), (text, first)
-        else:
-            from_frontend.append("ctx_info_endpoint")
-    record_property(f"server_info_from_frontend_{role}", ",".join(from_frontend) or "none")
+            if first.host not in texts[0] or not texts[0].endswith(f":{first.port}"):
+                problems.append("ctx_info_endpoint is not the engine's first KV endpoint")
+    assert not problems, (problems, info, engine)

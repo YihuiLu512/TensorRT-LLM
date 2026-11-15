@@ -110,11 +110,15 @@ def _ds_disagg_chain(
             env={**os.environ, **(orchestrator_env or {})},
             disagg_config=front,
             log_path=str(workdir / "output_orchestrator.log"),
+            # Its /health answers 503 until both workers register, and the server's own wait for
+            # it has no time limit: the workers are waited for first, then its /health.
+            wait_ready=False,
         ) as orchestrator:
             for server in (ctx, gen):
                 server.wait_for_server(timeout=basic.NATIVE_READY_TIMEOUT_S)
             url = f"http://localhost:{disagg_port}"
             basic.wait_registered(url, {"context": 1, "generation": 1})
+            basic.wait_healthy(url)
             engines = {
                 role: server._chain_handle.engine_endpoint
                 for role, server in (("context", ctx), ("generation", gen))
@@ -161,10 +165,52 @@ def _chat(served: basic.Served, messages, headers=None, **fields):
 
 
 def _orchestrator_counter(served: basic.Served, role: str, name: str) -> int:
-    """The orchestrator's ``<ctx|gen>_<name>_total`` counter, summed over its labels."""
+    """The orchestrator's ``<ctx|gen>_<name>_total`` counter, summed over its labels.
+
+    The orchestrator creates its counters with its clients, at zero: fails when it reports none.
+    """
     text = requests.get(f"{served.url}/prometheus/metrics", timeout=30).text
     pattern = re.compile(rf"^{role}_{name}_total(?:\{{[^}}]*\}})?\s+(\S+)\s*$", re.MULTILINE)
-    return int(sum(float(value) for value in pattern.findall(text)))
+    values = pattern.findall(text)
+    assert values, f"the orchestrator reports no {role}_{name}_total"
+    return int(sum(float(value) for value in values))
+
+
+def _marked_roots(root_pid: int, marker: str) -> list:
+    """The processes below ``root_pid`` that a parent started with ``marker`` in their environment.
+
+    A process's children inherit the variable, so only the processes whose parent lacks it count:
+    the roots of the marked subtrees.
+    """
+    import psutil
+
+    def marked(process) -> bool:
+        with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            return marker in process.environ()
+        return False
+
+    roots = []
+    for child in psutil.Process(root_pid).children(recursive=True):
+        try:
+            parent = child.parent()
+        except psutil.NoSuchProcess:
+            continue
+        if marked(child) and (parent is None or not marked(parent)):
+            roots.append(child)
+    return roots
+
+
+def _describe(processes) -> list[str]:
+    """``pid: cmdline`` of each process, for an assertion's message."""
+    import psutil
+
+    described = []
+    for process in processes:
+        try:
+            described.append(f"{process.pid}: {' '.join(process.cmdline())}")
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            described.append(f"{process.pid}: (gone)")
+    return described
 
 
 # -- GenerateRequests the worker front ends sent (TRTLLM_OPENENGINE_REQUEST_DUMP_DIR) --------
@@ -316,7 +362,7 @@ def discovery_served(request, groups):
         return
     etcd = shutil.which("etcd")
     if etcd is None:
-        pytest.skip("no etcd executable on PATH")
+        pytest.skip("no etcd executable on PATH: DG-29 is not verified in this run")
     groups.close()
     workdir = groups.workdir / "etcd"
     with _etcd(etcd, workdir) as (uri, ports):
@@ -406,15 +452,8 @@ def switch_served(request, groups, alignment_baseline):
 
 def _fleet_processes(orchestrator_pid: int) -> list:
     """The orchestrator's fleet processes (``num_workers``), by their per-process index."""
-    import psutil
-
-    found = []
-    for child in psutil.Process(orchestrator_pid).children(recursive=True):
-        with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
-            # serve.DisaggWorkerEnvs.TLLM_DISAGG_WORKER_PROCESS_ID
-            if "TRTLLM_DISAGG_WORKER_PROCESS_ID" in child.environ():
-                found.append(child)
-    return found
+    # serve.DisaggWorkerEnvs.TLLM_DISAGG_WORKER_PROCESS_ID
+    return _marked_roots(orchestrator_pid, "TRTLLM_DISAGG_WORKER_PROCESS_ID")
 
 
 @pytest.mark.parametrize("switch_served", list(SWITCHES), indirect=True)
@@ -432,7 +471,7 @@ def test_orchestrator_alignment_switches(alignment_baseline, switch_served):
     assert outputs == alignment_baseline, (outputs, alignment_baseline)
     if switch == "num_workers":
         fleet = _fleet_processes(served.servers["orchestrator"].proc.pid)
-        assert len(fleet) == 2, fleet
+        assert len(fleet) == 2, _describe(fleet)
 
 
 # -- NT-143: sub-agent affinity -------------------------------------------------------------
@@ -485,10 +524,13 @@ def affinity_served(request, groups) -> basic.Served:
     return _chain(groups, _affinity_group(request.param))
 
 
-def _conversation_stats(path: Path) -> tuple[int, int, int]:
-    """The context engine's last logged conversation statistics: seen again, moved, pinned."""
+def _conversation_stats(path: Path) -> tuple[int, int, int] | None:
+    """The context engine's last logged conversation statistics: seen again, moved, pinned.
+
+    ``None`` when it logged none yet; it logs them once it has seen a conversation again.
+    """
     found = CONVERSATION_STATS.findall(path.read_text(errors="replace")) if path.exists() else []
-    return tuple(int(n) for n in found[-1]) if found else (0, 0, 0)
+    return tuple(int(n) for n in found[-1]) if found else None
 
 
 @pytest.mark.parametrize("affinity_served", ["context", "both"], indirect=True)
@@ -533,15 +575,19 @@ def test_subagent_affinity(affinity_served, record_property):
         (choice,) = response.json()["choices"]
         assert choice["message"]["content"], (session, choice)
 
+    # Statistics not logged before these requests count from zero; after them they must be.
+    start = before or (0, 0, 0)
     deadline = time.monotonic() + RECORD_WAIT_S
     while True:
         after = _conversation_stats(log)
-        seen, moved, pinned = (a - b for a, b in zip(after, before))
-        if seen >= SUBAGENTS or time.monotonic() > deadline:
-            break
+        if after is not None:
+            seen, moved, pinned = (a - b for a, b in zip(after, start))
+            if seen >= SUBAGENTS:
+                break
+        assert time.monotonic() < deadline, f"conversation statistics {before} -> {after} in {log}"
         time.sleep(1)
     record_property("conversation_stats", f"seen {seen}, moved {moved}, pinned {pinned}")
-    assert seen >= SUBAGENTS and moved == 0, (before, after)
+    assert moved == 0, (before, after)
 
 
 # -- NT-144, NT-145: perf records, request ids and the two legs' requests --------------------
@@ -796,14 +842,7 @@ def _retry_group(dump_root: Path) -> basic.Group:
 
 def _attached_frontends(launcher_pid: int) -> list:
     """The processes a multi-frontend worker front end started to serve beside it."""
-    import psutil
-
-    found = []
-    for child in psutil.Process(launcher_pid).children(recursive=True):
-        with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
-            if child.environ().get(ATTACHED_FRONTEND_ENV):
-                found.append(child)
-    return found
+    return _marked_roots(launcher_pid, ATTACHED_FRONTEND_ENV)
 
 
 def _retry_prompt(index: int) -> str:
@@ -826,9 +865,12 @@ def _ctx_legs_in_flight(counter_dir: str, pid: int) -> int:
     )
     from tensorrt_llm.serve.openengine_poc import contracts
 
-    counts = contracts.read_serve_counters_by_pid(counter_dir).get(pid, {})
-    sent = counts.get(SERVE_COUNTER_GENERATE_SENT_BUCKETS[BUCKET_CONTEXT_ONLY], 0)
-    return sent - counts.get(SERVE_COUNTER_PREFILL_READY_RECEIVED, 0)
+    by_pid = contracts.read_serve_counters_by_pid(counter_dir)
+    # A front end publishes its counters once connected to its engine, before serving.
+    assert pid in by_pid, (pid, sorted(by_pid), counter_dir)
+    counts = by_pid[pid]
+    sent = counts[SERVE_COUNTER_GENERATE_SENT_BUCKETS[BUCKET_CONTEXT_ONLY]]
+    return sent - counts[SERVE_COUNTER_PREFILL_READY_RECEIVED]
 
 
 def test_ctx_leg_retry_after_ctx_frontend_killed(retry_served, dump_root):
@@ -845,13 +887,13 @@ def test_ctx_leg_retry_after_ctx_frontend_killed(retry_served, dump_root):
     # This is the file's last test: the module's groups fixture stops the group after it.
     handle = served.servers["context"]._chain_handle
     found = _attached_frontends(handle.frontend.pid)
-    assert len(found) == 1, found
+    assert len(found) == 1, _describe(found)
     (attached,) = found
     dirs = {role: dump_root / "retry" / role for role in ROLES}
     seen = {role: _dumps(path) for role, path in dirs.items()}
     retries = _orchestrator_counter(served, "ctx", "retry_requests")
 
-    sent, killed = 0, False
+    sent, killed, peak = 0, False, 0
     with concurrent.futures.ThreadPoolExecutor(RETRY_REQUESTS) as pool:
         for _ in range(RETRY_BATCHES):
             # Legs that ended on the context engine have no PrefillReady: count from here.
@@ -862,7 +904,9 @@ def test_ctx_leg_retry_after_ctx_frontend_killed(retry_served, dump_root):
             ]
             sent += RETRY_REQUESTS
             while not all(future.done() for future in futures):
-                if _ctx_legs_in_flight(handle.counter_dir, attached.pid) - idle >= LOST_LEGS:
+                in_flight = _ctx_legs_in_flight(handle.counter_dir, attached.pid) - idle
+                peak = max(peak, in_flight)
+                if in_flight >= LOST_LEGS:
                     # psutil checks that the pid is still this process before it signals.
                     attached.kill()
                     killed = True
@@ -876,7 +920,7 @@ def test_ctx_leg_retry_after_ctx_frontend_killed(retry_served, dump_root):
                 break
     assert killed, (
         f"the attached front end never had {LOST_LEGS} context legs in flight in "
-        f"{RETRY_BATCHES} batches of {RETRY_REQUESTS} requests"
+        f"{RETRY_BATCHES} batches of {RETRY_REQUESTS} requests (at most {peak})"
     )
     deadline = time.monotonic() + RECORD_WAIT_S
     while _orchestrator_counter(served, "ctx", "retry_requests") == retries:

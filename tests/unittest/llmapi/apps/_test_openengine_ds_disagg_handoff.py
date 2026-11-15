@@ -178,8 +178,8 @@ def _no_parked_kv(response: requests.Response) -> None:
 def _stopped_context_leg(served: basic.Served, first_token: int) -> int:
     """The disagg_request_id of a context leg that ended with ``stop``, parking nothing.
 
-    It stops on its first token. Greedy is not bitwise repeatable: a leg that hands off another
-    first token instead has its handoff served, and the next attempt stops on that token.
+    It stops on its first token. Should a leg hand off another first token than the one it was
+    told to stop on, its handoff is served and the next attempt stops on that token.
     """
     stop = first_token
     for _ in range(3):

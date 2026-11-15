@@ -128,15 +128,35 @@ def _wait(condition, what: str, timeout: float) -> None:
         time.sleep(0.2)
 
 
-def _pending(served: basic.Served, role: str) -> tuple[int, int]:
-    """The ``role`` ds engine's requests running and waiting (the chain: received and not ended)."""
+def _pending(served: basic.Served, role: str) -> tuple[int, int | None]:
+    """The ``role`` ds engine's requests running and waiting (the chain: received and not ended).
+
+    A count the engine does not report fails the test instead of reading as 0, but for one case:
+    a ds engine on the chain leaves out ``queued_requests`` while it has no fresh iteration
+    stats, and then counts every request it holds as running. The waiting count is None then.
+    """
     if served.chain:
         from openengine_chain import direct_replay
 
         load = direct_replay.get_load(served.engines[role])
-        return int(load.get("running_requests", 0)), int(load.get("queued_requests", 0))
+        assert "running_requests" in load, f"the {role} engine reports no running_requests: {load}"
+        queued = load.get("queued_requests")
+        return int(load["running_requests"]), None if queued is None else int(queued)
     load = requests.get(f"{served.workers[role]}/load", timeout=30).json()
-    return int(load.get("running", 0)), int(load.get("waiting", 0))
+    missing = [key for key in ("running", "waiting") if key not in load]
+    assert not missing, f"the {role} worker's /load has no {missing}: {load}"
+    return int(load["running"]), int(load["waiting"])
+
+
+def _queued(served: basic.Served, role: str) -> int:
+    """The ``role`` ds engine's waiting requests, once it reports them."""
+    found = []
+    _wait(
+        lambda: found.append(_pending(served, role)[1]) or found[-1] is not None,
+        f"the {role} engine to report its waiting requests",
+        CANCEL_ARRIVES_S,
+    )
+    return found[-1]
 
 
 def _handoffs(served: basic.Served) -> int | None:
@@ -182,9 +202,6 @@ LONG_PROMPT_TOKENS = 30000
 LONG_DECODE = 30000
 # How long _leave_decoding reads the stream before it leaves.
 READ_S = 3.0
-# The most tokens a decoding step of the generation engine outputs (DSpark: its drafts and one
-# more); _leave_decoding takes a streamed chunk to hold at most one step's tokens.
-TOKENS_PER_STEP = 1 + basic.GENERATION_CONFIG["speculative_config"]["max_draft_len"]
 # A left decode must have this many cancel windows of tokens left to decode.
 UNFINISHED_MARGIN = 3
 # Long context legs sent at most until one waits: the context engine runs one per rank.
@@ -201,26 +218,39 @@ def _long_prompt(n: int) -> list[int]:
 
 
 def _total(served: basic.Served, role: str) -> int:
-    return sum(_pending(served, role))
+    running, queued = _pending(served, role)
+    # Without a waiting count the running count holds every request (see _pending).
+    return running if queued is None else running + queued
 
 
 class _Left:
     """Checks that the context legs the test leaves end without a handoff.
 
     On the chain the context engine's PrefillReady count stays where it was; in form K the ds
-    context worker logs each request whose client left.
+    context worker logs each request whose client left. ``timeline`` holds when each step of the
+    test happened, in seconds after the first leg was sent, for the test's record.
     """
 
     def __init__(self, served: basic.Served) -> None:
         self.served = served
         self.handoffs = _handoffs(served)
         self.logged = None if served.chain else _log_count(served, "context", LEFT_LOG)
+        self.start: float | None = None
+        self.timeline: list[str] = []
+
+    def mark(self, event: str) -> None:
+        now = time.monotonic()
+        if self.start is None:
+            self.start = now
+        self.timeline.append(f"{now - self.start:.2f} s {event}")
 
     def handed_off(self) -> bool:
         return self.served.chain and _handoffs(self.served) != self.handoffs
 
     def check(self, what: str) -> None:
-        assert not self.handed_off(), f"a long prefill ended {what}; the prompt is too short here"
+        handed_off = self.handed_off()
+        self.mark(f"checked {what}: {'handed off' if handed_off else 'no handoff'}")
+        assert not handed_off, f"a long prefill ended {what}; the prompt is too short here"
 
     def logged_left(self, left: int) -> None:
         """Form K: the ds context worker logged ``left`` requests whose client left."""
@@ -238,18 +268,20 @@ class _Left:
             "the left context calls to end",
             CANCEL_ARRIVES_S,
         )
+        self.mark("context calls ended")
         self.check("after its client left")
         self.logged_left(left)
 
 
-def _leave_waiting(served: basic.Served) -> None:
+def _leave_waiting(left: _Left) -> None:
     """Leave a context leg that waits behind long prefills, then the prefilling legs too."""
-    left = _Left(served)
+    served = left.served
     with contextlib.ExitStack() as stack:
         legs = []
         while True:
             assert len(legs) < MAX_LONG_LEGS, "no context leg waited behind the long prefills"
             body = _context_body(_long_prompt(len(legs)))
+            left.mark(f"sending leg {len(legs)}")
             legs.append(stack.enter_context(_sent(_context_url(served), body)))
             _wait(
                 lambda: _total(served, "context") >= len(legs) or left.handed_off(),
@@ -257,43 +289,49 @@ def _leave_waiting(served: basic.Served) -> None:
                 PREFILL_STARTS_S,
             )
             left.check("before a leg waited")
-            if _pending(served, "context")[1]:
+            if _queued(served, "context"):
+                left.mark(f"leg {len(legs) - 1} waits")
                 break
         legs[-1].close()
+        left.mark(f"left leg {len(legs) - 1}")
         _wait(
             lambda: _total(served, "context") == len(legs) - 1,
             "the waiting call to end",
             CANCEL_ARRIVES_S,
         )
+        left.mark(f"leg {len(legs) - 1} ended")
         # One fewer call with no handoff (the chain), and the left one logged (form K): the
         # waiting call ended, not a prefilling one.
         left.check("before its client left")
         left.logged_left(1)
+    left.mark("left the other legs")
     left.ended(len(legs))
 
 
-def _leave_prefilling(served: basic.Served) -> None:
+def _leave_prefilling(left: _Left) -> None:
     """Leave a context leg while it prefills."""
-    left = _Left(served)
+    served = left.served
+    left.mark("sending leg 0")
     with _sent(_context_url(served), _context_body(_long_prompt(0))) as leg:
         _wait(
             lambda: _total(served, "context") >= 1 or left.handed_off(),
             "the prefill to start",
             PREFILL_STARTS_S,
         )
+        left.mark("leg 0 runs")
         left.check("before its client left")
         leg.close()
+    left.mark("left leg 0")
     left.ended(1)
 
 
 def _leave_decoding(served: basic.Served) -> str:
     """Stream a request through the orchestrator and leave once its generation leg decodes.
 
-    The stream is read for READ_S after its first text. Each chunk holds at most
-    TOKENS_PER_STEP tokens, which bounds the decode rate from above; at that rate the decode
-    must still have UNFINISHED_MARGIN cancel windows of tokens left, so that its call ending
-    within one window is the cancel and not its natural end. Form K's ds generation worker also
-    logs the request whose client left.
+    The stream is read for READ_S after its first text, with the usage in each chunk. At the
+    rate its completion tokens grew, the decode must still have UNFINISHED_MARGIN cancel windows
+    of tokens left, so that its call ending within one window is the cancel and not its natural
+    end. Form K's ds generation worker also logs the request whose client left.
 
     Returns:
         The stream's reading, for the test's record.
@@ -304,6 +342,7 @@ def _leave_decoding(served: basic.Served) -> str:
         "max_tokens": LONG_DECODE,
         "ignore_eos": True,
         "stream": True,
+        "stream_options": {"include_usage": True, "continuous_usage_stats": True},
     }
     logged = None if served.chain else _log_count(served, "generation", LEFT_LOG)
     with requests.post(
@@ -314,27 +353,33 @@ def _leave_decoding(served: basic.Served) -> str:
         stream=True,
     ) as response:
         assert response.status_code == 200, response.text
-        chunks, first = 0, None
+        first, first_tokens, tokens = None, 0, 0
         for line in response.iter_lines(decode_unicode=True):
             if not line or not line.startswith("data: ") or line == "data: [DONE]":
                 continue
-            choices = json.loads(line[len("data: ") :]).get("choices") or []
+            chunk = json.loads(line[len("data: ") :])
+            choices = chunk.get("choices") or []
             if not choices:
                 continue
+            usage = chunk.get("usage")
+            assert usage and "completion_tokens" in usage, f"a chunk without usage: {chunk}"
+            tokens = usage["completion_tokens"]
             if first is None:
                 if not choices[0].get("text"):
                     continue
-                first = time.monotonic()
-            chunks += 1
+                first, first_tokens = time.monotonic(), tokens
             if time.monotonic() - first >= READ_S:
                 break
         else:
             raise AssertionError(f"the stream ended within {READ_S} s of its first text")
         read_s = time.monotonic() - first
         _wait(lambda: _total(served, "generation") == 1, "the decode to run", DECODE_STARTS_S)
-    most = TOKENS_PER_STEP * chunks
-    left_s = (LONG_DECODE - most) * read_s / most
-    reading = f"{chunks} chunks in {read_s:.1f} s: at least {left_s:.0f} s of decode left"
+    assert tokens > first_tokens, f"no tokens decoded in {read_s:.1f} s after the first text"
+    left_s = (LONG_DECODE - tokens) * read_s / (tokens - first_tokens)
+    reading = (
+        f"{tokens - first_tokens} tokens in {read_s:.1f} s after the first, {tokens} in all: "
+        f"{left_s:.0f} s of decode left at that rate"
+    )
     assert left_s > UNFINISHED_MARGIN * CANCEL_ARRIVES_S, (
         f"{reading}; the decode could end by itself within the cancel window: raise LONG_DECODE"
     )
@@ -368,7 +413,11 @@ def test_abort_stages(cancel_served, stage, record_property):
     if stage == "decode":
         record_property("decode_left", _leave_decoding(served))
     else:
-        {"queued": _leave_waiting, "prefill": _leave_prefilling}[stage](served)
+        left = _Left(served)
+        try:
+            {"queued": _leave_waiting, "prefill": _leave_prefilling}[stage](left)
+        finally:
+            record_property("timeline", "; ".join(left.timeline))
     _serves(served)
 
 
@@ -466,9 +515,11 @@ def test_parked_kv_timeout_and_orphans(parked_served, record_property):
         "the context engine to drop the parked KV",
         DROP_LOGGED_S,
     )
-    response = _generation_leg(served, SHORT_PROMPT, next(iter(legs.values())))
+    did, context = next(iter(legs.items()))
+    response = _generation_leg(served, SHORT_PROMPT, context)
     assert response.status_code >= 400, (response.status_code, response.text)
-    assert "parked" in response.text.lower(), response.text
+    # The context engine's answer to a pull of a KV it does not hold names its disagg id.
+    assert "parked" in response.text.lower() and str(did) in response.text, (did, response.text)
     _serves(served)
 
 

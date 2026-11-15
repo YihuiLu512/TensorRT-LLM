@@ -213,8 +213,10 @@ def _generation_leg(served: basic.Served, prompt_ids: list[int], context: dict, 
 
 
 def _cached_tokens(usage) -> int:
-    details = getattr(usage, "prompt_tokens_details", None)
-    return int(getattr(details, "cached_tokens", None) or 0)
+    """``usage``'s cached prompt tokens; a usage without them fails the test."""
+    cached = getattr(getattr(usage, "prompt_tokens_details", None), "cached_tokens", None)
+    assert cached is not None, f"no prompt_tokens_details.cached_tokens: {usage}"
+    return int(cached)
 
 
 @pytest.mark.parametrize("api", ["completions", "chat"])
@@ -264,13 +266,16 @@ def _accepted_drafts(url: str) -> tuple[int, int]:
     """Drafts proposed and accepted in the iteration stats a ds worker's ``/metrics`` hands out.
 
     The worker hands out each iteration's stats once, so a call counts the iterations since the
-    previous one.
+    previous one. An iteration without the counts fails the test.
     """
     import requests
 
     stats = requests.get(f"{url}/metrics", timeout=60).json()
-    drafted = sum(int(it.get("numDraftTokens", 0)) for it in stats)
-    accepted = sum(int(it.get("numAcceptedDraftTokens", 0)) for it in stats)
+    keys = ("numDraftTokens", "numAcceptedDraftTokens")
+    for it in stats:
+        assert all(key in it for key in keys), f"an iteration without {keys}: {sorted(it)}"
+    drafted = sum(int(it["numDraftTokens"]) for it in stats)
+    accepted = sum(int(it["numAcceptedDraftTokens"]) for it in stats)
     return drafted, accepted
 
 
@@ -342,7 +347,7 @@ def postproc_served(groups, form):
 
 
 def test_postproc_workers_and_hook(postproc_served):
-    """NT-127 (F-38, F-40): a postprocessing pool changes no output, and the hook's rewrite shows.
+    """NT-127 (F-38, F-40): with a postprocessing pool and a hook, the output is the hook's rewrite.
 
     Each answer of the workers with a postprocessing pool and the upper-casing hook is the
     module's default group's answer, upper-cased.
@@ -381,10 +386,14 @@ def _engine_log(served: basic.Served, role: str):
 
 
 def _conversation_stats(path) -> tuple[int, int, int]:
-    """The context engine's last logged conversation statistics: seen again, moved, pinned."""
+    """The context engine's last logged conversation statistics: seen again, moved, pinned.
+
+    All 0 while it has logged none, or no log yet.
+    """
     import re
 
-    found = re.findall(CONVERSATION_STATS, path.read_text(errors="replace"))
+    text = path.read_text(errors="replace") if path.exists() else ""
+    found = re.findall(CONVERSATION_STATS, text)
     return tuple(int(n) for n in found[-1]) if found else (0, 0, 0)
 
 
@@ -549,12 +558,16 @@ def _start_multi_frontend_chain(stack, model: str, workdir, group: basic.Group) 
             port=disagg_port,
             disagg_config=front,
             log_path=str(workdir / "output_orchestrator.log"),
+            # Its /health answers 503 until both workers register; RemoteOpenAIServer's own wait
+            # has no time limit for a non-200 answer.
+            wait_ready=False,
         )
     )
     for server in (ctx, gen):
         server.wait_for_server(timeout=basic.NATIVE_READY_TIMEOUT_S)
     url = f"http://localhost:{disagg_port}"
     basic.wait_registered(url, {"context": 1, "generation": 1})
+    basic.wait_healthy(url)
     return basic.Served(
         url,
         ctx._chain_handle.engine_endpoint,

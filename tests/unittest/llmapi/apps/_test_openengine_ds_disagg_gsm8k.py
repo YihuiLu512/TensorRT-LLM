@@ -48,7 +48,7 @@ GSM8K_SYSTEM_PROMPT = (
     "End your response with a final line exactly in the form #### <answer>."
 )
 GSM8K_FILTERS = ("strict-match", "flexible-extract")
-# Every run of GSM8K-200 must score above this, on both filters (DQ-41).
+# Every run of GSM8K-200 must score above this, on both filters.
 GSM8K_GATE = 95.0
 # deepseek_v41_gsm8k.py's gate (reference 97.0 for 200 samples): computed and reported only.
 ORIGINAL_REFERENCE = 97.0
@@ -60,10 +60,8 @@ SMOKE_CONCURRENCY = 8
 
 ENV_PAIR_DIR = "TRTLLM_TEST_DS_GSM8K_PAIR_DIR"
 ENV_ROUNDS = "TRTLLM_TEST_DS_GSM8K_ROUNDS"
-# The paired comparison's rounds and margin: the judgement WT-33 proposed for DQ-41 from form K's
-# N-0 baseline (PoC-S3 status, appendix C3: three rounds per form, the chain's mean strict-match
-# score at least form K's minus 1.0, that is two questions), within the rule of three runs per
-# arm for a first measurement.
+# The paired comparison: three rounds per form by default, and the chain's mean strict-match
+# score at least form K's minus PAIRED_MARGIN points (1.0: two of the 200 questions).
 DEFAULT_ROUNDS = 3
 PAIRED_MARGIN = 1.0
 
@@ -476,12 +474,18 @@ def _smoke_completion(url: str, prompt: str, stream: bool) -> tuple[str, dict]:
             assert "error" not in payload, payload
             usage = payload.get("usage") or usage
             for choice in payload.get("choices", []):
-                text += choice.get("text", "")
+                text += choice["text"]
                 if choice.get("finish_reason") is not None:
                     assert choice["finish_reason"] == "stop", choice
                     finished = True
         assert done and finished, "the streamed response did not finish cleanly"
         return text, usage
+
+
+# How long the engines' counters may take to show a request after its HTTP response, and how
+# long they are watched for more once they do.
+COUNTER_TIMEOUT_S = 30.0
+COUNTER_SETTLE_S = 2.0
 
 
 def _handoffs(served) -> tuple[int, int]:
@@ -498,6 +502,20 @@ def _handoffs(served) -> tuple[int, int]:
             served.engines["generation"], COUNTER_GENERATE_ACCEPTED_BUCKETS[BUCKET_GENERATION_ONLY]
         ),
     )
+
+
+def _one_handoff(served, before: tuple[int, int]) -> tuple[int, int]:
+    """The hand-offs since ``before``: polled until both counters moved (at most
+    ``COUNTER_TIMEOUT_S``), then read again ``COUNTER_SETTLE_S`` later."""
+    deadline = time.monotonic() + COUNTER_TIMEOUT_S
+    while True:
+        now = _handoffs(served)
+        if all(n > b for n, b in zip(now, before)) or time.monotonic() > deadline:
+            break
+        time.sleep(0.2)
+    time.sleep(COUNTER_SETTLE_S)
+    after = _handoffs(served)
+    return after[0] - before[0], after[1] - before[1]
 
 
 def _chain_group(groups, group: basic.Group) -> basic.Served:
@@ -537,12 +555,8 @@ def _smoke_and_gsm8k(served, tokenizer, tmp_path, monkeypatch, layout: str) -> N
         for stream in (False, True):
             before = _handoffs(served)
             text, usage = _smoke_completion(served.url, case.prompt, stream)
-            after = _handoffs(served)
-            assert (after[0] - before[0], after[1] - before[1]) == (1, 1), (
-                case.name,
-                before,
-                after,
-            )
+            handoffs = _one_handoff(served, before)
+            assert handoffs == (1, 1), (case.name, stream, handoffs)
             assert text.strip() == case.expected, (case.name, stream, text)
             assert usage["completion_tokens"] > 1, (case.name, usage)
             if case.name == "long_recall":
@@ -558,10 +572,10 @@ def _smoke_and_gsm8k(served, tokenizer, tmp_path, monkeypatch, layout: str) -> N
 def test_deepseek_v41_smoke_and_gsm8k_ctx_dep2_gen_tp2(
     gen_tp2_served, tokenizer, tmp_path, monkeypatch
 ):
-    """NT-217 (F-02, F-09, F-31, F-32, F-33, F-36, DG-12, DG-13, DS-S16, DS-S19c): XD-060 on N-0.
+    """NT-217 (F-02, F-09, F-31, F-32, F-33, F-36, DG-12, DG-13, DS-S16, DS-S19c): N-0's smoke and GSM8K.
 
-    deepseek_v41's smoke prompts and GSM8K-200 through the chain with context DEP2 and generation
-    TP2 (:func:`_smoke_and_gsm8k`).
+    ``test_disaggregated_deepseek_v41_gsm8k_ctxtp4_gentp4``'s smoke prompts and GSM8K-200, rewritten
+    for the chain with context DEP2 and generation TP2 (:func:`_smoke_and_gsm8k`).
     """
     _smoke_and_gsm8k(gen_tp2_served, tokenizer, tmp_path, monkeypatch, "ctx DEP2 + gen TP2")
 
@@ -570,5 +584,8 @@ def test_deepseek_v41_smoke_and_gsm8k_ctx_dep2_gen_tp2(
 def test_deepseek_v41_smoke_and_gsm8k_ctx_dep2_gen_dep2(
     gen_dep2_served, tokenizer, tmp_path, monkeypatch
 ):
-    """NT-218 (F-32, DS-S19c): XD-061 on one node: NT-217 with generation DEP2 as well."""
+    """NT-218 (F-32, DS-S19c): NT-217 with generation DEP2 as well.
+
+    The one-node counterpart of ``test_disaggregated_deepseek_v41_gsm8k_ctxdp4_gendp4``.
+    """
     _smoke_and_gsm8k(gen_dep2_served, tokenizer, tmp_path, monkeypatch, "ctx DEP2 + gen DEP2")

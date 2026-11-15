@@ -51,7 +51,10 @@ def chain(tmp_path_factory):
 
 
 def _delta(before: dict, after: dict, role: str, key: str) -> int:
-    return after[role]["frontend"].get(key, 0) - before[role]["frontend"].get(key, 0)
+    """How much the ``role`` front end's counter ``key`` grew; it must be reported afterwards."""
+    counters = after[role]["frontend"]
+    assert key in counters, f"the {role} front end reports no {key}: {sorted(counters)}"
+    return counters[key] - before[role]["frontend"].get(key, 0)
 
 
 def _disagg_request_id(request) -> str:

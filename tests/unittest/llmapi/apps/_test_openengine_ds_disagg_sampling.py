@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
@@ -112,7 +113,7 @@ def complete(served, stream: bool = False, *, continuous: bool = False, **reques
             choice = chunk["choices"][0]
             assert out.finish_reason is None, "a chunk after the output finished"
             out.chunks += 1
-            out.text += choice.get("text") or ""
+            out.text += choice["text"]
             if choice.get("token_ids") is not None:
                 out.token_ids = (out.token_ids or []) + list(choice["token_ids"])
             if continuous and chunk.get("usage"):
@@ -138,6 +139,23 @@ def rendered_chat(tokenizer, content: str) -> str:
     )
 
 
+# How long an engine counter may take to show a call after its HTTP response, and how long a
+# counter that must not change is watched after the request it would have counted.
+COUNTER_TIMEOUT_S = 30.0
+COUNTER_SETTLE_S = 2.0
+
+
+def wait_counter(endpoint: str, key: str, target: int) -> int:
+    """Counter ``key`` once it reaches ``target``, polled for at most ``COUNTER_TIMEOUT_S``."""
+    deadline = time.monotonic() + COUNTER_TIMEOUT_S
+    while True:
+        value = basic.engine_counter(endpoint, key)
+        if value >= target:
+            return value
+        assert time.monotonic() < deadline, f"{endpoint}: {key} is {value}, not {target}"
+        time.sleep(0.2)
+
+
 CONTEXT_ENDED_STREAM_SHAPE = "context_ended_stream_shape"
 
 
@@ -149,9 +167,9 @@ def check_context_ended(
     The response carries no output text, at most the one token that ended it, and
     ``stop_reason`` unless it is ``None``; a stream ends with ``[DONE]``. Streamed through the
     chain, the response may also be ``[DONE]`` alone, with no choice and no usage: the
-    disaggregated server does not forward the context worker's finished response (a known
-    difference to form K, under review). Which of the two a stream was is recorded in the
-    property ``context_ended_stream_shape`` (``done_only`` or ``finish_chunk``).
+    disaggregated server does not forward the context worker's finished response, where form K's
+    ds proxy does. Which of the two a stream was is recorded in the property
+    ``context_ended_stream_shape`` (``done_only`` or ``finish_chunk``).
     """
     assert out.text == "", out
     if stream:
@@ -322,28 +340,48 @@ def test_first_token_stop_skips_gen(served, stream, record_property):
     """NT-115 (DG-16, DS-S10): a request that stops at its first token never reaches generation.
 
     The greedy first token is made a stop token id: the context leg ends the request with
-    ``stop`` (:func:`check_context_ended`). On the chain the context engine sends no PrefillReady
-    for it and the generation engine gets no call; in form K only the response is checked.
+    ``stop`` (:func:`check_context_ended`). On the chain, once the context engine has counted
+    the request's context-only call, and ``COUNTER_SETTLE_S`` later, the context engine has sent
+    no PrefillReady for it and the generation engine has received no call. In form K only the
+    response is checked.
     """
     from tensorrt_llm.grpc.openengine_conventions import (
+        BUCKET_CONTEXT_ONLY,
+        COUNTER_GENERATE_ACCEPTED_BUCKETS,
         COUNTER_GENERATE_RECEIVED,
         COUNTER_PREFILL_READY_SENT,
     )
 
-    first = greedy_ids(served, max_tokens=4)[0]
-
-    def counters():
-        if not served.chain:
-            return None
-        return (
-            basic.engine_counter(served.engines["context"], COUNTER_PREFILL_READY_SENT),
-            basic.engine_counter(served.engines["generation"], COUNTER_GENERATE_RECEIVED),
+    if served.chain:
+        context, generation = served.engines["context"], served.engines["generation"]
+        accepted = COUNTER_GENERATE_ACCEPTED_BUCKETS[BUCKET_CONTEXT_ONLY]
+        probe = (
+            basic.engine_counter(context, COUNTER_PREFILL_READY_SENT),
+            basic.engine_counter(generation, COUNTER_GENERATE_RECEIVED),
         )
-
-    before = counters()
+    first = greedy_ids(served, max_tokens=4)[0]
+    if served.chain:
+        # The probe's hand-off is counted before the request under test is sent.
+        wait_counter(context, COUNTER_PREFILL_READY_SENT, probe[0] + 1)
+        wait_counter(generation, COUNTER_GENERATE_RECEIVED, probe[1] + 1)
+        before = (
+            basic.engine_counter(context, accepted),
+            basic.engine_counter(context, COUNTER_PREFILL_READY_SENT),
+            basic.engine_counter(generation, COUNTER_GENERATE_RECEIVED),
+        )
     out = complete(served, stream, max_tokens=16, stop_token_ids=[first])
     check_context_ended(served, stream, out, record_property, first)
-    assert counters() == before, (before, counters())
+    if not served.chain:
+        return
+    # The request reached the context engine: its counters are up to date from here on.
+    wait_counter(context, accepted, before[0] + 1)
+    time.sleep(COUNTER_SETTLE_S)
+    after = (
+        basic.engine_counter(context, accepted),
+        basic.engine_counter(context, COUNTER_PREFILL_READY_SENT),
+        basic.engine_counter(generation, COUNTER_GENERATE_RECEIVED),
+    )
+    assert after == (before[0] + 1, before[1], before[2]), (before, after)
 
 
 def test_decode_options(served, tokenizer):
