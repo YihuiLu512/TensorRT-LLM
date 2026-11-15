@@ -12,7 +12,7 @@
   "job_id": "local-sample-v2-d14-missing",
   "launch_seq": 0,
   "pid": 2001,
-  "register_sha": "8e75863d8a4a3a850eb9e30e9a902b79e1a7cb599d5717803cf7ad89994f3bd6",
+  "register_sha": "a139c008d5f1ab0c06c9431ecb639ee04cddde21f1738d78bb51461591c8092e",
   "restart_count": 0,
   "role": "nullsse",
   "tier_label": "up-r40",
@@ -231,6 +231,6 @@
  "stop": null,
  "tier_table_sha256": "9ec2e9504387d851b23a6054f90df5b2f04de7e8eb81493c87e89591cb70e2a9",
  "tool": "nullsse",
- "written_mono_ns": 9882864843279717,
- "written_wall": "2026-11-15T01:34:00.923Z"
+ "written_mono_ns": 9915185604374355,
+ "written_wall": "2026-11-15T10:32:41.684Z"
 }

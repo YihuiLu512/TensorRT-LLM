@@ -459,8 +459,10 @@ class Builder:
             over = (v2.get("ladders") or {}).get(arm)
             if over is not None:
                 rel = "register/ladder.%d.json" % len(by_arm)
-                write_plain(os.path.join(self.W, rel), dict(
-                    ladder_doc(v2["configs"].get(arm), arm), **over))
+                lad = dict(ladder_doc(v2["configs"].get(arm), arm),
+                           tier_table_sha256=files["tier_table"]["sha256"])
+                lad.update(over)
+                write_plain(os.path.join(self.W, rel), lad)
                 files["ladder"] = self.register_file(rel, v2.get("ladder_kind", "ladder"))
                 p = os.path.join(self.W, rel)
                 if v2.get("ladder_broken") == "missing":

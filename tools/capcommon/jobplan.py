@@ -37,6 +37,13 @@ def check_item_class(item_class):
     return item_class
 
 
+def block_comparison(block_id):
+    """The comparison a block belongs to: block ids are '<comparison>-b<suffix>' (laddergen
+    --job-plan and --plan-from), so the text before the last '-b' (the whole id when there is
+    none). capjobs.submit pin-next and capjudge.pilot2 group block items by it."""
+    return block_id.rsplit("-b", 1)[0]
+
+
 def _is_pos_int(v):
     return isinstance(v, int) and not isinstance(v, bool) and v > 0
 

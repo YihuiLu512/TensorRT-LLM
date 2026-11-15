@@ -230,6 +230,16 @@ def test_shortfall_topup():
             S.shortfall_topup(*bad)
 
 
+def test_shortfall_q_is_the_q_hat_of_topup_and_the_product():
+    """RS15: one definition of q_hat; pilot2 shortfall records float(shortfall_q)."""
+    assert S.shortfall_q(2, 40) == Fraction(1, 20) and S.shortfall_q(3, 8) == Fraction(3, 8)
+    assert S.shortfall_q(40, 40) == Fraction(1, 2) and S.shortfall_q(0, 0) == Fraction(1, 20)
+    assert S.shortfall_q(1, 100) == Fraction(1, 20)
+    for bad in ((5, 4), (-1, 3), (1.0, 2), (True, 2)):
+        with pytest.raises(ValueError):
+            S.shortfall_q(*bad)
+
+
 # ---- test 11: sign-flip test, shift interval, T5 v2 ------------------------------------------
 
 def _brute_p(diffs):

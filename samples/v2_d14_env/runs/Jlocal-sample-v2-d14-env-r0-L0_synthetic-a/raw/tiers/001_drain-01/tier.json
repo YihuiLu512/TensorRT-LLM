@@ -9,7 +9,7 @@
   "job_id": "local-sample-v2-d14-env",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "e4b9d811e8bbac74835e0a06ded03fa2f50cf3c359c9bc316a2d6586f477817c",
+  "register_sha": "e1889a7bbc84627d7508f8ee60a5fc6130639bd84dbd3b1cf41a1db7a230fcbb",
   "restart_count": 0,
   "role": "launch",
   "tier_label": "drain-01",
@@ -194,6 +194,6 @@
   "tokens_per_msg": 1,
   "window_ns": 2000000000
  },
- "written_mono_ns": 9882865018718163,
- "written_wall": "2026-11-15T01:34:01.099Z"
+ "written_mono_ns": 9915185798411196,
+ "written_wall": "2026-11-15T10:32:41.878Z"
 }

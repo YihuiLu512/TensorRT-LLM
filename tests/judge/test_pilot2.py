@@ -20,6 +20,7 @@ from conftest import TOOLS
 if TOOLS not in sys.path:
     sys.path.insert(0, TOOLS)
 from capcommon import jobplan, ledger  # noqa: E402
+from capcommon.exitcodes import ConfigError  # noqa: E402
 from capcommon.hashing import sha256_file  # noqa: E402
 from capjudge import inputs as I  # noqa: E402
 from capjudge import nullz, stats  # noqa: E402
@@ -104,6 +105,42 @@ class FakeW:
     def listfile(self, name, lines):
         return self.put("lists/" + name, "".join("%s\t%s\t%s\n" % x for x in lines).encode())
 
+    def snapshot(self, plan_id):
+        """A plan snapshot whose job.env names <W>/runs as the run root (submit writes it)."""
+        snap = self.path("snaps/%s" % plan_id)
+        os.makedirs(snap, exist_ok=True)
+        with open(os.path.join(snap, "job.env"), "w") as f:
+            f.write("export CAPJOBS_RUN_ROOT=%s\n" % self.path("runs"))
+        return snap
+
+    def job(self, budget_id, item_id, job_id, status="VALID", ended=True,
+            item_class="planned", plan_sha="a" * 64):
+        """A RESERVED item and its plan's SUBMITTED (and ENDED) rows."""
+        pid = "p-" + item_id
+        ledger.budget_append(self.path("BUDGET.tsv"), {
+            "event": "RESERVED", "budget_id": budget_id, "item_id": item_id,
+            "item_class": item_class, "plan_sha256": plan_sha, "register_sha256": "f" * 64,
+            "plan_id": pid, "job_id": ""})
+        base = {c: "" for c in ledger.SUBMISSION_COLUMNS}
+        sub = self.path("submissions.tsv")
+        ledger.submissions_append(sub, dict(base, event="SUBMITTED", plan_id=pid, job_id=job_id,
+                                            snapshot_dir=self.snapshot(pid),
+                                            event_at=self.ts()))
+        if ended:
+            ledger.submissions_append(sub, dict(base, event="ENDED", plan_id=pid, job_id=job_id,
+                                                status=status, event_at=self.ts()))
+        return pid
+
+    def started(self, job_id, seq, arm="a", attempted=False):
+        """A launch tree of a job with raw/launch.json and no judge result (attempted: an
+        ended judge attempt without verdicts)."""
+        rel = "runs/J%s-r0-L%d_%s" % (job_id, seq, arm)
+        self.put(rel + "/raw/launch.json", {"launch_seq": seq})
+        if attempted:
+            self.put(rel + "/judge.attempts/20261115T000000Z-p1/attempt.json",
+                     {"status": "INPUT_INVALID"})
+        return self.path(rel)
+
 
 def fake_verify(W, tree):
     d = json.load(open(os.path.join(tree, "fake_ctx.json")))
@@ -127,6 +164,9 @@ def fake_trees(monkeypatch):
 
 # ---- bootstrap (test 40) -----------------------------------------------------------------------
 
+V0CAL_BUDGET = "E0v2-V0cal"
+
+
 def v0cal(tmp_path, set_no=1, rule=None, extra=None, env_b=None):
     """A V0-cal work dir: register (bootstrap_rule, d14_result), trees A, B (two configs) and
     C (launch-level conclusion not PASS, huge readings: must be dropped). Set 1: max |z| 3.0,
@@ -138,7 +178,8 @@ def v0cal(tmp_path, set_no=1, rule=None, extra=None, env_b=None):
         "schema": "capkit.register/1", "experiment": "E0", "arm_config": {"a": "s1", "b": "s2"},
         "calibration": [{"kind": "d14_result", "relpath": "register/e0_d14.json",
                          "sha256": sha256_file(d14)}],
-        "expected": {"bootstrap_rule": P2.BOOTSTRAP_RULE if rule is None else rule}},
+        "expected": {"bootstrap_rule": P2.BOOTSTRAP_RULE if rule is None else rule,
+                     "budget_id": V0CAL_BUDGET}},
         "register")
     rs = sha256_file(reg)
     junk = dict(zl=[500.0], zc=[-400.0], D=[900 * MS], ratio=[0.5], c13=[0.9])
@@ -166,6 +207,9 @@ def v0cal(tmp_path, set_no=1, rule=None, extra=None, env_b=None):
     tc = fw.tree("C", verdicts([tier(2, **junk)], cfg="s1", state="RED"), job_id="12",
                  arm="a", register_sha=rs, upstream="VOID")
     trees = [ta, tb, tc] + (extra(fw, rs) if extra else [])
+    jobs = {r["job_id"] for r in ledger.read_tsv(fw.path("JUDGED.tsv"), ledger.JUDGED_COLUMNS)}
+    for k, job in enumerate(sorted(jobs), start=1):  # every job: one ended V0-cal item
+        fw.job(V0CAL_BUDGET, "V0cal-%04d" % k, job)
     lst = fw.listfile("cal.tsv", [(t, "ALL", "subsat") for t in trees])
     return fw, reg, lst, trees
 
@@ -323,10 +367,63 @@ def _extra_no_cal(fw, rs):
 
 @pytest.mark.parametrize("extra", [_extra_other_env, _extra_other_judge, _extra_v1,
                                    _extra_other_register, _extra_no_cal])
-def test_bootstrap_rejects_mixed_or_foreign_inputs(tmp_path, fake_trees, extra):
+def test_bootstrap_rejects_mixed_or_foreign_inputs(tmp_path, fake_trees, extra, capsys):
     fw, reg, lst, _ = v0cal(tmp_path, 1, extra=extra)
     code, _d, out = boot(fw, reg, lst)
     assert code == 3 and not os.path.exists(out)
+    assert "not every judged tree" not in capsys.readouterr().err  # the foreign input's own check
+
+
+def test_bootstrap_list_must_be_every_judged_tree_of_the_budget(tmp_path, fake_trees, capsys):
+    """calibv2a-RS28: the list is the whole V0-cal set (every judged tree of every item
+    RESERVED under expected.budget_id); one tree less, or one of another budget, exits 3."""
+    fw, reg, _lst, trees = v0cal(tmp_path, 1)
+    code, d, _o = boot(fw, reg, fw.listfile("all.tsv", [(t, "ALL", "subsat") for t in trees]))
+    assert code == 0 and d["universe"] == {"budget_id": V0CAL_BUDGET, "items": 2, "jobs": 2}
+    code, _d, o = boot(fw, reg, fw.listfile("less.tsv", [(t, "ALL", "subsat")
+                                                         for t in trees[:2]]), out="less.json")
+    assert code == 3 and not os.path.exists(o)
+    assert "missing ['runs/C']" in capsys.readouterr().err
+    other = fw.tree("D", verdicts([tier(2, zl=[1.0], zc=[1.0], D=[MS], ratio=[0.0],
+                                        c13=[0.0])], cfg="s1"), job_id="13", arm="a",
+                    register_sha=sha256_file(reg))
+    fw.job("E0v2-other", "V0cal-other-0001", "13")
+    code, _d, o = boot(fw, reg, fw.listfile("more.tsv", [(t, "ALL", "subsat")
+                                                         for t in trees + [other]]),
+                       out="more.json")
+    assert code == 3 and not os.path.exists(o)
+    assert "extra ['runs/D']" in capsys.readouterr().err
+
+
+def test_bootstrap_waits_for_every_item_and_launch_tree(tmp_path, fake_trees, capsys):
+    """calibv2a-RS35: an item of the budget not ended, or an ended job's launch tree not judged
+    yet, exits 3; a tree the judge refused (ended attempt, no verdicts) is no input."""
+    fw, reg, lst, _trees = v0cal(tmp_path, 1)
+    fw.started("11", 7)
+    code, _d, o = boot(fw, reg, lst, out="a.json")
+    assert code == 3 and "not judged yet" in capsys.readouterr().err
+    fw.started("12", 7, attempted=True)
+    os.rename(fw.path("runs/J11-r0-L7_a"), fw.path("parked-J11-r0-L7_a"))
+    assert boot(fw, reg, lst, out="b.json")[0] == 0
+    fw.job(V0CAL_BUDGET, "V0cal-0099", "99", ended=False)
+    code, _d, o = boot(fw, reg, lst, out="c.json")
+    assert code == 3 and "not ended yet: ['V0cal-0099']" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("expected", [["budget_id"], "x", None])
+def test_a_register_whose_expected_is_not_an_object_exits_3(tmp_path, fake_trees, expected):
+    """calibv2a-RS36: bootstrap and shortfall refuse it with exit 3 (no AttributeError)."""
+    fw, _reg, lst, _trees = v0cal(tmp_path, 1)
+    bad = fw.put("register/bad.json", {"schema": "capkit.register/1", "experiment": "E0",
+                                       "arm_config": {"a": "s1"}, "expected": expected},
+                 "register")
+    assert boot(fw, bad, lst)[0] == 3
+    s = segment31(tmp_path / "seg")
+    run31(s)
+    s.reg = s.fw.put("register/bad.json", {"schema": "capkit.register/1", "experiment": "E0",
+                                           "arm_config": {"a": "s1"}, "expected": expected},
+                     "register")
+    assert shortfall(s, sel_list(s))[0] == 3
 
 
 def test_bootstrap_rejects_a_rule_text_that_differs(tmp_path, fake_trees):
@@ -392,7 +489,7 @@ class Seg:
             "arm_config": arm_config or {"a": "s1", "b": "s2"},
             "expected": {"shortfall_cap_jobs": cap_jobs}}, "register")
         self.plans, self.sha = [], {}
-        self.trees = {}
+        self.trees, self.jobs = {}, {}
 
     def plan(self, name, items):
         p = self.fw.put("register/%s.tsv" % name, jobplan.format_tsv(items), "job_plan")
@@ -410,9 +507,11 @@ class Seg:
             "item_class": it["item_class"], "plan_sha256": sha,
             "register_sha256": sha256_file(self.reg), "plan_id": pid, "job_id": ""})
         job = "9%04d" % (len(self.trees) + 1)
+        self.jobs[item_id] = job
         base = {c: "" for c in ledger.SUBMISSION_COLUMNS}
         sub = self.fw.path("submissions.tsv")
         ledger.submissions_append(sub, dict(base, event="SUBMITTED", plan_id=pid, job_id=job,
+                                            snapshot_dir=self.fw.snapshot(pid),
                                             event_at=self.fw.ts()))
         if ended:
             ledger.submissions_append(sub, dict(base, event="ENDED", plan_id=pid, job_id=job,
@@ -608,6 +707,65 @@ def test_shortfall_refuses_a_segment_with_an_unended_item(tmp_path, fake_trees):
     assert code == 3 and not os.path.exists(o)
 
 
+def two_jobs(root):
+    s = Seg(root)
+    s.plan("plan", [item(k, "U-%04d" % k, {"s1": 2}) for k in (1, 2)])
+    s.run("U-0001")
+    s.run("U-0002", launches=[("s1", "NOT_RUN")])  # one of its two launches judged
+    return s
+
+
+def test_shortfall_refuses_a_launch_tree_not_judged_yet(tmp_path, fake_trees, capsys):
+    """calibv2a-RS35: an ended job's launch tree with raw/launch.json and no judge result is not
+    a loss; shortfall exits 3 until it is judged, then counts it."""
+    s = two_jobs(tmp_path)
+    job = s.jobs["U-0002"]
+    s.fw.started(job, 1)
+    with pytest.raises(P2.Pilot2Error, match="not judged yet"):
+        s.select()
+    lst = s.fw.listfile("a.tsv", [(t, "ALL", "subsat") for ts in s.trees.values() for t in ts])
+    code, _d, o = shortfall(s, lst, out="a.json", per_job=2)
+    assert code == 3 and not os.path.exists(o)
+    assert "J%s-r0-L1_a'] of ended job %s not judged yet" % (job, job) in capsys.readouterr().err
+    s.fw.tree("J%s-r0-L1_a" % job, verdicts([tier(2, zl=[1.0])], cfg="s1"), job_id=job, seq=1)
+    code, d, _o = shortfall(s, sel_list(s, "b.tsv"), out="b.json", per_job=2)
+    assert code == 0 and d["by_config"]["s1"]["usable"] == 4 and d["items"] == []
+
+
+def test_a_run_root_that_cannot_be_read_is_no_loss(tmp_path, fake_trees, capsys):
+    """calibv2a-RS35: without the plan's job.env (or its CAPJOBS_RUN_ROOT) the launch trees
+    cannot be looked for; _select exits 3 instead of counting the launches as lost."""
+    s = two_jobs(tmp_path)
+    snap = s.fw.path("snaps/p-U-0002")
+    os.rename(os.path.join(snap, "job.env"), os.path.join(snap, "job.env.moved-away"))
+    with pytest.raises(P2.Pilot2Error, match="snapshot job.env unreadable"):
+        s.select()
+    with open(os.path.join(snap, "job.env"), "w") as f:
+        f.write("export CAPJOBS_EXPECT_NODE=n1\n")
+    with pytest.raises(P2.Pilot2Error, match="no CAPJOBS_RUN_ROOT"):
+        s.select()
+    s2 = two_jobs(tmp_path / "nosnap")
+    rows = ledger.read_tsv(s2.fw.path("submissions.tsv"), ledger.SUBMISSION_COLUMNS)
+    os.rename(s2.fw.path("submissions.tsv"), s2.fw.path("submissions.tsv.moved-away"))
+    for r in rows:  # the same rows without any snapshot_dir
+        ledger.append_tsv(s2.fw.path("submissions.tsv"), ledger.SUBMISSION_COLUMNS,
+                          dict(r, snapshot_dir=""))
+    with pytest.raises(P2.Pilot2Error, match="no snapshot_dir"):
+        s2.select()
+
+
+def test_a_launch_the_judge_refused_counts_as_unusable(tmp_path, fake_trees):
+    s = two_jobs(tmp_path)
+    s.fw.started(s.jobs["U-0002"], 1, attempted=True)
+    code, d, _o = shortfall(s, sel_list(s), per_job=2)
+    assert code == 0 and d["by_config"]["s1"]["usable"] == 3
+    (u,) = d["select"]["unusable"]
+    assert u["item_id"] == "U-0002" and u["reason"].startswith("U-0002: judge attempted")
+    s2 = two_jobs(tmp_path / "none")  # no tree at all: a launch that never started
+    code, d, _o = shortfall(s2, sel_list(s2), per_job=2)
+    assert code == 0 and "no launch tree" in d["select"]["unusable"][0]["reason"]
+
+
 def test_shortfall_third_round_exits_3(tmp_path, fake_trees, capsys):
     s = segment31(tmp_path)
     s.plan("sf1", [item(1, "S-sf1-0001", {"s1": 1}, cls="post_gate:shortfall")])
@@ -758,6 +916,20 @@ def test_judged_needs_the_judged_tsv_row_and_sha(tmp_path):
     fw.put("runs/B/judge/inputs.json", {"status": "OK", "code_sha": None})
     with pytest.raises(P2.Pilot2Error, match="code sha"):
         P2.judged(fw.W, t2)
+
+
+def test_verdicts_of_the_wrong_shape_and_bad_job_ids_exit_3(tmp_path):
+    """calibv2a-RS36: a verdicts.json that is not an object is a rejection, not an
+    AttributeError; tree_dir_glob takes only job ids of the tree-name alphabet."""
+    from capcommon import runtree
+    fw = FakeW(tmp_path)
+    t = fw.tree("A", verdicts([tier(2)]))
+    fw.rejudge(t, [1, 2])
+    with pytest.raises(P2.Pilot2Error, match="not a JSON object"):
+        P2.judged(fw.W, t)
+    assert runtree.tree_dir_glob("9400011") == "J9400011-r*-L*"
+    with pytest.raises(ConfigError):
+        runtree.tree_dir_glob("9*")
 
 
 def test_v1_tree_is_rejected():
@@ -946,12 +1118,18 @@ def test_shortfall_product_feeds_laddergen_plan_from(tmp_path, fake_trees):
     ledger.registry_append(s.fw.path("REGISTRY.tsv"), "E0", "register/sf.json", sha256_file(o),
                            "kind=e0_params;test", registered_at=s.fw.ts())
     out = s.fw.path("register/plan.sf1.tsv")
+    # calibv2a-RS33: packing with fewer launches per job than the gate counted would exceed the
+    # cap (7 launches: 2 jobs at 4, 4 jobs at 2); refused, nothing written
+    assert laddergen.main(["--plan-from", o, "--workdir", s.fw.W, "--phase-id", "S",
+                           "--seed-base", "t", "--launches-per-job", "2", "--out", out]) == 3
+    assert not os.path.exists(out)
     assert laddergen.main(["--plan-from", o, "--workdir", s.fw.W, "--phase-id", "S",
                            "--seed-base", "t", "--launches-per-job", "4", "--out", out]) == 0
     items = jobplan.read(out)
     assert {it["item_class"] for it in items} == {"post_gate:shortfall"}
     assert sum(it["launches"] for it in items) == d["items"][0]["launches"] == 7
-    assert len(items) == d["cap"]["jobs"] == 2
+    alloc = {it["config"]: it["launches"] for it in d["items"]}
+    assert len(items) == d["cap"]["jobs"] == 2 == P2._jobs_of(alloc, {"s1": False}, 4)
     assert all(it["arms"] == ["a"] and it["pin"] is False for it in items)
 
 
@@ -1044,7 +1222,8 @@ def test_shortfall_blocks_feed_laddergen_plan_from_and_queue_after_the_segment(t
                            "kind=e0_params;test", registered_at=s.fw.ts())
     out = s.fw.path("register/plan.sf1.tsv")
     assert laddergen.main(["--plan-from", o, "--workdir", s.fw.W, "--phase-id", "V2b",
-                           "--seed-base", "t", "--launches-per-job", "1", "--out", out]) == 0
+                           "--seed-base", "t", "--launches-per-job",
+                           str(d["cap"]["launches_per_job"]), "--out", out]) == 0
     items = jobplan.read(out)
     n = d["items"][0]["blocks"]
     assert len(items) == 2 * n and {it["order"] for it in items} == set(range(1, n + 1))

@@ -357,7 +357,8 @@ def test_a_contra_tier_makes_a_reverse_dose_launch_unusable(monkeypatch):
     rev["contra_tiers"] = [4]
     out = V.dose_response([_ctl()] + fwd + [rev])
     assert out["reverse"] == [] and out["status"] == "NOT_RUN"
-    assert "CONTRA tiers [4]" in out["excluded"][-1]["why"]
+    assert "CONTRA tiers [4] (X2 contradicts X1 / X3; the deterministic checks passed)" \
+        in out["excluded"][-1]["why"]
     rev["contra_tiers"] = []  # the same launch without it is usable evidence
     assert V.dose_response([_ctl()] + fwd + [rev])["status"] == "PASS"
 
@@ -412,7 +413,9 @@ def test_launch_grade_skips_other_void_tiers_but_never_claims_x_unreached():
                        {})
     assert g["grade"] == "LOCALIZED" and g["skipped_tiers"][0]["tier_seq"] == 4
     g = G.launch_grade([_t(2, "STABLE"), _t(4, "NOT_RUN")], {})
-    assert g["grade"] == "NOT_RUN" and "not evaluated" in g["reasons"][0]
+    assert g["grade"] == "NOT_RUN" and "have no stability conclusion" in g["reasons"][0]
+    g = G.launch_grade([_t(2, "STABLE"), _t(4, "CONTRA")], {})  # X was evaluated on CONTRA
+    assert g["grade"] == "NOT_RUN" and "not evaluated" not in g["reasons"][0]
 
 
 def test_launch_grade_undetermined_not_localized_not_run():

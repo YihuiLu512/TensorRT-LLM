@@ -7,5 +7,5 @@ registered_at	experiment	relpath	sha256	note
 2026-11-13T00:00:00.005Z	E0	register/e0_d14.json	ec92419c0237b024b9e5ca716e6cbf989df8e362e879e8e0251667c14df6e545	kind=d14_result;synthetic sample
 2026-11-13T00:00:00.006Z	E0	register/pilot2.json	5d210fddef19e1d12afd43b4d044fa897d39d08350ed4665ef345f0a29e13dfe	kind=pilot;synthetic sample
 2026-11-13T00:00:00.007Z	E0	register/loadgen_band.json	858ae51d62b92718523cf8e913d44680346be2eddd23c9c5027b074b362de001	kind=loadgen_band;synthetic sample
-2026-11-13T00:00:00.008Z	E0	register/ladder.0.json	23d4b34ec889680d6f5309c5ee0545b20ee31aeab5d7d8e4dc105309b1aa642a	kind=ladder;synthetic sample
-2026-11-13T00:00:00.009Z	E0	register/register.json	1e8eb03302cfcced8f3c701e5d1529031bc9c16215c511f63e94fee5f125ccea	kind=register;synthetic sample
+2026-11-13T00:00:00.008Z	E0	register/ladder.0.json	0e37c8ab40f0e7e3a4734e9bc94e9be0abdbac46fa290afbdcb0654f8815cf1d	kind=ladder;synthetic sample
+2026-11-13T00:00:00.009Z	E0	register/register.json	614a0c61df5061d58bacb6143fae3f185681dcd658b3f799e1c7dca216bfa3d1	kind=register;synthetic sample

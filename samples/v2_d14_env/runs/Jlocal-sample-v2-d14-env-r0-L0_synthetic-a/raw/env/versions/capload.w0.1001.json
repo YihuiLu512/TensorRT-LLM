@@ -5,7 +5,7 @@
   "job_id": "local-sample-v2-d14-env",
   "launch_seq": 0,
   "pid": 1001,
-  "register_sha": "e4b9d811e8bbac74835e0a06ded03fa2f50cf3c359c9bc316a2d6586f477817c",
+  "register_sha": "e1889a7bbc84627d7508f8ee60a5fc6130639bd84dbd3b1cf41a1db7a230fcbb",
   "restart_count": 0,
   "role": "capload",
   "tier_label": null,
@@ -31,6 +31,6 @@
   "python": "3.12.3 synthetic",
   "switchinterval_s": 0.005
  },
- "written_mono_ns": 9882864969168570,
- "written_wall": "2026-11-15T01:34:01.049Z"
+ "written_mono_ns": 9915185747911578,
+ "written_wall": "2026-11-15T10:32:41.828Z"
 }

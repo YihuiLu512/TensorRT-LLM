@@ -44,6 +44,14 @@ def tree_dir_name(job_id, restart_count, launch_seq, arm):
     return "J%s-r%d-L%d_%s" % (job_id, restart_count, launch_seq, arm)
 
 
+def tree_dir_glob(job_id):
+    """glob pattern of every launch tree name tree_dir_name gives a job (any restart, launch and
+    arm): J<job>-r*-L*. Used to find the launch trees a job left, not to read identity."""
+    if not JOB_ID_RE.match(str(job_id)):
+        raise ConfigError("bad job_id for a tree name")
+    return "J%s-r*-L*" % job_id
+
+
 def job_dir_name(job_id, restart_count):
     """runs/J<job>-r<restart>/ : job-level files (job.json, env/slurm_view.json). For humans."""
     if not JOB_ID_RE.match(str(job_id)) or not isinstance(restart_count, int) \

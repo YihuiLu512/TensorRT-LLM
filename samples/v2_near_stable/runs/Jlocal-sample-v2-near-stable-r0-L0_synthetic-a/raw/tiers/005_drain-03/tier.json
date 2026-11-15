@@ -9,7 +9,7 @@
   "job_id": "local-sample-v2-near-stable",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "1e8eb03302cfcced8f3c701e5d1529031bc9c16215c511f63e94fee5f125ccea",
+  "register_sha": "614a0c61df5061d58bacb6143fae3f185681dcd658b3f799e1c7dca216bfa3d1",
   "restart_count": 0,
   "role": "launch",
   "tier_label": "drain-03",
@@ -194,6 +194,6 @@
   "tokens_per_msg": 1,
   "window_ns": 2000000000
  },
- "written_mono_ns": 9882863636030495,
- "written_wall": "2026-11-15T01:33:59.716Z"
+ "written_mono_ns": 9915183798544158,
+ "written_wall": "2026-11-15T10:32:39.879Z"
 }

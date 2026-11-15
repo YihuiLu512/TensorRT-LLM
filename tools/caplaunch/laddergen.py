@@ -22,7 +22,8 @@ Four modes (exactly one):
       in seed order (V0-cal, DESIGN 4.2).
   --plan-from <registered gate product>
       job_plan.tsv of the post-gate items a registered gate product lists (never a replace item;
-      launch items and V2-b blocks of a shortfall product).
+      launch items and V2-b blocks of a shortfall product). --launches-per-job must equal the
+      product's cap.launches_per_job when it has one.
 """
 
 import argparse
@@ -149,7 +150,9 @@ def read_center(a):
             or doc.get("stage") != stage:
         raise LadderError("%s must be %s stage %r (it holds %s)" % (a.center, E0_PARAMS_SCHEMA,
                                                                    stage, a.center_key))
-    val = ((doc.get("by_config") or {}).get(a.config) or {}).get(a.center_key)
+    by_config = doc.get("by_config")
+    entry = by_config.get(a.config) if isinstance(by_config, dict) else None
+    val = entry.get(a.center_key) if isinstance(entry, dict) else None
     if not _pos_num(val):
         raise LadderError("%s has no by_config[%r][%r] > 0" % (a.center, a.config, a.center_key))
     return float(val), {"relpath": rel, "sha256": sha, "key": a.center_key}
@@ -581,6 +584,8 @@ def job_plan_items(spec):
                           "exactly once (DESIGN 4.2)" % phase)
     units = {"planned": [], "surplus": []}
     toks = {"planned": [], "surplus": []}
+    if not all(isinstance(spec.get(k, []), list) for k in ("configs", "blocks")):
+        raise LadderError("spec configs and blocks must be lists")
     for c in spec.get("configs") or []:
         if not (isinstance(c, dict) and isinstance(c.get("config"), str)
                 and ARM_RE.match(str(c.get("arm")))):
@@ -606,6 +611,9 @@ def job_plan_items(spec):
                 and len(pair) == 2 and all(isinstance(p, list) and len(p) == 2 for p in pair)):
             raise LadderError("spec blocks[] need comparison and configs [[config, arm], x2]")
         n_planned, n_surplus = b.get("planned", 0), b.get("surplus", 0)
+        if not all(isinstance(n, int) and not isinstance(n, bool) and n >= 0
+                   for n in (n_planned, n_surplus)):
+            raise LadderError("spec blocks[] planned / surplus must be ints >= 0")
         for k in range(n_planned + n_surplus):
             cls = "planned" if k < n_planned else "surplus"
             bid = "%s-b%02d" % (cmp_, k + 1)
@@ -638,7 +646,9 @@ def plan_from_items(a):
     '<phase_id>-<rule>-r<round>-NNNN', then block items {comparison, configs [[config, arm] x2],
     blocks, pin true} as blocks of two pinned one-launch jobs sharing one order, block ids
     '<comparison>-b<rule><round><NN>'. The round is in both, so no id repeats one of the
-    original segment's or of another round of the same phase."""
+    original segment's or of another round of the same phase. A product with
+    cap.launches_per_job (shortfall: its job cap was counted with it) needs the same
+    --launches-per-job (calibv2a-RS33)."""
     if a.workdir is None or not a.phase_id or not a.seed_base:
         raise LadderError("--plan-from needs --workdir, --phase-id and --seed-base")
     rel, sha, doc = registered(a.workdir, a.plan_from, "e0_params")
@@ -659,6 +669,13 @@ def plan_from_items(a):
     rnd = doc.get("round")
     if not (isinstance(rnd, int) and not isinstance(rnd, bool) and rnd >= 1):
         raise LadderError("%s has no int round >= 1 (item and block ids carry it)" % rel)
+    cap = doc.get("cap", {})
+    if not isinstance(cap, dict):
+        raise LadderError("%s cap must be an object" % rel)
+    if "launches_per_job" in cap and cap["launches_per_job"] != a.launches_per_job:
+        raise LadderError("--launches-per-job %r != %s cap.launches_per_job %r (the gate sized "
+                          "its job cap with it)" % (a.launches_per_job, rel,
+                                                    cap["launches_per_job"]))
     launch_items = [it for it in src if "comparison" not in it]
     block_items = [it for it in src if "comparison" in it]
     out = []

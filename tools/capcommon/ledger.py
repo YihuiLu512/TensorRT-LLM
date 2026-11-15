@@ -9,6 +9,7 @@ Files are only ever opened in append mode; nothing here rewrites a ledger.
 import fcntl
 import json
 import os
+import shlex
 
 from .clock import parse_wall_iso, wall_iso
 from .exitcodes import ConfigError
@@ -256,6 +257,17 @@ def submissions_current(path):
 def submission_unknown(cur):
     """True when a merged row (submissions_current) is waiting for reconciliation."""
     return cur.get("status") == UNKNOWN_SUBMIT
+
+
+def plan_job_env_value(snapshot_dir, key):
+    """A value of a submitted plan's own job.env (<snapshot_dir>/job.env, `export KEY=<shell
+    word>`), '' when the key is absent; OSError when job.env cannot be read."""
+    with open(os.path.join(snapshot_dir, "job.env"), "r", encoding="utf-8") as f:
+        for line in f:
+            if line.startswith("export %s=" % key):
+                vals = shlex.split(line.split("=", 1)[1])
+                return vals[0] if vals else ""
+    return ""
 
 
 def submission_for_job(path, job_id):

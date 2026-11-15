@@ -5,7 +5,7 @@
   "job_id": "local-sample-v2-good",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "d5e8ba1468c9d750ac502e8bbba479f0e4e3ffd28d68fc33ece448e1768983dd",
+  "register_sha": "0eaca9ba100bb52d4fc787c9bbcba818ff311c1bd4ef876fb5f3c00d9580485f",
   "restart_count": 0,
   "role": "launch",
   "tier_label": null,
@@ -34,6 +34,6 @@
    "tid": 2002
   }
  ],
- "written_mono_ns": 9882863022482857,
- "written_wall": "2026-11-15T01:33:59.103Z"
+ "written_mono_ns": 9915183172166994,
+ "written_wall": "2026-11-15T10:32:39.252Z"
 }

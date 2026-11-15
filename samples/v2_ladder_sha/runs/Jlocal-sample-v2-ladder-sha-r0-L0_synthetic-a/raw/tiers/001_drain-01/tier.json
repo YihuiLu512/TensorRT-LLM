@@ -9,7 +9,7 @@
   "job_id": "local-sample-v2-ladder-sha",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "d5e8ba1468c9d750ac502e8bbba479f0e4e3ffd28d68fc33ece448e1768983dd",
+  "register_sha": "0eaca9ba100bb52d4fc787c9bbcba818ff311c1bd4ef876fb5f3c00d9580485f",
   "restart_count": 0,
   "role": "launch",
   "tier_label": "drain-01",
@@ -194,6 +194,6 @@
   "tokens_per_msg": 1,
   "window_ns": 2000000000
  },
- "written_mono_ns": 9882864057317364,
- "written_wall": "2026-11-15T01:34:00.137Z"
+ "written_mono_ns": 9915184800137049,
+ "written_wall": "2026-11-15T10:32:40.880Z"
 }

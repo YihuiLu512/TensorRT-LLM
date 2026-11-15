@@ -467,7 +467,8 @@ def judge_tree(ctx, log, code_ok=True, code_note=""):
         rows.append(r.as_row())
         log("launch %s: %s chk=%d red=%d %s" % (r.check_id, r.status, r.checked, r.red,
                                                 r.detail[:3]))
-    v = _launch_verdict(ctx, tier_out, launch_res + post, launch_p, gpu_void, _fold(post))
+    v = _launch_verdict(ctx, tier_out, launch_res + post, launch_p, gpu_void, _fold(post),
+                        completed=completed)
     if c13_means is not None:
         v["c13_mean"] = c13_means
     return {"verdicts": v, "rows": rows}
@@ -600,16 +601,22 @@ def _not_run(r):
     return {"status": "NOT_RUN", "reason": r.reason}
 
 
-def ladder_t7(ladder, by_seq, tiers):
+def ladder_t7(ladder, by_seq, tiers, completed):
     """T7 (DESIGN-r7a 2.7, P2-06 5): least squares g = lam / mu + beta over ladder.json slope
     tiers, lam = the tier's load_value, g = 2 * D / L with D the tier's recorded
-    T1:req_first_lag_p50_ns trend (stats, ns) and L its window (ns). The slope tiers' own X
-    conclusion is not read. One request role must carry the statistic; several -> NOT_RUN with
-    the per-role fits. Returns the fit {role, mu, beta, n, points} or {status: NOT_RUN,
-    reason}."""
-    by_role = {}
+    T1:req_first_lag_p50_ns trend (stats, ns) and L its window (ns). Only slope tiers that ran
+    to the end (seq <= `completed`, launch_end.tiers_completed) with P PASS are fitted; the
+    others are listed in `skipped` with the reason. The slope tiers' own X conclusion is not
+    read. One request role must carry the statistic; several -> NOT_RUN with the per-role fits.
+    Returns the fit {role, mu, beta, n, points, skipped} or {status: NOT_RUN, reason,
+    skipped}."""
+    by_role, skipped = {}, []
     for e in ladder["slope"]:
         t, entry = tiers[e["seq"]], by_seq[e["seq"]]
+        if e["seq"] > completed or entry.get("P") != C.PASS:
+            skipped.append({"tier_seq": e["seq"], "reason": "not completed" if e["seq"] >
+                            completed else "P %s" % entry.get("P")})
+            continue
         for key, vals in (entry.get("stats") or {}).items():
             parts = key.split(":")
             if parts[0] != "T1" or parts[1] != T7_STAT or len(vals) != 1:
@@ -619,7 +626,8 @@ def ladder_t7(ladder, by_seq, tiers):
                 "tier_seq": e["seq"], "load_value": t.load_value, "D": vals[0],
                 "g": 2.0 * vals[0] / L})
     if not by_role:
-        return {"status": "NOT_RUN", "reason": "no %s trend on the slope tiers" % T7_STAT}
+        return {"status": "NOT_RUN", "reason": "no %s trend on the usable slope tiers"
+                % T7_STAT, "skipped": skipped}
     fits = {}
     for role, pts in sorted(by_role.items()):
         f = stats.t7_fit([(p["load_value"], p["g"]) for p in pts])
@@ -627,23 +635,24 @@ def ladder_t7(ladder, by_seq, tiers):
                                                                          points=pts)
     if len(fits) > 1:
         return {"status": "NOT_RUN", "reason": "several request roles %s" % sorted(fits),
-                "by_role": fits}
-    return next(iter(fits.values()))
+                "by_role": fits, "skipped": skipped}
+    return dict(next(iter(fits.values())), skipped=skipped)
 
 
-def _ladder_outputs(ctx, tier_out):
+def _ladder_outputs(ctx, tier_out, completed):
     """levels[], boundary, t7 and criterion_bias of a launch with a ladder.json."""
     by_seq = {e["tier_seq"]: e for e in tier_out}
     tiers = {t.seq: t for t in ctx.tt.tiers}
     levels = compose_levels(ctx.ladder, by_seq)
     boundary = ladder_boundary(levels)
-    t7 = ladder_t7(ctx.ladder, by_seq, tiers)
+    t7 = ladder_t7(ctx.ladder, by_seq, tiers, completed)
     mu = t7.get("mu")
     bias = None if boundary["b"] is None or mu is None else (boundary["b"] - mu) / mu
     return {"levels": levels, "boundary": boundary, "t7": t7, "criterion_bias": bias}
 
 
-def _launch_verdict(ctx, tier_out, launch_res, launch_p, gpu_void, post_p=C.PASS):
+def _launch_verdict(ctx, tier_out, launch_res, launch_p, gpu_void, post_p=C.PASS, *,
+                    completed):
     judged = [e for e in tier_out if e["judged"]]
     ladder_seqs = set()
     if ctx.ladder is not None:
@@ -665,7 +674,7 @@ def _launch_verdict(ctx, tier_out, launch_res, launch_p, gpu_void, post_p=C.PASS
            # register.json arm_config / arm_threshold_config of this arm (null: v1 register)
            "arm_config": ctx.config, "arm_threshold_config": ctx.threshold_config}
     if ctx.ladder is not None:
-        out.update(_ladder_outputs(ctx, tier_out))
+        out.update(_ladder_outputs(ctx, tier_out, completed))
     if ctx.mode != "P+X+I+V":
         out.update(localisation_I=NOT_REQUESTED, intervention_V=NOT_REQUESTED,
                    grade=NOT_REQUESTED)

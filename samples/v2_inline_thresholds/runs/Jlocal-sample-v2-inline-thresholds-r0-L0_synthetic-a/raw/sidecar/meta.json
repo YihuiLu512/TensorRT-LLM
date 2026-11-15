@@ -25,7 +25,7 @@
   "job_id": "local-sample-v2-inline-thresholds",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "651cc547eea266c9ad31e8278d58e45e3de5ff8a66c101d685ed15d2f958bbb8",
+  "register_sha": "36598ccb8af503f9cc34bf2933ad68520838bea2a6dc76e44a321d3a0b8c5a70",
   "restart_count": 0,
   "role": "sidecar",
   "tier_label": null,
@@ -58,6 +58,6 @@
  "stop": null,
  "unreadable": {},
  "unregistered_snapshot_pids": [],
- "written_mono_ns": 9882865808522083,
- "written_wall": "2026-11-15T01:34:01.889Z"
+ "written_mono_ns": 9915186391224598,
+ "written_wall": "2026-11-15T10:32:42.471Z"
 }

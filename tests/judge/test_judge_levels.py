@@ -560,21 +560,32 @@ def test_t7_on_linear_growth_slope_tiers():
         rec = X.Record()
         d, e = X._trend_z(s, LAG, lag, "lag", rec)
         assert d == "above" and e["z"] > 100  # bootstrap z 10
-        by_seq[seq] = {"tier_seq": seq, "stats": dict(rec), "zstats": dict(rec.z)}
+        by_seq[seq] = {"tier_seq": seq, "stats": dict(rec), "zstats": dict(rec.z), "P": "PASS"}
         tiers[seq] = _TT(seq, lam)
         slope.append({"rho": rho, "seq": seq})
-    t7 = J.ladder_t7({"slope": slope}, by_seq, tiers)
-    assert t7["role"] == "capload" and t7["n"] == 3
+    t7 = J.ladder_t7({"slope": slope}, by_seq, tiers, 12)
+    assert t7["role"] == "capload" and t7["n"] == 3 and t7["skipped"] == []
     assert abs(t7["mu"] / mu - 1) < 0.005 and abs(t7["beta"] + 1) < 0.01
     assert [p["tier_seq"] for p in t7["points"]] == [10, 11, 12]
+    # RS3: a slope tier that did not run to the end, or whose P is not PASS, is not fitted
+    for completed, p11, why in ((11, "PASS", "not completed"), (12, "NOT_RUN", "P NOT_RUN"),
+                                (12, "RED", "P RED")):
+        by_seq[11]["P"] = p11
+        t = J.ladder_t7({"slope": slope}, by_seq, tiers, completed)
+        bad = 12 if completed == 11 else 11
+        assert t["skipped"] == [{"tier_seq": bad, "reason": why}]
+        assert [p["tier_seq"] for p in t["points"]] == [x for x in (10, 11, 12) if x != bad]
+    by_seq[11]["P"] = "PASS"
     # one slope tier -> NOT_RUN; two request roles -> NOT_RUN with each role's fit
-    one = J.ladder_t7({"slope": slope[:1]}, by_seq, tiers)
-    assert one == {"status": "NOT_RUN", "reason": "too_few_loads"}
+    one = J.ladder_t7({"slope": slope[:1]}, by_seq, tiers, 12)
+    assert one == {"status": "NOT_RUN", "reason": "too_few_loads", "skipped": []}
+    none = J.ladder_t7({"slope": slope}, by_seq, tiers, 9)
+    assert none["status"] == "NOT_RUN" and len(none["skipped"]) == 3
     for e in by_seq.values():
         e["stats"]["T1:req_first_lag_p50_ns:other"] = e["stats"][LAG]
-    two = J.ladder_t7({"slope": slope}, by_seq, tiers)
+    two = J.ladder_t7({"slope": slope}, by_seq, tiers, 12)
     assert two["status"] == "NOT_RUN" and sorted(two["by_role"]) == ["capload", "other"]
-    assert J.ladder_t7({"slope": []}, by_seq, tiers)["status"] == "NOT_RUN"
+    assert J.ladder_t7({"slope": []}, by_seq, tiers, 12)["status"] == "NOT_RUN"
 
 
 def test_slope_tier_keeps_its_x_statistics_out_of_levels(tmp_path):

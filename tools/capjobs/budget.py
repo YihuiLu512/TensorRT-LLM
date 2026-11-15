@@ -16,8 +16,10 @@ section with a key other than the v1 pair job_budget / launches_per_arm):
   6 maintenance   `scontrol show reservation` (logged to 02_e0/E0/cluster/reservations.log)
                   against the partitions' live sinfo nodes; read or parse failure too   (4)
 
-Then submit writes the BUDGET.tsv RESERVED row, runs the usual submissions.tsv flow, and adds a
-JOB_ID row once the job id is known. A real submission runs the gates after its dirty-tree check
+Then submit writes the submissions.tsv PLANNED row, then the BUDGET.tsv RESERVED row (when that
+append fails the plan is closed ENDED SUBMIT_FAILED before sbatch, and the item, still without a
+RESERVED row, can be submitted again), runs sbatch and the rest of the usual submissions.tsv
+flow, and adds a JOB_ID row once the job id is known. A real submission runs the gates after its dirty-tree check
 and holds `reservation_lock` from the first gate until it returns (its RESERVED row included).
 --dry-run runs the checks, takes no lock and writes nothing.
 """
@@ -197,7 +199,8 @@ def maintenance(a, runner, partitions, time_s, log_path):
                 "decision": "defer" if problem or conflicts else "pass"})
     if log_path is not None:
         os.makedirs(os.path.dirname(log_path), exist_ok=True)
-        with open(log_path, "a", encoding="utf-8") as f:
+        fd = open_nofollow(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, sort_keys=True) + "\n")
     if problem:
         raise GateError("maintenance gate cannot read the reservations (%s): defer" % problem,
@@ -208,11 +211,18 @@ def maintenance(a, runner, partitions, time_s, log_path):
     return rec
 
 
+def open_nofollow(path, flags):
+    """os.open(path, flags | O_NOFOLLOW) (mode 0644 when created): a symlink at `path` raises
+    OSError instead of being followed (the lock and the gate logs)."""
+    return os.open(path, flags | os.O_NOFOLLOW, 0o644)
+
+
 @contextlib.contextmanager
 def reservation_lock(workdir):
-    """fcntl.flock(LOCK_EX) on <W>/BUDGET.tsv.lock (created empty when missing); a concurrent
-    real submission waits here, then reads the RESERVED row the first one wrote."""
-    fd = os.open(os.path.join(workdir, BUDGET_LOCK_REL), os.O_RDWR | os.O_CREAT, 0o644)
+    """fcntl.flock(LOCK_EX) on <W>/BUDGET.tsv.lock (created empty when missing; a symlink there
+    is refused); a concurrent real submission waits here, then reads the RESERVED row the first
+    one wrote."""
+    fd = open_nofollow(os.path.join(workdir, BUDGET_LOCK_REL), os.O_RDWR | os.O_CREAT)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         yield

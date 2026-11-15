@@ -12,7 +12,7 @@
   "job_id": "local-sample-v2-window",
   "launch_seq": 0,
   "pid": 2001,
-  "register_sha": "6a64daf8850a31536b96eeb37a1be225115b86faf8ceffc54a6fcc42d259ff77",
+  "register_sha": "722e67e67c47ee83dee62b6d1b1ffb52385c165df00f58df3ecb6e6f6026f597",
   "restart_count": 0,
   "role": "nullsse",
   "tier_label": "up-r20",
@@ -231,6 +231,6 @@
  "stop": null,
  "tier_table_sha256": "9ec2e9504387d851b23a6054f90df5b2f04de7e8eb81493c87e89591cb70e2a9",
  "tool": "nullsse",
- "written_mono_ns": 9882864554961689,
- "written_wall": "2026-11-15T01:34:00.635Z"
+ "written_mono_ns": 9915185313932154,
+ "written_wall": "2026-11-15T10:32:41.394Z"
 }

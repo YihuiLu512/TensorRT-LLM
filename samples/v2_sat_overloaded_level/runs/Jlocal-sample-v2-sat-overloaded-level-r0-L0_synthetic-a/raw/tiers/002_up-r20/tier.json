@@ -9,7 +9,7 @@
   "job_id": "local-sample-v2-sat-overloaded-level",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "d5e8ba1468c9d750ac502e8bbba479f0e4e3ffd28d68fc33ece448e1768983dd",
+  "register_sha": "0eaca9ba100bb52d4fc787c9bbcba818ff311c1bd4ef876fb5f3c00d9580485f",
   "restart_count": 0,
   "role": "launch",
   "tier_label": "up-r20",
@@ -249,6 +249,6 @@
   "tokens_per_msg": 1,
   "window_ns": 4000000000
  },
- "written_mono_ns": 9882863329855249,
- "written_wall": "2026-11-15T01:33:59.410Z"
+ "written_mono_ns": 9915183497670795,
+ "written_wall": "2026-11-15T10:32:39.578Z"
 }

@@ -871,18 +871,26 @@ def settle_rule(cells, cands, F):
 
 # ---- shortfall top-up (4.5) ------------------------------------------------------------------
 
+def shortfall_q(lost, ended):
+    """q_hat of a shortfall (4.5) as a Fraction: min(0.5, max(0.05, lost / ended)), 0.05 when
+    ended = 0. (2, 40) -> 1/20; (3, 8) -> 3/8; (40, 40) -> 1/2."""
+    for name, v in (("lost", lost), ("ended", ended)):
+        if not isinstance(v, int) or isinstance(v, bool):
+            raise ValueError("shortfall_q: %s must be an int" % name)
+    if lost < 0 or ended < 0 or lost > ended:
+        raise ValueError("shortfall_q: need 0 <= lost <= ended")
+    q = Fraction(lost, ended) if ended else Fraction(1, 20)
+    return min(Fraction(1, 2), max(Fraction(1, 20), q))
+
+
 def shortfall_topup(d, lost, ended, mult=1.25):
     """Launches (blocks) to register for a shortfall of d (4.5): ceil(mult * d / (1 - q)) + 1,
-    q = min(0.5, max(0.05, lost / ended)), q = 0.05 when ended = 0; exact rational arithmetic.
-    d <= 0 -> 0. (3, 2, 40) -> 5; (10, 40, 40) -> 26; (4, 0, 0) -> 7."""
-    for name, v in (("d", d), ("lost", lost), ("ended", ended)):
-        if not isinstance(v, int) or isinstance(v, bool):
-            raise ValueError("shortfall_topup: %s must be an int" % name)
-    if lost < 0 or ended < 0 or lost > ended:
-        raise ValueError("shortfall_topup: need 0 <= lost <= ended")
+    q = shortfall_q(lost, ended); exact rational arithmetic. d <= 0 -> 0. (3, 2, 40) -> 5;
+    (10, 40, 40) -> 26; (4, 0, 0) -> 7."""
+    if not isinstance(d, int) or isinstance(d, bool):
+        raise ValueError("shortfall_topup: d must be an int")
+    q = shortfall_q(lost, ended)
     if d <= 0:
         return 0
-    q = Fraction(lost, ended) if ended else Fraction(1, 20)
-    q = min(Fraction(1, 2), max(Fraction(1, 20), q))
     m = Fraction(str(mult)) if isinstance(mult, float) else Fraction(mult)
     return int(math.ceil(m * d / (1 - q))) + 1

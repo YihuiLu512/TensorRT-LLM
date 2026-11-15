@@ -72,15 +72,17 @@ def register(w, rel, doc, kind="e0_params"):
 
 
 def judge_accepts(lad_doc, doc, tmp, config="s1@1ms", arm="s1"):
-    """capjudge.inputs._load_ladder (the judge's own check) on the generated pair."""
+    """capjudge.inputs._load_ladder (the judge's own check) on the generated pair; the tier
+    table is written as tiergen writes it and registered under that sha."""
     from capjudge import inputs  # noqa: PLC0415
     tp, lp = os.path.join(tmp, "tt.json"), os.path.join(tmp, "lad.json")
     with open(tp, "w") as f:
-        json.dump(doc, f)
+        f.write(json.dumps(doc, sort_keys=True, indent=1) + "\n")
     with open(lp, "w") as f:
         json.dump(lad_doc, f)
     ctx = types.SimpleNamespace(ladder_path=lp, config=config, tt=TierTable.load(tp),
-                                ident=types.SimpleNamespace(arm=arm))
+                                ident=types.SimpleNamespace(arm=arm),
+                                register_files={"tier_table": {"sha256": sha256_file(tp)}})
     return inputs._load_ladder(ctx)
 
 
@@ -404,6 +406,30 @@ def test_plan_from_item_ids_carry_the_round(w, tmp_path):
         assert not os.path.exists(tmp_path / ("x%d.tsv" % k))
 
 
+def test_plan_from_launches_per_job_must_equal_the_products_cap(w, tmp_path):
+    """calibv2a-RS33: a shortfall product sized its job cap with cap.launches_per_job; another
+    --launches-per-job (which would pack more jobs than the cap) fails and writes nothing."""
+    for k, (cap, rc) in enumerate((({"launches_per_job": 4}, 3), ({"launches_per_job": 2}, 0),
+                                   ({}, 0), ([2], 3), ("2", 3))):
+        p = register(w, "gp.cap%d.json" % k, {
+            "schema": L.E0_PARAMS_SCHEMA, "stage": "shortfall", "round": 1, "cap": cap,
+            "items": [{"item_class": "post_gate:shortfall", "config": "s1@1ms", "arm": "s1",
+                       "launches": 3, "pin": False}]})
+        out = str(tmp_path / ("cap%d.tsv" % k))
+        assert _plan_from(w, p, out) == rc, cap
+        assert os.path.exists(out) == (rc == 0)
+
+
+@pytest.mark.parametrize("by_config", [["s1@1ms"], {"s1@1ms": [20.0]}, "x"])
+def test_a_center_file_of_the_wrong_shape_is_refused(w, by_config):
+    """calibv2a-RS36: by_config (or its entry) not an object -> LadderError (exit 3)."""
+    p = register(w, "02_e0/E0/register/v2/V1a1/e0_params.bad.json", {
+        "schema": L.E0_PARAMS_SCHEMA, "stage": "bracket", "by_config": by_config})
+    with pytest.raises(L.LadderError, match="has no by_config"):
+        L.generate(ns(w, "refine", w.root, "--settle-s", "30", phase="V1a2", center=(
+            "--center", p, "--center-key", "c1", "--e-c", "0.02")))
+
+
 @pytest.mark.parametrize("cls", ["replace", "post_gate:replace", "planned", "surplus"])
 def test_plan_from_refuses_every_class_but_post_gate(w, tmp_path, cls):
     p = _gate_product(w, cls, rel="gp.%s.json" % cls.replace(":", "_"))
@@ -634,7 +660,13 @@ def test_v0cal_phase_refuses_the_mixed_layout_which_doubles_a_config(tmp_path):
     ({"configs": V0CAL_SPEC["configs"][:3] + [dict(V0CAL_SPEC["configs"][3], planned=3)]},
      "same planned count"),
     ({"configs": V0CAL_SPEC["configs"][:3] + [dict(V0CAL_SPEC["configs"][0], arm="s1b")],
-      }, "distinct")])
+      }, "distinct"),
+    # calibv2a-RS36: a spec of the wrong shape is a LadderError too (exit 3), not a TypeError
+    ({"configs": 4}, "configs and blocks must be lists"),
+    ({"blocks": {"comparison": "AA"}}, "configs and blocks must be lists"),
+    ({"layout": "mixed", "phase": None, "configs": [], "blocks": [
+        {"comparison": "AA", "configs": [["s1", "a"], ["s2", "b"]], "planned": "2"}]},
+     "planned / surplus must be ints")])
 def test_one_each_refusals(over, match):
     with pytest.raises(L.LadderError, match=match):
         L.job_plan_items(_spec(**over))

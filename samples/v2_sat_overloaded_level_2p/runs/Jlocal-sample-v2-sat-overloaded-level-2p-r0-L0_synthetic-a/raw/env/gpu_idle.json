@@ -28,7 +28,7 @@
   "job_id": "local-sample-v2-sat-overloaded-level-2p",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "c54bd0ebe67d2c86dc8c466cc4e17d569eddb1901efe7d0c9e77d58362a0a777",
+  "register_sha": "caf598a189d0bc1a638a711cec54074fc6a68fe59cd2b1cc1f66f5fcd031c054",
   "restart_count": 0,
   "role": "jobs",
   "tier_label": null,
@@ -73,6 +73,6 @@
  "schema": "capkit.gpu_idle/1",
  "status": "PASS",
  "visible_gpus": 1,
- "written_mono_ns": 9885857666278632,
- "written_wall": "2026-11-15T02:23:53.746Z"
+ "written_mono_ns": 9915183913616363,
+ "written_wall": "2026-11-15T10:32:39.994Z"
 }

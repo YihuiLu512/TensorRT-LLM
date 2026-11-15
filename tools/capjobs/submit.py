@@ -654,8 +654,6 @@ def _submit(a, runner, prep, gate):
     ledger_path = os.path.join(prep["workdir"], "submissions.tsv")
     common = {"plan_id": plan_id, "experiment": a.experiment}
     purpose = submission_purpose(a.registered_hw_sha)
-    if gate is not None:
-        ledger.budget_append(gate["budget_path"], budget.budget_row(gate, "RESERVED", plan_id))
     ledger.submissions_append(ledger_path, ledger_row(
         event="PLANNED", reason=purpose, arms=",".join(prep["arms"]), launches=a.launches,
         basis=a.basis,
@@ -666,6 +664,16 @@ def _submit(a, runner, prep, gate):
         mounts_json=json.dumps([m["text"] for m in prep["mounts"]]),
         tokenizer_dir_sha256=prep["tok_sha"], assertions_json=json.dumps(prep["assertions"]),
         **common))
+    if gate is not None:  # after PLANNED: a failure in between leaves the item submittable
+        try:
+            ledger.budget_append(gate["budget_path"], budget.budget_row(gate, "RESERVED",
+                                                                        plan_id))
+        except (OSError, ValueError, CapkitError) as e:
+            ledger.submissions_append(ledger_path, ledger_row(
+                event="ENDED", status="SUBMIT_FAILED", reason=_one_line(
+                    "%s; BUDGET.tsv RESERVED row not written (%s): sbatch not run"
+                    % (purpose, e)), **common))
+            raise
     attempted_at = wall_iso()
     rc, out, err = get_runner(a, runner).run(argv)
     job_id = parse_parsable(out) if rc == 0 else None
@@ -727,11 +735,10 @@ def _is_unknown_submit(cur):
 
 def _snap_run_root(snap_dir):
     """CAPJOBS_RUN_ROOT from the plan's own job.env (the job writes its batch.tsv there)."""
-    with open(os.path.join(snap_dir, "job.env"), "r", encoding="utf-8") as f:
-        for line in f:
-            if line.startswith("export CAPJOBS_RUN_ROOT="):
-                return shlex.split(line.split("=", 1)[1])[0]
-    raise SubmitError("no CAPJOBS_RUN_ROOT in %s/job.env" % snap_dir)
+    root = ledger.plan_job_env_value(snap_dir, "CAPJOBS_RUN_ROOT")
+    if not root:
+        raise SubmitError("no CAPJOBS_RUN_ROOT in %s/job.env" % snap_dir)
+    return root
 
 
 def _batch_tsv_plans(run_root, job_id="*"):
@@ -983,12 +990,7 @@ def _exclude_cdb(a, runner, parts):
 
 def _snap_env_value(snap_dir, key):
     """A CAPJOBS_* value from the plan's own job.env ('' when absent)."""
-    with open(os.path.join(snap_dir, "job.env"), "r", encoding="utf-8") as f:
-        for line in f:
-            if line.startswith("export %s=" % key):
-                vals = shlex.split(line.split("=", 1)[1])
-                return vals[0] if vals else ""
-    return ""
+    return ledger.plan_job_env_value(snap_dir, key)
 
 
 def expect_node_of(workdir, plan_id):
@@ -1011,11 +1013,31 @@ def expect_node_of(workdir, plan_id):
     return node
 
 
+def _pin_log(path):
+    """The records of the pin-next log (empty when it does not exist yet); opened without
+    following a symlink."""
+    try:
+        fd = budget.open_nofollow(path, os.O_RDONLY)
+    except FileNotFoundError:
+        return []
+    with os.fdopen(fd, "r", encoding="utf-8") as f:
+        recs = [json.loads(line) for line in f if line.strip()]
+    if not all(isinstance(r, dict) for r in recs):
+        raise SubmitError("%s holds a line that is not a JSON object" % path)
+    return recs
+
+
 def cmd_pin_next(a, runner):
     """The target node of the next pinned item of one comparison (DESIGN-r7a 4.5, P2-08a):
     rotation of the registered node_list by sha256(seed_base|key|node); start after the node the
     comparison's last RESERVED pinned item was given (a block's second slot takes its partner's
-    node); skip excluded, absent, down and drained nodes, each logged with its reason."""
+    node); skip excluded, absent, down and drained nodes, each logged with its reason.
+
+    The comparison's own items only: a block item belongs to jobplan.block_comparison of its
+    block id, a pinned item outside blocks to the --key its earlier pin-next log record names
+    (none: to no comparison yet). An --item of another comparison, or a --key whose earlier
+    records over any of the same --plan files name another seed_base or node_list sha, exits 3
+    without a log line."""
     workdir = check_path(os.path.abspath(a.workdir), "--workdir")
     nl = nodes.node_list(workdir, a.node_list)
     ex = nodes.node_exclusions(workdir, a.exclusions, require_latest=True)
@@ -1030,10 +1052,36 @@ def cmd_pin_next(a, runner):
     item = items.get(a.item)
     if item is None or not item["pin"]:
         raise SubmitError("--item %s is not a pinned item of the --plan files" % a.item)
-    rows = [r for r in ledger.budget_rows(os.path.join(workdir, budget.BUDGET_REL))
-            if r["event"] == "RESERVED" and r["item_id"] in items and items[r["item_id"]]["pin"]]
-    if any(r["item_id"] == a.item for r in rows):
+    log = _pin_log(a.log)
+    logged_key = {}
+    shas = {pl["sha256"] for pl in plans}
+    for r in log:
+        logged_key.setdefault(r.get("item"), set()).add(r.get("key"))
+        same_sequence = r.get("key") == a.key and shas & {
+            pl.get("sha256") for pl in r.get("plans") or [] if isinstance(pl, dict)}
+        if same_sequence and (r.get("seed_base") != a.seed_base or (
+                r.get("node_list") or {}).get("sha256") != nl["sha256"]):
+            raise SubmitError("comparison %s was pinned with seed_base %r and node_list sha256 %s "
+                              "(%s): one comparison keeps one rotation"
+                              % (a.key, r.get("seed_base"), (r.get("node_list") or {}).get(
+                                  "sha256"), a.log))
+
+    def key_of(it):
+        if it["block_id"] is not None:
+            return jobplan.block_comparison(it["block_id"])
+        keys = logged_key.get(it["item_id"], set())
+        return a.key if a.key in keys else (sorted(keys)[0] if keys else None)
+
+    own = key_of(item)
+    if own is not None and own != a.key:
+        raise SubmitError("--item %s belongs to comparison %s, not --key %s"
+                          % (a.item, own, a.key))
+    reserved = [r for r in ledger.budget_rows(os.path.join(workdir, budget.BUDGET_REL))
+                if r["event"] == "RESERVED"]
+    if any(r["item_id"] == a.item for r in reserved):
         raise SubmitError("item %s already has a RESERVED row" % a.item)
+    rows = [r for r in reserved if r["item_id"] in items and items[r["item_id"]]["pin"]
+            and key_of(items[r["item_id"]]) == a.key]
     rec = {"t_wall": wall_iso(), "key": a.key, "item": a.item, "seed_base": a.seed_base,
            "node_list": {"relpath": nl["relpath"], "sha256": nl["sha256"]},
            "exclusions": {"relpath": ex["relpath"], "sha256": ex["sha256"]}, "plans": plans}
@@ -1051,7 +1099,8 @@ def cmd_pin_next(a, runner):
         node, skipped = nodes.pin_choice(nodes.rotation(nl["nodes"], a.seed_base, a.key), prev,
                                          ex["nodes"], live)
         rec.update({"previous": prev, "chosen": node, "skipped": skipped, "rule": "rotation"})
-    with open(a.log, "a", encoding="utf-8") as f:
+    fd = budget.open_nofollow(a.log, os.O_WRONLY | os.O_APPEND | os.O_CREAT)
+    with os.fdopen(fd, "a", encoding="utf-8") as f:
         f.write(json.dumps(rec, sort_keys=True) + "\n")
     emit(rec)
     if rec["chosen"] is None:

@@ -30,7 +30,7 @@
   "job_id": "local-sample-v2-ladder-sha",
   "launch_seq": 0,
   "pid": 1001,
-  "register_sha": "d5e8ba1468c9d750ac502e8bbba479f0e4e3ffd28d68fc33ece448e1768983dd",
+  "register_sha": "0eaca9ba100bb52d4fc787c9bbcba818ff311c1bd4ef876fb5f3c00d9580485f",
   "restart_count": 0,
   "role": "capload",
   "tier_label": "warmup",
@@ -455,6 +455,6 @@
  "stop": null,
  "tier_table_sha256": "9ec2e9504387d851b23a6054f90df5b2f04de7e8eb81493c87e89591cb70e2a9",
  "tool": "capload",
- "written_mono_ns": 9882864024272697,
- "written_wall": "2026-11-15T01:34:00.104Z"
+ "written_mono_ns": 9915184767169171,
+ "written_wall": "2026-11-15T10:32:40.847Z"
 }

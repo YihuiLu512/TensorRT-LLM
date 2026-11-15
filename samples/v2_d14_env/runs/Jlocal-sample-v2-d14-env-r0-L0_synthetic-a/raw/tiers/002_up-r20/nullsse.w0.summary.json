@@ -12,7 +12,7 @@
   "job_id": "local-sample-v2-d14-env",
   "launch_seq": 0,
   "pid": 2001,
-  "register_sha": "e4b9d811e8bbac74835e0a06ded03fa2f50cf3c359c9bc316a2d6586f477817c",
+  "register_sha": "e1889a7bbc84627d7508f8ee60a5fc6130639bd84dbd3b1cf41a1db7a230fcbb",
   "restart_count": 0,
   "role": "nullsse",
   "tier_label": "up-r20",
@@ -231,6 +231,6 @@
  "stop": null,
  "tier_table_sha256": "9ec2e9504387d851b23a6054f90df5b2f04de7e8eb81493c87e89591cb70e2a9",
  "tool": "nullsse",
- "written_mono_ns": 9882865035351363,
- "written_wall": "2026-11-15T01:34:01.115Z"
+ "written_mono_ns": 9915185819077784,
+ "written_wall": "2026-11-15T10:32:41.899Z"
 }

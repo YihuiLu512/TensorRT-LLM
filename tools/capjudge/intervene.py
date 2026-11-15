@@ -331,15 +331,16 @@ def _env(launches, order):
 
 def _reverse_unusable(x, base_env, env):
     """Why a reverse-dose launch cannot show "the boundary did not move", or None. Usable only
-    when no tier is VOID or CONTRA (a CONTRA tier is one the judge would have voided before
-    the CONTRA verdict existed: the deterministic checks and X disagree there), no tool limit
-    cut its interval (the dosed tool or another one reached its limit first: the interval is
-    not the boundary of the localised role) and both envelopes are closed (an open end cannot
-    be shown to overlap or not)."""
+    when no tier is VOID or CONTRA (a CONTRA tier passed the deterministic checks, but X2
+    contradicts X1 / X3 there: the judge voided such a tier before the CONTRA verdict existed),
+    no tool limit cut its interval (the dosed tool or another one reached its limit first: the
+    interval is not the boundary of the localised role) and both envelopes are closed (an open
+    end cannot be shown to overlap or not)."""
     if x["void_tiers"]:
         return "VOID tiers %s (a tool left its healthy band?)" % x["void_tiers"]
     if x.get("contra_tiers"):
-        return "CONTRA tiers %s (the deterministic checks and X disagree)" % x["contra_tiers"]
+        return "CONTRA tiers %s (X2 contradicts X1 / X3; the deterministic checks passed)" \
+            % x["contra_tiers"]
     cut = x["boundary"].get("censored_by")
     if cut:
         return "interval cut at tier %s (%s)" % (cut.get("tier_seq"), cut.get("why"))

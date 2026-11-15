@@ -12,7 +12,7 @@
   "job_id": "local-sample-v2-inline-thresholds",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "651cc547eea266c9ad31e8278d58e45e3de5ff8a66c101d685ed15d2f958bbb8",
+  "register_sha": "36598ccb8af503f9cc34bf2933ad68520838bea2a6dc76e44a321d3a0b8c5a70",
   "restart_count": 0,
   "role": "launch",
   "tier_label": null,
@@ -94,7 +94,7 @@
  },
  "register": {
   "relpath": "register/register.json",
-  "sha256": "651cc547eea266c9ad31e8278d58e45e3de5ff8a66c101d685ed15d2f958bbb8"
+  "sha256": "36598ccb8af503f9cc34bf2933ad68520838bea2a6dc76e44a321d3a0b8c5a70"
  },
  "roles": [
   {
@@ -262,6 +262,6 @@
   "relpath": "register/tiers.json",
   "sha256": "9ec2e9504387d851b23a6054f90df5b2f04de7e8eb81493c87e89591cb70e2a9"
  },
- "written_mono_ns": 9882865670967839,
- "written_wall": "2026-11-15T01:34:01.751Z"
+ "written_mono_ns": 9915186243708783,
+ "written_wall": "2026-11-15T10:32:42.324Z"
 }

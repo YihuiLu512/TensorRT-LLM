@@ -25,7 +25,7 @@
   "job_id": "local-sample-v2-window",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "6a64daf8850a31536b96eeb37a1be225115b86faf8ceffc54a6fcc42d259ff77",
+  "register_sha": "722e67e67c47ee83dee62b6d1b1ffb52385c165df00f58df3ecb6e6f6026f597",
   "restart_count": 0,
   "role": "sidecar",
   "tier_label": null,
@@ -58,6 +58,6 @@
  "stop": null,
  "unreadable": {},
  "unregistered_snapshot_pids": [],
- "written_mono_ns": 9882864622335259,
- "written_wall": "2026-11-15T01:34:00.702Z"
+ "written_mono_ns": 9915185379255549,
+ "written_wall": "2026-11-15T10:32:41.459Z"
 }

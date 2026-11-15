@@ -30,7 +30,7 @@
   "job_id": "local-sample-v2-near-stable",
   "launch_seq": 0,
   "pid": 1002,
-  "register_sha": "1e8eb03302cfcced8f3c701e5d1529031bc9c16215c511f63e94fee5f125ccea",
+  "register_sha": "614a0c61df5061d58bacb6143fae3f185681dcd658b3f799e1c7dca216bfa3d1",
   "restart_count": 0,
   "role": "capload",
   "tier_label": "up-r20",
@@ -455,6 +455,6 @@
  "stop": null,
  "tier_table_sha256": "9ec2e9504387d851b23a6054f90df5b2f04de7e8eb81493c87e89591cb70e2a9",
  "tool": "capload",
- "written_mono_ns": 9882863558288340,
- "written_wall": "2026-11-15T01:33:59.638Z"
+ "written_mono_ns": 9915183732360271,
+ "written_wall": "2026-11-15T10:32:39.812Z"
 }

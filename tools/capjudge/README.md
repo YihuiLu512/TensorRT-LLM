@@ -74,7 +74,7 @@
 | `T1:req_first_lag_p50_ns:<角色>` | 请求层首块滞后逐秒中位数的 T1 | X2 |
 | `T1:msg_lag_p50_ns:<角色>` | 消息层滞后逐秒中位数的 T1 | X2 |
 | `T1:send_lag_p50_ns:<角色>` | 发送滞后逐秒中位数的 T1 | C1；`under_test` 时也进 X2 |
-| `T2:delivery_ratio_norm:<角色>` | X1 归一后的交付率 | X1 |
+| `T2:delivery_ratio_norm:<角色>` | X1：`\|norm − 1\|`（归一交付率与 1 之差；键名沿用，勘误 calib-v2-A3 第 3 条） | X1 |
 | `T1:inflight_derived:<角色>` | 推出的在途数逐秒序列的 T1 | X3 |
 | `T1:backlog.<槽>:<角色>` | sidecar 里 `backlog.*` gauge 逐秒和的 T1 | X3 |
 | `T3:send_lag_p99_ns:<角色>` | 窗口内发送滞后 p99（逐 worker） | C1 |

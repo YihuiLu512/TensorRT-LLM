@@ -453,6 +453,10 @@ def test_v2_arm_without_a_ladder_judges_every_load_tier_subsat(tmp_path):
     ({"config": "s4"}, r"config 's4' != register.json arm_config"),
     ({"schema": "capkit.ladder/2"}, "schema must be capkit.ladder/1"),
     ({"baseline_seq": 9}, "baseline seq 9 must be a load"),
+    # a ladder of another tier table (same layout) or of another arm (R2 F22)
+    ({"tier_table_sha256": "0" * 64}, "tier_table_sha256 '0+' != the registered tier table"),
+    ({"tier_table_sha256": None}, "tier_table_sha256 None != the registered tier table"),
+    ({"arm": "other-arm"}, "arm 'other-arm' != this launch's arm"),
 ])
 def test_bad_ladder_is_input_invalid(tmp_path, over, match):
     e = _invalid(tmp_path, _v2(ladders={ARM: over}), match)

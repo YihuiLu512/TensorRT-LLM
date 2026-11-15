@@ -28,7 +28,7 @@
   "job_id": "local-sample-v2-d14-missing",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "8e75863d8a4a3a850eb9e30e9a902b79e1a7cb599d5717803cf7ad89994f3bd6",
+  "register_sha": "a139c008d5f1ab0c06c9431ecb639ee04cddde21f1738d78bb51461591c8092e",
   "restart_count": 0,
   "role": "jobs",
   "tier_label": null,
@@ -73,6 +73,6 @@
  "schema": "capkit.gpu_idle/1",
  "status": "PASS",
  "visible_gpus": 1,
- "written_mono_ns": 9882864737579492,
- "written_wall": "2026-11-15T01:34:00.818Z"
+ "written_mono_ns": 9915185491440840,
+ "written_wall": "2026-11-15T10:32:41.571Z"
 }

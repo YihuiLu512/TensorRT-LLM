@@ -18,7 +18,7 @@ from capcommon.gate import check_snapshot, planned_polls
 from capcommon.schedule import per_worker_tier_counts
 from capcommon.versions import check_versions
 
-from . import calib, stats
+from . import calib, nullz, stats
 from .symptoms import failures_by_class
 from .thresholds import band_key
 from .treedata import NS, cpu_tick_deltas, first_last_in_window, role_cpus, summary_value
@@ -1088,9 +1088,6 @@ def check_c13_launch(ctx, ld):
     return r.finish()
 
 
-C13_STAT = "T3:foreign_busy_frac"
-
-
 def _c13_d14(ctx):
     """irq_softirq_is_experiment of the registered d14_result (capjudge.nullz), or None."""
     d14 = ctx.thresholds.d14()
@@ -1133,10 +1130,10 @@ def check_c13_tier(ctx, ld, td, record):
         r.not_run.append("second half: sidecar cpus/threads/clk_tck missing")
         r.checked = len(ut)
         return r.finish()
-    cap = ctx.thresholds.cap(C13_STAT)
+    cap = ctx.thresholds.cap(nullz.C13_STAT)
     if cap is None:
         r.not_run.append("second half: no c13_cap %s in a registered pilot/2 (readings "
-                         "recorded)" % C13_STAT)
+                         "recorded)" % nullz.C13_STAT)
     ws, we = td.tier.window_start_ns, td.tier.window_end_ns
     by_pid = ld.procs_by_pid()
     for role in ut:
@@ -1173,11 +1170,11 @@ def check_c13_mean(ctx, tiers):
     r = Result("C13-MEAN", "launch", "launch.json roles[measure_class=under_test]")
     ut = [x["role"] for x in _roles_of(ctx, "under_test")]
     r.expected = len(ut)
-    cap = ctx.thresholds.cap(C13_STAT)
+    cap = ctx.thresholds.cap(nullz.C13_STAT)
     if _c13_d14(ctx) is None:
         r.not_run.append("no registered D14 result (d14_result)")
     if cap is None:
-        r.not_run.append("no c13_cap %s in a registered pilot/2" % C13_STAT)
+        r.not_run.append("no c13_cap %s in a registered pilot/2" % nullz.C13_STAT)
     means = {}
     for role in ut:
         key = band_key("T3", "foreign_busy_frac", role)

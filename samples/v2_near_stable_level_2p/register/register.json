@@ -34,7 +34,7 @@
   "synthetic-a": {
    "ladder": {
     "relpath": "register/ladder.0.json",
-    "sha256": "059fd6bb2fe187a14a14be7b03edf6c77a1b36288e7f10d7738f06be29f546c0"
+    "sha256": "6fb38c334c21dfb9317bbc04c25e69c2135d05be670ab34796a36cc25e12f6e7"
    },
    "prompts": {
     "relpath": "register/prompts.json",

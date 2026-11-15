@@ -114,7 +114,7 @@ def launch_grade(tiers, boundary):
                  > last_stable["order_key"])]
     if above:
         _lower(out, last_stable, "no unstable tier, but tiers %s above the highest stable tier "
-               "were not judged (VOID / NOT_RUN / CONTRA): X was not evaluated there" % above)
+               "have no stability conclusion (VOID / NOT_RUN / CONTRA)" % above)
         out["grade"] = "NOT_RUN"
         return out
     return _lower(out, last_stable, "X never held within the tool's range")

@@ -371,6 +371,69 @@ def test_void_item_cannot_be_submitted_again(world):
                        "submit"]._option_string_actions)
 
 
+def _fail_on(monkeypatch, name, event):
+    """ledger.<name> raises OSError for rows of `event` (a disk error, a killed process)."""
+    real = getattr(ledger, name)
+
+    def boom(path, row):
+        if row["event"] == event:
+            raise OSError("injected failure on the %s row" % event)
+        return real(path, row)
+    monkeypatch.setattr(ledger, name, boom)
+    return real
+
+
+def test_planned_row_failure_writes_no_reserved_row(world, monkeypatch):
+    """calibv2a-RS34: PLANNED is written before RESERVED, so a failure on PLANNED leaves both
+    ledgers without a new row and the item submittable."""
+    reg = world.register("V0cal/register.json", three_items(world))
+    real = _fail_on(monkeypatch, "submissions_append", "PLANNED")
+    rc, r = world.submit(reg, "V0cal-A-0001")
+    assert rc == 3 and world.budget_rows() == [] and not any("sbatch" in c[-1] for c in r.calls)
+    assert not os.path.exists(os.path.join(world.w, "submissions.tsv")) or ledger.read_tsv(
+        os.path.join(world.w, "submissions.tsv"), ledger.SUBMISSION_COLUMNS) == []
+    monkeypatch.setattr(ledger, "submissions_append", real)
+    assert world.submit(reg, "V0cal-A-0001")[0] == 0
+    assert [(x["event"], x["item_id"]) for x in world.budget_rows()] == [
+        ("RESERVED", "V0cal-A-0001"), ("JOB_ID", "V0cal-A-0001")]
+
+
+def test_reserved_row_failure_closes_the_plan_and_keeps_the_item_submittable(world, monkeypatch):
+    reg = world.register("V0cal/register.json", three_items(world))
+    real = _fail_on(monkeypatch, "budget_append", "RESERVED")
+    rc, r = world.submit(reg, "V0cal-A-0001")
+    assert rc == 3 and world.budget_rows() == [] and not any("sbatch" in c[-1] for c in r.calls)
+    cur = list(ledger.submissions_current(os.path.join(world.w, "submissions.tsv")).values())
+    assert [(c["event"], c["status"]) for c in cur] == [("ENDED", "SUBMIT_FAILED")]
+    assert "RESERVED row not written" in cur[0]["reason"]
+    assert budget.open_jobs(os.path.join(world.w, "submissions.tsv")) == []
+    monkeypatch.setattr(ledger, "budget_append", real)
+    assert world.submit(reg, "V0cal-A-0001")[0] == 0
+    assert [(x["event"], x["item_id"]) for x in world.budget_rows()] == [
+        ("RESERVED", "V0cal-A-0001"), ("JOB_ID", "V0cal-A-0001")]
+
+
+def test_lock_and_reservations_log_are_not_followed_through_a_symlink(world, tmp_path):
+    """RS10: a symlink at <W>/BUDGET.tsv.lock or at reservations.log fails the submission
+    (exit 3) and its target is left as it was."""
+    reg = world.register("V0cal/register.json", three_items(world))
+    target = tmp_path / "elsewhere"
+    target.write_bytes(b"keep\n")
+    lock = os.path.join(world.w, budget.BUDGET_LOCK_REL)
+    os.symlink(str(target), lock)
+    before = world.state()
+    rc, r = world.submit(reg, "V0cal-A-0001")
+    assert rc == 3 and target.read_bytes() == b"keep\n" and world.state() == before
+    assert r.calls == []
+    os.rename(lock, lock + ".moved-away")
+    log = os.path.join(world.w, budget.RESERVATIONS_LOG_REL)
+    os.makedirs(os.path.dirname(log), exist_ok=True)
+    os.symlink(str(target), log)
+    rc, r = world.submit(reg, "V0cal-A-0001")
+    assert rc == 3 and target.read_bytes() == b"keep\n" and world.budget_rows() == []
+    assert not any("sbatch" in c[-1] for c in r.calls)
+
+
 def test_remote_allows_sinfo_and_never_scancel():
     argv = remote.ssh_argv("fe", ["sinfo", "-N", "-h", "-o", "%N", "-p", "b200@x/y"])
     assert argv[-1].startswith("sinfo -N -h -o %N -p")

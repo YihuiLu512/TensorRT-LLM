@@ -192,3 +192,12 @@
   - fakebin.log 24 行，新增 6 行都是 e2e 作业内 simgate 的替身调用（exit 97），与以往同形；无残留进程。
   - 偏离修复清单之处（交 R2 与主会话）：F8 的范围按「本段」而非整个 budget_id（V1-b A、B 两段共用 budget_id，按整个 budget_id 会让 B 段补足必须连 A 段计划一起给、混成一段）；F11 的锁从门 ① 持有到本次提交返回（比「门 ② 到 RESERVED 行」更宽）；F14 的 STAT_KEY 改锚后行为不变（角色段 `[^:|*]+` 本身接受换行），没有加对应测试。
   - 未做（NOT RUN）：R2 三路自审（按流程由主会话开）；真实集群上的 sinfo / scontrol 输出（只用桩）。
+- 2026-11-15 17:42:38 R2 修复开工（HEAD 0a7d3aa0）：F15–F28，按 R2 triage.md 第 4 节逐项读码、先写会红的测试再修。
+- 2026-11-15 18:32:38 F22：重新生成 13 个带 ladder 的 v2 样本到 _local/calibv2-a/regen-r2/new（约 3～5 分钟）
+- 2026-11-15 18:42:24 代码与测试初稿完成（F15–F28 与全量核对扫出项），13 个 v2 样本已重新生成；接着写勘误 calib-v2-A9 与指引注，然后跑全量验证与变异。
+- 2026-11-15 18:50:37 提交 16dd2088；后台逐目录全量测试（logs/v9，full.sh，约 25 分钟），随后 selftest；期间准备变异脚本 mut/muts9.py。
+- 2026-11-15 19:10:44 v9（HEAD 16dd2088 + test_intervene 措辞断言，未提交）：10 个测试目录全过（judge 536 passed + 6 xfailed）、selftest 52 / errors 0 / deferred 5、py_compile 221/0。把 test_intervene 改动并入同一提交（amend），接着跑变异 r9（mut/muts9.py，28 项）。
+- 2026-11-15 19:18:54 变异 r9（28 项）：25 项红；F25a/F25b（软链目标内容不是 JSON，读时就被拒）与 F19c（无用例）存活，补强 test_pinning 软链用例（目标改为合法日志行）、新增 test_a_run_root_that_cannot_be_read_is_no_loss 后 r9b 全红（F19d 新增）；对照 r9b 逐文件：除 test_pinning 2 条（副本目录找不到仓库外输入 02d_cdb_b200.csv，同 R1）外全过。提交（amend）后跑作业路径 e2e 与副本回放。
+- 2026-11-15 19:23:36 副本回放完成（d14 与 e9523af6 产物全等、bootstrap boot-r2 rc 0、w60-259498a3 rc 10）；建覆盖清单 P0-259498a3，跑 V0 档位表 r9 与 e0 作业路径 e2e（J9500041/42，约 10 分钟）。
+- 2026-11-15 19:26:29 e0 作业路径 e2e（P0-259498a3）：J9500041 e0b-s1-single、J9500042 e0a-nullsse 都 L0 VALID、judge rc 11、RED 0、无 INPUT_INVALID。后台跑第 21 条 v2 作业路径 e2e（run.sh J9400021，laddergen ladder + F22 档位表 sha 实测，约 60 分钟），期间跑 V0 档位表 r9。
+- 2026-11-15 19:35:41 全量核对补一处（RS33 同类的反方向）：F17 的种子 / 清单一致性只比同一条序列（同一 key 且与本次 --plan 有共同计划的记录），否则别的期复用同一比较名会被误拒；补用例与变异 F17c（r9c 红）。amend 提交；e2e J9400021 的快照代码是 259498a3（与新 HEAD 只差 pin-next 与测试 / 文档，e2e 不经 pin-next），判定用新 HEAD。

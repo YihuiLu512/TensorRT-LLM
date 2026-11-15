@@ -454,7 +454,9 @@ def _load_ladder(ctx):
     """Read and check the arm's ladder.json (capkit.ladder/1, calib-v2 DESIGN-r7a 3.4) against
     this launch's tier table. Returns (document, {load tier seq: role}). Every up / down tier
     must be named by exactly one role (levels up_seq / down_seq, near, cal, holds, slope, or
-    baseline_seq): a load tier no role names would have no regime."""
+    baseline_seq): a load tier no role names would have no regime. The ladder must have been
+    generated for this launch: its tier_table_sha256 is the registered tier table's sha and
+    its arm the launch's arm (laddergen --arm, the files_by_arm key)."""
     item = "ladder.json"
     try:
         doc = read_json(ctx.ladder_path)
@@ -465,6 +467,13 @@ def _load_ladder(ctx):
     if doc.get("config") != ctx.config:
         raise InputInvalid(item, "config %r != register.json arm_config[%s] %r"
                            % (doc.get("config"), ctx.ident.arm, ctx.config))
+    want = ctx.register_files["tier_table"]["sha256"]
+    if doc.get("tier_table_sha256") != want:
+        raise InputInvalid(item, "tier_table_sha256 %r != the registered tier table %s"
+                           % (doc.get("tier_table_sha256"), want))
+    if doc.get("arm") != ctx.ident.arm:
+        raise InputInvalid(item, "arm %r != this launch's arm %r" % (doc.get("arm"),
+                                                                    ctx.ident.arm))
     kinds = {t.seq: t.kind for t in ctx.tt.tiers}
     named = []  # (seq, role, kind it must have or None for any load kind)
     levels = doc.get("levels")

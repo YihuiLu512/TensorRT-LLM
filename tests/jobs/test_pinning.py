@@ -246,6 +246,105 @@ def test_pin_next_refusals(world):
     assert rc == 3 and rec["chosen"] is None and len(rec["skipped"]) == 5
 
 
+def _first(key, prev, seed="E0v2-V2b"):
+    """pin_choice over the rotation of `key` from `prev`, with the test's exclusions / states."""
+    return nodes.pin_choice(nodes.rotation(NODES5, seed, key), prev,
+                            {"n2": "microcode"}, STATES)[0]
+
+
+def _log_lines(world):
+    p = os.path.join(world.w, "02_e0/E0/cluster/pin_next.log")
+    return open(p).read().splitlines() if os.path.exists(p) else []
+
+
+def test_pin_next_takes_the_previous_node_of_the_same_comparison_only(world):
+    """Two comparisons AA, XB in one plan, submitted in turn (calibv2a-RS32): XB's first block
+    starts its own rotation (previous None), AA's second block continues from AA's node."""
+    nl, ex = node_list(world), exclusions(world, ["n2"])
+    its = []
+    for k, (cmp_, b) in enumerate((("AA", 1), ("XB", 1), ("AA", 2), ("XB", 2)), start=1):
+        bid = "%s-b%02d" % (cmp_, b)
+        its += [bg.item(k, "V2b-%s-s%d" % (bid, s), block=bid, slot=s, pin=True) for s in (1, 2)]
+    plan = world.plan("02_e0/E0/register/v2/V2b/job_plan.two.tsv", its)
+    a1, b1 = _first("AA", None), _first("XB", None)
+    assert _first("XB", a1) != b1 and _first("AA", b1) != _first("AA", a1)  # the case bites
+    n = 0
+
+    def go(item_id, key):
+        nonlocal n
+        rc, rec = pin_next(world, nl, ex, plan, item_id, STATES, key=key)
+        assert rc == 0, rec
+        n += 1
+        fake_submitted(world, item_id, rec["chosen"], n)
+        return rec
+    assert go("V2b-AA-b01-s1", "AA")["chosen"] == a1
+    assert go("V2b-AA-b01-s2", "AA")["chosen"] == a1
+    rec = go("V2b-XB-b01-s1", "XB")
+    assert rec["previous"] is None and rec["chosen"] == b1
+    assert go("V2b-XB-b01-s2", "XB")["chosen"] == b1
+    rec = go("V2b-AA-b02-s1", "AA")
+    assert rec["previous"] == a1 and rec["chosen"] == _first("AA", a1)
+    lines = _log_lines(world)
+    rc, _rec = pin_next(world, nl, ex, plan, "V2b-XB-b02-s1", STATES, key="AA")
+    assert rc == 3 and _log_lines(world) == lines  # another comparison's block item
+
+
+def test_pin_next_assigns_unblocked_items_by_their_logged_key(world):
+    """A pinned item outside blocks belongs to the --key pin-next first logged it under."""
+    nl, ex = node_list(world), exclusions(world, ["n2"])
+    plan = pinned_plan(world, n=4)
+    rc, rec = pin_next(world, nl, ex, plan, "V2b-AA-0001", STATES, key="AA")
+    assert rc == 0
+    fake_submitted(world, "V2b-AA-0001", rec["chosen"], 1)
+    a1 = rec["chosen"]
+    rc, rec = pin_next(world, nl, ex, plan, "V2b-AA-0002", STATES, key="BB")
+    assert rc == 0 and rec["previous"] is None and rec["chosen"] == _first("BB", None)
+    # 0002 is logged under BB (not submitted yet): AA may not take it
+    lines = _log_lines(world)
+    assert pin_next(world, nl, ex, plan, "V2b-AA-0002", STATES, key="AA")[0] == 3
+    assert _log_lines(world) == lines
+    fake_submitted(world, "V2b-AA-0002", rec["chosen"], 2)
+    rc, rec = pin_next(world, nl, ex, plan, "V2b-AA-0003", STATES, key="AA")
+    assert rc == 0 and rec["previous"] == a1
+
+
+def test_pin_next_keeps_one_seed_and_node_list_per_comparison(world):
+    """calibv2a-RS33: a comparison's later pin-next with another --seed-base or node_list exits
+    3 without a log line; another comparison may use its own."""
+    nl, ex = node_list(world), exclusions(world, ["n2"])
+    plan = pinned_plan(world, n=4)
+    assert pin_next(world, nl, ex, plan, "V2b-AA-0001", STATES, key="AA")[0] == 0
+    lines = _log_lines(world)
+    assert pin_next(world, nl, ex, plan, "V2b-AA-0002", STATES, key="AA", seed="other")[0] == 3
+    nl2 = node_list(world, names=NODES5 + ["n6"], rel="02_e0/E0/register/v2/V2b/nl2.json")
+    assert pin_next(world, nl2, ex, plan, "V2b-AA-0002", STATES, key="AA")[0] == 3
+    assert _log_lines(world) == lines
+    assert pin_next(world, nl2, ex, plan, "V2b-AA-0002", STATES, key="BB", seed="other")[0] == 0
+    # the same comparison name over other plans (another phase) is another sequence
+    other = world.plan("02_e0/E0/register/v2/V2n/job_plan.pin.tsv",
+                       [bg.item(k, "V2n-AA-%04d" % k, pin=True) for k in (1, 2)])
+    assert pin_next(world, nl2, ex, other, "V2n-AA-0001", STATES, key="AA", seed="V2n")[0] == 0
+
+
+def test_pin_next_log_is_not_followed_through_a_symlink(world, tmp_path):
+    nl, ex = node_list(world), exclusions(world, ["n2"])
+    plan = pinned_plan(world, n=2)
+    target = tmp_path / "elsewhere.log"
+    target.write_text('{"key": "ZZ"}\n')  # a readable log: only O_NOFOLLOW refuses it
+    log = os.path.join(world.w, "02_e0/E0/cluster/pin_next.log")
+    os.makedirs(os.path.dirname(log), exist_ok=True)
+    os.symlink(str(target), log)
+    r = bg.StubSsh({"sinfo": sinfo_answer(STATES)})
+    argv = ["pin-next", "--login-host", "fe", "--ssh-timeout-s", "5", "--workdir", world.w,
+            "--node-list", nl, "--exclusions", ex, "--key", "AA", "--seed-base", "E0v2-V2b",
+            "--plan", plan, "--item", "V2b-AA-0001", "--partition", ts.PARTS, "--log", log]
+    assert ts.run(argv, r) == 3 and target.read_text() == '{"key": "ZZ"}\n'
+    os.rename(log, log + ".moved-away")
+    with open(log, "w") as f:  # calibv2a-RS36: a log line that is no JSON object -> 3
+        f.write("[1, 2]\n")
+    assert ts.run(argv, r) == 3 and open(log).read() == "[1, 2]\n"
+
+
 def test_new_anchored_patterns_refuse_a_trailing_newline():
     """NODE_RE, ITEM_ID_RE and the --cluster-utc-offset pattern end in \\Z: `$` would also
     match before a final newline."""

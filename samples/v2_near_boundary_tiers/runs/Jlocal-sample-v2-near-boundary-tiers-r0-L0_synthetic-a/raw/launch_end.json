@@ -11,7 +11,7 @@
   "job_id": "local-sample-v2-near-boundary-tiers",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "a96d62f2fcf712c84df1310c3ef2c295132ef4868316fc227582ee10ac154d31",
+  "register_sha": "cf4ca5ed7faf7362fa8bfa1602ffdb639960f62ef7e9d62a72f2cd0b9214e736",
   "restart_count": 0,
   "role": "launch",
   "tier_label": null,
@@ -32,6 +32,6 @@
  "state": "VALID",
  "stop": null,
  "tiers_completed": 5,
- "written_mono_ns": 9882865440419373,
- "written_wall": "2026-11-15T01:34:01.520Z"
+ "written_mono_ns": 9915186009542633,
+ "written_wall": "2026-11-15T10:32:42.090Z"
 }

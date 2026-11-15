@@ -5,7 +5,7 @@
   "job_id": "local-sample-v2-pilot1",
   "launch_seq": 0,
   "pid": 2001,
-  "register_sha": "02f85fa394acb4bc6b00d70eb88719fa5f8ea2ad34343ab520ede138182831d0",
+  "register_sha": "4b8bdb91c5b56ce690cd90afdad9452cbbb973cfb5c505cb0f3ed0af4e4c4d12",
   "restart_count": 0,
   "role": "nullsse",
   "tier_label": null,
@@ -33,6 +33,6 @@
   "python": "3.12.3 synthetic",
   "switchinterval_s": 0.005
  },
- "written_mono_ns": 9882864249542008,
- "written_wall": "2026-11-15T01:34:00.330Z"
+ "written_mono_ns": 9915184989189666,
+ "written_wall": "2026-11-15T10:32:41.069Z"
 }

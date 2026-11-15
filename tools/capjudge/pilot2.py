@@ -19,17 +19,20 @@ Framework (every subcommand):
 * every rejection exits 3.
 Every subcommand except `d14` and `bootstrap` requires its list file to equal, line for line, the
 selection `_select` computes from the registered job plans and the ledgers (DESIGN 4.5): one tree
-more, one less or a different order exits 3. `d14` and `bootstrap` take their tiers from
-capjudge.pilot.select_tiers (the launch-level conclusion recorded before the judge and the
-deterministic checks), never from the judge's launch verdict.
+more, one less or a different order exits 3. `bootstrap` requires its list to hold exactly the
+judged trees of every item of its register's budget_id (`bootstrap_universe`); both refuse an
+ended job with a launch tree not judged yet (`unjudged_trees`). `d14` and `bootstrap` take their
+tiers from capjudge.pilot.select_tiers (the launch-level conclusion recorded before the judge and
+the deterministic checks), never from the judge's launch verdict.
 """
 
 import argparse
+import glob
 import math
 import os
 import sys
 
-from capcommon import exitcodes, jobplan, ledger
+from capcommon import exitcodes, jobplan, ledger, runtree
 from capcommon.exitcodes import ConfigError
 from capcommon.hashing import sha256_file
 from capcommon.jsonio import dumps, read_json
@@ -40,7 +43,7 @@ from . import d14 as D14
 from . import nullz
 from . import pilot as P
 from . import stats
-from .judge import BATCH
+from .judge import ATTEMPTS_DIR, BATCH
 from .treedata import LaunchData, role_cpus
 
 MODULE = "capjudge.pilot2"
@@ -77,6 +80,8 @@ JOB_LEVEL_UNUSABLE = ("ENV_INVALID", "CANCELLED", "SUBMIT_FAILED")
 ALL_SELECTED_RULES = ("coverage", "blind_topup", "backstop", "shift")
 SHORTFALL_CLASS = jobplan.POST_GATE_PREFIX + "shortfall"
 MAX_SHORTFALL_ROUNDS = 2
+# selection unit of a block item: "cmp:<comparison>" (jobplan.block_comparison of its block id)
+CMP_PREFIX = "cmp:"
 
 
 class Pilot2Error(ConfigError):
@@ -149,8 +154,10 @@ def judged(W, tree):
         raise Pilot2Error("%s: judge/inputs.json unreadable: %s" % (rel, e))
     if not jsha:
         raise Pilot2Error("%s: judged without a code sha (judge/inputs.json code_sha)" % rel)
-    return {"rel": rel, "vpath": vpath, "vsha": vsha, "verdicts": read_json(vpath),
-            "judge_sha": jsha}
+    verdicts = read_json(vpath)
+    if not isinstance(verdicts, dict):
+        raise Pilot2Error("%s: judge/verdicts.json is not a JSON object" % rel)
+    return {"rel": rel, "vpath": vpath, "vsha": vsha, "verdicts": verdicts, "judge_sha": jsha}
 
 
 def unique(values, what):
@@ -167,21 +174,24 @@ def unique(values, what):
 
 def check_v2(rel, verdicts):
     """A tree judged by the calibration v2 judge (verdicts.json batch calib-v2); a v1 tree
-    exits 3."""
+    exits 3. bootstrap and _select call it; d14 does not: its inputs are the round-1 trees the
+    v1 judge judged (DESIGN-r7a 3.3 table)."""
     if verdicts.get("batch") != BATCH:
         raise Pilot2Error("%s was judged by batch %r, not %r (a v1 tree is no pilot2 input)"
                           % (rel, verdicts.get("batch"), BATCH))
 
 
 def check_windows(rel, tt, seqs, window_ns=WINDOW_NS):
-    """Every listed load tier has the registered window (60 s)."""
+    """Every listed load tier has the registered window (60 s). For the gate subcommands of
+    later sub-batches (no caller here: bootstrap has no window check, DESIGN-r7a 3.3 table)."""
     bad = {s: tt.tiers[s].window_ns for s in seqs if tt.tiers[s].window_ns != window_ns}
     if bad:
         raise Pilot2Error("%s: tier windows %s != %d ns" % (rel, bad, window_ns))
 
 
 def check_ramp(rel, tt, seqs, settle_ns):
-    """Every listed load tier has ramp_ns = 4 s + S (DESIGN 4.1)."""
+    """Every listed load tier has ramp_ns = 4 s + S (DESIGN 4.1). For the gate subcommands of
+    later sub-batches (no caller here)."""
     want = RAMP_BASE_NS + settle_ns
     bad = {s: tt.tiers[s].ramp_ns for s in seqs if tt.tiers[s].ramp_ns != want}
     if bad:
@@ -212,7 +222,8 @@ def registered(W, path, kind):
 
 def load_e0_params(W, path, stage):
     """{relpath, sha256, doc} of a registered capkit.e0_params/1 file of `stage`; a missing or
-    unregistered file or another stage exits 3."""
+    unregistered file or another stage exits 3. For the gate subcommands of later sub-batches
+    that read an earlier stage's product (no caller here)."""
     if path is None:
         raise Pilot2Error("needs the registered e0_params %s file" % stage)
     rel, sha, doc = registered(W, path, "e0_params")
@@ -271,7 +282,7 @@ def _unit_of(item, config):
     """Selection unit: the comparison of a block item (block_id '<comparison>-bNN'), else the
     configuration."""
     if item["block_id"] is not None:
-        return "cmp:" + item["block_id"].rsplit("-b", 1)[0]
+        return CMP_PREFIX + jobplan.block_comparison(item["block_id"])
     return config
 
 
@@ -286,9 +297,10 @@ def launch_facts(W, plans, void_usable=False):
     """Per launch slot of every plan item, in registration order: {"pos", "plan", "item_id",
     "item_class", "rule", "unit", "config", "block_id", "slot", "tree" (relpath or None),
     "node", "usable", "reason", "job_level", "verdict", "ended" (the item's job has an ENDED
-    row)}. Reads only the plans, BUDGET.tsv, submissions.tsv, JUDGED.tsv and each tree's
-    verdicts.json launch_verdict / arm_config / batch (never z, b or X). void_usable: a VOID
-    launch counts as usable (shortfall --job-level-only)."""
+    row)}. Reads only the plans, BUDGET.tsv, submissions.tsv, JUDGED.tsv, each tree's
+    verdicts.json launch_verdict / arm_config / batch (never z, b or X) and, for an ended job,
+    which launch trees its run root holds (unjudged_trees: one not judged yet exits 3).
+    void_usable: a VOID launch counts as usable (shortfall --job-level-only)."""
     files = _plan_files(W, plans)
     reserved, rows = {}, ledger.budget_rows(os.path.join(W, "BUDGET.tsv"))
     for r in rows:
@@ -350,32 +362,85 @@ def _check_plans_complete(files, reserved_rows):
 
 
 def _job_state(it, sha, reserved, subs):
-    """(job id or None, reason it is unusable at job level or None, job ended?)."""
+    """(job id or None, reason it is unusable at job level or None, job ended?, merged
+    submissions.tsv row or None)."""
     res = reserved.get(it["item_id"])
     if res is None:
-        return None, "not submitted (no RESERVED row)", False
+        return None, "not submitted (no RESERVED row)", False, None
     if res["plan_sha256"] != sha:
         raise Pilot2Error("item %s was reserved under plan sha %s, not %s"
                           % (it["item_id"], res["plan_sha256"], sha))
     sub = subs.get(res["plan_id"])
     if sub is None:
-        return None, "not submitted (plan id %s not in submissions.tsv)" % res["plan_id"], False
+        return None, "not submitted (plan id %s not in submissions.tsv)" % res["plan_id"], \
+            False, None
     if sub["event"] != "ENDED":
         return sub["job_id"] or None, "job not ended (%s %s)" % (sub["event"], sub["status"]), \
-            False
+            False, sub
     if sub["status"] in JOB_LEVEL_UNUSABLE:
-        return sub["job_id"] or None, "job %s" % sub["status"], True
-    return sub["job_id"], None, True
+        return sub["job_id"] or None, "job %s" % sub["status"], True, sub
+    return sub["job_id"], None, True, sub
+
+
+def _attempt_ended(tree):
+    """True when a judge attempt on `tree` ended without verdicts: no judge/ and an attempt
+    directory under judge.attempts/ holding its attempt.json (written when the attempt ends,
+    e.g. INPUT_INVALID). An attempt still running has no attempt.json yet."""
+    if os.path.exists(os.path.join(tree, "judge")):
+        return False  # judged, its ledger row or STATE line not committed yet: run the judge
+    return any(os.path.isfile(p) for p in glob.glob(os.path.join(tree, ATTEMPTS_DIR, "*",
+                                                                 "attempt.json")))
+
+
+def unjudged_trees(W, sub, judged_rels):
+    """([not judged yet], [judge attempted, no verdicts]) relpaths of the launch trees of an
+    ended job that are not in `judged_rels` (its JUDGED.tsv tree relpaths): the directories
+    <CAPJOBS_RUN_ROOT of the plan's job.env>/J<job>-r*-L*/ holding raw/launch.json (the launch
+    started; RS24). A run root that cannot be read exits 3: an unknown is never a loss
+    (calibv2a-RS35)."""
+    plan = sub["plan_id"]
+    if not sub.get("snapshot_dir"):
+        raise Pilot2Error("plan %s has no snapshot_dir in submissions.tsv: its run root (and "
+                          "launch trees) cannot be found" % plan)
+    try:
+        root = ledger.plan_job_env_value(sub["snapshot_dir"], "CAPJOBS_RUN_ROOT")
+    except OSError as e:
+        raise Pilot2Error("plan %s: snapshot job.env unreadable: %s" % (plan, e))
+    if not root:
+        raise Pilot2Error("plan %s: no CAPJOBS_RUN_ROOT in its snapshot job.env" % plan)
+    done = {os.path.realpath(os.path.join(W, r)) for r in judged_rels}
+    pending, attempted = [], []
+    try:
+        pattern = runtree.tree_dir_glob(sub["job_id"])
+    except ConfigError as e:
+        raise Pilot2Error("plan %s: %s" % (plan, e))
+    for d in sorted(glob.glob(os.path.join(glob.escape(root), pattern))):
+        if not os.path.isfile(os.path.join(d, "raw", "launch.json")) \
+                or os.path.realpath(d) in done:
+            continue
+        (attempted if _attempt_ended(d) else pending).append(os.path.relpath(d, W))
+    return pending, attempted
+
+
+def _check_judged(W, sub, judged_rels):
+    """The judge-attempted, no-verdicts trees of an ended job; Pilot2Error (exit 3) when a
+    launch tree of it is not judged yet."""
+    pending, attempted = unjudged_trees(W, sub, judged_rels)
+    if pending:
+        raise Pilot2Error("launch tree(s) %s of ended job %s not judged yet: judge them, then "
+                          "run this again" % (pending, sub["job_id"]))
+    return attempted
 
 
 def _item_facts(W, rel, sha, it, rule, reserved, subs, by_job, void_usable):
-    job_id, why, ended = _job_state(it, sha, reserved, subs)
-    trees = []
+    job_id, why, ended, sub = _job_state(it, sha, reserved, subs)
+    trees, attempted = [], []
     if why is None:
         rows = by_job.get(job_id, {})
         if len({rc for rc, _ls in rows}) > 1:
             raise Pilot2Error("job %s has launches judged under several restart counts" % job_id)
         trees = [rows[k] for k in sorted(rows)]
+        attempted = _check_judged(W, sub, [r["tree_relpath"] for r in trees])
     slots = {c: n for c, n in it["config_counts"].items()}
     base = {"plan": rel, "item_id": it["item_id"], "item_class": it["item_class"], "rule": rule,
             "block_id": it["block_id"], "slot": it["slot"], "ended": ended}
@@ -396,7 +461,10 @@ def _item_facts(W, rel, sha, it, rule, reserved, subs, by_job, void_usable):
                         reason="launch_verdict VOID" if bad else None, job_level=False))
     for cfg in sorted(slots):
         for _ in range(slots[cfg]):
-            reason = why or "no judged launch (did not run or was not judged)"
+            if why is None and attempted:
+                reason = "judge attempted, no verdicts (%s)" % attempted.pop(0)
+            else:
+                reason = why or "no judged launch (no launch tree with raw/launch.json)"
             out.append(dict(base, unit=_unit_of(it, cfg), config=cfg, tree=None, node=None,
                             verdict=None, usable=False, reason=reason, job_level=True))
     return out
@@ -531,21 +599,29 @@ def build_d14(entries, W, rule_path):
 # ---- bootstrap (P2-09c; DESIGN 2.11.3, gate G0c) --------------------------------------------
 
 def _register(W, path):
-    """{relpath, sha256, doc} of a registered register.json (kind register)."""
+    """{relpath, sha256, doc, expected} of a registered register.json (kind register); the
+    expected section, when present, must be an object ({} when absent)."""
     rel, sha, doc = registered(W, path, "register")
     if not isinstance(doc, dict):
         raise Pilot2Error("%s is not a JSON object" % rel)
-    return {"relpath": rel, "sha256": sha, "doc": doc}
+    exp = doc.get("expected", {})
+    if not isinstance(exp, dict):
+        raise Pilot2Error("%s expected must be a JSON object" % rel)
+    return {"relpath": rel, "sha256": sha, "doc": doc, "expected": exp}
 
 
 def _d14_ref(W, reg):
     """The one d14_result entry of the register's calibration list, sha checked."""
-    refs = [c for c in reg["doc"].get("calibration") or []
-            if isinstance(c, dict) and c.get("kind") == "d14_result"]
+    cal = reg["doc"].get("calibration", [])
+    if not isinstance(cal, list):
+        raise Pilot2Error("%s: calibration must be a list" % reg["relpath"])
+    refs = [c for c in cal if isinstance(c, dict) and c.get("kind") == "d14_result"]
     if len(refs) != 1:
         raise Pilot2Error("%s: calibration must list exactly one d14_result (got %d)"
                           % (reg["relpath"], len(refs)))
-    path = os.path.join(W, refs[0].get("relpath") or "")
+    if not isinstance(refs[0].get("relpath"), str):
+        raise Pilot2Error("%s: the d14_result entry needs a relpath" % reg["relpath"])
+    path = os.path.join(W, refs[0]["relpath"])
     if not os.path.isfile(path) or sha256_file(path) != refs[0].get("sha256"):
         raise Pilot2Error("%s: d14_result %s missing or sha256 differs"
                           % (reg["relpath"], refs[0].get("relpath")))
@@ -622,11 +698,20 @@ def build_bootstrap(entries, W, register_path):
     the ladder's cal tiers, through capjudge.pilot.select_tiers)."""
     W = os.path.abspath(W)
     reg = _register(W, register_path)
-    rule = (reg["doc"].get("expected") or {}).get("bootstrap_rule")
+    rule = reg["expected"].get("bootstrap_rule")
     if rule != BOOTSTRAP_RULE:
         raise Pilot2Error("%s expected.bootstrap_rule is not the registered rule text of this "
                           "code (DESIGN-r7a 2.11.3): %r" % (reg["relpath"], rule))
     d14 = _d14_ref(W, reg)
+    universe = bootstrap_universe(W, reg)
+    listed = {os.path.normpath(t) for t, _s, _r in entries}
+    want = {os.path.normpath(os.path.join(W, t)) for t in universe.pop("trees")}
+    if listed != want:
+        raise Pilot2Error("the list file is not every judged tree of budget %s (calibv2a-RS28): "
+                          "extra %s, missing %s" % (
+                              universe["budget_id"],
+                              sorted(os.path.relpath(t, W) for t in listed - want)[:5],
+                              sorted(os.path.relpath(t, W) for t in want - listed)[:5]))
     envs, exps, inputs = [], [], []
     readings = {f: [] for f in BOOTSTRAP_FAMILIES}
     for tree, seqs, regime in entries:
@@ -661,14 +746,48 @@ def build_bootstrap(entries, W, register_path):
     return {"schema": PILOT2_SCHEMA, "experiment": unique(exps, "experiment"),
             "stage": "bootstrap", "environment": env, "d14": d14, "select": SELECT,
             "rule": rule, "register": {"relpath": reg["relpath"], "sha256": reg["sha256"]},
-            "inputs": inputs, "x_const": x_const, "ratio_tol": ratio_tol, "c13_cap": c13_cap,
-            "max_abs": max_abs}
+            "universe": universe, "inputs": inputs, "x_const": x_const,
+            "ratio_tol": ratio_tol, "c13_cap": c13_cap, "max_abs": max_abs}
+
+
+def bootstrap_universe(W, reg):
+    """Every V0-cal tree, from the ledgers: the items with a RESERVED row under the register's
+    expected.budget_id in BUDGET.tsv, their plans in submissions.tsv (each must have ended)
+    and the JUDGED.tsv trees of their jobs. A launch tree of an ended job (not ENV_INVALID /
+    CANCELLED / SUBMIT_FAILED) that is not judged yet exits 3; one the judge refused (an ended
+    attempt, no verdicts) is no input. Returns {"budget_id", "items", "jobs", "trees"
+    (relpaths)}."""
+    bid = reg["expected"].get("budget_id")
+    if not isinstance(bid, str) or not jobplan.ITEM_ID_RE.match(bid):
+        raise Pilot2Error("%s expected.budget_id is missing: the V0-cal set is read from its "
+                          "BUDGET.tsv rows" % reg["relpath"])
+    rows = [r for r in ledger.budget_rows(os.path.join(W, "BUDGET.tsv"))
+            if r["event"] == "RESERVED" and r["budget_id"] == bid]
+    if not rows:
+        raise Pilot2Error("BUDGET.tsv has no RESERVED row of budget %s" % bid)
+    subs = ledger.submissions_current(os.path.join(W, "submissions.tsv"))
+    by_job = {}
+    for r in ledger.read_tsv(os.path.join(W, "JUDGED.tsv"), ledger.JUDGED_COLUMNS):
+        by_job.setdefault(r["job_id"], set()).add(os.path.normpath(r["tree_relpath"]))
+    trees, jobs, open_items = set(), set(), []
+    for r in rows:
+        sub = subs.get(r["plan_id"])
+        if sub is None or sub["event"] != "ENDED":
+            open_items.append(r["item_id"])
+            continue
+        if not sub["job_id"]:
+            continue  # SUBMIT_FAILED: no job, no tree
+        jobs.add(sub["job_id"])
+        done = sorted(by_job.get(sub["job_id"], ()))
+        if sub["status"] not in JOB_LEVEL_UNUSABLE:
+            _check_judged(W, sub, done)
+        trees.update(done)
+    if open_items:
+        raise Pilot2Error("budget %s items not ended yet: %s" % (bid, sorted(open_items)))
+    return {"budget_id": bid, "items": len(rows), "jobs": len(jobs), "trees": sorted(trees)}
 
 
 # ---- shortfall (P2-09b; DESIGN 4.5) ----------------------------------------------------------
-
-CMP_PREFIX = "cmp:"
-
 
 def _jobs_of(alloc, pin_of, per_job):
     """Jobs laddergen --plan-from packs `alloc` {unit: launches or blocks} into: launches of
@@ -789,7 +908,7 @@ def build_shortfall(entries, W, plans, register_path, per_job, phase, segment,
     if not (isinstance(per_job, int) and per_job >= 1):
         raise Pilot2Error("--launches-per-job must be an int >= 1")
     reg = _register(W, register_path)
-    cap_jobs = (reg["doc"].get("expected") or {}).get("shortfall_cap_jobs")
+    cap_jobs = reg["expected"].get("shortfall_cap_jobs")
     if not isinstance(cap_jobs, int) or isinstance(cap_jobs, bool) or cap_jobs < 0:
         raise Pilot2Error("%s expected.shortfall_cap_jobs must be an int >= 0" % reg["relpath"])
     files = _plan_files(W, plans)
@@ -819,7 +938,7 @@ def build_shortfall(entries, W, plans, register_path, per_job, phase, segment,
     prior_jobs = sum(len(x[2]) for x in prior)
     pin_of = {c: (True if c in pairs else arms[c][1]) for c in topup}
     alloc, capped = _cap(topup, pin_of, per_job, max(0, cap_jobs - prior_jobs))
-    q = min(0.5, max(0.05, lost / ended)) if ended else 0.05
+    q = float(stats.shortfall_q(lost, ended))
     return {"schema": E0_PARAMS_SCHEMA, "experiment": reg["doc"].get("experiment"),
             "stage": "shortfall", "phase": phase, "segment": segment, "round": rnd,
             "job_level_only": bool(job_level_only),
@@ -847,7 +966,8 @@ def v0_cancelled(rows, status_codes, start_rel_ns, end_rel_ns, stop_rel_ns):
     """Requests of a reqlog (`rows` columns done_rel_ns / status; `status_codes` the header's
     {str(status id): reason}) that ended grpc_CANCELLED inside [start_rel_ns, end_rel_ns) (the
     overload tier and its drain slot) and before the load generator stopped (stop_rel_ns): a
-    cancellation at or after the stop is the stop's own, not a finding."""
+    cancellation at or after the stop is the stop's own, not a finding. For the V0 analysis
+    (DESIGN-r7a 3.5 test 23; no caller here yet)."""
     ids = {int(k) for k, r in (status_codes or {}).items() if r == CANCELLED_REASON}
     return sum(1 for d, s in zip(rows.get("done_rel_ns", []), rows.get("status", []))
                if s in ids and start_rel_ns <= d < end_rel_ns and d < stop_rel_ns)

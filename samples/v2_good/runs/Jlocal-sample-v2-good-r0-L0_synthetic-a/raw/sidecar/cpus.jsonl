@@ -1,4 +1,4 @@
-{"_header": true, "columns": ["t_rel_ns", "cpu", "user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal", "freq_khz"], "identity": {"arm": "synthetic-a", "experiment": "E0", "job_id": "local-sample-v2-good", "launch_seq": 0, "pid": null, "register_sha": "d5e8ba1468c9d750ac502e8bbba479f0e4e3ffd28d68fc33ece448e1768983dd", "restart_count": 0, "role": "sidecar", "tier_label": null, "tier_seq": null, "worker": 0}, "schema": "capkit.sidecar.cpus/1", "written_wall": "2026-11-15T01:33:59.228Z"}
+{"_header": true, "columns": ["t_rel_ns", "cpu", "user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal", "freq_khz"], "identity": {"arm": "synthetic-a", "experiment": "E0", "job_id": "local-sample-v2-good", "launch_seq": 0, "pid": null, "register_sha": "0eaca9ba100bb52d4fc787c9bbcba818ff311c1bd4ef876fb5f3c00d9580485f", "restart_count": 0, "role": "sidecar", "tier_label": null, "tier_seq": null, "worker": 0}, "schema": "capkit.sidecar.cpus/1", "written_wall": "2026-11-15T10:32:39.382Z"}
 [-1000000000,2,0,0,0,0,0,0,0,0,2000000]
 [-1000000000,3,0,0,0,0,0,0,0,0,2000000]
 [-1000000000,4,0,0,0,0,0,0,0,0,2000000]

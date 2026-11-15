@@ -28,7 +28,7 @@
   "job_id": "local-sample-v2-near-stable",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "1e8eb03302cfcced8f3c701e5d1529031bc9c16215c511f63e94fee5f125ccea",
+  "register_sha": "614a0c61df5061d58bacb6143fae3f185681dcd658b3f799e1c7dca216bfa3d1",
   "restart_count": 0,
   "role": "jobs",
   "tier_label": null,
@@ -73,6 +73,6 @@
  "schema": "capkit.gpu_idle/1",
  "status": "PASS",
  "visible_gpus": 1,
- "written_mono_ns": 9882863487107053,
- "written_wall": "2026-11-15T01:33:59.567Z"
+ "written_mono_ns": 9915183663406926,
+ "written_wall": "2026-11-15T10:32:39.743Z"
 }
