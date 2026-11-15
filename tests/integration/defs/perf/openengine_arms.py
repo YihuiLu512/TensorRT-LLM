@@ -3117,7 +3117,9 @@ DS_FRONTEND_SETTINGS = (
 )
 _DS_ENV_PREFIX = "DSV4_"
 # ds variables that only choose what the engine logs; they need not match across arms.
-_DS_LOG_ONLY_ENV = ("DSV4_STEP_LOG", "DSV4_XFER_PROF", "DSV4_TOKCACHE_VERIFY", "DSV4_REQ_LOG")
+# DSV4_REQ_LOG is not among them: with it the engine runs its step-boundary work serially
+# instead of on the DSV4_HOST_PAR pool.
+_DS_LOG_ONLY_ENV = ("DSV4_STEP_LOG", "DSV4_XFER_PROF", "DSV4_TOKCACHE_VERIFY")
 # The ds engine ignores DSV4_GEN_OVERLAP=1 on a context instance, with block reuse or under
 # DSV4_SCHED_PIPE, and logs a warning then (DK-13).
 ENV_DS_GEN_OVERLAP = "DSV4_GEN_OVERLAP"
@@ -3309,17 +3311,24 @@ def _stop_process_group(proc: subprocess.Popen, grace_s: float) -> None:
     proc.poll()
 
 
+# Grace before SIGKILL when this process is being stopped: shorter than the 30 s the
+# single-node driver gives a role before it kills the role's process group.
+_STOPPING_GRACE_S = 10
+
+
 def _exit_on_sigterm(signum: int, _frame: Any) -> None:
+    # A further SIGTERM must not interrupt the cleanup this one starts.
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
     raise SystemExit(128 + signum)
 
 
 @contextlib.contextmanager
 def _sigterm_raises() -> Iterator[None]:
-    """Within the block, SIGTERM raises ``SystemExit`` (in the main thread only).
+    """Within the block, SIGTERM raises ``SystemExit`` once; later ones are ignored.
 
-    A child started in a session of its own is outside the reach of a signal sent to this
-    process's group; the caller's cleanup of that child then still runs when this process is
-    stopped with SIGTERM.
+    Only in the main thread. A child started in a session of its own is outside the reach of a
+    signal sent to this process's group; the caller's cleanup of that child then still runs
+    when this process is stopped with SIGTERM.
     """
     if threading.current_thread() is not threading.main_thread():
         yield
@@ -3341,8 +3350,9 @@ def run_ds_follower(
     """Run a follower node of a multi-node ds instance until ``wait(proc)`` returns.
 
     ``wait`` is the worker's wait for the end of the benchmark. The follower's process group
-    is then stopped (:func:`_stop_process_group`, 60 s grace), also when ``wait`` raises or
-    this process gets SIGTERM. Returns its exit code, or ``None`` when it outlived the SIGKILL.
+    is then stopped (:func:`_stop_process_group`, 60 s grace); so it is, with a shorter grace,
+    when ``wait`` raises or this process gets SIGTERM. Returns its exit code, or ``None`` when
+    it outlived the SIGKILL.
 
     Raises:
         OSError: The follower cannot be started.
@@ -3357,8 +3367,10 @@ def run_ds_follower(
         )
         try:
             wait(proc)
-        finally:
             _stop_process_group(proc, 60)
+        except BaseException:
+            _stop_process_group(proc, _STOPPING_GRACE_S)
+            raise
     return proc.returncode
 
 
@@ -3925,7 +3937,7 @@ def run_ds_agentx(argv: Sequence[str], environ: Mapping[str, str] | None = None)
     """The AgentX client of the case-03 arms: ``$TRTLLM_TEST_DS_ROOT/dev/run_agentx.sh``.
 
     Runs ds's client (aiperf with ds's warmup-learning patch when
-    ``AIPERF_AGENTX_WARMUP_LEARN_REQUESTS`` is set) against ``--host``/``--port`` with
+    ``AIPERF_AGENTX_WARMUP_LEARN_REQUESTS`` is above 0) against ``--host``/``--port`` with
     :data:`DS_AGENTX_SETTINGS`, writing its records to ``concurrency_<C>`` under
     ``TRTLLM_AGENTX_ARTIFACT_DIR`` (an export an earlier run left there is removed first,
     as perf/agentx_client.py does); then checks aiperf's export as agentx_client.py does and
@@ -4007,7 +4019,7 @@ def run_ds_agentx(argv: Sequence[str], environ: Mapping[str, str] | None = None)
                 f"run_agentx.sh still ran {duration + grace} s after it started; stopped it"
             )
         except BaseException:
-            _stop_process_group(proc, 60)
+            _stop_process_group(proc, _STOPPING_GRACE_S)
             raise
     if returncode != 0:
         print(f"[ds-agentx] run_agentx.sh exited {returncode}; checking its export", flush=True)

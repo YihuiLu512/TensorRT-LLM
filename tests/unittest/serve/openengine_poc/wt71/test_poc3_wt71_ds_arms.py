@@ -7,6 +7,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import signal
 import subprocess
 import sys
 import time
@@ -470,6 +471,8 @@ def test_ds_instance_reading_reads_the_running_process(arms, tmp_path):
         # Writes the step log from another thread: it can change step times, so it is compared.
         "DSV4_STEP_LOG_ASYNC": "1",
         "DSV4_XFER_PROF": "1",
+        # Moves the engine's step-boundary work off its thread pool: compared too.
+        "DSV4_REQ_LOG": "/r.log",
     }
     proc = subprocess.Popen(
         [
@@ -510,7 +513,11 @@ def test_ds_instance_reading_reads_the_running_process(arms, tmp_path):
     }
     assert reading["params"]["speculative_config"] == WORKER_CONFIG["speculative_config"]
     assert reading["params"]["moe_expert_parallel_size"] is None
-    assert reading["env"] == {"DSV4_TOKCACHE_ENTRIES": "1024", "DSV4_STEP_LOG_ASYNC": "1"}
+    assert reading["env"] == {
+        "DSV4_TOKCACHE_ENTRIES": "1024",
+        "DSV4_STEP_LOG_ASYNC": "1",
+        "DSV4_REQ_LOG": "/r.log",
+    }
     assert reading["log_only_env"] == {"DSV4_STEP_LOG": "/x.jsonl", "DSV4_XFER_PROF": "1"}
     assert reading["gen_overlap_ignored_warning"] is False
     assert reading["frontend"] == {
@@ -948,6 +955,25 @@ def _assert_gone(pid, what):
             return
         time.sleep(0.01)
     pytest.fail(f"{what} is still running: {status}")
+
+
+def test_sigterm_raises_once_and_then_lets_the_cleanup_run(arms):
+    before = signal.getsignal(signal.SIGTERM)
+    during_cleanup = []
+    with pytest.raises(SystemExit) as info:
+        with arms._sigterm_raises():
+            try:
+                os.kill(os.getpid(), signal.SIGTERM)
+                time.sleep(10)
+            except SystemExit:
+                # A second SIGTERM during the cleanup is ignored.
+                os.kill(os.getpid(), signal.SIGTERM)
+                time.sleep(0.1)
+                during_cleanup.append(signal.getsignal(signal.SIGTERM))
+                raise
+    assert info.value.code == 128 + signal.SIGTERM
+    assert during_cleanup == [signal.SIG_IGN]
+    assert signal.getsignal(signal.SIGTERM) == before
 
 
 def test_ds_agentx_stopped_with_sigterm_stops_its_client(arms, tmp_path):
