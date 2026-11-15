@@ -12,8 +12,10 @@ GenerateRequests it sends to a directory of its own
 
 NT-181 (DG-85): for each request sent through the orchestrator, the context
 leg's and the generation leg's GenerateRequest pair up by
-``disagg_request_id`` and are the same but for ``request_id`` and the keys only
-one leg carries (EX-DSG-7); the context leg's ``max_tokens`` is the client's.
+``disagg_request_id``; each holds every sampling and stopping field the client
+set, and logprobs when asked for; they are the same but for ``request_id`` and
+the keys only one leg carries (EX-DSG-7); the context leg's ``max_tokens`` is
+the client's.
 The two engines declare different length limits; a chat request without
 ``max_tokens`` makes each frontend fill in its own default, and the test
 records the two values (UV-67) without requiring them to agree.
@@ -218,6 +220,37 @@ def _legs(chain: Chain, path: str, body: dict) -> tuple[dict, dict]:
     return prefill, decode
 
 
+# The sampling fields the bodies below set, each under its own name in a GenerateRequest's
+# ``sampling``.
+_SAMPLING = (
+    "temperature",
+    "top_p",
+    "top_k",
+    "min_p",
+    "seed",
+    "frequency_penalty",
+    "presence_penalty",
+)
+
+
+def _carries(dump: dict, body: dict) -> None:
+    """``dump`` holds each field ``body`` sets: nothing the client gave is dropped (CH-7 ①)."""
+    checked = {"prompt", "max_tokens", "stop", "ignore_eos", "logprobs", *_SAMPLING}
+    assert set(body) <= checked, sorted(set(body) - checked)
+    sampling, stopping = dump.get("sampling", {}), dump.get("stopping", {})
+    for name in _SAMPLING:
+        if name in body:
+            # The JSON form of a uint64 is a string.
+            assert float(sampling.get(name, "nan")) == pytest.approx(body[name]), (name, dump)
+    stops = [condition.get("stop_text") for condition in stopping.get("conditions", [])]
+    for text in body.get("stop", []):
+        assert text in stops, (text, dump)
+    if "ignore_eos" in body:
+        assert stopping.get("ignore_eos", False) is body["ignore_eos"], dump
+    if "logprobs" in body:
+        assert dump.get("response", {}).get("return_output_logprobs") is True, dump
+
+
 BODIES = [
     {"prompt": PROMPT, "max_tokens": 3},
     {"prompt": PROMPT, "max_tokens": 5, "temperature": 0.5, "top_p": 0.9, "seed": 7, "stop": ["!"]},
@@ -231,6 +264,8 @@ def test_ctx_and_gen_generate_requests_match_on_real_engines(chain, record_prope
     """NT-181 (DG-85): both legs carry the same request; only the single-leg keys differ."""
     for body in BODIES:
         prefill, decode = _legs(chain, "v1/completions", body)
+        for dump in (prefill, decode):
+            _carries(dump, body)
         # The context leg's max_tokens is the client's: the engine enforces one token itself.
         assert int(prefill["stopping"]["max_tokens"]) == body["max_tokens"], prefill
         assert _comparable(prefill, PREFILL_ONLY_EXTRA) == _comparable(decode, DECODE_ONLY_EXTRA)

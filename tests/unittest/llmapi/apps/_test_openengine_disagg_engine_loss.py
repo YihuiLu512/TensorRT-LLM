@@ -17,8 +17,8 @@ when the chain stops); the test runs on the chain only.
 - NT-184 (DG-87): the same for the generation engine; the context worker is
   the one left.
 
-The expectations table marks the killed role (``leg_expect: killed``,
-``openengine_chain/expectations/WT-52.py``).
+The chain's expectations table (``openengine_chain/expectations``) marks the
+killed role (``leg_expect: killed``).
 
 Needs one GPU of Hopper or later and ``${LLM_MODELS_ROOT}/Qwen3/Qwen3-0.6B``.
 """
@@ -123,19 +123,19 @@ def _chain(directory):
     # Both workers run on this host: loopback is the only TCP device UCX needs.
     env = {**os.environ, "UCX_NET_DEVICES": "lo"}
 
-    def worker(role: str, port: int, overrides: dict) -> RemoteOpenAIServer:
+    def worker(role: str, port: int) -> RemoteOpenAIServer:
         return RemoteOpenAIServer(
             model,
             port=port,
             env=env,
             cli_args=["--server_role", role],
-            extra_config={**WORKER_CONFIG, "disagg_cluster": cluster, **overrides},
+            extra_config={**WORKER_CONFIG, "disagg_cluster": cluster},
             log_path=str(directory / f"output_{role}.log"),
             wait=False,
         )
 
     disagg_config = {"hostname": "localhost", "port": disagg_port, "disagg_cluster": cluster}
-    with worker("context", ctx_port, {}) as ctx, worker("generation", gen_port, {}) as gen:
+    with worker("context", ctx_port) as ctx, worker("generation", gen_port) as gen:
         with RemoteDisaggOpenAIServer(
             ctx_servers=[], gen_servers=[], port=disagg_port, disagg_config=disagg_config
         ) as orchestrator:
@@ -159,10 +159,14 @@ def _wait(condition, what: str, timeout: float) -> None:
         time.sleep(0.5)
 
 
-def _listed(chain: Chain, role: str, port: int) -> bool:
-    """Whether the orchestrator lists a ``role`` worker on ``port``."""
-    lists = requests.get(chain.orchestrator.url_for("cluster_info"), timeout=10).json()
-    return any(str(address).endswith(f":{port}") for address in lists["server_lists"][role])
+def _listed(chain: Chain, role: str, port: int) -> bool | None:
+    """Whether the orchestrator lists a ``role`` worker on ``port``; None if it did not answer."""
+    try:
+        lists = requests.get(chain.orchestrator.url_for("cluster_info"), timeout=10).json()
+        addresses = lists["server_lists"][role]
+    except (requests.RequestException, ValueError, KeyError):
+        return None
+    return any(str(address).endswith(f":{port}") for address in addresses)
 
 
 def _engine_exit_stops_the_worker(chain: Chain, role: str) -> None:
@@ -175,17 +179,17 @@ def _engine_exit_stops_the_worker(chain: Chain, role: str) -> None:
         timeout=REQUEST_TIMEOUT_S,
     )
     assert response.status_code == 200, response.text
-    assert _listed(chain, role, server.port)
+    assert _listed(chain, role, server.port) is True
 
     handle.engine.kill()
     _wait(lambda: handle.frontend.poll() is not None, "the frontend to stop", FRONTEND_STOP_S)
     log = Path(handle.frontend_log)
     _wait(lambda: LOST_LOG in log.read_text(errors="replace"), "the frontend's log", LOG_FLUSH_S)
-    _wait(lambda: not _listed(chain, role, server.port), "the worker to be dropped", DROP_S)
+    _wait(lambda: _listed(chain, role, server.port) is False, "the worker to be dropped", DROP_S)
     # The other worker is not affected.
     assert other._chain_handle.frontend.poll() is None
     assert requests.get(other.url_for("health"), timeout=10).status_code == 200
-    assert _listed(chain, other_role, other.port)
+    assert _listed(chain, other_role, other.port) is True
 
 
 def test_ctx_engine_exit_stops_the_frontend_and_drops_the_worker(chain):

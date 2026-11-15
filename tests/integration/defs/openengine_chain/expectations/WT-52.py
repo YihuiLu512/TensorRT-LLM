@@ -1,20 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Refusals of the disaggregated chain, cancels, and tests that send legs to a worker themselves.
+"""Refusals of the disaggregated chain, and tests that send legs to a worker themselves.
 
 A request the worker frontend refuses sends no Generate call; a worker the
-frontend refuses to start serves nothing, and its log says why. A test whose
-client leaves cancels calls. A test that sends context legs to the context
-worker itself and no generation leg leaves their handoffs unclaimed
-(``direct_ctx_leg`` with the number it leaves); one that also sends
-generation legs is ``direct_two_leg``, and one that sends to one worker
-frontend only is ``direct_worker``. A test that kills one role's engine is
-``killed``.
+frontend refuses to start serves nothing, and its log says why. A test that
+sends context legs to the context worker itself and no generation leg leaves
+their handoffs unclaimed (``direct_ctx_leg`` with the number it leaves); one
+that sends both legs itself is ``direct_two_leg``; one that sends to worker
+frontends itself, but no leg of a request split in two, is ``direct_worker``.
+A test that kills one role's engine is ``killed``.
 """
 
 from openengine_chain.conventions import CHAIN_TRTLLM
 from openengine_chain.expectations import (
-    CANCELS_CALLS,
     DIRECT_CTX_LEG,
     DIRECT_TWO_LEG,
     DIRECT_WORKER,
@@ -45,12 +43,6 @@ def _refused(test: str, reason: str) -> Expectation:
     )
 
 
-def _cancels(match: str) -> Expectation:
-    return _entry(
-        match, CANCELS_CALLS, "its client leaves, and the worker frontend cancels the call"
-    )
-
-
 def _killed(test: str, role: str, killed: str) -> Expectation:
     return _entry(
         _LOSS + test,
@@ -70,13 +62,13 @@ EXPECTATIONS = [
     _refused("test_n_above_one_is_rejected_through_the_orchestrator", "a chat request with n > 1"),
     _refused(
         "test_generation_logits_request_is_rejected",
-        "the generation leg; the context leg it hands off from is served",
+        "a generation leg with first_gen_logits, sent to the generation worker itself",
     ),
     _entry(
         _REJECTS + "test_generation_logits_request_is_rejected",
         LEG_EXPECT,
-        "it sends a context leg and a generation leg to the workers itself",
-        leg=DIRECT_TWO_LEG,
+        "it sends a generation leg to the generation worker itself",
+        leg=DIRECT_WORKER,
     ),
     _entry(
         _REJECTS + "test_beam_width_startup_rejected",
@@ -89,7 +81,10 @@ EXPECTATIONS = [
         STARTUP_REJECTED,
         "the generation worker is started with bounded_replay_on_generation; a handoff does "
         "not carry remote_tail_start",
-        log_contains="bounded_replay_on_generation is not supported",
+        log_contains=(
+            "bounded_replay_on_generation is not supported: an OpenEngine handoff does not "
+            "carry remote_tail_start"
+        ),
     ),
     # XD-219 (F-25, EG-06): its workers are started with max_beam_width 2.
     _entry(
@@ -98,8 +93,6 @@ EXPECTATIONS = [
         "the workers are started with max_beam_width > 1; OpenEngine has no beam search",
         log_contains=_BEAM_LOG,
     ),
-    _cancels(_CANCEL + "test_streaming_disconnect_aborts_the_gen_leg"),
-    _cancels(_CANCEL + "test_disconnect_during_prefill_aborts_the_ctx_leg"),
     _entry(
         _CANCEL + "test_disconnect_during_prefill_aborts_the_ctx_leg",
         LEG_EXPECT,
@@ -107,7 +100,6 @@ EXPECTATIONS = [
         leg=DIRECT_CTX_LEG,
         orphans=0,
     ),
-    _cancels(_CANCEL + "test_abort_reaches_the_engine_at_each_stage"),
     _entry(
         _CANCEL + "test_abort_reaches_the_engine_at_each_stage",
         LEG_EXPECT,

@@ -13,8 +13,8 @@ NT-187 (DG-90): the test sends one context leg to the context worker itself
 and no generation leg; the context engine sends one more PrefillReady, and
 the orphan handoffs, the PrefillReady events the context engine sent less the
 generation_only calls the generation engine accepted, are one more. The
-expectations table says the test leaves one handoff unclaimed
-(``leg_expect: direct_ctx_leg``, ``openengine_chain/expectations/WT-52.py``).
+chain's expectations table (``openengine_chain/expectations``) says the test
+leaves one handoff unclaimed (``leg_expect: direct_ctx_leg``).
 
 Needs one GPU of Hopper or later and ``${LLM_MODELS_ROOT}/Qwen3/Qwen3-0.6B``.
 """
@@ -112,19 +112,19 @@ def _chain(directory):
     # Both workers run on this host: loopback is the only TCP device UCX needs.
     env = {**os.environ, "UCX_NET_DEVICES": "lo"}
 
-    def worker(role: str, port: int, overrides: dict) -> RemoteOpenAIServer:
+    def worker(role: str, port: int) -> RemoteOpenAIServer:
         return RemoteOpenAIServer(
             model,
             port=port,
             env=env,
             cli_args=["--server_role", role],
-            extra_config={**WORKER_CONFIG, "disagg_cluster": cluster, **overrides},
+            extra_config={**WORKER_CONFIG, "disagg_cluster": cluster},
             log_path=str(directory / f"output_{role}.log"),
             wait=False,
         )
 
     disagg_config = {"hostname": "localhost", "port": disagg_port, "disagg_cluster": cluster}
-    with worker("context", ctx_port, {}) as ctx, worker("generation", gen_port, {}) as gen:
+    with worker("context", ctx_port) as ctx, worker("generation", gen_port) as gen:
         with RemoteDisaggOpenAIServer(
             ctx_servers=[], gen_servers=[], port=disagg_port, disagg_config=disagg_config
         ) as orchestrator:

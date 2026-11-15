@@ -11,8 +11,8 @@ run on that chain only. A refused request sends no Generate call.
 
 - NT-065 (F-25), NT-216 (EG-19): a worker started with ``max_beam_width > 1``
   or with the remote tail (``bounded_replay_on_generation``) does not start.
-  The harness reads the refusal from the frontend's log
-  (``openengine_chain/expectations/WT-52.py``).
+  The harness reads the refusal from the frontend's log (the chain's
+  expectations table, ``openengine_chain/expectations``).
 - NT-058 (F-10), NT-190 (EG-05a, EG-05b): a chat request with an image, or
   with a video, through the orchestrator is answered 400: the context leg's
   frontend refuses a disaggregated request with media.
@@ -22,13 +22,13 @@ run on that chain only. A refused request sends no Generate call.
 - NT-064 (F-19), NT-066 (F-26), NT-191 (EG-07): ``n > 1``, ``best_of > 1`` or
   ``return_context_logits`` through the orchestrator is answered 400 naming
   the context leg.
-- NT-192 (EG-10b): a generation leg with ``first_gen_logits`` is answered 400
-  naming the generation leg; the test sends the context leg it hands off
-  from to the context worker itself.
+- NT-192 (EG-10b): a generation leg with ``first_gen_logits``, sent to the
+  generation worker itself, is answered 400 naming the generation leg.
 
 NT-058, NT-185 and NT-190 each start a chain of a model whose engines take
 images and videos, so that the refusal they see is the one of a
-disaggregated request and not the one of a model without media. The tests
+disaggregated request and not the one of a model without media; the
+frontend sends a local file inline, so the video is a small one. The tests
 run in the order they are written: the workers that do not start, those
 three, then the tests on the module's chain, so that no two chains run at
 once.
@@ -74,6 +74,7 @@ MODEL_SUBDIR = os.path.join("Qwen3", "Qwen3-0.6B")
 MEDIA_MODEL_SUBDIR = os.path.join("Qwen3", "Qwen3-VL-2B-Instruct")
 MEDIA_SUBDIR = os.path.join("multimodals", "test_data")
 PROMPT = "The capital of France is Paris. The capital of Germany is"
+PROMPT_TOKEN_IDS = [1000, 1001, 1002, 1003]
 ENGINE_READY_TIMEOUT_S = 1200
 REQUEST_TIMEOUT_S = 120
 REGISTER_TIMEOUT_S = 120
@@ -221,7 +222,7 @@ def _media_chat(kind: str, file_name: str) -> dict:
 
 
 IMAGE_CHAT = ("image", "seashore.png")
-VIDEO_CHAT = ("video", "OAI-sora-tokyo-walk.mp4")
+VIDEO_CHAT = ("video", "world.mp4")
 
 
 def _start_refused(directory, role: str, overrides: dict) -> None:
@@ -303,24 +304,18 @@ def test_n_above_one_is_rejected_through_the_orchestrator(chain):
 
 
 def test_generation_logits_request_is_rejected(chain):
-    """NT-192 (EG-10b): a generation leg with ``first_gen_logits`` is refused, naming its leg."""
-    context_leg = {
-        "model": chain.model,
-        "prompt": PROMPT,
-        "max_tokens": 4,
-        "disaggregated_params": {
-            "request_type": "context_only",
-            "disagg_request_id": next(_DISAGG_REQUEST_IDS),
-        },
-    }
-    response = _post(chain.ctx, "v1/completions", context_leg)
-    assert response.status_code == 200, response.text
-    ctx = response.json()
+    """NT-192 (EG-10b): a generation leg with ``first_gen_logits`` is refused, naming its leg.
+
+    The frontend refuses the field before it looks at the rest of the handoff,
+    so the leg names a context leg that never ran, and no engine takes a call.
+    """
     handoff = {
-        **ctx["choices"][0]["disaggregated_params"],
         "request_type": "generation_only",
+        "ctx_request_id": 1,
+        "disagg_request_id": next(_DISAGG_REQUEST_IDS),
+        "first_gen_tokens": [PROMPT_TOKEN_IDS[0]],
         "first_gen_logits": FIRST_GEN_LOGITS,
     }
-    body = {"prompt": ctx["prompt_token_ids"], "max_tokens": 4, "disaggregated_params": handoff}
+    body = {"prompt": PROMPT_TOKEN_IDS, "max_tokens": 4, "disaggregated_params": handoff}
     message = _refused(chain, chain.gen, "v1/completions", body, GEN_LEG, "first_gen_logits")
     assert message.startswith(f"{GEN_LEG}: "), message

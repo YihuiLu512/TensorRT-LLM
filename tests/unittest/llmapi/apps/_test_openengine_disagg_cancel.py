@@ -8,7 +8,7 @@ TensorRT-LLM OpenEngine chain (``TRTLLM_TEST_OPENENGINE_CHAIN=trtllm``,
 ``tests/integration/defs/openengine_chain``) each worker is a frontend and a
 TensorRT-LLM OpenEngine server. The tests watch the engines over
 ``Control.GetLoad``: ``running_requests`` (the Generate calls the engine has
-accepted and not ended, waiting ones included), the Generate calls it
+received and not ended, waiting ones included), the Generate calls it
 received and the PrefillReady events it sent. The context engine takes one
 request at a time and prefills a long prompt in small chunks, so that a
 context leg can be left while it waits or while it prefills; a test checks
@@ -84,10 +84,8 @@ LONG_PROMPT = [1000 + i % 20000 for i in range(32000)]
 # A generation leg this long decodes for far longer than a cancel takes to arrive.
 LONG_DECODE = 8000
 # How long an engine may take to end a call whose client left (the worker
-# frontend checks for a gone client about once a second), and how long NT-090
-# waits before it checks that its call still runs.
+# frontend checks for a gone client about once a second).
 CANCEL_ARRIVES_S = 10.0
-STILL_RUNNING_S = 3.0
 _DISAGG_REQUEST_IDS = itertools.count(DISAGG_REQUEST_ID_MIN + 1)
 
 
@@ -171,7 +169,7 @@ def _load(server: RemoteOpenAIServer) -> dict:
 
 
 def _running(server: RemoteOpenAIServer) -> int:
-    """The Generate calls the worker's engine has accepted and not ended, waiting ones included."""
+    """The Generate calls the worker's engine has received and not ended, waiting ones included."""
     return int(_load(server).get("running_requests", 0))
 
 
@@ -210,14 +208,36 @@ def _context_leg_body(chain: Chain, prompt) -> dict:
     }
 
 
-def _send(url: str, body: dict) -> http.client.HTTPConnection:
-    """Send ``body`` to ``url`` and return the connection unread; closing it leaves the request."""
+@contextlib.contextmanager
+def _sent(url: str, body: dict):
+    """Send ``body`` to ``url`` and give the connection, unread; closing it leaves the request.
+
+    The connection is closed at the end in any case, so that a failed test
+    leaves no request behind on the module's chain.
+    """
     parts = urllib.parse.urlsplit(url)
     connection = http.client.HTTPConnection(parts.hostname, parts.port, timeout=REQUEST_TIMEOUT_S)
-    connection.request(
-        "POST", parts.path, body=json.dumps(body), headers={"Content-Type": "application/json"}
-    )
-    return connection
+    try:
+        connection.request(
+            "POST", parts.path, body=json.dumps(body), headers={"Content-Type": "application/json"}
+        )
+        yield connection
+    finally:
+        connection.close()
+
+
+def _until_ctx_runs(chain: Chain, count: int, handed_off: int, what: str) -> None:
+    """Wait until the context engine runs ``count`` calls while no prefill has ended since.
+
+    ``handed_off`` is the engine's PrefillReady count before the long prefill
+    started; a prefill that ended before the client could leave fails the test.
+    """
+
+    def ended() -> bool:
+        return _counter(chain.ctx, COUNTER_PREFILL_READY_SENT) != handed_off
+
+    _wait(lambda: _running(chain.ctx) == count or ended(), what, REQUEST_TIMEOUT_S)
+    assert not ended(), f"the long prefill ended before {what}; the prompt is too short here"
 
 
 def _leave_while_prefilling(
@@ -227,10 +247,7 @@ def _leave_while_prefilling(
 
     The context engine runs only that leg; ``handed_off`` is its PrefillReady count before it.
     """
-    _wait(lambda: _running(chain.ctx) == 1, "the prefill to run alone", REQUEST_TIMEOUT_S)
-    assert _counter(chain.ctx, COUNTER_PREFILL_READY_SENT) == handed_off, (
-        "the prefill ended before the client left; the prompt is too short for this GPU"
-    )
+    _until_ctx_runs(chain, 1, handed_off, "the prefill runs alone")
     connection.close()
     _wait(lambda: _running(chain.ctx) == 0, "the prefill call to end", CANCEL_ARRIVES_S)
     assert _counter(chain.ctx, COUNTER_PREFILL_READY_SENT) == handed_off
@@ -305,23 +322,21 @@ def test_non_streaming_disconnect_runs_both_legs_to_completion(chain):
     before = _orchestrator_counts(chain)
 
     def counts_grew(name: str) -> bool:
-        return _orchestrator_counts(chain).get(name, 0) > before.get(name, 0)
+        try:
+            return _orchestrator_counts(chain).get(name, 0) > before.get(name, 0)
+        except requests.RequestException:
+            return False
 
-    body = {
-        "model": chain.model,
-        "prompt": PROMPT,
-        "max_tokens": LONG_DECODE,
-        "ignore_eos": True,
-    }
-    connection = _send(chain.orchestrator.url_for("v1", "completions"), body)
-    _wait(lambda: counts_grew("gen_total_requests"), "the generation leg", REQUEST_TIMEOUT_S)
-    if CHAIN:
-        _wait(lambda: _running(chain.gen) == 1, "the decode call to run", REQUEST_TIMEOUT_S)
-    connection.close()
-    if CHAIN:
-        # Past the time a cancel takes to arrive, the generation leg still decodes.
-        time.sleep(STILL_RUNNING_S)
-        assert _running(chain.gen) == 1
+    body = {"model": chain.model, "prompt": PROMPT, "max_tokens": LONG_DECODE, "ignore_eos": True}
+    with _sent(chain.orchestrator.url_for("v1", "completions"), body) as connection:
+        _wait(lambda: counts_grew("gen_total_requests"), "the generation leg", REQUEST_TIMEOUT_S)
+        if CHAIN:
+            _wait(lambda: _running(chain.gen) == 1, "the decode call to run", REQUEST_TIMEOUT_S)
+        connection.close()
+        if CHAIN:
+            # Past the time a cancel would take to arrive, the generation leg still decodes.
+            time.sleep(CANCEL_ARRIVES_S)
+            assert _running(chain.gen) == 1, "the decode call ended within the cancel budget"
     for role in ("ctx", "gen"):
         _wait(
             lambda: counts_grew(f"{role}_completed_requests"),
@@ -340,7 +355,8 @@ def test_disconnect_during_prefill_aborts_the_ctx_leg(chain):
     handed_off = _counter(chain.ctx, COUNTER_PREFILL_READY_SENT)
     received = _counter(chain.ctx, COUNTER_GENERATE_RECEIVED)
     url = chain.ctx.url_for("v1", "completions")
-    _leave_while_prefilling(chain, _send(url, _context_leg_body(chain, LONG_PROMPT)), handed_off)
+    with _sent(url, _context_leg_body(chain, LONG_PROMPT)) as connection:
+        _leave_while_prefilling(chain, connection, handed_off)
     assert _counter(chain.ctx, COUNTER_GENERATE_RECEIVED) == received + 1
 
 
@@ -349,19 +365,15 @@ def test_abort_reaches_the_engine_at_each_stage(chain):
     """NT-197 (EG-16a): waiting, prefilling or decoding, a call whose client left ends."""
     url = chain.ctx.url_for("v1", "completions")
     handed_off = _counter(chain.ctx, COUNTER_PREFILL_READY_SENT)
-    # Waiting: a short context leg behind a long one, on an engine that takes one at a time.
-    long_leg = _send(url, _context_leg_body(chain, LONG_PROMPT))
-    _wait(lambda: _running(chain.ctx) == 1, "the long prefill to start", REQUEST_TIMEOUT_S)
-    short_leg = _send(url, _context_leg_body(chain, PROMPT))
-    _wait(lambda: _running(chain.ctx) == 2, "the short leg to wait", REQUEST_TIMEOUT_S)
-    assert _counter(chain.ctx, COUNTER_PREFILL_READY_SENT) == handed_off, (
-        "the long prefill ended before the short leg's client left"
-    )
-    short_leg.close()
-    _wait(lambda: _running(chain.ctx) == 1, "the waiting call to end", CANCEL_ARRIVES_S)
-
-    # Prefilling: the long leg, which neither leg handed off before.
-    _leave_while_prefilling(chain, long_leg, handed_off)
+    with _sent(url, _context_leg_body(chain, LONG_PROMPT)) as long_leg:
+        # Waiting: a short context leg behind the long one, on an engine that takes one at a time.
+        _until_ctx_runs(chain, 1, handed_off, "the long prefill starts")
+        with _sent(url, _context_leg_body(chain, PROMPT)) as short_leg:
+            _until_ctx_runs(chain, 2, handed_off, "the short leg waits")
+            short_leg.close()
+            _wait(lambda: _running(chain.ctx) == 1, "the waiting call to end", CANCEL_ARRIVES_S)
+        # Prefilling: the long leg, which neither leg handed off before.
+        _leave_while_prefilling(chain, long_leg, handed_off)
 
     # Decoding: a generation leg streamed and left once it decodes.
     body = _generation_leg_body(chain, _context_leg(chain), LONG_DECODE)
