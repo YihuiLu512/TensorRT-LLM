@@ -1,8 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """The submission gates of a registered job plan (calib-v2 DESIGN-r7a 3.1 P2-08b, 3.2, 4.5, 4.6;
-INTERFACES erratum calib-v2-A4). capjobs.submit runs them, in this order, before it writes
-anything, for every register that has an "expected" or an "arm_config" section:
+INTERFACES errata calib-v2-A4, calib-v2-A6). capjobs.submit runs them, in this order, before it
+writes anything, for every gated register (`gated`: an "arm_config" section, or an "expected"
+section with a key other than the v1 pair job_budget / launches_per_arm):
 
   1 registration  expected.{budget_id, job_budget, plan, disk}; plan = a registered job_plan.tsv
                   (sha checked); --exclude-file holds every node of the latest registered
@@ -49,9 +50,20 @@ class GateError(CapkitError):
         self.exit_code = exit_code
 
 
+# The whole "expected" section of a v1 register (E0 round 1, e0w60, E1). A register without
+# arm_config whose expected holds only these keys submits through the ungated flow.
+V1_EXPECTED_KEYS = frozenset({"job_budget", "launches_per_arm"})
+
+
 def gated(register_doc):
-    return isinstance(register_doc, dict) and ("expected" in register_doc
-                                               or "arm_config" in register_doc)
+    if not isinstance(register_doc, dict):
+        return False
+    if "arm_config" in register_doc:
+        return True
+    if "expected" not in register_doc:
+        return False
+    exp = register_doc["expected"]
+    return not (isinstance(exp, dict) and set(exp) <= V1_EXPECTED_KEYS)
 
 
 def _expected(doc):
@@ -188,13 +200,13 @@ def maintenance(a, runner, partitions, time_s, log_path):
 
 
 def gates(a, prep, runner, dry_run):
-    """Run gates 1-6 for a gated register; None for a register without expected / arm_config
-    (then --plan-item is refused). Nothing is written except the reservations log line of a real
-    submission."""
+    """Run gates 1-6 for a gated register; None for an ungated one (then --plan-item is
+    refused). Nothing is written except the reservations log line of a real submission."""
     workdir, doc = prep["workdir"], prep["register"]["doc"]
     if not gated(doc):
         if a.plan_item:
-            raise GateError("--plan-item needs a register with an expected section")
+            raise GateError("--plan-item needs a gated register (arm_config, or expected "
+                            "beyond job_budget / launches_per_arm)")
         return None
     exp = _expected(doc)  # 1
     items, plan_sha = _plan(workdir, exp)

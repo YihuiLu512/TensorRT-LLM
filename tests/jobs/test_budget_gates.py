@@ -217,6 +217,49 @@ def test_plan_item_refusals_exit_3_and_write_nothing(world, case):
     assert world.state() == before and not any("sbatch" in c[-1] for c in r.calls)
 
 
+def plain_register(world, name, extra):
+    """A register in the test_submit.Env shape plus `extra` top-level sections."""
+    doc = {"schema": "capkit.register/1", "experiment": "E0", "arms": ["nullsse-a"],
+           "files": {"scenario": {"relpath": world.env.scen_rel, "sha256": sha256_file(
+               os.path.join(world.w, world.env.scen_rel))}}, "environment": ts.REG_ENV}
+    doc.update(extra)
+    sha = sha256_file(world.reg_json("02_e0/E0/register/" + name, doc, "register"))
+    return sha, world.env.plan_for("launch_plan.%s" % name, sha)
+
+
+V1_EXPECTED = {"job_budget": 5, "launches_per_arm": 3}
+
+
+@pytest.mark.parametrize("expected", [V1_EXPECTED, {"job_budget": 5}, {}])
+def test_a_v1_expected_section_keeps_the_ungated_flow(world, expected):
+    """The registered E0 round-1, e0w60 and E1 registers carry expected = V1_EXPECTED and no
+    arm_config: they submit without --plan-item, write no BUDGET.tsv and read no reservation."""
+    reg = plain_register(world, "v1.register.json", {"expected": expected})
+    rc, r = world.submit(reg, None)
+    assert rc == 0
+    assert world.budget_rows() == []
+    assert [c[-1].split()[0] for c in r.calls] == ["sbatch"]
+    before = world.state()
+    assert world.submit(reg, "V0cal-A-0001")[0] == 3
+    assert world.state() == before
+
+
+@pytest.mark.parametrize("extra", [
+    {"expected": dict(V1_EXPECTED, budget_id="E0v2-V0cal")},
+    {"expected": dict(V1_EXPECTED, disk={"fs_path": "/x", "floor_bytes": 1, "per_job_bytes": 1})},
+    {"expected": "E0v2-V0cal"},
+    {"expected": V1_EXPECTED, "arm_config": {"nullsse-a": "nullsse"}},
+    {"arm_config": {"nullsse-a": "nullsse"}}])
+def test_a_v2_key_or_arm_config_makes_the_register_gated(world, extra):
+    """Any expected key beyond the v1 pair, a non-dict expected, or an arm_config section runs
+    gate 1, which refuses an incomplete expected section before anything is written."""
+    reg = plain_register(world, "v2.register.json", extra)
+    before = world.state()
+    rc, r = world.submit(reg, None)
+    assert rc == 3
+    assert world.state() == before and r.calls == []
+
+
 def test_block_pair_submits_consecutively_and_job_env_carries_the_node(world):
     p = world.plan("02_e0/E0/register/v2/V2b/job_plan.AA.tsv", [
         item(1, "V2b-AA-b01-s1", block="AA-b01", slot=1, pin=True),

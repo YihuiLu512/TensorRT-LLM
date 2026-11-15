@@ -133,3 +133,5 @@
   - 全量 tests/launch（短 TMPDIR /tmp/a5l2）：2 failed / 217 passed，2 条 test_fingerprint 要 probe-tree（本 worktree 没有）。
   - 附带：_local/calibv2-a/runt.sh、selftest.sh 的 EXIT 改为先存 $?（原来读的是 $(date) 的退出码）。
   - 未做（NOT RUN）：tests/jobs、tests/capcommon 等（本次没改 capjobs、capcommon）；I 样本与 shift 一一对应取代仍属 SB-C。
+- 2026-11-15 11:20:17 全量验证开工（HEAD e5de57bf）：建 probe-tree 软链（只供测试，不提交）、短 TMPDIR /home/scratch.yihlu_coreai/tmp/20261114-capkit-sm1718/calibv2-a；先跑 e0a-nullsse / e0b-s1-single 作业路径 e2e（脚本拷自 wt-fix-sm1718 e2e，放 _local/calibv2-a/e2e/*_e0*），再逐目录全量测试。
+- 2026-11-15 11:29:22 e0b-s1-single 作业路径 e2e（J9500001）在 build 处 submit 退出 3：A4 把带 `expected` 段的登记表一律门控，而已登记的 E0 第一轮 / e0w60 / E1 登记表都是 v1 的 `expected = {job_budget, launches_per_arm}`。修：budget.gated 只门控有 arm_config 或 expected 含 v1 两键之外键的登记表（勘误 calib-v2-A6）；test_budget_gates 新增 8 例 38 passed；变异 mut/v1gate 两项都变红。

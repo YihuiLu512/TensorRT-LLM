@@ -9,8 +9,9 @@ Sub-commands: probe (the only path that runs `sbatch --test-only`), submit, reco
 local-record, slurm-view, jobstate, record-end, exclude, pin-next, prep-tokenizer (the tokenizer
 copy, the only job that may mount a registered model dir read-only). See jobs/README.md. Nothing
 has a default resource value; every cluster command goes through capjobs.remote (ssh,
-allow-listed commands). A register with an "expected" or "arm_config" section submits only a
-registered job-plan item through capjobs.budget's gates (INTERFACES erratum calib-v2-A4).
+allow-listed commands). A gated register (capjobs.budget.gated: an "arm_config" section, or an
+"expected" section beyond the v1 job_budget / launches_per_arm) submits only a registered job-plan
+item through capjobs.budget's gates (INTERFACES errata calib-v2-A4, calib-v2-A6).
 """
 
 import argparse
