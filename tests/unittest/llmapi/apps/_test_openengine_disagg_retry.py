@@ -32,6 +32,7 @@ import psutil
 import pytest
 import requests
 import yaml
+from test_common.perf_metrics_utils import read_perf_metrics_jsonl
 
 from tensorrt_llm.grpc import openengine_conventions as conv
 
@@ -94,13 +95,12 @@ def _ctx_retries(deployment) -> int:
 
 
 def _records(perf_dir: Path) -> list[dict]:
-    """The orchestrator's perf records so far, in the order it wrote them."""
-    records = []
-    for path in sorted(perf_dir.glob("perf_metrics-disagg-*.jsonl")):
-        for line in path.read_text().splitlines():
-            if line.strip():
-                records.append(json.loads(line))
-    return records
+    """The orchestrator's perf records so far, in the order it wrote them.
+
+    Only the orchestrator writes to ``perf_dir``, into one file. A line it is still
+    writing is left out until it is complete.
+    """
+    return read_perf_metrics_jsonl(perf_dir)
 
 
 def _dumps(dump_dir: Path) -> dict[str, dict]:

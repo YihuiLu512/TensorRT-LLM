@@ -44,8 +44,10 @@ OPS_OPTIONS: Mapping[str, Mapping[str, Any]] = {
     "sleep_mode": {
         "worker_args": ("--enable_sleep_mode",),
         # Sleep mode runs on the V1 KV cache manager, which needs the C++ cache transceiver.
+        # Observed: with the NIXL backend, registering the KV cache memory of sleep mode fails
+        # and both workers exit at startup; with UCX they start and serve.
         "worker_config": {
-            "cache_transceiver_config": {"backend": "DEFAULT", "transceiver_runtime": "CPP"},
+            "cache_transceiver_config": {"backend": "UCX", "transceiver_runtime": "CPP"},
             "kv_cache_config": {
                 **BASE_WORKER_CONFIG["kv_cache_config"],
                 "use_kv_cache_manager_v2": False,
