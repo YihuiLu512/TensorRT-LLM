@@ -2,13 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Self-tests of how the rows WT-57 completes are shared with WT-57-fix1 and WT-57-fix2.
 
-WT-57 keeps the CPU and one-GPU cases (KEPT_WHOLE, and the cases PARTIAL keeps);
-WT-57-fix1 takes the new multi-GPU cases and WT-57-fix2 the existing multi-GPU
-ones. R11 (WT-60) waits for both fixes and verifies DG-43+rest; the R12 rows
+WT-57 keeps the CPU and one-GPU cases (KEPT_WHOLE but DG-43+rest, and the cases
+PARTIAL keeps); WT-57-fix1 takes the new multi-GPU cases and WT-57-fix2 the
+existing multi-GPU ones. R11 (WT-60) waits for both fixes and verifies DG-43+rest; the R12 rows
 whose cases WT-57-fix1 writes wait for it. The tests also cover the split
 mechanism these rows need: splits of a ``+rest`` row, a partial and a whole
 split on one row, notes that name only cases that stay, ``GROUP_ADDITIONS``,
-``VERIFIERS`` and ``ROW_WAITS``. Run from the repository root::
+``VERIFIERS``, ``ROW_WAITS``, and the refusal of fixes named in the tables of
+tasks.md. Run from the repository root::
 
     python3 -m pytest -p no:cacheprovider scripts/poc3/
 """
@@ -181,7 +182,8 @@ def test_a_fix_case_waits_for_its_fix_in_every_row(rows):
         for row in rows.values():
             if set(row.cases) & cases and fix not in row.deps:
                 # Existing cases also in rows completed earlier (DG-81's XD-215, EG-28's XD-010, ...)
-                # are not re-expected; NT cases are written by the fix and must wait everywhere.
+                # are not re-expected; NT and T cases are written or moved by the fix and must
+                # wait everywhere.
                 assert not {c for c in set(row.cases) & cases if c.startswith(("NT-", "T"))}, row.id
                 assert not set(row.cases) & cases & RE_EXPECTED, row.id
 
@@ -427,15 +429,20 @@ def test_group_additions_append_fixes_and_refuse_what_they_cannot_add():
     for additions, message in (
         ({"r12": (FIX1,)}, "no such group"),
         ({"r11-prereqs": ("WT-57-fx1",)}, "not a PoC-S3 work item"),
-        ({"r11-prereqs": ("WT-57",)}, "a member already"),
+        ({"r11-prereqs": ("WT-58",)}, "WT-58 is not a fix"),
+        ({"r11-prereqs": ("WT-57",)}, "WT-57 is not a fix"),
+        ({"r11-prereqs": ("WT-55-fix1",)}, "fixes WT-55, which is not a member"),
         ({"r11-prereqs": (FIX1, FIX1)}, "a member already"),
     ):
         with pytest.raises(ValueError, match=message):
             sync_feature_deps.add_group_members(groups, additions)
 
 
+ZZY = ("NT-003", "NT-081", "XD-082")
+
+
 def test_a_verifier_becomes_the_fixed_verifier_of_its_row_with_its_note():
-    rows = _derive(verifiers=[("EG-ZZY", "WT-60", "how")])
+    rows = _derive(verifiers=[("EG-ZZY", ZZY, "WT-60", "how")])
     assert rows["EG-ZZY"]["assignee"] == "WT-60" and rows["EG-ZZY"]["deps"] == ["link", "WT-57"]
     assert list(rows["EG-ZZY"])[:7] == [
         *("id", "features", "cases", "author", "deps", "chain", "assignee")
@@ -443,36 +450,51 @@ def test_a_verifier_becomes_the_fixed_verifier_of_its_row_with_its_note():
     assert rows["EG-ZZY"]["notes"] == ["how"] and rows["EG-ZZY"]["author"] == ["WT-57"]
     # A note of the tables stays first.
     rows = _derive(
-        deps="链路、WT-57；补充用例 XD-020 随 PB-3", verifiers=[("EG-ZZY", "WT-60", "how")]
+        deps="链路、WT-57；补充用例 XD-020 随 PB-3", verifiers=[("EG-ZZY", ZZY, "WT-60", "how")]
     )
     assert rows["EG-ZZY"]["notes"] == ["补充用例 XD-020 随 PB-3", "how"]
-    assert [entry[:2] for entry in sync_feature_deps.VERIFIERS] == [(TO_R11, "WT-60")]
+    assert [entry[:3] for entry in sync_feature_deps.VERIFIERS] == [(TO_R11, ("NT-011",), "WT-60")]
 
 
 @pytest.mark.parametrize(
     "verifiers, splits, message",
     [
-        ([("EG-ZZQ", "WT-60", "x")], (), "no such row"),
-        ([("EG-ZZY", "WT-65", "x")], (), "verifies no row of the tables"),
-        ([("EG-ZZY", "WT-6", "x")], (), "verifies no row of the tables"),
-        ([("EG-ZZY", "WT-60", " ")], (), "no note says how"),
-        ([("EG-ZZZ", "WT-61", "x")], (), "has a fixed verifier"),
-        ([("EG-ZZV", "WT-60", "x")], (), "deferred"),
-        ([("DS-ZZ", "WT-60", "x")], (), "case-03"),
-        ([("EG-ZZY", "WT-60", "x"), ("EG-ZZY", "WT-61", "x")], (), "two verifiers of one row"),
-        # A split refuses a row with a fixed verifier; the verifier cannot come after the split.
-        ([("EG-ZZY", "WT-60", "x")], [("EG-ZZY", ("XD-082",), FIX2)], "a split names or adds"),
-        ([(f"EG-ZZY+{FIX2}", "WT-60", "x")], [("EG-ZZY", ("XD-082",), FIX2)], "a split names"),
+        ([("EG-ZZQ", ZZY, "WT-60", "x")], (), "no such row"),
+        ([("EG-ZZY", ZZY[:2], "WT-60", "x")], (), "the row's cases are"),
+        ([("EG-ZZY", (*ZZY, "NT-030"), "WT-60", "x")], (), "the row's cases are"),
+        ([("EG-ZZY", ZZY, "WT-65", "x")], (), "verifies no row of the tables"),
+        ([("EG-ZZY", ZZY, "WT-6", "x")], (), "verifies no row of the tables"),
+        ([("EG-ZZY", ZZY, "WT-60", " ")], (), "no note says how"),
+        ([("EG-ZZZ", ("XD-213",), "WT-61", "x")], (), "has a fixed verifier"),
+        ([("EG-ZZV", ("XD-001",), "WT-60", "x")], (), "deferred"),
+        ([("DS-ZZ", ("NT-147",), "WT-60", "x")], (), "case-03"),
         (
-            [("EG-ZZY", "WT-60", "x")],
-            [("EG-ZZY", ("*", "NT-003", "NT-081", "XD-082"), FIX2)],
-            "a split",
+            [("EG-ZZY", ZZY, "WT-60", "x"), ("EG-ZZY", ZZY, "WT-61", "x")],
+            (),
+            "two verifiers of one row",
         ),
-        ([("EG-ZZX+rest", "WT-60", "x")], [("EG-ZZX+rest", ("XD-312",), FIX2)], "a split names"),
+        # A split refuses a row with a fixed verifier; the verifier cannot come after the split.
+        (
+            [("EG-ZZY", ZZY[:2], "WT-60", "x")],
+            [("EG-ZZY", ("XD-082",), FIX2)],
+            "a split names or adds",
+        ),
+        (
+            [(f"EG-ZZY+{FIX2}", ("XD-082",), "WT-60", "x")],
+            [("EG-ZZY", ("XD-082",), FIX2)],
+            "a split names",
+        ),
+        ([("EG-ZZY", ZZY, "WT-60", "x")], [("EG-ZZY", ("*", *ZZY), FIX2)], "a split"),
+        (
+            [("EG-ZZX+rest", ("NT-080",), "WT-60", "x")],
+            [("EG-ZZX+rest", ("XD-312",), FIX2)],
+            "a split names",
+        ),
     ],
     ids=[
-        *("no-row", "unknown-verifier", "malformed", "no-note", "has-one", "deferred", "case-03"),
-        *("twice", "split-row", "split-product", "whole-split-row", "split-rest-row"),
+        *("no-row", "fewer-cases", "more-cases", "unknown-verifier", "malformed", "no-note"),
+        *("has-one", "deferred", "case-03", "twice", "split-row", "split-product"),
+        *("whole-split-row", "split-rest-row"),
     ],
 )
 def test_a_verifier_the_row_cannot_take_is_refused(verifiers, splits, message):
@@ -480,46 +502,69 @@ def test_a_verifier_the_row_cannot_take_is_refused(verifiers, splits, message):
         _derive(splits, verifiers=verifiers)
 
 
+ZZW, ZZZ = ("NT-209",), ("XD-213",)
+
+
 def test_a_wait_makes_a_row_with_a_fixed_verifier_also_wait_for_the_item():
-    rows = _derive(waits=[("EG-ZZW", FIX1), ("EG-ZZZ", "WT-55-fix1")])
+    rows = _derive(waits=[("EG-ZZW", ZZW, FIX1), ("EG-ZZZ", ZZZ, "WT-55-fix1")])
     assert rows["EG-ZZW"]["deps"] == ["link", "WT-57", FIX1]
     assert rows["EG-ZZW"]["assignee"] == "WT-61" and rows["EG-ZZW"]["author"] == [FIX1]
     assert rows["EG-ZZZ"]["deps"] == ["r11-prereqs", "WT-55-fix1"]
-    assert set(sync_feature_deps.ROW_WAITS) == {(row_id, FIX1) for row_id in R12_WAITING}
+    assert {(row_id, item) for row_id, _, item in sync_feature_deps.ROW_WAITS} == {
+        (row_id, FIX1) for row_id in R12_WAITING
+    }
 
 
 @pytest.mark.parametrize(
     "waits, message",
     [
-        ([("EG-ZZQ", FIX1)], "no such row"),
-        ([("EG-ZZY", FIX1)], "has no fixed verifier"),
-        ([("EG-ZZV", FIX1)], "deferred"),
-        ([("EG-ZZW", "WT-57-fx1")], "not a PoC-S3 work item"),
-        ([("EG-ZZW", "WT-57")], "dependency of the row already"),
-        ([("EG-ZZZ", "WT-37")], "dependency of the row already"),  # through R11 前提
-        ([("EG-ZZZ", FIX2)], "dependency of the row already"),  # through GROUP_ADDITIONS
-        ([("EG-ZZW", FIX1), ("EG-ZZW", FIX2)], "two waits of one row"),
+        ([("EG-ZZQ", ZZW, FIX1)], "no such row"),
+        ([("EG-ZZW", (), FIX1)], "the row's cases are"),
+        ([("EG-ZZW", ("NT-209", "NT-210"), FIX1)], "the row's cases are"),
+        ([("EG-ZZY", ZZY, FIX1)], "has no fixed verifier"),
+        ([("EG-ZZV", ("XD-001",), FIX1)], "has no fixed verifier"),  # a deferred row has none
+        ([("EG-ZZW", ZZW, "WT-57-fx1")], "not a PoC-S3 work item"),
+        ([("EG-ZZW", ZZW, "WT-61")], "is the row's verifier"),
+        ([("EG-ZZW", ZZW, "WT-57")], "dependency of the row already"),
+        ([("EG-ZZZ", ZZZ, "WT-37")], "dependency of the row already"),  # through R11 前提
+        ([("EG-ZZZ", ZZZ, FIX2)], "dependency of the row already"),  # through GROUP_ADDITIONS
+        ([("EG-ZZW", ZZW, FIX1), ("EG-ZZW", ZZW, FIX2)], "two waits of one row"),
     ],
-    ids=["no-row", "no-verifier", "deferred", "malformed", "dependency", "group", "added", "twice"],
+    ids=[
+        *("no-row", "no-cases", "more-cases", "no-verifier", "deferred", "malformed"),
+        *("own-verifier", "dependency", "group", "added", "twice"),
+    ],
 )
 def test_a_wait_the_row_cannot_take_is_refused(waits, message):
     with pytest.raises(ValueError, match=message):
         _derive(waits=waits)
 
 
-def test_a_verifier_set_after_the_tables_can_also_wait():
-    rows = _derive(verifiers=[("EG-ZZY", "WT-60", "x")], waits=[("EG-ZZY", FIX1)])
+def test_a_performance_row_cannot_wait():
+    text = TABLES.replace("{DEPS}", "链路、WT-57").replace(
+        "| NT-209 | WT-57 | 链路、WT-57；R12 验收 |",
+        "| NT-209、PU-07 | WT-57 | 链路、WT-57；R12 验收；PU-07 取证（WT-54） |",
+    )
+    rows = {row["id"]: row for row in sync_feature_deps.derive(text)}
+    assert rows["EG-ZZW+PU-07"]["assignee"] == "WT-54"
+    with pytest.raises(ValueError, match="the row is performance evidence"):
+        sync_feature_deps.derive(text, waits=(("EG-ZZW+PU-07", ("PU-07",), FIX1),))
+
+
+def test_a_row_verifiers_gives_a_verifier_can_also_wait():
+    rows = _derive(verifiers=[("EG-ZZY", ZZY, "WT-60", "x")], waits=[("EG-ZZY", ZZY, FIX1)])
     assert rows["EG-ZZY"]["assignee"] == "WT-60" and rows["EG-ZZY"]["deps"][-1] == FIX1
 
 
-def test_a_split_row_cannot_wait():
+@pytest.mark.parametrize(
+    "split, cases",
+    [(("EG-ZZY", ("XD-082",), FIX2), ZZY[:2]), (("EG-ZZY", ("*", *ZZY), FIX2), ZZY)],
+    ids=["partial", "whole"],
+)
+def test_a_split_row_cannot_wait(split, cases):
     # It has no fixed verifier: a split refuses one, and VERIFIERS refuses the split rows.
-    for splits in (
-        [("EG-ZZY", ("XD-082",), FIX2)],
-        [("EG-ZZY", ("*", "NT-003", "NT-081", "XD-082"), FIX2)],
-    ):
-        with pytest.raises(ValueError, match="has no fixed verifier"):
-            _derive(splits, waits=[("EG-ZZY", FIX1)])
+    with pytest.raises(ValueError, match="has no fixed verifier"):
+        _derive([split], waits=[("EG-ZZY", cases, FIX1)])
 
 
 @pytest.mark.parametrize("deps", ["不设 E2E：x", "链路；R12 验收", "链路（只在 B200）、WT-57"])
@@ -528,11 +573,29 @@ def test_a_missing_rest_row_is_reported_as_missing_first(deps):
         _derive([("EG-ZZY+rest", ("*", "NT-003"), FIX1)], deps)
 
 
-def test_a_fix_in_the_group_table_is_refused():
+@pytest.mark.parametrize("spelling", ["WT-57-fix1", "WT-57-FIX1", "WT-57 fix1", "WT-57（fix1）"])
+def test_a_fix_in_the_group_table_is_refused(spelling):
     with pytest.raises(ValueError, match="fixes go in GROUP_ADDITIONS"):
-        sync_feature_deps.derive_groups(
-            TABLES.replace("WT-37、WT-57 |", "WT-37、WT-57、WT-57-fix1 |")
-        )
+        sync_feature_deps.derive_groups(TABLES.replace("WT-37、WT-57 |", f"WT-37、{spelling} |"))
+
+
+@pytest.mark.parametrize(
+    "old, new, message",
+    [
+        ("WT-57（NT-080、XD-312）", "WT-57-fix1（NT-080、XD-312）", "names a fix"),
+        ("其余用例另等 WT-57", "其余用例另等 WT-57-fix1", "names a fix"),
+        ("| NT-209 | WT-57 |", "| NT-209 | WT-57 Fix1 |", "names a fix"),
+        ("WT-41、WT-42、WT-43", "WT-41、WT-42-fix1", "repository's items name a fix"),
+    ],
+    ids=["author", "rest-clause", "author-spelling", "ds-repo"],
+)
+def test_a_fix_in_the_other_tables_is_refused(old, new, message):
+    text = TABLES.replace("{DEPS}", "链路、WT-57")
+    sync_feature_deps.derive_groups(text)
+    sync_feature_deps.derive(text)
+    with pytest.raises(ValueError, match=message):
+        sync_feature_deps.derive_groups(text.replace(old, new))
+        sync_feature_deps.derive(text.replace(old, new))
 
 
 def test_applying_splits_leaves_the_authors_it_is_given_alone():
