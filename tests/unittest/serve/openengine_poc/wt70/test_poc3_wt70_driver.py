@@ -367,11 +367,11 @@ def test_main_dry_run_writes_the_plan(driver, tmp_path):
         (ARM_ENV, "hostnames-local-0"),
     ],
 )
-def test_main_refuses(driver, tmp_path, capsys, env, stale):
+def test_main_refuses(driver, tmp_path, capfd, env, stale):
     if stale:
         (tmp_path / "out" / f"disagg-e2e-{PU02}" / stale).mkdir(parents=True)
     assert _main(driver, tmp_path, dict(os.environ, **env), "--dry-run") == 2
-    assert "[single-node disagg]" in capsys.readouterr().err
+    assert "[single-node disagg]" in capfd.readouterr().err
     assert not (tmp_path / "out" / "single-node").exists(), "nothing is started or written"
 
 
@@ -410,7 +410,7 @@ def test_main_stops_what_a_role_leaves_behind(quick, tmp_path, monkeypatch):
     assert not any(driver._alive(p) for p in report["leftover_pids"])
 
 
-def test_main_maps_a_bad_yaml_and_a_rule_error_to_exit_2(driver, tmp_path, capsys, monkeypatch):
+def test_main_maps_a_bad_yaml_and_a_rule_error_to_exit_2(driver, tmp_path, capfd, monkeypatch):
     env = dict(os.environ, **ARM_ENV)
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
@@ -424,7 +424,7 @@ def test_main_maps_a_bad_yaml_and_a_rule_error_to_exit_2(driver, tmp_path, capsy
     monkeypatch.setattr(driver, "ucx_env", no_rule)
     assert driver.main([*argv, "--config-dir", str(CONFIGS), f"disagg-e2e-{PU02}"], env) == 2
     assert not (tmp_path / "out" / "single-node").exists(), "a refused run leaves no directory"
-    assert "Traceback" not in capsys.readouterr().err
+    assert "Traceback" not in capfd.readouterr().err
 
 
 def test_report_shows_what_the_driver_adds_to_the_environment(driver, tmp_path):

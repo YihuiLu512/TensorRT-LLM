@@ -120,7 +120,7 @@ class _Unavailable:
         raise _Error()
 
 
-def test_main_writes_the_result_and_the_records(replay, engines, tmp_path, capsys):
+def test_main_writes_the_result_and_the_records(replay, engines, tmp_path, capfd):
     ctx, gen = engines
     argv = [
         "--ctx", _endpoint(ctx), "--gen", _endpoint(gen), "--model", MODEL,
@@ -128,14 +128,14 @@ def test_main_writes_the_result_and_the_records(replay, engines, tmp_path, capsy
         "--warmup-requests", "2", "--max-token-id", "500", "--out-dir", str(tmp_path),
     ]  # fmt: skip
     assert replay.main(argv) == 0
-    summary = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    summary = json.loads(capfd.readouterr().out.strip().splitlines()[-1])
     result = Path(summary["result"])
     assert json.loads(result.read_text())["arm"] == "E4-direct"
     records = result.with_suffix(".requests.jsonl").read_text().splitlines()
     assert len(records) == 4 and all(json.loads(line)["ok"] for line in records)
 
 
-def test_invalid_arguments(replay, capsys):
+def test_invalid_arguments(replay, capfd):
     argv = [
         "--ctx",
         "a:1",
@@ -149,4 +149,4 @@ def test_invalid_arguments(replay, capsys):
         "/x",
     ]
     assert replay.main(argv) == 2
-    assert "num_requests must be at least 1" in capsys.readouterr().err
+    assert "num_requests must be at least 1" in capfd.readouterr().err
