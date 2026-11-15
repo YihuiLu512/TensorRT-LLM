@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# A completion through the orchestrator and both worker frontends returns the prompt with the
+# answer (one context and one generation worker on one GPU).
+unittest/llmapi/apps/_test_openengine_disagg_endpoints.py::test_completion_echo[whole]
