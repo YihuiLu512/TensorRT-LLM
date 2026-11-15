@@ -149,14 +149,17 @@ def validate_args(args, common):
         raise ConfigError("S-FE options %s need --sfe-module" % given)
 
 
-def check_inject_specs(specs):
-    """Every spec targets a known site in a mode that site supports (else exit 3)."""
+def check_inject_specs(specs, site_modes=None, who="S-PB"):
+    """Every spec targets a known site in a mode that site supports (else exit 3). site_modes
+    defaults to S-PB's; S-NL passes its own."""
+    site_modes = SITE_MODES if site_modes is None else site_modes
     for sp in specs:
-        if sp.site not in SITE_MODES:
-            raise ConfigError("inject site %s unknown to S-PB (sites: %s)" % (sp.site, SITES))
-        if sp.mode not in SITE_MODES[sp.site]:
+        if sp.site not in site_modes:
+            raise ConfigError("inject site %s unknown to %s (sites: %s)"
+                              % (sp.site, who, tuple(sorted(site_modes))))
+        if sp.mode not in site_modes[sp.site]:
             raise ConfigError("inject site %s does not support mode %s (supports %s)"
-                              % (sp.site, sp.mode, SITE_MODES[sp.site]))
+                              % (sp.site, sp.mode, site_modes[sp.site]))
 
 
 def plan_streams(tt, prebaked, specs):

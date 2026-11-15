@@ -9,3 +9,5 @@
 
 ## 进度日志
 - 2026-11-15 23:49:02 开工：建 worktree（capkit-ft1 @ 756b9e7fe6ef5fb7726b0dd3f6a81869545f184d），写本进度日志头。
+- 2026-11-16 00:01:10 FT1-snl 开始：读完设计稿 §2.3 S-NL、E3 卡、产品 servicer/server/streaming（探针树），开始写 capstubs/nullllm.py 与 null_llm_server.py（预计 1～2 h）。
+- 2026-11-16 00:16:44 FT1-snl 变异 M0–M6 串行（约 5 分钟）

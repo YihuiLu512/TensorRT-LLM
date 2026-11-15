@@ -57,6 +57,9 @@ TOOL_TABLE = {
     # S-PB (errata B2B-3): takes --workers, which must be 1 (one process, expected_procs 1).
     "capstubs.prebaked_server": {"loop": True, "tiers": True, "snapshot": True, "ready": True,
                                  "port": True, "workers": True, "single": True},
+    # S-NL (errata FT1-1): one process like S-PB; every mode binds a port (metronome-only too).
+    "capstubs.null_llm_server": {"loop": True, "tiers": True, "snapshot": True, "ready": True,
+                                 "port": True, "workers": True, "single": True},
     # --ready-file: INTERFACES 2.2 ("all long-lived processes"); optional in B4's parsers.
     "capenv.sidecar": {"origin": True, "shm_only": True, "sidecar": True, "ready": True},
     "capenv.canary": {"origin": True, "canary": True, "ready": True},
