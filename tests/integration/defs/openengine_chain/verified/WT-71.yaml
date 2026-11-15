@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# This work item owes no feature row (pending_e2e.py). Its end-to-end checks are the PU-06 smoke
+# runs of the case-03 arms (ds engine, GB300, one node with four GPUs, N-0 layout, the
+# records/WT-71 configurations at concurrency 8), which the single-node driver
+# (jenkins/scripts/perf/local/single_node_disagg) starts; the work item's status file records
+# their result directories.
+#
+# Results, each run with all four roles exiting 0, 80 of 80 requests (81,920 output tokens)
+# and a result file the harness's validator accepts:
+# - E3-native and E3-native-al, one run each; E3-chain, three runs (chain proof ok, the ds
+#   chain's workers checked as cross-node legs, expectations/WT-71.py).
+# - On the final code (with the ds commit below): E3-mid, three runs, both legs answering
+#   /v1/completions with 200 and no 4xx (UV-35); E3-native, three runs, still passing.
+#
+# E3-mid with a /v1/completions client (benchmark_serving): the disaggregated server's YAML
+# carries gen_tokids_ctxbytes: false, and the result's notes and ds_alignment say so.
+# trtllm-serve's CompletionResponse has no prompt_token_ids_b64 field and refuses a context
+# response that carries it, so with the default (true) every request fails; on the chat and
+# responses paths trtllm-serve takes the field. Only E3-mid changes; the other arms keep
+# the default.
+#
+# dsv4-serve's CompletionResponse leaves prompt_token_ids_b64 out when it is None (ds commit
+# 94005ff481), as trtllm-serve's _omit_absent_* serializers do: trtllm-serve's
+# CompletionResponse refuses the key even as null, so E3-mid cannot run on completions
+# without it. Only a None-valued key is dropped; dsv4-serve's own disaggregated proxy reads
+# the key with .get(), so the native arms (E3-native, E3-native-al) are unchanged, as their
+# reruns on this commit show.
+#
+# DSV4_TOKCACHE_VERIFY counts among the log-only ds variables, as the perf-test plan lists it,
+# though it does more than log: the front end tokenizes again and raises RuntimeError when the
+# two results differ. None of the PU-06 arms sets it.
+entries: []

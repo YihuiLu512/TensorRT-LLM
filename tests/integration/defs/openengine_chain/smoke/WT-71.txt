@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# No entry. This work item's end-to-end tests are case-03 disaggregated perf runs on four GPUs: the
+# single-node driver (jenkins/scripts/perf/local/single_node_disagg) starts their roles on a ds
+# engine, which a one-GPU runner entry cannot do. Its runs are described in verified/WT-71.yaml.
