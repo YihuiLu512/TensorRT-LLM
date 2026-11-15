@@ -1,11 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Self-tests of the splits that make GPU-layer NT cases wait for WT-52-fix1 and WT-53-fix2.
+"""Self-tests of the splits that make cases of the link + WT-52 / WT-53 rows wait for a fix.
 
 The rows whose dependencies are exactly the link and WT-52 (or WT-53) are
 completed by WT-37's landing. Their GPU-layer NT cases (the layer column of
 the plan's functional tests, §6.3) also wait for WT-52-fix1 (WT-53-fix2);
-WT-37 keeps the rows' XD, T and CPU-layer NT cases. Run from the repository root::
+WT-37 keeps the rows' CPU-layer NT cases and their XD and T cases, except the
+XD cases in HANDED_OVER (test_poc3_wt30fix8_handoffs.py tests where they go).
+Run from the repository root::
 
     python3 -m pytest -p no:cacheprovider scripts/poc3/
 """
@@ -27,8 +29,9 @@ from poc3_common import parse_task
 # The same set as in test_poc3_scripts.py, kept here so that this module imports no other test
 # module.
 LINK = {"WT-35", "WT-37", "WT-38", "WT-40", "WT-50", "WT-51"}
-# Landed items the obligations below depend on, WT-37 excepted (the integration branch also has
-# items no row here depends on).
+# Items taken as landed before WT-37: the rest of the link, WT-52 and WT-53, which the rows below
+# depend on, and WT-51-fix1 and WT-54, which none of them depends on. The rows that depend on WT-55
+# are left to test_poc3_wt30fix8_handoffs.py.
 BEFORE_WT37 = (LINK - {"WT-37"}) | {"WT-51-fix1", "WT-52", "WT-53", "WT-54"}
 
 # The GPU-layer NT cases of those rows: layer GPU-直连 or GPU-E2E-case04 in §6.3 of the plan's
@@ -42,13 +45,11 @@ GPU_CASES = {
 # The cases each of those rows keeps for WT-37; the rows in WHOLE_ROWS keep none and wait for the
 # fix under their own ids.
 KEPT = {
-    "F-25": ["XD-219", "T2"],
+    "F-25": ["T2"],
     "F-30": ["XD-014", "T2", "T1"],
     "F-34": ["XD-014", "XD-059", "XD-208"],
-    "F-43": ["XD-120"],
-    "DG-19": ["XD-025", "XD-007", "XD-107", "XD-058", "XD-121", "XD-123", "XD-059"],
+    "DG-19": ["XD-025", "XD-007", "XD-107", "XD-058", "XD-059"],
     "DG-22": ["NT-004"],
-    "DG-24": ["XD-026", "XD-119"],
     "DG-35": ["NT-004"],
     "DG-38": ["XD-055", "NT-009", "XD-073", "XD-125"],
     "DG-39c": ["XD-055", "NT-009"],
@@ -59,7 +60,7 @@ KEPT = {
     "DG-88": ["NT-023", "NT-032"],
     "DG-90": ["NT-024", "NT-033"],
     "EG-05b": ["NT-025"],
-    "EG-06": ["XD-219", "NT-026"],
+    "EG-06": ["NT-026"],
     "EG-07": ["NT-028", "NT-034"],
     "EG-16a": ["XD-055"],
     "EG-19": ["NT-027"],
@@ -68,16 +69,24 @@ KEPT = {
 }
 WHOLE_ROWS = {
     "WT-52-fix1": ["F-10", "F-19", "F-26", "DG-39", "EG-05a", "EG-10b", "EG-29"],
-    "WT-53-fix2": ["F-06", "F-39", "DG-23", "DG-25", "DG-89"],
+    "WT-53-fix2": ["F-06", "F-39", "F-43", "DG-23", "DG-24", "DG-25", "DG-89"],
 }
 PARTIAL_ROWS = {
     "WT-52-fix1": [
         "F-25", "DG-38", "DG-39c", "DG-84", "DG-85", "DG-86", "DG-87", "DG-88", "DG-90",
-        "EG-05b", "EG-07", "EG-16a", "EG-19",
+        "EG-05b", "EG-06", "EG-07", "EG-16a", "EG-19",
     ],
-    "WT-53-fix2": ["F-43", "DG-19", "DG-22", "DG-24", "DG-35", "EG-21"],
+    "WT-53-fix2": ["DG-19", "DG-22", "DG-35", "EG-21"],
 }  # fmt: skip
-UNSPLIT_ROWS = {"F-30", "F-34", "EG-06", "EP-01"}  # no GPU-layer NT case
+UNSPLIT_ROWS = {"F-30", "F-34", "EP-01"}  # no case waits for a fix
+# The XD cases of the source rows (SOURCE_ROWS) that also wait for the fix.
+HANDED_OVER = {
+    "DG-19": {"XD-123", "XD-121"},
+    "F-43": {"XD-120"},
+    "DG-24": {"XD-026", "XD-119"},
+    "F-25": {"XD-219"},
+    "EG-06": {"XD-219"},
+}
 SOURCE_ROWS = set(KEPT) | {row for rows in WHOLE_ROWS.values() for row in rows}
 FIX_OF = {"WT-52-fix1": "WT-52", "WT-53-fix2": "WT-53"}
 
@@ -135,7 +144,8 @@ def test_the_splits_of_the_fixes_move_the_gpu_cases_of_the_source_rows(rows):
             assert list(base.cases) == KEPT[row_id] and base.deps == LINK | {"WT-52"}
             continue
         whole, moved, item = splits[row_id]
-        assert set(moved) <= GPU_CASES and whole == (row_id in WHOLE_ROWS[item])
+        assert set(moved) - GPU_CASES == HANDED_OVER.get(row_id, set())
+        assert whole == (row_id in WHOLE_ROWS[item])
         if whole:
             assert row_id not in KEPT and set(base.cases) == set(moved)
             assert base.deps == LINK | {FIX_OF[item], item}
@@ -144,7 +154,8 @@ def test_the_splits_of_the_fixes_move_the_gpu_cases_of_the_source_rows(rows):
             assert base.deps == LINK | {FIX_OF[item]}
             split = rows[f"{row_id}+{item}"]
             assert set(split.cases) == set(moved) and split.deps == LINK | {FIX_OF[item], item}
-    assert not GPU_CASES & {case for cases in KEPT.values() for case in cases}
+    kept = {case for cases in KEPT.values() for case in cases}
+    assert not (GPU_CASES | set().union(*HANDED_OVER.values())) & kept
 
 
 def test_no_link_wt52_or_wt53_row_has_a_gpu_case_left(rows):
@@ -172,10 +183,14 @@ def test_only_the_split_cases_wait_for_a_fix(rows):
     assert waiting == _fix_rows("WT-52-fix1") | _fix_rows("WT-53-fix2") | {
         "DG-16+WT-51-fix2",
         "DG-82+WT-51-fix2",
+        # Rows WT-55-fix1 owes whole (test_poc3_wt30fix8_handoffs.py).
+        "DG-39b",
+        "DG-81",
+        "EG-20",
     }
 
 
-def test_a_case_waits_for_a_fix_in_every_row_or_in_none(rows):
+def test_an_nt_case_waits_for_a_fix_in_every_row_or_in_none(rows):
     waiting, not_waiting = set(), set()
     for row in rows.values():
         fixed = any(parse_task(d)[1] for d in row.deps)
@@ -229,10 +244,12 @@ def test_the_supplementary_cases_stay_with_dg19_and_dg24(raw_rows):
     assert raw_rows["DG-19"]["hopper_cases"] == ["XD-049", "XD-122"]
     assert raw_rows["DG-24"]["hopper_cases"] == ["XD-050", "XD-051"]
     assert raw_rows["DG-24"]["not_runnable"] == ["XD-118"]
-    for row_id in ("DG-19", "DG-24"):
-        assert raw_rows[row_id]["deps"] == ["link", "WT-53"]
-        split = raw_rows[f"{row_id}+WT-53-fix2"]
-        assert not {"hopper_cases", "two_node_cases", "not_runnable"} & set(split)
+    # DG-19 is split in part, DG-24 whole: the row itself waits for the fix.
+    assert raw_rows["DG-19"]["deps"] == ["link", "WT-53"]
+    split = raw_rows["DG-19+WT-53-fix2"]
+    assert not {"hopper_cases", "two_node_cases", "not_runnable"} & set(split)
+    assert raw_rows["DG-24"]["deps"] == ["link", "WT-53", "WT-53-fix2"]
+    assert "DG-24+WT-53-fix2" not in raw_rows
 
 
 def test_pending_on_a_constructed_history(tmp_path, capsys):

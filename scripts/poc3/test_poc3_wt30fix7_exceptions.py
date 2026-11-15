@@ -476,3 +476,19 @@ def test_an_exception_is_spent_by_its_item_at_the_base_not_at_the_merge_base(tmp
     _git(repo, "commit", "-q", "--allow-empty", "-m", "landed\n\nPoC3-Task: WT-55")
     assert check_ownership.check("WT-55", "landed..main", str(repo)) == 1
     assert f"OUT OF BOUNDS  {path}  (the exception for WT-55 is spent" in capsys.readouterr().out
+
+
+# Work items whose trailers at the base leave WT-53-fix1's exceptions in force: the item it fixes
+# and that item's other fixes.
+@pytest.mark.parametrize("landed", _others("WT-53-fix1"))
+def test_an_exception_for_a_fix_is_not_spent_by_the_item_it_fixes_or_that_items_other_fixes(
+    tmp_path, capsys, landed
+):
+    # WT-53-fix1's lines in engine_client.py, made on a base where WT-53, or another fix of it,
+    # has landed and WT-53-fix1 has not.
+    item, path, rev, anchor, _, added = next(c for c in ADDED_ONLY if c[0] == "WT-53-fix1")
+    lines = _show(rev, path).split("\n")
+    base, head = "\n".join(lines), "\n".join(_after(lines, [anchor], added))
+    repo, sha = _repo_with(tmp_path, path, base, head, item, landed=landed)
+    assert check_ownership.check(item, f"{sha}..HEAD", str(repo)) == 0, capsys.readouterr().out
+    assert f"CHECK BY HAND  EXCEPTION  {path}" in capsys.readouterr().out

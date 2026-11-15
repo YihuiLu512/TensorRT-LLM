@@ -137,26 +137,32 @@ WHOLE = "*"  # first of a split's cases: the cases listed are every case in the 
 # WT-51-fix2 writes the GPU file of NT-080 and NT-179 once the link has landed, so the item that
 # completes the link cannot verify them. On the rows whose dependencies are exactly the link and
 # WT-52 (WT-53), every GPU-layer NT case (the layer column of the plan's functional tests, §6.3)
-# also waits for WT-52-fix1 (WT-53-fix2); the CPU-layer NT cases stay with the row.
+# also waits for WT-52-fix1 (WT-53-fix2); the CPU-layer NT cases stay with the row. The XD and T
+# cases stay with the row too, except XD-121 and XD-123 (DG-19), XD-120 (F-43), XD-026 and XD-119
+# (DG-24), which also wait for WT-53-fix2, so that F-43 and DG-24 wait for it whole, and XD-219,
+# which waits for WT-52-fix1 in both its rows (F-25, EG-06). DG-39b, DG-81 and EG-20, whose
+# dependencies include WT-55, wait for WT-55-fix1 whole.
 SPLITS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("DG-16", ("NT-080",), "WT-51-fix2"),
     ("DG-82", ("NT-179",), "WT-51-fix2"),
     ("F-06", ("*", "NT-055"), "WT-53-fix2"),
     ("F-10", ("*", "NT-058"), "WT-52-fix1"),
     ("F-19", ("*", "NT-064"), "WT-52-fix1"),
-    ("F-25", ("NT-065",), "WT-52-fix1"),
+    ("F-25", ("NT-065", "XD-219"), "WT-52-fix1"),
     ("F-26", ("*", "NT-066"), "WT-52-fix1"),
     ("F-39", ("*", "NT-069"), "WT-53-fix2"),
-    ("F-43", ("NT-073",), "WT-53-fix2"),
-    ("DG-19", ("NT-081",), "WT-53-fix2"),
+    ("F-43", ("*", "XD-120", "NT-073"), "WT-53-fix2"),
+    ("DG-19", ("NT-081", "XD-123", "XD-121"), "WT-53-fix2"),
     ("DG-22", ("NT-083", "NT-084"), "WT-53-fix2"),
     ("DG-23", ("*", "NT-085"), "WT-53-fix2"),
-    ("DG-24", ("NT-086",), "WT-53-fix2"),
+    ("DG-24", ("*", "XD-026", "XD-119", "NT-086"), "WT-53-fix2"),
     ("DG-25", ("*", "NT-087"), "WT-53-fix2"),
     ("DG-35", ("NT-083", "NT-084"), "WT-53-fix2"),
     ("DG-38", ("NT-089",), "WT-52-fix1"),
     ("DG-39", ("*", "NT-090"), "WT-52-fix1"),
+    ("DG-39b", ("*", "NT-091"), "WT-55-fix1"),
     ("DG-39c", ("NT-092",), "WT-52-fix1"),
+    ("DG-81", ("*", "XD-215", "XD-207", "XD-015", "XD-016", "XD-227"), "WT-55-fix1"),
     ("DG-84", ("NT-180", "NT-040"), "WT-52-fix1"),
     ("DG-85", ("NT-181",), "WT-52-fix1"),
     ("DG-86", ("NT-182",), "WT-52-fix1"),
@@ -166,10 +172,12 @@ SPLITS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("DG-90", ("NT-187",), "WT-52-fix1"),
     ("EG-05a", ("*", "NT-190"), "WT-52-fix1"),
     ("EG-05b", ("NT-190",), "WT-52-fix1"),
+    ("EG-06", ("XD-219",), "WT-52-fix1"),
     ("EG-07", ("NT-191",), "WT-52-fix1"),
     ("EG-10b", ("*", "NT-192"), "WT-52-fix1"),
     ("EG-16a", ("NT-197",), "WT-52-fix1"),
     ("EG-19", ("NT-216",), "WT-52-fix1"),
+    ("EG-20", ("*", "NT-200"), "WT-55-fix1"),
     ("EG-21", ("NT-201",), "WT-53-fix2"),
     ("EG-29", ("*", "NT-204"), "WT-52-fix1"),
 )
