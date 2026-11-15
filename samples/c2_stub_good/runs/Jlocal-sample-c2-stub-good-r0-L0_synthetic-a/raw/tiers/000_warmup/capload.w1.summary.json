@@ -30,7 +30,7 @@
   "job_id": "local-sample-c2-stub-good",
   "launch_seq": 0,
   "pid": 1002,
-  "register_sha": "a796d6b4ada485c51985b58a6dc88e534ccc28d325975e9f1750c49500209f96",
+  "register_sha": "9a68b633fb986e95dc39f2d97e318c1d5f6ecf22560c630eb3508e3ddcb5c2b0",
   "restart_count": 0,
   "role": "capload",
   "tier_label": "warmup",
@@ -455,6 +455,6 @@
  "stop": null,
  "tier_table_sha256": "9ec2e9504387d851b23a6054f90df5b2f04de7e8eb81493c87e89591cb70e2a9",
  "tool": "capload",
- "written_mono_ns": 9852505503630210,
- "written_wall": "2026-11-14T17:08:01.584Z"
+ "written_mono_ns": 9882861647770922,
+ "written_wall": "2026-11-15T01:33:57.728Z"
 }

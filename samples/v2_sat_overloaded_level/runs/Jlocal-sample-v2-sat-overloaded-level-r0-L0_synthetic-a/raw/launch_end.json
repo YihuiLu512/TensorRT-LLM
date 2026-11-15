@@ -1,0 +1,37 @@
+{
+ "ended_mono_ns": 1021000000000,
+ "exit_codes": {
+  "capload": 0,
+  "nullsse": 0
+ },
+ "gate_outcomes": [],
+ "identity": {
+  "arm": "synthetic-a",
+  "experiment": "E0",
+  "job_id": "local-sample-v2-sat-overloaded-level",
+  "launch_seq": 0,
+  "pid": null,
+  "register_sha": "d5e8ba1468c9d750ac502e8bbba479f0e4e3ffd28d68fc33ece448e1768983dd",
+  "restart_count": 0,
+  "role": "launch",
+  "tier_label": null,
+  "tier_seq": null,
+  "worker": 0
+ },
+ "leftovers": {
+  "after": [],
+  "before": [],
+  "marker_scan": "synthetic"
+ },
+ "ready_at_rel_ns": {
+  "capload": -1000000000,
+  "nullsse": -2000000000
+ },
+ "reason": "completed all tiers",
+ "schema": "capkit.launch_end/1",
+ "state": "VALID",
+ "stop": null,
+ "tiers_completed": 5,
+ "written_mono_ns": 9882863259247954,
+ "written_wall": "2026-11-15T01:33:59.339Z"
+}

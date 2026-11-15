@@ -484,13 +484,13 @@ def test_resolution_arm_reads_the_base_configs_thresholds(tmp_path):
     # arm_config = its own configuration, arm_threshold_config = s1@1ms; the thresholds pilot/2
     # has null_z keys of s1@1ms only
     opts = _v2({ARM: "s1@1.003ms"}, threshold_configs={ARM: "s1@1ms"})
-    opts["calib_v2"] = {"stage": "thresholds", "configs": ["s1@1ms"]}
+    opts["calib_v2"] = {"stage": "thresholds", "configs": ["s1@1ms"], "window_s": 4}
     W, tree = _build(tmp_path, opts)
     ctx = I.verify(W, tree)
     assert (ctx.config, ctx.threshold_config) == ("s1@1.003ms", "s1@1ms")
     key = "T1:req_first_lag_p50_ns:capload"
     hit = ctx.thresholds.get(key, ctx.threshold_config, ctx.tier_regime[4])
-    assert hit["key"] == key + "|s1@1ms|near|L=60"
+    assert hit["key"] == key + "|s1@1ms|near|L=4"
     assert ctx.thresholds.get(key, ctx.config, ctx.tier_regime[4]) is None
     # without arm_threshold_config the same arm reads its own configuration: no key
     opts2 = copy.deepcopy(opts)
@@ -554,3 +554,24 @@ def test_v1_sample_with_v2_sources_judges_per_tier(tmp_path):
     ctx = _verify(tmp_path, {"calib_v2": {"stage": "bootstrap"},
                                 "near_boundary_tiers": True})
     assert ctx.tier_regime == {2: "subsat", 4: "near_boundary"}  # near_boundary_tiers, v1
+
+
+def test_thresholds_window_must_match_the_judged_tiers(tmp_path):
+    """A thresholds-stage pilot/2 is for one window length: load tiers of another window are
+    INPUT_INVALID (calib-v2 erratum A5 item 6); a bootstrap pilot/2 has no window."""
+    opts = _v2({ARM: "s1@1ms"})
+    opts["calib_v2"] = {"stage": "thresholds", "configs": ["s1@1ms"], "window_s": 60}
+    e = _invalid(tmp_path, opts, "load tiers .* have other windows")
+    assert e.item == "register.calibration"
+    opts["calib_v2"]["window_s"] = 4
+    ctx = _verify(tmp_path, opts)
+    assert ctx.calib_docs["pilot"]["window_ns"] == 4 * 10 ** 9
+    # a hold tier of another window is not checked (its X conclusion is not used)
+    opts["calib_v2"]["window_s"] = 60
+    opts["v2"]["ladders"] = {ARM: {"levels": [], "holds": [{"rho": 0.95, "seq": 4,
+                                                            "hold_ns": 600 * 10 ** 9}],
+                                   "baseline_seq": None, "cal": [{"rho": 0.3, "seq": 2,
+                                                                  "pass": 1}]}}
+    with pytest.raises(I.InputInvalid, match=r"load tiers \{2: 4000000000\}"):
+        _verify(tmp_path, opts)
+    assert _verify(tmp_path, dict(opts, calib_v2={"stage": "bootstrap"})).ladder is not None

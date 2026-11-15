@@ -1,0 +1,22 @@
+{
+ "roles": {
+  "capload": {
+   "cpus": [
+    2,
+    3
+   ],
+   "numa_node": 0
+  },
+  "nullsse": {
+   "cpus": [
+    4
+   ],
+   "numa_node": 0
+  }
+ },
+ "rules": "synthetic",
+ "schema": "capkit.pin_table/1",
+ "siblings_left_idle": [],
+ "source_sha": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+ "unassigned": []
+}

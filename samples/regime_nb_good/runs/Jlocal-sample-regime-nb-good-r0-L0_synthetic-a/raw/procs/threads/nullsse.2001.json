@@ -5,7 +5,7 @@
   "job_id": "local-sample-regime-nb-good",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "3cb959d261a92f7cfd2a46e521c257e793571d819895d00f427b912b3149058a",
+  "register_sha": "b204496ff70796e7c0ff93d9fecb22a0c3cd5bb287fd873fd87820eae8e8fc3c",
   "restart_count": 0,
   "role": "launch",
   "tier_label": null,
@@ -34,6 +34,6 @@
    "tid": 2002
   }
  ],
- "written_mono_ns": 9852506640110372,
- "written_wall": "2026-11-14T17:08:02.720Z"
+ "written_mono_ns": 9882862788629240,
+ "written_wall": "2026-11-15T01:33:58.869Z"
 }

@@ -5,7 +5,7 @@
   "job_id": "local-sample-probe-entry-unmatched",
   "launch_seq": 0,
   "pid": 2001,
-  "register_sha": "fafcd6d3122ea924b1dc14283a7c718dfb9e75b290caa87f4edfb86c3ab104ff",
+  "register_sha": "2ebc3730daa7ab2d463ee1377b396a04e637dfc51199734dc4fe6aa535079da0",
   "restart_count": 0,
   "role": "nullsse",
   "tier_label": null,
@@ -33,6 +33,6 @@
   "python": "3.12.3 synthetic",
   "switchinterval_s": 0.005
  },
- "written_mono_ns": 9852499815420197,
- "written_wall": "2026-11-14T17:07:55.895Z"
+ "written_mono_ns": 9882855544747731,
+ "written_wall": "2026-11-15T01:33:51.625Z"
 }

@@ -12,7 +12,7 @@
   "job_id": "local-sample-input-calib-invalid",
   "launch_seq": 0,
   "pid": 2001,
-  "register_sha": "60e2f269db39155f7f945947585bbc825714d081ddd15a17e48cae4a4d45164a",
+  "register_sha": "d3b559310b8167e60d9eb816fcf69fe801dceff9e77c9815ad7cff7647d35dfd",
   "restart_count": 0,
   "role": "nullsse",
   "tier_label": "warmup",
@@ -231,6 +231,6 @@
  "stop": null,
  "tier_table_sha256": "9ec2e9504387d851b23a6054f90df5b2f04de7e8eb81493c87e89591cb70e2a9",
  "tool": "nullsse",
- "written_mono_ns": 9852506875773155,
- "written_wall": "2026-11-14T17:08:02.956Z"
+ "written_mono_ns": 9882865935639690,
+ "written_wall": "2026-11-15T01:34:02.016Z"
 }

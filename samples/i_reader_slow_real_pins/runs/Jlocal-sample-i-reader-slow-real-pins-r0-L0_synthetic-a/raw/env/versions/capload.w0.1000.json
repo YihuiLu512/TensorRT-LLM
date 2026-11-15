@@ -5,7 +5,7 @@
   "job_id": "local-sample-i-reader-slow-real-pins",
   "launch_seq": 0,
   "pid": 1000,
-  "register_sha": "40711a063baf8d9cc4510edaab4d030da8f906285506d31b53a4ca7ea5041ed9",
+  "register_sha": "0182e981f2a0b89a74cc533e6124374a8b8889a73aa5acb23487a69444b77358",
   "restart_count": 0,
   "role": "capload",
   "tier_label": null,
@@ -31,6 +31,6 @@
   "python": "3.12.3 synthetic",
   "switchinterval_s": 0.005
  },
- "written_mono_ns": 9852504576090638,
- "written_wall": "2026-11-14T17:08:00.656Z"
+ "written_mono_ns": 9882860668097212,
+ "written_wall": "2026-11-15T01:33:56.748Z"
 }

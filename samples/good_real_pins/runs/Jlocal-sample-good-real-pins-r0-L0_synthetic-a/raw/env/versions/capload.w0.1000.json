@@ -5,7 +5,7 @@
   "job_id": "local-sample-good-real-pins",
   "launch_seq": 0,
   "pid": 1000,
-  "register_sha": "a593d6e9f119ed3f714a7f9f759775976a459069322be6fb3d5bd98a2157bcc7",
+  "register_sha": "448e4de5b4136e6ebe02b2ca7db02b6f310ac8b00974b377e435edf3de734c30",
   "restart_count": 0,
   "role": "capload",
   "tier_label": null,
@@ -31,6 +31,6 @@
   "python": "3.12.3 synthetic",
   "switchinterval_s": 0.005
  },
- "written_mono_ns": 9852504823379026,
- "written_wall": "2026-11-14T17:08:00.903Z"
+ "written_mono_ns": 9882860913428068,
+ "written_wall": "2026-11-15T01:33:56.993Z"
 }

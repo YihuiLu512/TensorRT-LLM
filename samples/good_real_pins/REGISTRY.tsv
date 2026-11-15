@@ -3,6 +3,8 @@ registered_at	experiment	relpath	sha256	note
 2026-11-13T00:00:00.001Z	E0	register/schedule.capbin	4275dc232d95f33bcf6c5eca28ea37bc306bb49ad15e15037f98c84a920346b4	kind=schedule;synthetic sample
 2026-11-13T00:00:00.002Z	E0	register/prompts.json	2e03b59f7251c4c4646ea0f542daedf57fecb6aa27fd8d52f6379ff9a40e6672	kind=prompts;synthetic sample
 2026-11-13T00:00:00.003Z	E0	register/scenario.json	966fdfaaf7bb7c01d5b13c6dfd6392ef192b4e0b205b548d55d1f8b90ee49f80	kind=scenario;synthetic sample
-2026-11-13T00:00:00.004Z	E0	register/pilot.json	4ef14ba54ddb27c603a0ed07218ebdc9319ba7f030c29dd52f87741bc6d853fa	kind=pilot;synthetic sample
-2026-11-13T00:00:00.005Z	E0	register/loadgen_band.json	858ae51d62b92718523cf8e913d44680346be2eddd23c9c5027b074b362de001	kind=loadgen_band;synthetic sample
-2026-11-13T00:00:00.006Z	E0	register/register.json	a593d6e9f119ed3f714a7f9f759775976a459069322be6fb3d5bd98a2157bcc7	kind=register;synthetic sample
+2026-11-13T00:00:00.004Z	E0	register/d14_rule.sample.json	89500db9c6f105ed0f497b248e1155c9d43828304e2f010fd892abb0e0fffdfb	kind=d14_rule;synthetic sample
+2026-11-13T00:00:00.005Z	E0	register/e0_d14.json	ec92419c0237b024b9e5ca716e6cbf989df8e362e879e8e0251667c14df6e545	kind=d14_result;synthetic sample
+2026-11-13T00:00:00.006Z	E0	register/pilot2.json	5d210fddef19e1d12afd43b4d044fa897d39d08350ed4665ef345f0a29e13dfe	kind=pilot;synthetic sample
+2026-11-13T00:00:00.007Z	E0	register/loadgen_band.json	858ae51d62b92718523cf8e913d44680346be2eddd23c9c5027b074b362de001	kind=loadgen_band;synthetic sample
+2026-11-13T00:00:00.008Z	E0	register/register.json	448e4de5b4136e6ebe02b2ca7db02b6f310ac8b00974b377e435edf3de734c30	kind=register;synthetic sample

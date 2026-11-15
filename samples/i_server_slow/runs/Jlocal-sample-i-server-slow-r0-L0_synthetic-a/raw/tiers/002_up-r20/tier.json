@@ -9,7 +9,7 @@
   "job_id": "local-sample-i-server-slow",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "9298d0c36235233833cb1c7557f9efd63ec3fd8ec0aa8d10ff14a4aa21160dd0",
+  "register_sha": "b05cb6cd1354db01271ff30959dfd8c8199284f3592b3c0f6ab518b4162fe043",
   "restart_count": 0,
   "role": "launch",
   "tier_label": "up-r20",
@@ -249,6 +249,6 @@
   "tokens_per_msg": 1,
   "window_ns": 4000000000
  },
- "written_mono_ns": 9852504226525404,
- "written_wall": "2026-11-14T17:08:00.307Z"
+ "written_mono_ns": 9882860275403636,
+ "written_wall": "2026-11-15T01:33:56.355Z"
 }

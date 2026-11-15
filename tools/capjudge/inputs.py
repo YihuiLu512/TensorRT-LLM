@@ -427,6 +427,21 @@ def _load_tier_regimes(ctx):
                        for t in ctx.tt.tiers if t.kind in ("up", "down")}
 
 
+def _check_threshold_window(ctx):
+    """A thresholds-stage pilot/2 holds per-key thresholds for one window length (its
+    window_ns, the L= of its null_z keys): every load tier whose X is judged (all but ladder
+    hold tiers) must have that window (calib-v2 DESIGN-r7a 2.5, 3.5 test 22). A bootstrap
+    pilot/2 has one value per family and no window."""
+    doc = ctx.calib_docs.get("pilot")
+    if not isinstance(doc, dict) or doc.get("stage") != "thresholds":
+        return
+    bad = {t.seq: t.window_ns for t in ctx.tt.tiers if t.kind in ("up", "down")
+           and ctx.tier_role.get(t.seq) != "holds" and t.window_ns != doc["window_ns"]}
+    if bad:
+        raise InputInvalid("register.calibration", "pilot/2 thresholds are for window_ns %d; "
+                           "load tiers %s have other windows" % (doc["window_ns"], bad))
+
+
 def _is_num(v):
     return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
 
@@ -646,6 +661,7 @@ def verify(workdir, tree_root):
     _load_calibration(ctx)
     _load_tier_table_and_schedule(ctx)
     _load_tier_regimes(ctx)
+    _check_threshold_window(ctx)
     _load_localize(ctx)
     _check_reconcile_and_scenario(ctx)
     _scan_identities(ctx)

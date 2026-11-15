@@ -28,7 +28,7 @@
   "job_id": "local-sample-c9-pinning",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "fafcd6d3122ea924b1dc14283a7c718dfb9e75b290caa87f4edfb86c3ab104ff",
+  "register_sha": "2ebc3730daa7ab2d463ee1377b396a04e637dfc51199734dc4fe6aa535079da0",
   "restart_count": 0,
   "role": "jobs",
   "tier_label": null,
@@ -73,6 +73,6 @@
  "schema": "capkit.gpu_idle/1",
  "status": "PASS",
  "visible_gpus": 1,
- "written_mono_ns": 9852501286074835,
- "written_wall": "2026-11-14T17:07:57.366Z"
+ "written_mono_ns": 9882857171074337,
+ "written_wall": "2026-11-15T01:33:53.251Z"
 }

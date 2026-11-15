@@ -30,7 +30,7 @@
   "job_id": "local-sample-sat-spin-thread-same-process",
   "launch_seq": 0,
   "pid": 1002,
-  "register_sha": "67c5cafd07719815fff5a1de882382d154efa72bc9b235ee4b82772cc519ef36",
+  "register_sha": "a4c0d986f8b850adc705a8a30a9817bae4d096b53cfb049b54eb78c3218c0657",
   "restart_count": 0,
   "role": "capload",
   "tier_label": "up-r40",
@@ -455,6 +455,6 @@
  "stop": null,
  "tier_table_sha256": "9ec2e9504387d851b23a6054f90df5b2f04de7e8eb81493c87e89591cb70e2a9",
  "tool": "capload",
- "written_mono_ns": 9852504035537957,
- "written_wall": "2026-11-14T17:08:00.116Z"
+ "written_mono_ns": 9882860062355972,
+ "written_wall": "2026-11-15T01:33:56.142Z"
 }

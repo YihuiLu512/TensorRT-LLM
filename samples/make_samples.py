@@ -379,7 +379,8 @@ class Builder:
         """opts calib_v2 = {"stage": "bootstrap" | "thresholds", "configs": [...] (thresholds:
         configurations with a null_z key), "d14_env": {...} (environment overrides of
         e0_d14.json), "d14": False (no d14_result), "pilot": False (no pilot/2: V0-cal),
-        "bootstrap_set": {"<dotted path>": value} (bootstrap pilot/2 overrides)}: a
+        "bootstrap_set": {"<dotted path>": value} (bootstrap pilot/2 overrides), "window_s"
+        (thresholds: window_ns and the L= of its keys, default 60)}: a
         registered d14_result and pilot/2. The default of every sample (absent calib_v2: a
         bootstrap pilot/2 with the r6 design constants); opts calib_v1 registers the v1
         pilot.json instead (rejected by the judge, calib-v2 erratum)."""
@@ -410,8 +411,9 @@ class Builder:
                     d = d[k]
                 d[last] = value
         else:
-            doc.update(window_ns=60 * S, ratio={}, null_z={
-                "%s|%s|%s|L=60" % (NULL_Z_STAT, cfg, rg): {
+            win = cv.get("window_s", 60)
+            doc.update(window_ns=win * S, ratio={}, null_z={
+                "%s|%s|%s|L=%d" % (NULL_Z_STAT, cfg, rg, win): {
                     "family": "lag", "thr_hi": 3.0, "thr_lo": -3.0, "uncalibrated": False}
                 for cfg in cv.get("configs", []) for rg in ("subsat", "near")},
                 i1_calibration={"near_one_core_min": I1_NEAR_ONE, "source_tiers": [], "n": 1})
@@ -427,7 +429,9 @@ class Builder:
         """opts v2 = {"configs": {arm: config}, "threshold_configs": {arm: config} (optional),
         "ladders": {arm: {ladder.json field overrides}} (arms with a ladder), "ladder_kind"
         (REGISTRY kind of the ladder files, default ladder), "nbt": True (writes
-        judge.near_boundary_tiers)}: arm_config etc. and files_by_arm."""
+        judge.near_boundary_tiers), "ladder_broken": "missing" (the registered ladder file is
+        renamed away) | "sha" (one byte appended after registration)}: arm_config etc. and
+        files_by_arm."""
         v2 = self.opts["v2"]
         reg["arm_config"] = dict(v2["configs"])
         if v2.get("threshold_configs") is not None:
@@ -443,6 +447,12 @@ class Builder:
                 write_plain(os.path.join(self.W, rel), dict(
                     ladder_doc(v2["configs"].get(arm), arm), **over))
                 files["ladder"] = self.register_file(rel, v2.get("ladder_kind", "ladder"))
+                p = os.path.join(self.W, rel)
+                if v2.get("ladder_broken") == "missing":
+                    os.replace(p, p + ".moved-away")
+                elif v2.get("ladder_broken") == "sha":
+                    with open(p, "ab") as f:
+                        f.write(b" ")
             by_arm[arm] = files
         del reg["files"]
         reg["files_by_arm"] = by_arm
@@ -1069,6 +1079,9 @@ class Builder:
 # name -> (simulation / file options, expect). expect: exit_code, tier_verdicts (only listed tiers
 # are compared), red_checks (must all be RED somewhere in checks.tsv), not_run_checks likewise.
 GOOD_V = {"2": "STABLE", "4": "STABLE"}
+V2 = {"configs": {ARM: "s1"}, "ladders": {ARM: {}}}
+V2_NEAR = {"configs": {ARM: "s1"}, "ladders": {ARM: {
+    "levels": [], "near": [{"rho": 1.0, "seq": 4, "pass": 1}]}}}
 SAMPLES = {
     "good": ({}, {"exit_code": 0, "tier_verdicts": GOOD_V, "red_checks": [],
                   "state_last": "VALID"}),
@@ -1180,10 +1193,33 @@ SAMPLES = {
         "2": "STABLE", "4": "NOT_RUN"}, "red_checks": [], "not_run_checks": ["C12"]}),
     # tier 4 registered near-boundary: without near-boundary bands it is NOT_RUN (no fallback
     # to the sub-saturation bands); with them it is judged
-    "regime_nb_missing": ({"regime_nb": "missing"}, {"exit_code": 11, "tier_verdicts": {
-        "2": "STABLE", "4": "NOT_RUN"}, "red_checks": []}),
-    "regime_nb_good": ({"regime_nb": "good"}, {"exit_code": 0, "tier_verdicts": {
-        "2": "STABLE", "4": "STABLE"}, "red_checks": []}),
+    # a registered near_boundary_noise file (single or with a pilot band of the same key) is no
+    # threshold source since calibration v2 (INTERFACES erratum calib-v2-A2 item 1)
+    "regime_nb_missing": ({"regime_nb": "missing"}, {"exit_code": 13}),
+    "regime_nb_good": ({"regime_nb": "good"}, {"exit_code": 13}),
+    # calibration v2 (calib-v2 DESIGN-r7a 3.5 test 22): a v2 register (arm_config, ladder.json:
+    # tier 2 the baseline, tier 4 a one-pass level), bootstrap pilot/2 + e0_d14.json, and one
+    # broken input per sample
+    "v2_good": ({"v2": V2}, {"exit_code": 0, "tier_verdicts": GOOD_V, "red_checks": [],
+                             "state_last": "VALID"}),
+    "v2_sat_overloaded_level": ({"v2": V2, "overload": True}, {
+        "exit_code": 0, "tier_verdicts": {"2": "STABLE", "4": "UNSTABLE"}, "red_checks": []}),
+    "v2_near_stable": ({"v2": V2_NEAR}, {"exit_code": 0, "tier_verdicts": GOOD_V,
+                                         "red_checks": []}),
+    "v2_ladder_missing": ({"v2": dict(V2, ladder_broken="missing")}, {"exit_code": 13}),
+    "v2_ladder_sha": ({"v2": dict(V2, ladder_broken="sha")}, {"exit_code": 13}),
+    "v2_pilot1": ({"v2": V2, "calib_v1": True}, {"exit_code": 13}),
+    "v2_window": ({"v2": V2, "calib_v2": {"stage": "thresholds", "configs": ["s1"]}},
+                  {"exit_code": 13}),
+    "v2_d14_missing": ({"v2": V2, "calib_v2": {"d14": False}}, {
+        "exit_code": 11, "tier_verdicts": {"2": "NOT_RUN", "4": "NOT_RUN"}, "red_checks": []}),
+    "v2_d14_env": ({"v2": V2, "calib_v2": {"d14_env": {"hw_profile_sha": "0" * 64}}},
+                   {"exit_code": 13}),
+    "v2_arm_config_missing": ({"v2": {"configs": {"synthetic-b": "s1"}},
+                               "extra_arms": ["synthetic-b"]}, {"exit_code": 13}),
+    "v2_near_boundary_tiers": ({"v2": dict(V2, nbt=True)}, {"exit_code": 13}),
+    "v2_inline_thresholds": ({"v2": V2, "inline": {"form_version": "calib-v2"}},
+                             {"exit_code": 13}),
     "input_calib_invalid": ({"calib_invalid": True}, {"exit_code": 13}),
     "input_registered_late": ({"register_late": True}, {"exit_code": 13}),
     "input_identity_mismatch": ({"identity_mismatch": True}, {"exit_code": 13}),

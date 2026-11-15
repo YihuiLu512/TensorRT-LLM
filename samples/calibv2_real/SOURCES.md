@@ -29,3 +29,11 @@ test 12) is an extract, not a copy: the keys `S_fit_by_K`, `table_max_s` and
 `job_overhead_s_max_floor` of `02_e0/E0/analysis/calib-v2/r4/out/plan_r4.json` (sha256
 `551548b73e937c83ef4fe2d3b838fcc9aa9e23133ad1b8ae0964d097b38b6366`; written by `r4/plan_r4.py`),
 re-serialised with `json.dump(..., indent=1, sort_keys=True)`.
+
+`e0_round1.pilot_inputs.tsv` (used by `tests/judge/test_pilot2.py`, calib-v2 DESIGN-r7a 3.5
+tests 27 and 34) is a byte-identical copy (`cp -p`, 2026-11-15) of `02_e0/E0/analysis/pilot_inputs.tsv`
+(the 15 round-1 trees and tiers the registered `pilot.json` was built from), sha256
+`344e0c45fce623aafb670e1aa3a66368b15d0a20754edd8fb8e0173a02c0fd24`. The tests read the trees
+it names and the registered D14 rule `02_e0/E0/register/d14_rule.json` (sha256
+`ae28dec44bc0579dd34e9774c64569a86a6bcbfdef135b46885c5cce204d8444`, REGISTRY.tsv line 2) in
+place, read only, and are skipped where W is absent.

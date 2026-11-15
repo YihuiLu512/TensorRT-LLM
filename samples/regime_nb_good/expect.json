@@ -1,10 +1,5 @@
 {
- "exit_code": 0,
- "red_checks": [],
+ "exit_code": 13,
  "synthetic": true,
- "tier_verdicts": {
-  "2": "STABLE",
-  "4": "STABLE"
- },
  "tree": "runs/Jlocal-sample-regime-nb-good-r0-L0_synthetic-a"
 }

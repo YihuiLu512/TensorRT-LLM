@@ -41,7 +41,7 @@
   "job_id": "local-sample-i-reader-slow-real-pins",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "40711a063baf8d9cc4510edaab4d030da8f906285506d31b53a4ca7ea5041ed9",
+  "register_sha": "0182e981f2a0b89a74cc533e6124374a8b8889a73aa5acb23487a69444b77358",
   "restart_count": 0,
   "role": "launch",
   "tier_label": "drain-03",
@@ -88,7 +88,7 @@
       0,
       "local-sample-i-reader-slow-real-pins",
       0,
-      "40711a063baf8d9cc4510edaab4d030da8f906285506d31b53a4ca7ea5041ed9"
+      "0182e981f2a0b89a74cc533e6124374a8b8889a73aa5acb23487a69444b77358"
      ],
      "pid": 1000,
      "seq": 180,
@@ -102,7 +102,7 @@
       0,
       "local-sample-i-reader-slow-real-pins",
       0,
-      "40711a063baf8d9cc4510edaab4d030da8f906285506d31b53a4ca7ea5041ed9"
+      "0182e981f2a0b89a74cc533e6124374a8b8889a73aa5acb23487a69444b77358"
      ],
      "pid": 1001,
      "seq": 180,
@@ -116,7 +116,7 @@
       0,
       "local-sample-i-reader-slow-real-pins",
       0,
-      "40711a063baf8d9cc4510edaab4d030da8f906285506d31b53a4ca7ea5041ed9"
+      "0182e981f2a0b89a74cc533e6124374a8b8889a73aa5acb23487a69444b77358"
      ],
      "pid": 1002,
      "seq": 180,
@@ -130,7 +130,7 @@
       0,
       "local-sample-i-reader-slow-real-pins",
       0,
-      "40711a063baf8d9cc4510edaab4d030da8f906285506d31b53a4ca7ea5041ed9"
+      "0182e981f2a0b89a74cc533e6124374a8b8889a73aa5acb23487a69444b77358"
      ],
      "pid": 2001,
      "seq": 180,
@@ -180,7 +180,7 @@
       0,
       "local-sample-i-reader-slow-real-pins",
       0,
-      "40711a063baf8d9cc4510edaab4d030da8f906285506d31b53a4ca7ea5041ed9"
+      "0182e981f2a0b89a74cc533e6124374a8b8889a73aa5acb23487a69444b77358"
      ],
      "pid": 1000,
      "seq": 182,
@@ -194,7 +194,7 @@
       0,
       "local-sample-i-reader-slow-real-pins",
       0,
-      "40711a063baf8d9cc4510edaab4d030da8f906285506d31b53a4ca7ea5041ed9"
+      "0182e981f2a0b89a74cc533e6124374a8b8889a73aa5acb23487a69444b77358"
      ],
      "pid": 1001,
      "seq": 182,
@@ -208,7 +208,7 @@
       0,
       "local-sample-i-reader-slow-real-pins",
       0,
-      "40711a063baf8d9cc4510edaab4d030da8f906285506d31b53a4ca7ea5041ed9"
+      "0182e981f2a0b89a74cc533e6124374a8b8889a73aa5acb23487a69444b77358"
      ],
      "pid": 1002,
      "seq": 182,
@@ -222,7 +222,7 @@
       0,
       "local-sample-i-reader-slow-real-pins",
       0,
-      "40711a063baf8d9cc4510edaab4d030da8f906285506d31b53a4ca7ea5041ed9"
+      "0182e981f2a0b89a74cc533e6124374a8b8889a73aa5acb23487a69444b77358"
      ],
      "pid": 2001,
      "seq": 182,
@@ -272,7 +272,7 @@
       0,
       "local-sample-i-reader-slow-real-pins",
       0,
-      "40711a063baf8d9cc4510edaab4d030da8f906285506d31b53a4ca7ea5041ed9"
+      "0182e981f2a0b89a74cc533e6124374a8b8889a73aa5acb23487a69444b77358"
      ],
      "pid": 1000,
      "seq": 184,
@@ -286,7 +286,7 @@
       0,
       "local-sample-i-reader-slow-real-pins",
       0,
-      "40711a063baf8d9cc4510edaab4d030da8f906285506d31b53a4ca7ea5041ed9"
+      "0182e981f2a0b89a74cc533e6124374a8b8889a73aa5acb23487a69444b77358"
      ],
      "pid": 1001,
      "seq": 184,
@@ -300,7 +300,7 @@
       0,
       "local-sample-i-reader-slow-real-pins",
       0,
-      "40711a063baf8d9cc4510edaab4d030da8f906285506d31b53a4ca7ea5041ed9"
+      "0182e981f2a0b89a74cc533e6124374a8b8889a73aa5acb23487a69444b77358"
      ],
      "pid": 1002,
      "seq": 184,
@@ -314,7 +314,7 @@
       0,
       "local-sample-i-reader-slow-real-pins",
       0,
-      "40711a063baf8d9cc4510edaab4d030da8f906285506d31b53a4ca7ea5041ed9"
+      "0182e981f2a0b89a74cc533e6124374a8b8889a73aa5acb23487a69444b77358"
      ],
      "pid": 2001,
      "seq": 184,
@@ -364,7 +364,7 @@
       0,
       "local-sample-i-reader-slow-real-pins",
       0,
-      "40711a063baf8d9cc4510edaab4d030da8f906285506d31b53a4ca7ea5041ed9"
+      "0182e981f2a0b89a74cc533e6124374a8b8889a73aa5acb23487a69444b77358"
      ],
      "pid": 1000,
      "seq": 186,
@@ -378,7 +378,7 @@
       0,
       "local-sample-i-reader-slow-real-pins",
       0,
-      "40711a063baf8d9cc4510edaab4d030da8f906285506d31b53a4ca7ea5041ed9"
+      "0182e981f2a0b89a74cc533e6124374a8b8889a73aa5acb23487a69444b77358"
      ],
      "pid": 1001,
      "seq": 186,
@@ -392,7 +392,7 @@
       0,
       "local-sample-i-reader-slow-real-pins",
       0,
-      "40711a063baf8d9cc4510edaab4d030da8f906285506d31b53a4ca7ea5041ed9"
+      "0182e981f2a0b89a74cc533e6124374a8b8889a73aa5acb23487a69444b77358"
      ],
      "pid": 1002,
      "seq": 186,
@@ -406,7 +406,7 @@
       0,
       "local-sample-i-reader-slow-real-pins",
       0,
-      "40711a063baf8d9cc4510edaab4d030da8f906285506d31b53a4ca7ea5041ed9"
+      "0182e981f2a0b89a74cc533e6124374a8b8889a73aa5acb23487a69444b77358"
      ],
      "pid": 2001,
      "seq": 186,
@@ -423,6 +423,6 @@
  "schema": "capkit.drain_gate/1",
  "source": "default",
  "t_pass_rel_ns": 18600000000,
- "written_mono_ns": 9852504724353740,
- "written_wall": "2026-11-14T17:08:00.804Z"
+ "written_mono_ns": 9882860799523696,
+ "written_wall": "2026-11-15T01:33:56.880Z"
 }

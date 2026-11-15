@@ -3,13 +3,16 @@
 INTERFACES §10.4、设计稿 §2.7 末段的三类样本 + 两个可满足性样本。**全部是合成样本**（每个 `launch.json`、`register.json`、`pilot.json` 都带 `"synthetic": true`）；按计划 P8，第一个 E0 作业采到真实样本后，以真实良品替换 `good` 作参照并重跑自测。
 
 - 生成：`python3.11 make_samples.py --out <目录>`（目录下不得已有同名样本；`--only <名字>` 只建一个）。数据来自一次确定性模拟（固定随机种子）；`written_mono_ns`、`written_wall` 等时间戳每次不同，其余内容不变。
-- `make_samples.build()` 另有只供测试用的选项（`calib_v2`、`v2`、`calibration_entries` 等，INTERFACES 勘误 calib-v2-A2 第 8 条），下表的样本不用它们。（生成器的缺省标定已改为 v2 源，另有选项 `calib_v1`、`c13_foreign_rate`；本目录已提交的样本尚未重新生成，见勘误 calib-v2-A3 第 9 条。）`calibv2_real/` 不是样本（没有 `expect.json`），是测试用的真实片段，来源与 sha 见其 `SOURCES.md`。
-- 运行：`python3.11 run_selftest.py --tools <C>/tools --package <capjudge|judge> --tmp <已存在的临时目录> --expect-samples 38`（`--expect-samples` 必填，等于下表行数）。每个样本先整份拷到临时目录再判（判定器只判一次，不放宽任何输入核对）；期望 13 的样本另断言没有 `judge/`、`judge.attempts/` 下恰有一条 `INPUT_INVALID` 记录，且再判仍是 13；良品另做：`judge/attempt.json` 为 `JUDGED`、再判一次 → 12 且不新增尝试记录、树拷到别处 → 12（JUDGED.tsv）、`--tree` 带通配符 → 2、不存在 → 2、按 `sabotage.json` 改一处（先断言目标文件确实变了）→ 期望 C5 红。
+- `make_samples.build()` 另有只供测试用的选项（`calib_v2`、`v2`、`calibration_entries` 等，INTERFACES 勘误 calib-v2-A2 第 8 条），下表的样本不用它们。（生成器的缺省标定已改为 v2 源，另有选项 `calib_v1`、`c13_foreign_rate`；本目录的样本已按 v2 缺省重新生成，见勘误 calib-v2-A5 第 6 条。）`calibv2_real/` 不是样本（没有 `expect.json`），是测试用的真实片段，来源与 sha 见其 `SOURCES.md`。
+- 运行：`python3.11 run_selftest.py --tools <C>/tools --package <capjudge|judge> --tmp <已存在的临时目录> --expect-samples 50`（`--expect-samples` 必填，等于下表行数）。每个样本先整份拷到临时目录再判（判定器只判一次，不放宽任何输入核对）；期望 13 的样本另断言没有 `judge/`、`judge.attempts/` 下恰有一条 `INPUT_INVALID` 记录，且再判仍是 13；良品另做：`judge/attempt.json` 为 `JUDGED`、再判一次 → 12 且不新增尝试记录、树拷到别处 → 12（JUDGED.tsv）、`--tree` 带通配符 → 2、不存在 → 2、按 `sabotage.json` 改一处（先断言目标文件确实变了）→ 期望 C5 红。
 - 文件形状按真实写方（caplaunch 的 `tier.json`、`raw/env/versions/*.json`，sidecar 的 `meta.json`、`gpu.jsonl` 头，capjobs.envfiles 的 `gpu_idle.json`，capprobe.overlay 的覆盖清单），并与集成时本地端到端产出的启动树逐文件比对过；sidecar 的 GPU 采样周期取 2 s（`meta.json` 的 `gpu_every_ns`），GPU-IDLE 的应检行数要按它算。
 - 所有样本共有：nullsse（被测、P2）按新架构单前端声明 `proc_kinds: ["frontend", "frontend_openengine", "frontend_single"]`（进程类词表见 capprobe 位点表）；覆盖清单除 F2（`frontend_openengine`）外还列一个 `W1`（`proc_kind: worker`），本拓扑没有 worker 进程，C8 把它列为「不适用」；capload 有一个 `multiprocessing.resource_tracker` 辅助进程，按 caplaunch 的写法记在 `roles.json` 的 `aux_helpers` 与 `tier.json` 的 `scans.*.aux_helpers`，判定器不把它当被测进程。
 - 每棵启动树另有 `STATE`：先是 caplaunch 的 `VALID` 一行，再是 capjobs.launches 的一行（`upstream_void` 为 `VOID`，其余为 `VALID`）；`launch_end.json` 带 `state: VALID` 与空的 `leftovers.after`。判定器把它们当作判定之前已记下的启动级结论，自己的结论只能更差（LAUNCH-STATE）。期望里写了 `state_last` 的样本另断言判后 `STATE` 末行的状态。
 - 每棵启动树另有 `raw/env/exclusivity.json`：只合成门禁第 6 项（被测核在空转窗口内 softirq 为 0），是 D14 的空载读数；合成 `pilot.json` 的 `d14_softirq` 只有 `capjudge.d14` 写出的键集，没有读数，结论 `irq_softirq_is_experiment` 是合成的 `true`（INTERFACES 勘误 R1b；C13 第二半与 I1 只读这个布尔值）。合成 `pilot.json` 另带 `i1_calibration`（`near_one_core_min` 0.95）与 I 用的带；模式 `P+X+I+V` 的样本在 `expect.json` 里另有 `tier_localisation`（比对 `tiers[].X.I`）与 `grade`（比对顶层 `grade`），由 `run_selftest.py` 断言（INTERFACES 勘误 B2-2E-9）。
 - 每个样本 = 一个最小工作目录 W：`REGISTRY.tsv`、`submissions.tsv`（`local-sample-*` 作业，PLANNED + SUBMITTED 两行）、空的 `JUDGED.tsv`、`register/`（档位表、时间表、prompt 池、场景、pilot、`loadgen_band`（形态 `capload-r` 绑给 capload）、个别样本另有 `stub_calib` / `near_boundary_noise`、登记表，全部已登记且登记早于提交）、`runs/<树>/`、`expect.json`。
+
+- **已知不符（SB-C 之前）**：模式 `P+X+I+V` 的 5 个样本（`sat_spin_thread_same_process`、`i_server_slow`、`i_reader_slow`、`i_reader_slow_real_pins`、`i_conflict`）的期望是 I 定位成立；I1 改读 pilot/2 的 `i1_calibration` 属 P2-13（SB-C），在那之前 bootstrap pilot/2 没有它 ⇒ I `NOT_RUN`，自测对这 5 个样本报不符、退出码 1。期望不改，等 P2-13 落地后复核。
+- `v2_sat_overloaded_level`、`v2_near_stable` 是 DESIGN-r7a §3.5 第 22 条的两个可满足性样本的单遍版：样本档位表每个负载只有一档，两遍合成（AND）由 `tests/judge/test_judge_levels.py` 的合成用例覆盖。
 
 | 样本 | 改了什么 | 期望 |
 |---|---|---|
@@ -45,8 +48,20 @@ INTERFACES §10.4、设计稿 §2.7 末段的三类样本 + 两个可满足性�
 | `c2_stub_loop_lag` | 同上，档 4 nullsse 事件循环延迟 p99 ≈ 50 ms | 10；档 4 VOID（C2） |
 | `c4_short_output` | 档 4 一个请求只出 2 个 token（capload 记 `short_output`） | 10；档 4 VOID（C4，连带 C3） |
 | `c12_idle_worker` | 档 4 capload worker 1 的请求一个都没发出（摘要 `counts.sent` 为 0，全部未发出即超时） | 11；档 4 NOT_RUN（C12） |
-| `regime_nb_missing` | 档 4 登记为近边界档，近边界带只有 C13 的键 | 11；档 4 NOT_RUN（X 不退回亚饱和带） |
-| `regime_nb_good` | 档 4 登记为近边界档，另登记一份与 pilot 同键的 `near_boundary_noise` | 0；档 2、4 STABLE（同一键两个来源各管一个 regime） |
+| `regime_nb_missing` | 档 4 登记为近边界档，近边界带只有 C13 的键 | 13（`near_boundary_noise` 已不是阈值源，勘误 calib-v2-A2 第 1 条；原期望 11 作废） |
+| `regime_nb_good` | 档 4 登记为近边界档，另登记一份与 pilot 同键的 `near_boundary_noise` | 13（同上；原期望 0 作废） |
+| `v2_good` | v2 登记表（`arm_config`、`ladder.json`：档 2 基线、档 4 单遍级）+ bootstrap pilot/2 + `e0_d14.json` | 0；档 2、4 STABLE；`levels[]` 一级 STABLE |
+| `v2_sat_overloaded_level` | 同 `v2_good`，档 4 过载（同 `sat_overloaded_tier`） | 0；档 4 UNSTABLE（明显过载级判 UNSTABLE） |
+| `v2_near_stable` | 同 `v2_good`，档 4 在 `ladder.json` 里是 `near` 角色 | 0；档 2、4 STABLE（近边界稳定档在内） |
+| `v2_ladder_missing` | 登记过的 `ladder.json` 被改名移走（`*.moved-away`） | 13 |
+| `v2_ladder_sha` | `ladder.json` 登记后多写一个字节 | 13 |
+| `v2_pilot1` | v2 登记表引用 v1 `pilot.json` | 13（v1 calibration is not a threshold source） |
+| `v2_window` | thresholds 阶段 pilot/2 的 `window_ns` 60 s，档窗口 4 s | 13（勘误 calib-v2-A5 第 6 条） |
+| `v2_d14_missing` | 登记表不列 `e0_d14.json` | 11；档 2、4 NOT_RUN（C13 第二半无 D14） |
+| `v2_d14_env` | `e0_d14.json` 的 `environment` 画像与启动不符 | 13（calibration environment） |
+| `v2_arm_config_missing` | `arm_config` 缺本臂 | 13 |
+| `v2_near_boundary_tiers` | v2 登记表写了 `judge.near_boundary_tiers` | 13 |
+| `v2_inline_thresholds` | v2 登记表 `inline_thresholds` 非空 | 13 |
 | `input_calib_invalid` | `loadgen_band` 一个带 min > max | 13 |
 | `input_registered_late` | `register.json` 登记时刻晚于提交 | 13 |
 | `input_identity_mismatch` | 一个自报文件的 `identity.arm` 不同 | 13 |

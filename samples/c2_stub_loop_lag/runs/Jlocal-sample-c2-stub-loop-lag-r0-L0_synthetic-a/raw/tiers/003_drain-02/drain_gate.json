@@ -41,7 +41,7 @@
   "job_id": "local-sample-c2-stub-loop-lag",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "a796d6b4ada485c51985b58a6dc88e534ccc28d325975e9f1750c49500209f96",
+  "register_sha": "9a68b633fb986e95dc39f2d97e318c1d5f6ecf22560c630eb3508e3ddcb5c2b0",
   "restart_count": 0,
   "role": "launch",
   "tier_label": "drain-02",
@@ -88,7 +88,7 @@
       0,
       "local-sample-c2-stub-loop-lag",
       0,
-      "a796d6b4ada485c51985b58a6dc88e534ccc28d325975e9f1750c49500209f96"
+      "9a68b633fb986e95dc39f2d97e318c1d5f6ecf22560c630eb3508e3ddcb5c2b0"
      ],
      "pid": 1001,
      "seq": 100,
@@ -102,7 +102,7 @@
       0,
       "local-sample-c2-stub-loop-lag",
       0,
-      "a796d6b4ada485c51985b58a6dc88e534ccc28d325975e9f1750c49500209f96"
+      "9a68b633fb986e95dc39f2d97e318c1d5f6ecf22560c630eb3508e3ddcb5c2b0"
      ],
      "pid": 1002,
      "seq": 100,
@@ -116,7 +116,7 @@
       0,
       "local-sample-c2-stub-loop-lag",
       0,
-      "a796d6b4ada485c51985b58a6dc88e534ccc28d325975e9f1750c49500209f96"
+      "9a68b633fb986e95dc39f2d97e318c1d5f6ecf22560c630eb3508e3ddcb5c2b0"
      ],
      "pid": 2001,
      "seq": 100,
@@ -166,7 +166,7 @@
       0,
       "local-sample-c2-stub-loop-lag",
       0,
-      "a796d6b4ada485c51985b58a6dc88e534ccc28d325975e9f1750c49500209f96"
+      "9a68b633fb986e95dc39f2d97e318c1d5f6ecf22560c630eb3508e3ddcb5c2b0"
      ],
      "pid": 1001,
      "seq": 102,
@@ -180,7 +180,7 @@
       0,
       "local-sample-c2-stub-loop-lag",
       0,
-      "a796d6b4ada485c51985b58a6dc88e534ccc28d325975e9f1750c49500209f96"
+      "9a68b633fb986e95dc39f2d97e318c1d5f6ecf22560c630eb3508e3ddcb5c2b0"
      ],
      "pid": 1002,
      "seq": 102,
@@ -194,7 +194,7 @@
       0,
       "local-sample-c2-stub-loop-lag",
       0,
-      "a796d6b4ada485c51985b58a6dc88e534ccc28d325975e9f1750c49500209f96"
+      "9a68b633fb986e95dc39f2d97e318c1d5f6ecf22560c630eb3508e3ddcb5c2b0"
      ],
      "pid": 2001,
      "seq": 102,
@@ -244,7 +244,7 @@
       0,
       "local-sample-c2-stub-loop-lag",
       0,
-      "a796d6b4ada485c51985b58a6dc88e534ccc28d325975e9f1750c49500209f96"
+      "9a68b633fb986e95dc39f2d97e318c1d5f6ecf22560c630eb3508e3ddcb5c2b0"
      ],
      "pid": 1001,
      "seq": 104,
@@ -258,7 +258,7 @@
       0,
       "local-sample-c2-stub-loop-lag",
       0,
-      "a796d6b4ada485c51985b58a6dc88e534ccc28d325975e9f1750c49500209f96"
+      "9a68b633fb986e95dc39f2d97e318c1d5f6ecf22560c630eb3508e3ddcb5c2b0"
      ],
      "pid": 1002,
      "seq": 104,
@@ -272,7 +272,7 @@
       0,
       "local-sample-c2-stub-loop-lag",
       0,
-      "a796d6b4ada485c51985b58a6dc88e534ccc28d325975e9f1750c49500209f96"
+      "9a68b633fb986e95dc39f2d97e318c1d5f6ecf22560c630eb3508e3ddcb5c2b0"
      ],
      "pid": 2001,
      "seq": 104,
@@ -289,6 +289,6 @@
  "schema": "capkit.drain_gate/1",
  "source": "default",
  "t_pass_rel_ns": 10400000000,
- "written_mono_ns": 9852505770797542,
- "written_wall": "2026-11-14T17:08:01.851Z"
+ "written_mono_ns": 9882861938440570,
+ "written_wall": "2026-11-15T01:33:58.018Z"
 }

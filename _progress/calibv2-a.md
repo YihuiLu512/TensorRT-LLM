@@ -100,3 +100,23 @@
   - 实测数：V0 计时行 K=24、S=90、e_c 0.30 表长 13 264 s 通过（time_budget 13 940 s），K=26 14 308 s 失败；V0-cal 1474 s、4 次一作业 time_budget 7610 s；--plan 的 S_fit_by_K 与 plan_r4.json 逐项相等；tiergen 写出的档位表 sha256 = ladder.json 的 tier_table_sha256。
   - 变异 r4 / r4b / r4c（mut/muts4.py，25 项）：全部变红。r4 的对照因多目录同跑 conftest 撞名与快照拒收软链而无效，改 run_mut4.sh（逐文件跑、configs/jobs 拷贝）后 r4b 对照全过；r4b 存活 Q12b（作业条件去掉，K=26 仍被 time_budget 拒）、Q20（--all-but 目标不在 node_list 的检查去掉，原测试目标同时不在 sinfo）——补测试后 r4c 变红。
   - 未做（NOT RUN）：tests/judge 与其余目录（本步没改它们的代码）；真实集群上的 sinfo / scontrol 输出格式（只用桩）；pc 槽按 §4.1 为 130 s 而非 §4.2 写的 90 s（勘误 A4 第 1 条注明）。
+- 2026-11-15 08:41:44 SB-A-5 开工：读 impl-steps 第 5 条与 DESIGN-r7a §2.11.3、§2.12、§3.1 P2-09/09b/09c/10、§3.2、§3.3、§4.2、§4.5、§3.5 测试条目。
+- 2026-11-15 08:59:25 读完设计；d14 真实回放原型（15 棵树、约 10 s）读数与 pilot.json 8e823f12 相等、12 棵完整、结论 false。开始写 tools/capjudge/pilot2.py（框架、_select、d14、bootstrap、shortfall），先骨架再分段。
+- 2026-11-15 09:17:57 pilot2.py 三个子命令与 _select 写完；tests/judge/test_pilot2.py 29 passed（bootstrap 第 40 条、_select 第 31 条、shortfall 第 35 条）。接着写第 13 条框架拒收、第 27/34 条真实 d14、第 23 条取消计数。
+- 2026-11-15 09:22:53 后台跑变异 r5（28 项 + 对照，逐个串行，每项约 20 s，合计约 10 分钟），期间写 INTERFACES 勘误 A5。
+- 2026-11-15 09:30:03 变异 r5：28 项全部变红，对照 49 passed（mut/r5/summary.txt）。接着做第 22 条：判定器加 thresholds 窗口核对、make_samples 加 v2 自测样本并重新生成已提交样本。
+- 2026-11-15 09:31:45 12 个 v2 自测样本逐个判过、退出码全部符合期望（tmp/a5/s22/r1）。全量重新生成样本到 tmp/a5/s22/full 并跑自测（约 3～5 分钟）。
+- 2026-11-15 09:36:09 已提交样本按 v2 缺省重新生成（50 个，新增 12 个 v2 样本；regime_nb 两个改期望 13）。自测：50 个都跑了，只有 5 个 I 样本不符（P2-13 属 SB-C），runner 退出码 1（selftest.sh 的 EXIT 打印读的是 $(date) 的 $?，不可信，以 run_selftest 的 errors 为准）。
+- 2026-11-15 09:40:59 INTERFACES calib-v2-A5 与 SB-A 收尾清单、两处正文指引、capjudge README、samples README 已写。开始逐目录全量：tests/judge（约 6 分钟，后台）。
+- 2026-11-15 09:51:53 全量 tests/judge（logs/a5full，450 s）：12 failed / 499 passed。归因：test_selftest 4 条是样本数常量 38（改为 50，见下次运行）；其余 8 条全是 I 样本（P2-13，SB-C）：test_calib 2、test_analysis 2、test_intervene 2、test_selftest 生成/已提交 2。SB-A-4 收尾时为 14 failed / 448 passed。补了 shortfall→laddergen --plan-from 往返测试与判定器窗口核对测试，重跑 test_pilot2、test_calibv2_sources、test_selftest。
+- 2026-11-15 09:58:45 test_selftest（logs/a5c，326 s）：6 passed / 2 failed；两条失败的 errors 只来自 5 个 I 样本（P2-13）。后台跑变异 r5b（判定器窗口核对 3 项 + 对照）。
+- 2026-11-15 10:01 SB-A-5 收尾（P2-09 pilot2-d14 + P2-09b shortfall + P2-09c bootstrap + P2-10 selftest-and-docs），实测（MEASURED）：
+  - 新文件 tools/capjudge/pilot2.py（框架、_select、d14、bootstrap、shortfall、v0_cancelled）与 tests/judge/test_pilot2.py（第 13、23、27、31、34、35、40 条 + shortfall→laddergen --plan-from 往返）：50 passed（logs/a5d）。
+  - 第 27 条真实回放：本机读第一轮 15 棵树，`pilot2 d14` 读数与 pilot.json 8e823f12 的 d14_softirq.readings 逐字相等、结论 false、完整树 12 棵、launch_verdict VALID 0 棵（CLI 实跑 + 测试）。
+  - 判定器新增 thresholds 阶段 pilot/2 的窗口核对（inputs._check_threshold_window）；test_calibv2_sources 66 passed。
+  - 已提交样本重新生成为 50 个（新增 12 个 v2 样本，regime_nb 两个期望改 13）；自测 50 个都跑了，errors 只来自 5 个 I 样本（P2-13，SB-C）。
+  - 全量 tests/judge（logs/a5full，改样本数常量前）12 failed / 499 passed；改后 test_selftest 6 passed / 2 failed（logs/a5c）。剩余 8 条失败全是 I 样本（test_calib 2、test_analysis 2、test_intervene 2、test_selftest 2），属 P2-13。
+  - 变异 r5（28 项，pilot2）与 r5b（3 项，判定器窗口核对）全部变红，对照全过（mut/r5/summary.txt、mut/r5b/summary.txt）。
+  - fakebin.log 0 行；py_compile 本步改动文件 6/0。
+  - 推断（INFERRED）：shift 条目按「全部入选」处理是否满足 P2-11 的一一对应取代，要到 SB-C 才能核。
+  - 未做（NOT RUN）：第 21 条作业路径 e2e（本 worktree 没有 probe-tree 覆盖清单）；V2-b 区组段的缺额补足；tests/launch、tests/jobs、tests/capcommon 等目录（本步没改它们的代码）。

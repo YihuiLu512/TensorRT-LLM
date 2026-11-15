@@ -41,7 +41,7 @@
   "job_id": "local-sample-c3-non-overload",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "fafcd6d3122ea924b1dc14283a7c718dfb9e75b290caa87f4edfb86c3ab104ff",
+  "register_sha": "2ebc3730daa7ab2d463ee1377b396a04e637dfc51199734dc4fe6aa535079da0",
   "restart_count": 0,
   "role": "launch",
   "tier_label": "drain-03",
@@ -88,7 +88,7 @@
       0,
       "local-sample-c3-non-overload",
       0,
-      "fafcd6d3122ea924b1dc14283a7c718dfb9e75b290caa87f4edfb86c3ab104ff"
+      "2ebc3730daa7ab2d463ee1377b396a04e637dfc51199734dc4fe6aa535079da0"
      ],
      "pid": 1001,
      "seq": 180,
@@ -102,7 +102,7 @@
       0,
       "local-sample-c3-non-overload",
       0,
-      "fafcd6d3122ea924b1dc14283a7c718dfb9e75b290caa87f4edfb86c3ab104ff"
+      "2ebc3730daa7ab2d463ee1377b396a04e637dfc51199734dc4fe6aa535079da0"
      ],
      "pid": 1002,
      "seq": 180,
@@ -116,7 +116,7 @@
       0,
       "local-sample-c3-non-overload",
       0,
-      "fafcd6d3122ea924b1dc14283a7c718dfb9e75b290caa87f4edfb86c3ab104ff"
+      "2ebc3730daa7ab2d463ee1377b396a04e637dfc51199734dc4fe6aa535079da0"
      ],
      "pid": 2001,
      "seq": 180,
@@ -166,7 +166,7 @@
       0,
       "local-sample-c3-non-overload",
       0,
-      "fafcd6d3122ea924b1dc14283a7c718dfb9e75b290caa87f4edfb86c3ab104ff"
+      "2ebc3730daa7ab2d463ee1377b396a04e637dfc51199734dc4fe6aa535079da0"
      ],
      "pid": 1001,
      "seq": 182,
@@ -180,7 +180,7 @@
       0,
       "local-sample-c3-non-overload",
       0,
-      "fafcd6d3122ea924b1dc14283a7c718dfb9e75b290caa87f4edfb86c3ab104ff"
+      "2ebc3730daa7ab2d463ee1377b396a04e637dfc51199734dc4fe6aa535079da0"
      ],
      "pid": 1002,
      "seq": 182,
@@ -194,7 +194,7 @@
       0,
       "local-sample-c3-non-overload",
       0,
-      "fafcd6d3122ea924b1dc14283a7c718dfb9e75b290caa87f4edfb86c3ab104ff"
+      "2ebc3730daa7ab2d463ee1377b396a04e637dfc51199734dc4fe6aa535079da0"
      ],
      "pid": 2001,
      "seq": 182,
@@ -244,7 +244,7 @@
       0,
       "local-sample-c3-non-overload",
       0,
-      "fafcd6d3122ea924b1dc14283a7c718dfb9e75b290caa87f4edfb86c3ab104ff"
+      "2ebc3730daa7ab2d463ee1377b396a04e637dfc51199734dc4fe6aa535079da0"
      ],
      "pid": 1001,
      "seq": 184,
@@ -258,7 +258,7 @@
       0,
       "local-sample-c3-non-overload",
       0,
-      "fafcd6d3122ea924b1dc14283a7c718dfb9e75b290caa87f4edfb86c3ab104ff"
+      "2ebc3730daa7ab2d463ee1377b396a04e637dfc51199734dc4fe6aa535079da0"
      ],
      "pid": 1002,
      "seq": 184,
@@ -272,7 +272,7 @@
       0,
       "local-sample-c3-non-overload",
       0,
-      "fafcd6d3122ea924b1dc14283a7c718dfb9e75b290caa87f4edfb86c3ab104ff"
+      "2ebc3730daa7ab2d463ee1377b396a04e637dfc51199734dc4fe6aa535079da0"
      ],
      "pid": 2001,
      "seq": 184,
@@ -289,6 +289,6 @@
  "schema": "capkit.drain_gate/1",
  "source": "default",
  "t_pass_rel_ns": 18400000000,
- "written_mono_ns": 9852500344188565,
- "written_wall": "2026-11-14T17:07:56.424Z"
+ "written_mono_ns": 9882856108181168,
+ "written_wall": "2026-11-15T01:33:52.188Z"
 }

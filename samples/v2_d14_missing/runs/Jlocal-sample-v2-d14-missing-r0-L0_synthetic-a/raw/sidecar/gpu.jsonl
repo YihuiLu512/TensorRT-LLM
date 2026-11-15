@@ -1,0 +1,13 @@
+{"_header": true, "columns": ["t_rel_ns", "gpu_index", "util_pct", "mem_used_mib", "compute_pids", "query_rc"], "gpu_count": 1, "identity": {"arm": "synthetic-a", "experiment": "E0", "job_id": "local-sample-v2-d14-missing", "launch_seq": 0, "pid": null, "register_sha": "8e75863d8a4a3a850eb9e30e9a902b79e1a7cb599d5717803cf7ad89994f3bd6", "restart_count": 0, "role": "sidecar", "tier_label": null, "tier_seq": null, "worker": 0}, "positive_control_ok": true, "schema": "capkit.sidecar.gpu/1", "written_wall": "2026-11-15T01:34:00.952Z"}
+[-2000000000,0,0,0,[],0]
+[0,0,0,0,[],0]
+[2000000000,0,0,0,[],0]
+[4000000000,0,0,0,[],0]
+[6000000000,0,0,0,[],0]
+[8000000000,0,0,0,[],0]
+[10000000000,0,0,0,[],0]
+[12000000000,0,0,0,[],0]
+[14000000000,0,0,0,[],0]
+[16000000000,0,0,0,[],0]
+[18000000000,0,0,0,[],0]
+[20000000000,0,0,0,[],0]
