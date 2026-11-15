@@ -42,7 +42,6 @@ CHAIN = os.environ.get("TRTLLM_TEST_OPENENGINE_CHAIN", "none") not in ("", "none
 ENGINE_READY_TIMEOUT_S = 1800
 REQUEST_TIMEOUT_S = 300
 REGISTER_TIMEOUT_S = 120
-ROLES = ("context", "generation")
 
 BASE_CONFIG: Mapping[str, Any] = {
     "cache_transceiver_config": {"backend": "DEFAULT"},
@@ -80,10 +79,10 @@ def tiktoken_env() -> dict[str, str]:
 
 
 def needs_gpus(count: int) -> None:
-    if not torch.cuda.is_available() or torch.cuda.get_device_capability(0) < (9, 0):
-        pytest.skip("needs a GPU of Hopper or later")
-    if torch.cuda.device_count() < count:
+    if not torch.cuda.is_available() or torch.cuda.device_count() < count:
         pytest.skip(f"needs {count} GPUs")
+    if any(torch.cuda.get_device_capability(i) < (9, 0) for i in range(count)):
+        pytest.skip(f"needs {count} GPUs of Hopper or later")
 
 
 TWO_GPUS = {"context": Role(gpus="0"), "generation": Role(gpus="1")}
@@ -156,11 +155,11 @@ def _physical_gpus(gpus: str, env: Mapping[str, str]) -> str:
     return ",".join(listed[int(index)] for index in gpus.split(","))
 
 
-def _registered(orchestrator: RemoteDisaggOpenAIServer) -> bool:
+def _ready(orchestrator: RemoteDisaggOpenAIServer) -> bool:
+    """Whether the orchestrator's ``/health`` is 200: both workers have registered with it."""
     try:
-        lists = requests.get(orchestrator.url_for("cluster_info"), timeout=10).json()
-        return bool(lists["server_lists"]["context"] and lists["server_lists"]["generation"])
-    except (requests.RequestException, ValueError, KeyError):
+        return requests.get(orchestrator.url_for("health"), timeout=10).status_code == 200
+    except requests.RequestException:
         return False
 
 
@@ -220,10 +219,11 @@ def deployment(
             llmapi_launch=False,
             disagg_config=disagg_config,
             log_path=str(directory / "orchestrator.log"),
+            # Its /health stays 503 until the workers register; their own waits notice a worker
+            # that exits, and the wait below has a timeout.
+            wait_ready=False,
         ) as orchestrator:
             for server in (ctx, gen):
                 server.wait_for_server(timeout=ENGINE_READY_TIMEOUT_S)
-            wait_for(
-                lambda: _registered(orchestrator), "the workers to register", REGISTER_TIMEOUT_S
-            )
+            wait_for(lambda: _ready(orchestrator), "the workers to register", REGISTER_TIMEOUT_S)
             yield Deployment(model, orchestrator, {"context": ctx, "generation": gen})

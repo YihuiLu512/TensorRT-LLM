@@ -12,12 +12,16 @@ read the engines' ``Control.GetLoad``.
   and no generation leg. The context worker's KV cache holds one such prompt,
   not two, so the request that follows through the orchestrator is only
   scheduled once ``kv_transfer_timeout_ms`` has freed the unclaimed blocks:
-  the test checks it waited about that long. The expectations table says the test leaves one handoff unclaimed
+  the test checks it waited at least that long, less a slack. The
+  expectations table says the test leaves one handoff unclaimed
   (``leg_expect: direct_ctx_leg``).
 - NT-199 (EG-16c): a streamed request with a long prompt is left as soon as
   the orchestrator counts its context leg completed, about when the
   generation leg starts on the KV cache handed over; whether the transfer is
-  still under way then is not controlled. The workers then serve the next
+  still under way then is not controlled. The request asks for many tokens
+  (``CANCEL_DECODE_TOKENS``); the test waits for the orchestrator to start
+  the generation leg and end every leg, and checks that every generation leg
+  ended as an error, as a leg cut short does. The workers then serve the next
   request. The test records the orchestrator's generation-leg counts over
   the request (``gen_leg_counts``), so that the runs of both forms can be set
   side by side.
@@ -65,7 +69,7 @@ TRANSFER_TIMEOUT_MS = 10000
 # How much sooner than the transfer timeout the follow-up request may be served.
 TIMEOUT_SLACK_S = 2
 CANCEL_PROMPT_TOKENS = 16000
-CANCEL_DECODE_TOKENS = 512
+CANCEL_DECODE_TOKENS = 8192
 SETTLE_S = 120
 
 
@@ -129,10 +133,20 @@ def _orchestrator_counts(served: Deployment) -> dict[str, int]:
     return counts
 
 
-def _engines_idle(served: Deployment) -> bool:
+def _legs_ended(served: Deployment, before: dict[str, int]) -> bool:
+    """Whether the orchestrator has started a generation leg since ``before`` and ended every leg."""
+    now = _orchestrator_counts(served)
+    if now.get("gen_total_requests", 0) == before.get("gen_total_requests", 0):
+        return False
     return all(
-        int(load(worker).get("running_requests", 0)) == 0 for worker in served.workers.values()
+        now.get(f"{role}_completed_requests", 0) - before.get(f"{role}_completed_requests", 0)
+        == now.get(f"{role}_total_requests", 0) - before.get(f"{role}_total_requests", 0)
+        for role in ("ctx", "gen")
     )
+
+
+def _engines_idle(served: Deployment) -> bool:
+    return all(int(load(worker)["running_requests"]) == 0 for worker in served.workers.values())
 
 
 def test_cancel_during_transfer_is_the_same_on_both_forms(tmp_path, record_property):
@@ -169,11 +183,13 @@ def test_cancel_during_transfer_is_the_same_on_both_forms(tmp_path, record_prope
                 REQUEST_TIMEOUT_S,
                 interval=0.05,
             )
-        # Leaving the block closed the connection unread; let the orchestrator see it.
-        time.sleep(5)
+        # Leaving the block closed the connection unread.
+        wait_for(lambda: _legs_ended(served, before), "the orchestrator to end the legs", SETTLE_S)
         after = _orchestrator_counts(served)
         counts = {name: after.get(name, 0) - before.get(name, 0) for name in names}
         record_property("gen_leg_counts", json.dumps(counts, sort_keys=True))
+        # The orchestrator counts every leg it ends as completed, and a leg cut short also as an error.
+        assert counts["gen_error_requests"] == counts["gen_total_requests"], counts
         if CHAIN:
             wait_for(lambda: _engines_idle(served), "the engines to end the legs", SETTLE_S)
         assert complete(served, "The capital of France is")["choices"][0]["text"]

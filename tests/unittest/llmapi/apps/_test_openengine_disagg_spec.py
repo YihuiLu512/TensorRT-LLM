@@ -20,6 +20,7 @@ Needs two GPUs of Hopper or later (NT-209: Blackwell, and 140000 MiB each) and
 the models under ``LLM_MODELS_ROOT`` that each test names.
 """
 
+import dataclasses
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -44,8 +45,8 @@ ANSWER = "Paris"
 
 def _with_config(context: dict, generation: dict) -> dict[str, Role]:
     return {
-        "context": Role(config=context, gpus="0"),
-        "generation": Role(config=generation, gpus="1"),
+        "context": dataclasses.replace(TWO_GPUS["context"], config=context),
+        "generation": dataclasses.replace(TWO_GPUS["generation"], config=generation),
     }
 
 
@@ -122,7 +123,7 @@ def test_eagle3_batch_slot_is_released_at_batch_size_one(tmp_path):
 def test_dynamic_tree_draft_tokens_cross_handoff(tmp_path, record_property):
     """NT-209 (EG-01g): Eagle3 with a dynamic draft tree on both workers answers correctly."""
     needs_gpus(2)
-    if torch.cuda.get_device_capability(0) < (10, 0):
+    if any(torch.cuda.get_device_capability(i) < (10, 0) for i in (0, 1)):
         pytest.skip("the dynamic draft tree needs Blackwell")
     if any(torch.cuda.get_device_properties(i).total_memory < 140_000 * 2**20 for i in (0, 1)):
         pytest.skip("Qwen3-30B-A3B with its draft model needs 140000 MiB on each GPU")

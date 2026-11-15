@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """The chain proof of the disaggregated transceiver tests that send a leg themselves or leave early.
 
-The other tests of these files send every request through the
+The other tests of ``tests/unittest/llmapi/apps/_test_openengine_disagg_{spec,
+harmony,transceiver,topology,engine_combos}.py`` send every request through the
 disaggregated server, so both legs carry traffic and need no entry.
 """
 

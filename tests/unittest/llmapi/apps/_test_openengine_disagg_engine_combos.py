@@ -16,14 +16,18 @@ on the OpenEngine chain (``TRTLLM_TEST_OPENENGINE_CHAIN``,
   ``examples/llm-api/llm_kv_cache_connector.py``, which saves each computed
   block to a directory and loads it back for a prompt it has seen. A request
   answers and the connector saved its blocks; the same request answers the
-  same again, and its blocks are loaded, not computed and saved again.
+  same again, and the connector logs that it matched all of them (its
+  ``KV CONNECTOR: Matched <n> blocks`` line in the log of the process that
+  runs the context worker's executor: the worker, or on the chain its
+  engine).
 - NT-212 (EG-37): both workers run their executors with Ray
   (``orchestrator_type: ray``); a request answers correctly.
 - NT-213 (EG-38): attention-DP workers on two GPUs each route by KV cache
   and count the requests whose KV cache is still in transfer
   (``kv_cache_routing_account_for_in_transfer``); the context worker is the
   one with such requests, those it is still sending. Requests sent at once
-  all answer correctly.
+  all answer correctly. Which rank serves which request is not visible from
+  outside the engine.
 
 Needs GPUs of Hopper or later (NT-211: one, NT-213: four, the others: two)
 and the models under ``LLM_MODELS_ROOT`` that each test names.
@@ -37,6 +41,7 @@ import pytest
 import requests
 
 from ._test_openengine_disagg_per_role import (
+    CHAIN,
     OWN_GPU_KV_CACHE,
     REQUEST_TIMEOUT_S,
     TWO_GPUS,
@@ -47,7 +52,9 @@ from ._test_openengine_disagg_per_role import (
     model_dir,
     needs_gpus,
     tiktoken_env,
+    wait_for,
 )
+from .openai_server import RemoteOpenAIServer
 
 pytestmark = [pytest.mark.threadleak(enabled=False)]
 
@@ -87,6 +94,17 @@ def test_sliding_window_attention_two_legs(tmp_path):
         assert "5" in (answer["choices"][0]["message"].get("content") or ""), answer
 
 
+def _executor_log(server: RemoteOpenAIServer) -> str:
+    """The log of the process that runs the worker's executor: the worker, or its engine."""
+    return server._chain_handle.engine_log if CHAIN else server.log_path
+
+
+def _matched_all(log: str) -> int:
+    """How many lines of ``log`` say the connector matched all eight saved blocks of a request."""
+    with open(log, encoding="utf-8", errors="replace") as handle:
+        return sum("KV CONNECTOR: Matched 8 blocks" in line for line in handle)
+
+
 def test_kv_cache_connector_with_disagg_prefill(tmp_path):
     """NT-211 (EG-36): a context worker with a KV-cache connector serves the context leg."""
     needs_gpus(1)
@@ -99,19 +117,24 @@ def test_kv_cache_connector_with_disagg_prefill(tmp_path):
     python_path = os.pathsep.join(filter(None, (str(EXAMPLES), os.environ.get("PYTHONPATH"))))
     context = Role(
         config={"kv_connector_config": connector, "enable_chunked_prefill": False},
-        env={"PYTHONPATH": python_path, "CONNECTOR_CACHE_FOLDER": str(saved)},
+        # The connector logs its matches at INFO.
+        env={
+            "PYTHONPATH": python_path,
+            "CONNECTOR_CACHE_FOLDER": str(saved),
+            "TLLM_LOG_LEVEL": "INFO",
+        },
     )
     # Eight whole blocks of the default 32 tokens and a part block, which the connector does not save.
     prompt = [1000 + i for i in range(8 * 32 + 5)]
     with deployment(tmp_path, model_dir(QWEN), roles={"context": context}) as served:
         first = complete(served, prompt)["choices"][0]["text"]
         assert first
-        blocks = {path: path.stat().st_mtime_ns for path in saved.glob("*.pt")}
-        assert len(blocks) == 8, sorted(blocks)
+        assert len(list(saved.glob("*.pt"))) == 8, sorted(saved.glob("*.pt"))
+        log = _executor_log(served.ctx)
+        assert _matched_all(log) == 0
         again = complete(served, prompt)["choices"][0]["text"]
         assert again == first
-        # The second request loaded the blocks: the connector saves only the blocks it computes.
-        assert {path: path.stat().st_mtime_ns for path in saved.glob("*.pt")} == blocks
+        wait_for(lambda: _matched_all(log) > 0, "the connector to match the saved blocks", 30)
 
 
 def test_ray_orchestrator_engines_two_legs(tmp_path):
