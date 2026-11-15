@@ -170,10 +170,14 @@ def test_fill_gate_matches_the_submit_script(driver, tmp_path):
 def test_ucx_rule_is_the_submit_scripts(driver):
     from test_common import cluster_env
 
-    for cluster in ("", "computelab", "oci-jhb-x", "nsc-svg-slurm-1"):
+    # A name each cluster-specific rule matches, and names no rule of its own matches.
+    clusters = ["", "no-such-cluster"] + [
+        pattern.replace("*", "x") for pattern, _, _ in cluster_env.UCX_ENV_RULES
+    ]
+    for cluster in clusters:
         assert driver.ucx_env(cluster, "B200") == cluster_env.get_ucx_env(cluster, "B200")
-    # UV-53: a cluster with no rule of its own clears the submit scripts' variables and sets none.
-    assert driver.ucx_env("computelab", "B200") == {}
+    # A cluster with no rule of its own clears the submit scripts' variables and sets none.
+    assert driver.ucx_env("no-such-cluster", "B200") == {}
 
 
 def test_stale_state(driver, tmp_path):
@@ -327,14 +331,14 @@ ARM_ENV = {
 
 
 def test_main_dry_run_writes_the_plan(driver, tmp_path):
-    env = dict(os.environ, **ARM_ENV, SLURM_CLUSTER_NAME="computelab")
+    env = dict(os.environ, **ARM_ENV, SLURM_CLUSTER_NAME="no-such-cluster")
     assert _main(driver, tmp_path, env, "--dry-run") == 0
     report = _report(tmp_path)
     assert (report["arm"], report["chain"], report["status"]) == ("E4-chain", "trtllm", "planned")
     assert [(r["role"], r["gpus"]) for r in report["roles"]] == [
         ("GEN_0", ["4"]), ("CTX_0", ["5"]), ("DISAGG_SERVER", None), ("BENCHMARK", None)
     ]  # fmt: skip
-    assert report["ucx"] == {"cluster": "computelab", "gpu_type": "B200", "set": {}}
+    assert report["ucx"] == {"cluster": "no-such-cluster", "gpu_type": "B200", "set": {}}
     assert report["environment"]["GEN_0"]["set"]["CUDA_VISIBLE_DEVICES"] == "4"
     # The run directory now exists: the same output directory is refused.
     assert _main(driver, tmp_path, env, "--dry-run") == 2
@@ -389,3 +393,64 @@ def test_main_stops_what_a_role_leaves_behind(quick, tmp_path, monkeypatch):
     while any(driver._alive(p) for p in report["leftover_pids"]) and time.monotonic() < deadline:
         time.sleep(0.1)
     assert not any(driver._alive(p) for p in report["leftover_pids"])
+
+
+def test_main_maps_a_bad_yaml_and_a_rule_error_to_exit_2(driver, tmp_path, capsys, monkeypatch):
+    env = dict(os.environ, **ARM_ENV)
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    (config_dir / f"{PU02}.yaml").write_text("hardware: [unclosed\n")
+    argv = ["--output-dir", str(tmp_path / "out"), "--dry-run"]
+    assert driver.main([*argv, "--config-dir", str(config_dir), f"disagg-e2e-{PU02}"], env) == 2
+
+    def no_rule(cluster, gpu_type):
+        raise ValueError("no UCX rule")
+
+    monkeypatch.setattr(driver, "ucx_env", no_rule)
+    assert driver.main([*argv, "--config-dir", str(CONFIGS), f"disagg-e2e-{PU02}"], env) == 2
+    assert not (tmp_path / "out" / "single-node").exists(), "a refused run leaves no directory"
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_report_shows_what_the_driver_adds_to_the_environment(driver, tmp_path):
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTEST_ADDOPTS")}
+    assert _main(driver, tmp_path, dict(env, **ARM_ENV), "--dry-run") == 0
+    added = _report(tmp_path)["environment"]["GEN_0"]["set"]
+    assert "openengine_chain.pytest_plugin" in added["PYTEST_ADDOPTS"]
+    assert {"PYTHONPATH", "TRTLLM_OPENENGINE_RESULTS_DIR"} <= set(added)
+
+
+def test_stop_group_reaches_members_that_outlive_the_leader(driver):
+    # The leader exits on SIGTERM; its child ignores SIGTERM and needs the group's SIGKILL.
+    leader = subprocess.Popen(
+        _script(
+            "import signal, subprocess, sys, time\n"
+            "subprocess.Popen([sys.executable, '-c', "
+            "'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(600)'])\n"
+            "time.sleep(600)"
+        ),
+        start_new_session=True,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while len(driver.group_members(leader.pid)) < 2 and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert len(driver.group_members(leader.pid)) == 2
+        driver.stop_group(leader.pid, 2.0)
+        deadline = time.monotonic() + 10
+        while driver.group_members(leader.pid) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert driver.group_members(leader.pid) == []
+    finally:
+        if leader.poll() is None:
+            leader.kill()
+        leader.wait()
+
+
+def test_driver_repeats_the_arms_module(driver, arms):
+    """The driver does not import the perf arms module; what it repeats must agree with it."""
+    for name in ("ENV_ARM", "ENV_SINGLE_NODE", "ENV_CHAIN", "ENV_RESULTS_DIR"):
+        assert getattr(driver, name) == getattr(arms, name), name
+    assert driver.DISAGG_MODES == arms.DISAGG_ARM_MODES
+    for config in ({}, {"tensor_parallel_size": 2, "pipeline_parallel_size": 2}):
+        assert driver._parallel(config) == arms.parallel_gpus(config)

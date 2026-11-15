@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""The first-output timestamps (CP-09) of the OpenEngine server and the worker front end, on stubs."""
+"""The first-output timestamps of the OpenEngine server and the worker front end, on stubs."""
 
 from __future__ import annotations
 

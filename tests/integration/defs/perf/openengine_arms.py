@@ -11,15 +11,16 @@ whether the server runs as an OpenEngine engine plus a
 ``trtllm-serve --openengine-endpoint`` front end, and which engine serves;
 with the TensorRT-LLM chain, the harness also adds engine options of its own
 (``openengine_chain.launch`` says which). Every other setting of the test is kept; a server that needs a fixed port gets
-one chosen in advance. Only the plain aggregated perf sanity cases (no
-benchmark mode such as ``ctx_only``, no ``time_breakdown``) and the legacy
-serve perf tests take an arm; the legacy tests still write their usual perf
-records under the test's own name. The other perf sanity cases (multi-node
-ones included), perf sanity test ids that upload results, clients other than
-benchmark_serving (accuracy runs included) and the legacy trtllm-bench tests
-refuse one, and the arms with a chain refuse the options that the OpenEngine
-front end's option check refuses; perf tests that do not read these
-variables ignore them.
+one chosen in advance. The arms of :data:`ARMS` take the plain aggregated
+perf sanity cases (no benchmark mode such as ``ctx_only``, no
+``time_breakdown``) and the legacy serve perf tests; the legacy tests still
+write their usual perf records under the test's own name. The arms of
+:data:`DISAGG_ARMS` take the disaggregated perf sanity cases that
+:func:`check_disagg_case` accepts. The other perf sanity cases, perf sanity
+test ids that upload results, clients other than benchmark_serving (accuracy
+runs included) and the legacy trtllm-bench tests refuse an arm, and the
+arms with a chain refuse the options that the OpenEngine front end's option
+check refuses; perf tests that do not read these variables ignore them.
 
 Each measured benchmark run then writes one result JSON with its metrics, the
 front end's CPU time per output token, the settings that must match across arms
@@ -292,7 +293,7 @@ ARMS: dict[str, Arm] = {
 }
 
 # The case-04 arms (TensorRT-LLM engines behind a disaggregated server). Each worker
-# runs one front end (DQ-20); the lean arms also run no post-processing workers.
+# runs one front end; the lean arms also run no post-processing workers.
 CASE_DISAGG = "case-04"
 TOPOLOGY_AGG = "agg"
 TOPOLOGY_DISAGG = "disagg"
@@ -398,16 +399,17 @@ def selected_arm(environ: Mapping[str, str] | None = None) -> Arm | None:
     env = os.environ if environ is None else environ
     name = env.get(ENV_ARM, "")
     chain = env.get(ENV_CHAIN, "")
+    known = all_arms()
     if not name:
         if chain:
             raise ArmError(
                 f"{ENV_CHAIN}={chain!r} is set for a perf test; set {ENV_ARM} to one of "
-                f"{', '.join(all_arms())} to choose the comparison arm"
+                f"{', '.join(known)} to choose the comparison arm"
             )
         return None
-    arm = all_arms().get(name)
+    arm = known.get(name)
     if arm is None:
-        raise ArmError(f"{ENV_ARM}={name!r}; expected one of {', '.join(all_arms())}")
+        raise ArmError(f"{ENV_ARM}={name!r}; expected one of {', '.join(known)}")
     expected = "" if arm.in_process else arm.chain
     if chain != expected:
         want = f"set to {expected!r}" if expected else "unset"
@@ -436,9 +438,14 @@ def checks_decoded_tokens(arm: Arm | None) -> bool:
     """Whether perf sanity requires :data:`DECODED_TOKENS_LINE` of a speculative-decoding case.
 
     Not of the arms with a chain, which cannot report it; their results of
-    such cases say so instead.
+    such cases say so instead. Under a disaggregated arm the generation workers
+    send the responses, so their chain decides.
     """
-    return arm is None or arm.in_process
+    if arm is None:
+        return True
+    if arm.topology == TOPOLOGY_DISAGG and arm.gen is not None:
+        return arm.gen.in_process
+    return arm.in_process
 
 
 def _speculative(config: Mapping[str, Any]) -> bool:
@@ -592,13 +599,16 @@ def prepare_server(
             configuration option without its value or a YAML that is not a
             mapping, an arm with a chain gets options the OpenEngine front end's
             option check refuses, or the glm HTTP arm has no
-            ``TRTLLM_TEST_GLM_SERVE_CMD``.
+            ``TRTLLM_TEST_GLM_SERVE_CMD``, or ``arm`` is not a one-server arm.
         ValueError: The glm HTTP arm cannot split the command line.
         OSError: The YAML cannot be read or its copy written.
         yaml.YAMLError: The YAML or an option value cannot be parsed.
         ImportError: An arm with a chain cannot import TensorRT-LLM's
             OpenEngine front end, or the glm HTTP arm the harness.
     """
+    if arm.topology != TOPOLOGY_AGG:
+        # The legacy serve perf tests start one server for any arm; a disaggregated one is not theirs.
+        raise ArmError(f"arm {arm.name} runs disaggregated perf sanity cases, not one server")
     tokens = list(cmd)
     _check_no_cli_override(tokens, arm)
     found = [(i, v) for name in CONFIG_OPTIONS for i, v in _option_values(tokens, name)]
@@ -1524,9 +1534,9 @@ def kv_transfer_env(env: Mapping[str, str]) -> dict[str, str]:
 class LogMirror:
     """Copies what a log file gains to another file, as it grows.
 
-    Under :data:`ENV_SINGLE_NODE` or a chain, the generation worker's
-    ``gen_server_<i>.log`` that perf sanity reads the engine's per-iteration
-    lines from is written this way (see :func:`gen_log_source`).
+    Under :data:`ENV_SINGLE_NODE` or a chain, the generation worker's log
+    that perf sanity reads the engine's per-iteration lines from
+    (:func:`gen_log_name`) is written this way (see :func:`gen_log_source`).
     """
 
     def __init__(self, source: Callable[[], str | None], dest: str) -> None:
@@ -1570,9 +1580,31 @@ def gen_log_source(server: "ArmServer", server_log: str) -> Callable[[], str | N
 
 
 def mirrors_gen_log(view: Arm, environ: Mapping[str, str] | None = None) -> bool:
-    """Whether a generation worker writes its engine's output to ``gen_server_<i>.log`` itself."""
+    """Whether a generation worker writes its engine's output to its :func:`gen_log_name` itself."""
     env = os.environ if environ is None else environ
     return not view.in_process or env.get(ENV_SINGLE_NODE) == "1"
+
+
+def gen_log_name(index: int | str, environ: Mapping[str, str] | None = None) -> str:
+    """The file, in the test's output directory, that holds generation worker ``index``'s engine lines.
+
+    ``gen_server_<i>.log``, except for a chained generation worker that no
+    :data:`ENV_SINGLE_NODE` driver runs: there an srun step writes the
+    worker's own output to ``gen_server_<i>.log``, without appending, while
+    the chain's engine logs elsewhere, so the worker copies the engine log to
+    ``gen_engine_<i>.log`` and no two writers share a file. Reads the arm's
+    name only (never raises), as the benchmark's log parsing needs.
+    """
+    env = os.environ if environ is None else environ
+    arm = DISAGG_ARMS.get(env.get(ENV_ARM, ""))
+    if (
+        arm is not None
+        and arm.gen is not None
+        and not arm.gen.in_process
+        and env.get(ENV_SINGLE_NODE) != "1"
+    ):
+        return f"gen_engine_{index}.log"
+    return f"gen_server_{index}.log"
 
 
 _SPAWNED_MARK = "multiprocessing.spawn"
@@ -1585,6 +1617,48 @@ def _read_cmdline(pid: int) -> str | None:
             return f.read().replace(b"\0", b" ").decode("utf-8", "replace")
     except OSError:
         return None
+
+
+def _process_argv(pid: int) -> list[str] | None:
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            raw = f.read()
+    except OSError:
+        return None
+    return [arg.decode("utf-8", "replace") for arg in raw.split(b"\0") if arg]
+
+
+def _process_environ(pid: int) -> dict[str, str] | None:
+    """Process ``pid``'s environment as it started, or ``None`` when it cannot be read."""
+    try:
+        with open(f"/proc/{pid}/environ", "rb") as f:
+            raw = f.read()
+    except OSError:
+        return None
+    env = {}
+    for entry in raw.split(b"\0"):
+        key, sep, value = entry.decode("utf-8", "replace").partition("=")
+        if sep:
+            env[key] = value
+    return env
+
+
+def _process_config(pid: int) -> dict[str, Any] | None:
+    """The YAML of the last configuration option on process ``pid``'s command line, if readable."""
+    argv = _process_argv(pid)
+    path = None
+    for i, arg in enumerate(argv or ()):
+        name, sep, value = arg.partition("=")
+        if name in CONFIG_OPTIONS:
+            path = value if sep else (argv[i + 1] if i + 1 < len(argv) else None)
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            config = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError):
+        return None
+    return config if isinstance(config, dict) else None
 
 
 def count_spawned(pids: Iterable[int], cmdline: Callable[[int], str | None] = _read_cmdline) -> int:
@@ -1604,6 +1678,7 @@ def count_spawned(pids: Iterable[int], cmdline: Callable[[int], str | None] = _r
 
 PHASE_BEFORE = "before"
 PHASE_AFTER = "after"
+PHASES = (PHASE_BEFORE, PHASE_AFTER)
 # How long the benchmark waits for every worker's reading of one phase.
 READINGS_TIMEOUT_S = 120.0
 _READINGS_POLL_S = 0.2
@@ -1709,10 +1784,16 @@ class RoleReader:
         self._thread.start()
 
     def stop(self) -> None:
-        """Stop answering; copy what the log mirror has not copied yet."""
+        """Stop answering; copy what the log mirror has not copied yet.
+
+        A thread still busy after the wait keeps the mirror to itself.
+        """
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=30)
+            if self._thread.is_alive():
+                self.errors.append("the reader thread did not stop within 30 s")
+                return
         if self.mirror is not None:
             self.mirror.pump()
 
@@ -1733,16 +1814,31 @@ class RoleReader:
             if address and _health_ok(address):
                 self.startup_s = round(time.monotonic() - self.launched_at, 3)
         try:
-            names = sorted(os.listdir(self.directory))
+            names = os.listdir(self.directory)
         except OSError:
             return
+        requests = []
         for name in names:
             match = _REQUEST.match(name)
-            if match is None or name in self._done:
-                continue
+            if match is not None and name not in self._done:
+                requests.append((int(match.group(2)), match.group(3) != PHASE_BEFORE, name, match))
+        # In the order the benchmark asked: by client, the reading before it first.
+        for _, _, name, match in sorted(requests):
             self._done.add(name)
             session, seq, phase = match.group(1), int(match.group(2)), match.group(3)
-            doc = self.read(session, seq, phase)
+            try:
+                doc = self.read(session, seq, phase)
+            except Exception as error:  # noqa: BLE001 - the benchmark still gets an answer
+                doc = {
+                    "worker": self.worker,
+                    "role": self.role,
+                    "phase": phase,
+                    "seq": seq,
+                    "notes": [f"reading failed: {error!r}"],
+                }
+            # The engine lines of the client just measured go to the log before the answer.
+            if self.mirror is not None:
+                self.mirror.pump()
             write_json_atomic(reading_path(self.directory, session, seq, phase, self.worker), doc)
 
     def read(self, session: str, seq: int, phase: str) -> dict[str, Any]:
@@ -1758,7 +1854,10 @@ class RoleReader:
             "address": address,
             "pid": os.getpid(),
             "node": socket.gethostname(),
+            # This node's clock, which the engine's and front end's timestamps also use.
+            "t_ns": time.time_ns(),
             "startup_s": self.startup_s,
+            "speculative": _speculative(self.plan.config),
             "gpus": parallel_gpus(self.plan.config),
             "frontends": {"configured": worker_frontends(self.plan), "started": None},
             "postproc_workers": {
@@ -1766,13 +1865,16 @@ class RoleReader:
                 "started": None,
             },
             "stream_interval": self.plan.config.get("stream_interval"),
-            "kv_transfer": self._kv_transfer(),
+            "kv_transfer": self._kv_transfer(notes),
             "alignment": worker_alignment(self.plan, self.env),
             "counters": None,
             "frontend_cpu_s": None,
             "leg": None,
             "notes": notes,
         }
+        accepted = self.env.get(ENV_SPEC_DECODE_ACCEPTED)
+        if accepted and doc["alignment"]["spec_decode_force_accepted"] is None:
+            notes.append(f"{ENV_SPEC_DECODE_ACCEPTED}={accepted!r} is not a number")
         pids, note = self.reader.frontend_pids(
             self.server.frontend_pid, in_process=self.view.in_process
         )
@@ -1807,14 +1909,34 @@ class RoleReader:
             doc["leg"] = self._judge_leg(start, address, notes)
         return doc
 
-    def _kv_transfer(self) -> dict[str, Any]:
-        transceiver = self.plan.config.get("cache_transceiver_config") or {}
+    def _kv_transfer(self, notes: list[str]) -> dict[str, Any]:
+        """The KV-transfer settings of the process that runs this worker's engine, as it runs.
+
+        Read from ``/proc``: the configuration file on its command line and its
+        environment. That process is a chained worker's engine, whose
+        configuration the harness rewrites (resolving backend DEFAULT, for
+        one), else the worker's own server process. What ``/proc`` does not
+        give, the worker's planned configuration and environment stand in for,
+        with a note.
+        """
+        handle = self.server.handle
+        process = handle.engine if handle is not None else self.server.proc
+        pid = process.pid if process is not None else None
+        config = _process_config(pid) if pid is not None else None
+        if config is None:
+            notes.append(f"KV transfer: no configuration file read from process {pid}; planned one")
+            config = self.plan.config
+        env = _process_environ(pid) if pid is not None else None
+        if env is None:
+            notes.append(f"KV transfer: environment of process {pid} not readable; planned one")
+            env = self.env
+        transceiver = config.get("cache_transceiver_config") or {}
         if not isinstance(transceiver, Mapping):
             transceiver = {}
         return {
             "backend": transceiver.get("backend"),
             "runtime": transceiver.get("transceiver_runtime"),
-            "env": kv_transfer_env(self.env),
+            "env": kv_transfer_env(env),
         }
 
     def _frontends_started(self, notes: list[str]) -> int | None:
@@ -1871,15 +1993,18 @@ def orchestrator_pid_path(directory: str) -> str:
 
 
 def publish_orchestrator_pid(directory: str, pid: int) -> None:
-    write_json_atomic(orchestrator_pid_path(directory), {"pid": pid})
+    write_json_atomic(orchestrator_pid_path(directory), {"pid": pid, "node": socket.gethostname()})
 
 
 def _orchestrator_pid(directory: str) -> int | None:
+    """The disaggregated server's pid when it runs on this node (its CPU time is read here)."""
     try:
         with open(orchestrator_pid_path(directory), encoding="utf-8") as f:
-            return int(json.load(f)["pid"])
+            doc = json.load(f)
+        pid = int(doc["pid"])
     except (OSError, ValueError, KeyError, TypeError):
         return None
+    return pid if doc.get("node") == socket.gethostname() else None
 
 
 def _tree_ticks(root: int | None) -> int | None:
@@ -2291,8 +2416,10 @@ def build_disagg_result(
     """One measured client's result document under a disaggregated arm (TH-DSG-6).
 
     Raises:
-        ArmError: ``TRTLLM_PERF_RUN`` is not a positive integer.
+        ArmError: ``output`` is refused by :func:`check_benchmark_output`, or
+            ``TRTLLM_PERF_RUN`` is not a positive integer.
     """
+    check_benchmark_output(output)
     env = os.environ if environ is None else environ
     metrics, output_tokens = parse_metrics(output)
     metrics["gen_device_step_ms"] = {
@@ -2303,6 +2430,9 @@ def build_disagg_result(
     after = probe.readings.get(PHASE_AFTER, {})
     for worker, reading in sorted(after.items()):
         notes.extend(f"{worker}: {n}" for n in reading.get("notes", []))
+    gen_readings = [after.get(w) or {} for w in probe._role_workers(ROLE_GEN)]
+    if not checks_decoded_tokens(probe.arm) and any(r.get("speculative") for r in gen_readings):
+        notes.append(_DECODED_TOKENS_NOTE)
     ticks = probe.orch_ticks
     orch_cpu = None
     if ticks.get(PHASE_BEFORE) is not None and ticks.get(PHASE_AFTER) is not None:
@@ -2312,7 +2442,7 @@ def build_disagg_result(
         client_cpu = round(probe.client_cpu[PHASE_AFTER] - probe.client_cpu[PHASE_BEFORE], 3)
     orch = _orchestrator_block(orchestrator_config, orch_cpu)
     proof_block = probe.chain_proof(static_members(orchestrator_config))
-    if proof_block and proof_block["orphan_handoffs"]:
+    if proof_block and (proof_block["orphan_handoffs"] or 0) > 0:
         notes.append(
             f"{proof_block['orphan_handoffs']} orphan handoffs in the measured window: the run "
             "is affected by KV cache held for them and is not a formal comparison"
@@ -2333,7 +2463,10 @@ def build_disagg_result(
         "topology": probe.arm.topology,
         "test_id": test_id,
         "benchmark_mode": benchmark_mode,
-        "concurrency": _int_or_none(option_value(client_cmd, "--max-concurrency")),
+        "concurrency": _int_or_none(
+            option_value(client_cmd, "--max-concurrency")
+            or option_value(client_cmd, "--concurrency")
+        ),
         "dataset": dataset_kind(client_cmd),
         "run": run_number(env),
         "metrics": metrics,
@@ -2636,7 +2769,7 @@ def results_directory(default_dir: str, environ: Mapping[str, str] | None = None
     return os.path.join(results, "perf") if results else default_dir
 
 
-# Per-request timestamps (CP-09). A worker in the chain gets FIRST_OUTPUT_DIR_ENV; its engine
+# Per-request timestamps. A worker in the chain gets FIRST_OUTPUT_DIR_ENV; its engine
 # then records when each Generate call's first response leaves it, and its front end when that
 # response arrives (tensorrt_llm/grpc/openengine/servicer.py FirstOutputTimestamps), one JSONL
 # file per process under the worker's directory.
@@ -2693,21 +2826,23 @@ def _gap_stats(gaps_ms: Sequence[float]) -> dict[str, Any]:
 
 def first_output_gaps(
     records: Mapping[str, Mapping[str, Sequence[int]]],
-    window: tuple[int, int] | None,
+    window: tuple[int, int] | Callable[[str], tuple[int, int] | None] | None,
     first_wave: int,
 ) -> dict[str, Any]:
     """The first-output gap (front end received - engine sent) of the calls sent in ``window``.
 
     A call counts when both probes recorded it exactly once and the engine sent
     its first output inside ``window``; the ``first_wave`` calls the engine sent
-    first are summarized apart from the rest.
+    first are summarized apart from the rest. ``window`` may also map a call's
+    id to the window of the clock that call's timestamps use.
     """
     sent = records.get(ENGINE_FIRST_OUTPUT_PROBE, {})
     received = records.get(FRONTEND_FIRST_OUTPUT_PROBE, {})
     joined = []
     unmatched = 0
     for request_id, times in sent.items():
-        if len(times) != 1 or window is None or not window[0] <= times[0] <= window[1]:
+        bounds = window(request_id) if callable(window) else window
+        if len(times) != 1 or bounds is None or not bounds[0] <= times[0] <= bounds[1]:
             continue
         other = received.get(request_id, ())
         if len(other) != 1:
@@ -2735,6 +2870,16 @@ def first_output_block(probe: "DisaggRunProbe", first_wave: int | None) -> dict[
     window = None
     if PHASE_BEFORE in probe.window and PHASE_AFTER in probe.window:
         window = (probe.window[PHASE_BEFORE], probe.window[PHASE_AFTER])
+
+    def worker_window(call: str) -> tuple[int, int] | None:
+        # The engine and front end of a worker share its node's clock, which the worker's
+        # readings record; the benchmark's own clock stands in when a reading lacks it.
+        worker = call.split("/", 1)[0]
+        times = [(probe.readings.get(p, {}).get(worker) or {}).get("t_ns") for p in PHASES]
+        if all(isinstance(t, int) for t in times):
+            return (times[0], times[1])
+        return window
+
     block: dict[str, Any] = {"directory": os.path.join(probe.directory, "first-output")}
     for role in WORKER_ROLES:
         if role not in chained:
@@ -2747,7 +2892,7 @@ def first_output_block(probe: "DisaggRunProbe", first_wave: int | None) -> dict[
                     merged.setdefault(name, {}).setdefault(f"{worker}/{request_id}", []).extend(
                         times
                     )
-        block[role] = first_output_gaps(merged, window, first_wave or 0)
+        block[role] = first_output_gaps(merged, worker_window, first_wave or 0)
     return block
 
 

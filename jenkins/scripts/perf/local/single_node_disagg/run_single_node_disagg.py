@@ -489,13 +489,45 @@ def supervise(
         for run in running:
             notes.append(f"stopped {run.role}: {reason}")
             run.stopped = True
-            stop_pids([run.proc.pid], STOP_GRACE_S, _signal_group)
+            stop_group(run.proc.pid, STOP_GRACE_S)
         timeout_s = float("inf")
         benchmark_done = None
 
 
-def _signal_group(pid: int, sig: int) -> None:
-    os.killpg(pid, sig)
+def group_members(pgid: int) -> list[int]:
+    """The live (not zombie) processes of process group ``pgid``."""
+    members = []
+    for name in os.listdir("/proc"):
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{name}/stat", encoding="utf-8") as f:
+                fields = f.read().rsplit(")", 1)[1].split()
+        except (OSError, IndexError):
+            continue
+        if len(fields) > 2 and fields[2] == str(pgid) and fields[0] != "Z":
+            members.append(int(name))
+    return members
+
+
+def stop_group(pgid: int, grace_s: float) -> None:
+    """SIGTERM process group ``pgid``; SIGKILL it if a member is left after ``grace_s``.
+
+    The group's leader is a role's pytest, which the driver has not reaped, so
+    its id is not reused while this runs; members outlive an exited leader.
+    """
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    deadline = time.monotonic() + grace_s
+    while group_members(pgid) and time.monotonic() < deadline:
+        time.sleep(0.5)
+    if group_members(pgid):
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
 
 
 def plan_runs(
@@ -586,7 +618,8 @@ def main(argv: Sequence[str] | None = None, environ: Mapping[str, str] | None = 
 
 
 def _main(args: argparse.Namespace, environ: Mapping[str, str] | None) -> int:
-    base = dict(os.environ if environ is None else environ)
+    outer = dict(os.environ if environ is None else environ)
+    base = dict(outer)
     llm_root = os.path.abspath(
         args.llm_root or os.path.join(_PERF_SCRIPTS, os.pardir, os.pardir, os.pardir)
     )
@@ -611,15 +644,17 @@ def _main(args: argparse.Namespace, environ: Mapping[str, str] | None) -> int:
                 "use a new --output-dir"
             )
         assignment = assign_gpus(plan, available_gpus(base, count_gpus))
-    except (DriverError, OSError, ValueError, subprocess.SubprocessError) as error:
+        cluster = args.cluster if args.cluster is not None else base.get("SLURM_CLUSTER_NAME", "")
+        gpu_type = args.gpu_type or cluster_env.gpu_type_from_supported_gpus(
+            list(plan.supported_gpus)
+        )
+        ucx = ucx_env(cluster, gpu_type)
+    except (DriverError, OSError, ValueError, yaml.YAMLError, subprocess.SubprocessError) as error:
         print(f"[single-node disagg] {error}", file=sys.stderr)
         return 2
     os.makedirs(run_dir)
     os.makedirs(test_output_dir, exist_ok=True)
     base.setdefault("LLM_ROOT", llm_root)
-    cluster = args.cluster if args.cluster is not None else base.get("SLURM_CLUSTER_NAME", "")
-    gpu_type = args.gpu_type or cluster_env.gpu_type_from_supported_gpus(list(plan.supported_gpus))
-    ucx = ucx_env(cluster, gpu_type)
     tag = f"{args.test_id}-{uuid.uuid4().hex[:12]}"
     harness_env(base, defs_dir=defs_dir, run_dir=run_dir)
     runs = plan_runs(
@@ -639,7 +674,7 @@ def _main(args: argparse.Namespace, environ: Mapping[str, str] | None) -> int:
         "chain": base.get(ENV_CHAIN, ""),
         "ucx": {"cluster": cluster, "gpu_type": gpu_type, "set": ucx},
         "roles": [],
-        "environment": {role: _env_summary(env, base) for role, env in envs.items()},
+        "environment": {role: _env_summary(env, outer) for role, env in envs.items()},
         "notes": [],
         "leftover_pids": [],
         "status": "planned",
@@ -664,7 +699,7 @@ def _main(args: argparse.Namespace, environ: Mapping[str, str] | None) -> int:
         for run in runs:
             if run.proc is not None and run.proc.poll() is None:
                 run.stopped = True
-                stop_pids([run.proc.pid], STOP_GRACE_S, _signal_group)
+                stop_group(run.proc.pid, STOP_GRACE_S)
                 run.returncode = run.proc.wait()
                 run.ended = time.monotonic()
         time.sleep(SETTLE_S)

@@ -4,8 +4,9 @@
 
 Each role of such a test (every context and generation worker, the
 disaggregated server and the benchmark) runs the same test id in a pytest of
-its own, on one node or several. Each worker's pytest proves its own worker's
-leg; the benchmark's pytest judges what needs every worker's readings and the
+its own, on one node or several. The pytest of each worker in the chain
+proves that worker's leg (an in-process worker has no leg to prove); the
+benchmark's pytest judges what needs every worker's readings and the
 disaggregated server's (``perf/openengine_arms.DisaggRunProbe``), so each
 test is ``leg_expect: cross_node``. The disaggregated server's and the
 benchmark's pytests start no chain server and prove nothing themselves.

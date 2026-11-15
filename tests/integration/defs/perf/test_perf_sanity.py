@@ -594,7 +594,10 @@ def _stdev(values: List[float]) -> float:
 
 
 def gen_worker_log_sizes(output_dir: str, num_gen_servers: int) -> List[int]:
-    """Current byte size of each gen_server_{i}.log (0 if missing).
+    """Current byte size of each gen worker's log (0 if missing).
+
+    The log is gen_server_{i}.log, or the file openengine_arms.gen_log_name
+    names under an OpenEngine perf arm.
 
     Used to delimit per-client segments in DisaggTestCmds.run_cmd: snapshot
     sizes before launching a client, then pass the snapshot as that client's
@@ -603,7 +606,7 @@ def gen_worker_log_sizes(output_dir: str, num_gen_servers: int) -> List[int]:
     """
     sizes: List[int] = []
     for i in range(num_gen_servers):
-        log_path = os.path.join(output_dir, f"gen_server_{i}.log")
+        log_path = os.path.join(output_dir, openengine_arms.gen_log_name(i))
         sizes.append(os.path.getsize(log_path) if os.path.isfile(log_path) else 0)
     return sizes
 
@@ -668,7 +671,7 @@ def _scan_gen_worker_device_step_time(
     """
     per_file_rows: List[List[_IterRow]] = []
     for i in range(num_gen_servers):
-        log_path = os.path.join(output_dir, f"gen_server_{i}.log")
+        log_path = os.path.join(output_dir, openengine_arms.gen_log_name(i))
         if not os.path.isfile(log_path):
             continue
 
@@ -883,7 +886,7 @@ def parse_gen_worker_device_step_time(
 ) -> Optional[_DeviceStepTimeStats]:
     """Per-iter prev_device_step_time statistics (ms) across all gen workers.
 
-    For each gen_server_{i}.log, take the iter >= 5 rows that are not the
+    For each gen worker's log, take the iter >= 5 rows that are not the
     successor of an empty (num_scheduled_requests == 0) iteration, bucket them
     by num_generation_tokens, pick the expected steady-state bucket when
     expected_ngen is given and trusted, else the bucket with the most rows (the
@@ -901,7 +904,7 @@ def parse_gen_worker_device_step_time(
     _stats_at_mode_ngen for the bucket selection.
 
     start_offsets[i] and end_offsets[i] delimit the byte window read from
-    gen_server_{i}.log, slicing out a single client's iteration segment; either
+    gen worker i's log (see gen_worker_log_sizes), slicing out a single client's iteration segment; either
     may be None for start-of-file / end-of-file. A mode with more than one
     client appends every client's iterations to the same worker log, so an
     open-ended window would silently attribute the whole run to the first
@@ -3828,7 +3831,7 @@ class DisaggTestCmds(NamedTuple):
                     _, index = openengine_arms.worker_role(self.disagg_serving_type)
                     mirror = openengine_arms.LogMirror(
                         openengine_arms.gen_log_source(server_proc, server_file_path),
-                        os.path.join(self.test_output_dir, f"gen_server_{index}.log"),
+                        os.path.join(self.test_output_dir, openengine_arms.gen_log_name(index)),
                     )
                 reader = openengine_arms.RoleReader(
                     server=server_proc,
@@ -4306,7 +4309,7 @@ class AggrGenOnlyNoContextCmds(NamedTuple):
     perf_metrics_output_dir: str = ""
 
     def _gen_worker_log(self, server_idx: int, gen_idx: int = 0) -> str:
-        return os.path.join(self.test_output_dir, f"gen_server_{gen_idx}.log")
+        return os.path.join(self.test_output_dir, openengine_arms.gen_log_name(gen_idx))
 
     def get_server_logs(self, server_idx: int) -> List[str]:
         """Logs wait_for_endpoint_ready scans for a fatal error while polling."""
@@ -5235,7 +5238,7 @@ class PerfSanityTestConfig:
             )
         if arm is not None and "upload" in self._test_param_labels.split("-")[0]:
             raise openengine_arms.ArmError(
-                f"{openengine_arms.ENV_ARM}={arm.name}: run the aggr- test id, not "
+                f"{openengine_arms.ENV_ARM}={arm.name}: run the test id without upload, not "
                 f"{self._test_param_labels}; arm results are not uploaded"
             )
         if arm is not None:

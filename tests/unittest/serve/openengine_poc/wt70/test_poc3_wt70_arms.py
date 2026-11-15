@@ -637,7 +637,7 @@ def test_first_output_names_match_the_server(arms):
         assert f'"{name}"' in servicer
 
 
-# ----------------------------------------------------------------------------- UV-44 on the harness
+# ----------------------------------------------------------------------------- the gen_only fill gate
 
 
 def test_chain_engine_gets_the_fill_gate_and_timestamp_variables(harness_path):
@@ -654,3 +654,205 @@ def test_chain_engine_gets_the_fill_gate_and_timestamp_variables(harness_path):
     assert {k: engine[k] for k in env} == env
     frontend = split.disagg_frontend_env(env)
     assert frontend["TRTLLM_OPENENGINE_FIRST_OUTPUT_DIR"] == "/d/GEN_0"
+
+
+# ----------------------------------------------------------------------------- what the result holds
+
+
+@pytest.mark.parametrize(
+    "name, expected", [("E4-base", True), ("E4-ctx", True), ("E4-gen", False), ("E4-chain", False)]
+)
+def test_checks_decoded_tokens_follows_the_generation_workers(arms, name, expected):
+    assert arms.checks_decoded_tokens(arms.DISAGG_ARMS[name]) is expected
+
+
+def test_result_refuses_a_failed_benchmark(arms, tmp_path):
+    probe = _probe(arms, "E4-chain", tmp_path)
+    config = tmp_path / "disagg.yaml"
+    config.write_text(yaml.safe_dump(ORCHESTRATOR))
+    with pytest.raises(arms.ArmError, match="7 failed requests"):
+        arms.build_disagg_result(
+            probe,
+            output=BENCHMARK_OUTPUT + "Failed requests:                         7\n",
+            client_cmd=CLIENT,
+            test_id="disagg-e2e-b200_x",
+            benchmark_mode="e2e",
+            orchestrator_config=str(config),
+            orchestrator_env={},
+            environ={},
+        )
+
+
+def test_result_notes_and_alignment(arms, tmp_path):
+    probe = _probe(arms, "E4-chain", tmp_path)
+    probe.readings["after"]["GEN_0"]["speculative"] = True
+    config = tmp_path / "disagg.yaml"
+    config.write_text(yaml.safe_dump(ORCHESTRATOR))
+    client = [a for a in CLIENT if a not in ("--max-concurrency", "4")] + ["--concurrency", "8"]
+    doc = arms.build_disagg_result(
+        probe,
+        output=BENCHMARK_OUTPUT,
+        client_cmd=client,
+        test_id="disagg-e2e-b200_x",
+        benchmark_mode="e2e",
+        orchestrator_config=str(config),
+        orchestrator_env={},
+        environ={},
+    )
+    assert doc["concurrency"] == 8
+    assert doc["alignment"]["disagg_no_retry"] is False
+    assert arms._DECODED_TOKENS_NOTE in doc["notes"]
+
+
+@pytest.mark.parametrize("orphans, noted", [(2, True), (0, False), (-1, False), (None, False)])
+def test_orphan_handoffs_note(arms, tmp_path, monkeypatch, orphans, noted):
+    probe = _probe(arms, "E4-chain", tmp_path)
+    real = probe.chain_proof
+
+    def chain_proof(members):
+        block = real(members)
+        block["orphan_handoffs"] = orphans
+        return block
+
+    monkeypatch.setattr(probe, "chain_proof", chain_proof)
+    doc = _result(arms, probe, tmp_path)
+    assert any("orphan handoffs" in n for n in doc["notes"]) is noted
+
+
+def test_first_output_window_uses_each_workers_clock(arms, tmp_path):
+    probe = _probe(arms, "E4-gen", tmp_path)
+    # The benchmark's clock is far off; the worker's readings bound its own calls.
+    probe.window = {"before": 10**18, "after": 10**18 + 1}
+    probe.readings["before"]["GEN_0"]["t_ns"] = 0
+    probe.readings["after"]["GEN_0"]["t_ns"] = 3_000_000
+    directory = Path(arms.first_output_dir(str(tmp_path), "GEN_0"))
+    _write_probe(directory, arms.ENGINE_FIRST_OUTPUT_PROBE, [("r1", 1_000_000), ("r2", 5_000_000)])
+    _write_probe(
+        directory, arms.FRONTEND_FIRST_OUTPUT_PROBE, [("r1", 1_500_000), ("r2", 5_500_000)]
+    )
+    assert arms.first_output_block(probe, first_wave=1)["gen"]["calls"] == 1
+
+
+def test_orchestrator_pid_of_another_node_is_not_read(arms, tmp_path, monkeypatch):
+    arms.publish_orchestrator_pid(str(tmp_path), 4321)
+    assert arms._orchestrator_pid(str(tmp_path)) == 4321
+    monkeypatch.setattr(arms.socket, "gethostname", lambda: "another-node")
+    assert arms._orchestrator_pid(str(tmp_path)) is None
+
+
+@pytest.mark.parametrize(
+    "env, expected",
+    [
+        ({"TRTLLM_PERF_ARM": "E4-chain"}, "gen_engine_3.log"),
+        ({"TRTLLM_PERF_ARM": "E4-ctx"}, "gen_server_3.log"),
+        ({"TRTLLM_PERF_ARM": "E4-chain", "TRTLLM_PERF_SINGLE_NODE": "1"}, "gen_server_3.log"),
+        ({"TRTLLM_PERF_ARM": "A-def"}, "gen_server_3.log"),
+        ({}, "gen_server_3.log"),
+    ],
+)
+def test_gen_log_name(arms, env, expected):
+    # Under srun the generation worker's own output owns gen_server_<i>.log.
+    assert arms.gen_log_name(3, env) == expected
+
+
+# ----------------------------------------------------------------------------- the reader's answers
+
+
+def test_role_reader_answers_in_request_order(arms, tmp_path):
+    view = arms.role_view(arms.DISAGG_ARMS["E4-base"], "gen")
+    reader, _ = _reader(arms, view, tmp_path)
+    order = []
+    reader.read = lambda session, seq, phase: order.append((seq, phase)) or {}
+    for seq, phase in ((10, "before"), (2, "after"), (2, "before")):
+        arms.write_json_atomic(arms.request_path(str(tmp_path), "ab12", seq, phase), {})
+    reader.poll()
+    assert order == [(2, "before"), (2, "after"), (10, "before")]
+
+
+def test_role_reader_answers_a_failed_reading(arms, tmp_path):
+    view = arms.role_view(arms.DISAGG_ARMS["E4-base"], "gen")
+    reader, _ = _reader(arms, view, tmp_path)
+
+    def broken(session, seq, phase):
+        raise RuntimeError("no counters")
+
+    reader.read = broken
+    arms.write_json_atomic(arms.request_path(str(tmp_path), "ab12", 0, "before"), {})
+    reader.poll()
+    doc = yaml.safe_load(
+        Path(arms.reading_path(str(tmp_path), "ab12", 0, "before", "GEN_0")).read_text()
+    )
+    assert doc["phase"] == "before" and "no counters" in doc["notes"][0]
+
+
+def test_role_reader_copies_the_log_before_answering(arms, tmp_path):
+    view = arms.role_view(arms.DISAGG_ARMS["E4-base"], "gen")
+    reader, _ = _reader(arms, view, tmp_path)
+    source = tmp_path / "engine.log"
+    source.write_text("")
+    reader.mirror = arms.LogMirror(lambda: str(source), str(tmp_path / "gen_server_0.log"))
+
+    def read(session, seq, phase):
+        source.write_text("iter line written while reading\n")
+        return {}
+
+    reader.read = read
+    arms.write_json_atomic(arms.request_path(str(tmp_path), "ab12", 0, "after"), {})
+    reader.poll()
+    assert "while reading" in (tmp_path / "gen_server_0.log").read_text()
+
+
+def test_role_reader_stop_leaves_the_mirror_to_a_busy_thread(arms, tmp_path):
+    view = arms.role_view(arms.DISAGG_ARMS["E4-base"], "gen")
+    reader, _ = _reader(arms, view, tmp_path)
+    reader.mirror = SimpleNamespace(pump=lambda: pytest.fail("pumped beside a busy thread"))
+    reader._thread = SimpleNamespace(join=lambda timeout: None, is_alive=lambda: True)
+    reader.stop()
+    assert reader.errors == ["the reader thread did not stop within 30 s"]
+
+
+def test_role_reader_reads_the_running_process_transfer_settings(arms, tmp_path):
+    import subprocess
+    import sys
+
+    config = tmp_path / "engine.yaml"
+    config.write_text(
+        yaml.safe_dump(
+            {"cache_transceiver_config": {"backend": "NIXL", "transceiver_runtime": "PYTHON"}}
+        )
+    )
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import time; time.sleep(30)",
+            "--extra_llm_api_options",
+            str(config),
+        ],
+        env={"UCX_TLS": "cuda_ipc", "PATH": "/usr/bin"},
+    )
+    try:
+        view = arms.role_view(arms.DISAGG_ARMS["E4-chain"], "gen")
+        reader, _ = _reader(arms, view, tmp_path, env={"UCX_TLS": "tcp"})
+        reader.server.handle = SimpleNamespace(engine=proc)
+        notes = []
+        assert reader._kv_transfer(notes) == {
+            "backend": "NIXL",
+            "runtime": "PYTHON",
+            "env": {"UCX_TLS": "cuda_ipc"},
+        }
+        assert notes == []
+        reader.server.handle = None
+        planned = reader._kv_transfer(notes)
+        assert planned["backend"] == "DEFAULT" and planned["env"] == {"UCX_TLS": "tcp"}
+        assert len(notes) == 2, "the planned values stand in, noted"
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+@pytest.mark.parametrize("name", ["E4-base", "E4-chain", "E4-direct"])
+def test_one_server_preparation_refuses_the_disagg_arms(arms, tmp_path, name):
+    # The legacy serve perf tests start one server for whatever arm is selected.
+    with pytest.raises(arms.ArmError, match="not one server"):
+        arms.prepare_server(["trtllm-serve", "m"], arms.DISAGG_ARMS[name], str(tmp_path))

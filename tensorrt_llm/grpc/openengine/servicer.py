@@ -832,6 +832,8 @@ class FirstOutputTimestamps:
         self._pending = 0
         self._warned = False
         self.dropped_records = 0
+        # Opened by the writer thread on its first record, line-buffered, kept open.
+        self._output = None
 
     @classmethod
     def from_env(cls, probe: str) -> "FirstOutputTimestamps | None":
@@ -867,9 +869,10 @@ class FirstOutputTimestamps:
     def _write(self, line: str) -> None:
         # Runs only on the writer's one thread.
         try:
-            os.makedirs(self._directory, exist_ok=True)
-            with open(self.path, "a", encoding="utf-8") as output:
-                output.write(line)
+            if self._output is None:
+                os.makedirs(self._directory, exist_ok=True)
+                self._output = open(self.path, "a", encoding="utf-8", buffering=1)
+            self._output.write(line)
         except OSError as error:
             self._drop(f"cannot write {self.path}: {error}")
         finally:

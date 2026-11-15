@@ -42,6 +42,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 import grpc
+from google.protobuf.json_format import MessageToDict
 
 from tensorrt_llm.grpc.openengine.bindings import kv_pb2, openengine_pb2_grpc
 
@@ -179,7 +180,12 @@ def replay_one(
                 record.token_event_s.append(now)
                 record.output_tokens += len(response.token.tokens)
             elif kind == "finished":
-                finished = True
+                reason = MessageToDict(response.finished, preserving_proto_field_name=True).get(
+                    "reason"
+                )
+                finished = reason in dr._NORMAL_FINISH_REASONS
+                if not finished:
+                    record.error = record.error or f"generation leg: finished with reason {reason}"
             elif kind == "error":
                 record.error = f"generation leg: engine error {response.error.message!r}"
         record.gen_status = "OK"
@@ -358,14 +364,31 @@ class LoadRun:
     client_cpu_s: float | None = None
 
 
+# How often, and how far apart, the counters are read after the load until two reads agree.
+_SETTLE_READS = 5
+_SETTLE_GAP_S = 0.5
+
+
+def settled_counters(ctx: str, gen: str) -> dict[str, dict[str, int]]:
+    """Both engines' counters, read until two reads in a row agree (or the reads run out)."""
+    last = {"ctx": read_counters(ctx), "gen": read_counters(gen)}
+    for _ in range(_SETTLE_READS - 1):
+        time.sleep(_SETTLE_GAP_S)
+        now = {"ctx": read_counters(ctx), "gen": read_counters(gen)}
+        if now == last:
+            break
+        last = now
+    return last
+
+
 def measure(ctx: str, gen: str, config: LoadConfig) -> LoadRun:
-    """Read both engines, run the load, read them again."""
+    """Read both engines, run the load, read them again once their counters settle."""
     info = {"ctx": dr.server_info(ctx), "gen": dr.server_info(gen)}
     before = {"ctx": read_counters(ctx), "gen": read_counters(gen)}
     cpu = os.times()
     records, duration = run_load(ctx, gen, config)
     used = os.times()
-    after = {"ctx": read_counters(ctx), "gen": read_counters(gen)}
+    after = settled_counters(ctx, gen)
     client_cpu = round((used.user - cpu.user) + (used.system - cpu.system), 3)
     return LoadRun(config, records, duration, before, after, info, client_cpu)
 

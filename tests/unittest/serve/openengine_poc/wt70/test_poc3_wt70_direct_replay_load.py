@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""The direct replay load tool (openengine_chain/direct_replay_load.py, CT-13) against two fake engines."""
+"""The direct replay load tool (openengine_chain/direct_replay_load.py) against two fake engines."""
 
 from __future__ import annotations
 
