@@ -57,27 +57,29 @@ from dataclasses import dataclass, field
 import yaml
 
 _PERF_SCRIPTS = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-if _PERF_SCRIPTS not in sys.path:
-    sys.path.insert(0, _PERF_SCRIPTS)
-
-from benchmark_utils import is_gen_only_no_context, parse_positive_concurrency  # noqa: E402
+_REPO = os.path.dirname(os.path.dirname(os.path.dirname(_PERF_SCRIPTS)))
 
 
-def _load_cluster_env():
-    path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(_PERF_SCRIPTS))),
-        "tests",
-        "test_common",
-        "cluster_env.py",
-    )
-    spec = importlib.util.spec_from_file_location("test_common_cluster_env", path)
+def _load(name: str, path: str) -> types.ModuleType:
+    """The module at ``path``, loaded under ``name`` without changing ``sys.path``.
+
+    It is registered in ``sys.modules`` first, as dataclasses look their module up.
+    """
+    spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
 
 
+# The helpers the submit scripts parse a test's YAML with (jenkins/scripts/perf/benchmark_utils.py).
+benchmark_utils = _load(
+    "single_node_disagg_benchmark_utils", os.path.join(_PERF_SCRIPTS, "benchmark_utils.py")
+)
 # The UCX rule table the submit scripts use (tests/test_common/cluster_env.py).
-cluster_env = _load_cluster_env()
+cluster_env = _load(
+    "single_node_disagg_cluster_env", os.path.join(_REPO, "tests", "test_common", "cluster_env.py")
+)
 
 ENV_TAG = "TRTLLM_PERF_DRIVER_TAG"
 ENV_SINGLE_NODE = "TRTLLM_PERF_SINGLE_NODE"
@@ -166,9 +168,9 @@ def load_plan(test_id: str, config_dir: str) -> TestPlan:
     num_gen = int(hardware.get("num_gen_servers") or 0)
     if num_ctx < 1 or num_gen < 1:
         raise DriverError(f"{path}: needs at least one context and one generation server")
-    if is_gen_only_no_context(mode, config):
+    if benchmark_utils.is_gen_only_no_context(mode, config):
         raise DriverError(f"{path}: the driver does not run the gen_only_no_context mode")
-    concurrency = parse_positive_concurrency(
+    concurrency = benchmark_utils.parse_positive_concurrency(
         (config.get("benchmark") or {}).get("concurrency_list", "1")
     )
     roles = tuple(f"GEN_{i}" for i in range(num_gen)) + tuple(f"CTX_{i}" for i in range(num_ctx))
@@ -293,13 +295,9 @@ def stale_state(test_output_dir: str) -> list[str]:
 
 def load_arms(defs_dir: str) -> types.ModuleType:
     """``perf/openengine_arms.py`` of the checkout."""
-    name = "single_node_disagg_openengine_arms"
-    path = os.path.join(defs_dir, "perf", "openengine_arms.py")
-    spec = importlib.util.spec_from_file_location(name, path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules[name] = module
-    spec.loader.exec_module(module)
-    return module
+    return _load(
+        "single_node_disagg_openengine_arms", os.path.join(defs_dir, "perf", "openengine_arms.py")
+    )
 
 
 def check_arm(env: Mapping[str, str], arms: Mapping) -> str:
