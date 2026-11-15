@@ -10,16 +10,19 @@ on the OpenEngine chain (``TRTLLM_TEST_OPENENGINE_CHAIN``,
 
 - NT-210 (EG-34): gpt-oss-20b, whose sliding-window layers attend to the last
   128 tokens, answers a chat whose prompt is longer than the window: the
-  final answer, not the reasoning, holds the number asked for.
+  final answer, not the reasoning, holds the number asked for as a word of
+  its own.
 - NT-211 (EG-36): the context worker has a KV-cache connector
   (``kv_connector_config``): the example connector of
   ``examples/llm-api/llm_kv_cache_connector.py``, which saves each computed
-  block to a directory and loads it back for a prompt it has seen. A request
-  answers and the connector saved its blocks; the same request answers the
-  same again, and the connector logs that it matched all of them (its
+  block to a directory and loads it back for a prompt it has seen. Two
+  deployments of one GPU share the directory. A request to the first answers
+  and the connector saved its blocks; the same request to the second answers
+  and its connector logs that it matched all of them (its
   ``KV CONNECTOR: Matched <n> blocks`` line in the log of the process that
   runs the context worker's executor: the worker, or on the chain its
-  engine).
+  engine). Both answers are recorded (``completion_texts``); they need not be
+  equal, as loaded blocks change the order of the attention sums.
 - NT-212 (EG-37): both workers run their executors with Ray
   (``orchestrator_type: ray``); a request answers correctly.
 - NT-213 (EG-38): attention-DP workers on two GPUs each route by KV cache
@@ -33,7 +36,9 @@ Needs GPUs of Hopper or later (NT-211: one, NT-213: four, the others: two)
 and the models under ``LLM_MODELS_ROOT`` that each test names.
 """
 
+import json
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -41,6 +46,7 @@ import pytest
 import requests
 
 from ._test_openengine_disagg_per_role import (
+    BASE_CONFIG,
     CHAIN,
     OWN_GPU_KV_CACHE,
     REQUEST_TIMEOUT_S,
@@ -48,7 +54,7 @@ from ._test_openengine_disagg_per_role import (
     Role,
     attention_dp_roles,
     complete,
-    deployment,
+    deploy,
     model_dir,
     needs_gpus,
     tiktoken_env,
@@ -64,34 +70,36 @@ EXAMPLES = Path(__file__).resolve().parents[4] / "examples" / "llm-api"
 SLIDING_WINDOW = 128
 
 
-def test_sliding_window_attention_two_legs(tmp_path):
+def test_sliding_window_attention_two_legs(request, tmp_path):
     """NT-210 (EG-34): a prompt longer than the sliding window is answered across the handoff."""
     needs_gpus(2)
     filler = " ".join(f"Item {i} is a plain line of filler text." for i in range(60))
     question = "Ignore the items. What is 2 + 3? Answer with the number only."
-    with deployment(
+    served = deploy(
+        request,
         tmp_path,
         model_dir("gpt_oss/gpt-oss-20b"),
         config={"kv_cache_config": OWN_GPU_KV_CACHE},
         roles=TWO_GPUS,
         env=tiktoken_env(),
-    ) as served:
-        response = requests.post(
-            served.url("v1", "chat", "completions"),
-            json={
-                "model": served.model,
-                "messages": [{"role": "user", "content": f"{filler}\n\n{question}"}],
-                "max_tokens": 1024,
-                "temperature": 0.0,
-                "reasoning_effort": "low",
-            },
-            timeout=REQUEST_TIMEOUT_S,
-        )
-        assert response.status_code == 200, response.text
-        answer = response.json()
-        assert answer["usage"]["prompt_tokens"] > SLIDING_WINDOW, answer["usage"]
-        # The final answer, not the reasoning, which may mention the items' numbers.
-        assert "5" in (answer["choices"][0]["message"].get("content") or ""), answer
+    )
+    response = requests.post(
+        served.url("v1", "chat", "completions"),
+        json={
+            "model": served.model,
+            "messages": [{"role": "user", "content": f"{filler}\n\n{question}"}],
+            "max_tokens": 1024,
+            "temperature": 0.0,
+            "reasoning_effort": "low",
+        },
+        timeout=REQUEST_TIMEOUT_S,
+    )
+    assert response.status_code == 200, response.text
+    answer = response.json()
+    assert answer["usage"]["prompt_tokens"] > SLIDING_WINDOW, answer["usage"]
+    # The final answer, not the reasoning, which may mention the items' numbers.
+    content = answer["choices"][0]["message"].get("content") or ""
+    assert re.search(r"\b5\b", content), answer
 
 
 def _executor_log(server: RemoteOpenAIServer) -> str:
@@ -105,8 +113,8 @@ def _matched_all(log: str) -> int:
         return sum("KV CONNECTOR: Matched 8 blocks" in line for line in handle)
 
 
-def test_kv_cache_connector_with_disagg_prefill(tmp_path):
-    """NT-211 (EG-36): a context worker with a KV-cache connector serves the context leg."""
+def test_kv_cache_connector_with_disagg_prefill(request, tmp_path, record_property):
+    """NT-211 (EG-36): a second deployment's context worker loads the first's blocks."""
     needs_gpus(1)
     saved = tmp_path / "connector_cache"
     connector = {
@@ -116,60 +124,73 @@ def test_kv_cache_connector_with_disagg_prefill(tmp_path):
     }
     python_path = os.pathsep.join(filter(None, (str(EXAMPLES), os.environ.get("PYTHONPATH"))))
     context = Role(
-        config={"kv_connector_config": connector, "enable_chunked_prefill": False},
-        # The connector logs its matches at INFO.
+        config={
+            "kv_connector_config": connector,
+            "enable_chunked_prefill": False,
+            # Without prefix-aware scheduling the executor asks the connector through
+            # get_num_new_matched_tokens, which logs the match.
+            "scheduler_config": {"enable_prefix_aware_scheduling": False},
+        },
         env={
             "PYTHONPATH": python_path,
             "CONNECTOR_CACHE_FOLDER": str(saved),
             "TLLM_LOG_LEVEL": "INFO",
+            "TLLM_LOG_LEVEL_BY_MODULE": "",
         },
     )
+    # A connector needs block reuse.
+    config = {"kv_cache_config": {**BASE_CONFIG["kv_cache_config"], "enable_block_reuse": True}}
     # Eight whole blocks of the default 32 tokens and a part block, which the connector does not save.
     prompt = [1000 + i for i in range(8 * 32 + 5)]
-    with deployment(tmp_path, model_dir(QWEN), roles={"context": context}) as served:
-        first = complete(served, prompt)["choices"][0]["text"]
-        assert first
-        assert len(list(saved.glob("*.pt"))) == 8, sorted(saved.glob("*.pt"))
-        log = _executor_log(served.ctx)
-        assert _matched_all(log) == 0
-        again = complete(served, prompt)["choices"][0]["text"]
-        assert again == first
-        wait_for(lambda: _matched_all(log) > 0, "the connector to match the saved blocks", 30)
+    model = model_dir(QWEN)
+    first = deploy(request, tmp_path / "first", model, config=config, roles={"context": context})
+    cold = complete(first, prompt)["choices"][0]["text"]
+    assert cold
+    assert len(list(saved.glob("*.pt"))) == 8, sorted(saved.glob("*.pt"))
+    # Its context worker has not seen the prompt, so its own cache cannot serve the blocks.
+    second = deploy(request, tmp_path / "second", model, config=config, roles={"context": context})
+    log = _executor_log(second.ctx)
+    warm = complete(second, prompt)["choices"][0]["text"]
+    assert warm
+    record_property("completion_texts", json.dumps([cold, warm]))
+    wait_for(lambda: _matched_all(log) > 0, "the connector to match the saved blocks", 30)
 
 
-def test_ray_orchestrator_engines_two_legs(tmp_path):
+def test_ray_orchestrator_engines_two_legs(request, tmp_path):
     """NT-212 (EG-37): workers whose executors run with Ray answer correctly."""
     needs_gpus(2)
     pytest.importorskip("ray", reason="orchestrator_type ray needs Ray installed")
-    with deployment(
+    served = deploy(
+        request,
         tmp_path,
         model_dir(QWEN),
         config={"orchestrator_type": "ray", "kv_cache_config": OWN_GPU_KV_CACHE},
         roles=TWO_GPUS,
-    ) as served:
-        text = complete(served, "The capital of France is")["choices"][0]["text"]
-        assert "Paris" in text, text
+    )
+    text = complete(served, "The capital of France is")["choices"][0]["text"]
+    assert "Paris" in text, text
 
 
-def test_kv_routing_accounts_for_in_transfer(tmp_path):
+def test_kv_routing_accounts_for_in_transfer(request, tmp_path):
     """NT-213 (EG-38): KV-aware attention-DP routing that counts in-transfer requests."""
     needs_gpus(4)
     routing = {
         "enable_kv_cache_aware_routing": True,
         "kv_cache_routing_account_for_in_transfer": True,
     }
-    with deployment(
+    served = deploy(
+        request,
         tmp_path,
         model_dir(QWEN),
         # The KV-aware attention-DP router is built only with block reuse.
         config={"kv_cache_config": {**OWN_GPU_KV_CACHE, "enable_block_reuse": True}},
         roles=attention_dp_roles(routing, routing),
-    ) as served:
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            texts = list(
-                pool.map(
-                    lambda _: complete(served, "The capital of France is")["choices"][0]["text"],
-                    range(8),
-                )
+    )
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        texts = list(
+            pool.map(
+                lambda _: complete(served, "The capital of France is")["choices"][0]["text"],
+                range(8),
             )
-        assert all("Paris" in text for text in texts), texts
+        )
+    assert all("Paris" in text for text in texts), texts

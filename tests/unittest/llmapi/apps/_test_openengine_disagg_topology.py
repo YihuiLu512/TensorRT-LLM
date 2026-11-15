@@ -23,7 +23,7 @@ from ._test_openengine_disagg_per_role import (
     OWN_GPU_KV_CACHE,
     attention_dp_roles,
     complete,
-    deployment,
+    deploy,
     model_dir,
     needs_gpus,
 )
@@ -34,20 +34,21 @@ MODEL = os.path.join("Qwen3", "Qwen3-0.6B")
 REQUESTS = 8
 
 
-def test_kv_balanced_admission_on_the_generation_side(tmp_path):
+def test_kv_balanced_admission_on_the_generation_side(request, tmp_path):
     """NT-208 (EG-33): KV-balanced admission on the generation worker; every request answers."""
     needs_gpus(4)
-    with deployment(
+    served = deploy(
+        request,
         tmp_path,
         model_dir(MODEL),
         config={"kv_cache_config": OWN_GPU_KV_CACHE},
         roles=attention_dp_roles({"enable_kv_balanced_admission": True}),
-    ) as served:
-        with ThreadPoolExecutor(max_workers=REQUESTS) as pool:
-            texts = list(
-                pool.map(
-                    lambda _: complete(served, "The capital of France is")["choices"][0]["text"],
-                    range(REQUESTS),
-                )
+    )
+    with ThreadPoolExecutor(max_workers=REQUESTS) as pool:
+        texts = list(
+            pool.map(
+                lambda _: complete(served, "The capital of France is")["choices"][0]["text"],
+                range(REQUESTS),
             )
-        assert all("Paris" in text for text in texts), texts
+        )
+    assert all("Paris" in text for text in texts), texts

@@ -32,7 +32,7 @@ from ._test_openengine_disagg_per_role import (
     Deployment,
     Role,
     complete,
-    deployment,
+    deploy,
     model_dir,
     needs_gpus,
 )
@@ -60,7 +60,7 @@ def _check_answer(served: Deployment, record_property) -> None:
     assert ANSWER in text, text
 
 
-def test_dflash_output_is_the_same_on_both_forms(tmp_path, record_property):
+def test_dflash_output_is_the_same_on_both_forms(request, tmp_path, record_property):
     """NT-188 (EG-01e): DFlash on both workers answers correctly; the text is recorded per form."""
     needs_gpus(2)
     spec = {
@@ -69,27 +69,28 @@ def test_dflash_output_is_the_same_on_both_forms(tmp_path, record_property):
         "speculative_model": model_dir("Qwen3-8B-DFlash-b16"),
     }
     config = {"speculative_config": spec, "kv_cache_config": OWN_GPU_KV_CACHE, "max_batch_size": 8}
-    with deployment(tmp_path, model_dir("Qwen3/Qwen3-8B"), config=config, roles=TWO_GPUS) as served:
-        _check_answer(served, record_property)
+    served = deploy(request, tmp_path, model_dir("Qwen3/Qwen3-8B"), config=config, roles=TWO_GPUS)
+    _check_answer(served, record_property)
 
 
-def test_mtp_on_the_generation_side_only(tmp_path, record_property):
+def test_mtp_on_the_generation_side_only(request, tmp_path, record_property):
     """NT-189 (EG-01a): with MTP on the generation worker only, the answer is right."""
     needs_gpus(2)
     mtp = {"speculative_config": {"decoding_type": "MTP", "max_draft_len": 2}}
-    with deployment(
+    served = deploy(
+        request,
         tmp_path,
         model_dir("DeepSeek-V3-Lite/bf16"),
         config={"kv_cache_config": OWN_GPU_KV_CACHE},
         roles=_with_config({}, mtp),
-    ) as served:
-        _check_answer(served, record_property)
-        # A second request: the generation worker's draft state does not carry over.
-        text = _complete(served)
-        assert ANSWER in text, text
+    )
+    _check_answer(served, record_property)
+    # A second request: the generation worker's draft state does not carry over.
+    text = _complete(served)
+    assert ANSWER in text, text
 
 
-def test_eagle3_batch_slot_is_released_at_batch_size_one(tmp_path):
+def test_eagle3_batch_slot_is_released_at_batch_size_one(request, tmp_path):
     """NT-207 (EG-31): one request at a time per worker; ten requests sent at once all complete."""
     needs_gpus(2)
     spec = {
@@ -106,21 +107,19 @@ def test_eagle3_batch_slot_is_released_at_batch_size_one(tmp_path):
             "free_gpu_memory_fraction": 0.4,
         },
     }
-    with deployment(tmp_path, model_dir("Qwen3/Qwen3-8B"), config=config, roles=TWO_GPUS) as served:
+    served = deploy(request, tmp_path, model_dir("Qwen3/Qwen3-8B"), config=config, roles=TWO_GPUS)
 
-        def one(_):
-            return _complete(
-                served, "What is the capital of Germany?", max_tokens=25, ignore_eos=True
-            )
+    def one(_):
+        return _complete(served, "What is the capital of Germany?", max_tokens=25, ignore_eos=True)
 
-        with ThreadPoolExecutor(max_workers=10) as pool:
-            texts = list(pool.map(one, range(10)))
-        assert len(texts) == 10 and all(texts), texts
-        # Every slot is free again: one more request still completes.
-        assert _complete(served)
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        texts = list(pool.map(one, range(10)))
+    assert len(texts) == 10 and all(texts), texts
+    # Every slot is free again: one more request still completes.
+    assert _complete(served)
 
 
-def test_dynamic_tree_draft_tokens_cross_handoff(tmp_path, record_property):
+def test_dynamic_tree_draft_tokens_cross_handoff(request, tmp_path, record_property):
     """NT-209 (EG-01g): Eagle3 with a dynamic draft tree on both workers answers correctly."""
     needs_gpus(2)
     if any(torch.cuda.get_device_capability(i) < (10, 0) for i in (0, 1)):
@@ -141,7 +140,7 @@ def test_dynamic_tree_draft_tokens_cross_handoff(tmp_path, record_property):
         "max_num_tokens": 4096,
         "kv_cache_config": OWN_GPU_KV_CACHE,
     }
-    with deployment(
-        tmp_path, model_dir("Qwen3/Qwen3-30B-A3B"), config=config, roles=TWO_GPUS
-    ) as served:
-        _check_answer(served, record_property)
+    served = deploy(
+        request, tmp_path, model_dir("Qwen3/Qwen3-30B-A3B"), config=config, roles=TWO_GPUS
+    )
+    _check_answer(served, record_property)

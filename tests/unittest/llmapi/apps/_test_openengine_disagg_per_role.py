@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 """A disaggregated deployment whose roles differ: their own configuration, GPUs and environment.
 
-No tests here. :func:`deployment` starts a context and a generation worker,
-each a ``trtllm-serve`` with ``--server_role``, and an orchestrator they
-register with through its own cluster. Each role gets the shared
+No tests here. :func:`deploy` starts an orchestrator and a context and a
+generation worker, each a ``trtllm-serve`` with ``--server_role``, that
+register with it through its own cluster, and stops them at the test's
+teardown. Each role gets the shared
 configuration merged with its own (top level only), its own GPUs
 (``CUDA_VISIBLE_DEVICES``; ``None`` shares the visible ones) and its own
 environment. Without ``TRTLLM_TEST_OPENENGINE_CHAIN`` each worker runs its
@@ -30,7 +31,7 @@ import requests
 import torch
 from utils.llm_data import llm_models_root
 
-from tensorrt_llm._utils import get_free_ports
+from tensorrt_llm._utils import get_free_port
 
 from .openai_server import RemoteDisaggOpenAIServer, RemoteOpenAIServer
 
@@ -157,6 +158,8 @@ def _physical_gpus(gpus: str, env: Mapping[str, str]) -> str:
 
 def _ready(orchestrator: RemoteDisaggOpenAIServer) -> bool:
     """Whether the orchestrator's ``/health`` is 200: both workers have registered with it."""
+    code = orchestrator.proc.poll()
+    assert code is None, f"the orchestrator exited with code {code}; log {orchestrator.log_path}"
     try:
         return requests.get(orchestrator.url_for("health"), timeout=10).status_code == 200
     except requests.RequestException:
@@ -164,7 +167,7 @@ def _ready(orchestrator: RemoteDisaggOpenAIServer) -> bool:
 
 
 @contextlib.contextmanager
-def deployment(
+def _deployment(
     directory: Path,
     model: str,
     *,
@@ -172,17 +175,17 @@ def deployment(
     roles: Mapping[str, Role] | None = None,
     env: Mapping[str, str] | None = None,
 ) -> Iterator[Deployment]:
-    """Start the two workers and the orchestrator; ``config`` is merged over :data:`BASE_CONFIG`."""
-    disagg_port, ctx_port, gen_port = get_free_ports(3)
-    # On the chain the harness picks the engines' ports as the workers start: not these three.
-    launch.reserve_ports(disagg_port, ctx_port, gen_port)
+    """Start the orchestrator and the two workers; ``config`` is merged over :data:`BASE_CONFIG`."""
+    disagg_port = get_free_port()
+    # On the chain the harness picks the engines' ports as the workers start: not this one.
+    launch.reserve_ports(disagg_port)
     cluster = {"cluster_uri": f"http://localhost:{disagg_port}", "cluster_name": ""}
     auth_key = secrets.token_hex(32)
     shared = {**BASE_CONFIG, **(config or {})}
     # The workers run on this host: loopback is the only TCP device UCX needs.
     base_env = {**os.environ, "UCX_NET_DEVICES": "lo", **(env or {})}
 
-    def worker(role: str, port: int) -> RemoteOpenAIServer:
+    def worker(role: str) -> RemoteOpenAIServer:
         own = (roles or {}).get(role, Role())
         worker_env = {**base_env, **own.env}
         if own.gpus is not None:
@@ -193,9 +196,10 @@ def deployment(
             "disagg_cluster": cluster,
             "internal_request_auth_key": auth_key,
         }
+        # No port given: the worker registers its own address with the orchestrator, and a
+        # chain front end whose port was taken moves to another.
         return RemoteOpenAIServer(
             model,
-            port=port,
             env=worker_env,
             cli_args=["--server_role", role],
             llmapi_launch=False,
@@ -210,20 +214,39 @@ def deployment(
         "disagg_cluster": cluster,
         "internal_request_auth_key": auth_key,
     }
-    with worker("context", ctx_port) as ctx, worker("generation", gen_port) as gen:
-        with RemoteDisaggOpenAIServer(
-            ctx_servers=[],
-            gen_servers=[],
-            port=disagg_port,
-            env=base_env,
-            llmapi_launch=False,
-            disagg_config=disagg_config,
-            log_path=str(directory / "orchestrator.log"),
-            # Its /health stays 503 until the workers register; their own waits notice a worker
-            # that exits, and the wait below has a timeout.
-            wait_ready=False,
-        ) as orchestrator:
+    with RemoteDisaggOpenAIServer(
+        ctx_servers=[],
+        gen_servers=[],
+        port=disagg_port,
+        env=base_env,
+        llmapi_launch=False,
+        disagg_config=disagg_config,
+        log_path=str(directory / "orchestrator.log"),
+        # Its /health stays 503 until the workers register; the wait below has a timeout.
+        wait_ready=False,
+    ) as orchestrator:
+        with worker("context") as ctx, worker("generation") as gen:
             for server in (ctx, gen):
                 server.wait_for_server(timeout=ENGINE_READY_TIMEOUT_S)
             wait_for(lambda: _ready(orchestrator), "the workers to register", REGISTER_TIMEOUT_S)
             yield Deployment(model, orchestrator, {"context": ctx, "generation": gen})
+
+
+def deploy(
+    request: pytest.FixtureRequest,
+    directory: Path,
+    model: str,
+    *,
+    config: Mapping[str, Any] | None = None,
+    roles: Mapping[str, Role] | None = None,
+    env: Mapping[str, str] | None = None,
+) -> Deployment:
+    """Start a deployment that stops at the test's teardown; its logs go to ``directory``.
+
+    On the chain the harness reads the orchestrator's counters when the test
+    body ends, so the deployment must still run then.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    stack = contextlib.ExitStack()
+    request.addfinalizer(stack.close)
+    return stack.enter_context(_deployment(directory, model, config=config, roles=roles, env=env))
