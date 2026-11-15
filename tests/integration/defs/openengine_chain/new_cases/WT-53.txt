@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+NT-055 unittest/llmapi/apps/_test_openengine_disagg_server_info.py::test_server_info_direct
+NT-069 unittest/llmapi/apps/_test_openengine_disagg_multi_frontend.py::test_multi_frontend_worker_two_stage
+NT-073 unittest/llmapi/apps/_test_openengine_disagg_kv_aware.py::test_kv_cache_events_direct
+NT-081 unittest/llmapi/apps/_test_openengine_disagg_kv_aware.py::test_kv_cache_aware_routing_hits_through_the_orchestrator
+NT-083 unittest/llmapi/apps/_test_openengine_disagg_subagent_affinity.py::test_subagent_affinity_scope_context
+NT-084 unittest/llmapi/apps/_test_openengine_disagg_subagent_affinity.py::test_subagent_affinity_scope_both_is_not_forwarded_to_the_gen_engine
+NT-085 unittest/llmapi/apps/_test_openengine_disagg_multi_frontend.py::test_ctx_frontend_affinity_port_is_used_and_falls_back
+NT-086 unittest/llmapi/apps/_test_openengine_disagg_kv_aware.py::test_conditional_disagg_local_prefill_skips_the_ctx_leg
+NT-087 unittest/llmapi/apps/_test_openengine_disagg_kv_aware.py::test_kv_hints_are_stripped_by_default_and_passed_when_trusted
+NT-186 unittest/llmapi/apps/_test_openengine_disagg_server_info.py::test_disagg_fields_come_from_the_engine
+NT-201 unittest/llmapi/apps/_test_openengine_disagg_admission.py::test_orig_elapsed_s_reaches_the_generation_engine

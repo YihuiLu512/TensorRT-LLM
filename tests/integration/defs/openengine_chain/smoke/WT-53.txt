@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# A context and a generation worker answer /server_info with the fields a router reads, taken
+# from their engines (one cluster on one GPU, no generation request).
+unittest/llmapi/apps/_test_openengine_disagg_server_info.py::test_server_info_direct
+unittest/llmapi/apps/_test_openengine_disagg_server_info.py::test_disagg_fields_come_from_the_engine
