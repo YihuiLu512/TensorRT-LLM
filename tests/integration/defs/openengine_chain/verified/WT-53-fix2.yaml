@@ -1,0 +1,194 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# End-to-end checks of the disaggregated chain (case-04, trtllm chain, B200; one GPU shared by
+# the workers, two GPUs for XD-119). Each junit path is relative to the result directory of its
+# run, which the work item's status file records; a unit test's is the junit of the test inside
+# the chain, an integration test's the outer junit; both carry the chain proof. Each case ran
+# three times.
+entries:
+  # NT-055: chain proof ok in every run; the engines took no call.
+  - row: F-06
+    features:
+    - F-06
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_server_info.py::test_server_info_direct
+    commit: 647e8719278aa32e7ac94da24ce41d41f84f8f5c
+    junit:
+    - b200-1g-oc-a/b200-1g-oc-a/job-5963729_0-r0/node0/results/e00/junit/inner-20261115T122913-1794716953694832994-1549368-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_server_info.py_test_server_info_direct_.xml
+    - b200-1g-oc-b/b200-1g-oc-b/job-5963732_0-r0/node0/results/e00/junit/inner-20261115T122941-1794716981006731240-625537-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_server_info.py_test_server_info_direct_.xml
+    - b200-1g-oc-c/b200-1g-oc-c/job-5963733_0-r0/node0/results/e00/junit/inner-20261115T122938-1794716978779924889-625367-test_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_server_info.py_test_server_info_direct_.xml
+    result: passed
+    chain_proof: ok
+  # NT-069: chain proof ok in every run.
+  - row: F-39
+    features:
+    - F-39
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_multi_frontend.py::test_multi_frontend_worker_two_stage
+    commit: 647e8719278aa32e7ac94da24ce41d41f84f8f5c
+    junit:
+    - b200-1g-oc-a/b200-1g-oc-a/job-5963729_0-r0/node0/results/e01/junit/inner-20261115T123422-1794717262490653193-1583733-y_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_multi_frontend.py_test_multi_frontend_worker_two_stage_.xml
+    - b200-1g-oc-b/b200-1g-oc-b/job-5963732_0-r0/node0/results/e01/junit/inner-20261115T123432-1794717272348113117-640149-y_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_multi_frontend.py_test_multi_frontend_worker_two_stage_.xml
+    - b200-1g-oc-c/b200-1g-oc-c/job-5963733_0-r0/node0/results/e01/junit/inner-20261115T123445-1794717285366721785-641785-y_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_multi_frontend.py_test_multi_frontend_worker_two_stage_.xml
+    result: passed
+    chain_proof: ok
+  # NT-073: chain proof ok in every run; the context worker's events store the request's blocks
+  #   under the hashes a router computes. XD-120: skipped on the trtllm chain by
+  #   expectations/WT-53.py (it hashes with the default algorithm, the engine's events name
+  #   v2_sha256_64).
+  - row: F-43
+    features:
+    - F-43
+    cases:
+    - disaggregated/test_workers.py::test_workers_kv_cache_events
+    - unittest/llmapi/apps/_test_openengine_disagg_kv_aware.py::test_kv_cache_events_direct
+    commit: ccaef4ff2c7b2fcf3bfdfca7b0de6bc6bd5d2245
+    junit:
+    - b200-1g-rt-oc-a/b200-1g-rt-oc-a/job-5967824_0-r0/node0/results/e03/outer-junit.xml
+    - b200-1g-rt-oc-b/b200-1g-rt-oc-b/job-5967827_0-r0/node0/results/e03/outer-junit.xml
+    - b200-1g-rt-oc-c/b200-1g-rt-oc-c/job-5967830_0-r0/node0/results/e03/outer-junit.xml
+    - b200-1g-rt-oc-a/b200-1g-rt-oc-a/job-5967824_0-r0/node0/results/e00/junit/inner-20261115T154403-1794728643443017641-2260623-est_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_kv_aware.py_test_kv_cache_events_direct_.xml
+    - b200-1g-rt-oc-b/b200-1g-rt-oc-b/job-5967827_0-r0/node0/results/e00/junit/inner-20261115T154455-1794728695146527045-1058423-est_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_kv_aware.py_test_kv_cache_events_direct_.xml
+    - b200-1g-rt-oc-c/b200-1g-rt-oc-c/job-5967830_0-r0/node0/results/e00/junit/inner-20261115T154410-1794728650258199779-1916457-est_unittests.py_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_kv_aware.py_test_kv_cache_events_direct_.xml
+    result: skipped
+    chain_proof: ok
+  # XD-121, NT-081: chain proof ok in every run (XD-121 direct_two_leg).
+  - row: DG-19+WT-53-fix2
+    features:
+    - DG-19
+    cases:
+    - disaggregated/test_workers.py::test_workers_kv_cache_aware_router
+    - unittest/llmapi/apps/_test_openengine_disagg_kv_aware.py::test_kv_cache_aware_routing_hits_through_the_orchestrator
+    commit: ccaef4ff2c7b2fcf3bfdfca7b0de6bc6bd5d2245
+    junit:
+    - b200-1g-rt-oc-a/b200-1g-rt-oc-a/job-5967824_0-r0/node0/results/e04/outer-junit.xml
+    - b200-1g-rt-oc-b/b200-1g-rt-oc-b/job-5967827_0-r0/node0/results/e04/outer-junit.xml
+    - b200-1g-rt-oc-c/b200-1g-rt-oc-c/job-5967830_0-r0/node0/results/e04/outer-junit.xml
+    - b200-1g-rt-oc-a/b200-1g-rt-oc-a/job-5967824_0-r0/node0/results/e01/junit/inner-20261115T154944-1794728984400521401-2282201-s_v2_unittest_llmapi_apps__test_openengine_disagg_kv_aware.py_test_kv_cache_aware_routing_hits_through_the_orchestrator_.xml
+    - b200-1g-rt-oc-b/b200-1g-rt-oc-b/job-5967827_0-r0/node0/results/e01/junit/inner-20261115T155002-1794729002943066684-1079415-s_v2_unittest_llmapi_apps__test_openengine_disagg_kv_aware.py_test_kv_cache_aware_routing_hits_through_the_orchestrator_.xml
+    - b200-1g-rt-oc-c/b200-1g-rt-oc-c/job-5967830_0-r0/node0/results/e01/junit/inner-20261115T154927-1794728967773369958-1945843-s_v2_unittest_llmapi_apps__test_openengine_disagg_kv_aware.py_test_kv_cache_aware_routing_hits_through_the_orchestrator_.xml
+    result: passed
+    chain_proof: ok
+  # XD-123: skipped on the trtllm chain by expectations/WT-53.py (its event reader leaves out the
+  #   hash algorithm the events name, so its router matches no block).
+  - row: DG-19+WT-53-fix2
+    features:
+    - DG-19
+    cases:
+    - disaggregated/test_workers.py::test_workers_kv_cache_aware_router_eviction
+    commit: 9173f600082e284dc1e80306a16afb3839506003
+    junit:
+    - b200-1g-rt2-oc-a/b200-1g-rt2-oc-a/job-5971416_0-r0/node0/results/e02/outer-junit.xml
+    - b200-1g-rt2-oc-b/b200-1g-rt2-oc-b/job-5971417_0-r0/node0/results/e02/outer-junit.xml
+    - b200-1g-rt2-oc-c/b200-1g-rt2-oc-c/job-5971418_0-r0/node0/results/e02/outer-junit.xml
+    result: skipped
+  # NT-083, NT-084: chain proof ok in every run.
+  - row: DG-22+WT-53-fix2
+    features:
+    - DG-22
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_subagent_affinity.py::test_subagent_affinity_scope_context
+    - unittest/llmapi/apps/_test_openengine_disagg_subagent_affinity.py::test_subagent_affinity_scope_both_is_not_forwarded_to_the_gen_engine
+    commit: 9173f600082e284dc1e80306a16afb3839506003
+    junit:
+    - b200-1g-rt2-oc-a/b200-1g-rt2-oc-a/job-5971416_0-r0/node0/results/e00/junit/inner-20261115T190644-1794740804014379387-1085262-est_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_subagent_affinity.py_test_subagent_affinity_scope_context_.xml
+    - b200-1g-rt2-oc-b/b200-1g-rt2-oc-b/job-5971417_0-r0/node0/results/e00/junit/inner-20261115T190624-1794740784063522811-2504500-est_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_subagent_affinity.py_test_subagent_affinity_scope_context_.xml
+    - b200-1g-rt2-oc-c/b200-1g-rt2-oc-c/job-5971418_0-r0/node0/results/e00/junit/inner-20261115T190716-1794740836957843948-149271-est_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_subagent_affinity.py_test_subagent_affinity_scope_context_.xml
+    - b200-1g-rt2-oc-a/b200-1g-rt2-oc-a/job-5971416_0-r0/node0/results/e01/junit/inner-20261115T191949-1794741589548414800-1113261-_apps__test_openengine_disagg_subagent_affinity.py_test_subagent_affinity_scope_both_is_not_forwarded_to_the_gen_engine_.xml
+    - b200-1g-rt2-oc-b/b200-1g-rt2-oc-b/job-5971417_0-r0/node0/results/e01/junit/inner-20261115T191326-1794741206382933031-2521046-_apps__test_openengine_disagg_subagent_affinity.py_test_subagent_affinity_scope_both_is_not_forwarded_to_the_gen_engine_.xml
+    - b200-1g-rt2-oc-c/b200-1g-rt2-oc-c/job-5971418_0-r0/node0/results/e01/junit/inner-20261115T191348-1794741228364789901-187969-_apps__test_openengine_disagg_subagent_affinity.py_test_subagent_affinity_scope_both_is_not_forwarded_to_the_gen_engine_.xml
+    result: passed
+    chain_proof: ok
+  # NT-083, NT-084: chain proof ok in every run.
+  - row: DG-35+WT-53-fix2
+    features:
+    - DG-35
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_subagent_affinity.py::test_subagent_affinity_scope_context
+    - unittest/llmapi/apps/_test_openengine_disagg_subagent_affinity.py::test_subagent_affinity_scope_both_is_not_forwarded_to_the_gen_engine
+    commit: 9173f600082e284dc1e80306a16afb3839506003
+    junit:
+    - b200-1g-rt2-oc-a/b200-1g-rt2-oc-a/job-5971416_0-r0/node0/results/e00/junit/inner-20261115T190644-1794740804014379387-1085262-est_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_subagent_affinity.py_test_subagent_affinity_scope_context_.xml
+    - b200-1g-rt2-oc-b/b200-1g-rt2-oc-b/job-5971417_0-r0/node0/results/e00/junit/inner-20261115T190624-1794740784063522811-2504500-est_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_subagent_affinity.py_test_subagent_affinity_scope_context_.xml
+    - b200-1g-rt2-oc-c/b200-1g-rt2-oc-c/job-5971418_0-r0/node0/results/e00/junit/inner-20261115T190716-1794740836957843948-149271-est_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_subagent_affinity.py_test_subagent_affinity_scope_context_.xml
+    - b200-1g-rt2-oc-a/b200-1g-rt2-oc-a/job-5971416_0-r0/node0/results/e01/junit/inner-20261115T191949-1794741589548414800-1113261-_apps__test_openengine_disagg_subagent_affinity.py_test_subagent_affinity_scope_both_is_not_forwarded_to_the_gen_engine_.xml
+    - b200-1g-rt2-oc-b/b200-1g-rt2-oc-b/job-5971417_0-r0/node0/results/e01/junit/inner-20261115T191326-1794741206382933031-2521046-_apps__test_openengine_disagg_subagent_affinity.py_test_subagent_affinity_scope_both_is_not_forwarded_to_the_gen_engine_.xml
+    - b200-1g-rt2-oc-c/b200-1g-rt2-oc-c/job-5971418_0-r0/node0/results/e01/junit/inner-20261115T191348-1794741228364789901-187969-_apps__test_openengine_disagg_subagent_affinity.py_test_subagent_affinity_scope_both_is_not_forwarded_to_the_gen_engine_.xml
+    result: passed
+    chain_proof: ok
+  # NT-085: chain proof ok in every run.
+  - row: DG-23
+    features:
+    - DG-23
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_multi_frontend.py::test_ctx_frontend_affinity_port_is_used_and_falls_back
+    commit: 647e8719278aa32e7ac94da24ce41d41f84f8f5c
+    junit:
+    - b200-1g-oc-a/b200-1g-oc-a/job-5963729_0-r0/node0/results/e06/junit/inner-20261115T125657-1794718617635799351-1699313-2_unittest_llmapi_apps__test_openengine_disagg_multi_frontend.py_test_ctx_frontend_affinity_port_is_used_and_falls_back_.xml
+    - b200-1g-oc-b/b200-1g-oc-b/job-5963732_0-r0/node0/results/e06/junit/inner-20261115T125909-1794718749818195649-729390-2_unittest_llmapi_apps__test_openengine_disagg_multi_frontend.py_test_ctx_frontend_affinity_port_is_used_and_falls_back_.xml
+    - b200-1g-oc-c/b200-1g-oc-c/job-5963733_0-r0/node0/results/e06/junit/inner-20261115T125727-1794718647094508084-723517-2_unittest_llmapi_apps__test_openengine_disagg_multi_frontend.py_test_ctx_frontend_affinity_port_is_used_and_falls_back_.xml
+    result: passed
+    chain_proof: ok
+  # XD-026, NT-086: chain proof ok in every run (ctx_zero_ok); XD-119 on two GPUs, chain proof ok
+  #   in every run (direct_worker). XD-050 and XD-051 run on Hopper only; not run.
+  - row: DG-24
+    features:
+    - DG-24
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_conditional
+    - disaggregated/test_workers.py::test_workers_conditional_disaggregation_deepseek_v3_lite_bf16[DeepSeek-V3-Lite-bf16]
+    - unittest/llmapi/apps/_test_openengine_disagg_kv_aware.py::test_conditional_disagg_local_prefill_skips_the_ctx_leg
+    commit: ccaef4ff2c7b2fcf3bfdfca7b0de6bc6bd5d2245
+    junit:
+    - b200-1g-rt-oc-a/b200-1g-rt-oc-a/job-5967824_0-r0/node0/results/e06/outer-junit.xml
+    - b200-1g-rt-oc-b/b200-1g-rt-oc-b/job-5967827_0-r0/node0/results/e06/outer-junit.xml
+    - b200-1g-rt-oc-c/b200-1g-rt-oc-c/job-5967830_0-r0/node0/results/e06/outer-junit.xml
+    - b200-2g-rt-xd119-a/b200-2g-rt-xd119-a/job-5967825_0-r0/node0/results/e00/outer-junit.xml
+    - b200-2g-rt-xd119-b/b200-2g-rt-xd119-b/job-5967828_0-r0/node0/results/e00/outer-junit.xml
+    - b200-2g-rt-xd119-c/b200-2g-rt-xd119-c/job-5967831_0-r0/node0/results/e00/outer-junit.xml
+    - b200-1g-rt-oc-a/b200-1g-rt-oc-a/job-5967824_0-r0/node0/results/e02/junit/inner-20261115T155548-1794729348923571298-2297623-sts_v2_unittest_llmapi_apps__test_openengine_disagg_kv_aware.py_test_conditional_disagg_local_prefill_skips_the_ctx_leg_.xml
+    - b200-1g-rt-oc-b/b200-1g-rt-oc-b/job-5967827_0-r0/node0/results/e02/junit/inner-20261115T155528-1794729328111739360-1091862-sts_v2_unittest_llmapi_apps__test_openengine_disagg_kv_aware.py_test_conditional_disagg_local_prefill_skips_the_ctx_leg_.xml
+    - b200-1g-rt-oc-c/b200-1g-rt-oc-c/job-5967830_0-r0/node0/results/e02/junit/inner-20261115T155543-1794729343614837684-1976886-sts_v2_unittest_llmapi_apps__test_openengine_disagg_kv_aware.py_test_conditional_disagg_local_prefill_skips_the_ctx_leg_.xml
+    result: passed
+    chain_proof: ok
+  # NT-087: chain proof ok in every run.
+  - row: DG-25
+    features:
+    - DG-25
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_kv_aware.py::test_kv_hints_are_stripped_by_default_and_passed_when_trusted
+    commit: 647e8719278aa32e7ac94da24ce41d41f84f8f5c
+    junit:
+    - b200-1g-oc-a/b200-1g-oc-a/job-5963729_0-r0/node0/results/e08/junit/inner-20261115T130432-1794719072652507236-1740906-_unittest_llmapi_apps__test_openengine_disagg_kv_aware.py_test_kv_hints_are_stripped_by_default_and_passed_when_trusted_.xml
+    - b200-1g-oc-b/b200-1g-oc-b/job-5963732_0-r0/node0/results/e08/junit/inner-20261115T130533-1794719133487003512-756487-_unittest_llmapi_apps__test_openengine_disagg_kv_aware.py_test_kv_hints_are_stripped_by_default_and_passed_when_trusted_.xml
+    - b200-1g-oc-c/b200-1g-oc-c/job-5963733_0-r0/node0/results/e08/junit/inner-20261115T130343-1794719023932143236-748586-_unittest_llmapi_apps__test_openengine_disagg_kv_aware.py_test_kv_hints_are_stripped_by_default_and_passed_when_trusted_.xml
+    result: passed
+    chain_proof: ok
+  # NT-186: chain proof ok in every run; the engines took no call. The frontend's and the engine's
+  #   tokens_per_block are the same value here, so the check that it comes from the engine is
+  #   made against the engine's GetServerInfo, not against a differing frontend value.
+  - row: DG-89
+    features:
+    - DG-89
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_server_info.py::test_disagg_fields_come_from_the_engine
+    commit: 647e8719278aa32e7ac94da24ce41d41f84f8f5c
+    junit:
+    - b200-1g-oc-a/b200-1g-oc-a/job-5963729_0-r0/node0/results/e09/junit/inner-20261115T131117-1794719477605040054-1771546-y_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_server_info.py_test_disagg_fields_come_from_the_engine_.xml
+    - b200-1g-oc-b/b200-1g-oc-b/job-5963732_0-r0/node0/results/e09/junit/inner-20261115T131117-1794719477703504107-781155-y_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_server_info.py_test_disagg_fields_come_from_the_engine_.xml
+    - b200-1g-oc-c/b200-1g-oc-c/job-5963733_0-r0/node0/results/e09/junit/inner-20261115T130921-1794719361483168833-775852-y_test_unittests_v2_unittest_llmapi_apps__test_openengine_disagg_server_info.py_test_disagg_fields_come_from_the_engine_.xml
+    result: passed
+    chain_proof: ok
+  # NT-201: chain proof ok in every run.
+  - row: EG-21+WT-53-fix2
+    features:
+    - EG-21
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_admission.py::test_orig_elapsed_s_reaches_the_generation_engine
+    commit: 647e8719278aa32e7ac94da24ce41d41f84f8f5c
+    junit:
+    - b200-1g-oc-a/b200-1g-oc-a/job-5963729_0-r0/node0/results/e10/junit/inner-20261115T131402-1794719642630720356-1786485-nittests_v2_unittest_llmapi_apps__test_openengine_disagg_admission.py_test_orig_elapsed_s_reaches_the_generation_engine_.xml
+    - b200-1g-oc-b/b200-1g-oc-b/job-5963732_0-r0/node0/results/e10/junit/inner-20261115T131403-1794719643960386614-799690-nittests_v2_unittest_llmapi_apps__test_openengine_disagg_admission.py_test_orig_elapsed_s_reaches_the_generation_engine_.xml
+    - b200-1g-oc-c/b200-1g-oc-c/job-5963733_0-r0/node0/results/e10/junit/inner-20261115T131154-1794719514540648401-786948-nittests_v2_unittest_llmapi_apps__test_openengine_disagg_admission.py_test_orig_elapsed_s_reaches_the_generation_engine_.xml
+    result: passed
+    chain_proof: ok
