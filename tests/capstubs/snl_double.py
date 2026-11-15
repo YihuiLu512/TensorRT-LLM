@@ -9,7 +9,7 @@ baseline): request_id must be non-empty and unique among active requests, a Valu
 generate_async becomes INVALID_ARGUMENT, one token response per result with the delta of the
 cumulative output.token_ids, a finished response with usage after the final result, an error
 response for result.error, abort() of the handle when the stream ends without the engine having
-finished. It is not the product: what S-NL does with the real servicer is checked in the cluster
+finished; a Control route runs the product's inference probe. It is not the product: what S-NL does with the real servicer is checked in the cluster
 smoke (INTERFACES errata FT1)."""
 
 import grpc
@@ -17,6 +17,7 @@ import grpc
 import oe_double
 
 METHOD = "/openengine.v1.Inference/Generate"
+PROBE = "/openengine.v1.Control/CheckHealth"
 
 
 class _SP:
@@ -85,21 +86,35 @@ class OpenEngineInferenceServicer:
             self._active.pop(rid, None)
 
 
+async def _inference_probe(llm):
+    """The product Control's inference probe (control.py _run_inference_probe): one token,
+    non-streaming, awaited with aresult()."""
+    handle = llm.generate_async([1], sampling_params=_SP(1), streaming=False)
+    await handle.aresult()
+    return b"READY"
+
+
 class _Routes(grpc.GenericRpcHandler):
-    def __init__(self, servicer):
-        self._h = grpc.unary_stream_rpc_method_handler(
+    def __init__(self, servicer, llm):
+        async def probe(request, context):
+            return await _inference_probe(llm)
+
+        self._h = {METHOD: grpc.unary_stream_rpc_method_handler(
             servicer.Generate, request_deserializer=oe_double.GenerateRequest.FromString,
-            response_serializer=oe_double.GenerateResponse.SerializeToString)
+            response_serializer=oe_double.GenerateResponse.SerializeToString),
+            PROBE: grpc.unary_unary_rpc_method_handler(
+                probe, request_deserializer=None,
+                response_serializer=None)}
 
     def service(self, details):
-        return self._h if details.method == METHOD else None
+        return self._h.get(details.method)
 
 
 class OpenEngineServer:
     def __init__(self, host, port, llm, model, **kwargs):
         self._server = grpc.aio.server()
         servicer = OpenEngineInferenceServicer(llm, model)  # the module-level name
-        self._server.add_generic_rpc_handlers([_Routes(servicer)])
+        self._server.add_generic_rpc_handlers([_Routes(servicer, llm)])
         self.port = self._server.add_insecure_port("%s:%d" % (host, port))
         self.host = host
 

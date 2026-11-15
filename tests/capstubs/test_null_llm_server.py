@@ -194,6 +194,21 @@ def test_metronome_paces_one_item_per_planned_step(launch):
     sn = launch.summaries("snl")
     assert sn[0][0]["counts"]["streams_completed"] == 1
     assert sn[0][0]["tier_attribution"] == "event"
+    assert sn[0][0]["counts"]["streams_outside_rpc"] == 0
+
+
+def test_control_inference_probe_is_served_and_counted_apart(launch):
+    """The product Control's probe (non-streaming generate_async + aresult) is answered on the
+    beat and counted as streams_outside_rpc, not as a Generate stream."""
+    launch.write_table(table_doc([("warmup", 600, 2.0, {"n": 4}), ("drain", 300, 0.0, {})]))
+    origin = launch.set_origin(4.0)
+    port = start_snl(launch, "snl", "full")
+    wait_until(origin + 50 * MS)
+    with grpc.insecure_channel("127.0.0.1:%d" % port) as ch:
+        assert ch.unary_unary("/openengine.v1.Control/CheckHealth")(b"", timeout=10) == b"READY"
+    assert launch.stop("snl") == 0, launch.stderr("snl")
+    c = launch.summaries("snl")[0][0]["counts"]
+    assert c["streams_outside_rpc"] == 1 and c["streams_accepted"] == 0 and c["rpcs"] == 0
 
 
 def test_minimal_mode_answers_without_a_beat(launch):

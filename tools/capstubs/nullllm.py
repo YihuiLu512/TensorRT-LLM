@@ -4,7 +4,7 @@
 "S-NL", D:202), with no executor, worker or GPU behind them. S-NL (capstubs.null_llm_server) runs
 the product's OpenEngineServer on top of it.
 
-- generate_async(inputs, sampling_params, streaming=True, ...) returns a NullHandle: an async
+- generate_async(inputs, sampling_params, streaming, ...) returns a NullHandle: an async
   iterator whose __anext__ takes exactly ONE queued step (D:198; the product's GenerationResult
   handles one response per iteration and the servicer cuts the delta from the cumulative
   output.token_ids itself). N = sampling_params.max_tokens; the tokens come from a fixed list
@@ -156,6 +156,13 @@ class NullHandle:
         self.ev.set()
 
     # -- servicer side ------------------------------------------------------------------------
+    async def aresult(self):
+        """Run the stream to its end (the product Control's inference probe awaits this on a
+        non-streaming request); returns the final result."""
+        async for _ in self:
+            pass
+        return self
+
     def abort(self):
         if not self.closed:
             self.aborted = True
@@ -229,6 +236,8 @@ class NullLlm:
         self.llm_id = llm_id
 
     def _prompt_ids(self, inputs):
+        if isinstance(inputs, (list, tuple)) and all(type(t) is int for t in inputs):
+            return list(inputs)  # the Control inference probe passes [1]
         if isinstance(inputs, dict):
             ids = inputs.get("prompt_token_ids")
             if ids is not None:
@@ -237,15 +246,14 @@ class NullLlm:
         else:
             text = inputs
         if not isinstance(text, str):
-            raise NullLlmError("NullLlm takes a text prompt or prompt_token_ids, got %s"
+            raise NullLlmError("NullLlm takes a text prompt, prompt_token_ids or a token id list, "
+                           "got %s"
                                % type(inputs).__name__)
         if self.tokenizer is None:
             return []
         return list(self.tokenizer.encode(text))
 
     def generate_async(self, inputs, sampling_params=None, streaming=False, **kwargs):
-        if not streaming:
-            raise NullLlmError("NullLlm serves streaming requests only")
         if kwargs.get("disaggregated_params") is not None:
             raise NullLlmError("NullLlm serves aggregated requests only")
         n = getattr(sampling_params, "max_tokens", None)

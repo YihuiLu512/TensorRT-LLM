@@ -141,7 +141,6 @@ def test_prompt_token_source_and_tokenizer():
 
 
 @pytest.mark.parametrize("call,match", [
-    (lambda m: m.generate_async("x", sp(3), streaming=False), "streaming"),
     (lambda m: m.generate_async("x", sp(0), streaming=True), "max_tokens"),
     (lambda m: m.generate_async("x", sp(None), streaming=True), "max_tokens"),
     (lambda m: m.generate_async("x", sp(3), streaming=True, disaggregated_params=object()),
@@ -158,6 +157,20 @@ def test_refusals_are_value_errors(call, match):
             call(llm(src))
         assert src.opened == []
     run(body())
+
+
+def test_non_streaming_probe_request():
+    """The product Control's inference probe: generate_async([1], max_tokens=1,
+    streaming=False), then await handle.aresult()."""
+    async def body():
+        src = Src((1,))
+        h = llm(src).generate_async([1], sp(1), streaming=False)
+        assert h.prompt_token_ids == [1]
+        h.push(0)
+        r = await asyncio.wait_for(h.aresult(), 1)
+        assert r is h and r.finished and r.outputs[0].token_ids == [11]
+        return src
+    assert run(body()).closed == ["completed"]
 
 
 def test_context_hook_and_no_retention():

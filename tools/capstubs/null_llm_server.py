@@ -194,7 +194,7 @@ def validate_args(args, common):
         raise ConfigError("--prefill-delay-us has no effect in minimal mode (no beat)")
 
 
-def message_shape(tt, mode, stream_interval):
+def message_shape(tt, stream_interval):
     """(k, s) of the streams: the load tiers' common (tokens_per_msg, stream_interval)."""
     try:
         k, s = uniform_msg_shape(tt)
@@ -334,7 +334,8 @@ class NullLlmServer:
         self.c = {name: z() for name in (
             "rpcs", "rpcs_without_stream", "rejected", "streams_accepted", "streams_completed",
             "streams_cancelled", "streams_truncated", "first_step_bumped", "msgs_yielded",
-            "items_taken", "tokens_produced", "short_requests", "request_id_not_decimal")}
+            "items_taken", "tokens_produced", "short_requests", "request_id_not_decimal",
+            "streams_outside_rpc")}
         self.max_pending = z()
         cap = args.max_stream_records
         if cap is None:
@@ -384,6 +385,9 @@ class NullLlmServer:
         n2 = shorted(n, d)
         h.n, h.shorted_by = n2, d
         h.toks, h.offs = self.plan(n2)
+        rec = CURRENT_RPC.get()
+        if rec is None:  # not from a Generate RPC: the product Control's inference probe
+            self.c["streams_outside_rpc"][self._event_seq()] += 1
         v = self.v
         v[self.i_accepted] += 1
         v[self.i_active_streams] += 1
@@ -401,7 +405,6 @@ class NullLlmServer:
         first = self.bs.step_at_or_after(rel)
         if first is not None and first < self.next_step:  # the metronome already passed it
             first = self.next_step
-            rec = CURRENT_RPC.get()
             if rec is not None:
                 self.c["first_step_bumped"][rec.seq] += 1
         if first is None or first + h.offs[0] >= self.bs.n_steps:
@@ -719,7 +722,7 @@ def main(argv=None):
         specs = combine_launch_specs(common.inject_specs, tt, common.identity.role) \
             + tt.all_inject_for(common.identity.role)
         check_inject_specs(specs, SITE_MODES, "S-NL")
-        ks = message_shape(tt, args.mode, args.stream_interval)
+        ks = message_shape(tt, args.stream_interval)
         sched = _schedule_tiers(args.schedule, tt) if args.schedule else (None, None)
         product = tokenizer = None
         if args.mode != "metronome-only":

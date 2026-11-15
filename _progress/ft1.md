@@ -11,3 +11,5 @@
 - 2026-11-15 23:49:02 开工：建 worktree（capkit-ft1 @ 756b9e7fe6ef5fb7726b0dd3f6a81869545f184d），写本进度日志头。
 - 2026-11-16 00:01:10 FT1-snl 开始：读完设计稿 §2.3 S-NL、E3 卡、产品 servicer/server/streaming（探针树），开始写 capstubs/nullllm.py 与 null_llm_server.py（预计 1～2 h）。
 - 2026-11-16 00:16:44 FT1-snl 变异 M0–M6 串行（约 5 分钟）
+- 2026-11-16 00:22:52 提交 907a2e30（S-NL 代码与测试；变异 M1–M9 全被抓，M7 为等价变异已换 M7b）。开跑作业路径 e2e：覆盖清单按 HEAD 生成，e2e-snl-full / e2e-snl-mono / e0a-nullsse 回归（各约 2–3 分钟）
+- 2026-11-16 00:32:56 跑 tests/capstubs 全目录（约 2–3 分钟），之后 tests/launch（约 5 分钟）；建测试用软链 WT/probe-tree（结束后改名移到 _local/ft1/probe-tree.link）

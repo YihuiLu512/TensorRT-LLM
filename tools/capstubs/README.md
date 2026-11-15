@@ -45,3 +45,13 @@
 - 作业里的用法(INTERFACES 勘误 B2B-9、B2B-11):`--prebaked {input:prebaked}`(场景 `job_inputs.prebaked`,由 `capjobs.launches` 用产品的 `generation_pb2` 在作业里生成);前端模式的 `--sfe-module` 指向覆盖清单 `stub_modules` 里 `sfe` 在快照中的文件(计划写 `--param sfe_module={SNAP}/<src>`),判定器的 C10 核对就绪文件里报的 sha 等于清单的；指纹参数拼自 `{input:fingerprint}`。示例场景见 `configs/e0s/e0s-spb-frontend.scenario.json`。
 
 测试 `tests/capstubs/`：线格式读取器以真 protobuf 解析为准绳；预制文件用 pb2 测试替身（`oe_double.py`）与探针树里产品的 `_generated/generation_pb2.py`（按路径作私有包导入，只需 protobuf）各生成一次；本地 e2e 用 `capgrpc.load --request-format openengine`（请求字节同样由替身生成）读 S-PB；前端模式用一个替身 S-FE 模块。真 `fake_openengine.py` 与真前端连 S-PB 属于 1.4 补充冒烟，本机没有运行。
+
+## `python -m capstubs.null_llm_server`（S-NL）
+
+产品的 `OpenEngineServer`（真 servicer、真 `_format_result`）跑在 `capstubs.nullllm.NullLlm` 上；单进程。契约见 INTERFACES 勘误 FT1-1～FT1-6（模式、命令行、位点与积压槽、输出、已知缺口），这里只列用法。
+
+- `--mode minimal`：每个请求的全部项一到就入队，不需要节拍；E0 补充冒烟的最小版（一个请求能回）。
+- `--mode full`：一个节拍器按档位表推进，每条流一个无界待发队列，`NullHandle.__anext__` 每次只取一项；已 yield 计数与 `send.msg` 注入在包住产品 servicer `Generate` 的子类里（D17，不改产品文件）。
+- `--mode metronome-only`：只有节拍器、队列与进程内消费协程，按 `--schedule` 开流，没有 servicer 与 gRPC 流量；E3-3a 的同进程空跑档。
+- 产品模块只在 `minimal` / `full` 下导入（`--server-module`，缺省 `tensorrt_llm.grpc.openengine.server`），任何失败退出码 3；导入了什么写进就绪文件与每档自报的 `imported`。只在容器里能用；本机测试用 `tests/capstubs/snl_double.py`。
+- 读 S-NL 用 `capgrpc.load --request-format openengine`（原始请求格式没有 `request_id`，真 servicer 拒绝）。
