@@ -93,3 +93,18 @@
 - 真前端里 F2 / F4 的守卫调用与替身里的写法相同（`if _capprobe.ON_F2: _capprobe.F2()`，patchcheck 核对过行号），所以只要 P1 覆盖装好、`CAPPROBE_ENTRY` 匹配，注入与心跳的行为应与本机一致。
 ### NOT RUN
 - 带产品角色的 P1 作业路径 e2e（本机作业路径没有产品前端的替身）；真 `trtllm-serve` 上的 F2 / F4 注入；判定器对产品侧心跳的核对与 V 判读（属 2E）。E4 的 V 在 2E 之前只能人工按勘误 FT1-18 读心跳，核对不了的报「P+X+I，V 未运行」。
+- 2026-11-16 03:04:16 全量验证 fv1 开始（HEAD 538fc8ef；建临时软链 WT/probe-tree，跑完改名到 _local/ft1/probe-tree.link-fv1；全部 tests 目录逐个 + selftest 25 + patchcheck + py_compile + bash -n，约 20–30 分钟，后台）
+- 2026-11-16 03:21:28 fv1 全绿（11 目录、selftest 25、patchcheck PASS、py_compile 217/0、bash -n 3/0；logs/fv1/summary.txt），软链改名为 _local/ft1/probe-tree.link-fv1。开跑作业路径 e2e 五臂（e2e/run_fv.sh，覆盖清单 ovl/P0-538fc8ef，J9300051–55，约 15 分钟，后台）
+
+## 子批 ft1 全量验证（HEAD 538fc8ef5e19f4cbc3cbbd75b6fde476a8433487）
+
+### MEASURED（本机；脚本 _local/ft1/fullv.sh、_local/ft1/e2e/run_fv.sh；日志 _local/ft1/logs/fv1、_local/ft1/e2e/runs）
+- 测试目录逐个串行（临时软链 WT/probe-tree，跑完改名为 _local/ft1/probe-tree.link-fv1）：capcommon 193、capload 33、capprobe 171、capstubs 159、envgate 71、grpc 39、jobs 250、judge 98、launch 396、nullsse 4、sidecar 5，全部 passed、0 failed（logs/fv1/summary.txt）。
+- `samples/run_selftest.py --package capjudge --expect-samples 25`：EXIT 0，ran 25，errors []。
+- patchcheck（探针树只读，--rev HEAD）：PASS，站点 7/7、位置 8/8，violations []。
+- py_compile 217 ok / 0 bad；bash -n 3 ok / 0 bad（jobs/capkit_inner.sh、capkit_job.sbatch、prep_tokenizer.sbatch）。fakebin.log 60 行，全是测试里真 capenv.gate 的 scontrol / squeue（替身退出 97）。
+- 作业路径 e2e（覆盖清单 e2e/ovl/P0-538fc8ef，launch.json capkit_sha = 538fc8ef；真快照 capkit_job.sbatch + capkit_inner.sh，srun 替身，环境即作业导出，RS21）：e0a-nullsse J9300051、e2e-spb-null J9300052（S-PB 补充冒烟的本地替代：capgrpc.load openengine 读者 → S-PB，pb2 = oe_double）、e2e-snl-full J9300053（capgrpc.load → S-NL full + snl_double）、e2e-sink-spb J9300054（oe_sink 客户端替身 ← S-PB）、e2e-snl-mono J9300055（S-NL metronome-only）。五臂均 submit rc 0、sbatch rc 0、L0 VALID、judge rc 11（launch NOT_RUN）、0 RED、无 INPUT_INVALID；checks PASS/NOT_RUN 分别为 27/10、38/21、38/21、43/16、28/31。
+### INFERRED
+- e2e-spb-null 是 S-PB 补充冒烟项（e0s-spb-frontend）在本机能跑的最近形态（RUNBOOK §2.1 第 3 行写的本地 e2e 即此）；真前端 + httpprobe + importprobe 那一段只能在集群冒烟作业里验证。
+### NOT RUN
+- e0s-spb-frontend / e0s-snl-frontend / e0s-import-probe 原样场景（需要真 trtllm-serve 与可 import 的 tensorrt_llm）；真 pb2 / 真 servicer / 真客户端包上的任何运行；E4 产品侧注入的作业路径 e2e（本机无产品前端替身）。
