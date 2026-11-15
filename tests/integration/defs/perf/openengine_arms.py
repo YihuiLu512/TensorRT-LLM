@@ -1539,9 +1539,9 @@ def check_disagg_case(
 ) -> None:
     """Refuse a perf sanity test a disaggregated arm cannot run.
 
-    A disaggregated arm takes the ``e2e`` and ``gen_only`` modes of a
-    disaggregated test whose workers each fit on one node (a case-03 worker may take whole
-    nodes, :func:`ds_spans_nodes`), without the time
+    A disaggregated arm takes the ``e2e`` and ``gen_only`` modes (a case-03 arm ``e2e``
+    only) of a disaggregated test whose workers each fit on one node (a case-03 worker may
+    take whole nodes, :func:`ds_spans_nodes`), without the time
     breakdown, DWDP or ``numactl``: the chain starts its engine and front end
     with a ``trtllm-serve`` command line and cannot split one that a
     ``numactl`` prefix starts, and both arms of a comparison start the same way.
@@ -1562,6 +1562,10 @@ def check_disagg_case(
             f"{where} takes the benchmark modes {', '.join(DISAGG_ARM_MODES)}, "
             f"not {benchmark_mode!r}"
         )
+    if arm.case == CASE_DS and benchmark_mode != "e2e":
+        # gen_only rests on trtllm-serve's request queue (TLLM_BENCHMARK_REQ_QUEUES_SIZE),
+        # which the ds engine does not have.
+        raise ArmError(f"{where} takes the e2e benchmark mode only, not {benchmark_mode!r}")
     if time_breakdown:
         raise ArmError(f"{where} does not take the time_breakdown modifier")
     if dwdp_size:
@@ -2700,8 +2704,10 @@ def validate_disagg_result(doc: Any) -> list[str]:
     """Problems with a disaggregated arm's result document; empty when it matches the schema."""
     if not isinstance(doc, dict):
         return [f"result is a {type(doc).__name__}, not an object"]
-    # A case-03 result also holds DS_RESULT_KEYS (validate_ds_blocks).
-    keys = set(DISAGG_RESULT_KEYS) | (set(DS_RESULT_KEYS) if doc.get("case") == CASE_DS else set())
+    # A case-03 disaggregated result also holds DS_RESULT_KEYS (validate_ds_blocks); a direct
+    # one has no orchestrator or client to describe.
+    ds_blocks = doc.get("case") == CASE_DS and doc.get("topology") == TOPOLOGY_DISAGG
+    keys = set(DISAGG_RESULT_KEYS) | (set(DS_RESULT_KEYS) if ds_blocks else set())
     if set(doc) != keys:
         missing = sorted(keys - set(doc))
         extra = sorted(set(doc) - keys)
@@ -2777,7 +2783,7 @@ def validate_disagg_result(doc: Any) -> list[str]:
         errors.append("job_id must be a string or null")
     if not isinstance(doc["notes"], list) or not all(isinstance(n, str) for n in doc["notes"]):
         errors.append("notes must be a list of strings")
-    if doc["case"] == CASE_DS:
+    if ds_blocks:
         errors += validate_ds_blocks(doc, arm)
     return errors
 
@@ -3076,10 +3082,10 @@ ENV_DS_SERVE_CMD = "TRTLLM_TEST_DS_SERVE_CMD"
 # The ds-engine checkout: its commit goes into the result, and the AgentX client runs its
 # ``dev/run_agentx.sh``.
 ENV_DS_ROOT = "TRTLLM_TEST_DS_ROOT"
-# The ds-engine commit written to the result when the checkout is not a git work tree.
+# The ds-engine commit written to the result; when unset, the HEAD of TRTLLM_TEST_DS_ROOT.
 ENV_DS_SHA = "TRTLLM_PERF_DS_SHA"
 # Orchestrator values that differ between dsv4-serve's and trtllm-serve's disaggregated servers
-# by default (03_perf-tests.md §3.3): the aligned arms write dsv4-serve's defaults for both, so
+# by default: the aligned arms write dsv4-serve's defaults for both, so
 # the values are the same whichever server reads them.
 DS_ALIGNED_ORCHESTRATOR = {"max_retries": 3, "server_keep_alive_timeout": 600}
 # dsv4-serve's disaggregated-server variables: the aligned native arm does not route new
@@ -3088,7 +3094,7 @@ DS_ALIGNED_ORCHESTRATOR = {"max_retries": 3, "server_keep_alive_timeout": 600}
 ENV_DS_PROXY_LOAD_ROUTE = "DSV4_PROXY_LOAD_ROUTE"
 ENV_DS_PROXY_WORKERS = "DSV4_PROXY_WORKERS"
 ENV_DS_PROXY_FE_AFFINITY = "DSV4_PROXY_FE_AFFINITY"
-# Instance parameters of a ds worker that the aligned arms must share (03_perf-tests.md §3.3).
+# Instance parameters of a ds worker that the aligned arms must share.
 DS_INSTANCE_PARAMS = (
     "tensor_parallel_size",
     "moe_expert_parallel_size",
@@ -3102,7 +3108,7 @@ DS_INSTANCE_PARAMS = (
     "custom_tokenizer",
 )
 # Settings of the serving front end in front of a ds engine (the chain's worker front end, or
-# dsv4-serve's own HTTP front end) that §3.3 lists.
+# dsv4-serve's own HTTP front end) that the result records.
 DS_FRONTEND_SETTINGS = (
     "num_serve_frontends",
     "enable_tokenization_cache",
@@ -3112,7 +3118,7 @@ _DS_ENV_PREFIX = "DSV4_"
 # ds variables that only choose what the engine logs; they need not match across arms.
 _DS_LOG_ONLY_ENV = ("DSV4_STEP_LOG", "DSV4_XFER_PROF", "DSV4_TOKCACHE_VERIFY", "DSV4_REQ_LOG")
 # The ds engine ignores DSV4_GEN_OVERLAP=1 on a context instance, with block reuse or under
-# DSV4_SCHED_PIPE, and logs a warning then (04_baseline-and-gaps.md DK-13).
+# DSV4_SCHED_PIPE, and logs a warning then (DK-13).
 ENV_DS_GEN_OVERLAP = "DSV4_GEN_OVERLAP"
 # Node rank of a multi-node ds instance, as dsv4-serve reads it ($DS/python/dsv4_serve/cli.py _multinode).
 _DS_NODE_RANK_ENV = ("DSV4_NODE_RANK", "SLURM_NODEID", "SLURM_PROCID")
@@ -3216,10 +3222,16 @@ def ds_node_rank(
     follow.
 
     Raises:
-        ArmError: The instance's GPUs are not a multiple of this node's, the step runs more
-            than one task on a node, or the rank is not a non-negative integer.
+        ArmError: The plan sets pipeline or context parallelism, which dsv4-serve ignores
+            (the worker would get GPUs its instance does not use), the instance's GPUs are
+            not a multiple of this node's, the step runs more than one task on a node, or
+            the rank is not a non-negative integer.
     """
     env = os.environ if environ is None else environ
+    for key in ("pipeline_parallel_size", "context_parallel_size"):
+        size = _as_int(_ds_param(plan.cmd, plan.config, key))
+        if isinstance(size, int) and size > 1:
+            raise ArmError(f"dsv4-serve ignores {key}={size}; a ds worker must set it to 1")
     visible = env.get("CUDA_VISIBLE_DEVICES")
     if visible is not None and visible.strip():
         local_gpus = len([gpu for gpu in visible.split(",") if gpu.strip()])
@@ -3247,9 +3259,10 @@ def ds_node_rank(
 def ds_follower_command(plan: ServerPlan, environ: Mapping[str, str] | None = None) -> list[str]:
     """The command of a follower node of a multi-node ds instance.
 
-    A follower runs dsv4-serve with the leader's options; dsv4-serve sees its node rank and
-    only loads its part of the model and follows the leader's steps. It serves neither HTTP
-    nor gRPC, so a chain worker's follower is the same command as a native one's.
+    A follower runs dsv4-serve with the worker's command line and YAML; dsv4-serve sees its
+    node rank and only loads its part of the model and follows the leader's steps. It serves
+    neither HTTP nor gRPC, so a chain worker's follower is the same command as a native one's
+    (the chain's leader is the OpenEngine engine the harness starts from a rewritten YAML).
 
     Raises:
         ArmError: ``TRTLLM_TEST_DS_SERVE_CMD`` is unset.
@@ -3262,23 +3275,37 @@ def ds_follower_command(plan: ServerPlan, environ: Mapping[str, str] | None = No
     return ds_http_command(tokens, environ)
 
 
+def _group_alive(pgid: int) -> bool:
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def _stop_process_group(proc: subprocess.Popen, grace_s: float) -> None:
     """Stop ``proc``, started in a session of its own, and every process of its group.
 
-    SIGTERM to the group, SIGKILL to it after ``grace_s`` seconds if ``proc`` is still running.
+    SIGTERM to the group; SIGKILL to it when any of its processes, ``proc`` or another,
+    still runs ``grace_s`` seconds later. Reaps ``proc`` when it has exited; raises nothing
+    when a process outlives the SIGKILL too.
     """
     for sig in (signal.SIGTERM, signal.SIGKILL):
         try:
             os.killpg(proc.pid, sig)
         except ProcessLookupError:
             break
-        try:
-            proc.wait(timeout=grace_s)
-            break
-        except subprocess.TimeoutExpired:
-            continue
-    if proc.poll() is None:
-        proc.wait(timeout=grace_s)
+        deadline = time.monotonic() + grace_s
+        while True:
+            proc.poll()
+            if not _group_alive(proc.pid):
+                return
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.1)
+    proc.poll()
 
 
 def run_ds_follower(
@@ -3291,8 +3318,8 @@ def run_ds_follower(
     """Run a follower node of a multi-node ds instance until ``wait(proc)`` returns.
 
     ``wait`` is the worker's wait for the end of the benchmark. The follower's process group
-    is then stopped (SIGTERM, SIGKILL after 60 s), so that no process it started is left.
-    Returns its exit code.
+    is then stopped (:func:`_stop_process_group`, 60 s grace). Returns its exit code, or
+    ``None`` when it outlived the SIGKILL.
 
     Raises:
         OSError: The follower cannot be started.
@@ -3392,13 +3419,15 @@ def _ds_env_split(env: Mapping[str, str]) -> tuple[dict[str, str], dict[str, str
     shared, log_only = {}, {}
     for key, value in sorted(env.items()):
         if key.startswith(_DS_ENV_PREFIX):
-            (log_only if key.startswith(_DS_LOG_ONLY_ENV) else shared)[key] = value
+            (log_only if key in _DS_LOG_ONLY_ENV else shared)[key] = value
     return shared, log_only
 
 
 # dsv4-serve's other names for the instance parameters' options, and its flag options.
 _DS_PARAM_OPTIONS = {
     "tensor_parallel_size": ("--tensor_parallel_size", "--tp_size"),
+    "pipeline_parallel_size": ("--pipeline_parallel_size", "--pp_size"),
+    "context_parallel_size": ("--context_parallel_size", "--cp_size"),
     "moe_expert_parallel_size": ("--moe_expert_parallel_size", "--ep_size"),
 }
 _DS_FLAG_PARAMS = ("enable_attention_dp",)
@@ -3406,7 +3435,10 @@ _DS_KV_FRACTION_OPTIONS = ("--free_gpu_memory_fraction", "--kv_cache_free_gpu_me
 
 
 def _ds_param(argv: Sequence[str], config: Mapping[str, Any], key: str) -> Any:
-    """Instance parameter ``key`` as dsv4-serve reads it: its option in ``argv``, else ``config``."""
+    """Instance parameter ``key``: its option in ``argv`` (dsv4-serve's names), else ``config``.
+
+    Does not apply ``--kv_cache_dtype`` or ``--set``, which perf sanity does not pass.
+    """
     if key in _DS_FLAG_PARAMS:
         return True if f"--{key}" in argv else config.get(key)
     if key == "kv_cache_config":
@@ -3470,7 +3502,7 @@ def ds_instance_reading(
     }
 
 
-# The blocks only a case-03 result holds, on top of DISAGG_RESULT_KEYS.
+# The blocks only a case-03 disaggregated result holds, on top of DISAGG_RESULT_KEYS.
 DS_RESULT_KEYS = ("ds_instances", "ds_alignment", "ds_client")
 _DS_ORCH_KEYS = (
     "max_retries",
@@ -3480,6 +3512,7 @@ _DS_ORCH_KEYS = (
     "conversation_affinity_header_for_subagents",
     "subagent_affinity_scope",
     "frontend_affinity",
+    "num_proxy_workers",
 )
 _DS_ALIGNMENT_KEYS = ("orchestrator", "orchestrator_env", "frontend")
 _DS_KV_NOTE = (
@@ -3489,6 +3522,8 @@ _DS_KV_NOTE = (
 )
 # The line the AgentX wrapper (run_ds_agentx) prints with the client's settings.
 DS_CLIENT_LINE = "[ds-agentx] settings "
+# The line it prints with where the run's output token count comes from in aiperf's export.
+DS_TOKENS_LINE = "[ds-agentx] total generated tokens from "
 
 
 def ds_sha(environ: Mapping[str, str] | None = None) -> str | None:
@@ -3548,13 +3583,18 @@ def add_ds_blocks(
         ),
     }
     doc["ds_client"] = _client_settings(output)
+    for line in output.splitlines():
+        if line.startswith(DS_TOKENS_LINE):
+            doc["notes"].append(
+                f"case-03 AgentX: output_tokens is aiperf's {line[len(DS_TOKENS_LINE) :]}"
+            )
     doc["orch"]["kind"] = probe.arm.orchestrator
     doc["versions"]["ds"] = ds_sha(environ)
     doc["notes"].append(_DS_KV_NOTE)
 
 
 def validate_ds_blocks(doc: Mapping[str, Any], arm: Arm | None) -> list[str]:
-    """Problems with the case-03 blocks of a result (:data:`DS_RESULT_KEYS`)."""
+    """Problems with the case-03 blocks of a disaggregated result (:data:`DS_RESULT_KEYS`)."""
     errors = []
     instances = doc["ds_instances"]
     if not isinstance(instances, dict) or set(instances) != set(WORKER_ROLES):
@@ -3579,6 +3619,9 @@ def validate_ds_blocks(doc: Mapping[str, Any], arm: Arm | None) -> list[str]:
         for key, value in DS_ALIGNED_ORCHESTRATOR.items():
             if orch.get(key) != value:
                 errors.append(f"ds_alignment.orchestrator.{key} must be {value} for arm {arm.name}")
+        # trtllm-serve's disaggregated server then retries 0 times; dsv4-serve's still 3.
+        if isinstance(doc.get("alignment"), dict) and doc["alignment"].get("disagg_no_retry"):
+            errors.append(f"arm {arm.name} must not set {ENV_DISAGG_NO_RETRY}=1")
         if arm.orchestrator == ORCHESTRATOR_DS:
             env = alignment["orchestrator_env"] or {}
             if env.get(ENV_DS_PROXY_LOAD_ROUTE) not in (None, "0"):
@@ -3596,7 +3639,7 @@ def validate_ds_blocks(doc: Mapping[str, Any], arm: Arm | None) -> list[str]:
 def compare_ds_instances(first: Mapping[str, Any], second: Mapping[str, Any]) -> list[str]:
     """Differences between two case-03 results' ds instances (parameters and shared variables).
 
-    E3-native-al and E3-chain must have none (03_perf-tests.md §3.3); the variables that
+    E3-native-al and E3-chain must have none; the variables that
     only choose logging are not compared. A role without a reading is a difference.
     """
     differences = []
@@ -3721,7 +3764,7 @@ def ds_layout(
 AGENTX_CLIENT = "agentx"
 # The trace corpus $DS/dev/run_agentx.sh replays (it takes no dataset argument).
 DS_AGENTX_DATASET = "semianalysis_cc_traces_weka_062126"
-# The client settings all case-03 arms share (03_perf-tests.md §3.3, PU-08); they replace the
+# The client settings all case-03 arms share (PU-08's); they replace the
 # lane's own values.
 DS_AGENTX_SETTINGS = {
     "AGENTX_DURATION": "3600",
@@ -3825,16 +3868,19 @@ def run_ds_agentx(argv: Sequence[str], environ: Mapping[str, str] | None = None)
     :data:`DS_AGENTX_SETTINGS`, writing its records to ``concurrency_<C>`` under
     ``TRTLLM_AGENTX_ARTIFACT_DIR`` (an export an earlier run left there is removed first,
     as perf/agentx_client.py does); then checks aiperf's export as agentx_client.py does and
-    prints its metrics in benchmark_serving's format, the total output token count, and one
-    line of the client's settings (:data:`DS_CLIENT_LINE`) for the result. Returns 0, or
-    raises.
+    prints its metrics in benchmark_serving's format, the total output token count, and the
+    lines of the client's settings (:data:`DS_CLIENT_LINE`) and of where that count comes
+    from (:data:`DS_TOKENS_LINE`) for the result. Returns 0, or raises.
 
     Raises:
         ArmError: The ds checkout, its script or the artifact directory is missing, the
             dataset is not the one run_agentx.sh replays, the run outlived its duration plus
             ``AGENTX_TIMEOUT_GRACE`` seconds (its processes are stopped), or it wrote no
             export.
-        RuntimeError: The export shows an incomplete or failed run (agentx_client.py's checks).
+        RuntimeError: The export shows an incomplete or failed run (agentx_client.py's checks)
+            or holds no output token count.
+        ValueError: ``AGENTX_TIMEOUT_GRACE`` is not an integer, or the export is not JSON
+            (``json.JSONDecodeError``).
     """
     import argparse
 
@@ -3882,7 +3928,7 @@ def run_ds_agentx(argv: Sequence[str], environ: Mapping[str, str] | None = None)
     }
     print(DS_CLIENT_LINE + json.dumps(settings, sort_keys=True), flush=True)
     url = f"http://{args.host}:{args.port}"
-    grace = int(env.get("AGENTX_TIMEOUT_GRACE", "3600"))
+    grace = int(env.get("AGENTX_TIMEOUT_GRACE", "900"))
     # A session of its own: on a timeout, aiperf and its workers stop with the script.
     proc = subprocess.Popen(
         ["bash", script, url, str(args.concurrency), str(duration), out_dir],
@@ -3904,9 +3950,10 @@ def run_ds_agentx(argv: Sequence[str], environ: Mapping[str, str] | None = None)
     client.check_run_health(export)
     client.report_metrics(export)
     tokens, source = _total_output_tokens(export)
-    if tokens is not None:
-        print(f"Total generated tokens: {tokens}", flush=True)
-        print(f"[ds-agentx] total generated tokens from {source}", flush=True)
+    if tokens is None:
+        raise RuntimeError(f"{export_path} holds no output token count")
+    print(f"Total generated tokens: {tokens}", flush=True)
+    print(DS_TOKENS_LINE + source, flush=True)
     return 0
 
 

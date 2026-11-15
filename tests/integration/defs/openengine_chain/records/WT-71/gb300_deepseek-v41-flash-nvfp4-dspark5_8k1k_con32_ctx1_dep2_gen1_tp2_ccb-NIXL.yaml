@@ -16,10 +16,11 @@
 # PU-06 (case-03, layout N-0): DeepSeek-V4.1-Flash NVFP4, context DEP2 + generation TP2 on one
 # node of 4 GB300 GPUs, ISL/OSL 8192/1024, random token ids, concurrency 32 (160 requests).
 # The worker settings are those of the ds-engine's dev/test_disagg.sh (tests/configs/
-# disagg_ctx_dep2.yaml, disagg_gen_tp2.yaml) and its proxy configuration (disagg_local.yaml); the
-# arms E3-native, E3-native-al, E3-mid and E3-chain (perf/openengine_arms.py) run this one file.
-# Every worker pins the accepted draft length (2.51 of 5). Run it with the single-node driver:
-#   run_single_node_disagg.py --config-dir <this directory> \
+# disagg_ctx_dep2.yaml, disagg_gen_tp2.yaml) and its proxy configuration (disagg_local.yaml),
+# plus enable_tokenization_cache, which the chain's worker front ends take and dsv4-serve reads
+# too. Every case-03 disaggregated arm (perf/openengine_arms.py) runs this one file. Every worker
+# pins the accepted draft length (2.51 of 5). Run it with the single-node driver:
+#   run_single_node_disagg.py --config-dir <this directory> --output-dir <directory> \
 #     disagg-e2e-gb300_deepseek-v41-flash-nvfp4-dspark5_8k1k_con32_ctx1_dep2_gen1_tp2_ccb-NIXL
 metadata:
   model_name: deepseek_v41_flash_nvfp4_dspark

@@ -3789,7 +3789,7 @@ class DisaggTestCmds(NamedTuple):
                 self.test_output_dir,
                 f"ds-follower.{self.disagg_serving_type}.{server_idx}.node{node_rank}.log",
             )
-            follower_env = copy.deepcopy(os.environ)
+            follower_env = dict(os.environ)
             if worker_cfg is not None:
                 follower_env.update(worker_cfg.to_env())
             print_info(f"Starting node {node_rank} of {self.disagg_serving_type} as a ds follower")
@@ -5243,9 +5243,11 @@ class PerfSanityTestConfig:
 
         # OpenEngine comparison arms: plain single-node aggregated cases with
         # benchmark_serving clients only (no accuracy run), results never uploaded.
+        # The case-03 disaggregated arms also take the AgentX client (below).
         arm = openengine_arms.selected_arm()
         if arm is not None and arm.topology != openengine_arms.TOPOLOGY_AGG:
-            # The disaggregated arms (case-04, case-03) take e2e and gen_only disaggregated cases.
+            # The disaggregated arms (case-04, case-03) take the disaggregated cases that
+            # check_disagg_case admits.
             disagg_config = (
                 self.server_configs[0][2]
                 if self.runtime in DISAGG_CONFIG_RUNTIMES and self.server_configs

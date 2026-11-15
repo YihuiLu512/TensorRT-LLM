@@ -243,6 +243,17 @@ def test_case03_worker_may_span_whole_nodes(arms):
         arms.check_disagg_case(arms.DISAGG_ARMS["E3-chain"], **_case(worker_gpus={"gen": 6}))
 
 
+@pytest.mark.parametrize("name", ["E3-native", "E3-native-al", "E3-mid", "E3-chain"])
+def test_case03_arms_take_e2e_only(arms, name):
+    with pytest.raises(arms.ArmError, match="e2e benchmark mode only"):
+        arms.check_disagg_case(
+            arms.DISAGG_ARMS[name], **_case(benchmark_mode="gen_only", worker_gpus={})
+        )
+    arms.check_disagg_case(
+        arms.DISAGG_ARMS["E4-chain"], **_case(benchmark_mode="gen_only", worker_gpus={})
+    )
+
+
 def _tp_plan(arms, tp, *cli):
     return arms.ServerPlan(("trtllm-serve", "/m", *cli), {"tensor_parallel_size": tp})
 
@@ -265,13 +276,22 @@ def test_ds_node_rank(arms, tp, env, rank):
     assert arms.ds_node_rank(_tp_plan(arms, tp), 4, env) == rank
 
 
-def test_ds_node_rank_reads_the_command_line_and_only_tensor_parallelism(arms):
+def test_ds_node_rank_reads_the_command_line(arms):
     plan = _tp_plan(arms, 2, "--tp_size", "8")
     assert arms.ds_node_rank(plan, 4, {"SLURM_NODEID": "1"}) == 1
-    pipeline = arms.ServerPlan(
-        ("trtllm-serve", "/m"), {"tensor_parallel_size": 4, "pipeline_parallel_size": 2}
-    )
-    assert arms.ds_node_rank(pipeline, 4, {}) is None
+
+
+@pytest.mark.parametrize(
+    "plan",
+    [
+        (("trtllm-serve", "/m"), {"tensor_parallel_size": 4, "pipeline_parallel_size": 2}),
+        (("trtllm-serve", "/m", "--cp_size", "2"), {"tensor_parallel_size": 4}),
+    ],
+)
+def test_ds_node_rank_refuses_what_dsv4_serve_ignores(arms, plan):
+    # A worker of tp 4 x pp 2 gets 8 GPUs, but dsv4-serve runs tp 4 and ignores pp.
+    with pytest.raises(arms.ArmError, match="must set it to 1"):
+        arms.ds_node_rank(arms.ServerPlan(*plan), 4, {})
 
 
 @pytest.mark.parametrize(
@@ -341,6 +361,41 @@ def test_run_ds_follower_stops_the_processes_it_started(arms, tmp_path):
         pytest.fail(f"the follower's child is still running: {status}")
 
 
+def test_stop_process_group_kills_a_member_that_outlives_the_leader(arms, tmp_path):
+    # The leader exits on SIGTERM; its child ignores SIGTERM and keeps running.
+    pid_file = tmp_path / "child.pid"
+    leader_file = tmp_path / "leader.out"
+    child = (
+        "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        f"open({str(pid_file)!r}, 'w').write('ready'); time.sleep(120)"
+    )
+    script = (
+        "import subprocess, sys, time; "
+        f"child = subprocess.Popen([sys.executable, '-c', {child!r}]); "
+        f"open({str(leader_file)!r}, 'w').write(str(child.pid)); time.sleep(120)"
+    )
+    proc = subprocess.Popen([sys.executable, "-c", script], start_new_session=True)
+    for _ in range(1000):
+        if pid_file.exists() and pid_file.read_text() == "ready" and leader_file.exists():
+            if leader_file.read_text():
+                break
+        time.sleep(0.01)
+    else:
+        os.killpg(proc.pid, 9)
+        pytest.fail("the child did not start")
+    child_pid = int(leader_file.read_text())
+    start = time.monotonic()
+    arms._stop_process_group(proc, 1)
+    assert proc.returncode is not None and time.monotonic() - start < 10
+    status = Path(f"/proc/{child_pid}/status")
+    for _ in range(500):
+        if not status.exists() or "\nState:\tZ" in status.read_text():
+            break
+        time.sleep(0.01)
+    else:
+        pytest.fail(f"the member that ignored SIGTERM is still running: {status}")
+
+
 def _layout(layout):
     return [(i.worker, i.nodes, i.gpus, i.tp) for i in layout.instances], layout.orchestrator_node
 
@@ -393,6 +448,8 @@ def test_ds_instance_reading_reads_the_running_process(arms, tmp_path):
         **os.environ,
         "DSV4_TOKCACHE_ENTRIES": "1024",
         "DSV4_STEP_LOG": "/x.jsonl",
+        # Writes the step log from another thread: it can change step times, so it is compared.
+        "DSV4_STEP_LOG_ASYNC": "1",
         "DSV4_XFER_PROF": "1",
     }
     proc = subprocess.Popen(
@@ -434,7 +491,7 @@ def test_ds_instance_reading_reads_the_running_process(arms, tmp_path):
     }
     assert reading["params"]["speculative_config"] == WORKER_CONFIG["speculative_config"]
     assert reading["params"]["moe_expert_parallel_size"] is None
-    assert reading["env"] == {"DSV4_TOKCACHE_ENTRIES": "1024"}
+    assert reading["env"] == {"DSV4_TOKCACHE_ENTRIES": "1024", "DSV4_STEP_LOG_ASYNC": "1"}
     assert reading["log_only_env"] == {"DSV4_STEP_LOG": "/x.jsonl", "DSV4_XFER_PROF": "1"}
     assert reading["gen_overlap_ignored_warning"] is False
     assert reading["frontend"] == {
@@ -581,11 +638,22 @@ def test_case03_result_matches_schema(arms, tmp_path, name):
     [
         ("E3-native-al", {"orchestrator": {"max_retries": 1}}, "max_retries must be 3"),
         ("E3-chain", {"orchestrator": {"server_keep_alive_timeout": 10}}, "keep_alive_timeout"),
+        ("E3-mid", {"env": {"TRTLLM_DISAGG_NO_RETRY": "1"}}, "must not set TRTLLM_DISAGG_NO_RETRY"),
     ],
 )
 def test_case03_result_refuses_unaligned_values(arms, tmp_path, name, kwargs, message):
     doc = _result(arms, tmp_path, name, **kwargs)
     assert any(message in e for e in arms.validate_disagg_result(doc)), doc["ds_alignment"]
+
+
+def test_case03_direct_result_holds_no_ds_blocks(arms, tmp_path):
+    # The direct replay tool has no orchestrator or client to describe.
+    doc = _result(arms, tmp_path, "E3-chain")
+    for key in arms.DS_RESULT_KEYS:
+        del doc[key]
+    doc.update(arm="E3-direct", topology="direct")
+    errors = arms.validate_disagg_result(doc)
+    assert not any(e.startswith("keys:") or "ds_" in e or "orch.kind" in e for e in errors), errors
 
 
 @pytest.mark.parametrize(
@@ -772,6 +840,10 @@ def test_run_ds_agentx_reports_in_benchmark_serving_format(arms, tmp_path, capfd
     # The result carries the settings line (card ②).
     doc = _result(arms, tmp_path, "E3-chain", output=BENCHMARK_OUTPUT + out)
     assert doc["ds_client"] == settings
+    assert (
+        "case-03 AgentX: output_tokens is aiperf's "
+        "output_token_throughput.avg x benchmark_duration.avg" in doc["notes"]
+    )
     assert arms.validate_disagg_result(doc) == []
 
 
@@ -794,11 +866,15 @@ def test_total_output_tokens_prefers_the_count(arms):
         (EXPORT, "dataset", "ArmError", "not the lane's dataset other_traces"),
         (None, None, "ArmError", "exited 3 and wrote no"),
         ({**EXPORT, "metadata": {"submission_valid": False}}, None, "RuntimeError", "submission_valid=false"),
+        (EXPORT, "no_token_count", "RuntimeError", "holds no output token count"),
     ],
 )  # fmt: skip
-def test_run_ds_agentx_refuses(arms, tmp_path, export, setup, error, message):
+def test_run_ds_agentx_refuses(arms, tmp_path, monkeypatch, export, setup, error, message):
     root = _ds_root(tmp_path, export)
     env = _agentx_env(tmp_path, root)
+    if setup == "no_token_count":
+        # agentx_client's checks need the fields of the estimate; a later aiperf may not.
+        monkeypatch.setattr(arms, "_total_output_tokens", lambda export: (None, None))
     if setup == "no_root":
         env["TRTLLM_TEST_DS_ROOT"] = str(tmp_path / "missing")
     argv = AGENTX_ARGV + (["--dataset", "other_traces"] if setup == "dataset" else [])
