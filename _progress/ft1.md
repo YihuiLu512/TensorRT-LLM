@@ -53,3 +53,17 @@
 - 2026-11-16 01:41:46 FT1-scen 开始：读完快轨计划、E2/E3/E4 卡、gen_e0/gen_e0s、E0 补充冒烟登记与计划、S-NL/oe_sink 参数；开始写 gen_e0s 第 3 项与 E2a/E3/E4 生成器（约 60 分钟）
 - 2026-11-16 01:55:01 FT1-scen 首跑 test_e2a_e3_e4_configs.py + test_e0s_configs.py（约 1–2 分钟）
 - 2026-11-16 01:58:19 FT1-scen 跑 tests/launch 全目录（约 5 分钟）
+- 2026-11-16 02:03:37 FT1-scen 作业路径 e2e：按 HEAD 047d3d80 生成覆盖清单；用生成的场景（只换本地替身 pb2/server 模块）跑 e3a-snl-kc-mc、e3a-mono-mc、e3b-ees-mc、e3b-ees-mc-vstub、e2a-spb-1c-r、e2a-snl-1c-md、e0a-nullsse 回归（约 15 分钟）
+- 2026-11-16 02:10:36 FT1-scen 变异 S1–S16 串行（约 3 分钟）
+
+## FT1-scen 结果
+
+- 代码（提交 047d3d80）：`configs/gen_e0s_configs.py` 加第 3 项 `e0s-snl-frontend`（S-NL 最小版 + 真 OpenEngineServer + 真前端，一个 /v1/completions）；新生成器 `configs/gen_e2a_e3_e4_configs.py` 写出 `configs/e2a`、`configs/e3`、`configs/e4`（每臂 scenario + tiers.template + values.todo，全部为模板，档位值 TBD）；测试 `tests/launch/test_e2a_e3_e4_configs.py`，`tests/launch/test_e0s_configs.py` 加第 3 项。文档：三个目录的 README、`configs/e0s/README.md`、`tools/caplaunch/README.md`、INTERFACES 勘误 FT1-14～FT1-17 与两处指向注。
+### MEASURED（本机；日志在 _local/ft1/logs、_local/ft1/mut-scen、_local/ft1/e2e/runs）
+- tests/launch 全目录 356 passed + test_fingerprint.py 2 passed（需临时软链 WT/probe-tree，跑完改名为 _local/ft1/probe-tree.link-scen1；logs/scen-launch-1、scen-fp-1）；两份配置测试 131 passed（logs/scen-2）。
+- 变异 S1～S16、S7b 全部被抓到（S7 等价变异，已换 S7b；mut-scen/summary.txt）。
+- 作业路径 e2e（覆盖清单 ovl/P0-047d3d80；生成的场景只把作业输入的 pb2 换成 oe_double、S-NL full 加 --server-module snl_double；build_scen.py / run_scen.sh）：e3a-snl-kc-mc J9300031、e3a-mono-mc J9300032、e3b-ees-mc J9300033、e3b-ees-mc-vstub J9300034（S-PB send.msg 注入每档 applied = hits）、e2a-spb-1c-r J9300035、e2a-snl-1c-md J9300036 全部 L0 VALID、judge rc 11、0 RED、无 INPUT_INVALID；C3/C5/C6/C9/C11/P-PIDS/P-SENT/RECORDS 逐档 PASS（mono 的 C3、C6、P-SENT 为 NOT_RUN，无负载角色，预期）；e0a-nullsse J9300037 回归 VALID、0 RED。
+### INFERRED
+- E4 臂与 e0s-snl-frontend 的前端角色与 E0 已登记的 e0s-spb-frontend 写法相同（只差端点与 --num_input_processor_workers），后者在集群上已过门禁与作业输入（02_e0/E0/supp/notes.md），所以场景层面应能起；真前端连 S-NL 的启动检查仍未知。
+### NOT RUN
+- E4 全部臂、e0s-snl-frontend（需要真 trtllm-serve 与真产品模块，本机不能 import）；e2a/e3 的 kc 形态读 S-PB、oe_sink generate-stream 档、R 轴读 S-NL 的作业路径 e2e（同类组合已跑过代表臂）；真 pb2 / 真 server 模块上的任何运行。

@@ -15,7 +15,7 @@ E0 配置生成器在 `configs/gen_e0_configs.py`。
 | `caplaunch.tiergen` | `python -m caplaunch.tiergen`:把档位表模板里的 `TBD:<名字>` 填成登记的数，生成并校验 `capkit.tiers/1`(可选同时写到达时刻表) |
 | `caplaunch.httpprobe` | E0(c) HTTP 冒烟客户端(作为场景里的 aux 角色运行):逐帧记录文本增量是否为空;可选 `--started-file`(发第一个请求前写，回答要等到原点之后的场景用它作就绪文件;INTERFACES 勘误 B2B-15) |
 | `caplaunch.smoke` | `python -m caplaunch.smoke`:E0(c) 可行性冒烟各项，输出 `capkit.smoke/2`(PASS / FAIL / RECORDED / NOT_RUN);也可作为场景里的 aux 角色(TOOL_TABLE `caplaunch.smoke`,参数同 httpprobe;`--items` 选项组、`--hold` 写完后等 SIGTERM、`--result-dir` 是 `--out` 的别名;INTERFACES 勘误 B2B-12) |
-| `configs/gen_e0_configs.py`、`configs/gen_e0s_configs.py`(不在本包内) | `configs/e0/*.json`、`configs/e0s/*.json` 的生成器(交付物是生成出的 JSON;改配置请改生成器，生成到新目录后 diff) |
+| `configs/gen_e0_configs.py`、`configs/gen_e0s_configs.py`、`configs/gen_e2a_e3_e4_configs.py`(不在本包内) | `configs/e0/*.json`、`configs/e0s/*.json`、`configs/{e2a,e3,e4}/*.json`(快轨场景模板，INTERFACES 勘误 FT1-15)的生成器(交付物是生成出的 JSON;改配置请改生成器，生成到新目录后 diff) |
 
 ## `python -m caplaunch` 参数
 
