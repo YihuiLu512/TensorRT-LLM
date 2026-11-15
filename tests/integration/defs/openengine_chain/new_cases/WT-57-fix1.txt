@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+NT-098 unittest/llmapi/apps/_test_openengine_disagg_harmony.py::test_harmony_chat_context_first
+NT-188 unittest/llmapi/apps/_test_openengine_disagg_spec.py::test_dflash_output_is_the_same_on_both_forms
+NT-189 unittest/llmapi/apps/_test_openengine_disagg_spec.py::test_mtp_on_the_generation_side_only
+NT-207 unittest/llmapi/apps/_test_openengine_disagg_spec.py::test_eagle3_batch_slot_is_released_at_batch_size_one
+NT-209 unittest/llmapi/apps/_test_openengine_disagg_spec.py::test_dynamic_tree_draft_tokens_cross_handoff
+NT-198 unittest/llmapi/apps/_test_openengine_disagg_transceiver.py::test_kv_transfer_timeout_frees_the_context_side
+NT-199 unittest/llmapi/apps/_test_openengine_disagg_transceiver.py::test_cancel_during_transfer_is_the_same_on_both_forms
+NT-202 unittest/llmapi/apps/_test_openengine_disagg_transceiver.py::test_cpp_runtime_backends[<backend>]
+NT-208 unittest/llmapi/apps/_test_openengine_disagg_topology.py::test_kv_balanced_admission_on_the_generation_side
+NT-210 unittest/llmapi/apps/_test_openengine_disagg_engine_combos.py::test_sliding_window_attention_two_legs
+NT-211 unittest/llmapi/apps/_test_openengine_disagg_engine_combos.py::test_kv_cache_connector_with_disagg_prefill
+NT-212 unittest/llmapi/apps/_test_openengine_disagg_engine_combos.py::test_ray_orchestrator_engines_two_legs
+NT-213 unittest/llmapi/apps/_test_openengine_disagg_engine_combos.py::test_kv_routing_accounts_for_in_transfer

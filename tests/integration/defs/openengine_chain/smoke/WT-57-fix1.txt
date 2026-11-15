@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# An unclaimed context leg's KV-cache blocks are freed by the transfer timeout, so that the next
+# request through the disaggregated server is served (one GPU, both workers).
+unittest/llmapi/apps/_test_openengine_disagg_transceiver.py::test_kv_transfer_timeout_frees_the_context_side
