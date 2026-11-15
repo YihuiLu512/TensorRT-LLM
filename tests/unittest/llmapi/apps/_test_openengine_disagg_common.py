@@ -21,13 +21,16 @@ import contextlib
 import dataclasses
 import json
 import os
+import re
 import secrets
+import time
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 import openai
 import pytest
+import requests
 import torch
 from test_common.http_utils import wait_for_endpoint_ready
 
@@ -41,6 +44,9 @@ CHAIN = os.environ.get("TRTLLM_TEST_OPENENGINE_CHAIN", "none") not in ("", "none
 # Set in a deployment's ``env``: on the chain each worker frontend writes every
 # GenerateRequest it sends to this directory.
 DUMP_ENV = conv.SERVE_REQUEST_DUMP_DIR_ENV
+# The orchestrator's count of requests it sent to each role's workers.
+_SENT = re.compile(r"^(ctx|gen)_total_requests_total(?:\{[^}]*\})?\s+(\S+)\s*$", re.MULTILINE)
+WORKERS_LISTED_TIMEOUT_S = 300
 MODEL_NAME = "Qwen3/Qwen3-0.6B"
 ENGINE_READY_TIMEOUT_S = 1200
 REQUEST_TIMEOUT_S = 120
@@ -177,7 +183,36 @@ def disagg_deployment(
             for worker in workers[role]:
                 worker.wait_for_server(timeout=ENGINE_READY_TIMEOUT_S)
         wait_for_endpoint_ready(orchestrator.url_root + "/health", server_proc=orchestrator.proc)
+        _wait_until_listed(orchestrator.url_root, counts)
         yield Deployment(orchestrator, workers, model)
+
+
+def _wait_until_listed(url: str, counts: Mapping[str, int]) -> None:
+    """Wait until the orchestrator routes to every worker; /health needs only one per role."""
+    deadline = time.monotonic() + WORKERS_LISTED_TIMEOUT_S
+    listed = {}
+    while time.monotonic() < deadline:
+        response = requests.get(f"{url}/cluster_info", timeout=REQUEST_TIMEOUT_S)
+        if response.ok:
+            listed = response.json().get("server_lists", {})
+            if all(len(listed.get(role, [])) >= count for role, count in counts.items()):
+                return
+        time.sleep(1)
+    raise AssertionError(f"the orchestrator lists workers {listed}, not {dict(counts)}")
+
+
+def orchestrator_sent(deployment: Deployment) -> dict[str, int]:
+    """Requests the orchestrator has sent to the context (``ctx``) and generation (``gen``) workers.
+
+    Read from its own ``/prometheus/metrics``, which both forms have; a request it sends
+    again after an error counts once.
+    """
+    response = requests.get(f"{deployment.url}/prometheus/metrics", timeout=REQUEST_TIMEOUT_S)
+    assert response.status_code == 200, response.text
+    counts = {"ctx": 0, "gen": 0}
+    for role, value in _SENT.findall(response.text):
+        counts[role] += int(float(value))
+    return counts
 
 
 def dump_names(dump_dir: Path) -> set[str]:

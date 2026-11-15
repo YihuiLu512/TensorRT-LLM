@@ -1,7 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-# T1 and T2's beam, stream_options and cached_tokens tests (F-25, F-30) are WT-52's; T23, T31 and
-# T32 are WT-57-fix2's.
 T1 unittest/llmapi/apps/_test_openai_completions.py::test_completion_logprobs
 T1 unittest/llmapi/apps/_test_openai_completions.py::test_completion_logprobs_streaming
 T1 unittest/llmapi/apps/_test_openai_completions.py::test_completion_streaming

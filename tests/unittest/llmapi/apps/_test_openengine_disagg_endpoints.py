@@ -133,11 +133,12 @@ def test_version_direct(deployment):
 
 
 def test_health_direct(deployment):
-    workers = requests.get(f"{deployment.url}/cluster_info", timeout=REQUEST_TIMEOUT_S).json()
+    info = requests.get(f"{deployment.url}/cluster_info", timeout=REQUEST_TIMEOUT_S).json()
     for role in ROLES:
-        listed = workers["current_workers"][f"{role}_servers"]
+        # The orchestrator routes to "host:port" of each worker it lists.
+        listed = [int(server.rsplit(":", 1)[1]) for server in info["server_lists"][role]]
         port = urlsplit(deployment.workers[role][0].url_for("health")).port
-        assert [worker["port"] for worker in listed] == [port], (role, workers)
+        assert listed == [port], (role, info)
         response = _worker_get(deployment, role, "health")
         assert response.status_code == 200, (role, response.text)
 

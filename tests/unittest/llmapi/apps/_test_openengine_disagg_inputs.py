@@ -22,6 +22,8 @@ GenerateRequests (``_test_openengine_disagg_common.legs``).
   the two counts are the same.
 """
 
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -65,8 +67,14 @@ def deployment(tmp_path_factory, dump_dir):
         yield deployment
 
 
-def _token_ids(leg: dict) -> list[int]:
-    return [int(token_id) for token_id in leg["token_ids"]["ids"]]
+def _same_token_ids(leg: dict, token_ids: list[int]) -> bool:
+    """Whether the leg's prompt is ``token_ids``: a dump keeps their count and digest only."""
+    data = json.dumps(token_ids, separators=(",", ":")).encode()
+    return leg["token_ids"] == {
+        "count": len(token_ids),
+        "length": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
 
 
 def _chat(deployment, dump_dir: Path, expected_ids: list[int], **fields) -> None:
@@ -80,8 +88,8 @@ def _chat(deployment, dump_dir: Path, expected_ids: list[int], **fields) -> None
     assert response.json()["usage"]["prompt_tokens"] == len(expected_ids), response.text
     if CHAIN:
         prefill, decode = legs(dump_dir, before)
-        assert _token_ids(prefill) == expected_ids, prefill
-        assert _token_ids(decode) == expected_ids, decode
+        assert _same_token_ids(prefill, expected_ids), prefill
+        assert _same_token_ids(decode, expected_ids), decode
 
 
 # The allowed case runs first: its deployment stops before the module's starts.
@@ -102,8 +110,8 @@ def test_request_chat_template_gate(request, tmp_path, tokenizer, gate):
         assert "chat_template" in response.text, response.text
         return
     expected = tokenizer.encode(QUESTION[0]["content"], add_special_tokens=False)
-    model_render = tokenizer.apply_chat_template(QUESTION, add_generation_prompt=True)
-    assert len(model_render) != len(expected)
+    model_text = tokenizer.apply_chat_template(QUESTION, add_generation_prompt=True, tokenize=False)
+    assert len(tokenizer.encode(model_text, add_special_tokens=False)) != len(expected)
     dump_dir = tmp_path / "dumps"
     dump_dir.mkdir()
     with disagg_deployment(

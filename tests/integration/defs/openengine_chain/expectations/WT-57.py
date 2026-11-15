@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """WT-57's new disaggregated tests whose chain proof is not the default.
 
-Each test of the ``_test_openengine_disagg_*`` files starts or shares a
-deployment: an orchestrator and workers with ``--server_role``. By default the
+Each of WT-57's tests in the ``_test_openengine_disagg_*`` files starts or shares
+a deployment: an orchestrator and workers with ``--server_role``. By default the
 chain proof expects every request to go through the orchestrator to both
 legs. A test listed here sends no Generate call, sends to the worker
 frontends itself, kills a worker, may end on the context leg, expects a worker
@@ -65,29 +65,26 @@ EXPECTATIONS = [
                 "the context worker frontend refuses tool_choice='required' before calling "
                 "its engine",
             ),
-            (
-                f"{_UNSUPPORTED_OPS}test_profile_endpoints_refused_direct",
-                "asks each worker frontend for the profiling endpoints only",
-            ),
         )
     ),
     *(
         expectation
-        for test, endpoint in (
-            ("test_version_direct", "/version"),
-            ("test_health_direct", "/health"),
+        for match, endpoint in (
+            (f"{_ENDPOINTS}test_version_direct", "/version"),
+            (f"{_ENDPOINTS}test_health_direct", "/health"),
+            (f"{_UNSUPPORTED_OPS}test_profile_endpoints_refused_direct", "the profiling endpoints"),
         )
         for expectation in (
             Expectation(
                 "WT-57",
-                f"{_ENDPOINTS}{test}",
+                match,
                 NO_ENGINE_TRAFFIC,
                 f"asks each worker frontend for {endpoint} only",
                 chains=_CHAIN,
             ),
             Expectation(
                 "WT-57",
-                f"{_ENDPOINTS}{test}",
+                match,
                 LEG_EXPECT,
                 f"sends {endpoint} to each worker frontend itself, not through the orchestrator",
                 chains=_CHAIN,

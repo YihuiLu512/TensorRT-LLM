@@ -16,7 +16,7 @@ import grpc
 import pytest
 
 __extra_import_path__ = [".", ".."]
-from wt57_chain import FAILURE, PROMPT, Fail, calls, start_chain  # noqa: E402
+from wt57_chain import FAILURE, PROMPT, Fail, calls, scripted, start_chain  # noqa: E402
 
 pytestmark = [pytest.mark.cpu_only, pytest.mark.threadleak(enabled=False)]
 
@@ -48,8 +48,8 @@ def test_worker_frontend_error_passes_through_the_orchestrator(chain, role, code
     else:
         body = {"messages": [{"role": "user", "content": PROMPT}], "max_tokens": 4}
     before = calls(chain)
-    worker.engine.push_script(Fail(code, FAILURE))
-    response = chain.post(path, body)
+    with scripted(worker.engine, Fail(code, FAILURE)):
+        response = chain.post(path, body)
     after = calls(chain)
 
     assert response.status_code == status, response.text

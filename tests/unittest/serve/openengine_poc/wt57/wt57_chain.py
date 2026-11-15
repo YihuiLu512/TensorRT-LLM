@@ -77,6 +77,25 @@ def start_chain(
         yield chain
 
 
+@contextlib.contextmanager
+def scripted(engine: Any, *steps: Any) -> Iterator[None]:
+    """Answer the engine's next call with ``steps`` within the block; no later call gets them.
+
+    A script that no call took fails the block (unless it raised already) and is dropped,
+    so that it cannot answer the next test's call.
+    """
+    engine.push_script(*steps)
+    failed = True
+    try:
+        yield
+        failed = False
+    finally:
+        leftover = len(engine._scripts)
+        engine._scripts.clear()
+        if leftover and not failed:
+            raise AssertionError(f"{leftover} scripted call(s) were not made")
+
+
 def calls(chain: CpuDisaggChain) -> dict[str, int]:
     """The Generate calls each engine has received so far, by role."""
     return {worker.role: len(worker.engine.requests) for worker in chain.workers}

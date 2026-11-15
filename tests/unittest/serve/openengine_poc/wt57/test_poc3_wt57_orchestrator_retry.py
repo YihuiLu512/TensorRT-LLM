@@ -38,7 +38,7 @@ from tensorrt_llm.grpc.openengine_conventions import (
 __extra_import_path__ = [".", "..", "~/tests/unittest/grpc/openengine_client"]
 from cpu_disagg_chain import MODEL  # noqa: E402
 from fake_openengine import DisaggFaults  # noqa: E402
-from wt57_chain import FAILURE, PROMPT, Fail, Hang, calls, start_chain  # noqa: E402
+from wt57_chain import FAILURE, PROMPT, Fail, Hang, calls, scripted, start_chain  # noqa: E402
 
 pytestmark = [pytest.mark.cpu_only, pytest.mark.threadleak(enabled=False)]
 
@@ -78,8 +78,8 @@ def timed_chain(tmp_path_factory):
 def test_ctx_retry_sends_a_new_disagg_request_id_to_the_engine(chain):
     before = calls(chain)
     handoffs = chain.ctx.engine.counters[COUNTER_PREFILL_READY_SENT]
-    chain.ctx.engine.push_script(Fail(grpc.StatusCode.INTERNAL, FAILURE))
-    response = chain.complete(prompt=PROMPT, max_tokens=4)
+    with scripted(chain.ctx.engine, Fail(grpc.StatusCode.INTERNAL, FAILURE)):
+        response = chain.complete(prompt=PROMPT, max_tokens=4)
     assert response.status_code == 200, response.text
     # Only the attempt that succeeded hands its KV cache off, to the generation leg.
     assert chain.ctx.engine.counters[COUNTER_PREFILL_READY_SENT] - handoffs == 1
@@ -96,8 +96,8 @@ def test_ctx_retry_sends_a_new_disagg_request_id_to_the_engine(chain):
 
 def _refused_by_the_frontend(chain, code, status) -> None:
     before = calls(chain)
-    chain.gen.engine.push_script(Fail(code, FAILURE))
-    response = chain.complete(prompt=PROMPT, max_tokens=4)
+    with scripted(chain.gen.engine, Fail(code, FAILURE)):
+        response = chain.complete(prompt=PROMPT, max_tokens=4)
     assert response.status_code == status, response.text
     assert FAILURE in response.text, response.text
     # The generation worker frontend answered, so the leg may own the context
@@ -176,8 +176,8 @@ def test_gen_leg_retry_rules_hold_with_worker_frontends(request, tmp_path, case)
 def test_no_retry_env_disables_retries(no_retry_chain):
     chain = no_retry_chain
     before = calls(chain)
-    chain.ctx.engine.push_script(Fail(grpc.StatusCode.INTERNAL, FAILURE))
-    response = chain.complete(prompt=PROMPT, max_tokens=4)
+    with scripted(chain.ctx.engine, Fail(grpc.StatusCode.INTERNAL, FAILURE)):
+        response = chain.complete(prompt=PROMPT, max_tokens=4)
     assert response.status_code == 500, response.text
     assert calls(chain)["context"] - before["context"] == 1
     assert calls(chain)["generation"] - before["generation"] == 0
@@ -190,9 +190,9 @@ def test_request_timeout_cuts_the_worker_request(timed_chain, role):
     chain = timed_chain
     worker = chain.ctx if role == "context" else chain.gen
     before = calls(chain)
-    worker.engine.push_script(Hang())
     started = time.monotonic()
-    response = chain.complete(prompt=PROMPT, max_tokens=4, timeout=60)
+    with scripted(worker.engine, Hang()):
+        response = chain.complete(prompt=PROMPT, max_tokens=4, timeout=60)
     elapsed = time.monotonic() - started
     assert response.status_code >= 500, response.text
     assert REQUEST_TIMEOUT_S <= elapsed < REQUEST_TIMEOUT_S + 20, elapsed

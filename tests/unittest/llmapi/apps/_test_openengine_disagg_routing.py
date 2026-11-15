@@ -58,22 +58,7 @@ def deployment(tmp_path_factory, perf_dir):
             "perf_metrics_output_dir": str(perf_dir),
         },
     ) as deployment:
-        _wait_for_context_workers(deployment, NUM_CTX)
         yield deployment
-
-
-def _wait_for_context_workers(deployment, count: int, timeout: float = 300) -> None:
-    """Wait until the orchestrator routes to ``count`` context workers."""
-    deadline = time.monotonic() + timeout
-    servers = []
-    while time.monotonic() < deadline:
-        response = requests.get(f"{deployment.url}/cluster_info", timeout=REQUEST_TIMEOUT_S)
-        if response.ok:
-            servers = response.json().get("server_lists", {}).get("context", [])
-            if len(servers) >= count:
-                return
-        time.sleep(1)
-    raise AssertionError(f"the orchestrator lists context workers {servers}, not {count}")
 
 
 def _records(perf_dir: Path) -> list[dict]:

@@ -1,6 +1,5 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-# NT-011 is not written: nothing on the orchestrator's request path raises CppExecutorError.
 NT-010 unittest/serve/openengine_poc/wt57/test_poc3_wt57_orchestrator_errors.py::test_worker_frontend_error_passes_through_the_orchestrator
 NT-012 unittest/serve/openengine_poc/wt57/test_poc3_wt57_orchestrator_retry.py::test_ctx_retry_sends_a_new_disagg_request_id_to_the_engine
 NT-013 unittest/serve/openengine_poc/wt57/test_poc3_wt57_orchestrator_retry.py::test_gen_leg_retry_rules_hold_with_worker_frontends

@@ -5,19 +5,21 @@
 The deployment is ``_test_openengine_disagg_common.disagg_deployment`` (Qwen3-0.6B,
 one context and one generation worker on one GPU), in-process or on the
 OpenEngine chain. The context leg samples the first token and the generation
-leg the rest, so an option that one leg drops changes the output. On the
-chain the tests also read the two legs' GenerateRequests
-(``_test_openengine_disagg_common.legs``).
+leg the rest. On the chain the tests also read the two legs'
+GenerateRequests (``_test_openengine_disagg_common.legs``), which show an
+option that one leg drops.
 
 - NT-059 (F-11): ``top_k`` 1 and ``min_p`` 1 at temperature 1 are greedy; on
   the chain both legs get the request's ``temperature``, ``top_p``, ``top_k``
   and ``min_p``.
 - NT-060 (F-12): a seed gives the same output again; on the chain both legs
   get the seed.
-- NT-061 (F-13): each of the three penalties changes the output.
+- NT-061 (F-13): each of the three penalties changes the output; on the
+  chain both legs get it.
 - NT-062 (F-15): ``min_tokens`` keeps the answer going past its end.
-- NT-063 (F-17): a stop string that is the first token ends the output with
-  nothing, as in the aggregated form.
+- NT-063 (F-17): a stop string that is the first token ends the request on
+  the context leg with no text: whole, with ``finish_reason`` ``stop``;
+  streamed, the orchestrator sends only the end of the stream, no chunk.
 """
 
 from pathlib import Path
@@ -103,12 +105,15 @@ def test_seed_reproducible(deployment, dump_dir):
 
 
 @pytest.mark.parametrize("penalty", ["repetition_penalty", "frequency_penalty", "presence_penalty"])
-def test_penalties(deployment, penalty):
+def test_penalties(deployment, dump_dir, penalty):
     plain = _text(deployment, REPEAT_PROMPT, temperature=0.0, max_tokens=64)
     penalized = _text(
         deployment, REPEAT_PROMPT, temperature=0.0, max_tokens=64, extra_body={penalty: 2.0}
     )
     assert penalized != plain
+    if CHAIN:
+        sampling = _sampling_of_both_legs(deployment, dump_dir, temperature=0.0, **{penalty: 2.0})
+        assert float(sampling.get(penalty, "nan")) == pytest.approx(2.0), sampling
 
 
 def test_min_tokens(deployment):
@@ -144,13 +149,9 @@ def test_stop_word_on_first_token(deployment, stream):
                 model=deployment.model, prompt=GREEDY_PROMPT, stream=True, **kwargs
             )
         )
-        text = "".join(chunk.choices[0].text for chunk in chunks if chunk.choices)
-        finish = [
-            c.choices[0].finish_reason for c in chunks if c.choices and c.choices[0].finish_reason
-        ]
-        assert finish == ["stop"], finish
+        # The context leg ended the request; the orchestrator has no chunk to relay.
+        assert chunks == [], chunks
     else:
         choice = _complete(deployment, GREEDY_PROMPT, **kwargs).choices[0]
-        text = choice.text
         assert choice.finish_reason == "stop"
-    assert text == "", text
+        assert choice.text == "", choice.text

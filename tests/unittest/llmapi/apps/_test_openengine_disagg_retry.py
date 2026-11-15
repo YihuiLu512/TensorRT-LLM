@@ -35,7 +35,14 @@ import yaml
 
 from tensorrt_llm.grpc import openengine_conventions as conv
 
-from ._test_openengine_disagg_common import CHAIN, REQUEST_TIMEOUT_S, disagg_deployment, model_path
+from ._test_openengine_disagg_common import (
+    CHAIN,
+    DUMP_ENV,
+    ENGINE_READY_TIMEOUT_S,
+    REQUEST_TIMEOUT_S,
+    disagg_deployment,
+    model_path,
+)
 from .openai_server import RemoteOpenAIServer
 
 pytestmark = pytest.mark.threadleak(enabled=False)
@@ -49,7 +56,6 @@ MAX_RETRIES = 900
 RETRIED_REQUEST_TIMEOUT_S = MAX_RETRIES + 300
 RECORD_WAIT_S = 30
 PROMPT = "The capital of France is"
-DUMP_ENV = conv.SERVE_REQUEST_DUMP_DIR_ENV
 _CTX_RETRIES = re.compile(r"^ctx_retry_requests_total(?:\{[^}]*\})?\s+(\S+)\s*$", re.MULTILINE)
 
 
@@ -71,7 +77,6 @@ def deployment(dirs):
         },
         env={DUMP_ENV: str(dirs["dumps"])},
     ) as deployment:
-        _wait_for_context_workers(deployment, NUM_CTX)
         yield deployment
 
 
@@ -80,20 +85,6 @@ def restarted(deployment):
     """Workers the test starts again, stopped before the deployment."""
     with contextlib.ExitStack() as stack:
         yield stack
-
-
-def _wait_for_context_workers(deployment, count: int, timeout: float = 300) -> None:
-    """Wait until the orchestrator routes to ``count`` context workers."""
-    deadline = time.monotonic() + timeout
-    servers = []
-    while time.monotonic() < deadline:
-        response = requests.get(f"{deployment.url}/cluster_info", timeout=REQUEST_TIMEOUT_S)
-        if response.ok:
-            servers = response.json().get("server_lists", {}).get("context", [])
-            if len(servers) >= count:
-                return
-        time.sleep(1)
-    raise AssertionError(f"the orchestrator lists context workers {servers}, not {count}")
 
 
 def _ctx_retries(deployment) -> int:
@@ -149,7 +140,7 @@ def _lose_and_restart(deployment, restarted, logs: Path):
     worker.proc.wait()
 
     def restart():
-        restarted.enter_context(
+        server = restarted.enter_context(
             RemoteOpenAIServer(
                 model_path(deployment.model),
                 port=worker.port,
@@ -161,6 +152,8 @@ def _lose_and_restart(deployment, restarted, logs: Path):
                 wait=False,
             )
         )
+        # Raises as soon as the restarted worker exits, rather than after the retries run out.
+        server.wait_for_server(timeout=ENGINE_READY_TIMEOUT_S)
 
     return restart
 
@@ -231,4 +224,7 @@ def test_request_survives_a_lost_ctx_worker_with_a_new_id(deployment, restarted,
             for d in dumps
             if "session" in d.get("kv", {})
         )
-        assert ctx_ids == final_ids == gen_ids, (ctx_ids, final_ids, gen_ids)
+        # A restarted front end may refuse a context leg it already wrote down; the
+        # orchestrator sends that leg again under a new id, so ids may be left unused.
+        assert set(final_ids) <= set(ctx_ids), (ctx_ids, final_ids)
+        assert gen_ids == final_ids, (gen_ids, final_ids)

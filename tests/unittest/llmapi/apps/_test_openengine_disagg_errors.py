@@ -22,19 +22,22 @@ is read from its own per-role counters (``ctx_total_requests``,
 
 import json
 import os
-import re
 
 import pytest
 import requests
 
-from ._test_openengine_disagg_common import REQUEST_TIMEOUT_S, ROLES, disagg_deployment, model_path
+from ._test_openengine_disagg_common import (
+    REQUEST_TIMEOUT_S,
+    ROLES,
+    disagg_deployment,
+    model_path,
+    orchestrator_sent,
+)
 
 pytestmark = pytest.mark.threadleak(enabled=False)
 
 PROMPT = "The capital of France is"
 QUESTION = [{"role": "user", "content": "What is 1 + 1?"}]
-# The orchestrator's count of requests it sent to each role's workers.
-_SENT = re.compile(r"^(ctx|gen)_total_requests_total(?:\{[^}]*\})?\s+(\S+)\s*$", re.MULTILINE)
 
 
 @pytest.fixture(scope="module")
@@ -43,16 +46,6 @@ def deployment(tmp_path_factory):
         tmp_path_factory.mktemp("disagg_errors"), orchestrator_config={"max_retries": 0}
     ) as deployment:
         yield deployment
-
-
-def _sent(deployment) -> dict[str, int]:
-    """Requests the orchestrator has sent to the context (``ctx``) and generation (``gen``) workers."""
-    response = requests.get(f"{deployment.url}/prometheus/metrics", timeout=REQUEST_TIMEOUT_S)
-    assert response.status_code == 200, response.text
-    counts = {"ctx": 0, "gen": 0}
-    for role, value in _SENT.findall(response.text):
-        counts[role] += int(float(value))
-    return counts
 
 
 def _bodies(deployment, **fields) -> list[tuple[str, dict]]:
@@ -78,7 +71,7 @@ def test_worker_frontend_4xx_passes_through_the_orchestrator(deployment):
     expected = f"Token ID {vocab_size} out of vocabulary range [0, {vocab_size})"
     worker_ports = [str(w.port) for role in ROLES for w in deployment.workers[role]]
     bodies = _bodies(deployment, logit_bias={str(vocab_size): 1.0})
-    before = _sent(deployment)
+    before = orchestrator_sent(deployment)
     for path, body in bodies:
         response = _post(deployment, path, body)
         assert response.status_code == 400, (path, response.text)
@@ -86,17 +79,17 @@ def test_worker_frontend_4xx_passes_through_the_orchestrator(deployment):
         assert "http://" not in response.text, (path, response.text)
         for port in worker_ports:
             assert f":{port}" not in response.text, (path, port, response.text)
-    after = _sent(deployment)
+    after = orchestrator_sent(deployment)
     assert after["ctx"] - before["ctx"] == len(bodies), (before, after)
     assert after["gen"] == before["gen"], (before, after)
 
 
 def test_orchestrator_rejects_an_invalid_body_before_any_worker(deployment):
-    before = _sent(deployment)
+    before = orchestrator_sent(deployment)
     for path, body in _bodies(deployment, no_such_field=1):
         response = _post(deployment, path, body)
         assert response.status_code == 400, (path, response.text)
         payload = response.json()
         assert list(payload) == ["error"], (path, response.text)
         assert "no_such_field" in payload["error"], (path, response.text)
-    assert _sent(deployment) == before
+    assert orchestrator_sent(deployment) == before
