@@ -8,7 +8,7 @@
 | 文件 | 在哪里跑 | 作用 |
 |---|---|---|
 | `tools/capjobs/submit.py` | agent VM（`python3.11`，只用标准库） | 唯一提交入口：`probe`、`submit`、`reconcile-submit`、`local-record`、`slurm-view`、`jobstate`、`record-end`、`exclude`、`pin-next`、`prep-tokenizer` |
-| `tools/capjobs/remote.py` | VM | ssh 命令构造与唯一执行点；远端命令白名单 `sbatch squeue sacct scontrol show cdb find`（没有 `scancel`） |
+| `tools/capjobs/remote.py` | VM | ssh 命令构造与唯一执行点；远端命令白名单 `sbatch squeue sacct scontrol show cdb find sinfo`（`sinfo` 只读、不限参数；没有 `scancel`） |
 | `tools/capjobs/resources.py` | VM | 资源参数校验与 sbatch 参数拼装（新写，不继承 WT-21 的资源段） |
 | `tools/capjobs/snapshot.py` | VM / 容器 | 不可变快照目录与 `MANIFEST.json`；`verify()` 在作业开头重算 |
 | `tools/capjobs/cdbexclude.py` | VM | 从 `cdb find … -o csv` 输出算 `--exclude` |
@@ -107,7 +107,7 @@ cd <C> && bash -c 'ulimit -v 8388608; exec systemd-run --user --scope -q -p Memo
   /home/scratch.yihlu_coreai/tmp/20261106-wt03-venv/venv/bin/python -B -m pytest -q -p no:cacheprovider tests/jobs'
 ```
 
-`conftest.py` 让 `subprocess` 拒绝执行 `ssh sbatch srun squeue sacct scontrol scancel salloc cdb`；批处理脚本的测试在 `PATH` 前面放一个假的 `srun` 记录参数；内层脚本 `run` 模式的测试用一个假的容器 Python 记录各步命令行，再用真实的 `capenv.gate` 解析器与 `capenv.hwprofile` 核对这些命令行。
+`conftest.py` 让 `subprocess` 拒绝执行 `ssh sbatch srun squeue sacct scontrol scancel salloc cdb sinfo`；批处理脚本的测试在 `PATH` 前面放一个假的 `srun` 记录参数；内层脚本 `run` 模式的测试用一个假的容器 Python 记录各步命令行，再用真实的 `capenv.gate` 解析器与 `capenv.hwprofile` 核对这些命令行。
 
 依赖本仓库之外的两份输入，缺了就**失败**（`conftest.external_input`，提示缺哪个文件），不 skip——跳过的检查读起来像通过：`<C>/../00_plan/cluster-probe/20261113/02d_cdb_b200.csv`（`exclude` 的离线样本）与 WT-21 的 `wt21_round_v4.sbatch`（「写死资源」静态检查的阳性对照，路径见 `conftest.WT21_SBATCH`）。
 

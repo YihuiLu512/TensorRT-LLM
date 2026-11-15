@@ -139,16 +139,18 @@ def check_imports(dest, packages):
 
 
 def check_job(snap, plan_id, node, deadline_epoch, expect_node=None):
-    """Snapshot verification and, for a pinned job (submit --expect-node), the short host name:
-    a different node fails the check, so the job ends ENV_INVALID before any measurement."""
+    """Snapshot verification and, for a pinned job (submit --expect-node), the Slurm node name
+    `node` (SLURMD_NODENAME, the name space of sinfo, pin-next and --expect-node): another node,
+    or none known ('' or 'unknown'), fails the check, so the job ends ENV_INVALID before any
+    measurement. The short host name is recorded for diagnosis only."""
     ok, problems = snapshot.verify(snap)
     with open(os.path.join(snap, snapshot.MANIFEST), "rb") as f:
         msha = sha256_bytes(f.read())
     host = socket.gethostname().split(".")[0]
-    node_ok = not expect_node or host == expect_node
+    node_ok = not expect_node or (node not in (None, "", "unknown") and node == expect_node)
     if not node_ok:
-        problems = list(problems) + ["host %s is not the expected node %s" % (host,
-                                                                            expect_node)]
+        problems = list(problems) + ["node %s (host %s) is not the expected node %s"
+                                     % (node or "unknown", host, expect_node)]
     passed = ok and node_ok
     return {"plan_id": plan_id, "node": node, "snapshot_dir": snap, "snapshot_sha256": msha,
             "snapshot_verified": ok, "snapshot_problems": problems,
@@ -180,8 +182,8 @@ def main(argv=None):
     ap.add_argument("--plan-id")
     ap.add_argument("--node")
     ap.add_argument("--deadline-epoch", type=int)
-    ap.add_argument("--expect-node", default="", help="job: the short host name a pinned job "
-                                                     "must run on ('' = not pinned)")
+    ap.add_argument("--expect-node", default="", help="job: the Slurm node name (--node) a "
+                                                     "pinned job must run on ('' = not pinned)")
     a = ap.parse_args(argv)
     try:
         ident = jobident.from_args(a)

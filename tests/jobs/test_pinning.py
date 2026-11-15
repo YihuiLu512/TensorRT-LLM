@@ -246,9 +246,33 @@ def test_pin_next_refusals(world):
     assert rc == 3 and rec["chosen"] is None and len(rec["skipped"]) == 5
 
 
+def test_new_anchored_patterns_refuse_a_trailing_newline():
+    """NODE_RE, ITEM_ID_RE and the --cluster-utc-offset pattern end in \\Z: `$` would also
+    match before a final newline."""
+    from capcommon import jobplan
+    from capjobs import budget
+    assert nodes.NODE_RE.match("node1") and not nodes.NODE_RE.match("node1\n")
+    assert jobplan.ITEM_ID_RE.match("i1") and not jobplan.ITEM_ID_RE.match("i1\n")
+    assert budget.parse_offset("+08:00") == 8 * 3600
+    with pytest.raises(budget.GateError):
+        budget.parse_offset("+08:00\n")
+    with pytest.raises(nodes.NodesError):
+        nodes.expand_hostlist("node1\n")
+
+
 def test_usable_state_and_hostlists():
-    assert nodes.usable_state("idle") and nodes.usable_state("mix*")
-    assert not any(nodes.usable_state(s) for s in ("down", "down*", "drain", "drng", "fail~"))
+    """An allow-list of sinfo %t states: idle / mix / alloc / comp, bare or with the backfill
+    "-" suffix; any other base state or flag suffix is unusable."""
+    for s in ("idle", "mix", "mixed", "alloc", "allocated", "comp", "completing", "mix-",
+              "IDLE", "idle-"):
+        assert nodes.usable_state(s), s
+    for s in ("down", "down*", "drain", "drng", "fail~", "idle*", "mix*", "idle~", "idle#",
+              "idle!", "idle%", "idle$", "idle@", "idle^", "mix-*", "maint", "resv", "unk",
+              "unk*", "inval", "boot", "npc", "plnd", "pow_dn", "future", "", None,
+              "idle--"):
+        assert not nodes.usable_state(s), s
+    rot = ["a", "b", "c"]
+    assert nodes.pin_choice(rot, None, {}, {"a": "idle*", "b": "maint", "c": "mix-"})[0] == "c"
     assert nodes.expand_hostlist("umbriel-b200-[001-003,026],x1") == [
         "umbriel-b200-001", "umbriel-b200-002", "umbriel-b200-003", "umbriel-b200-026", "x1"]
     for bad in ("a-[3-1]", "a-[1-2", "a-[x]"):
@@ -258,18 +282,29 @@ def test_usable_state_and_hostlists():
 
 # ---- --expect-node in the job (test 24) ----------------------------------------------------------
 
-def test_job_check_fails_on_another_host(tmp_path, monkeypatch):
+def test_job_check_fails_on_another_node(tmp_path, monkeypatch):
+    """The pinned name is a Slurm node name (sinfo, pin-next): the check compares --node
+    (SLURMD_NODENAME), never the host name, which is only recorded."""
     snap = tmp_path / "snap"
     snap.mkdir()
     (snap / snapshot.MANIFEST).write_text("{}")
     monkeypatch.setattr(envfiles.snapshot, "verify", lambda s: (True, []))
-    monkeypatch.setattr(socket, "gethostname", lambda: "umbriel-b200-012.cluster")
-    ok = envfiles.check_job(str(snap), "P1", "n", 1, "umbriel-b200-012")
-    assert ok["passed"] and ok["expect_node_ok"] and ok["hostname_short"] == "umbriel-b200-012"
-    assert envfiles.check_job(str(snap), "P1", "n", 1, "")["passed"]  # not pinned
-    bad = envfiles.check_job(str(snap), "P1", "n", 1, "umbriel-b200-013")
+    monkeypatch.setattr(socket, "gethostname", lambda: "b200-host-12.cluster")
+    ok = envfiles.check_job(str(snap), "P1", "umbriel-b200-012", 1, "umbriel-b200-012")
+    assert ok["passed"] and ok["expect_node_ok"] and ok["hostname_short"] == "b200-host-12"
+    assert envfiles.check_job(str(snap), "P1", "unknown", 1, "")["passed"]  # not pinned
+    bad = envfiles.check_job(str(snap), "P1", "umbriel-b200-012", 1, "umbriel-b200-013")
     assert not bad["passed"] and bad["outcome"] == "FAIL"
     assert "expected node umbriel-b200-013" in bad["snapshot_problems"][-1]
+    assert "node umbriel-b200-012 (host b200-host-12)" in bad["snapshot_problems"][-1]
+    monkeypatch.setattr(socket, "gethostname", lambda: "umbriel-b200-013")
+    assert not envfiles.check_job(str(snap), "P1", "umbriel-b200-012", 1,
+                                  "umbriel-b200-013")["passed"]  # the host name is not read
+    for unknown in ("unknown", "", None):
+        bad = envfiles.check_job(str(snap), "P1", unknown, 1, "umbriel-b200-013")
+        assert not bad["passed"] and not bad["expect_node_ok"], unknown
+    # the placeholder of an unset SLURMD_NODENAME never satisfies a pin, even one so named
+    assert not envfiles.check_job(str(snap), "P1", "unknown", 1, "unknown")["passed"]
     ident = ["--experiment", "E0", "--arm", "job", "--launch-seq", "0", "--job-id", "1",
              "--restart-count", "0", "--register-sha", "a" * 64, "--role", "jobs"]
     out = tmp_path / "job.json"

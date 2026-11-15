@@ -162,6 +162,11 @@ def test_t_quantiles_match_the_reference():
     assert round(S.t_isf(0.01 / 60, 19), 4) == 4.3649
     assert S.t_sf(S.t_isf(0.05, 19), 19) == pytest.approx(0.05, rel=1e-9)
     assert S.t_isf(0.95, 19) == pytest.approx(-S.t_isf(0.05, 19))
+    # past the old fixed bracket [0, 1000]: the bracket grows instead of clipping at 1000
+    assert S.t_isf(1e-4, 1) == pytest.approx(1 / math.tan(math.pi * 1e-4), rel=1e-9)  # 3183.1
+    assert round(S.t_isf(1e-4, 1), 1) == 3183.1
+    with pytest.raises(ValueError, match="above"):
+        S.t_isf(1e-300, 1)
 
 
 # CV/r5/out/settle_r5.json TOL_table (TOL_new; the design quotes 3 decimals, +-0.001)

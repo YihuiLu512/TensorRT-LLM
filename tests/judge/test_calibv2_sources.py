@@ -160,8 +160,14 @@ def test_thresholds_stage_reads_keys_per_config_and_regime():
     assert unc["uncalibrated"] and Z.compare(1e9, unc) is None
     assert th.lookups[COUNT + "|s1@1ms|near_boundary"] == "uncalibrated"
     r = th.get(RATIO, "any", "subsat")
-    assert r["form"] == "ratio_abs" and Z.compare(0.011, r) == "above"
-    assert Z.compare(-0.01, r) == "inside"
+    assert r["form"] == "ratio_abs" and Z.compare(0.011, r, planned_requests=1000) == "above"
+    assert Z.compare(-0.01, r, planned_requests=1000) == "inside"
+    # DESIGN-r7a 2.9: the V2 tolerance has the floor 1 / planned requests (0.02 at 50)
+    assert Z.compare(0.015, r, planned_requests=50) == "inside"
+    assert Z.compare(-0.021, r, planned_requests=50) == "below"
+    for bad in (None, 0, True, 2.0):
+        with pytest.raises(ValueError, match="ratio_abs comparison needs planned_requests"):
+            Z.compare(0.011, r, planned_requests=bad)
     assert th.i1_near() == 0.93
     assert th.cap("T3:foreign_busy_frac")["launch_mean"] == 0.06
     with pytest.raises(ValueError):
@@ -231,6 +237,10 @@ def _broken():
         "null_z lo>hi": thr(lambda d: nz(d)[LAG + "|s1@1ms|near|L=60"].update(thr_lo=9)),
         "null_z no thr": thr(lambda d: nz(d)[LAG + "|s1@1ms|near|L=60"].update(thr_hi=None)),
         "ratio key": thr(lambda d: d.update(ratio={RATIO + "|s1@1ms|near": {"abs_tol": 0.1}})),
+        # a key with a trailing newline is not the key (anchors are \Z, not $)
+        "null_z newline": thr(lambda d: nz(d).update({LAG + "|c|near|L=60\n": dict(
+            nz(d)[LAG + "|s1@1ms|near|L=60"])})),
+        "ratio newline": thr(lambda d: d.update(ratio={RATIO + "|*|*\n": {"abs_tol": 0.1}})),
         "i1": thr(lambda d: d.update(i1_calibration={"near_one_core_min": 1.5,
                                                      "source_tiers": [], "n": 1})),
         "d14 schema": d14(lambda d: d.update(schema="capkit.d14_result/2")),

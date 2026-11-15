@@ -632,12 +632,13 @@ def job_plan_items(spec):
 
 
 def plan_from_items(a):
-    """Post-gate items of a registered gate product (REGISTRY kind e0_params, sha checked):
-    launch items {config, arm, launches, pin} packed --launches-per-job to a job (pinned and
-    unpinned apart), then block items {comparison, configs [[config, arm] x2], blocks, pin true}
-    as blocks of two pinned one-launch jobs sharing one order, block ids
-    '<comparison>-b<rule><round><NN>' (round from the product, so no block id repeats one of the
-    original segment's '<comparison>-bNN' or of an earlier round)."""
+    """Post-gate items of a registered gate product (REGISTRY kind e0_params, sha checked; an
+    int `round` >= 1 required): launch items {config, arm, launches, pin} packed
+    --launches-per-job to a job (pinned and unpinned apart), item ids
+    '<phase_id>-<rule>-r<round>-NNNN', then block items {comparison, configs [[config, arm] x2],
+    blocks, pin true} as blocks of two pinned one-launch jobs sharing one order, block ids
+    '<comparison>-b<rule><round><NN>'. The round is in both, so no id repeats one of the
+    original segment's or of another round of the same phase."""
     if a.workdir is None or not a.phase_id or not a.seed_base:
         raise LadderError("--plan-from needs --workdir, --phase-id and --seed-base")
     rel, sha, doc = registered(a.workdir, a.plan_from, "e0_params")
@@ -655,6 +656,9 @@ def plan_from_items(a):
         raise LadderError("--plan-from writes post-gate items only, not %r" % cls)
     rule = cls[len(jobplan.POST_GATE_PREFIX):]
     tag = rule.replace("_", "")
+    rnd = doc.get("round")
+    if not (isinstance(rnd, int) and not isinstance(rnd, bool) and rnd >= 1):
+        raise LadderError("%s has no int round >= 1 (item and block ids carry it)" % rel)
     launch_items = [it for it in src if "comparison" not in it]
     block_items = [it for it in src if "comparison" in it]
     out = []
@@ -672,10 +676,7 @@ def plan_from_items(a):
             out.append(_job_item(job, cls, pin))
     for k, it in enumerate(out, start=1):
         it["order"] = k
-        it["item_id"] = "%s-%s-%04d" % (a.phase_id, tag, k)
-    rnd = doc.get("round")
-    if block_items and not (isinstance(rnd, int) and not isinstance(rnd, bool) and rnd >= 1):
-        raise LadderError("%s lists blocks but no round >= 1" % rel)
+        it["item_id"] = "%s-%s-r%d-%04d" % (a.phase_id, tag, rnd, k)
     order = len(out)
     for it in block_items:
         _check_block_item(it)

@@ -19,10 +19,14 @@ from . import remote
 
 NODE_EXCLUSIONS_SCHEMA = "capkit.node_exclusions/1"
 NODE_LIST_SCHEMA = "capkit.node_list/1"
-NODE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
-# sinfo %t states that make a node unusable for a pinned job (DESIGN 4.5: down / drain; draining
-# and failed nodes are treated the same way). The state may carry a flag suffix (* ~ # ! % $ @ ^ -).
-UNUSABLE_STATE_PREFIXES = ("down", "drain", "drng", "fail")
+NODE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+# The only sinfo %t states a pinned job may be sent to (DESIGN 4.5 names down / drain; every
+# other base state - maint, resv, unk, inval, boot, npc, plnd, ... - is unusable too, and so is
+# any flag suffix but "-" (planned by the backfill scheduler): * not responding, ~ powered off,
+# # powering up, ! pending power down, % powering down, $ maintenance reservation, @ pending
+# reboot, ^ rebooting).
+USABLE_STATES = frozenset({"idle", "mix", "mixed", "alloc", "allocated", "comp", "completing"})
+USABLE_STATE_SUFFIX = "-"
 
 
 class NodesError(ConfigError):
@@ -128,8 +132,11 @@ def sinfo_nodes(runner, login_host, partitions, states=False):
 
 
 def usable_state(state):
-    s = (state or "").lower().rstrip("*~#!%$@^-")
-    return not s.startswith(UNUSABLE_STATE_PREFIXES)
+    """An allow-list: a base state in USABLE_STATES with no flag suffix or the "-" one."""
+    s = (state or "").lower()
+    if s.endswith(USABLE_STATE_SUFFIX):
+        s = s[:-len(USABLE_STATE_SUFFIX)]
+    return s in USABLE_STATES
 
 
 def rotation(nodes, seed_base, key):
@@ -205,24 +212,38 @@ def expand_hostlist(text):
     return [h for piece in _split_top(text) for h in _expand_one(piece)]
 
 
+RESV_START = re.compile(r"\s+(?=ReservationName=)")
+RESV_KEYS = ("ReservationName", "StartTime", "EndTime", "Nodes", "PartitionName", "Flags")
+
+
+def _resv_value(rec, key):
+    """The value of `key=` in one record (whitespace before the key or at the start; the value
+    runs to the next whitespace), None when absent; two occurrences raise."""
+    vals = re.findall(r"(?:^|\s)%s=(\S*)" % re.escape(key), rec)
+    if len(vals) > 1:
+        raise NodesError("reservation record has %s twice: %r" % (key, rec[:80]))
+    return vals[0] if vals else None
+
+
 def parse_reservations(text):
     """Records of `scontrol show reservation` as [{name, start, end, nodes (list or "ALL"),
-    partition, flags}]; times are the controller's local wall clock strings. Raises on
-    anything it cannot read (the gate then defers)."""
+    partition, flags}]; times are the controller's local wall clock strings. A record runs from
+    one `ReservationName=` to the next; inside it the keys are read by name, so other fields may
+    hold spaces (Comment=weekly maintenance window). Raises on anything it cannot read (the gate
+    then defers)."""
     body = (text or "").strip()
     if not body:
         raise NodesError("empty scontrol show reservation output")
     if body.startswith("No reservations"):
         return []
-    recs, cur = [], None
-    for tok in body.split():
-        if tok.startswith("ReservationName="):
-            cur = {}
-            recs.append(cur)
-        if cur is None or "=" not in tok:
-            raise NodesError("unparsable reservation token %r" % tok)
-        k, _, v = tok.partition("=")
-        cur[k] = v
+    if not body.startswith("ReservationName="):
+        raise NodesError("scontrol show reservation output does not start with a record: %r"
+                         % body[:80])
+    recs = []
+    for chunk in RESV_START.split(body):
+        if chunk.strip():
+            recs.append({k: v for k in RESV_KEYS for v in [_resv_value(chunk, k)]
+                         if v is not None})
     out = []
     for r in recs:
         if not all(k in r for k in ("ReservationName", "StartTime", "EndTime", "Nodes")):

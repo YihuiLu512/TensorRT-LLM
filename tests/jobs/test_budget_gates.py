@@ -299,12 +299,60 @@ def test_dry_run_writes_nothing_and_the_submissions_header_is_unchanged(world, c
     reg = world.register("V0cal/register.json", three_items(world))
     rc, r = world.submit(reg, "V0cal-A-0001", **{"--dry-run": None})
     assert rc == 0 and world.state() == {k: None for k in world.state()}
+    assert not os.path.exists(os.path.join(world.w, budget.BUDGET_LOCK_REL))  # no lock taken
     out = json.loads(capsys.readouterr().out)
     assert out["budget_gate"]["item"]["item_id"] == "V0cal-A-0001"
     assert [c[-1].split()[0] for c in r.calls] == ["scontrol"]
     assert world.submit(reg, "V0cal-A-0001")[0] == 0
     with open(os.path.join(world.w, "submissions.tsv")) as f:
         assert f.readline().rstrip("\n") == SUBMISSION_HEADER
+
+
+def test_a_dirty_tree_is_refused_before_the_gates_touch_anything(world):
+    """A real gated submission checks the code tree first: no ssh, no reservations.log, no
+    ledger row (the dry run only reports it)."""
+    reg = world.register("V0cal/register.json", three_items(world))
+    dirty = lambda _r, _p: (ts.HEAD, [" M tools/capcommon/policy.py"])  # noqa: E731
+    r = StubSsh({"scontrol": NO_RESV, "sinfo": SINFO, "sbatch": (0, "1\n", "")})
+    assert ts.run(world.args(reg, "V0cal-A-0001"), r, dirty) == 3
+    assert r.calls == [] and world.state() == {k: None for k in world.state()}
+    r = StubSsh({"scontrol": NO_RESV, "sinfo": SINFO})
+    assert ts.run(world.args(reg, "V0cal-A-0001", **{"--dry-run": None}), r, dirty) == 0
+    assert [c[-1].split()[0] for c in r.calls] == ["scontrol"]
+
+
+def test_concurrent_submissions_of_one_item_reserve_it_once(world):
+    """Gate 2's "no RESERVED row yet" and the RESERVED row are under one lock: a second real
+    submission of the same item that starts while the first sits in gate 6 waits for it, then
+    is refused (without the lock both would pass gate 2 and reserve the item twice)."""
+    import threading
+    reg = world.register("V0cal/register.json", three_items(world))
+    first_in, second_in = threading.Event(), threading.Event()
+
+    def slow_scontrol(_argv):
+        first_in.set()
+        second_in.wait(3)  # the second one reaches gate 6 only when nothing serialises them
+        return NO_RESV
+
+    def fast_scontrol(_argv):
+        second_in.set()
+        return NO_RESV
+
+    rcs = {}
+
+    def go(name, scontrol):
+        rcs[name] = world.submit(reg, "V0cal-A-0001", answers={"scontrol": scontrol})[0]
+
+    t1 = threading.Thread(target=go, args=("first", slow_scontrol))
+    t1.start()
+    assert first_in.wait(10)
+    t2 = threading.Thread(target=go, args=("second", fast_scontrol))
+    t2.start()
+    t1.join(30)
+    t2.join(30)
+    assert rcs == {"first": 0, "second": 3} and not second_in.is_set()
+    assert [(x["event"], x["item_id"]) for x in world.budget_rows()] == [
+        ("RESERVED", "V0cal-A-0001"), ("JOB_ID", "V0cal-A-0001")]
 
 
 def test_void_item_cannot_be_submitted_again(world):
@@ -369,12 +417,15 @@ def test_disk_gate_exits_5_and_writes_nothing(world):
     assert world.submit(reg, "V0cal-A-0001")[0] == 0
 
 
-def resv(start, end="2026-11-16T22:00:00", nodes="n[1-2]", part="(null)"):
+def resv(start, end="2026-11-16T22:00:00", nodes="n[1-2]", part="(null)", comment=""):
     return (0, "ReservationName=maint StartTime=%s EndTime=%s Duration=11:55:00\n"
                "   Nodes=%s NodeCnt=2 CoreCnt=448 Features=(null) PartitionName=%s "
                "Flags=MAINT,SPEC_NODES\n   TRES=cpu=448\n   Users=root Groups=(null) "
                "Accounts=(null) Licenses=(null) State=INACTIVE BurstBuffer=(null) Watts=n/a\n"
-               "   MaxStartDelay=(null)\n" % (start, end, nodes, part), "")
+               "   MaxStartDelay=(null)%s\n" % (start, end, nodes, part, comment), "")
+
+
+COMMENT = "\n   Comment=weekly maintenance window (ops)"
 
 
 @pytest.mark.parametrize("answer,rc", [
@@ -384,6 +435,8 @@ def resv(start, end="2026-11-16T22:00:00", nodes="n[1-2]", part="(null)"):
     (resv("2026-11-16T07:00:00", end="2026-11-16T07:30:00"), 0),  # already over
     (resv("2026-11-16T09:05:00", nodes="m[1-2]"), 0),             # disjoint node set
     (resv("2026-11-16T09:05:00", nodes="ALL"), 4),
+    (resv("2026-11-16T09:05:00", comment=COMMENT), 4),             # a value with spaces
+    (resv("2026-11-16T09:05:00", nodes="m[1-2]", comment=COMMENT), 0),
     ((255, "", "ssh: connect to host fe: timed out"), 4),
     ((0, "garbage without fields\n", ""), 4),
     ((0, "", ""), 4)])
@@ -401,6 +454,24 @@ def test_maintenance_gate(world, answer, rc):
         assert after["submissions.tsv"] == before["submissions.tsv"]
         assert after["BUDGET.tsv"] == before["BUDGET.tsv"]
         assert not any("sbatch" in c[-1] for c in r.calls)
+
+
+def test_parse_reservations_reads_keys_by_name():
+    """Records split at ReservationName=; inside one, keys are read by name, so a value with
+    spaces is no longer an unparsable token. A missing or repeated key still raises (defer)."""
+    from capjobs import nodes
+    two = resv("2026-11-16T09:05:00", comment=COMMENT)[1] + resv(
+        "2026-11-17T09:05:00", nodes="ALL", part="b200")[1].replace("=maint ", "=other ")
+    got = nodes.parse_reservations(two)
+    assert [(x["name"], x["start"], x["nodes"], x["partition"]) for x in got] == [
+        ("maint", "2026-11-16T09:05:00", ["n1", "n2"], "(null)"),
+        ("other", "2026-11-17T09:05:00", "ALL", "b200")]
+    assert got[0]["flags"] == ["MAINT", "SPEC_NODES"]
+    for bad in (resv("x")[1].replace("EndTime=", "Ended="),
+                resv("x", comment="\n   Nodes=m1")[1],
+                "garbage ReservationName=a StartTime=1 EndTime=2 Nodes=n1\n"):
+        with pytest.raises(nodes.NodesError):
+            nodes.parse_reservations(bad)
 
 
 def test_maintenance_reads_the_partitions_live(world):

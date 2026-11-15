@@ -22,7 +22,7 @@ JOB_PLAN_COLUMNS = ("order", "item_id", "item_class", "arms", "launches", "block
 POST_GATE_RULES = ("shift", "backstop", "coverage", "blind_topup", "shortfall")
 POST_GATE_PREFIX = "post_gate:"
 ITEM_CLASSES = ("planned", "surplus") + tuple(POST_GATE_PREFIX + r for r in POST_GATE_RULES)
-ITEM_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+ITEM_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 BLOCK_ID_RE = ITEM_ID_RE
 
 

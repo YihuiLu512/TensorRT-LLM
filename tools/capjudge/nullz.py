@@ -42,10 +42,10 @@ RATIO_STAT = "T2:delivery_ratio_norm"
 C13_STAT = "T3:foreign_busy_frac"
 ENV_KEYS_PILOT2 = ENV_KEYS + ("judge_sha",)
 _PART = r"[^:|*]+"
-NULL_Z_KEY = re.compile(r"^(%s):(%s):(%s)\|([^|*]+)\|(subsat|near)\|L=([0-9]+)$"
+NULL_Z_KEY = re.compile(r"^(%s):(%s):(%s)\|([^|*]+)\|(subsat|near)\|L=([0-9]+)\Z"
                         % ("|".join(KEY_CODES), _PART, _PART))
-RATIO_KEY = re.compile(r"^%s:(%s)\|\*\|\*$" % (re.escape(RATIO_STAT), _PART))
-STAT_KEY = re.compile(r"^(%s):(%s):(%s)$" % ("|".join(KEY_CODES), _PART, _PART))
+RATIO_KEY = re.compile(r"^%s:(%s)\|\*\|\*\Z" % (re.escape(RATIO_STAT), _PART))
+STAT_KEY = re.compile(r"^(%s):(%s):(%s)\Z" % ("|".join(KEY_CODES), _PART, _PART))
 NS_PER_S = 1_000_000_000
 
 
@@ -321,9 +321,11 @@ def compare(z, entry, D=None, planned_requests=None):
 
     `z` is the trend statistic z_d for null_z / lag_const / count_const entries and the signed
     normalised delivery deviation (norm - 1) for ratio entries. A lag_const entry also needs
-    `D` (the trend in raw units, ns): above iff z >= z_lag and D >= min_D_ns. A ratio_tol entry
-    needs `planned_requests` of the tier: the tolerance is max(min_per_request /
-    planned_requests, tol). null_z, count_const and ratio_abs compare strictly (>, <)."""
+    `D` (the trend in raw units, ns): above iff z >= z_lag and D >= min_D_ns. Ratio entries
+    need `planned_requests` of the tier: the tolerance is max(min_per_request /
+    planned_requests, tol) for ratio_tol and max(1 / planned_requests, abs_tol) for ratio_abs
+    (DESIGN-r7a 2.9: the V2 quantile has the floor 1 / planned requests). null_z, count_const
+    and both ratio forms compare strictly (>, <)."""
     if entry is None or z is None or isinstance(z, stats.NotRun):
         return None
     if not _is_num(z):
@@ -340,13 +342,14 @@ def compare(z, entry, D=None, planned_requests=None):
     if form == "count_const":
         return "above" if z > entry["z"] else "below" if z < -entry["z"] else "inside"
     if form in ("ratio_abs", "ratio_tol"):
-        tol = entry.get("abs_tol")
+        if not isinstance(planned_requests, int) or isinstance(planned_requests, bool) \
+                or planned_requests < 1:
+            raise ValueError("a %s comparison needs planned_requests >= 1, got %r"
+                             % (form, planned_requests))
         if form == "ratio_tol":
-            if not isinstance(planned_requests, int) or isinstance(planned_requests, bool) \
-                    or planned_requests < 1:
-                raise ValueError("a ratio_tol comparison needs planned_requests >= 1, got %r"
-                                 % (planned_requests,))
             tol = max(entry["min_per_request"] / planned_requests, entry["tol"])
+        else:
+            tol = max(1 / planned_requests, entry["abs_tol"])
         if abs(z) > tol:
             return "above" if z > 0 else "below"
         return "inside"

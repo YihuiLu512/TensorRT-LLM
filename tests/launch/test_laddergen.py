@@ -354,10 +354,14 @@ def test_job_plan_mixes_planned_then_surplus_by_the_seed(w, tmp_path):
     assert L.main(["--job-plan", str(spec), "--out", str(out)]) == 3  # never overwrites
 
 
-def _gate_product(w, cls, rel="02_e0/E0/register/v2/V0/e0_params.shortfall.A.r1.json"):
-    return register(w, rel, {"schema": L.E0_PARAMS_SCHEMA, "stage": "shortfall", "items": [
+def _gate_product(w, cls, rel="02_e0/E0/register/v2/V0/e0_params.shortfall.A.r1.json",
+                  rnd=1):
+    doc = {"schema": L.E0_PARAMS_SCHEMA, "stage": "shortfall", "round": rnd, "items": [
         {"item_class": cls, "config": "s1@1ms", "arm": "s1", "launches": 3, "pin": False},
-        {"item_class": cls, "config": "s2", "arm": "s2", "launches": 2, "pin": False}]})
+        {"item_class": cls, "config": "s2", "arm": "s2", "launches": 2, "pin": False}]}
+    if rnd is None:
+        del doc["round"]
+    return register(w, rel, doc)
 
 
 def _plan_from(w, product, out):
@@ -372,6 +376,7 @@ def test_plan_from_only_takes_a_registered_gate_product(w, tmp_path, capsys):
     items = jobplan.read(out)
     assert {it["item_class"] for it in items} == {"post_gate:shortfall"}
     assert sum(it["launches"] for it in items) == 5 and [it["order"] for it in items] == [1, 2, 3]
+    assert [it["item_id"] for it in items] == ["V0-shortfall-r1-%04d" % k for k in (1, 2, 3)]
     assert json.loads(capsys.readouterr().out)["gate_product"]["sha256"] == sha256_file(p)
     # not registered, or changed after registration -> fail, nothing written
     unreg = tmp_path / "unreg.json"
@@ -381,6 +386,22 @@ def test_plan_from_only_takes_a_registered_gate_product(w, tmp_path, capsys):
         f.write(" ")
     assert _plan_from(w, p, str(tmp_path / "x2.tsv")) == 3
     assert not os.path.exists(tmp_path / "x1.tsv") and not os.path.exists(tmp_path / "x2.tsv")
+
+
+def test_plan_from_item_ids_carry_the_round(w, tmp_path):
+    """RS25: two rounds of one phase never share an item id; a product without an int round
+    >= 1 is refused (launch items too, not only blocks)."""
+    ids = []
+    for rnd in (1, 2):
+        p = _gate_product(w, "post_gate:shortfall", rel="gp.r%d.json" % rnd, rnd=rnd)
+        out = str(tmp_path / ("sf%d.tsv" % rnd))
+        assert _plan_from(w, p, out) == 0
+        ids.append([it["item_id"] for it in jobplan.read(out)])
+    assert ids[1] == [x.replace("-r1-", "-r2-") for x in ids[0]] and not set(ids[0]) & set(ids[1])
+    for k, rnd in enumerate((None, 0, True, "1", 1.0)):
+        p = _gate_product(w, "post_gate:shortfall", rel="gp.bad%d.json" % k, rnd=rnd)
+        assert _plan_from(w, p, str(tmp_path / ("x%d.tsv" % k))) == 3, rnd
+        assert not os.path.exists(tmp_path / ("x%d.tsv" % k))
 
 
 @pytest.mark.parametrize("cls", ["replace", "post_gate:replace", "planned", "surplus"])
@@ -407,6 +428,7 @@ def test_plan_from_writes_shortfall_blocks_after_the_launch_items(w, tmp_path):
     single = [it for it in items if it["block_id"] is None]
     blocks = [it for it in items if it["block_id"] is not None]
     assert [it["order"] for it in single] == [1, 2] and len(blocks) == 4
+    assert [it["item_id"] for it in single] == ["V0-shortfall-r2-0001", "V0-shortfall-r2-0002"]
     assert [it["order"] for it in blocks] == [3, 3, 4, 4]
     for it in blocks:
         assert it["block_id"] in ("s1-vs-s2-bshortfall201", "s1-vs-s2-bshortfall202")

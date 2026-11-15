@@ -593,7 +593,7 @@ def _job_env(a, prep, plan_id, snap_dir):
         "CAPJOBS_COMPARABLE_FILE": prep["comparable"],
         "CAPJOBS_NVIDIA_SMI": a.nvidia_smi, "CAPJOBS_TIME_LIMIT_S": prep["res"]["time_s"],
         "CAPJOBS_CODE_SHA": prep["head"],
-        # the job's envfiles `job` check asserts the short host name when set (P2-08a)
+        # the job's envfiles `job` check asserts the Slurm node name when set (P2-08a)
         "CAPJOBS_EXPECT_NODE": a.expect_node or "",
         # register.json "environment" (RS8: hard limits come from the register, never defaults)
         "CAPJOBS_MAX_ALLOC_GPUS": renv["gpus"], "CAPJOBS_IDLE_WINDOW_S": renv["idle_window_s"],
@@ -605,7 +605,18 @@ def _job_env(a, prep, plan_id, snap_dir):
 
 def cmd_submit(a, runner, code_state_fn):
     prep = prepare_submit(a, code_state_fn)
-    gate = budget.gates(a, prep, get_runner(a, runner), a.dry_run)
+    if a.dry_run or not budget.gated(prep["register"]["doc"]):
+        return _submit(a, runner, prep, budget.gates(a, prep, get_runner(a, runner), a.dry_run))
+    if prep["dirty"]:  # before the gates: they query the cluster and log the answer
+        raise SubmitError("code tree has uncommitted changes under the snapshot paths: %s"
+                          % prep["dirty"])
+    with budget.reservation_lock(prep["workdir"]):
+        return _submit(a, runner, prep, budget.gates(a, prep, get_runner(a, runner), False))
+
+
+def _submit(a, runner, prep, gate):
+    """The submission after the gates (`gate` None for an ungated register); a gated one runs
+    inside budget.reservation_lock, which its caller releases after this returns."""
     res = prep["res"]
     p = prep["paths"]
     plan_id = make_plan_id(a.experiment)
@@ -1212,7 +1223,7 @@ def build_parser():
     cp = p.add_mutually_exclusive_group(required=True)
     cp.add_argument("--comparable-file")
     cp.add_argument("--no-comparable", action="store_true")
-    p.add_argument("--expect-node", help="short host name the job must start on (else "
+    p.add_argument("--expect-node", help="Slurm node name the job must start on (else "
                                          "ENV_INVALID before any measurement)")
     p.add_argument("--plan-item", help="item_id of the registered job plan (gated registers)")
     p.add_argument("--cluster-utc-offset", help="+HH:MM of the times scontrol prints (gated "

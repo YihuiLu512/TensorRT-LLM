@@ -338,6 +338,30 @@ def test_hop_counts_first_and_unusable_launches_are_listed():
     assert "VOID tiers [6]" in whys and v["status"] == "NOT_RUN"
 
 
+def test_a_contra_tier_makes_a_reverse_dose_launch_unusable(monkeypatch):
+    """CONTRA took VOID's place for the X contradiction (calib-v2 erratum A3 item 6): a reverse
+    launch with a CONTRA tier is not evidence that the boundary stayed, exactly as one with
+    that tier VOID used to be. load_launch lists such tiers; no I localisation is needed."""
+    tiers = [{"tier_seq": s, "judged": True, "verdict": v}
+             for s, v in ((2, "STABLE"), (4, "CONTRA"), (6, "UNSTABLE"), (8, "VOID"))]
+    tiers.append({"tier_seq": 9, "judged": False, "verdict": "CONTRA"})
+    v = {"mode": "P+X+I+V", "tiers": tiers, "identity": {}, "axis": AXIS}
+    monkeypatch.setattr(V.B, "load_judged", lambda tree, W: (v, None, "s" * 64))
+    monkeypatch.setattr(V.B, "upstream_now", lambda tree, vv: ("VALID", None))
+    monkeypatch.setattr(V.B, "launch_interval", lambda vv: ({}, {"lower": 1000, "upper": 1100}))
+    monkeypatch.setattr(V.B, "_roles", lambda tree: ROLES)
+    x = V.load_launch("t", "W")
+    assert x["contra_tiers"] == [4] and x["void_tiers"] == [8]
+    fwd = [_launch(800, 900), _launch(500, 600, delta=40000)]
+    rev = _launch(1000, 1100, role_dose="drain")
+    rev["contra_tiers"] = [4]
+    out = V.dose_response([_ctl()] + fwd + [rev])
+    assert out["reverse"] == [] and out["status"] == "NOT_RUN"
+    assert "CONTRA tiers [4]" in out["excluded"][-1]["why"]
+    rev["contra_tiers"] = []  # the same launch without it is usable evidence
+    assert V.dose_response([_ctl()] + fwd + [rev])["status"] == "PASS"
+
+
 def test_dose_response_needs_localised_controls():
     v = V.dose_response([_launch(1000, 1100, doses="none", grade={"grade": "LOWER_BOUND"}),
                          _launch(800, 900)])

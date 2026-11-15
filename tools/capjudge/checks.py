@@ -1156,6 +1156,13 @@ def check_c13_tier(ctx, ld, td, record):
     return r.finish()
 
 
+def c13_launch_readings(tiers, key):
+    """The population C13-MEAN averages for one under_test role's key: its readings on every
+    judged load tier of the launch (verdicts.json `tiers[]` with judged true, any verdict).
+    pilot2 bootstrap's launch_mean reads the same population (DESIGN-r7a 2.11.3)."""
+    return [v for e in tiers if e.get("judged") for v in (e.get("stats") or {}).get(key, [])]
+
+
 def check_c13_mean(ctx, tiers):
     """C13-MEAN (DESIGN-r7a 2.11.1, P2-05), launch level: for each under_test role the mean of
     its T3:foreign_busy_frac readings over all judged load tiers (verdicts.json `tiers[].stats`,
@@ -1174,8 +1181,7 @@ def check_c13_mean(ctx, tiers):
     means = {}
     for role in ut:
         key = band_key("T3", "foreign_busy_frac", role)
-        vals = [v for e in tiers if e.get("judged")
-                for v in (e.get("stats") or {}).get(key, [])]
+        vals = c13_launch_readings(tiers, key)
         if not vals:
             r.not_run.append("%s: no %s reading on any judged load tier" % (role, key))
             continue

@@ -17,10 +17,14 @@ section with a key other than the v1 pair job_budget / launches_per_arm):
                   against the partitions' live sinfo nodes; read or parse failure too   (4)
 
 Then submit writes the BUDGET.tsv RESERVED row, runs the usual submissions.tsv flow, and adds a
-JOB_ID row once the job id is known. --dry-run runs the checks and writes nothing.
+JOB_ID row once the job id is known. A real submission runs the gates after its dirty-tree check
+and holds `reservation_lock` from the first gate until it returns (its RESERVED row included).
+--dry-run runs the checks, takes no lock and writes nothing.
 """
 
+import contextlib
 import datetime
+import fcntl
 import json
 import os
 import re
@@ -38,7 +42,12 @@ DISK_MARGIN = 1.5
 MAINTENANCE_PAD_S = 600
 RESERVATIONS_LOG_REL = "02_e0/E0/cluster/reservations.log"
 BUDGET_REL = "BUDGET.tsv"
-OFFSET_RE = re.compile(r"^([+-])(\d\d):(\d\d)$")
+# Held by a real gated submission from its first gate until it returns, so gate 2's read of the
+# RESERVED rows and its own RESERVED row are under one lock. Not BUDGET.tsv itself:
+# ledger.append_tsv flocks that file while appending, and a second flock on it from this
+# process would wait for itself.
+BUDGET_LOCK_REL = BUDGET_REL + ".lock"
+OFFSET_RE = re.compile(r"^([+-])(\d\d):(\d\d)\Z")
 SLURM_TIME_FMT = "%Y-%m-%dT%H:%M:%S"
 _now = time.time  # injectable for tests
 _statvfs = os.statvfs  # injectable for tests
@@ -197,6 +206,19 @@ def maintenance(a, runner, partitions, time_s, log_path):
         raise GateError("maintenance reservation(s) %s overlap now + --time + %d s: defer"
                         % (conflicts, MAINTENANCE_PAD_S), RUNTIME)
     return rec
+
+
+@contextlib.contextmanager
+def reservation_lock(workdir):
+    """fcntl.flock(LOCK_EX) on <W>/BUDGET.tsv.lock (created empty when missing); a concurrent
+    real submission waits here, then reads the RESERVED row the first one wrote."""
+    fd = os.open(os.path.join(workdir, BUDGET_LOCK_REL), os.O_RDWR | os.O_CREAT, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
 
 
 def gates(a, prep, runner, dry_run):

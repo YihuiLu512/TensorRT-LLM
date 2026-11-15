@@ -248,7 +248,7 @@ def t6_meets_bound(rng, bound, better):
     raise ValueError("better must be 'higher' or 'lower'")
 
 
-# ---- calibration v2 (calib-v2 DESIGN-r7a; pure functions, no caller yet) -------------------
+# ---- calibration v2 (calib-v2 DESIGN-r7a; pure functions) ------------------------------------
 
 
 class NotRun:
@@ -365,15 +365,24 @@ def t_sf(x, df):
     return p if x >= 0 else 1.0 - p
 
 
+T_ISF_MAX = 1e12
+
+
 def t_isf(p, df):
-    """x with P(T > x) = p, 0 < p < 1 (bisection on t_sf, 200 steps; p > 0.5 by symmetry)."""
+    """x with P(T > x) = p, 0 < p < 1 (p > 0.5 by symmetry): the upper end doubles from 1
+    until t_sf(hi) < p (past T_ISF_MAX: ValueError, never a clipped value), then 200
+    bisection steps on t_sf."""
     if not 0 < p < 1:
         raise ValueError("t_isf: p must be in (0, 1)")
     if p > 0.5:
         return -t_isf(1.0 - p, df)
     if p == 0.5:
         return 0.0
-    lo, hi = 0.0, 1000.0
+    lo, hi = 0.0, 1.0
+    while t_sf(hi, df) >= p:
+        lo, hi = hi, hi * 2
+        if hi > T_ISF_MAX:
+            raise ValueError("t_isf(%r, %r) is above %g" % (p, df, T_ISF_MAX))
     for _ in range(200):
         m = (lo + hi) / 2
         if t_sf(m, df) > p:

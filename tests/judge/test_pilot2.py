@@ -142,18 +142,22 @@ def v0cal(tmp_path, set_no=1, rule=None, extra=None, env_b=None):
         "register")
     rs = sha256_file(reg)
     junk = dict(zl=[500.0], zc=[-400.0], D=[900 * MS], ratio=[0.5], c13=[0.9])
+    # tree A's baseline and VOID tiers carry no C13 reading: the launch mean is taken over every
+    # judged tier (as C13-MEAN), which test_bootstrap_launch_mean_is_the_c13_mean_population
+    # covers on its own
+    junk_a = dict(junk, c13=[])
     if set_no == 1:
-        a = [tier(1, role=None, **junk), tier(2, zl=[3.0, -1.0], zc=[-2.5], D=[2 * MS, -MS],
-                                               ratio=[0.0], c13=[0.03]),
+        a = [tier(1, role=None, **junk_a), tier(2, zl=[3.0, -1.0], zc=[-2.5], D=[2 * MS, -MS],
+                                                 ratio=[0.0], c13=[0.03]),
              tier(3, zl=[0.5], zc=[1.0], D=[0.5 * MS], ratio=[0.0], c13=[0.01]),
-             tier(4, c3="RED", verdict="VOID", **junk)]
+             tier(4, c3="RED", verdict="VOID", **junk_a)]
         b = [tier(2, zl=[-2.0], zc=[3.0], D=[-1.5 * MS], ratio=[0.0], c13=[-0.02]),
              tier(3, zl=[1.0], zc=[0.0], D=[0.0], ratio=[0.0], c13=[0.0])]
     else:
-        a = [tier(1, role=None, **junk), tier(2, zl=[4.0], zc=[-1.0], D=[5 * MS], ratio=[0.01],
-                                               c13=[0.04]),
+        a = [tier(1, role=None, **junk_a), tier(2, zl=[4.0], zc=[-1.0], D=[5 * MS],
+                                                 ratio=[0.01], c13=[0.04]),
              tier(3, zl=[1.0], zc=[-4.0], D=[MS], ratio=[0.0], c13=[-0.02]),
-             tier(4, c3="RED", verdict="VOID", **junk)]
+             tier(4, c3="RED", verdict="VOID", **junk_a)]
         b = [tier(2, zl=[2.0], zc=[1.0], D=[-3 * MS], ratio=[0.005], c13=[0.01]),
              tier(3, zl=[0.0], zc=[0.0], D=[0.0], ratio=[0.0], c13=[0.0])]
     ta = fw.tree("A", verdicts(a, cfg="s1"), job_id="11", arm="a", register_sha=rs, node="n1")
@@ -168,6 +172,24 @@ def v0cal(tmp_path, set_no=1, rule=None, extra=None, env_b=None):
 
 def run_cli(args):
     return P2.main([str(a) for a in args])
+
+
+def test_bootstrap_launch_mean_is_the_c13_mean_population():
+    """launch_mean is calibrated on what C13-MEAN compares with it: the mean over every judged
+    load tier of the launch (baseline and VOID tiers too, unjudged tiers not), while the
+    per-window family reads only the used cal tiers."""
+    from capjudge import checks
+    tiers = [tier(1, role=None, c13=[0.09]), tier(2, c13=[0.03]), tier(3, c13=[0.01]),
+             tier(4, c3="RED", verdict="VOID", c13=[0.05]), dict(tier(5, c13=[0.7]),
+                                                                   judged=False)]
+    r = P2.bootstrap_readings("t", tiers, [2, 3])
+    assert [x[0] for x in r["c13_window"]] == [0.03, 0.01]
+    (mean, tree, seq, key), = r["c13_launch_mean"]
+    assert (tree, seq, key) == ("t", None, C13)
+    assert mean == pytest.approx((0.09 + 0.03 + 0.01 + 0.05) / 4, abs=1e-15)
+    vals = checks.c13_launch_readings(tiers, C13)
+    assert sorted(vals) == [0.01, 0.03, 0.05, 0.09]
+    assert mean == pytest.approx(sum(vals) / len(vals), abs=1e-15)
 
 
 def boot(fw, reg, lst, out="boot.json"):
@@ -586,7 +608,7 @@ def test_shortfall_refuses_a_segment_with_an_unended_item(tmp_path, fake_trees):
     assert code == 3 and not os.path.exists(o)
 
 
-def test_shortfall_third_round_exits_3(tmp_path, fake_trees):
+def test_shortfall_third_round_exits_3(tmp_path, fake_trees, capsys):
     s = segment31(tmp_path)
     s.plan("sf1", [item(1, "S-sf1-0001", {"s1": 1}, cls="post_gate:shortfall")])
     s.plan("sf2", [item(1, "S-sf2-0001", {"s1": 1}, cls="post_gate:shortfall")])
@@ -595,8 +617,15 @@ def test_shortfall_third_round_exits_3(tmp_path, fake_trees):
     s.run("S-sf2-0001", status="ENV_INVALID")
     code, _d, o = shortfall(s, sel_list(s))
     assert code == 3 and not os.path.exists(o)
-    code, d, _o = shortfall(s, sel_list(s, "two.tsv"), out="r2.json", plans=s.plans[:2])
-    assert code == 0 and d["round"] == 2
+    assert "shortfall round 3 > 2 (N15" in capsys.readouterr().err
+    # leaving the second round's plan out does not make this round 2 again (RS28: the rounds
+    # are counted against BUDGET.tsv)
+    sf2_sha = sha256_file(s.plans[2])
+    for given in (s.plans[:2], s.plans[:1]):
+        code, _d, o = shortfall(s, sel_list(s, "two.tsv"), out="r2.json", plans=given)
+        assert code == 3 and not os.path.exists(o)
+        err = capsys.readouterr().err
+        assert "not given with --plan" in err and sf2_sha in err
 
 
 def test_shortfall_caps_the_cumulative_jobs(tmp_path, fake_trees):
@@ -759,6 +788,35 @@ def test_e0_params_must_be_registered_and_of_the_stage(tmp_path):
         P2.load_e0_params(fw.W, other, "capacity")
 
 
+def test_select_needs_every_plan_the_segment_submitted_from(tmp_path):
+    """RS28: every RESERVED row of the segment's budget id, from its first original-segment
+    row to the next segment's original plan, must belong to a given plan; the segments of one
+    budget id (V1-b A, then B) are told apart by that order."""
+    s = Seg(tmp_path)
+    a = s.plan("A", [item(k, "A-%04d" % k, {"s1": 1}) for k in (1, 2)])
+    sfa = s.plan("A.sf1", [item(1, "A-sf-0001", {"s1": 1}, cls="post_gate:shortfall")])
+    for iid in ("A-0001", "A-0002", "A-sf-0001"):
+        s.run(iid, launches=[("s1", "VALID")])
+    b = s.plan("B", [item(k, "B-%04d" % k, {"s1": 1}) for k in (1, 2)])
+    sfb = s.plan("B.sf1", [item(1, "B-sf-0001", {"s1": 1}, cls="post_gate:shortfall")])
+    for iid in ("B-0001", "B-0002", "B-sf-0001"):
+        s.run(iid, launches=[("s1", "VALID")])
+    assert P2._select([b, sfb], s.fw.W)["by_unit"]["s1"]["usable"] == 3
+    assert P2._select([a, sfa], s.fw.W)["by_unit"]["s1"]["usable"] == 3  # B ends A's rows
+    with pytest.raises(P2.Pilot2Error, match=sha256_file(sfa)):
+        P2._select([a], s.fw.W)  # A's shortfall plan left out
+    with pytest.raises(P2.Pilot2Error, match=sha256_file(sfb)):
+        P2._select([b], s.fw.W)
+    with pytest.raises(P2.Pilot2Error, match="several budget ids"):
+        s.sha["X-0001"] = (sha256_file(s.plan("X", [item(1, "X-0001", {"s1": 1})])),
+                           item(1, "X-0001", {"s1": 1}))
+        ledger.budget_append(s.fw.path("BUDGET.tsv"), {
+            "event": "RESERVED", "budget_id": "E0v2-other", "item_id": "X-0001",
+            "item_class": "planned", "plan_sha256": s.sha["X-0001"][0],
+            "register_sha256": sha256_file(s.reg), "plan_id": "p-X", "job_id": ""})
+        P2._select([b, sfb, s.plans[-1]], s.fw.W)
+
+
 def test_plans_must_be_registered_job_plans(tmp_path):
     s = Seg(tmp_path)
     p = s.fw.put("register/loose.tsv", jobplan.format_tsv([item(1, "L-0001", {"s1": 1})]))
@@ -895,6 +953,36 @@ def test_shortfall_product_feeds_laddergen_plan_from(tmp_path, fake_trees):
     assert sum(it["launches"] for it in items) == d["items"][0]["launches"] == 7
     assert len(items) == d["cap"]["jobs"] == 2
     assert all(it["arms"] == ["a"] and it["pin"] is False for it in items)
+
+
+def test_two_shortfall_rounds_of_one_phase_get_distinct_item_ids(tmp_path, fake_trees):
+    """RS25: round 1 and round 2 of one phase through laddergen --plan-from (same --phase-id)
+    give different item ids, so both plans pass jobplan.validate and _select together (the
+    ids carry the round: '<phase_id>-shortfall-r<round>-NNNN')."""
+    from caplaunch import laddergen
+    s = segment31(tmp_path)
+    run31(s)
+    ids = []
+    for rnd in (1, 2):
+        code, d, o = shortfall(s, sel_list(s, "sel%d.tsv" % rnd), out="register/sf%d.json" % rnd)
+        assert code == 0 and d["round"] == rnd
+        ledger.registry_append(s.fw.path("REGISTRY.tsv"), "E0", "register/sf%d.json" % rnd,
+                               sha256_file(o), "kind=e0_params;test", registered_at=s.fw.ts())
+        out = s.fw.path("register/plan.sf%d.out.tsv" % rnd)
+        assert laddergen.main(["--plan-from", o, "--workdir", s.fw.W, "--phase-id", "S",
+                               "--seed-base", "t", "--launches-per-job", "4", "--out",
+                               out]) == 0
+        items = jobplan.read(out)
+        assert all(it["item_id"].startswith("S-shortfall-r%d-" % rnd) for it in items)
+        ids.append({it["item_id"] for it in items})
+        s.plan("plan.sf%d" % rnd, items)
+        for it in items:
+            s.run(it["item_id"], status="ENV_INVALID")
+    assert ids[0] and ids[1] and not ids[0] & ids[1]
+    for p in s.plans[1:]:
+        assert jobplan.validate(jobplan.read(p))
+    sel = s.select()  # the original plan and both rounds together
+    assert {f["item_id"] for f in sel["facts"]} >= ids[0] | ids[1]
 
 
 def run_blocks(s):

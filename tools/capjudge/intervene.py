@@ -28,8 +28,8 @@ Two parts:
     move to less load at every step and every step must exceed the noise band (T5
     "different", in that direction). Reverse: the same kind of delta on a load source or an
     out-of-domain stub must leave the boundary where it is (T5 "indistinguishable" from
-    delta = 0). A reverse launch is evidence only when it stayed healthy (no VOID tier, no tool
-    limit cut its interval) and both envelopes are closed (else excluded); such a launch T5
+    delta = 0). A reverse launch is evidence only when it stayed healthy (no VOID or CONTRA
+    tier, no tool limit cut its interval) and both envelopes are closed (else excluded); such a launch T5
     tells apart from the control is a FAIL. An indistinguishable one counts only when the
     comparison could have seen the move: its min_resolvable_diff is below the forward shift of
     the same delta (distance of the envelope midpoints of that forward level and the control,
@@ -308,8 +308,12 @@ def load_launch(tree, W):
             "boundary": used, "boundary_t4": t4, "grade": v.get("grade") or {},
             "doses": iv.get("doses"), "heartbeat": iv.get("heartbeat"),
             "measure_class": iv.get("measure_class") or {}, "roles": roles,
-            "void_tiers": [t["tier_seq"] for t in v.get("tiers", []) if t.get("judged")
-                           and t.get("verdict") == "VOID"]}
+            "void_tiers": _tiers_of(v, "VOID"), "contra_tiers": _tiers_of(v, "CONTRA")}
+
+
+def _tiers_of(v, verdict):
+    return [t["tier_seq"] for t in v.get("tiers", []) if t.get("judged")
+            and t.get("verdict") == verdict]
 
 
 def _scalar_dose(specs):
@@ -327,11 +331,15 @@ def _env(launches, order):
 
 def _reverse_unusable(x, base_env, env):
     """Why a reverse-dose launch cannot show "the boundary did not move", or None. Usable only
-    when no tier is VOID, no tool limit cut its interval (the dosed tool or another one
-    reached its limit first: the interval is not the boundary of the localised role) and both
-    envelopes are closed (an open end cannot be shown to overlap or not)."""
+    when no tier is VOID or CONTRA (a CONTRA tier is one the judge would have voided before
+    the CONTRA verdict existed: the deterministic checks and X disagree there), no tool limit
+    cut its interval (the dosed tool or another one reached its limit first: the interval is
+    not the boundary of the localised role) and both envelopes are closed (an open end cannot
+    be shown to overlap or not)."""
     if x["void_tiers"]:
         return "VOID tiers %s (a tool left its healthy band?)" % x["void_tiers"]
+    if x.get("contra_tiers"):
+        return "CONTRA tiers %s (the deterministic checks and X disagree)" % x["contra_tiers"]
     cut = x["boundary"].get("censored_by")
     if cut:
         return "interval cut at tier %s (%s)" % (cut.get("tier_seq"), cut.get("why"))

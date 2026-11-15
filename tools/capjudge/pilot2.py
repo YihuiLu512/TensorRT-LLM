@@ -34,6 +34,7 @@ from capcommon.exitcodes import ConfigError
 from capcommon.hashing import sha256_file
 from capcommon.jsonio import dumps, read_json
 
+from . import checks as C
 from . import cmdrec
 from . import d14 as D14
 from . import nullz
@@ -289,12 +290,13 @@ def launch_facts(W, plans, void_usable=False):
     verdicts.json launch_verdict / arm_config / batch (never z, b or X). void_usable: a VOID
     launch counts as usable (shortfall --job-level-only)."""
     files = _plan_files(W, plans)
-    reserved = {}
-    for r in ledger.budget_rows(os.path.join(W, "BUDGET.tsv")):
+    reserved, rows = {}, ledger.budget_rows(os.path.join(W, "BUDGET.tsv"))
+    for r in rows:
         if r["event"] == "RESERVED":
             if r["item_id"] in reserved:
                 raise Pilot2Error("item %s has two RESERVED rows in BUDGET.tsv" % r["item_id"])
             reserved[r["item_id"]] = r
+    _check_plans_complete(files, [r for r in rows if r["event"] == "RESERVED"])
     subs = ledger.submissions_current(os.path.join(W, "submissions.tsv"))
     by_job = {}
     for r in ledger.read_tsv(os.path.join(W, "JUDGED.tsv"), ledger.JUDGED_COLUMNS):
@@ -309,6 +311,42 @@ def launch_facts(W, plans, void_usable=False):
     for k, f in enumerate(facts):
         f["pos"] = k
     return facts
+
+
+def _check_plans_complete(files, reserved_rows):
+    """The given plans must be every plan the segment has submitted from (RS28: the shortfall
+    round, the cap already used and the selection are counted from them, so a plan left out
+    would restart them). Segments of one budget_id (V1-b A, then B) run one after the other,
+    so the segment's RESERVED rows are those of its budget_id from the first one of a given
+    original-segment plan (of any given plan when the original has none yet) up to the first
+    planned / surplus row of a plan not given (the next segment's original plan). Each of
+    these rows must carry the sha of a given plan, else Pilot2Error naming the missing plan
+    sha(s)."""
+    shas = {sha for _rel, sha, _items, _rule in files}
+    ids = {it["item_id"] for _rel, _sha, items, _rule in files for it in items}
+    mine = [k for k, r in enumerate(reserved_rows) if r["item_id"] in ids]
+    if not mine:
+        return
+    budget_ids = sorted({reserved_rows[k]["budget_id"] for k in mine})
+    if len(budget_ids) != 1:
+        raise Pilot2Error("the given plans were reserved under several budget ids %s"
+                          % budget_ids)
+    orig = {sha for _rel, sha, _items, rule in files if rule is None}
+    starts = [k for k in mine if reserved_rows[k]["plan_sha256"] in orig]
+    start = min(starts or mine)
+    missing = set()
+    for r in reserved_rows[start:]:
+        if r["budget_id"] != budget_ids[0] or r["plan_sha256"] in shas:
+            continue
+        if not r["item_class"].startswith(jobplan.POST_GATE_PREFIX):
+            break  # the next segment's original plan
+        missing.add(r["plan_sha256"])
+    missing = sorted(missing)
+    if missing:
+        raise Pilot2Error("BUDGET.tsv has RESERVED rows of budget %s since this segment began "
+                          "under plan sha256 %s, not given with --plan: give every plan of "
+                          "the segment (rounds, caps and the selection are counted from them)"
+                          % (budget_ids[0], missing))
 
 
 def _job_state(it, sha, reserved, subs):
@@ -526,13 +564,14 @@ def _num(v):
 
 
 def bootstrap_readings(rel, tiers, used):
-    """{family: [(|value|, tree, tier_seq, key)]} of one tree: X2 / X3 z_d (`zstats`, lag and
-    count families), the lag trend D and the X1 |norm - 1| (`stats`), the C13 per-window
-    foreign busy fractions and, per under_test role, their mean over the used tiers (tier_seq
-    None). Reads no X conclusion."""
+    """{family: [(|value|, tree, tier_seq, key)]} of one tree: on the used tiers, X2 / X3 z_d
+    (`zstats`, lag and count families), the lag trend D and the X1 |norm - 1| (`stats`) and
+    the C13 per-window foreign busy fractions; per under_test role (C13 key), the mean the
+    judge's C13-MEAN takes, over every judged load tier of the launch (checks.
+    c13_launch_readings; tier_seq None). Reads no X conclusion."""
     by_seq = {t["tier_seq"]: t for t in tiers}
     out = {f: [] for f in BOOTSTRAP_FAMILIES}
-    c13 = {}
+    c13 = set()
     for seq in used:
         t = by_seq[seq]
         for key, vals in sorted((t.get("zstats") or {}).items()):
@@ -547,8 +586,11 @@ def bootstrap_readings(rel, tiers, used):
                 out["ratio"] += [(abs(v), rel, seq, key) for v in vals]
             elif key.startswith(nullz.C13_STAT + ":"):
                 out["c13_window"] += [(abs(v), rel, seq, key) for v in vals]
-                c13.setdefault(key, []).extend(vals)
-    for key, vals in sorted(c13.items()):
+    for t in tiers:
+        if t.get("judged"):
+            c13.update(k for k in (t.get("stats") or {}) if k.startswith(nullz.C13_STAT + ":"))
+    for key in sorted(c13):
+        vals = [v for v in C.c13_launch_readings(tiers, key) if _num(v)]
         if vals:
             out["c13_launch_mean"].append((abs(math.fsum(vals) / len(vals)), rel, None, key))
     return out
