@@ -38,7 +38,18 @@ WORK_ITEMS = {
     *(f"WT-{n}" for n in (70, 71, 72, 73, 79)),
 }
 LINK = {"WT-35", "WT-37", "WT-38", "WT-40", "WT-50", "WT-51"}
-R11_PREREQS = {"WT-37", "WT-38", "WT-40", "WT-50", "WT-51", "WT-52", "WT-57"}
+# With the fixes sync_feature_deps.GROUP_ADDITIONS adds.
+R11_PREREQS = {
+    "WT-37",
+    "WT-38",
+    "WT-40",
+    "WT-50",
+    "WT-51",
+    "WT-52",
+    "WT-57",
+    "WT-57-fix1",
+    "WT-57-fix2",
+}
 DS_LINK = {"WT-33", "WT-37", "WT-38", "WT-42", "WT-43", "WT-50", "WT-51", "WT-52", "WT-56", "WT-62"}
 # tasks.md §3.1 rule 6: the nine FB-2 rows whose case-04 dependency set is the link alone.
 FB2_ROWS = ["F-01", "F-02", "F-14", "F-16", "DG-12", "DG-13", "DG-16", "DG-82", "DG-83"]
@@ -2357,9 +2368,9 @@ def test_rows_with_an_item_on_top_of_the_link_follow_landing_order(rows):
     # ... and if the link's last item lands after WT-57, that item owes it.
     owed = _owed("WT-50", (LINK - {"WT-50"}) | {"WT-57"}, rows)[0]
     assert {"F-01", "F-03", "F-01+rest"} <= set(owed)
-    # F-30 (§3.4: 链路、WT-52; 其余用例另等 WT-57): its +rest row waits for both.
+    # F-30 (§3.4: 链路、WT-52; 其余用例另等 WT-57): its +rest row waits for both (and WT-57-fix2).
     assert "F-30" not in owed and "F-30+rest" not in owed
-    owed = _owed("WT-52", LINK | {"WT-57"}, rows)[0]
+    owed = _owed("WT-52", LINK | {"WT-57", "WT-57-fix2"}, rows)[0]
     assert {"F-30", "F-30+rest"} <= set(owed)
 
 

@@ -28,10 +28,10 @@
 #   not_runnable  Cases the PoC machines cannot run.
 #   notes         Clauses of the tables this file does not model, verbatim.
 #
-# A row <id>+<item> (DG-16+WT-51-fix2) holds cases split out of row <id> after
-# the tables were written; it waits for <item> too. A whole split covers all the
-# cases of row <id> without adding a row: row <id> itself waits for <item>
-# instead.
+# A row <id>+<item> (DG-16+WT-51-fix2; DG-34+rest+WT-57-fix2 for a +rest row)
+# holds cases split out of row <id> after the tables were written; it waits for
+# <item> too. A whole split covers all the cases row <id> keeps without adding
+# a row: row <id> itself waits for <item> instead.
 # sync_feature_deps.SPLITS lists these splits.
 #
 # A row with an assignee is verified by it. Otherwise the verifier of a case-04
@@ -42,7 +42,7 @@ version: 1
 groups:
   link: [WT-35, WT-37, WT-38, WT-40, WT-50, WT-51]
   ds-link: [WT-33, WT-37, WT-38, WT-42, WT-43, WT-50, WT-51, WT-52, WT-56, WT-62]
-  r11-prereqs: [WT-37, WT-38, WT-40, WT-50, WT-51, WT-52, WT-57]
+  r11-prereqs: [WT-37, WT-38, WT-40, WT-50, WT-51, WT-52, WT-57, WT-57-fix1, WT-57-fix2]
   ds-repo: [WT-41, WT-42, WT-43]
 rows:
 - id: F-01
@@ -209,9 +209,15 @@ rows:
   chain: case-03
 - id: F-09
   features: [F-09]
-  cases: [XD-060, XD-061, NT-057]
+  cases: [NT-057]
   author: [WT-57]
   deps: [link, WT-57]
+  chain: case-04
+- id: F-09+WT-57-fix2
+  features: [F-09]
+  cases: [XD-060, XD-061]
+  author: [WT-57-fix2]
+  deps: [link, WT-57, WT-57-fix2]
   chain: case-04
 - id: F-09@03
   features: [F-09]
@@ -353,9 +359,15 @@ rows:
   chain: case-03
 - id: F-20
   features: [F-20]
-  cases: [XD-062, T5, T1]
+  cases: [T5, T1]
   author: [WT-57]
   deps: [link, WT-57]
+  chain: case-04
+- id: F-20+WT-57-fix2
+  features: [F-20]
+  cases: [XD-062]
+  author: [WT-57-fix2]
+  deps: [link, WT-57, WT-57-fix2]
   chain: case-04
 - id: F-20@03
   features: [F-20]
@@ -386,8 +398,8 @@ rows:
 - id: F-23
   features: [F-23]
   cases: [XD-206, XD-073, XD-074, T23]
-  author: [WT-57]
-  deps: [link, WT-57]
+  author: [WT-57-fix2]
+  deps: [link, WT-57, WT-57-fix2]
   chain: case-04
 - id: F-23@03
   features: [F-23]
@@ -482,8 +494,8 @@ rows:
 - id: F-30+rest
   features: [F-30]
   cases: [XD-060, XD-061]
-  author: [WT-57]
-  deps: [link, WT-52, WT-57]
+  author: [WT-57-fix2]
+  deps: [link, WT-52, WT-57, WT-57-fix2]
   chain: case-04
 - id: F-30@03
   features: [F-30]
@@ -494,8 +506,8 @@ rows:
 - id: F-31
   features: [F-31]
   cases: [XD-205, XD-203, XD-221]
-  author: [WT-57]
-  deps: [link, WT-57]
+  author: [WT-57-fix2]
+  deps: [link, WT-57, WT-57-fix2]
   chain: case-04
   hopper_cases: [XD-036, XD-052, XD-037, XD-047, XD-048]
 - id: F-31@03
@@ -507,8 +519,8 @@ rows:
 - id: F-32
   features: [F-32]
   cases: [XD-225, XD-203, XD-011, XD-029, XD-030, XD-031, XD-032, XD-033, XD-034, T31, T32]
-  author: [WT-57]
-  deps: [link, WT-57]
+  author: [WT-57-fix2]
+  deps: [link, WT-57, WT-57-fix2]
   chain: case-04
 - id: F-32@03
   features: [F-32]
@@ -792,9 +804,15 @@ rows:
   assignee: WT-60
 - id: DG-11
   features: [DG-11]
-  cases: [XD-105, NT-002]
+  cases: [NT-002]
   author: [WT-50]
   deps: [link, WT-57]
+  chain: case-04
+- id: DG-11+WT-57-fix2
+  features: [DG-11]
+  cases: [XD-105]
+  author: [WT-57-fix2]
+  deps: [link, WT-57, WT-57-fix2]
   chain: case-04
 - id: DG-12
   features: [DG-12]
@@ -881,11 +899,17 @@ rows:
   chain: case-04
 - id: DG-20
   features: [DG-20]
-  cases: [XD-008, NT-082]
+  cases: [NT-082]
   author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
   hopper_cases: [XD-124]
+- id: DG-20+WT-57-fix2
+  features: [DG-20]
+  cases: [XD-008]
+  author: [WT-57-fix2]
+  deps: [link, WT-57, WT-57-fix2]
+  chain: case-04
 - id: DG-21
   features: [DG-21]
   cases: [NT-082]
@@ -1019,9 +1043,15 @@ rows:
   chain: case-04
 - id: DG-34+rest
   features: [DG-34]
-  cases: [XD-312, NT-088]
-  author: [WT-54, WT-57]
+  cases: [NT-088]
+  author: [WT-57]
   deps: [link, WT-54, WT-57]
+  chain: case-04
+- id: DG-34+rest+WT-57-fix2
+  features: [DG-34]
+  cases: [XD-312]
+  author: [WT-57-fix2]
+  deps: [link, WT-54, WT-57, WT-57-fix2]
   chain: case-04
 - id: DG-34@03
   features: [DG-34]
@@ -1150,6 +1180,7 @@ rows:
   author: [WT-57]
   deps: [link, WT-57]
   chain: case-04
+  assignee: WT-60
 - id: DG-44
   features: [DG-44]
   cases: [XD-108, XD-109]
@@ -1296,9 +1327,15 @@ rows:
   chain: case-03
 - id: DG-67
   features: [DG-67]
-  cases: [XD-057, XD-058, XD-208, NT-098]
-  author: [WT-57]
-  deps: [link, WT-57]
+  cases: [NT-098]
+  author: [WT-57-fix1]
+  deps: [link, WT-57, WT-57-fix1]
+  chain: case-04
+- id: DG-67+WT-57-fix2
+  features: [DG-67]
+  cases: [XD-057, XD-058, XD-208]
+  author: [WT-57-fix2]
+  deps: [link, WT-57, WT-57-fix2]
   chain: case-04
 - id: DG-76
   features: [DG-76]
@@ -1507,17 +1544,23 @@ rows:
   notes: ["\u4E0D\u8BBE E2E\uFF1A\U0001F173\uFF08DQ-33\uFF0C\u5DF2\u5B9A\uFF09"]
 - id: EG-01a
   features: [EG-01a]
-  cases: [XD-225, XD-205, NT-189]
-  author: [WT-57]
-  deps: [link, WT-57]
+  cases: [NT-189]
+  author: [WT-57-fix1]
+  deps: [link, WT-57, WT-57-fix1]
   chain: case-04
   hopper_cases: [XD-036, XD-052, XD-037, XD-047, XD-048]
   not_runnable: [XD-202]
+- id: EG-01a+WT-57-fix2
+  features: [EG-01a]
+  cases: [XD-225, XD-205]
+  author: [WT-57-fix2]
+  deps: [link, WT-57, WT-57-fix2]
+  chain: case-04
 - id: EG-01b
   features: [EG-01b]
   cases: [XD-210, XD-059, XD-231]
-  author: [WT-57]
-  deps: [link, WT-57]
+  author: [WT-57-fix2]
+  deps: [link, WT-57, WT-57-fix2]
   chain: case-04
 - id: EG-01c
   features: [EG-01c]
@@ -1534,20 +1577,20 @@ rows:
 - id: EG-01e
   features: [EG-01e]
   cases: [NT-188]
-  author: [WT-57]
-  deps: [link, WT-57]
+  author: [WT-57-fix1]
+  deps: [link, WT-57, WT-57-fix1]
   chain: case-04
 - id: EG-01f
   features: [EG-01f]
   cases: [XD-228, XD-060, XD-061]
-  author: [WT-57]
-  deps: [link, WT-57]
+  author: [WT-57-fix2]
+  deps: [link, WT-57, WT-57-fix2]
   chain: case-04
 - id: EG-01g
   features: [EG-01g]
   cases: [NT-209]
   author: [WT-57]
-  deps: [link, WT-57]
+  deps: [link, WT-57, WT-57-fix1]
   chain: case-04
   assignee: WT-61
 - id: EG-02
@@ -1561,8 +1604,8 @@ rows:
 - id: EG-03
   features: [EG-03]
   cases: [XD-212, XD-217, XD-215, XD-221, XD-224]
-  author: [WT-57]
-  deps: [link, WT-57]
+  author: [WT-57-fix2]
+  deps: [link, WT-57, WT-57-fix2]
   chain: case-04
   hopper_cases: [XD-038, XD-039]
 - id: EG-04
@@ -1629,8 +1672,8 @@ rows:
 - id: EG-10a
   features: [EG-10a]
   cases: [XD-062]
-  author: [existing]
-  deps: [link, WT-52, WT-57]
+  author: [WT-57-fix2]
+  deps: [link, WT-52, WT-57, WT-57-fix2]
   chain: case-04
 - id: EG-10b
   features: [EG-10b]
@@ -1662,8 +1705,8 @@ rows:
 - id: EG-13
   features: [EG-13]
   cases: [XD-043, XD-053, XD-222, XD-220, XD-224, XD-226, XD-229, XD-060, XD-061, XD-010]
-  author: [WT-57]
-  deps: [link, WT-57]
+  author: [WT-57-fix2]
+  deps: [link, WT-57, WT-57-fix2]
   chain: case-04
   hopper_cases: [XD-041, XD-046, XD-044, XD-047, XD-048, XD-042]
 - id: EG-14a
@@ -1703,8 +1746,8 @@ rows:
 - id: EG-14e+rest
   features: [EG-14e]
   cases: [XD-231]
-  author: [WT-57]
-  deps: [link, WT-57]
+  author: [WT-57-fix2]
+  deps: [link, WT-57, WT-57-fix2]
   chain: case-04
 - id: EG-15
   features: [EG-15]
@@ -1727,14 +1770,14 @@ rows:
 - id: EG-16b
   features: [EG-16b]
   cases: [NT-198]
-  author: [WT-57]
-  deps: [link, WT-57]
+  author: [WT-57-fix1]
+  deps: [link, WT-57, WT-57-fix1]
   chain: case-04
 - id: EG-16c
   features: [EG-16c]
   cases: [NT-199]
-  author: [WT-57]
-  deps: [link, WT-57]
+  author: [WT-57-fix1]
+  deps: [link, WT-57, WT-57-fix1]
   chain: case-04
 - id: EG-16d
   features: [EG-16d]
@@ -1766,8 +1809,8 @@ rows:
 - id: EG-18+rest
   features: [EG-18]
   cases: [XD-205]
-  author: [WT-57]
-  deps: [link, WT-57]
+  author: [WT-57-fix2]
+  deps: [link, WT-57, WT-57-fix2]
   chain: case-04
 - id: EG-19
   features: [EG-19]
@@ -1801,30 +1844,36 @@ rows:
   chain: case-04
 - id: EG-22a
   features: [EG-22a]
-  cases: [NT-041, XD-017, XD-040, XD-211, XD-223, XD-226, XD-209, XD-230]
-  author: [WT-40, WT-57]
+  cases: [NT-041]
+  author: [WT-40]
   deps: [link, WT-57]
   chain: case-04
   hopper_cases: [XD-201]
+- id: EG-22a+WT-57-fix2
+  features: [EG-22a]
+  cases: [XD-017, XD-040, XD-211, XD-223, XD-226, XD-209, XD-230]
+  author: [WT-57-fix2]
+  deps: [link, WT-57, WT-57-fix2]
+  chain: case-04
 - id: EG-22b
   features: [EG-22b]
   cases: [NT-202]
   author: [WT-57]
-  deps: [link, WT-57]
+  deps: [link, WT-57, WT-57-fix1]
   chain: case-04
   assignee: WT-61
 - id: EG-22c
   features: [EG-22c]
   cases: [NT-202]
   author: [WT-57]
-  deps: [link, WT-57]
+  deps: [link, WT-57, WT-57-fix1]
   chain: case-04
   assignee: WT-61
 - id: EG-22d
   features: [EG-22d]
   cases: [NT-202]
   author: [WT-57]
-  deps: [link, WT-57]
+  deps: [link, WT-57, WT-57-fix1]
   chain: case-04
   assignee: WT-61
 - id: EG-23
@@ -1836,8 +1885,8 @@ rows:
 - id: EG-24
   features: [EG-24]
   cases: [XD-018]
-  author: [WT-57]
-  deps: [link, WT-57]
+  author: [WT-57-fix2]
+  deps: [link, WT-57, WT-57-fix2]
   chain: case-04
 - id: EG-25
   features: [EG-25]
@@ -1852,16 +1901,16 @@ rows:
 - id: EG-26
   features: [EG-26]
   cases: [XD-231]
-  author: [WT-57]
-  deps: [link, WT-57]
+  author: [WT-57-fix2]
+  deps: [link, WT-57, WT-57-fix2]
   chain: case-04
   not_runnable: [XD-020]
   notes: ["\u8865\u5145\u7528\u4F8B XD-020 \u968F PB-3\uFF08WT-72\uFF1BDQ-23\uFF0C\u5DF2\u5B9A\uFF09"]
 - id: EG-27
   features: [EG-27]
   cases: [XD-221, XD-072, XD-003]
-  author: [WT-57]
-  deps: [link, WT-57]
+  author: [WT-57-fix2]
+  deps: [link, WT-57, WT-57-fix2]
   chain: case-04
 - id: EG-28
   features: [EG-28]
@@ -1888,8 +1937,8 @@ rows:
 - id: EG-31
   features: [EG-31]
   cases: [NT-207]
-  author: [WT-57]
-  deps: [link, WT-57]
+  author: [WT-57-fix1]
+  deps: [link, WT-57, WT-57-fix1]
   chain: case-04
 - id: EG-32
   features: [EG-32]
@@ -1904,14 +1953,14 @@ rows:
   features: [EG-33]
   cases: [NT-208]
   author: [WT-57]
-  deps: [link, WT-57]
+  deps: [link, WT-57, WT-57-fix1]
   chain: case-04
   assignee: WT-61
 - id: EG-34
   features: [EG-34]
   cases: [NT-210]
   author: [WT-57]
-  deps: [link, WT-57]
+  deps: [link, WT-57, WT-57-fix1]
   chain: case-04
   assignee: WT-61
 - id: EG-35
@@ -1928,21 +1977,21 @@ rows:
   features: [EG-36]
   cases: [NT-211]
   author: [WT-57]
-  deps: [link, WT-57]
+  deps: [link, WT-57, WT-57-fix1]
   chain: case-04
   assignee: WT-61
 - id: EG-37
   features: [EG-37]
   cases: [NT-212]
   author: [WT-57]
-  deps: [link, WT-57]
+  deps: [link, WT-57, WT-57-fix1]
   chain: case-04
   assignee: WT-61
 - id: EG-38
   features: [EG-38]
   cases: [NT-213]
   author: [WT-57]
-  deps: [link, WT-57]
+  deps: [link, WT-57, WT-57-fix1]
   chain: case-04
   assignee: WT-61
 - id: EG-39
@@ -1980,8 +2029,8 @@ rows:
 - id: EP-04+rest
   features: [EP-04]
   cases: [NT-202]
-  author: [WT-57]
-  deps: [link, WT-57]
+  author: [WT-57-fix1]
+  deps: [link, WT-57, WT-57-fix1]
   chain: case-04
 - id: EP-05
   features: [EP-05]
@@ -2016,8 +2065,8 @@ rows:
 - id: EP-09+rest
   features: [EP-09]
   cases: [XD-221]
-  author: [WT-57]
-  deps: [link, WT-57]
+  author: [WT-57-fix2]
+  deps: [link, WT-57, WT-57-fix2]
   chain: case-04
 - id: EP-10
   features: [EP-10]

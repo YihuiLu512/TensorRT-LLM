@@ -187,6 +187,16 @@ def test_only_the_split_cases_wait_for_a_fix(rows):
         "DG-39b",
         "DG-81",
         "EG-20",
+        # Rows waiting for WT-57-fix1 or WT-57-fix2: split rows, R11 rows (the fixes are in its group)
+        # and R12 rows (ROW_WAITS); test_poc3_wt30fix10_splits.py.
+        *("DG-08", "DG-10", "DG-11+WT-57-fix2", "DG-18", "DG-20+WT-57-fix2", "DG-33"),
+        *("DG-34+rest+WT-57-fix2", "DG-36", "DG-44", "DG-52", "DG-67", "DG-67+WT-57-fix2"),
+        *("DG-78", "EG-01a", "EG-01a+WT-57-fix2", "EG-01b", "EG-01e", "EG-01f", "EG-01g", "EG-02"),
+        *("EG-03", "EG-09", "EG-10a", "EG-13", "EG-14a", "EG-14b", "EG-14c", "EG-14d"),
+        *("EG-14e+rest", "EG-16b", "EG-16c", "EG-18+rest", "EG-22a+WT-57-fix2", "EG-22b"),
+        *("EG-22c", "EG-22d", "EG-24", "EG-26", "EG-27", "EG-31", "EG-33", "EG-34", "EG-36"),
+        *("EG-37", "EG-38", "EP-04+rest", "EP-09+rest", "F-09+WT-57-fix2", "F-20+WT-57-fix2"),
+        *("F-23", "F-30+rest", "F-31", "F-32", "F-33", "F-36", "F-37"),
     }
 
 
