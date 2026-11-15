@@ -1,0 +1,11 @@
+registered_at	experiment	relpath	sha256	note
+2026-11-13T00:00:00.000Z	E0	register/tiers.json	9ec2e9504387d851b23a6054f90df5b2f04de7e8eb81493c87e89591cb70e2a9	kind=tier_table;synthetic sample
+2026-11-13T00:00:00.001Z	E0	register/schedule.capbin	4275dc232d95f33bcf6c5eca28ea37bc306bb49ad15e15037f98c84a920346b4	kind=schedule;synthetic sample
+2026-11-13T00:00:00.002Z	E0	register/prompts.json	2e03b59f7251c4c4646ea0f542daedf57fecb6aa27fd8d52f6379ff9a40e6672	kind=prompts;synthetic sample
+2026-11-13T00:00:00.003Z	E0	register/scenario.json	c5e744357404ac03d0aeb2cfc9c78e9808d73cd4f9d1d1afa50408415c5bde6e	kind=scenario;synthetic sample
+2026-11-13T00:00:00.004Z	E0	register/d14_rule.sample.json	89500db9c6f105ed0f497b248e1155c9d43828304e2f010fd892abb0e0fffdfb	kind=d14_rule;synthetic sample
+2026-11-13T00:00:00.005Z	E0	register/e0_d14.json	ec92419c0237b024b9e5ca716e6cbf989df8e362e879e8e0251667c14df6e545	kind=d14_result;synthetic sample
+2026-11-13T00:00:00.006Z	E0	register/pilot2.json	5d210fddef19e1d12afd43b4d044fa897d39d08350ed4665ef345f0a29e13dfe	kind=pilot;synthetic sample
+2026-11-13T00:00:00.007Z	E0	register/loadgen_band.json	858ae51d62b92718523cf8e913d44680346be2eddd23c9c5027b074b362de001	kind=loadgen_band;synthetic sample
+2026-11-13T00:00:00.008Z	E0	register/ladder.0.json	e49c096d07fd61f942a08082ed60fab01ffb340d8f8c84747be38d73f7621a1f	kind=ladder;synthetic sample
+2026-11-13T00:00:00.009Z	E0	register/register.json	0eaca9ba100bb52d4fc787c9bbcba818ff311c1bd4ef876fb5f3c00d9580485f	kind=register;synthetic sample

@@ -30,7 +30,7 @@
   "job_id": "local-sample-good-real-pins",
   "launch_seq": 0,
   "pid": 1001,
-  "register_sha": "a593d6e9f119ed3f714a7f9f759775976a459069322be6fb3d5bd98a2157bcc7",
+  "register_sha": "448e4de5b4136e6ebe02b2ca7db02b6f310ac8b00974b377e435edf3de734c30",
   "restart_count": 0,
   "role": "capload",
   "tier_label": "up-r40",
@@ -455,6 +455,6 @@
  "stop": null,
  "tier_table_sha256": "9ec2e9504387d851b23a6054f90df5b2f04de7e8eb81493c87e89591cb70e2a9",
  "tool": "capload",
- "written_mono_ns": 9852504921475817,
- "written_wall": "2026-11-14T17:08:01.002Z"
+ "written_mono_ns": 9882861019107662,
+ "written_wall": "2026-11-15T01:33:57.099Z"
 }

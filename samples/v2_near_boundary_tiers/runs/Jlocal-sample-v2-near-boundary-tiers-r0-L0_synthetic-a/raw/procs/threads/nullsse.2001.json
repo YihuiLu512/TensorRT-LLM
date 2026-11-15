@@ -1,0 +1,39 @@
+{
+ "identity": {
+  "arm": "synthetic-a",
+  "experiment": "E0",
+  "job_id": "local-sample-v2-near-boundary-tiers",
+  "launch_seq": 0,
+  "pid": null,
+  "register_sha": "cf4ca5ed7faf7362fa8bfa1602ffdb639960f62ef7e9d62a72f2cd0b9214e736",
+  "restart_count": 0,
+  "role": "launch",
+  "tier_label": null,
+  "tier_seq": null,
+  "worker": 0
+ },
+ "pid": 2001,
+ "rules_sha": "0000000000000000000000000000000000000000000000000000000000000000",
+ "schema": "capkit.threads/1",
+ "taken_mono_ns": 1001000000000,
+ "threads": [
+  {
+   "class": "python",
+   "comm": "python",
+   "identified_as": "event_loop",
+   "py_name": null,
+   "source": "synthetic",
+   "tid": 2001
+  },
+  {
+   "class": "python",
+   "comm": "capkit-snap",
+   "identified_as": "snapshot_writer",
+   "py_name": null,
+   "source": "synthetic",
+   "tid": 2002
+  }
+ ],
+ "written_mono_ns": 9915186007340216,
+ "written_wall": "2026-11-15T10:32:42.087Z"
+}

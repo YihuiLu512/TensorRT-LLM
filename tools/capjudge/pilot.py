@@ -160,7 +160,8 @@ def build(list_path, W, d14_rule_path):
     drain_waits, switch = [], set()
     d14_trees, d14_submitted = [], {}
     for tree, seqs in entries:
-        sel = select_tiers(tree, seqs, W)
+        # v1 builder: a CONTRA tier stays out as it did when a contradiction voided the tier
+        sel = select_tiers(tree, seqs, W, drop_verdicts=("VOID", "CONTRA"))
         ctx, rec, by_seq = sel["ctx"], sel["rec"], sel["by_seq"]
         e = _env_of(ctx)
         if env is None:

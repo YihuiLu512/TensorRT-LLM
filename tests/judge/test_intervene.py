@@ -13,7 +13,7 @@ import sys
 from types import SimpleNamespace as NS
 
 import pytest
-from conftest import SAMPLES, TOOLS, judge_mod
+from conftest import SAMPLES, TOOLS, XFAIL_I_P2_13, judge_mod
 
 from capcommon.inject import InjectSpec  # noqa: E402
 
@@ -338,6 +338,31 @@ def test_hop_counts_first_and_unusable_launches_are_listed():
     assert "VOID tiers [6]" in whys and v["status"] == "NOT_RUN"
 
 
+def test_a_contra_tier_makes_a_reverse_dose_launch_unusable(monkeypatch):
+    """CONTRA took VOID's place for the X contradiction (calib-v2 erratum A3 item 6): a reverse
+    launch with a CONTRA tier is not evidence that the boundary stayed, exactly as one with
+    that tier VOID used to be. load_launch lists such tiers; no I localisation is needed."""
+    tiers = [{"tier_seq": s, "judged": True, "verdict": v}
+             for s, v in ((2, "STABLE"), (4, "CONTRA"), (6, "UNSTABLE"), (8, "VOID"))]
+    tiers.append({"tier_seq": 9, "judged": False, "verdict": "CONTRA"})
+    v = {"mode": "P+X+I+V", "tiers": tiers, "identity": {}, "axis": AXIS}
+    monkeypatch.setattr(V.B, "load_judged", lambda tree, W: (v, None, "s" * 64))
+    monkeypatch.setattr(V.B, "upstream_now", lambda tree, vv: ("VALID", None))
+    monkeypatch.setattr(V.B, "launch_interval", lambda vv: ({}, {"lower": 1000, "upper": 1100}))
+    monkeypatch.setattr(V.B, "_roles", lambda tree: ROLES)
+    x = V.load_launch("t", "W")
+    assert x["contra_tiers"] == [4] and x["void_tiers"] == [8]
+    fwd = [_launch(800, 900), _launch(500, 600, delta=40000)]
+    rev = _launch(1000, 1100, role_dose="drain")
+    rev["contra_tiers"] = [4]
+    out = V.dose_response([_ctl()] + fwd + [rev])
+    assert out["reverse"] == [] and out["status"] == "NOT_RUN"
+    assert "CONTRA tiers [4] (X2 contradicts X1 / X3; the deterministic checks passed)" \
+        in out["excluded"][-1]["why"]
+    rev["contra_tiers"] = []  # the same launch without it is usable evidence
+    assert V.dose_response([_ctl()] + fwd + [rev])["status"] == "PASS"
+
+
 def test_dose_response_needs_localised_controls():
     v = V.dose_response([_launch(1000, 1100, doses="none", grade={"grade": "LOWER_BOUND"}),
                          _launch(800, 900)])
@@ -388,7 +413,9 @@ def test_launch_grade_skips_other_void_tiers_but_never_claims_x_unreached():
                        {})
     assert g["grade"] == "LOCALIZED" and g["skipped_tiers"][0]["tier_seq"] == 4
     g = G.launch_grade([_t(2, "STABLE"), _t(4, "NOT_RUN")], {})
-    assert g["grade"] == "NOT_RUN" and "not evaluated" in g["reasons"][0]
+    assert g["grade"] == "NOT_RUN" and "have no stability conclusion" in g["reasons"][0]
+    g = G.launch_grade([_t(2, "STABLE"), _t(4, "CONTRA")], {})  # X was evaluated on CONTRA
+    assert g["grade"] == "NOT_RUN" and "not evaluated" not in g["reasons"][0]
 
 
 def test_launch_grade_undetermined_not_localized_not_run():
@@ -540,6 +567,7 @@ def _intervene(tmp_path, W, trees, out="v.json"):
     return p, o
 
 
+@XFAIL_I_P2_13
 def test_intervene_cli_on_a_judged_control_launch(tmp_path):
     W, tree, p = _judge_sample(tmp_path, "i_server_slow")
     assert p.returncode == 0, p.stderr
@@ -554,6 +582,7 @@ def test_intervene_cli_on_a_judged_control_launch(tmp_path):
     assert p2.returncode == 3 and "exists" in p2.stderr
 
 
+@XFAIL_I_P2_13
 def test_load_launch_uses_the_interval_cut_at_the_tool_limit(tmp_path):
     W, tree, p = _judge_sample(tmp_path, "i_reader_slow")
     assert p.returncode == 0, p.stderr

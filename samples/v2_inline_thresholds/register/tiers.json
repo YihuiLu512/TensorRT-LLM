@@ -1,0 +1,180 @@
+{
+ "arrival": {
+  "dist": "fixed",
+  "seed": 20261113
+ },
+ "axis": {
+  "load_key": "rate_rps",
+  "name": "R",
+  "order": "asc",
+  "unit": "req/s"
+ },
+ "beat_origin_rel_ns": 0,
+ "default_gate": {
+  "deadline_guard_ns": 200000000,
+  "max_snapshot_age_ns": 400000000,
+  "mode": "enforce",
+  "poll_ns": 200000000,
+  "readings": [
+   {
+    "abs_max": 0,
+    "name": "loadgen_inflight",
+    "terms": [
+     {
+      "agg": "sum",
+      "role": "capload",
+      "sign": 1,
+      "slot": "backlog.inflight"
+     }
+    ]
+   },
+   {
+    "abs_max": 0,
+    "name": "sink_streams",
+    "terms": [
+     {
+      "agg": "sum",
+      "role": "nullsse",
+      "sign": 1,
+      "slot": "backlog.active_streams"
+     }
+    ]
+   }
+  ],
+  "rule": "abs_max",
+  "settle_polls": 2
+ },
+ "experiment": "E0",
+ "launch_inject": [],
+ "name": "synthetic-judge-sample",
+ "request_timeout_ns": 1000000000,
+ "schema": "capkit.tiers/1",
+ "tiers": [
+  {
+   "baseline": false,
+   "beat_ns": 20000000,
+   "gate": null,
+   "inject": [],
+   "kind": "warmup",
+   "label": "warmup",
+   "load_value": null,
+   "max_tokens": 3,
+   "note": "synthetic",
+   "prompt_set": "tok8",
+   "ramp_ns": 0,
+   "rate_rps": 10.0,
+   "seq": 0,
+   "start_ns": 0,
+   "stream_interval": 1,
+   "streams_c": null,
+   "tail_ns": 0,
+   "tokens_per_msg": 1,
+   "window_ns": 2000000000
+  },
+  {
+   "baseline": false,
+   "beat_ns": 20000000,
+   "gate": null,
+   "inject": [],
+   "kind": "drain",
+   "label": "drain-01",
+   "load_value": null,
+   "max_tokens": 0,
+   "note": "synthetic",
+   "prompt_set": null,
+   "ramp_ns": 0,
+   "rate_rps": 0.0,
+   "seq": 1,
+   "start_ns": 2000000000,
+   "stream_interval": 1,
+   "streams_c": null,
+   "tail_ns": 0,
+   "tokens_per_msg": 1,
+   "window_ns": 2000000000
+  },
+  {
+   "baseline": true,
+   "beat_ns": 20000000,
+   "gate": null,
+   "inject": [],
+   "kind": "up",
+   "label": "up-r20",
+   "load_value": 20.0,
+   "max_tokens": 3,
+   "note": "synthetic",
+   "prompt_set": "tok8",
+   "ramp_ns": 1000000000,
+   "rate_rps": 20.0,
+   "seq": 2,
+   "start_ns": 4000000000,
+   "stream_interval": 1,
+   "streams_c": null,
+   "tail_ns": 1000000000,
+   "tokens_per_msg": 1,
+   "window_ns": 4000000000
+  },
+  {
+   "baseline": false,
+   "beat_ns": 20000000,
+   "gate": null,
+   "inject": [],
+   "kind": "drain",
+   "label": "drain-02",
+   "load_value": null,
+   "max_tokens": 0,
+   "note": "synthetic",
+   "prompt_set": null,
+   "ramp_ns": 0,
+   "rate_rps": 0.0,
+   "seq": 3,
+   "start_ns": 10000000000,
+   "stream_interval": 1,
+   "streams_c": null,
+   "tail_ns": 0,
+   "tokens_per_msg": 1,
+   "window_ns": 2000000000
+  },
+  {
+   "baseline": false,
+   "beat_ns": 20000000,
+   "gate": null,
+   "inject": [],
+   "kind": "up",
+   "label": "up-r40",
+   "load_value": 40.0,
+   "max_tokens": 3,
+   "note": "synthetic",
+   "prompt_set": "tok8",
+   "ramp_ns": 1000000000,
+   "rate_rps": 40.0,
+   "seq": 4,
+   "start_ns": 12000000000,
+   "stream_interval": 1,
+   "streams_c": null,
+   "tail_ns": 1000000000,
+   "tokens_per_msg": 1,
+   "window_ns": 4000000000
+  },
+  {
+   "baseline": false,
+   "beat_ns": 20000000,
+   "gate": null,
+   "inject": [],
+   "kind": "drain",
+   "label": "drain-03",
+   "load_value": null,
+   "max_tokens": 0,
+   "note": "synthetic",
+   "prompt_set": null,
+   "ramp_ns": 0,
+   "rate_rps": 0.0,
+   "seq": 5,
+   "start_ns": 18000000000,
+   "stream_interval": 1,
+   "streams_c": null,
+   "tail_ns": 0,
+   "tokens_per_msg": 1,
+   "window_ns": 2000000000
+  }
+ ]
+}

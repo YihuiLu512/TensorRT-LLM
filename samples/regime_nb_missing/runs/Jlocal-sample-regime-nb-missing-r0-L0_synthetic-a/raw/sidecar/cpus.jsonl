@@ -1,4 +1,4 @@
-{"_header": true, "columns": ["t_rel_ns", "cpu", "user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal", "freq_khz"], "identity": {"arm": "synthetic-a", "experiment": "E0", "job_id": "local-sample-regime-nb-missing", "launch_seq": 0, "pid": null, "register_sha": "eb3e34bf0ab302cdda28ab1a4d13c92bb4f9b845714bb191e5e04f80d73babc2", "restart_count": 0, "role": "sidecar", "tier_label": null, "tier_seq": null, "worker": 0}, "schema": "capkit.sidecar.cpus/1", "written_wall": "2026-11-14T17:08:02.627Z"}
+{"_header": true, "columns": ["t_rel_ns", "cpu", "user", "nice", "system", "idle", "iowait", "irq", "softirq", "steal", "freq_khz"], "identity": {"arm": "synthetic-a", "experiment": "E0", "job_id": "local-sample-regime-nb-missing", "launch_seq": 0, "pid": null, "register_sha": "7b9616d7091e51c14d5d3b3797da4a85bfab5bcc9f3749188b0b3ef0d3fbf9b0", "restart_count": 0, "role": "sidecar", "tier_label": null, "tier_seq": null, "worker": 0}, "schema": "capkit.sidecar.cpus/1", "written_wall": "2026-11-15T01:33:58.760Z"}
 [-1000000000,2,0,0,0,0,0,0,0,0,2000000]
 [-1000000000,3,0,0,0,0,0,0,0,0,2000000]
 [-1000000000,4,0,0,0,0,0,0,0,0,2000000]

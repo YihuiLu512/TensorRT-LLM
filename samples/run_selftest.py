@@ -4,9 +4,10 @@
 
 For every sample W under --samples: copy it to a fresh temp dir, run the judge exactly as
 documented (`python -m <pkg> --tree <T> --workdir <W>`, one tree, no globs), and assert the
-exit code, the listed tier verdicts, that every listed check is RED / NOT_RUN and, when the
-sample lists state_last, the status of the tree's last STATE line (the judge's line must not
-improve on what caplaunch / capjobs recorded before it). Plus:
+exit code, the listed tier verdicts, the listed ladder level verdicts (verdicts.json levels[],
+calibration v2), that every listed check is RED / NOT_RUN and, when the sample lists
+state_last, the status of the tree's last STATE line (the judge's line must not improve on what
+caplaunch / capjobs recorded before it). Plus:
   * the good sample judged a second time -> 12 without a new attempt record; its tree copied
     elsewhere (JUDGED.tsv) -> 12;
   * an INPUT_INVALID sample leaves no judge/ but one judge.attempts/*/ record (attempt.json and
@@ -16,6 +17,14 @@ improve on what caplaunch / capjobs recorded before it). Plus:
     target file (positive control of the sabotage), then assert the expected RED.
 Exit code 0 only if every assertion holds and at least one sample ran; --expect-samples is
 required and must equal the number of sample dirs (with expect.json) under --samples.
+
+DEFERRED_P2_13 lists the samples whose expectation needs the I threshold source of calibration
+v2 (pilot/2 i1_calibration, DESIGN-r7a P2-13, sub-batch SB-C; INTERFACES erratum calib-v2-A7)
+and, per sample, the expectation parts that need it: "tier_localisation", "grade" and
+"tier_verdicts.<seq>". Such a sample still runs; the rest of its expectation (exit code, other
+tier verdicts, checks, ...) is asserted as usual. Mismatches in the listed parts go to the
+report's `deferred` section instead of `errors`. A listed sample whose listed parts all hold is
+an error, so the list has to shrink when P2-13 lands.
 """
 
 import argparse
@@ -29,6 +38,10 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXED_CODE_SHA = "b" * 40
+_I_PARTS = ("tier_localisation", "grade")
+DEFERRED_P2_13 = {"i_conflict": _I_PARTS + ("tier_verdicts.4",),  # UNDETERMINED needs I
+                  "i_reader_slow": _I_PARTS, "i_reader_slow_real_pins": _I_PARTS,
+                  "i_server_slow": _I_PARTS, "sat_spin_thread_same_process": _I_PARTS}
 
 
 def sha(p):
@@ -66,7 +79,8 @@ def compare(name, exp, rc, tree, errs):
     if rc != exp["exit_code"]:
         errs.append("%s: exit %d != expected %d" % (name, rc, exp["exit_code"]))
     tv = exp.get("tier_verdicts") or {}
-    if tv:
+    lv = exp.get("levels") or {}
+    if tv or lv:
         vpath = os.path.join(tree, "judge", "verdicts.json")
         if not os.path.exists(vpath):
             errs.append("%s: no verdicts.json" % name)
@@ -78,6 +92,11 @@ def compare(name, exp, rc, tree, errs):
             if got.get(seq) != want:
                 errs.append("%s: tier %s verdict %r != expected %r" % (name, seq, got.get(seq),
                                                                        want))
+        got = {str(x["level"]): x["verdict"] for x in v.get("levels") or []}
+        for level, want in lv.items():
+            if got.get(level) != want:
+                errs.append("%s: level %s verdict %r != expected %r" % (name, level,
+                                                                        got.get(level), want))
     _compare_localisation(name, exp, tree, errs)
     if "state_last" in exp:
         got = last_state(tree)
@@ -123,8 +142,38 @@ def copy_sample(src, tmp, name):
     return dst
 
 
+def split_deferred(exp, parts):
+    """(core expectation, expectation of the deferred parts only); the deferred one carries no
+    exit code (compare() asserts it with the core part)."""
+    core = json.loads(json.dumps(exp))
+    later = {}
+    for part in parts:
+        key, _, seq = part.partition(".")
+        if seq:
+            tv = core.get(key) or {}
+            if seq in tv:
+                later.setdefault(key, {})[seq] = tv.pop(seq)
+        elif key in core:
+            later[key] = core.pop(key)
+    return core, later
+
+
+def _deferred_compare(name, exp, rc, tree, errs, deferred):
+    """compare() for a DEFERRED_P2_13 sample: the core part as usual, mismatches of the listed
+    parts under `deferred`; listed parts that all hold are an error (the list would rot)."""
+    core, later = split_deferred(exp, DEFERRED_P2_13[name])
+    compare(name, core, rc, tree, errs)
+    mine = []
+    if later:
+        compare(name, dict(later, exit_code=rc), rc, tree, mine)
+    deferred[name] = mine
+    if not mine:
+        errs.append("%s: listed in DEFERRED_P2_13 but matches its expectation; remove it from "
+                    "the list" % name)
+
+
 def run(args):
-    errs, ran = [], []
+    errs, ran, deferred = [], [], {}
     names = sorted(n for n in os.listdir(args.samples)
                    if os.path.isfile(os.path.join(args.samples, n, "expect.json")))
     if len(names) != args.expect_samples:
@@ -140,13 +189,18 @@ def run(args):
             if os.listdir(tree):
                 errs.append("%s: tree is not empty" % name)
         rc, err = run_judge(args, W, tree)
-        compare(name, exp, rc, tree, errs)
+        if name in DEFERRED_P2_13:
+            _deferred_compare(name, exp, rc, tree, errs, deferred)
+        else:
+            compare(name, exp, rc, tree, errs)
         ran.append((name, rc))
         if exp["exit_code"] == 13:
             _input_invalid_extras(args, name, W, tree, errs)
         if name == "good":
             _good_extras(args, W, tree, tmp, errs)
-    print(json.dumps({"ran": ran, "errors": errs, "tmp": tmp}, indent=1))
+    print(json.dumps({"ran": ran, "errors": errs, "deferred": deferred,
+                      "deferred_rule": "DEFERRED_P2_13 (INTERFACES calib-v2-A7)", "tmp": tmp},
+                     indent=1))
     if not ran:
         errs.append("no sample ran")
     return 0 if not errs else 1

@@ -13,6 +13,7 @@ import importlib.util
 import json
 import os
 import shutil
+import socket
 import sys
 
 from capcommon.exitcodes import ENV_INVALID, OK, CapkitError
@@ -137,13 +138,25 @@ def check_imports(dest, packages):
             "passed": passed, "outcome": outcome}
 
 
-def check_job(snap, plan_id, node, deadline_epoch):
+def check_job(snap, plan_id, node, deadline_epoch, expect_node=None):
+    """Snapshot verification and, for a pinned job (submit --expect-node), the Slurm node name
+    `node` (SLURMD_NODENAME, the name space of sinfo, pin-next and --expect-node): another node,
+    or none known ('' or 'unknown'), fails the check, so the job ends ENV_INVALID before any
+    measurement. The short host name is recorded for diagnosis only."""
     ok, problems = snapshot.verify(snap)
     with open(os.path.join(snap, snapshot.MANIFEST), "rb") as f:
         msha = sha256_bytes(f.read())
+    host = socket.gethostname().split(".")[0]
+    node_ok = not expect_node or (node not in (None, "", "unknown") and node == expect_node)
+    if not node_ok:
+        problems = list(problems) + ["node %s (host %s) is not the expected node %s"
+                                     % (node or "unknown", host, expect_node)]
+    passed = ok and node_ok
     return {"plan_id": plan_id, "node": node, "snapshot_dir": snap, "snapshot_sha256": msha,
             "snapshot_verified": ok, "snapshot_problems": problems,
-            "deadline_epoch": deadline_epoch, "passed": ok, "outcome": "PASS" if ok else "FAIL"}
+            "expect_node": expect_node or None, "hostname_short": host,
+            "expect_node_ok": node_ok, "deadline_epoch": deadline_epoch, "passed": passed,
+            "outcome": "PASS" if passed else "FAIL"}
 
 
 SCHEMAS = {"image": "capkit.image/1", "mounts": "capkit.mounts/1",
@@ -169,6 +182,8 @@ def main(argv=None):
     ap.add_argument("--plan-id")
     ap.add_argument("--node")
     ap.add_argument("--deadline-epoch", type=int)
+    ap.add_argument("--expect-node", default="", help="job: the Slurm node name (--node) a "
+                                                     "pinned job must run on ('' = not pinned)")
     a = ap.parse_args(argv)
     try:
         ident = jobident.from_args(a)
@@ -187,7 +202,7 @@ def main(argv=None):
             with open(a.manifest, "r", encoding="utf-8") as f:
                 doc = check_imports(a.dest, manifest_packages(json.load(f)))
         else:
-            doc = check_job(a.snap, a.plan_id, a.node, a.deadline_epoch)
+            doc = check_job(a.snap, a.plan_id, a.node, a.deadline_epoch, a.expect_node)
     except (CapkitError, OSError, ValueError, TypeError) as e:
         print("capjobs.envfiles %s: %s" % (a.what, e), file=sys.stderr)
         return ENV_INVALID

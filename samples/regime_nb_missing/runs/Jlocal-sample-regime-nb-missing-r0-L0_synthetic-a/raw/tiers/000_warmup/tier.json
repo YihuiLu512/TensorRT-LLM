@@ -9,7 +9,7 @@
   "job_id": "local-sample-regime-nb-missing",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "eb3e34bf0ab302cdda28ab1a4d13c92bb4f9b845714bb191e5e04f80d73babc2",
+  "register_sha": "7b9616d7091e51c14d5d3b3797da4a85bfab5bcc9f3749188b0b3ef0d3fbf9b0",
   "restart_count": 0,
   "role": "launch",
   "tier_label": "warmup",
@@ -249,6 +249,6 @@
   "tokens_per_msg": 1,
   "window_ns": 2000000000
  },
- "written_mono_ns": 9852506460553016,
- "written_wall": "2026-11-14T17:08:02.541Z"
+ "written_mono_ns": 9882862595274579,
+ "written_wall": "2026-11-15T01:33:58.675Z"
 }

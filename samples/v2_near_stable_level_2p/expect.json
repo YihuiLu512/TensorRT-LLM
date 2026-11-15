@@ -1,0 +1,15 @@
+{
+ "exit_code": 0,
+ "levels": {
+  "1": "STABLE"
+ },
+ "red_checks": [],
+ "state_last": "VALID",
+ "synthetic": true,
+ "tier_verdicts": {
+  "2": "STABLE",
+  "4": "STABLE",
+  "6": "STABLE"
+ },
+ "tree": "runs/Jlocal-sample-v2-near-stable-level-2p-r0-L0_synthetic-a"
+}

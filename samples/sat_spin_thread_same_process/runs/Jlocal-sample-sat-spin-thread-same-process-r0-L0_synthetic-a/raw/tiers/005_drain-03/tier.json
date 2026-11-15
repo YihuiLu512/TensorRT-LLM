@@ -9,7 +9,7 @@
   "job_id": "local-sample-sat-spin-thread-same-process",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "67c5cafd07719815fff5a1de882382d154efa72bc9b235ee4b82772cc519ef36",
+  "register_sha": "a4c0d986f8b850adc705a8a30a9817bae4d096b53cfb049b54eb78c3218c0657",
   "restart_count": 0,
   "role": "launch",
   "tier_label": "drain-03",
@@ -210,6 +210,6 @@
   "tokens_per_msg": 1,
   "window_ns": 2000000000
  },
- "written_mono_ns": 9852504058846763,
- "written_wall": "2026-11-14T17:08:00.139Z"
+ "written_mono_ns": 9882860086509952,
+ "written_wall": "2026-11-15T01:33:56.167Z"
 }

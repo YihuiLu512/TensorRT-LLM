@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""Append-only TSV ledgers: REGISTRY.tsv, submissions.tsv, JUDGED.tsv (INTERFACES.md 9.3, 9.5, 10.1).
+"""Append-only TSV ledgers: REGISTRY.tsv, submissions.tsv, BUDGET.tsv, JUDGED.tsv (INTERFACES.md
+9.3, 9.5, 10.1; BUDGET.tsv: erratum calib-v2-A4).
 
 Files are only ever opened in append mode; nothing here rewrites a ledger.
 """
@@ -8,10 +9,12 @@ Files are only ever opened in append mode; nothing here rewrites a ledger.
 import fcntl
 import json
 import os
+import shlex
 
 from .clock import parse_wall_iso, wall_iso
 from .exitcodes import ConfigError
 from .hashing import is_sha256_hex
+from .jobplan import ITEM_ID_RE, check_item_class
 from .policy import (ASSERTION_KEYS, NO_MODEL_EXPERIMENTS, PREP_ASSERTION_KEYS,
                      PREP_TOKENIZER_EXPERIMENT, PREP_TOKENIZER_PURPOSE, PolicyError,
                      check_mounts, check_prep_tokenizer_mounts)
@@ -19,7 +22,10 @@ from .policy import (ASSERTION_KEYS, NO_MODEL_EXPERIMENTS, PREP_ASSERTION_KEYS,
 REGISTRY_COLUMNS = ("registered_at", "experiment", "relpath", "sha256", "note")
 REGISTRY_KINDS = ("register", "register_md", "tier_table", "schedule", "prompts", "scenario",
                   "pilot", "loadgen_band", "stub_calib", "near_boundary_noise", "prediction",
-                  "hw_profile", "d14_rule")
+                  "hw_profile", "d14_rule",
+                  # calibration v2 (calib-v2 DESIGN-r7a 3.1 P2-02, 3.2)
+                  "errata", "ladder", "e0_params", "e0_summary", "d14_result", "e0_list",
+                  "job_plan", "node_exclusions", "node_list")
 SUBMISSION_COLUMNS = ("event_at", "plan_id", "event", "job_id", "status", "reason", "experiment",
                       "arms", "launches", "basis", "account", "partition", "qos", "exclude",
                       "time_limit", "mem", "cpus_per_task", "gpus", "exclusive", "snapshot_dir",
@@ -31,6 +37,12 @@ SUBMISSION_STATUSES = ("", "VALID", "VOID", "NOT_RUN", "ENV_INVALID", "CANCELLED
 # sbatch outcome unknown (the job may be queued): only on a NOTE row with submitted_at; a later
 # SUBMITTED or ENDED row (written from evidence, never by resubmitting) supersedes it.
 UNKNOWN_SUBMIT = "UNKNOWN_SUBMIT"
+# BUDGET.tsv (<W>/BUDGET.tsv, append-only; calib-v2 DESIGN-r7a 3.2, P2-08b): RESERVED is written
+# before sbatch, JOB_ID once the job id is known. The budget count of a budget_id is the number of
+# distinct item_id with a RESERVED row (never the row count).
+BUDGET_COLUMNS = ("event_at", "event", "budget_id", "item_id", "item_class", "plan_sha256",
+                  "register_sha256", "plan_id", "job_id")
+BUDGET_EVENTS = ("RESERVED", "JOB_ID")
 JUDGED_COLUMNS = ("judged_at", "job_id", "restart_count", "launch_seq", "arm", "experiment",
                   "tree_relpath", "verdicts_sha256")
 
@@ -247,12 +259,63 @@ def submission_unknown(cur):
     return cur.get("status") == UNKNOWN_SUBMIT
 
 
+def plan_job_env_value(snapshot_dir, key):
+    """A value of a submitted plan's own job.env (<snapshot_dir>/job.env, `export KEY=<shell
+    word>`), '' when the key is absent; OSError when job.env cannot be read."""
+    with open(os.path.join(snapshot_dir, "job.env"), "r", encoding="utf-8") as f:
+        for line in f:
+            if line.startswith("export %s=" % key):
+                vals = shlex.split(line.split("=", 1)[1])
+                return vals[0] if vals else ""
+    return ""
+
+
 def submission_for_job(path, job_id):
     """The merged row whose job_id matches, or None (error if more than one plan has it)."""
     hits = [r for r in submissions_current(path).values() if r["job_id"] == str(job_id)]
     if len(hits) > 1:
         raise LedgerError("job %s appears under more than one plan_id" % job_id)
     return hits[0] if hits else None
+
+
+# ---- BUDGET.tsv --------------------------------------------------------------------------------
+
+def budget_append(path, row):
+    """Append one BUDGET.tsv row (every column but event_at given; event_at is set here)."""
+    full = dict(row)
+    if full.get("event") not in BUDGET_EVENTS:
+        raise LedgerError("BUDGET event must be one of %s" % (BUDGET_EVENTS,))
+    if not full.get("budget_id") or not ITEM_ID_RE.match(full["budget_id"]):
+        raise LedgerError("BUDGET budget_id must match %s" % ITEM_ID_RE.pattern)
+    if not full.get("item_id") or not ITEM_ID_RE.match(full["item_id"]):
+        raise LedgerError("BUDGET item_id must match %s" % ITEM_ID_RE.pattern)
+    check_item_class(full.get("item_class"))
+    for k in ("plan_sha256", "register_sha256"):
+        if not is_sha256_hex(full.get(k, "")):
+            raise LedgerError("BUDGET %s must be 64 lowercase hex" % k)
+    if not full.get("plan_id"):
+        raise LedgerError("BUDGET rows name the submission plan_id")
+    if (full["event"] == "JOB_ID") != bool(full.get("job_id")):
+        raise LedgerError("BUDGET: a JOB_ID row has a job id, a RESERVED row has none")
+    full.setdefault("event_at", wall_iso())
+    _check_ts("event_at", full["event_at"])
+    append_tsv(path, BUDGET_COLUMNS, full)
+    return full
+
+
+def budget_rows(path):
+    return read_tsv(path, BUDGET_COLUMNS)
+
+
+def budget_reserved_items(path, budget_id=None):
+    """{item_id} with a RESERVED row (in budget_id when given)."""
+    return {r["item_id"] for r in budget_rows(path) if r["event"] == "RESERVED"
+            and (budget_id is None or r["budget_id"] == budget_id)}
+
+
+def budget_count(path, budget_id):
+    """The budget count: distinct item_id with a RESERVED row for budget_id."""
+    return len(budget_reserved_items(path, budget_id))
 
 
 # ---- JUDGED.tsv --------------------------------------------------------------------------------

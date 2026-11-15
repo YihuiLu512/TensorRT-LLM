@@ -30,7 +30,8 @@ def external_input(path):
     return path
 
 
-FORBIDDEN = ("ssh", "sbatch", "srun", "squeue", "sacct", "scontrol", "scancel", "salloc", "cdb")
+FORBIDDEN = ("ssh", "sbatch", "srun", "squeue", "sacct", "scontrol", "scancel", "salloc", "cdb",
+             "sinfo")
 DATA = os.path.join(os.path.dirname(__file__), "data")
 
 

@@ -12,6 +12,11 @@ A judged tier reads only the bands of its own regime (register.json judge.near_b
 marks the near-boundary tiers; every other tier is subsat): a near-boundary tier never falls
 back to a sub-saturation band (DATA-AND-ANALYSIS 4 item 6). A key that no source defines for
 the tier's regime -> the check that needs it is NOT_RUN.
+
+Calibration v2 (INTERFACES errata calib-v2-A2): the judge rejects capkit.pilot/1 and every
+near_boundary_noise file before they reach this container; its sources are now the
+loadgen_band / stub_calib files and a v1 register's inline thresholds. pilot/2 and d14_result
+are read by capjudge.nullz.
 """
 
 from . import stats

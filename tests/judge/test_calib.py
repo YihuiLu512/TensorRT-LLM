@@ -13,13 +13,14 @@ import sys
 from types import SimpleNamespace as NS
 
 import pytest
-from conftest import C, PKG, SAMPLES, TOOLS
+from conftest import C, PKG, SAMPLES, TOOLS, XFAIL_I_P2_13
 
 if TOOLS not in sys.path:
     sys.path.insert(0, TOOLS)
 from capjudge import calib as K  # noqa: E402
 from capjudge import checks as CH  # noqa: E402
 from capjudge import inputs as I  # noqa: E402
+from capjudge import nullz as Z  # noqa: E402
 from capjudge import thresholds as T  # noqa: E402
 
 ENV = {"hw_profile_sha": "d" * 64, "image_sha": "e" * 64, "capkit_sha": "c" * 40,
@@ -134,26 +135,27 @@ def test_same_key_and_regime_twice_is_an_error():
         b.add_source("near_boundary_noise", "n", "b" * 64, _nb())
 
 
-def test_pilot_subsat_and_near_boundary_noise_files_register_together(monkeypatch, tmp_path):
-    # RUNBOOK E1 / E2a: the pilot, a subsat near_boundary_noise file (pilot format, built by
-    # capjudge.pilot) and a near_boundary one, all in one register
+def test_v1_pilot_and_near_boundary_noise_files_are_not_threshold_sources(monkeypatch,
+                                                                          tmp_path):
+    # calib-v2 (DESIGN-r7a P2-02): the register that used to load the pilot, a subsat
+    # near_boundary_noise file (pilot format) and a near_boundary one is now INPUT_INVALID,
+    # whichever of them comes first; a near_boundary_noise file is rejected alone, once or twice
     pilot = {"schema": K.PILOT_SCHEMA, "environment": dict(ENV),
              "noise_bands": {"T1:p_ns:r": dict(BAND)}}
     subsat = {"schema": K.PILOT_SCHEMA, "environment": dict(ENV),
               "noise_bands": {"T1:x_ns:r": dict(BAND, max=5)}}
-    ctx = _load_cal(monkeypatch, tmp_path, [_entry("pilot", "p"),
-                                            _entry("near_boundary_noise", "e1_noise"),
-                                            _entry("near_boundary_noise", "nb")],
-                    [pilot, subsat, _nb()])
-    assert ctx.bands.get("T1:x_ns:r", "subsat")["max"] == 5
-    assert ctx.bands.get("T1:x_ns:r", "near_boundary")["regime"] == "near_boundary"
-    assert ctx.bands.extras["pilot"] is ctx.calib_docs["pilot"]
-    assert sorted(ctx.bands.extras["near_boundary_noise"]) == ["e1_noise", "nb"]
-    assert sorted(ctx.calib_docs["near_boundary_noise"]) == ["e1_noise", "nb"]
-    # still one source per (key, regime), and the other kinds at most once
-    with pytest.raises(I.InputInvalid, match="defined by both"):
-        _load_cal(monkeypatch, tmp_path, [_entry("near_boundary_noise", "a"),
-                                          _entry("near_boundary_noise", "b")], [_nb(), _nb()])
+    for entries, docs in (
+            ([_entry("pilot", "p"), _entry("near_boundary_noise", "e1_noise"),
+              _entry("near_boundary_noise", "nb")], [pilot, subsat, _nb()]),
+            ([_entry("pilot", "p")], [pilot]),
+            ([_entry("near_boundary_noise", "e1_noise")], [subsat]),
+            ([_entry("near_boundary_noise", "nb")], [_nb()]),
+            ([_entry("near_boundary_noise", "a"), _entry("near_boundary_noise", "b")],
+             [_nb(), _nb("subsat")])):
+        with pytest.raises(I.InputInvalid, match=r"v1 calibration is not a threshold source "
+                                                 r"\(calib-v2 erratum\)"):
+            _load_cal(monkeypatch, tmp_path, entries, docs)
+    # Bands (loadgen_band / stub_calib sources): still one file per kind
     for kind, doc in (("pilot", pilot), ("loadgen_band", _loadgen())):
         b = T.Bands()
         b.add_source(kind, "one", "a" * 64, doc)
@@ -183,7 +185,8 @@ def _ctx(**kw):
     c = NS(launch={"hw_profile_sha": ENV["hw_profile_sha"], "image": {"sha256": ENV["image_sha"]},
                    "register": {"relpath": "r.json"}},
            ident=NS(experiment="E2a", arm="a", register_sha="f" * 64), bands=T.Bands(),
-           calib_docs={}, calib_bind={}, tier_regime={})
+           thresholds=Z.Thresholds(), calib_docs={}, calib_bind={}, tier_regime={},
+           config=None, threshold_config=None, ladder_path=None, tier_role={})
     c.__dict__.update(kw)
     return c
 
@@ -223,7 +226,6 @@ def test_bind_loads_and_shapes_resolve(monkeypatch, tmp_path):
     (_entry("loadgen_band", "l", bind={"ld": "s"}, note="x"), _loadgen()),  # unknown key
     (_entry("loadgen_band", "l", bind={"ld": "s"}),
      _loadgen(environment=dict(ENV, image_sha="0" * 64))),  # other environment
-    (_entry("near_boundary_noise", "n"), _nb(environment=dict(ENV, hw_profile_sha="1" * 64))),
     (_entry("stub_calib", "s", bind={"sink": "s"}), _stub(in_domain={"x": 1})),
 ])
 def test_bad_calibration_entries_are_input_invalid(monkeypatch, tmp_path, entry, doc):
@@ -632,8 +634,9 @@ def test_loadgen_band_builder_uses_stable_tiers_only(tmp_path):
     assert "4" in d["inputs"][0]["tiers_excluded"]
 
 
-@pytest.mark.parametrize("name, censored, role", [("i_reader_slow", False, "capload"),
-                                                  ("i_server_slow", True, "nullsse")])
+@pytest.mark.parametrize("name, censored, role", [
+    pytest.param("i_reader_slow", False, "capload", marks=XFAIL_I_P2_13),
+    pytest.param("i_server_slow", True, "nullsse", marks=XFAIL_I_P2_13)])
 def test_loadgen_band_maximum_is_measured_only_when_the_role_was_localised(tmp_path, name,
                                                                            censored, role):
     W, tree = _judged(tmp_path, name)
@@ -684,10 +687,12 @@ def test_shape_builder_never_leaves_a_launch_out_of_the_maximum(tmp_path, monkey
 
     def no_lower(*a):
         sel = real(*a)
-        sel["verdicts"]["boundary_T4"] = dict(sel["verdicts"]["boundary_T4"], lower_seq=None)
+        for t in sel["verdicts"]["tiers"]:
+            if t.get("verdict") == "STABLE":
+                t["verdict"] = "UNSTABLE"
         return sel
     monkeypatch.setattr(K, "_select", no_lower)
-    with pytest.raises(K.CalibError, match="T4 has no lower end") as e:
+    with pytest.raises(K.CalibError, match="no stable tier below the first non-stable") as e:
         K.build_shapes("loadgen_band", str(lst), str(W))
     assert str(tree) in str(e.value)
     monkeypatch.setattr(K, "_select", real)
@@ -702,3 +707,119 @@ def test_shape_builders_reject_bad_lists(tmp_path, line):
     W, tree = _judged(tmp_path, "good")
     p, o = _build(tmp_path, W, "loadgen-band", [line.format(t=tree)])
     assert p.returncode == 3 and not o.exists()
+
+
+# ---- b2-judge FU-3 / FU-4 (calib-v2 DESIGN-r7a 3.5 test 41; errata calib-v2-A1) -------------
+# The cases of code-review/self-review-compare/capkit-b2judge-J17871/R3/_compare/repro_b2.py.
+
+from capjudge import boundary as BD  # noqa: E402
+from capjudge import grade as G  # noqa: E402
+from capjudge import stats as ST  # noqa: E402
+
+LD_LOC = {"status": "LOCALIZED", "role": "ld", "measure_class": "load_source"}
+
+
+def _rt(seq, load, v, i=None):
+    e = {"tier_seq": seq, "order_key": load, "load_value": load, "verdict": v,
+         "judged": True, "checks": {}}
+    if i:
+        e["X"] = {"I": i}
+    return e
+
+
+def _judge_like(tiers):
+    """boundary_T4 and grade as capjudge.judge writes them for these tiers (P+X+I+V)."""
+    t4 = ST.t4_boundary([{"seq": e["tier_seq"], "order_key": e["order_key"],
+                          "load_value": e["load_value"], "verdict": e["verdict"]}
+                         for e in tiers])
+    t4["undetermined_seqs"] = [e["tier_seq"] for e in tiers if e["verdict"] == "UNDETERMINED"]
+    return {"tiers": tiers, "boundary_T4": t4, "grade": G.launch_grade(tiers, t4),
+            "mode": "P+X+I+V"}
+
+
+HINT = "T4: a stable tier lies above the lowest unstable or undetermined tier"
+
+
+def test_fu3_non_monotone_max_tier_is_the_grade_lower_end():
+    v = _judge_like([_rt(1, 10, "STABLE"), _rt(2, 20, "UNSTABLE", LD_LOC),
+                     _rt(3, 30, "STABLE")])
+    assert v["boundary_T4"]["lower_seq"] == 3 and v["boundary_T4"]["non_monotone"] is True
+    assert v["grade"]["interval"]["lower_seq"] == 1 and HINT in v["grade"]["reasons"]
+    assert K._healthy_max_tier(v, "/t") == (1, 2)
+    assert K.max_attribution(v, "ld")[0] is True      # the same tier the attribution names
+
+
+def test_fu4_undetermined_below_a_stable_tier_is_non_monotone():
+    v = _judge_like([_rt(1, 10, "STABLE"), _rt(2, 20, "UNDETERMINED"), _rt(3, 30, "STABLE")])
+    t4 = v["boundary_T4"]
+    assert t4["non_monotone"] is True
+    # the interval itself is unchanged: only STABLE / UNSTABLE make it
+    assert (t4["lower_seq"], t4["upper_seq"], t4["kind"]) == (3, None, "lower_bound_only")
+    assert v["grade"]["grade"] == "UNDETERMINED" and HINT in v["grade"]["reasons"]
+    assert K._healthy_max_tier(v, "/t") == (1, 2)
+    # UNDETERMINED above the highest stable tier: monotone, no hint
+    v2 = _judge_like([_rt(1, 10, "STABLE"), _rt(2, 20, "UNDETERMINED")])
+    assert v2["boundary_T4"]["non_monotone"] is False and HINT not in v2["grade"]["reasons"]
+    # the analysis scripts' T4 recheck compares lower / upper / seqs / kind only
+    assert BD.launch_interval(v)[0]["lower_seq"] == 3
+
+
+def test_fu3_fu4_monotone_launch_is_unchanged():
+    v = _judge_like([_rt(1, 10, "STABLE"), _rt(2, 20, "STABLE"), _rt(3, 30, "UNSTABLE", LD_LOC)])
+    t4 = v["boundary_T4"]
+    assert (t4["lower_seq"], t4["upper_seq"], t4["kind"], t4["non_monotone"]) == \
+        (2, 3, "interval", False)
+    assert K._healthy_max_tier(v, "/t") == (2, 3) and HINT not in v["grade"]["reasons"]
+    # the load source saturated first: LOWER_BOUND, the interval has no upper end
+    assert v["grade"]["grade"] == "LOWER_BOUND"
+    assert v["grade"]["interval"] == {"lower_seq": 2, "lower": 20, "upper_seq": None,
+                                      "upper": None}
+
+
+def test_max_tier_skips_other_void_tiers_as_the_grade_does():
+    tiers = [_rt(1, 10, "STABLE"), dict(_rt(2, 20, "VOID"), checks={"C5": "RED"}),
+             _rt(3, 30, "STABLE"), dict(_rt(4, 40, "VOID"), checks={"C1": "RED"}),
+             _rt(5, 50, "STABLE")]
+    v = _judge_like(tiers)
+    assert K._healthy_max_tier(v, "/t") == (3, 4) and v["grade"]["interval"]["lower_seq"] == 3
+    assert v["boundary_T4"]["lower_seq"] == 5
+
+
+def test_max_tier_refuses_a_grade_that_names_another_tier():
+    v = _judge_like([_rt(1, 10, "STABLE"), _rt(2, 20, "UNSTABLE", LD_LOC)])
+    v["grade"]["interval"]["lower_seq"] = 7
+    with pytest.raises(K.CalibError, match="interval lower end is tier 7"):
+        K._healthy_max_tier(v, "/t")
+    with pytest.raises(K.CalibError, match="no stable tier below"):
+        K._healthy_max_tier(_judge_like([_rt(1, 10, "UNSTABLE", LD_LOC),
+                                         _rt(2, 20, "STABLE")]), "/t")
+
+
+def test_shape_builder_takes_the_tier_below_the_first_non_stable(tmp_path, monkeypatch):
+    # the good sample re-labelled S U S on its three rate tiers (warm-up 10, 20, 40 req/s):
+    # the maximum comes from tier 0, inputs[] records tier 0, the first non-stable tier 2 and
+    # the T4 lower end 4; the launch is uncensored (the grade localised tier 2 to capload)
+    W, tree = _judged(tmp_path, "good")
+    lst = tmp_path / "l.tsv"
+    lst.write_text("%s\t2,4\tcapload\tld-r\n" % tree)
+    real, asked = K._select, []
+    loc = dict(LD_LOC, role="capload")
+
+    def relabel(*a):
+        sel = real(*a)
+        tiers = [_rt(0, 10.0, "STABLE"), _rt(2, 20.0, "UNSTABLE", loc), _rt(4, 40.0, "STABLE")]
+        sel["verdicts"].update(_judge_like(tiers))
+        return sel
+
+    def spy(ctx, t, role, k, split, lk):
+        asked.append(t.seq)
+        return real_load(ctx, t, role, k, split, lk)
+    real_load = K.worker_load
+    monkeypatch.setattr(K, "_select", relabel)
+    monkeypatch.setattr(K, "worker_load", spy)
+    d = K.build_shapes("loadgen_band", str(lst), str(W))
+    assert set(asked) == {0}
+    assert d["inputs"][0]["max_tier"] == {"tier_seq": 0, "first_non_stable_seq": 2,
+                                          "t4_lower_seq": 4}
+    mx = d["shapes"]["ld-r"]["per_worker_max"]
+    assert mx["censored"] is False and mx["value"] != 20.0

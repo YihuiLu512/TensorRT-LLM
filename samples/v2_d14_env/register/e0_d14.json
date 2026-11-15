@@ -1,0 +1,24 @@
+{
+ "d14_softirq": {
+  "conclusion_reason": "synthetic",
+  "irq_softirq_is_experiment": true,
+  "n_trees_complete": 0,
+  "readings": {},
+  "rule": null,
+  "rule_file": null
+ },
+ "environment": {
+  "baseline_sha": "2f22a98d6e",
+  "capkit_sha": "cccccccccccccccccccccccccccccccccccccccc",
+  "hw_profile_sha": "0000000000000000000000000000000000000000000000000000000000000000",
+  "image_sha": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+ },
+ "inputs": [],
+ "rule": {
+  "relpath": "register/d14_rule.sample.json",
+  "sha256": "89500db9c6f105ed0f497b248e1155c9d43828304e2f010fd892abb0e0fffdfb"
+ },
+ "schema": "capkit.d14_result/1",
+ "select": "capjudge.pilot.select_tiers",
+ "synthetic": true
+}

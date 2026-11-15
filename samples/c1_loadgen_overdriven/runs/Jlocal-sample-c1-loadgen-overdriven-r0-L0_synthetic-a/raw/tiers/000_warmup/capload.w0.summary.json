@@ -30,7 +30,7 @@
   "job_id": "local-sample-c1-loadgen-overdriven",
   "launch_seq": 0,
   "pid": 1001,
-  "register_sha": "2a09620b16ad69a777a5a150bb7cab6b519706544238cd3cde013d4f2b7b0177",
+  "register_sha": "1ef7161952ab0ffbe6c9e80f9a9c5c552e1a7834e80f2f2826e6b327f81ae9f4",
   "restart_count": 0,
   "role": "capload",
   "tier_label": "warmup",
@@ -455,6 +455,6 @@
  "stop": null,
  "tier_table_sha256": "9ec2e9504387d851b23a6054f90df5b2f04de7e8eb81493c87e89591cb70e2a9",
  "tool": "capload",
- "written_mono_ns": 9852505278279450,
- "written_wall": "2026-11-14T17:08:01.358Z"
+ "written_mono_ns": 9882861407879850,
+ "written_wall": "2026-11-15T01:33:57.488Z"
 }

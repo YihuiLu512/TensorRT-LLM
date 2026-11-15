@@ -50,6 +50,20 @@ def test_t4_boundary_interval_and_lower_bound():
     assert S.t4_boundary([_t(1, 10, "NOT_RUN")])["kind"] == "none"
 
 
+def test_t4_non_monotone_counts_undetermined_tiers_where_x_held():
+    # b2-judge FU-4: an UNDETERMINED tier (X held) below the highest stable tier
+    r = S.t4_boundary([_t(1, 10, "STABLE"), _t(2, 20, "UNDETERMINED"), _t(3, 30, "STABLE")])
+    assert r["non_monotone"] is True
+    assert (r["lower_seq"], r["upper_seq"], r["kind"]) == (3, None, "lower_bound_only")
+    # VOID / NOT_RUN tiers below a stable tier: X was not established there
+    for v in ("VOID", "NOT_RUN"):
+        r = S.t4_boundary([_t(1, 10, "STABLE"), _t(2, 20, v), _t(3, 30, "STABLE")])
+        assert r["non_monotone"] is False
+    r = S.t4_boundary([_t(1, 10, "STABLE"), _t(2, 20, "UNDETERMINED"),
+                       _t(3, 30, "UNSTABLE")])
+    assert r["non_monotone"] is False and r["upper_seq"] == 3
+
+
 def test_t4_envelope_asc_desc_and_open_end():
     e = S.t4_envelope([(20, 40), (30, 50), (10, 45)])
     assert (e["lower"], e["upper"], e["n_launches"]) == (10, 50, 3)

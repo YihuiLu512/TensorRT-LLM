@@ -6,7 +6,7 @@
   "job_id": "local-sample-i-conflict",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "9298d0c36235233833cb1c7557f9efd63ec3fd8ec0aa8d10ff14a4aa21160dd0",
+  "register_sha": "b05cb6cd1354db01271ff30959dfd8c8199284f3592b3c0f6ab518b4162fe043",
   "restart_count": 0,
   "role": "gate",
   "tier_label": null,
@@ -64,6 +64,6 @@
  "schema": "capkit.exclusivity/1",
  "slurm_view_error": null,
  "slurm_view_file": "synthetic",
- "written_mono_ns": 9852505041853892,
- "written_wall": "2026-11-14T17:08:01.122Z"
+ "written_mono_ns": 9882861160871056,
+ "written_wall": "2026-11-15T01:33:57.241Z"
 }

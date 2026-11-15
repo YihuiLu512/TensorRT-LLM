@@ -8,8 +8,9 @@ samples come from the first E0 job and replace these as the良品 reference).
     python3.11 make_samples.py --out <new directory>
 
 Topology simulated: capload (load_source, 2 workers) -> nullsse (under_test, P2 probe site F2).
-Tiers: warmup, drain, up r20 (baseline), drain, up r40, drain. Times are synthetic; all
-values come from one deterministic simulation (random.Random seeds fixed).
+Tiers: warmup, drain, up r20 (baseline), drain, up r40, drain (opts two_pass: then down r40,
+drain, the second pass of the r40 level). Times are synthetic; all values come from one
+deterministic simulation (random.Random seeds fixed).
 """
 
 import argparse
@@ -103,6 +104,14 @@ LOADGEN_BANDS = {"T1:send_lag_p50_ns": (-20 * US, 20 * US), "T3:send_lag_p99_ns"
 STUB_BANDS = {"T3:loop_lag_p99_ns": (0, 2 * MS), "T3:thread_cpu_cores": (0.0, 0.5)}
 ENV = {"hw_profile_sha": HW_SHA, "image_sha": IMAGE_SHA, "capkit_sha": CODE_SHA,
        "baseline_sha": "2f22a98d6e"}
+ARM = "synthetic-a"
+# Calibration v2 sources (opts "calib_v2", calib-v2 DESIGN-r7a 3.2): a bootstrap pilot/2 carries
+# the r6 design constants (the floors of the registered bootstrap rule, DESIGN-r7a 2.11.3); a
+# thresholds pilot/2 carries one null_z key per listed configuration.
+BOOTSTRAP = {"x_const": {"lag": {"z": 10.0, "min_D_ns": 10 * MS}, "count": {"z": 10.705}},
+             "ratio_tol": {"T2:delivery_ratio_norm": {"min_per_request": 2, "tol": 0.02}}}
+C13_CAP = {"T3:foreign_busy_frac": {"window": 0.10, "launch_mean": 0.05}}
+NULL_Z_STAT = "T1:req_first_lag_p50_ns:capload"
 
 
 def shape_doc(bands, max_key, max_value):
@@ -123,13 +132,39 @@ def tier(seq, label, kind, start, ramp, window, tail, rate, baseline=False):
             "load_value": float(rate) if kind in ("up", "down") else None}
 
 
-def tier_table_doc():
+def ladder_doc(config, arm):
+    """capkit.ladder/1 (calib-v2 DESIGN-r7a 3.4) for the sample tier table: tier 2 (r20) the
+    baseline, tier 4 (r40) a one-pass ladder level."""
+    return {"schema": "capkit.ladder/1", "synthetic": True, "config": config, "arm": arm,
+            "c_lad": 40.0, "axis": "rate_rps", "h": 0.0025, "K": 1, "span_half": 0.0,
+            "passes": 1, "u": 0.0, "settle_ns": 0, "ramp_base_ns": S,
+            "seed": {"base": "synthetic", "block_id": None, "slot": None, "sha": "0" * 64},
+            "baseline_seq": 2,
+            "levels": [{"level": 1, "rho": 1.0, "load_value": 40.0, "up_seq": 4,
+                        "down_seq": None}],
+            "near": [], "cal": [], "holds": [], "slope": [], "drain_rule": {}}
+
+
+def level_seqs(opts):
+    """Tier seqs of the r40 level: tier 4, and tier 6 (its second pass) with opts two_pass."""
+    return (4, 6) if opts.get("two_pass") else (4,)
+
+
+def end_ns(opts):
+    """End of the last drain tier of the sample's tier table."""
+    return (28 if opts.get("two_pass") else 20) * S
+
+
+def tier_table_doc(two_pass=False):
     tiers = [tier(0, "warmup", "warmup", 0, 0, 2 * S, 0, 10),
              tier(1, "drain-01", "drain", 2 * S, 0, 2 * S, 0, 0),
              tier(2, "up-r20", "up", 4 * S, S, 4 * S, S, 20, baseline=True),
              tier(3, "drain-02", "drain", 10 * S, 0, 2 * S, 0, 0),
              tier(4, "up-r40", "up", 12 * S, S, 4 * S, S, 40),
              tier(5, "drain-03", "drain", 18 * S, 0, 2 * S, 0, 0)]
+    if two_pass:
+        tiers += [tier(6, "down-r40", "down", 20 * S, S, 4 * S, S, 40),
+                  tier(7, "drain-04", "drain", 26 * S, 0, 2 * S, 0, 0)]
     return {"schema": "capkit.tiers/1", "experiment": "E0", "name": "synthetic-judge-sample",
             "arrival": {"dist": "fixed", "seed": 20261113},
             "axis": {"name": "R", "load_key": "rate_rps", "unit": "req/s", "order": "asc"},
@@ -147,7 +182,8 @@ class Sim:
         by_tier = {}
         for rid, ts in enumerate(tseq):
             by_tier.setdefault(ts, []).append(rid)
-        timeouts = set(by_tier[4][-5:]) if opts.get("overload") else set()
+        lv = level_seqs(opts)
+        timeouts = {r for s in lv for r in by_tier[s][-5:]} if opts.get("overload") else set()
         if opts.get("c12"):  # every request of capload worker 1 in tier 4 times out
             timeouts = {rid for rid in by_tier[4] if rid % 2 == 1}
         self.short = by_tier[4][0] if opts.get("c4") else None
@@ -181,7 +217,7 @@ class Sim:
             recv = []
             for o in offs:
                 pl = beat.planned_rel_ns(fs + o)
-                extra = (pl - t.start_ns) // 20 if (grow and ts == 4) else 0  # 50 ms per s
+                extra = (pl - t.start_ns) // 20 if (grow and ts in lv) else 0  # 50 ms per s
                 recv.append(pl + 150 * US + rng.randrange(30 * US) + extra)
             recv.append(recv[-1] + 20 * US)  # usage frame
             r["chunks"] = list(enumerate(recv))
@@ -257,6 +293,7 @@ class Builder:
         os.makedirs(os.path.join(W, "register"))
         self.reg_n = 0
         self.job_id = "local-sample-%s" % name.replace("_", "-")
+        self.arm = opts.get("arm", ARM)
 
     def rel(self, *p):
         return os.path.join(*p)
@@ -273,7 +310,7 @@ class Builder:
     def build_registered(self):
         W = self.W
         tt_rel = "register/tiers.json"
-        write_plain(os.path.join(W, tt_rel), tier_table_doc())
+        write_plain(os.path.join(W, tt_rel), tier_table_doc(bool(self.opts.get("two_pass"))))
         self.tt = TierTable.load(os.path.join(W, tt_rel))
         sc_rel = "register/schedule.capbin"
         write_schedule(os.path.join(W, sc_rel), self.tt, 100000)
@@ -310,22 +347,132 @@ class Builder:
                       "schedule": self.register_file(sc_rel, "schedule"),
                       "prompts": self.register_file(pr_rel, "prompts"),
                       "scenario": self.register_file(sn_rel, "scenario")}
-        pilot = self.register_file(pi_rel, "pilot")
-        calibration = [{"kind": "pilot", "relpath": pilot["relpath"],
-                        "sha256": pilot["sha256"]}] + self.build_stage2_calibration()
+        if self.opts.get("calibration_entries") is not None:
+            calibration = self.copied_calibration()
+        elif not self.opts.get("calib_v1"):
+            calibration = self.build_v2_calibration()
+        else:
+            pilot = self.register_file(pi_rel, "pilot")
+            calibration = [{"kind": "pilot", "relpath": pilot["relpath"],
+                            "sha256": pilot["sha256"]}]
+        calibration += self.build_stage2_calibration()
         judge = {"mode": "P+X+I+V" if self.opts.get("ixv") else "P+X",
                  "checks": CHECKS_STUB if self.opts.get("stub_ood") else CHECKS}
         if self.opts.get("slow"):
             judge["localize"] = LOCALIZE
-        if self.opts.get("regime_nb") is not None:
-            judge["near_boundary_tiers"] = {"synthetic-a": ["up-r40"]}
+        if self.opts.get("regime_nb") is not None or self.opts.get("near_boundary_tiers"):
+            judge["near_boundary_tiers"] = {self.arm: ["up-r40"]}
         rg_rel = "register/register.json"
-        write_plain(os.path.join(W, rg_rel), {
-            "schema": "capkit.register/1", "experiment": "E0", "synthetic": True,
-            "arms": ["synthetic-a"], "files": self.files, "calibration": calibration,
-            "expected": {"launches_per_arm": 1, "job_budget": 0}, "judge": judge})
+        reg = {"schema": "capkit.register/1", "experiment": "E0", "synthetic": True,
+               "arms": [self.arm] + list(self.opts.get("extra_arms", [])), "files": self.files,
+               "calibration": calibration,
+               "expected": {"launches_per_arm": 1, "job_budget": 0}, "judge": judge}
+        if self.opts.get("v2") is not None:
+            self.v2_register(reg, judge)
+        if self.opts.get("inline") is not None:
+            reg["inline_thresholds"] = self.opts["inline"]
+        write_plain(os.path.join(W, rg_rel), reg)
         late = "2026-11-13T00:00:20.000Z" if self.opts.get("register_late") else None
         self.register = self.register_file(rg_rel, "register", registered_at=late)
+
+    def copied_calibration(self):
+        """opts calibration_entries = [register.calibration entries, verbatim] with
+        calibration_files = {relpath: source file}: each source is copied byte for byte to its
+        relpath in W and registered with the entry's kind (e.g. the E1-0 register's entry for
+        the round-1 pilot.json)."""
+        out = []
+        for e in self.opts["calibration_entries"]:
+            dst = os.path.join(self.W, e["relpath"])
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            with open(self.opts["calibration_files"][e["relpath"]], "rb") as f:
+                atomic_write_bytes(dst, f.read())
+            self.register_file(e["relpath"], e["kind"])
+            out.append(dict(e))
+        return out
+
+    def build_v2_calibration(self):
+        """opts calib_v2 = {"stage": "bootstrap" | "thresholds", "configs": [...] (thresholds:
+        configurations with a null_z key), "d14_env": {...} (environment overrides of
+        e0_d14.json), "d14": False (no d14_result), "pilot": False (no pilot/2: V0-cal),
+        "bootstrap_set": {"<dotted path>": value} (bootstrap pilot/2 overrides), "window_s"
+        (thresholds: window_ns and the L= of its keys, default 60)}: a
+        registered d14_result and pilot/2. The default of every sample (absent calib_v2: a
+        bootstrap pilot/2 with the r6 design constants); opts calib_v1 registers the v1
+        pilot.json instead (rejected by the judge, calib-v2 erratum)."""
+        W, cv = self.W, self.opts.get("calib_v2") or {}
+        rule_rel = "register/d14_rule.sample.json"  # not register/d14_rule.json (tests' rule)
+        write_plain(os.path.join(W, rule_rel), {"schema": "capkit.d14_rule/1", "synthetic": True})
+        rule = self.register_file(rule_rel, "d14_rule")
+        d14_rel = "register/e0_d14.json"
+        write_plain(os.path.join(W, d14_rel), {
+            "schema": "capkit.d14_result/1", "synthetic": True, "rule": rule,
+            "select": "capjudge.pilot.select_tiers",
+            "environment": dict(ENV, **cv.get("d14_env", {})), "inputs": [],
+            "d14_softirq": {"rule": None, "rule_file": None, "readings": {},
+                            "n_trees_complete": 0, "irq_softirq_is_experiment": True,
+                            "conclusion_reason": "synthetic"}})
+        d14 = self.register_file(d14_rel, "d14_result")
+        stage = cv.get("stage", "bootstrap")
+        doc = {"schema": "capkit.pilot/2", "experiment": "E0", "stage": stage,
+               "synthetic": True, "environment": dict(ENV, judge_sha="b" * 40),
+               "d14": dict(d14), "inputs": [], "c13_cap": C13_CAP}
+        if stage == "bootstrap":
+            doc.update(json.loads(json.dumps(BOOTSTRAP)), select="capjudge.pilot.select_tiers",
+                       rule="synthetic")
+            for path, value in (cv.get("bootstrap_set") or {}).items():
+                *head, last = path.split(".")
+                d = doc
+                for k in head:
+                    d = d[k]
+                d[last] = value
+        else:
+            win = cv.get("window_s", 60)
+            doc.update(window_ns=win * S, ratio={}, null_z={
+                "%s|%s|%s|L=%d" % (NULL_Z_STAT, cfg, rg, win): {
+                    "family": "lag", "thr_hi": 3.0, "thr_lo": -3.0, "uncalibrated": False}
+                for cfg in cv.get("configs", []) for rg in ("subsat", "near")},
+                i1_calibration={"near_one_core_min": I1_NEAR_ONE, "source_tiers": [], "n": 1})
+        p2_rel = "register/pilot2.json"
+        write_plain(os.path.join(W, p2_rel), doc)
+        out = [dict(self.register_file(p2_rel, "pilot"), kind="pilot")] \
+            if cv.get("pilot", True) else []
+        if cv.get("d14", True):
+            out.append(dict(d14, kind="d14_result"))
+        return out
+
+    def v2_register(self, reg, judge):
+        """opts v2 = {"configs": {arm: config}, "threshold_configs": {arm: config} (optional),
+        "ladders": {arm: {ladder.json field overrides}} (arms with a ladder), "ladder_kind"
+        (REGISTRY kind of the ladder files, default ladder), "nbt": True (writes
+        judge.near_boundary_tiers), "ladder_broken": "missing" (the registered ladder file is
+        renamed away) | "sha" (one byte appended after registration)}: arm_config etc. and
+        files_by_arm."""
+        v2 = self.opts["v2"]
+        reg["arm_config"] = dict(v2["configs"])
+        if v2.get("threshold_configs") is not None:
+            reg["arm_threshold_config"] = dict(v2["threshold_configs"])
+        if v2.get("nbt"):
+            judge["near_boundary_tiers"] = {self.arm: ["up-r40"]}
+        by_arm = {}
+        for arm in reg["arms"]:
+            files = dict(self.files)
+            over = (v2.get("ladders") or {}).get(arm)
+            if over is not None:
+                rel = "register/ladder.%d.json" % len(by_arm)
+                lad = dict(ladder_doc(v2["configs"].get(arm), arm),
+                           tier_table_sha256=files["tier_table"]["sha256"])
+                lad.update(over)
+                write_plain(os.path.join(self.W, rel), lad)
+                files["ladder"] = self.register_file(rel, v2.get("ladder_kind", "ladder"))
+                p = os.path.join(self.W, rel)
+                if v2.get("ladder_broken") == "missing":
+                    os.replace(p, p + ".moved-away")
+                elif v2.get("ladder_broken") == "sha":
+                    with open(p, "ab") as f:
+                        f.write(b" ")
+            by_arm[arm] = files
+        del reg["files"]
+        reg["files_by_arm"] = by_arm
 
     def build_stage2_calibration(self):
         """loadgen_band (always; C1), stub_calib (stub_ood samples; C2) and near_boundary_noise
@@ -368,7 +515,7 @@ class Builder:
         sub = os.path.join(self.W, "submissions.tsv")
         base = {c: "" for c in ledger.SUBMISSION_COLUMNS}
         base.update({"plan_id": "plan-" + self.name, "experiment": "E0",
-                     "arms": "synthetic-a", "launches": "1", "gpus": "0", "exclusive": "0",
+                     "arms": self.arm, "launches": "1", "gpus": "0", "exclusive": "0",
                      "basis": "synthetic judge self-test sample (local, no cluster)",
                      "mounts_json": "[]", "tokenizer_dir_sha256": "none",
                      "assertions_json": json.dumps({k: True for k in
@@ -384,7 +531,7 @@ class Builder:
 
     # ---- the launch tree ---------------------------------------------------------------------
     def ident(self, role, worker=0, pid=None, tier=None):
-        i = Identity(experiment="E0", arm="synthetic-a", launch_seq=0, job_id=self.job_id,
+        i = Identity(experiment="E0", arm=self.arm, launch_seq=0, job_id=self.job_id,
                      restart_count=0, register_sha=self.register["sha256"], role=role,
                      worker=worker, pid=pid)
         return i.with_tier(tier.seq, tier.label) if tier is not None else i
@@ -476,8 +623,22 @@ class Builder:
                 n += v // len(cs) + (v % len(cs) if cpu == cs[0] else 0)
         return n
 
+    def foreign_ticks(self, t):
+        """opts c13_foreign_rate = {"<tier seq>" | "all": fraction}: cumulative foreign busy
+        ticks on nullsse's core 4 up to row time t, `fraction` x CLK per second inside that
+        tier's steady window (every second for "all")."""
+        rate = self.opts["c13_foreign_rate"]
+        wins = {str(x.seq): (x.window_start_ns, x.window_end_ns) for x in self.tt.tiers}
+        n = 0
+        for j in range(-1, t // S):
+            for k, frac in rate.items():
+                lo, hi = wins[k] if k != "all" else (j * S, (j + 1) * S)
+                if lo <= j * S < hi:
+                    n += round(frac * CLK)
+        return n
+
     def build_tree(self):
-        self.tree_rel = os.path.join("runs", tree_dir_name(self.job_id, 0, 0, "synthetic-a"))
+        self.tree_rel = os.path.join("runs", tree_dir_name(self.job_id, 0, 0, self.arm))
         self.T = RunTree(os.path.join(self.W, self.tree_rel)).make_skeleton()
         sc = os.path.join(self.W, self.files["schedule"]["relpath"])
         from capcommon.capbin import read_capbin
@@ -513,9 +674,10 @@ class Builder:
         self.build_inventory()
         write_json_stamped(self.T.launch_end_json, "capkit.launch_end/1", L, {
             "stop": None, "ready_at_rel_ns": {"capload": -S, "nullsse": -2 * S},
-            "tiers_completed": 5, "gate_outcomes": [], "exit_codes": {"capload": 0,
-                                                                      "nullsse": 0},
-            "ended_mono_ns": ORIGIN + 21 * S, "state": "VALID", "reason": "completed all tiers",
+            "tiers_completed": len(self.tt.tiers) - 1, "gate_outcomes": [],
+            "exit_codes": {"capload": 0, "nullsse": 0},
+            "ended_mono_ns": ORIGIN + end_ns(self.opts) + S, "state": "VALID",
+            "reason": "completed all tiers",
             "leftovers": {"before": [], "after": [], "marker_scan": "synthetic"}})
         # the launch-level outcome caplaunch and then capjobs.launches record before the judge
         append_state(self.T.root, "VALID", "completed all tiers", "caplaunch")
@@ -854,8 +1016,9 @@ class Builder:
 
     # ---- sidecar ---------------------------------------------------------------------------
     def build_sidecar(self):
-        times = [k * S for k in range(-1, 22)]
-        gpu_times = [k * GPU_EVERY_NS for k in range(-1, 22 * S // GPU_EVERY_NS)]
+        n_rows = end_ns(self.opts) // S + 2
+        times = [k * S for k in range(-1, n_rows)]
+        gpu_times = [k * GPU_EVERY_NS for k in range(-1, n_rows * S // GPU_EVERY_NS)]
         sc = self.T.sidecar
         pc = {"ok": True, "gpu_count": 1, "rc": 0, "reason": None,
               "cmd": ["nvidia-smi", "--query-gpu=index", "--format=csv,noheader"]}
@@ -893,6 +1056,8 @@ class Builder:
                     user = self.core_ticks(cpu, t)
                     if self.opts.get("c13_foreign") and cpu == 4:
                         user += 30 * n
+                    if self.opts.get("c13_foreign_rate") and cpu == 4:
+                        user += self.foreign_ticks(t)
                     w.write_row([t, cpu, user, 0, 0, max(0, 100 * n - user - n), 0, 0, n, 0,
                                  2000000])
         with JsonlWriter(sc("gpu.jsonl"), "capkit.sidecar.gpu/1", self.ident("sidecar"),
@@ -933,6 +1098,12 @@ class Builder:
 # name -> (simulation / file options, expect). expect: exit_code, tier_verdicts (only listed tiers
 # are compared), red_checks (must all be RED somewhere in checks.tsv), not_run_checks likewise.
 GOOD_V = {"2": "STABLE", "4": "STABLE"}
+V2 = {"configs": {ARM: "s1"}, "ladders": {ARM: {}}}
+V2_NEAR = {"configs": {ARM: "s1"}, "ladders": {ARM: {
+    "levels": [], "near": [{"rho": 1.0, "seq": 4, "pass": 1}]}}}
+# two_pass samples: the r40 level up (tier 4) and down (tier 6)
+V2_2P = {"configs": {ARM: "s1"}, "ladders": {ARM: {"passes": 2, "levels": [
+    {"level": 1, "rho": 1.0, "load_value": 40.0, "up_seq": 4, "down_seq": 6}]}}}
 SAMPLES = {
     "good": ({}, {"exit_code": 0, "tier_verdicts": GOOD_V, "red_checks": [],
                   "state_last": "VALID"}),
@@ -983,8 +1154,9 @@ SAMPLES = {
                                               "red_checks": ["RECORDS"]}),
     "probe_tier_mismatch": ({"probe_mismatch": True}, {"exit_code": 10, "tier_verdicts": {
         "2": "VOID", "4": "VOID"}, "red_checks": ["PROBE-TIER"]}),
-    "x_contradiction": ({"x_contradiction": True}, {"exit_code": 10, "tier_verdicts": {
-        "2": "STABLE", "4": "VOID"}, "red_checks": []}),
+    # a counter contradiction: tier CONTRA, never VOID (calib-v2 DESIGN-r7a P2-06)
+    "x_contradiction": ({"x_contradiction": True}, {"exit_code": 0, "tier_verdicts": {
+        "2": "STABLE", "4": "CONTRA"}, "red_checks": []}),
     "sat_overloaded_tier": ({"overload": True}, {"exit_code": 0, "tier_verdicts": {
         "2": "STABLE", "4": "UNSTABLE"}, "red_checks": []}),
     # judged in mode P+X+I+V (errata B2-2E): the GIL domain (event loop + spin thread on one
@@ -1043,10 +1215,42 @@ SAMPLES = {
         "2": "STABLE", "4": "NOT_RUN"}, "red_checks": [], "not_run_checks": ["C12"]}),
     # tier 4 registered near-boundary: without near-boundary bands it is NOT_RUN (no fallback
     # to the sub-saturation bands); with them it is judged
-    "regime_nb_missing": ({"regime_nb": "missing"}, {"exit_code": 11, "tier_verdicts": {
-        "2": "STABLE", "4": "NOT_RUN"}, "red_checks": []}),
-    "regime_nb_good": ({"regime_nb": "good"}, {"exit_code": 0, "tier_verdicts": {
-        "2": "STABLE", "4": "STABLE"}, "red_checks": []}),
+    # a registered near_boundary_noise file (single or with a pilot band of the same key) is no
+    # threshold source since calibration v2 (INTERFACES erratum calib-v2-A2 item 1)
+    "regime_nb_missing": ({"regime_nb": "missing"}, {"exit_code": 13}),
+    "regime_nb_good": ({"regime_nb": "good"}, {"exit_code": 13}),
+    # calibration v2 (calib-v2 DESIGN-r7a 3.5 test 22): a v2 register (arm_config, ladder.json:
+    # tier 2 the baseline, tier 4 a one-pass level), bootstrap pilot/2 + e0_d14.json, and one
+    # broken input per sample
+    "v2_good": ({"v2": V2}, {"exit_code": 0, "tier_verdicts": GOOD_V, "red_checks": [],
+                             "state_last": "VALID"}),
+    "v2_sat_overloaded_level": ({"v2": V2, "overload": True}, {
+        "exit_code": 0, "tier_verdicts": {"2": "STABLE", "4": "UNSTABLE"}, "red_checks": []}),
+    "v2_near_stable": ({"v2": V2_NEAR}, {"exit_code": 0, "tier_verdicts": GOOD_V,
+                                         "red_checks": []}),
+    # the two satisfiability samples with both passes of the level (DESIGN-r7a 2.4): an
+    # obviously overloaded level UNSTABLE in both passes, a near-boundary stable level inside in
+    # both passes
+    "v2_sat_overloaded_level_2p": ({"v2": V2_2P, "overload": True, "two_pass": True}, {
+        "exit_code": 0, "tier_verdicts": {"2": "STABLE", "4": "UNSTABLE", "6": "UNSTABLE"},
+        "levels": {"1": "UNSTABLE"}, "red_checks": []}),
+    "v2_near_stable_level_2p": ({"v2": V2_2P, "two_pass": True}, {
+        "exit_code": 0, "tier_verdicts": {"2": "STABLE", "4": "STABLE", "6": "STABLE"},
+        "levels": {"1": "STABLE"}, "red_checks": [], "state_last": "VALID"}),
+    "v2_ladder_missing": ({"v2": dict(V2, ladder_broken="missing")}, {"exit_code": 13}),
+    "v2_ladder_sha": ({"v2": dict(V2, ladder_broken="sha")}, {"exit_code": 13}),
+    "v2_pilot1": ({"v2": V2, "calib_v1": True}, {"exit_code": 13}),
+    "v2_window": ({"v2": V2, "calib_v2": {"stage": "thresholds", "configs": ["s1"]}},
+                  {"exit_code": 13}),
+    "v2_d14_missing": ({"v2": V2, "calib_v2": {"d14": False}}, {
+        "exit_code": 11, "tier_verdicts": {"2": "NOT_RUN", "4": "NOT_RUN"}, "red_checks": []}),
+    "v2_d14_env": ({"v2": V2, "calib_v2": {"d14_env": {"hw_profile_sha": "0" * 64}}},
+                   {"exit_code": 13}),
+    "v2_arm_config_missing": ({"v2": {"configs": {"synthetic-b": "s1"}},
+                               "extra_arms": ["synthetic-b"]}, {"exit_code": 13}),
+    "v2_near_boundary_tiers": ({"v2": dict(V2, nbt=True)}, {"exit_code": 13}),
+    "v2_inline_thresholds": ({"v2": V2, "inline": {"form_version": "calib-v2"}},
+                             {"exit_code": 13}),
     "input_calib_invalid": ({"calib_invalid": True}, {"exit_code": 13}),
     "input_registered_late": ({"register_late": True}, {"exit_code": 13}),
     "input_identity_mismatch": ({"identity_mismatch": True}, {"exit_code": 13}),

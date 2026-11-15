@@ -9,7 +9,7 @@
   "job_id": "local-sample-c1-send-lag",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "fafcd6d3122ea924b1dc14283a7c718dfb9e75b290caa87f4edfb86c3ab104ff",
+  "register_sha": "2ebc3730daa7ab2d463ee1377b396a04e637dfc51199734dc4fe6aa535079da0",
   "restart_count": 0,
   "role": "launch",
   "tier_label": "up-r20",
@@ -249,6 +249,6 @@
   "tokens_per_msg": 1,
   "window_ns": 4000000000
  },
- "written_mono_ns": 9852500090255852,
- "written_wall": "2026-11-14T17:07:56.170Z"
+ "written_mono_ns": 9882855835430651,
+ "written_wall": "2026-11-15T01:33:51.915Z"
 }

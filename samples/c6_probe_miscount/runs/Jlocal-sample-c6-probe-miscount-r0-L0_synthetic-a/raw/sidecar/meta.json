@@ -25,7 +25,7 @@
   "job_id": "local-sample-c6-probe-miscount",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "fafcd6d3122ea924b1dc14283a7c718dfb9e75b290caa87f4edfb86c3ab104ff",
+  "register_sha": "2ebc3730daa7ab2d463ee1377b396a04e637dfc51199734dc4fe6aa535079da0",
   "restart_count": 0,
   "role": "sidecar",
   "tier_label": null,
@@ -58,6 +58,6 @@
  "stop": null,
  "unreadable": {},
  "unregistered_snapshot_pids": [],
- "written_mono_ns": 9852500776170229,
- "written_wall": "2026-11-14T17:07:56.856Z"
+ "written_mono_ns": 9882856613094066,
+ "written_wall": "2026-11-15T01:33:52.693Z"
 }

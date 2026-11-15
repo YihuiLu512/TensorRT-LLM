@@ -1,0 +1,37 @@
+{
+ "K": 1,
+ "arm": "synthetic-a",
+ "axis": "rate_rps",
+ "baseline_seq": 2,
+ "c_lad": 40.0,
+ "cal": [],
+ "config": "s1",
+ "drain_rule": {},
+ "h": 0.0025,
+ "holds": [],
+ "levels": [
+  {
+   "down_seq": null,
+   "level": 1,
+   "load_value": 40.0,
+   "rho": 1.0,
+   "up_seq": 4
+  }
+ ],
+ "near": [],
+ "passes": 1,
+ "ramp_base_ns": 1000000000,
+ "schema": "capkit.ladder/1",
+ "seed": {
+  "base": "synthetic",
+  "block_id": null,
+  "sha": "0000000000000000000000000000000000000000000000000000000000000000",
+  "slot": null
+ },
+ "settle_ns": 0,
+ "slope": [],
+ "span_half": 0.0,
+ "synthetic": true,
+ "tier_table_sha256": "9ec2e9504387d851b23a6054f90df5b2f04de7e8eb81493c87e89591cb70e2a9",
+ "u": 0.0
+}

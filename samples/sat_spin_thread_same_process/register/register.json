@@ -5,8 +5,13 @@
  "calibration": [
   {
    "kind": "pilot",
-   "relpath": "register/pilot.json",
-   "sha256": "4ef14ba54ddb27c603a0ed07218ebdc9319ba7f030c29dd52f87741bc6d853fa"
+   "relpath": "register/pilot2.json",
+   "sha256": "5d210fddef19e1d12afd43b4d044fa897d39d08350ed4665ef345f0a29e13dfe"
+  },
+  {
+   "kind": "d14_result",
+   "relpath": "register/e0_d14.json",
+   "sha256": "ec92419c0237b024b9e5ca716e6cbf989df8e362e879e8e0251667c14df6e545"
   },
   {
    "bind": {

@@ -41,7 +41,7 @@
   "job_id": "local-sample-good-real-pins",
   "launch_seq": 0,
   "pid": null,
-  "register_sha": "a593d6e9f119ed3f714a7f9f759775976a459069322be6fb3d5bd98a2157bcc7",
+  "register_sha": "448e4de5b4136e6ebe02b2ca7db02b6f310ac8b00974b377e435edf3de734c30",
   "restart_count": 0,
   "role": "launch",
   "tier_label": "drain-01",
@@ -88,7 +88,7 @@
       0,
       "local-sample-good-real-pins",
       0,
-      "a593d6e9f119ed3f714a7f9f759775976a459069322be6fb3d5bd98a2157bcc7"
+      "448e4de5b4136e6ebe02b2ca7db02b6f310ac8b00974b377e435edf3de734c30"
      ],
      "pid": 1000,
      "seq": 20,
@@ -102,7 +102,7 @@
       0,
       "local-sample-good-real-pins",
       0,
-      "a593d6e9f119ed3f714a7f9f759775976a459069322be6fb3d5bd98a2157bcc7"
+      "448e4de5b4136e6ebe02b2ca7db02b6f310ac8b00974b377e435edf3de734c30"
      ],
      "pid": 1001,
      "seq": 20,
@@ -116,7 +116,7 @@
       0,
       "local-sample-good-real-pins",
       0,
-      "a593d6e9f119ed3f714a7f9f759775976a459069322be6fb3d5bd98a2157bcc7"
+      "448e4de5b4136e6ebe02b2ca7db02b6f310ac8b00974b377e435edf3de734c30"
      ],
      "pid": 1002,
      "seq": 20,
@@ -130,7 +130,7 @@
       0,
       "local-sample-good-real-pins",
       0,
-      "a593d6e9f119ed3f714a7f9f759775976a459069322be6fb3d5bd98a2157bcc7"
+      "448e4de5b4136e6ebe02b2ca7db02b6f310ac8b00974b377e435edf3de734c30"
      ],
      "pid": 2001,
      "seq": 20,
@@ -180,7 +180,7 @@
       0,
       "local-sample-good-real-pins",
       0,
-      "a593d6e9f119ed3f714a7f9f759775976a459069322be6fb3d5bd98a2157bcc7"
+      "448e4de5b4136e6ebe02b2ca7db02b6f310ac8b00974b377e435edf3de734c30"
      ],
      "pid": 1000,
      "seq": 22,
@@ -194,7 +194,7 @@
       0,
       "local-sample-good-real-pins",
       0,
-      "a593d6e9f119ed3f714a7f9f759775976a459069322be6fb3d5bd98a2157bcc7"
+      "448e4de5b4136e6ebe02b2ca7db02b6f310ac8b00974b377e435edf3de734c30"
      ],
      "pid": 1001,
      "seq": 22,
@@ -208,7 +208,7 @@
       0,
       "local-sample-good-real-pins",
       0,
-      "a593d6e9f119ed3f714a7f9f759775976a459069322be6fb3d5bd98a2157bcc7"
+      "448e4de5b4136e6ebe02b2ca7db02b6f310ac8b00974b377e435edf3de734c30"
      ],
      "pid": 1002,
      "seq": 22,
@@ -222,7 +222,7 @@
       0,
       "local-sample-good-real-pins",
       0,
-      "a593d6e9f119ed3f714a7f9f759775976a459069322be6fb3d5bd98a2157bcc7"
+      "448e4de5b4136e6ebe02b2ca7db02b6f310ac8b00974b377e435edf3de734c30"
      ],
      "pid": 2001,
      "seq": 22,
@@ -239,6 +239,6 @@
  "schema": "capkit.drain_gate/1",
  "source": "default",
  "t_pass_rel_ns": 2200000000,
- "written_mono_ns": 9852504872247406,
- "written_wall": "2026-11-14T17:08:00.952Z"
+ "written_mono_ns": 9882860966041751,
+ "written_wall": "2026-11-15T01:33:57.046Z"
 }
