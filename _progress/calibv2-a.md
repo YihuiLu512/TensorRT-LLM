@@ -179,3 +179,16 @@
 - 2026-11-15 15:10:39 F1–F12、F14 代码与测试初稿已改，接着 F13（README）、勘误 A8，然后跑受影响的测试文件。
 - 2026-11-15 15:23:22 R1 修复：受影响测试文件单跑全过（logs/r1f）；后台跑变异 r7（mut/muts7.py，28 项 + 对照，逐个串行，约 15 分钟），期间写勘误 A8。
 - 2026-11-15 15:31:46 R1 修复（F1–F14，triage.md 第 4 节）代码、测试、勘误 calib-v2-A8 写完：受影响文件单跑全过（logs/r1f）；变异 r7（mut/muts7.py，28 项）全部变红、对照除 test_pinning 2 条外全过（那 2 条是副本目录下找不到仓库外输入 02d_cdb_b200.csv，与变异无关；pinning 类变异按多出的目标用例判红）。偏离清单之处：F8 的范围按「本段」（同一 budget_id 下从本段原段计划首行到下一份未给出的原段计划为止）而非整个 budget_id，否则 V1-b B 段的补足要把 A 段计划一起给、混成一段（A8 第 8 条）；F11 的锁覆盖六道门到本次提交返回（比「门 ② 到 RESERVED 行」更宽）；F14 的 STAT_KEY 改锚后行为不变（角色段本身接受换行），未加测试。提交后跑全量验证。
+- 2026-11-15 15:32:45 提交 e9523af6；全量验证开工：后台逐目录跑 tests（logs/v8，约 25 分钟），随后 selftest / py_compile / patchcheck / bash -n、e0 作业路径 e2e、pilot2 副本回放、V0 档位表、w60 重判。
+- 2026-11-15 15:52:47 v8：10 个测试目录全过（judge 524 passed + 6 xfailed）、selftest 52/errors []、py_compile 221/0、patchcheck rc 0 violations []、bash -n 3/0；d14 副本回放与 e7d6d0ce 产物全等，bootstrap 副本回放与 e7d6d0ce 产物全键相等。接着建覆盖清单 P0-e9523af6，跑 e0a-nullsse / e0b-s1-single 作业路径 e2e（J9500031/32，约 5 分钟）。
+- 2026-11-15 15:58 R1 修复收尾（提交 e9523af6；勘误 calib-v2-A8；本条只改进度日志），实测（MEASURED）：
+  - 测试目录逐个（logs/v8，HEAD e9523af6）：capcommon 200、capload 33、capprobe 159、envgate 71、grpc 53、jobs 287、nullsse 4、sidecar 5、launch 245、judge 524 passed + 6 xfailed（XFAIL_I_P2_13，strict）；无失败，launch 无偶发。
+  - selftest（logs/v8，--expect-samples 52）：EXIT 0，ran 52、errors []，deferred 5 个 I 样本；py_compile 221/0；patchcheck --rev HEAD EXIT 0、violations []，探针树 HEAD 与 porcelain 前后不变；bash -n 3/0。
+  - 变异 r7（mut/muts7.py，28 项，每个 F 项至少一项）：全部变红。对照：test_pinning 在副本目录下有 2 条因仓库外输入 02d_cdb_b200.csv 路径不存在而失败（与 R1 改动无关，原 worktree 下全过），pinning 类变异按多出的目标用例判红（逐个核过失败用例名）；其余对照全过。
+  - 作业路径 e2e（覆盖清单 e2e/ovl/P0-e9523af6）：e0b-s1-single J9500031、e0a-nullsse J9500032 都 L0 VALID（222 / 318 文件）、judge rc 11（NOT_RUN，无 D14 与 c13_cap 时的预期）、RED 0、无 INPUT_INVALID。
+  - pilot2 d14（replay/d14 同一副本）：rc 0，d14_softirq.readings 与 W/02_e0/E0/analysis/pilot.json 逐字相等、结论 false，与 e7d6d0ce 产物全等；bootstrap（replay/boot）rc 0，capkit.pilot/2 stage bootstrap，nullz.validate 接受，与 e7d6d0ce 产物全键相等（含 c13_cap.launch_mean 0.06606）。推断（INFERRED）：副本登记表把全部负载档标为 cal，所以「全部被判负载档」与「入选 cal 档」在这批树上是同一组档，F9 的口径改动在这里不改变数值。
+  - V0-cal / V0 档位表（v0tables/r8，gen_v0_r7.py）：与 r7 同表长与 time_budget（cal 1474 s / 7610 s；pc 660 s；c13pc 460 s；计时行 13264 s / 13940 s；e2e 1872 s）；s1-pc 取值文件 request_timeout_ns null + registered_nulls，s1-fix 60 s；10 个作业 submit --dry-run 全部 rc 0、桩真提交全 rc 0（BUDGET.tsv 10 RESERVED + 10 JOB_ID，真提交建了 BUDGET.tsv.lock）。
+  - e0w60 J5940628:L2 新副本 v2 重判（replay/w60-e9523af6）：无崩溃，rc 10 VOID（C3/C5/C6 RED，与原判同因），级 0、1 STABLE、级 2 VOID，唯一 NOT_RUN 是 t7（原因「no req_first_lag_p50_ns trend on the slope tiers」）；verdicts 除 written_mono_ns / written_wall 外与 e7d6d0ce 副本相同。
+  - fakebin.log 24 行，新增 6 行都是 e2e 作业内 simgate 的替身调用（exit 97），与以往同形；无残留进程。
+  - 偏离修复清单之处（交 R2 与主会话）：F8 的范围按「本段」而非整个 budget_id（V1-b A、B 两段共用 budget_id，按整个 budget_id 会让 B 段补足必须连 A 段计划一起给、混成一段）；F11 的锁从门 ① 持有到本次提交返回（比「门 ② 到 RESERVED 行」更宽）；F14 的 STAT_KEY 改锚后行为不变（角色段 `[^:|*]+` 本身接受换行），没有加对应测试。
+  - 未做（NOT RUN）：R2 三路自审（按流程由主会话开）；真实集群上的 sinfo / scontrol 输出（只用桩）。
