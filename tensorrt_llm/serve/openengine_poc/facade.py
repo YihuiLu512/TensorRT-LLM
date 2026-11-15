@@ -604,6 +604,8 @@ class OpenEngineLLM:
         self._counter_dir = os.environ.get(SERVE_COUNTER_DIR_ENV) or None
         self._counter = contracts.GenerateCounter(self._counter_dir)
         self._metrics = contracts.create_metrics_recorder(args)
+        # With TRTLLM_OPENENGINE_FIRST_OUTPUT_DIR, the time each call's first event is read.
+        self.first_output = _first_output_timestamps()
         # The default recorder derives nothing from the engine's load, so none is fetched.
         self._metrics_use_load = contracts.resolve_slot("create_metrics_recorder")[1] != "default"
         # Event-loop time of the latest load read, or of the next one already scheduled.
@@ -1937,6 +1939,7 @@ class OpenEngineRequestOutput:
         queue = self._queue
         assert queue is not None
         counted = False
+        first_output = getattr(self._facade, "first_output", None)
 
         def count() -> None:
             nonlocal counted
@@ -1948,6 +1951,9 @@ class OpenEngineRequestOutput:
 
         try:
             async for event in stream:
+                if first_output is not None:
+                    first_output.record(stream.request_id, time.time_ns())
+                    first_output = None
                 count()
                 if isinstance(event, PrefillReady):
                     self._prefill_ready(event, offset)
@@ -2540,3 +2546,18 @@ def adapt_server(server: Any, facade: OpenEngineLLM) -> None:
 
     server.create_error_response = create_status_error_response
     app.add_middleware(_CountGenerationRequests, facade=facade)
+
+
+def _first_output_timestamps() -> Any:
+    """The front end's writer of first-event times, when ``TRTLLM_OPENENGINE_FIRST_OUTPUT_DIR`` is set.
+
+    The records join the engine's (``servicer.FirstOutputTimestamps``) by the call's request id.
+    """
+    if not os.environ.get("TRTLLM_OPENENGINE_FIRST_OUTPUT_DIR"):
+        return None
+    from tensorrt_llm.grpc.openengine.servicer import (
+        FRONTEND_FIRST_OUTPUT_PROBE,
+        FirstOutputTimestamps,
+    )
+
+    return FirstOutputTimestamps.from_env(FRONTEND_FIRST_OUTPUT_PROBE)

@@ -3753,6 +3753,109 @@ class DisaggTestCmds(NamedTuple):
                 server_proc.terminate()
                 server_proc.wait()
 
+    def _run_arm_worker(
+        self,
+        server_idx: int,
+        arm: "openengine_arms.Arm",
+        configs_for_idx: Optional[Tuple["ServerConfig", "ServerConfig", "DisaggConfig"]],
+        benchmark_status_file: str,
+    ) -> None:
+        """Run this task's context or generation worker as a disaggregated arm says.
+
+        The worker starts as its role's settings of the arm say (in the chain or
+        in-process), on a port chosen in advance when it is in the chain or runs
+        several front ends, and its pytest answers the benchmark's reading
+        requests until the benchmark is done (openengine_arms.RoleReader).
+        """
+        role, _ = openengine_arms.worker_role(self.disagg_serving_type)
+        is_ctx = role == openengine_arms.ROLE_CTX
+        ctx_cmd, gen_cmd, _ = self.server_cmds[server_idx]
+        server_cmd = ctx_cmd if is_ctx else gen_cmd
+        if self.disagg_serving_type not in ("CTX_0", "GEN_0"):
+            self._wait_for_config_file(server_cmd[server_cmd.index("--config") + 1])
+        worker_cfg = None
+        if configs_for_idx is not None:
+            worker_cfg = configs_for_idx[0] if is_ctx else configs_for_idx[1]
+        view = openengine_arms.role_view(arm, role)
+        plan = openengine_arms.prepare_worker(server_cmd, arm, role, self.test_output_dir)
+        hostname_file = self._hostname_file(server_idx)
+        if openengine_arms.worker_needs_port(view, plan):
+            worker_port = openengine_arms.free_port(self.hostname)
+            server_cmd = add_host_port_to_cmd(list(plan.cmd), self.hostname, worker_port)
+            publish_addr_file(hostname_file, self.hostname, worker_port)
+        else:
+            server_cmd = add_host_port_to_cmd(list(plan.cmd), self.hostname, 0) + [
+                "--report_addr",
+                hostname_file,
+            ]
+
+        def address() -> Optional[str]:
+            try:
+                with open(hostname_file, encoding="utf-8") as f:
+                    return f.read().strip() or None
+            except OSError:
+                return None
+
+        server_file_path = os.path.join(
+            self.test_output_dir, f"trtllm-serve.{self.disagg_serving_type}.{server_idx}.log"
+        )
+        worker_env = copy.deepcopy(os.environ)
+        if worker_cfg is not None:
+            worker_env.update(worker_cfg.to_env())
+        readings_dir = openengine_arms.readings_dir(self.test_output_dir, server_idx)
+        worker_env.update(
+            openengine_arms.first_output_env(view, readings_dir, self.disagg_serving_type)
+        )
+        server_proc = None
+        reader = None
+        try:
+            print_info(
+                f"Starting worker {self.disagg_serving_type} of arm {arm.name}. cmd is {server_cmd}"
+            )
+            with open(server_file_path, "w") as server_ctx:
+                launched_at = time.monotonic()
+                server_proc = openengine_arms.launch(
+                    openengine_arms.ServerPlan(tuple(server_cmd), plan.config),
+                    view,
+                    env=worker_env,
+                    sink=server_ctx,
+                    ready_timeout=min(
+                        self.timeout, server_ready_timeout(DISAGG_SERVER_READY_TIMEOUT, "DISAGG")
+                    ),
+                )
+                mirror = None
+                if not is_ctx and openengine_arms.mirrors_gen_log(view):
+                    _, index = openengine_arms.worker_role(self.disagg_serving_type)
+                    mirror = openengine_arms.LogMirror(
+                        openengine_arms.gen_log_source(server_proc, server_file_path),
+                        os.path.join(self.test_output_dir, f"gen_server_{index}.log"),
+                    )
+                reader = openengine_arms.RoleReader(
+                    server=server_proc,
+                    view=view,
+                    role=role,
+                    worker=self.disagg_serving_type,
+                    directory=readings_dir,
+                    address=address,
+                    plan=plan,
+                    env=worker_env,
+                    launched_at=launched_at,
+                    mirror=mirror,
+                )
+                reader.start()
+                self.wait_for_benchmark_ready(
+                    benchmark_status_file, server_proc=server_proc, server_log=server_file_path
+                )
+        finally:
+            print_info(f"Worker {self.disagg_serving_type} of arm {arm.name} stopped")
+            if server_proc is not None:
+                server_proc.terminate()
+                server_proc.wait()
+            if reader is not None:
+                reader.stop()
+                for error in reader.errors:
+                    print_warning(f"Perf arm reader of {self.disagg_serving_type}: {error}")
+
     def run_cmd(self, server_idx: int) -> List[str]:
         """Run commands for a server and return outputs."""
         outputs = []
@@ -3765,6 +3868,12 @@ class DisaggTestCmds(NamedTuple):
         )
         if self.disagg_serving_type == DWDP_CTX_SERVING_TYPE:
             self._run_dwdp_ctx_worker(server_idx, configs_for_idx, benchmark_status_file)
+        elif (
+            "CTX" in self.disagg_serving_type or "GEN" in self.disagg_serving_type
+        ) and openengine_arms.disagg_arm(openengine_arms.selected_arm()) is not None:
+            self._run_arm_worker(
+                server_idx, openengine_arms.selected_arm(), configs_for_idx, benchmark_status_file
+            )
         elif "CTX" in self.disagg_serving_type or "GEN" in self.disagg_serving_type:
             hostname_file = self._hostname_file(server_idx)
             is_ctx = "CTX" in self.disagg_serving_type
@@ -3859,6 +3968,12 @@ class DisaggTestCmds(NamedTuple):
                         stdout=disagg_server_ctx,
                         stderr=subprocess.STDOUT,
                     )
+                    if openengine_arms.disagg_arm(openengine_arms.selected_arm()) is not None:
+                        # The benchmark reads the server's CPU time for the arm's result.
+                        openengine_arms.publish_orchestrator_pid(
+                            openengine_arms.readings_dir(self.test_output_dir, server_idx),
+                            disagg_server_proc.pid,
+                        )
                     self.wait_for_benchmark_ready(
                         benchmark_status_file,
                         server_proc=disagg_server_proc,
@@ -3913,6 +4028,13 @@ class DisaggTestCmds(NamedTuple):
                 )
                 observations = self._collect_worker_startup_observations(server_idx)
                 write_startup_observations(self.test_output_dir, server_idx, observations)
+                # A disaggregated arm's per-run readings (openengine_arms.DisaggRunProbe);
+                # their result files are written once the gen-worker logs are parsed.
+                arm = openengine_arms.disagg_arm(openengine_arms.selected_arm())
+                arm_workers = [f"CTX_{i}" for i in range(self.num_ctx_servers)] + [
+                    f"GEN_{i}" for i in range(self.num_gen_servers)
+                ]
+                pending_arm_results: List[dict] = []
 
                 measured_client = self._measured_client_for_connection_warmup(server_idx)
                 if measured_client is not None:
@@ -4016,11 +4138,37 @@ class DisaggTestCmds(NamedTuple):
                         bench_env["TRTLLM_AGENTX_ARTIFACT_DIR"] = os.path.join(
                             self.test_output_dir, f"agentx.{server_idx}.{client_idx}"
                         )
+                        arm_probe = None
+                        if arm is not None:
+                            arm_probe = openengine_arms.DisaggRunProbe.start(
+                                arm,
+                                directory=openengine_arms.readings_dir(
+                                    self.test_output_dir, server_idx
+                                ),
+                                workers=arm_workers,
+                                orchestrator_url=(
+                                    f"http://{disagg_server_hostname}:{disagg_server_port}"
+                                ),
+                                seq=client_idx,
+                            )
                         output = _run_benchmark_with_log(
                             client_cmd_with_port,
                             bench_env,
                             benchmark_file_path,
                         )
+                        if arm_probe is not None:
+                            arm_probe.stop()
+                            pending_arm_results.append(
+                                {
+                                    "output_index": len(outputs),
+                                    "probe": arm_probe,
+                                    "client_cmd": client_cmd_with_port,
+                                    "test_id": (
+                                        f"{openengine_arms.current_test_id()}"
+                                        f"|server={server_idx}|client={client_idx}"
+                                    ),
+                                }
+                            )
 
                         outputs.append(output)
                         if collect_device_step_time:
@@ -4112,6 +4260,26 @@ class DisaggTestCmds(NamedTuple):
                 outputs,
                 leading_lines_to_skip=unmeasured_line_counts,
             )
+            # After the gen-worker logs are parsed, so that each result has its device step time.
+            orchestrator_env = dict(os.environ)
+            if configs_for_idx is not None:
+                orchestrator_env.update(to_env_dict(configs_for_idx[2].server_env_var))
+            for record in pending_arm_results:
+                result_path = openengine_arms.write_disagg_result(
+                    openengine_arms.build_disagg_result(
+                        record["probe"],
+                        output=outputs[record["output_index"]],
+                        client_cmd=record["client_cmd"],
+                        test_id=record["test_id"],
+                        benchmark_mode=benchmark_mode_for_idx,
+                        orchestrator_config=os.path.join(
+                            self.test_output_dir, f"server_config.{server_idx}.yaml"
+                        ),
+                        orchestrator_env=orchestrator_env,
+                    ),
+                    openengine_arms.results_directory(self.test_output_dir),
+                )
+                print_info(f"Perf arm {arm.name} result: {result_path}")
 
         return outputs
 
@@ -5030,7 +5198,31 @@ class PerfSanityTestConfig:
         # OpenEngine comparison arms: plain single-node aggregated cases with
         # benchmark_serving clients only (no accuracy run), results never uploaded.
         arm = openengine_arms.selected_arm()
-        if arm is not None and (
+        if arm is not None and arm.topology != openengine_arms.TOPOLOGY_AGG:
+            # The disaggregated arms (case-04) take e2e and gen_only disaggregated cases.
+            disagg_config = (
+                self.server_configs[0][2]
+                if self.runtime in DISAGG_CONFIG_RUNTIMES and self.server_configs
+                else None
+            )
+            openengine_arms.check_disagg_case(
+                arm,
+                runtime=self.runtime,
+                benchmark_mode=self.benchmark_mode,
+                time_breakdown=self.time_breakdown,
+                numa_bind=bool(disagg_config and disagg_config.numa_bind),
+                dwdp_size=disagg_config.dwdp_size if disagg_config else 0,
+                worker_gpus={
+                    role: max(config[i].gpus for config in self.server_configs)
+                    for i, role in enumerate(openengine_arms.WORKER_ROLES)
+                }
+                if disagg_config
+                else {},
+                gpus_per_node=disagg_config.hardware.get("gpus_per_node", 0)
+                if disagg_config
+                else 0,
+            )
+        elif arm is not None and (
             self.runtime != "aggr_server"
             or self.benchmark_mode
             or self.time_breakdown

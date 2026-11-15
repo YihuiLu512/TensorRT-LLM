@@ -4,9 +4,13 @@
 """OpenEngine Inference service adapter for the TensorRT-LLM LLM API."""
 
 import asyncio
+import json
+import os
+import socket
 import threading
+import time
 from collections.abc import AsyncIterator, Callable
-from concurrent.futures import Executor
+from concurrent.futures import Executor, ThreadPoolExecutor
 from contextlib import aclosing
 from contextvars import copy_context
 from functools import partial
@@ -216,6 +220,8 @@ class OpenEngineInferenceServicer(openengine_pb2_grpc.InferenceServicer):
         # With perf_metrics_output_dir, each finished leg of a disaggregated
         # request leaves a record of its durations there (EN-TRTD-8).
         self._leg_durations = LegDurationsWriter.from_llm(llm)
+        # With TRTLLM_OPENENGINE_FIRST_OUTPUT_DIR, the time each call's first response is sent.
+        self._first_output = FirstOutputTimestamps.from_env(ENGINE_FIRST_OUTPUT_PROBE)
 
     @property
     def supported_media_modalities(self) -> frozenset[str]:
@@ -713,6 +719,7 @@ class OpenEngineInferenceServicer(openengine_pb2_grpc.InferenceServicer):
 
         rpc_task.add_done_callback(on_rpc_done)
 
+        first_output = self._first_output
         try:
             watchdog.start()
             async for result in result_handle:
@@ -728,6 +735,9 @@ class OpenEngineInferenceServicer(openengine_pb2_grpc.InferenceServicer):
                     if request_metrics is not None:
                         request_metrics.observe_response(resp)
                     watchdog.pending()
+                    if first_output is not None:
+                        first_output.record(request_id, time.time_ns())
+                        first_output = None
                     yield resp
                     watchdog.delivered()
                     if resp.HasField("prefill_ready"):
@@ -792,6 +802,79 @@ class OpenEngineInferenceServicer(openengine_pb2_grpc.InferenceServicer):
             # A task callback already scheduled on the event loop can still
             # hold this cell. abort_request is a no-op after this cleanup.
             result_handle = None
+
+
+# Directory where the OpenEngine server and its worker front end record, per Generate call,
+# when the call's first response leaves the engine and reaches the front end.
+FIRST_OUTPUT_DIR_ENV = "TRTLLM_OPENENGINE_FIRST_OUTPUT_DIR"
+ENGINE_FIRST_OUTPUT_PROBE = "engine_first_output_sent"
+FRONTEND_FIRST_OUTPUT_PROBE = "frontend_first_output_received"
+# Records waiting to be written; past this many, a new record is dropped.
+_FIRST_OUTPUT_MAX_PENDING = 4096
+
+
+class FirstOutputTimestamps:
+    """Appends one ``{"probe", "request_id", "t_ns"}`` line per record to a JSONL file.
+
+    The file is ``<directory>/<probe>-<host>-<pid>.jsonl``; ``t_ns`` is a
+    ``time.time_ns()`` the caller took. One background thread writes, so
+    recording never holds up the event loop. A record that cannot be written,
+    or that finds ``_FIRST_OUTPUT_MAX_PENDING`` records waiting, is dropped and
+    counted, never failing the request; the first drop is logged.
+    """
+
+    def __init__(self, directory: str, probe: str) -> None:
+        self._directory = directory
+        self._probe = probe
+        self.path = os.path.join(directory, f"{probe}-{socket.gethostname()}-{os.getpid()}.jsonl")
+        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix=probe)
+        self._lock = threading.Lock()
+        self._pending = 0
+        self._warned = False
+        self.dropped_records = 0
+
+    @classmethod
+    def from_env(cls, probe: str) -> "FirstOutputTimestamps | None":
+        """A writer to ``TRTLLM_OPENENGINE_FIRST_OUTPUT_DIR``, or None when it is unset or empty."""
+        directory = os.environ.get(FIRST_OUTPUT_DIR_ENV)
+        return cls(directory, probe) if directory else None
+
+    def record(self, request_id: str, t_ns: int) -> None:
+        line = json.dumps({"probe": self._probe, "request_id": request_id, "t_ns": t_ns}) + "\n"
+        with self._lock:
+            full = self._pending >= _FIRST_OUTPUT_MAX_PENDING
+            if not full:
+                self._pending += 1
+        if full:
+            self._drop(f"{_FIRST_OUTPUT_MAX_PENDING} records are waiting to be written")
+            return
+        try:
+            self._executor.submit(self._write, line)
+        except RuntimeError as error:
+            # The interpreter is shutting down.
+            with self._lock:
+                self._pending -= 1
+            self._drop(str(error))
+
+    def _drop(self, reason: str) -> None:
+        with self._lock:
+            self.dropped_records += 1
+            warn = not self._warned
+            self._warned = True
+        if warn:
+            logger.warning(f"Dropping {self._probe} timestamps: {reason}")
+
+    def _write(self, line: str) -> None:
+        # Runs only on the writer's one thread.
+        try:
+            os.makedirs(self._directory, exist_ok=True)
+            with open(self.path, "a", encoding="utf-8") as output:
+                output.write(line)
+        except OSError as error:
+            self._drop(f"cannot write {self.path}: {error}")
+        finally:
+            with self._lock:
+                self._pending -= 1
 
 
 __all__ = ["OpenEngineInferenceServicer"]
