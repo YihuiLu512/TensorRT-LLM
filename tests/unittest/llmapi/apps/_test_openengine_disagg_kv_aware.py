@@ -12,9 +12,9 @@ Each test has clusters of its own, which run until the test has ended.
   routers that learn the cached blocks from the workers' events only
   (``track_routed_blocks: false``); after two warm-up requests, requests
   sharing their prefix land on one context worker. A router reads a
-  worker's events when a request it routed there ends, so the second
-  warm-up request gives it a second read in case the first came before the
-  events.
+  worker's events when a request it routed there ends; the second warm-up
+  request caches the prefix on whichever worker it lands on and is read
+  there, in case the first read came before the first worker's events.
 - NT-086: with ``conditional_disagg_config``, a request whose uncached part
   on the generation worker is short is prefilled there: the context worker
   gets no call and the generation worker serves the whole request. The

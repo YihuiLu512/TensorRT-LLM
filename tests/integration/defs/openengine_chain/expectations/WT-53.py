@@ -4,10 +4,10 @@
 
 ``test_workers.py`` sends the legs to the worker frontends itself: the
 KV-cache-aware router tests send both legs (``direct_two_leg``), the eviction
-test sends aggregated requests to the generation worker only
-(``direct_worker``), and the conditional test sends the legs itself or, when
-most of the prompt is the previous round's, the whole request to the
-generation worker (``ctx_zero_ok``). With ``conditional_disagg_config`` the
+test sends aggregated requests to the generation worker only, and the
+conditional test sends the legs itself or, when most of the prompt is the
+previous round's, the whole request to the generation worker
+(``direct_worker`` for both). With ``conditional_disagg_config`` the
 disaggregated server may prefill a request on the generation worker
 (``ctx_zero_ok``). The tests through the disaggregated server that send
 both legs, such as ``test_disaggregated_cache_aware_balance*``, need no
@@ -90,9 +90,9 @@ EXPECTATIONS = [
         "WT-53",
         "test_workers.py::test_workers_conditional_disaggregation*",
         LEG_EXPECT,
-        "the test sends a request whose prompt is mostly the previous round's to the "
-        "generation worker frontend alone",
-        leg=CTX_ZERO_OK,
+        "the test sends the legs to the worker frontends itself, and a request whose prompt "
+        "is mostly the previous round's to the generation worker frontend alone",
+        leg=DIRECT_WORKER,
     ),
     # Hopper only.
     Expectation(

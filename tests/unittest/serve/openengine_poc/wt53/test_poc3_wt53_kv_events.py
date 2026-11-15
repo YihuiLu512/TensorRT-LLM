@@ -9,6 +9,8 @@
   events start with a ``created`` event stating the engine's
   ``total_kv_blocks`` (from its ``ServerInfo``, else its load), which a router
   reads as in-process.
+- The block hashes the engine publishes as signed 64-bit integers reach a
+  router as the unsigned ones it computes for the same tokens.
 """
 
 from __future__ import annotations
@@ -38,6 +40,7 @@ from tensorrt_llm.serve.openengine_poc.engine_client import EngineLoad, KvEventS
 from tensorrt_llm.serve.openengine_poc.engine_client_impl import _engine_info
 from tensorrt_llm.serve.openengine_poc.facade import adapt_server
 from tensorrt_llm.serve.router import KvCacheAwareServerState
+from tensorrt_llm.serve.router_utils import BlockHashMixin
 from tensorrt_llm.tokenizer import TransformersTokenizer
 
 __extra_import_path__ = ["~/tests/unittest/grpc/openengine_client"]
@@ -449,3 +452,46 @@ def test_a_failed_subscription_at_start_closes_the_connection(tmp_path, monkeypa
             await facade.aclose()
 
     asyncio.run(main())
+
+
+def _signed(block_hash: int) -> int:
+    return block_hash - 2**64 if block_hash >= 2**63 else block_hash
+
+
+def test_published_signed_block_hashes_match_the_ones_a_router_computes():
+    tokens_per_block = 4
+    tokens = list(range(100, 100 + 8 * tokens_per_block + 1))
+    router = SimpleNamespace(_tokens_per_block=tokens_per_block)
+    (hashes,) = BlockHashMixin._compute_block_hashes(router, [tokens], HASH_ALGO)
+    published = [_signed(h) for h in hashes]
+    # The check needs hashes that differ when read as signed: some do, at least one negative.
+    assert any(h < 0 for h in published) and published != hashes, hashes
+    block_size = tokens_per_block
+    batch = [
+        1.0,
+        [
+            {
+                "type": "BlockStored",
+                "block_hashes": published[1:],
+                "parent_block_hash": published[0],
+                "token_ids": tokens[block_size : len(hashes) * block_size],
+                "block_size": block_size,
+                "medium": "GPU",
+            },
+            {"type": "BlockRemoved", "block_hashes": published[-1:]},
+        ],
+    ]
+    stored, removed = metrics_module.to_in_process_events(
+        batch, first_event_id=0, hash_algo=HASH_ALGO, attention_dp_rank=None
+    )
+    assert [b["block_hash"] for b in stored["data"]["blocks"]] == hashes[1:]
+    assert stored["data"]["parent_hash"] == hashes[0]
+    assert removed["data"]["block_hashes"] == hashes[-1:]
+
+    state = KvCacheAwareServerState("worker:1", tokens_per_block=tokens_per_block)
+    state.update_with_events([stored])
+    matched = asyncio.run(state.matched_tokens([hashes[1:]], HASH_ALGO))
+    assert matched == (len(hashes) - 1) * tokens_per_block
+    state.update_with_events([removed])
+    matched = asyncio.run(state.matched_tokens([hashes[1:]], HASH_ALGO))
+    assert matched == (len(hashes) - 2) * tokens_per_block

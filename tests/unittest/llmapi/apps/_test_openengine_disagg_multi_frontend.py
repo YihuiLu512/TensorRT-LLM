@@ -3,9 +3,9 @@
 """Disaggregated workers with several serving frontends (F-39, DG-23).
 
 - NT-069: context and generation workers each run two frontends and register
-  through the orchestrator's cluster; two-stage requests complete and one
-  process of each worker, the launcher frontend, registered (the cluster
-  storage keys a registration by the registering process). On the chain, where
+  through the orchestrator's cluster; two-stage requests complete and each
+  worker registered once, under its port (the cluster storage keys a
+  registration by the registering process). On the chain, where
   every frontend process counts the Generate calls it sent its engine, the
   two frontends of a worker are both connected, and the calls they sent
   together are each leg once, all received by the one engine.
@@ -108,7 +108,7 @@ def test_multi_frontend_worker_two_stage(two_frontend_workers):
         engine_before = {role: engine_counts(served, role) for role in served.workers}
     for i in range(NUM_REQUESTS):
         _complete(served.orchestrator, i)
-    # One process of each worker registered, under the worker's port; the routers list it once.
+    # Each worker registered once, under its port, and the routers list it at that port.
     registered = registered_workers(served)
     listed = members(served.orchestrator)
     for role, servers in served.workers.items():
@@ -123,6 +123,7 @@ def test_multi_frontend_worker_two_stage(two_frontend_workers):
             pid: n for pid, n in _delta(sent_by_frontend(servers[0]), before[role]).items() if n
         }
         # Each frontend process that sent a call counts its own; together they sent each leg once.
+        # How the calls split between the two frontends is not checked.
         assert 1 <= len(sent) <= NUM_FRONTENDS, (role, sent)
         assert sum(sent.values()) == NUM_REQUESTS, (role, sent)
         (engine_after,) = engine_counts(served, role)

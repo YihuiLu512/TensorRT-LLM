@@ -5,7 +5,7 @@
 NT-201 (chain only): the orchestrator stamps the generation leg of a request
 with ``orig_elapsed_s``, the seconds since the request arrived; the
 generation worker frontend sends it to its engine in the GenerateRequest's
-``extra`` (EX-DSG-3), where the engine orders its admission by it. The
+``extra`` (EX-DSG-3), which the engine can order its admission by. The
 context leg carries none. The evidence is the GenerateRequests the worker
 frontends wrote as they sent them (``TRTLLM_OPENENGINE_REQUEST_DUMP_DIR``);
 the chain proof shows each one reached its engine. The orchestrator's own

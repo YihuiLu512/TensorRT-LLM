@@ -624,6 +624,8 @@ def to_in_process_events(
     medium. An ``mm_key``'s ``hash`` is the published digest, with its
     ``uuid`` beside it when it has one. All blocks cleared, which has no
     in-process counterpart, becomes ``{"type": "all_blocks_cleared"}``.
+    Block hashes, which the engine publishes as signed 64-bit integers, are
+    given as the unsigned 64-bit integers in-process gives and a router computes.
 
     Raises:
         TypeError, ValueError, KeyError, AttributeError, IndexError, OverflowError:
@@ -650,12 +652,15 @@ def to_in_process_events(
     return entries
 
 
+_U64_MASK = 0xFFFF_FFFF_FFFF_FFFF
+
+
 def _event_data(event: Mapping[str, Any]) -> dict[str, Any] | None:
     kind = event.get("type")
     if kind == "BlockStored":
         return _stored(event)
     if kind == "BlockRemoved":
-        return {"type": "removed", "block_hashes": list(event.get("block_hashes") or [])}
+        return {"type": "removed", "block_hashes": _unsigned_hashes(event.get("block_hashes"))}
     if kind == "AllBlocksCleared":
         return {"type": "all_blocks_cleared"}
     logger.warning(f"Ignoring a KV-cache event of unknown type {kind!r}")
@@ -663,7 +668,7 @@ def _event_data(event: Mapping[str, Any]) -> dict[str, Any] | None:
 
 
 def _stored(event: Mapping[str, Any]) -> dict[str, Any]:
-    hashes = list(event.get("block_hashes") or [])
+    hashes = _unsigned_hashes(event.get("block_hashes"))
     tokens = list(event.get("token_ids") or [])
     block_size = int(event.get("block_size") or 0)
     mm_keys = event.get("mm_keys") or []
@@ -687,7 +692,17 @@ def _stored(event: Mapping[str, Any]) -> dict[str, Any]:
                 ],
             }
         )
-    return {"type": "stored", "parent_hash": event.get("parent_block_hash"), "blocks": blocks}
+    parent = event.get("parent_block_hash")
+    parent = None if parent is None else _unsigned_hash(parent)
+    return {"type": "stored", "parent_hash": parent, "blocks": blocks}
+
+
+def _unsigned_hash(block_hash: int) -> int:
+    return block_hash & _U64_MASK
+
+
+def _unsigned_hashes(block_hashes: Sequence[int] | None) -> list[int]:
+    return [_unsigned_hash(block_hash) for block_hash in block_hashes or []]
 
 
 def _mm_key(key: Mapping[str, Any]) -> dict[str, Any]:
