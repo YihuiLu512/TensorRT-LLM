@@ -35,3 +35,14 @@
 | S2 | 全量验证 tests/jobs 的 `test_v0_tables_fit` 6 例 KeyError 'argv'：main（SB-A）的 `caplaunch.laddergen.packing` 用只有 `budget_s` 的合成计划调 `capjobs.submit.time_budget`；2B 让 `time_budget` 经 `launchplan.in_job_bound_s` 从每个启动 argv 读场景、加 `job_inputs_s`。两边文本都没冲突 | `time_budget(plan, renv, job_input_kinds=None)`：None 照旧读场景（提交端不变）；整数则每个启动按这么多种类计。`laddergen.packing` 传 0（v2 标定场景都不声明 `job_inputs`），`packing` 段（进 `ladder.json`）的键与数值与合入前相同，没加新键以免改变 `ladder.json` 字节。测试：`tests/jobs/test_job_inputs.py::test_in_job_bound_counts_each_declared_kind` 加显式计数的三条断言；`test_v0_tables_fit` 覆盖 laddergen 路径。INTERFACES 新增 M-SPB-2 |
 - 2026-11-16 00:11:53 r1 在 tests/judge 处中止（S2 修复改了代码，r1 前 7 个目录跑的是旧合并提交：capcommon 203、capload 33、capprobe 171、capstubs 95、envgate 111、grpc 56 全过，jobs 6 failed = S2）。S2 修复并入合并提交 91c6e683；开跑全量验证 r2（logs/merge-spb/r2，约 30 分钟，后台）。
 - 2026-11-16 r2 全量验证（HEAD 91c6e683b37705755ee2a530ecb2f136ba465c5a，logs/merge-spb/r2/summary.txt）全绿，首跑即过、无重跑：capcommon 203、capload 33、capprobe 171、capstubs 95、envgate 111、grpc 56、jobs 346、judge 542 + 6 xfailed、launch 322、nullsse 4、sidecar 5；selftest ran 52 / errors 0 / deferred 5（DEFERRED_P2_13，与 main v2 相同）；patchcheck PASS（7 位点 / 8 处，0 violations）；py_compile 239/0；bash -n 3/0；fakebin.log 0 行。
+- 2026-11-16 00:34:04 作业路径 e2e：e2e-spb-null J9600001（覆盖清单 P0-9cfb7d50，约 2–3 分钟），之后 e0a-nullsse J9600002。probe-tree 软链已移到 _local/merge-spb/probe-tree.link。
+- 2026-11-16 00:35:05 e2e-spb-null J9600001 完：submit rc 0、L0 VALID（拷回 172 文件）、judge rc 11（NOT_RUN：C1/C6/C7/C13/C13-MEAN）、RED 0、无 INPUT_INVALID、C10 PASS 5/5；S-PB 每档 grpc_server_options 时限 18 s（缺省来源），drain ok = planned（50/150/300/600/300/150）、failed 0。开跑 e0a-nullsse J9600002。
+- 2026-11-16 e0a-nullsse J9600002 完：submit rc 0、L0 VALID（拷回 318 文件）、judge rc 11（NOT_RUN 11 / PASS 27）、RED 0、无 INPUT_INVALID；判定表（档、检查、结论、说明）与 main 上 SB-A 的 J9500042 逐行相同，只差 C7 一条 PASS 说明里跨档计入的块行数（11 → 9，时序相关）。
+- e2e-spb-null J9600001 判定表（档、检查、结论）与 b2-spb 的 J9200041 相比只多一行 `launch C13-MEAN NOT_RUN`（SB-A 新增的检查，没有登记 D14 / c13_cap 时的预期结果）。
+- 两个 e2e 共往本目录 fakebin.log 写 6 行，都是真 capenv.gate 的 scontrol / squeue（替身 exit 97，与 b2-spb 每次 3 行相同）；测试阶段 mainv/fakebin.log 0 行；没碰集群。
+
+## 结论
+
+全绿，快进 main 到本分支。合并提交 91c6e683b37705755ee2a530ecb2f136ba465c5a（父：b3b3368e、756b9e7f）。合入时改的两处语义冲突见 S1、S2 与 INTERFACES 勘误 M-SPB-1、M-SPB-2。
+
+follow-up：`caplaunch.laddergen.packing` 按 0 个作业输入算时间预算（M-SPB-2）；calibration v2 若用声明了 `job_inputs` 的场景，要改成按该场景的种类数传入。
