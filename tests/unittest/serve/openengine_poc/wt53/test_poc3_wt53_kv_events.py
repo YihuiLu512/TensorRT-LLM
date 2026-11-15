@@ -496,10 +496,10 @@ def test_published_signed_block_hashes_match_the_ones_a_router_computes():
     assert asyncio.run(state.matched_tokens([hashes], HASH_ALGO)) == evicted * tokens_per_block
 
 
-def test_hashes_that_are_not_negative_64_bit_integers_are_kept():
-    batch = [1.0, [{"type": "BlockRemoved", "block_hashes": [5, 2**63, "ab", True, -(2**63) - 1]}]]
+def test_only_negative_64_bit_hashes_are_converted():
+    published = [-1, -(2**63), 0, 5, 2**63, "ab", -(2**63) - 1]
+    batch = [1.0, [{"type": "BlockRemoved", "block_hashes": published}]]
     (removed,) = metrics_module.to_in_process_events(
         batch, first_event_id=0, hash_algo=HASH_ALGO, attention_dp_rank=None
     )
-    kept = removed["data"]["block_hashes"]
-    assert kept == [5, 2**63, "ab", True, -(2**63) - 1] and kept[3] is True
+    assert removed["data"]["block_hashes"] == [2**64 - 1, 2**63, 0, 5, 2**63, "ab", -(2**63) - 1]

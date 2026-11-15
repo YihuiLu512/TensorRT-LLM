@@ -695,11 +695,7 @@ def _stored(event: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _unsigned_hash(block_hash: Any) -> Any:
-    if (
-        isinstance(block_hash, int)
-        and not isinstance(block_hash, bool)
-        and -(2**63) <= block_hash < 0
-    ):
+    if isinstance(block_hash, int) and -(2**63) <= block_hash < 0:
         return block_hash + 2**64
     return block_hash
 

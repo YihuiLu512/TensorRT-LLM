@@ -17,12 +17,13 @@ DP, so on the chain their engines check the signed parent id
   it leaves it out only when the engine does not declare the check, when the
   call has no conversation id, or when the parent id is not printable ASCII.
 - NT-084: with ``subagent_affinity_scope: both`` (a second orchestrator) the
-  requests succeed. On the chain, where the generation engine also declares
-  that it checks the hint, this is the evidence that the generation
-  frontend did not send the hint to its engine: the engine refuses a
-  generation call that carries one ("supported on context requests only"),
-  which would fail the request; the hint travels as gRPC metadata, which the
-  frontend's request dumps do not hold. Neither engine logs a refusal.
+  requests succeed. The generation engine also declares that it checks the
+  hint, so its frontend cannot leave the hint out for the engine not
+  declaring it, and the engine refuses a generation call that carries one
+  ("supported on context requests only"), which would fail the request. On
+  the chain the requests succeeding is the evidence that the generation
+  frontend did not send the hint; the hint travels as gRPC metadata, which
+  the frontend's request dumps do not hold. Neither engine logs a refusal.
 
 Needs one GPU of Hopper or later and ``${LLM_MODELS_ROOT}/Qwen3/Qwen3-0.6B``.
 """
