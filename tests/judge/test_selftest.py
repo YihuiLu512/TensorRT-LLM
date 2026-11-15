@@ -169,6 +169,10 @@ def test_deferred_list_is_the_five_i_samples_of_the_table():
     assert sorted(_deferred_list()) == ["i_conflict", "i_reader_slow", "i_reader_slow_real_pins",
                                         "i_server_slow", "sat_spin_thread_same_process"]
     assert set(_deferred_list()) <= set(make_samples.SAMPLES)
+    for name, parts in _deferred_list().items():
+        assert set(parts) >= {"tier_localisation", "grade"}, name
+        assert set(parts) - {"tier_localisation", "grade"} <= (
+            {"tier_verdicts.4"} if name == "i_conflict" else set()), name
 
 
 def test_deferred_sample_is_reported_apart_and_does_not_fail_the_runner(tmp_path):
@@ -190,6 +194,21 @@ def test_deferred_sample_with_a_wrong_exit_code_is_still_an_error(tmp_path):
     p = _runner(str(out), TOOLS, tmp_path, 1)
     rep = json.loads(p.stdout)
     assert p.returncode == 1 and rep["errors"] == ["i_server_slow: exit 0 != expected 3"], rep
+
+
+def test_deferred_sample_keeps_its_other_expectations(tmp_path):
+    """Only the listed parts are deferred: a wrong tier verdict outside them is an error (this
+    keeps e.g. the X2 tamper red on the I samples)."""
+    out = _gen_only(tmp_path, "i_server_slow")
+    ep = out / "i_server_slow" / "expect.json"
+    exp = json.loads(ep.read_text())
+    exp["tier_verdicts"]["2"] = "UNSTABLE"
+    ep.write_text(json.dumps(exp))
+    p = _runner(str(out), TOOLS, tmp_path, 1)
+    rep = json.loads(p.stdout)
+    assert p.returncode == 1, rep
+    assert rep["errors"] == ["i_server_slow: tier 2 verdict 'STABLE' != expected 'UNSTABLE'"], rep
+    assert rep["deferred"]["i_server_slow"], rep
 
 
 def test_deferred_sample_that_matches_its_expectation_fails_the_runner(tmp_path):

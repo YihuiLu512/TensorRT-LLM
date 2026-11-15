@@ -151,3 +151,5 @@
 - 2026-11-15 12:15:36 SB-A-6-verify-gaps 开工（HEAD 27c597aa）：读完 DESIGN-r7a §3.4/§4.1/§4.2、ERRATA-after-r7a E1/E2、STATUS 12:07 决定、laddergen/tiergen/run_selftest 与 8 条失败用例。计划：(a) 8 条 I 样本用例 xfail(strict) 拆分到参数级、run_selftest 加 P2-13 延后清单；(b) --job-plan 加 layout one_each（V0cal 强制）；(c) --request-timeout-ns（null 为登记的 null、tiergen 认 registered_nulls）与 kind c13pc；(d) INTERFACES calib-v2-A7。
 - 2026-11-15 12:21:11 代码与测试初稿完成（laddergen 54 passed、test_v0_tables_fit 6 passed）；跑 judge 的 xfail 用例与 selftest 新用例（约 3～5 分钟）
 - 2026-11-15 12:22:34 后台跑变异 r6（mut/muts6.py，27 项 + 对照，逐个串行，约 5 分钟）；同时写 INTERFACES calib-v2-A7
+- 2026-11-15 12:31:17 提交 730f5ea7；变异 r6 27 项（S01～S05、J01～J08、T01～T10、C01～C03）中 25 项红，J07、T07 补测试后 r6b 红，对照 r6c 全过。后台逐个跑 tests/judge（约 8 分钟）、tests/jobs、tests/launch 与 selftest（52）
+- 2026-11-15 12:44:32 全量（HEAD 730f5ea7）：tests/judge 1 failed / 516 passed / 6 xfailed——X2 篡改用例只在 I 样本档 4 上变红，整份延后后失去信号；改为按样本只延后依赖 I 的期望部分（I 定位、等级；i_conflict 另有档 4 判定）。tests/jobs 281 passed、tests/launch 244 passed、selftest 52 ran / errors []、py_compile 221/0。

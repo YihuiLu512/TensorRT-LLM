@@ -18,11 +18,13 @@ caplaunch / capjobs recorded before it). Plus:
 Exit code 0 only if every assertion holds and at least one sample ran; --expect-samples is
 required and must equal the number of sample dirs (with expect.json) under --samples.
 
-DEFERRED_P2_13 lists the samples whose final expectation needs the I threshold source of
-calibration v2 (pilot/2 i1_calibration, DESIGN-r7a P2-13, sub-batch SB-C; INTERFACES erratum
-calib-v2-A7). Such a sample still runs and its exit code is still asserted; its other
-mismatches go to the report's `deferred` section instead of `errors`. A listed sample that
-matches its whole expectation is an error, so the list has to shrink when P2-13 lands.
+DEFERRED_P2_13 lists the samples whose expectation needs the I threshold source of calibration
+v2 (pilot/2 i1_calibration, DESIGN-r7a P2-13, sub-batch SB-C; INTERFACES erratum calib-v2-A7)
+and, per sample, the expectation parts that need it: "tier_localisation", "grade" and
+"tier_verdicts.<seq>". Such a sample still runs; the rest of its expectation (exit code, other
+tier verdicts, checks, ...) is asserted as usual. Mismatches in the listed parts go to the
+report's `deferred` section instead of `errors`. A listed sample whose listed parts all hold is
+an error, so the list has to shrink when P2-13 lands.
 """
 
 import argparse
@@ -36,8 +38,10 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXED_CODE_SHA = "b" * 40
-DEFERRED_P2_13 = ("i_conflict", "i_reader_slow", "i_reader_slow_real_pins", "i_server_slow",
-                  "sat_spin_thread_same_process")
+_I_PARTS = ("tier_localisation", "grade")
+DEFERRED_P2_13 = {"i_conflict": _I_PARTS + ("tier_verdicts.4",),  # UNDETERMINED needs I
+                  "i_reader_slow": _I_PARTS, "i_reader_slow_real_pins": _I_PARTS,
+                  "i_server_slow": _I_PARTS, "sat_spin_thread_same_process": _I_PARTS}
 
 
 def sha(p):
@@ -138,15 +142,31 @@ def copy_sample(src, tmp, name):
     return dst
 
 
+def split_deferred(exp, parts):
+    """(core expectation, expectation of the deferred parts only); the deferred one carries no
+    exit code (compare() asserts it with the core part)."""
+    core = json.loads(json.dumps(exp))
+    later = {}
+    for part in parts:
+        key, _, seq = part.partition(".")
+        if seq:
+            tv = core.get(key) or {}
+            if seq in tv:
+                later.setdefault(key, {})[seq] = tv.pop(seq)
+        elif key in core:
+            later[key] = core.pop(key)
+    return core, later
+
+
 def _deferred_compare(name, exp, rc, tree, errs, deferred):
-    """compare() for a DEFERRED_P2_13 sample: exit-code mismatches stay errors, the rest is
-    reported under `deferred`; no mismatch at all is an error (the list would rot)."""
+    """compare() for a DEFERRED_P2_13 sample: the core part as usual, mismatches of the listed
+    parts under `deferred`; listed parts that all hold are an error (the list would rot)."""
+    core, later = split_deferred(exp, DEFERRED_P2_13[name])
+    compare(name, core, rc, tree, errs)
     mine = []
-    compare(name, exp, rc, tree, mine)
-    exit_prefix = "%s: exit " % name
-    errs.extend(e for e in mine if e.startswith(exit_prefix))
-    rest = [e for e in mine if not e.startswith(exit_prefix)]
-    deferred[name] = rest
+    if later:
+        compare(name, dict(later, exit_code=rc), rc, tree, mine)
+    deferred[name] = mine
     if not mine:
         errs.append("%s: listed in DEFERRED_P2_13 but matches its expectation; remove it from "
                     "the list" % name)
