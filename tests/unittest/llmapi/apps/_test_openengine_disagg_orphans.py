@@ -4,17 +4,17 @@
 
 An orchestrator and a context and a generation worker, each started with
 ``--server_role``, register through the orchestrator's cluster; on the
-OpenEngine chain (``TRTLLM_TEST_OPENENGINE_CHAIN``,
+TensorRT-LLM OpenEngine chain (``TRTLLM_TEST_OPENENGINE_CHAIN=trtllm``,
 ``tests/integration/defs/openengine_chain``) each worker is a frontend and a
 TensorRT-LLM OpenEngine server, whose ``Control.GetLoad`` counters the test
 reads, so it runs on the chain only.
 
-NT-187 (DG-90): the test sends context legs to the context worker itself and
-no generation leg; the orphan handoffs, the PrefillReady events the context
-engine sent less the generation_only calls the generation engine accepted,
-are as many as the context legs. The expectations table says how many
-handoffs the test leaves unclaimed (``leg_expect: direct_ctx_leg``,
-``openengine_chain/expectations/WT-52.py``).
+NT-187 (DG-90): the test sends one context leg to the context worker itself
+and no generation leg; the context engine sends one more PrefillReady, and
+the orphan handoffs, the PrefillReady events the context engine sent less the
+generation_only calls the generation engine accepted, are one more. The
+expectations table says the test leaves one handoff unclaimed
+(``leg_expect: direct_ctx_leg``, ``openengine_chain/expectations/WT-52.py``).
 
 Needs one GPU of Hopper or later and ``${LLM_MODELS_ROOT}/Qwen3/Qwen3-0.6B``.
 """
@@ -42,11 +42,13 @@ from .openai_server import RemoteDisaggOpenAIServer, RemoteOpenAIServer
 
 __extra_import_path__ = ["~/tests/integration/defs"]
 from openengine_chain import direct_replay as dr  # noqa: E402
+from openengine_chain import launch  # noqa: E402
+from openengine_chain.conventions import CHAIN_TRTLLM  # noqa: E402
 
-CHAIN = os.environ.get("TRTLLM_TEST_OPENENGINE_CHAIN", "none") not in ("", "none")
+CHAIN = os.environ.get("TRTLLM_TEST_OPENENGINE_CHAIN") == CHAIN_TRTLLM
 pytestmark = [
     pytest.mark.threadleak(enabled=False),
-    pytest.mark.skipif(not CHAIN, reason="the counters are the OpenEngine engines'"),
+    pytest.mark.skipif(not CHAIN, reason="the counters are the TensorRT-LLM OpenEngine engines'"),
 ]
 
 MODEL_SUBDIR = os.path.join("Qwen3", "Qwen3-0.6B")
@@ -60,8 +62,6 @@ WORKER_CONFIG = {
     "disable_overlap_scheduler": True,
     "cuda_graph_config": None,
 }
-# The context legs NT-187 leaves unclaimed; the expectations table says the same number.
-UNCLAIMED = 2
 _DISAGG_REQUEST_IDS = itertools.count(DISAGG_REQUEST_ID_MIN + 1)
 
 
@@ -101,40 +101,30 @@ def _wait_registered(orchestrator: RemoteDisaggOpenAIServer) -> None:
 
 
 @contextlib.contextmanager
-def _chain(directory, ctx_config=None, gen_config=None, role_env=None, cluster_config=None):
-    """An orchestrator and two workers with roles, registered through its cluster.
-
-    ``ctx_config`` and ``gen_config`` add to a worker's configuration,
-    ``role_env`` (role name to variables) to its environment, and
-    ``cluster_config`` to the cluster settings of all three.
-    """
+def _chain(directory):
+    """An orchestrator and two workers with roles, registered through its cluster."""
     _needs_gpu()
     model = _model_dir()
     disagg_port, ctx_port, gen_port = get_free_ports(3)
-    cluster = {
-        "cluster_uri": f"http://localhost:{disagg_port}",
-        "cluster_name": "",
-        **(cluster_config or {}),
-    }
+    # On the chain the harness picks the engines' ports as the workers start: not these three.
+    launch.reserve_ports(disagg_port, ctx_port, gen_port)
+    cluster = {"cluster_uri": f"http://localhost:{disagg_port}", "cluster_name": ""}
     # Both workers run on this host: loopback is the only TCP device UCX needs.
     env = {**os.environ, "UCX_NET_DEVICES": "lo"}
 
-    def worker(role: str, port: int, overrides) -> RemoteOpenAIServer:
+    def worker(role: str, port: int, overrides: dict) -> RemoteOpenAIServer:
         return RemoteOpenAIServer(
             model,
             port=port,
-            env={**env, **(role_env or {}).get(role, {})},
+            env=env,
             cli_args=["--server_role", role],
-            extra_config={**WORKER_CONFIG, "disagg_cluster": cluster, **(overrides or {})},
+            extra_config={**WORKER_CONFIG, "disagg_cluster": cluster, **overrides},
             log_path=str(directory / f"output_{role}.log"),
             wait=False,
         )
 
     disagg_config = {"hostname": "localhost", "port": disagg_port, "disagg_cluster": cluster}
-    with (
-        worker("context", ctx_port, ctx_config) as ctx,
-        worker("generation", gen_port, gen_config) as gen,
-    ):
+    with worker("context", ctx_port, {}) as ctx, worker("generation", gen_port, {}) as gen:
         with RemoteDisaggOpenAIServer(
             ctx_servers=[], gen_servers=[], port=disagg_port, disagg_config=disagg_config
         ) as orchestrator:
@@ -162,21 +152,22 @@ def _orphans(chain: Chain) -> int:
 
 
 def test_an_unclaimed_handoff_is_reported_as_an_orphan(chain):
-    """NT-187 (DG-90): each context leg without a generation leg is one more orphan handoff."""
+    """NT-187 (DG-90): a context leg without a generation leg is one more orphan handoff."""
+    handed_off = _counter(chain.ctx, COUNTER_PREFILL_READY_SENT)
     before = _orphans(chain)
-    for _ in range(UNCLAIMED):
-        body = {
-            "model": chain.model,
-            "prompt": PROMPT,
-            "max_tokens": 4,
-            "disaggregated_params": {
-                "request_type": "context_only",
-                "disagg_request_id": next(_DISAGG_REQUEST_IDS),
-            },
-        }
-        response = requests.post(
-            chain.ctx.url_for("v1", "completions"), json=body, timeout=REQUEST_TIMEOUT_S
-        )
-        assert response.status_code == 200, response.text
-        assert response.json()["choices"][0].get("disaggregated_params"), response.text
-    assert _orphans(chain) - before == UNCLAIMED
+    body = {
+        "model": chain.model,
+        "prompt": PROMPT,
+        "max_tokens": 4,
+        "disaggregated_params": {
+            "request_type": "context_only",
+            "disagg_request_id": next(_DISAGG_REQUEST_IDS),
+        },
+    }
+    response = requests.post(
+        chain.ctx.url_for("v1", "completions"), json=body, timeout=REQUEST_TIMEOUT_S
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["choices"][0].get("disaggregated_params"), response.text
+    assert _counter(chain.ctx, COUNTER_PREFILL_READY_SENT) == handed_off + 1
+    assert _orphans(chain) == before + 1

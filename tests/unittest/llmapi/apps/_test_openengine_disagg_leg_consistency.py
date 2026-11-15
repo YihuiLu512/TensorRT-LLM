@@ -4,7 +4,7 @@
 
 An orchestrator and a context and a generation worker, each started with
 ``--server_role``, register through the orchestrator's cluster; on the
-OpenEngine chain (``TRTLLM_TEST_OPENENGINE_CHAIN``,
+TensorRT-LLM OpenEngine chain (``TRTLLM_TEST_OPENENGINE_CHAIN=trtllm``,
 ``tests/integration/defs/openengine_chain``) each worker is a frontend and a
 TensorRT-LLM OpenEngine server. Each worker frontend writes the
 GenerateRequests it sends to a directory of its own
@@ -25,7 +25,7 @@ import contextlib
 import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
@@ -44,10 +44,16 @@ from tensorrt_llm.grpc.openengine_conventions import (
 
 from .openai_server import RemoteDisaggOpenAIServer, RemoteOpenAIServer
 
-CHAIN = os.environ.get("TRTLLM_TEST_OPENENGINE_CHAIN", "none") not in ("", "none")
+__extra_import_path__ = ["~/tests/integration/defs"]
+from openengine_chain import launch  # noqa: E402
+from openengine_chain.conventions import CHAIN_TRTLLM  # noqa: E402
+
+CHAIN = os.environ.get("TRTLLM_TEST_OPENENGINE_CHAIN") == CHAIN_TRTLLM
 pytestmark = [
     pytest.mark.threadleak(enabled=False),
-    pytest.mark.skipif(not CHAIN, reason="the OpenEngine worker frontends write the requests"),
+    pytest.mark.skipif(
+        not CHAIN, reason="the TensorRT-LLM OpenEngine worker frontends write the requests"
+    ),
 ]
 
 MODEL_SUBDIR = os.path.join("Qwen3", "Qwen3-0.6B")
@@ -89,6 +95,8 @@ class Chain:
     orchestrator: RemoteDisaggOpenAIServer
     ctx: RemoteOpenAIServer
     gen: RemoteOpenAIServer
+    # Role name to the directory its worker frontend writes its GenerateRequests to.
+    dump_dirs: dict[str, Path] = field(default_factory=dict)
 
 
 def _wait_registered(orchestrator: RemoteDisaggOpenAIServer) -> None:
@@ -107,39 +115,36 @@ def _wait_registered(orchestrator: RemoteDisaggOpenAIServer) -> None:
 
 
 @contextlib.contextmanager
-def _chain(directory, ctx_config=None, gen_config=None, role_env=None, cluster_config=None):
+def _chain(directory, role_env: dict):
     """An orchestrator and two workers with roles, registered through its cluster.
 
-    ``ctx_config`` and ``gen_config`` add to a worker's configuration,
-    ``role_env`` (role name to variables) to its environment, and
-    ``cluster_config`` to the cluster settings of all three.
+    The workers take CTX_CONFIG and GEN_CONFIG; ``role_env`` (role name to
+    variables) adds to a worker's environment.
     """
     _needs_gpu()
     model = _model_dir()
     disagg_port, ctx_port, gen_port = get_free_ports(3)
-    cluster = {
-        "cluster_uri": f"http://localhost:{disagg_port}",
-        "cluster_name": "",
-        **(cluster_config or {}),
-    }
+    # On the chain the harness picks the engines' ports as the workers start: not these three.
+    launch.reserve_ports(disagg_port, ctx_port, gen_port)
+    cluster = {"cluster_uri": f"http://localhost:{disagg_port}", "cluster_name": ""}
     # Both workers run on this host: loopback is the only TCP device UCX needs.
     env = {**os.environ, "UCX_NET_DEVICES": "lo"}
 
-    def worker(role: str, port: int, overrides) -> RemoteOpenAIServer:
+    def worker(role: str, port: int, overrides: dict) -> RemoteOpenAIServer:
         return RemoteOpenAIServer(
             model,
             port=port,
-            env={**env, **(role_env or {}).get(role, {})},
+            env={**env, **role_env[role]},
             cli_args=["--server_role", role],
-            extra_config={**WORKER_CONFIG, "disagg_cluster": cluster, **(overrides or {})},
+            extra_config={**WORKER_CONFIG, "disagg_cluster": cluster, **overrides},
             log_path=str(directory / f"output_{role}.log"),
             wait=False,
         )
 
     disagg_config = {"hostname": "localhost", "port": disagg_port, "disagg_cluster": cluster}
     with (
-        worker("context", ctx_port, ctx_config) as ctx,
-        worker("generation", gen_port, gen_config) as gen,
+        worker("context", ctx_port, CTX_CONFIG) as ctx,
+        worker("generation", gen_port, GEN_CONFIG) as gen,
     ):
         with RemoteDisaggOpenAIServer(
             ctx_servers=[], gen_servers=[], port=disagg_port, disagg_config=disagg_config
@@ -157,7 +162,7 @@ def chain(tmp_path_factory):
     for path in dump_dirs.values():
         path.mkdir()
     role_env = {role: {SERVE_REQUEST_DUMP_DIR_ENV: str(path)} for role, path in dump_dirs.items()}
-    with _chain(directory, CTX_CONFIG, GEN_CONFIG, role_env) as served:
+    with _chain(directory, role_env) as served:
         served.dump_dirs = dump_dirs
         yield served
 

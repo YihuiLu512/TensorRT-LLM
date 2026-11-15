@@ -4,15 +4,18 @@
 
 An orchestrator and a context and a generation worker, each started with
 ``--server_role``, register through the orchestrator's cluster; on the
-OpenEngine chain (``TRTLLM_TEST_OPENENGINE_CHAIN``,
+TensorRT-LLM OpenEngine chain (``TRTLLM_TEST_OPENENGINE_CHAIN=trtllm``,
 ``tests/integration/defs/openengine_chain``) each worker is a frontend and a
 TensorRT-LLM OpenEngine server. Each test starts a chain of its own, sends one
-request through it, and kills one worker's engine process; the test runs on
-the chain only.
+request through it, and kills one worker's engine process (SIGKILL to the
+process that serves its gRPC; the harness stops the processes it started
+when the chain stops); the test runs on the chain only.
 
 - NT-183 (DG-87): the context engine exits; its frontend reports the engine
-  lost and exits, and the orchestrator no longer lists the worker.
-- NT-184 (DG-87): the same for the generation engine.
+  lost and exits, and the orchestrator no longer lists the worker. The
+  generation worker still runs, answers ``/health`` and is still listed.
+- NT-184 (DG-87): the same for the generation engine; the context worker is
+  the one left.
 
 The expectations table marks the killed role (``leg_expect: killed``,
 ``openengine_chain/expectations/WT-52.py``).
@@ -35,10 +38,16 @@ from tensorrt_llm._utils import get_free_ports
 
 from .openai_server import RemoteDisaggOpenAIServer, RemoteOpenAIServer
 
-CHAIN = os.environ.get("TRTLLM_TEST_OPENENGINE_CHAIN", "none") not in ("", "none")
+__extra_import_path__ = ["~/tests/integration/defs"]
+from openengine_chain import launch  # noqa: E402
+from openengine_chain.conventions import CHAIN_TRTLLM  # noqa: E402
+
+CHAIN = os.environ.get("TRTLLM_TEST_OPENENGINE_CHAIN") == CHAIN_TRTLLM
 pytestmark = [
     pytest.mark.threadleak(enabled=False),
-    pytest.mark.skipif(not CHAIN, reason="the engine is a process of its own on the chain only"),
+    pytest.mark.skipif(
+        not CHAIN, reason="the engine is a process of its own on the TensorRT-LLM chain only"
+    ),
 ]
 
 MODEL_SUBDIR = os.path.join("Qwen3", "Qwen3-0.6B")
@@ -57,6 +66,8 @@ CLUSTER_CONFIG = {"heartbeat_interval_sec": 1, "inactive_timeout_sec": 5}
 # The frontend gives up on its engine after its engine-lost timeout (30 s by default).
 FRONTEND_STOP_S = 180
 DROP_S = 60
+# How long the log helper may take to write the frontend's last lines once it exits.
+LOG_FLUSH_S = 30
 # What a frontend logs when it gives up on its engine.
 LOST_LOG = "stopping this frontend"
 
@@ -97,40 +108,34 @@ def _wait_registered(orchestrator: RemoteDisaggOpenAIServer) -> None:
 
 
 @contextlib.contextmanager
-def _chain(directory, ctx_config=None, gen_config=None, role_env=None, cluster_config=None):
-    """An orchestrator and two workers with roles, registered through its cluster.
-
-    ``ctx_config`` and ``gen_config`` add to a worker's configuration,
-    ``role_env`` (role name to variables) to its environment, and
-    ``cluster_config`` to the cluster settings of all three.
-    """
+def _chain(directory):
+    """An orchestrator and two workers with roles, registered through its cluster of CLUSTER_CONFIG."""
     _needs_gpu()
     model = _model_dir()
     disagg_port, ctx_port, gen_port = get_free_ports(3)
+    # On the chain the harness picks the engines' ports as the workers start: not these three.
+    launch.reserve_ports(disagg_port, ctx_port, gen_port)
     cluster = {
         "cluster_uri": f"http://localhost:{disagg_port}",
         "cluster_name": "",
-        **(cluster_config or {}),
+        **CLUSTER_CONFIG,
     }
     # Both workers run on this host: loopback is the only TCP device UCX needs.
     env = {**os.environ, "UCX_NET_DEVICES": "lo"}
 
-    def worker(role: str, port: int, overrides) -> RemoteOpenAIServer:
+    def worker(role: str, port: int, overrides: dict) -> RemoteOpenAIServer:
         return RemoteOpenAIServer(
             model,
             port=port,
-            env={**env, **(role_env or {}).get(role, {})},
+            env=env,
             cli_args=["--server_role", role],
-            extra_config={**WORKER_CONFIG, "disagg_cluster": cluster, **(overrides or {})},
+            extra_config={**WORKER_CONFIG, "disagg_cluster": cluster, **overrides},
             log_path=str(directory / f"output_{role}.log"),
             wait=False,
         )
 
     disagg_config = {"hostname": "localhost", "port": disagg_port, "disagg_cluster": cluster}
-    with (
-        worker("context", ctx_port, ctx_config) as ctx,
-        worker("generation", gen_port, gen_config) as gen,
-    ):
+    with worker("context", ctx_port, {}) as ctx, worker("generation", gen_port, {}) as gen:
         with RemoteDisaggOpenAIServer(
             ctx_servers=[], gen_servers=[], port=disagg_port, disagg_config=disagg_config
         ) as orchestrator:
@@ -143,7 +148,7 @@ def _chain(directory, ctx_config=None, gen_config=None, role_env=None, cluster_c
 @pytest.fixture
 def chain(tmp_path):
     """A chain for one test: the test kills one of its engines."""
-    with _chain(tmp_path, cluster_config=CLUSTER_CONFIG) as served:
+    with _chain(tmp_path) as served:
         yield served
 
 
@@ -161,7 +166,8 @@ def _listed(chain: Chain, role: str, port: int) -> bool:
 
 
 def _engine_exit_stops_the_worker(chain: Chain, role: str) -> None:
-    server = chain.ctx if role == "context" else chain.gen
+    server, other = (chain.ctx, chain.gen) if role == "context" else (chain.gen, chain.ctx)
+    other_role = "generation" if role == "context" else "context"
     handle = server._chain_handle
     response = requests.post(
         chain.orchestrator.url_for("v1", "completions"),
@@ -173,8 +179,13 @@ def _engine_exit_stops_the_worker(chain: Chain, role: str) -> None:
 
     handle.engine.kill()
     _wait(lambda: handle.frontend.poll() is not None, "the frontend to stop", FRONTEND_STOP_S)
-    assert LOST_LOG in Path(handle.frontend_log).read_text(errors="replace")
+    log = Path(handle.frontend_log)
+    _wait(lambda: LOST_LOG in log.read_text(errors="replace"), "the frontend's log", LOG_FLUSH_S)
     _wait(lambda: not _listed(chain, role, server.port), "the worker to be dropped", DROP_S)
+    # The other worker is not affected.
+    assert other._chain_handle.frontend.poll() is None
+    assert requests.get(other.url_for("health"), timeout=10).status_code == 200
+    assert _listed(chain, other_role, other.port)
 
 
 def test_ctx_engine_exit_stops_the_frontend_and_drops_the_worker(chain):

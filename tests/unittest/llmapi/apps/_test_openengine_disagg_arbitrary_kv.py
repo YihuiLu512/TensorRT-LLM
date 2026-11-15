@@ -4,7 +4,7 @@
 
 An orchestrator and a context and a generation worker, each started with
 ``--server_role``, register through the orchestrator's cluster; on the
-OpenEngine chain (``TRTLLM_TEST_OPENENGINE_CHAIN``,
+TensorRT-LLM OpenEngine chain (``TRTLLM_TEST_OPENENGINE_CHAIN=trtllm``,
 ``tests/integration/defs/openengine_chain``) each worker is a frontend and a
 TensorRT-LLM OpenEngine server. In-process a worker answers with its KV cache
 transceiver's state, so the test runs on the chain only.
@@ -30,10 +30,16 @@ from tensorrt_llm._utils import get_free_ports
 
 from .openai_server import RemoteDisaggOpenAIServer, RemoteOpenAIServer
 
-CHAIN = os.environ.get("TRTLLM_TEST_OPENENGINE_CHAIN", "none") not in ("", "none")
+__extra_import_path__ = ["~/tests/integration/defs"]
+from openengine_chain import launch  # noqa: E402
+from openengine_chain.conventions import CHAIN_TRTLLM  # noqa: E402
+
+CHAIN = os.environ.get("TRTLLM_TEST_OPENENGINE_CHAIN") == CHAIN_TRTLLM
 pytestmark = [
     pytest.mark.threadleak(enabled=False),
-    pytest.mark.skipif(not CHAIN, reason="the 501 is the OpenEngine worker frontend's"),
+    pytest.mark.skipif(
+        not CHAIN, reason="the 501 is the TensorRT-LLM OpenEngine worker frontend's"
+    ),
 ]
 
 MODEL_SUBDIR = os.path.join("Qwen3", "Qwen3-0.6B")
@@ -84,40 +90,30 @@ def _wait_registered(orchestrator: RemoteDisaggOpenAIServer) -> None:
 
 
 @contextlib.contextmanager
-def _chain(directory, ctx_config=None, gen_config=None, role_env=None, cluster_config=None):
-    """An orchestrator and two workers with roles, registered through its cluster.
-
-    ``ctx_config`` and ``gen_config`` add to a worker's configuration,
-    ``role_env`` (role name to variables) to its environment, and
-    ``cluster_config`` to the cluster settings of all three.
-    """
+def _chain(directory):
+    """An orchestrator and two workers with roles, registered through its cluster."""
     _needs_gpu()
     model = _model_dir()
     disagg_port, ctx_port, gen_port = get_free_ports(3)
-    cluster = {
-        "cluster_uri": f"http://localhost:{disagg_port}",
-        "cluster_name": "",
-        **(cluster_config or {}),
-    }
+    # On the chain the harness picks the engines' ports as the workers start: not these three.
+    launch.reserve_ports(disagg_port, ctx_port, gen_port)
+    cluster = {"cluster_uri": f"http://localhost:{disagg_port}", "cluster_name": ""}
     # Both workers run on this host: loopback is the only TCP device UCX needs.
     env = {**os.environ, "UCX_NET_DEVICES": "lo"}
 
-    def worker(role: str, port: int, overrides) -> RemoteOpenAIServer:
+    def worker(role: str, port: int, overrides: dict) -> RemoteOpenAIServer:
         return RemoteOpenAIServer(
             model,
             port=port,
-            env={**env, **(role_env or {}).get(role, {})},
+            env=env,
             cli_args=["--server_role", role],
-            extra_config={**WORKER_CONFIG, "disagg_cluster": cluster, **(overrides or {})},
+            extra_config={**WORKER_CONFIG, "disagg_cluster": cluster, **overrides},
             log_path=str(directory / f"output_{role}.log"),
             wait=False,
         )
 
     disagg_config = {"hostname": "localhost", "port": disagg_port, "disagg_cluster": cluster}
-    with (
-        worker("context", ctx_port, ctx_config) as ctx,
-        worker("generation", gen_port, gen_config) as gen,
-    ):
+    with worker("context", ctx_port, {}) as ctx, worker("generation", gen_port, {}) as gen:
         with RemoteDisaggOpenAIServer(
             ctx_servers=[], gen_servers=[], port=disagg_port, disagg_config=disagg_config
         ) as orchestrator:
