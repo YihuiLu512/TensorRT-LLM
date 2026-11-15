@@ -217,8 +217,11 @@ def orchestrator_sent(deployment: Deployment) -> dict[str, int]:
     """
     response = requests.get(f"{deployment.url}/prometheus/metrics", timeout=REQUEST_TIMEOUT_S)
     assert response.status_code == 200, response.text
+    found = _SENT.findall(response.text)
+    # Both counters exist from the start, so a missing one means the metric changed.
+    assert {role for role, _ in found} == {"ctx", "gen"}, response.text
     counts = {"ctx": 0, "gen": 0}
-    for role, value in _SENT.findall(response.text):
+    for role, value in found:
         counts[role] += int(float(value))
     return counts
 
