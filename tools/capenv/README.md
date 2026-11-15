@@ -89,6 +89,10 @@ INTERFACES §11 的参数。server 写端口文件，client 做 `--round-trips` 
 
 `<身份> --versions-dir raw/env/versions --expected-count N --out env/switchinterval.json`。逐个版本自报文件取 `switchinterval_s`；`N` 由调用方给（`launch.json` 的 `expected_procs` 之和）；`N=0` ⇒ NOT_RUN，少于 N 个或缺字段 ⇒ RED。值只记录不判定。
 
+### `python -m capenv.spinners`（SB-B1）
+
+caplaunch 场景的 `aux` 角色（`measure_class: observer`）：`--cpus` 每核一个纯 Python 自旋进程，`--target-role ROLE` 另起一个绑到绑核表里 ROLE 的第一个核（C13 阳性对照）。`--pin-table` 由编排器给（启动树的 `raw/env/pin_table.json`）。参数、进程模型、角色写法、退出码与输出 `raw/spinners/<角色>.json` 见 INTERFACES 勘误「Calibration v2 SB-B1」。
+
 ## 已知限制
 
 - 第 6 项只按核的忙碌比例判，不扣除「本作业自己的进程」的 CPU（按核归属进程时间在 /proc 里拿不到）；pre 阶段本作业只有门禁自己与作业脚本在睡眠，阈值留出这部分。

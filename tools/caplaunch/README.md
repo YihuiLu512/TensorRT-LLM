@@ -24,7 +24,7 @@ E0 配置生成器在 `configs/gen_e0_configs.py`。
 --housekeeping-ms --kill-after-s --capkit-sha --probe-tree-sha --baseline-sha --snapshot-dir --image-path
 --image-sha256 --hw-profile-sha --overlay-manifest --nvidia-smi --job-env-dir`;`--param KEY=VALUE` 可重复(场景 `params_required` 全部要给)。长选项只认完整拼写(`allow_abbrev=False`：`capjobs` 按完整拼写核对计划 argv)。
 
-- `--job-env-dir`:作业级 `env/` 目录(门禁结果、`gpu_idle.json` 等),其中的文件拷进 `raw/env/`;不是目录 ⇒ 起任何进程之前停止,NOT_RUN(`stop.json` reason `job_env_dir_missing`)。
+- `--job-env-dir`:作业级 `env/` 目录(门禁结果、`gpu_idle.json` 等),其中的文件拷进 `raw/env/`;不是目录 ⇒ 起任何进程之前停止,NOT_RUN(`stop.json` reason `job_env_dir_missing`)。其中若有 `pin_table.json`,它必须与 `--pin-table` 字节相同，否则起任何进程之前退出码 3。
 
 - `--overlay-manifest`:作业级覆盖清单，原样拷进 `raw/env/overlay_manifest.json`,sha 记进 `launch.json` 的 `overlay_manifest`。文件不存在时只记录;但场景里有带 `probe_tier` 的角色时，启动在起任何进程之前停止,STATE 为 NOT_RUN(`stop.json` reason `overlay_manifest_missing`)。
 - `--nvidia-smi`:nvidia-smi 可执行文件的绝对路径，展开场景参数里的 `{nvidia_smi}` 占位(sidecar 的 GPU 查询),路径与 sha 记进 `launch.json`。

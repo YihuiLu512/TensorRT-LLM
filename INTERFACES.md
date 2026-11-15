@@ -115,7 +115,7 @@
 ### 2.3 端口文件、就绪文件、停止
 
 - **端口文件**：服务端绑定 `127.0.0.1:0`（或 `--host`/`--port` 显式给定）后，用 `capcommon.lifecycle.write_port_file(path, identity, host, port)` 写 JSON：`{"schema":"capkit.portfile/1","identity":…,"host":…,"port":…,"pid":…,"t_mono_ns":…}`。多进程共享端口（`SO_REUSEPORT`）的服务：父进程先绑定拿到端口，再起子进程绑同一端口，全部子进程就绪后才写端口文件。读：`capcommon.lifecycle.wait_port_file(path, timeout_s)`。
-- **就绪文件**：进程准备好接收 / 发送后写 `capcommon.lifecycle.write_ready_file(path, identity, versions, affinity=None, children=None, info=None)`：`{"schema":"capkit.ready/1","identity":…,"t_mono_ns":…,"versions":<§2.5>,"affinity":[…读回的核…],"children":[{"pid":…,"worker":…,"role":…}],"info":{…工具自定…}}`。**多进程工具必须在 `children` 里列出每个子进程的 pid**——编排器据此登记「pid → 角色」（§5.3），sidecar 不按命令行认进程。
+- **就绪文件**：进程准备好接收 / 发送后写 `capcommon.lifecycle.write_ready_file(path, identity, versions, affinity=None, children=None, info=None)`：`{"schema":"capkit.ready/1","identity":…,"t_mono_ns":…,"versions":<§2.5>,"affinity":[…读回的核…],"children":[{"pid":…,"worker":…,"role":…}],"info":{…工具自定…}}`。**多进程工具必须在 `children` 里列出每个子进程的 pid**——编排器据此登记「pid → 角色」（§5.3），sidecar 不按命令行认进程。（例外：`capenv.spinners` 的自旋进程不列，见勘误 SB-B1-4。）
 - **停止**：`SIGTERM` 或 `SIGINT` = 优雅停止：不再发新请求 / 不再接新流，在 `--stop-grace-s` 内收尾，落盘全部记录与自报，退出。第二次信号 = 立即落盘已有记录并退出。用 `capcommon.lifecycle.StopController` 安装处理器。编排器在发信号之前先写 `<T>/control/stop.json`（`{"schema":"capkit.stop/1","reason":…,"t_mono_ns":…,"after_tier_seq":…}`）；工具落盘时若该文件存在，把它的内容原样抄进自己的末尾自报（`stop` 字段）。`<T>/control/` 在 `raw/` 之外，只是编排器到工具的单向信道。
 - 负载器、排空端按档位表跑完最后一档（加 `--stop-grace-s` 的收尾）后自己退出；服务端、桩、中继、sidecar、金丝雀只在收到信号时退出。
 
@@ -343,6 +343,7 @@ JSON 头：
 │   ├── tiers/pre/ 、tiers/post/          原点之前 / 最后一档之后的记录（预热前的启动期、停止收尾）
 │   ├── sidecar/                       sidecar 逐秒序列（§5.6）
 │   ├── canary/                        金丝雀逐秒序列（§5.6）
+│   ├── spinners/<角色>.json           自旋器的记录（勘误 SB-B1-5）
 │   └── logs/<角色>[.w<k>].<pid>.{out,err}   标准输出与错误（编排器重定向）
 ├── control/                           编排器 → 工具的信道（stop.json）；不是原始数据
 ├── judge/                             判定器输出（§10），只生成一次
@@ -938,6 +939,7 @@ python3 -m capjudge --tree <启动树的路径> --workdir <W>
 | `python -m capprobe.overlay`（B3） | `--tier {P0,P1,P2}`、`--probe-tree PATH`、`--image-commit SHA`、`--base-commit SHA`、`--capkit-root <C>`、`--capkit-sha SHA`、`--packages LIST`、`--groups LIST`、`--out PATH` | — | §6.6 |
 | `python -m capenv.sidecar`（B4；新参数见勘误 R1-10） | 通用、快照目录 `--shm-dir`、`--origin-ns`、`--roles-file PATH`、`--interval-ms INT`、`--out-dir PATH`、`--cpus-watch {all,LIST}`（LIST 必须 ⊇ 绑核表全部角色的核，§5.6）、`--gpu-every-s FLOAT`、`--numa-every-s FLOAT`、`--logs-dir PATH` | — | §5.6 |
 | `python -m capenv.canary`（B4） | 通用、`--origin-ns`、`--interval-ms INT`、`--out PATH`（`--cpus` 恰好 1 个核） | — | §5.6 |
+| `python -m capenv.spinners`（SB-B1，见勘误 SB-B1-1） | 通用、`--origin-ns`、`--ready-file`、`--pin-table PATH`（编排器给）、`--target-role ROLE`（可选） | — | `raw/spinners/<角色>.json`（勘误 SB-B1-5） |
 | `python -m capenv.gate`（B4；新参数见勘误 R1-21） | `--run-dir`（作业目录）、`--phase {pre,post}`、`--registered-hw-sha SHA`、`--comparable-file PATH` 或 `--no-comparable`、`--slurm-view-file PATH`、`--slurm-view-wait-s FLOAT`（§5.5.2）、身份参数（`--role gate`） | — | 作业目录 `env/` 各文件；退出码 0 / 6 |
 | `python -m capenv.clockcheck`（B4） | 通用、`--peer-mode {server,client}`、`--port-file PATH`、`--round-trips N`、`--back-to-back N`、`--out PATH` | — | `env/clock_check.json`（§5.5） |
 | `python -m capenv.hwprofile`、`capenv.pins`、`capenv.loopback`（B4；hwprofile 新参数见勘误 R1-21） | 各自 README | — | `env/hw_profile.json`、`env/pin_table.json`、`env/loopback_softirq.json` |
@@ -953,7 +955,7 @@ python3 -m capjudge --tree <启动树的路径> --workdir <W>
 |---|---|
 | `workers` | 工具内部的 worker 数；编排器据此生成 `--workers`（不接受场景在 `args` 里另写 `--workers`）。不分 worker 的工具与产品进程写 1 |
 | `expected_procs` | 该角色应有的进程总数，含它派生的子进程（产品进程按其参数推出，如前端 + `num_postprocess_workers` 个池进程）。判定器的应检进程数一律取它 |
-| `measure_class` | `load_source` / `stub_out_of_domain`（域外桩：空汇、排空端、节拍源、S-PB、S-FE、S-NL）/ `stub_in_domain` / `under_test` / `observer`（sidecar、金丝雀）。同一个模块在不同实验里类别不同（E1 里 `capload` 是 `under_test`，E0 里是 `load_source`）；判定器只按它决定 C 项的作用对象（§10.2） |
+| `measure_class` | `load_source` / `stub_out_of_domain`（域外桩：空汇、排空端、节拍源、S-PB、S-FE、S-NL）/ `stub_in_domain` / `under_test` / `observer`（sidecar、金丝雀、自旋器（勘误 SB-B1-3））。同一个模块在不同实验里类别不同（E1 里 `capload` 是 `under_test`，E0 里是 `load_source`）；判定器只按它决定 C 项的作用对象（§10.2） |
 | `asyncio`、`uses_grpc`、`loop`、`probe_tier` | C10 的必需字段与 `loop_impl` 核对（§2.5） |编排器把 `--target-port-file`、`--upstream-port-file` 这类「指向另一个角色」的参数用 `{port_file:<角色>}` 占位符写在 `args` 里，由编排器替换成实际路径。
 
 ### 11.1 `capcommon` 速查（各组件必须用这些实现，不另写）
@@ -1407,6 +1409,47 @@ R2 自审（slug `capkit-b2judge-J17871`）发现的问题已直接改进本子�
 6. 等级输出加 `I_status`：B2-2E-8。缺 `i1_calibration` 的后果链与组合规则的裁决：B2-2E-10①。B2-2E-8 两条推断改为裁决结论。
 7. `sink_health` 核对带文件的环境：§14.3。没有 `stub_calib` 时列 C2 的后果：B2-2E-A-7。C12 只在加倍是处理时列入：B2-2A-10②。
 8. 验证：`tests/judge`、样本自测、变异（`_local/b2-judge/mut/summary7.txt`）与 e2e 的实测记录在 `_progress/b2-judge.md`。
+
+### Calibration v2 SB-B1: capenv.spinners aux tool for the C13 positive control
+
+依据：E0 v2 设计 `02_e0/E0/analysis/calib-v2/DESIGN-r7a.md` 的 V1CD-01 与测试第 26 条（V0 的 `c13-pc` 启动，以及 SB-B2 之后 V1-c/d 的陪跑负载）。本节的条目覆盖正文中对应的句子，正文相关处已加指针。
+
+1. **新入口 `python -m capenv.spinners`**（`tools/capenv/spinners.py`）。参数：通用（§2.1 身份、`--run-dir`、`--stop-grace-s`、`--cpus`）、`--origin-ns`、`--ready-file`、`--pin-table PATH`，全部必需；`--target-role ROLE` 可选；不收 `--inject`；参数不接受前缀缩写。行为：
+   - `--cpus` 的每个核起一个自旋进程（fork），各自 `sched_setaffinity` 绑到该核，跑纯 Python 的 31 位 LCG（每单位 2000 步，单线程，持 GIL）。
+   - 给了 `--target-role` 时，另起一个自旋进程，绑到绑核表 `roles[ROLE].cpus` 列表的第一项。ROLE 是绑核表 `roles` 的键（即被测角色的 `pin_role`）。这个自旋进程自己调用 `sched_setaffinity`，绑核表只读不改，绑核表的生成也不变。
+   - 起进程的那个进程只做监督，不自旋：它绑到 `--cpus`，等每个自旋进程报回亲和性读回值（恰好是自己那个核；全部合计最多等 10 s），然后才写就绪文件。
+   - 第一次 SIGTERM/SIGINT：向自旋进程发 SIGTERM，`--stop-grace-s` 之后还在的发 SIGKILL。第二次信号：剩下的立即 SIGKILL。
+   - 自旋进程每 64 个单位查一次父进程是否还在，监督者被 SIGKILL 时自己退出。
+   - 退出码：
+     - 0：被信号停止，每个自旋进程都报了结果（被第二次信号杀掉的不算缺）；或者在就绪之前就收到停止信号，而已经报回的亲和性都正确（记录里 `ready: false`，不要求结果，没报回亲和性的也不算缺）。
+     - 3：绑核表读不到、不是 `capkit.pin_table/1` 或没有 `roles`、ROLE 不在表里或没有核、目标核落在 `--cpus` 里。这些都在起任何自旋进程之前判，不写就绪文件，也不写记录。ROLE 的条件在场景校验阶段已经核过（第 3 条），工具里的检查是兜底。
+     - 4：监督者把自己绑到 `--cpus` 失败（照常写记录，`supervisor_affinity: null`、`spinners: []`，不起自旋进程）；某个自旋进程绑核失败或读回不符，没报回亲和性就退出，或者在等待时限内没有报回亲和性（这几种都不写就绪文件）；在停止之前就退出了；宽限期过后仍没有报结果。凡是退出 4，都写记录，原因在 `problems`。
+   - 本工具不做性能测量。记录只说明跑了什么，不作为判定依据。
+2. **接线**（`caplaunch/scenario.py`；作业级副本的核对在 `caplaunch/orchestrator.py`）：
+   - `TOOL_TABLE` 加 `"capenv.spinners": {"origin": True, "ready": True, "pin_table": True, "role_fixed": {…}}`（`role_fixed` 见第 3 条）。
+   - 新参数组 `pin_table`：`build_argv` 追加 `--pin-table <T>/raw/env/pin_table.json`，路径用 `RunTree(<T>).env("pin_table.json")` 求出。这正是编排器在启动开始时放绑核表副本的位置（§5.1 的 `raw/env/`；设计稿写作「<启动树>/env/pin_table.json」，指的就是这个文件）。作业级 env 目录（`--job-env-dir`）里若有同名文件，编排器要求它与 `--pin-table` 字节相同，否则在起任何进程之前拒绝（退出码 3）；所以启动树里的副本就是绑核用的那份。场景里不写这个路径。
+   - `--pin-table` 加入 `MANAGED_FLAGS`，对所有 capkit 工具生效：场景 `args` 里出现 `--pin-table` 或 `--pin-table=…` ⇒ 场景校验失败（退出码 3）。
+3. **场景里的角色写法**：`kind: aux`，`measure_class: observer`，`workers: 1`，`expected_procs: 1`，`asyncio: false`，`loop: null`，`uses_grpc: false`，`snapshots: none`，`backlog_slots: []`，`readiness: [{"kind": "capkit_ready"}]`，`proc_kinds: []`。`cpus_needed` 等于本角色自己的自旋核数（至少 1）；给 `--target-role` 时，总自旋进程数是 `cpus_needed + 1`。
+   - `kind`、`measure_class`、`expected_procs`、`asyncio`、`uses_grpc`、`snapshots` 这六项由场景校验强制（`TOOL_TABLE` 的 `role_fixed`，不符 ⇒ 退出码 3）。`measure_class` 必须属于编排器的 `MONITOR_CLASSES`，这一对齐由编排器的导入期断言保证。理由见第 4 条：自旋进程是未登记的子进程，在其他类别的角色下面会被记为 `unattributed`。
+   - `--target-role X` 由场景校验核对（不符 ⇒ 退出码 3）：X 是字面值（不含 `{` 占位符），只出现一次；X 是场景里另一个角色的名字；该角色的 `pin_role` 等于 X（工具按 `pin_role` 在绑核表里取核，判定器的 C9/C13 按角色名取核，两者要指向同一条）；X 在本角色的 `start_after` 里（目标角色就绪之后才起自旋进程）。
+   - 本工具只记录，不发快照，不判档。
+4. **§2.3「多进程工具必须列出子进程」的例外**：`capenv.spinners` 的就绪文件 `children` 是 `[]`，自旋进程不登记。
+   - 原因：登记了的进程，C10 要求它有版本自报（§2.5）。编排器只从快照 meta，或从起进程那个进程自己的就绪文件里取版本自报（`orchestrator._versions`），自旋进程两者都没有，一旦登记，整次启动就 C10 NOT_RUN。
+   - 后果：自旋进程是 observer 角色的未登记子孙，记在 `procs/monitor_children.json` 与各档 `tier.json` 的 `monitor_descendants`，不进窗口始末的 pid 比较，也不进 `unattributed`。
+   - 对 `c13-pc` 的影响（按代码推断，没有在真实 sidecar 与判定器上跑过，由 V0 的 c13-pc 读回确认）：`check_c9` 跳过不属于登记 pid 的线程行，`_foreign_frac` 用核忙碌减去 relay1 的登记线程。所以目标自旋进程的忙碌应当算进 C13 第二半的外来忙碌，C9 不应因它判 RED。设计稿里的「C9 RED 预期」按代码推断不会出现，见上。c13-pc 的判据不变（C13 每窗与 `C13-MEAN` 都 RED），C9 的结果在该启动上不作要求。
+5. **输出 `raw/spinners/<角色>.json`**（`capkit.spinners/1`，带本次启动的身份，判定器的身份扫描照常核对；判定器不读内容）。键：
+   - `origin_ns`、`unit_ops`、`workload`、`cpus`、`supervisor_affinity`；
+   - `pin_table`：`path` 与读到的字节的 `sha256`；
+   - `target_role`、`target_cpu`（不给 `--target-role` 时为 null）；
+   - `ready`、`ready_rel_ns`、`stop_rel_ns`（相对原点）；
+   - `spinners`：每个自旋进程一行，含 `index cpu purpose(own|target) target_role pid affinity pinned_ok reported units cpu_ns wall_ns cpu_frac orphaned last_cpu exit killed(false|second_signal|grace_expired)`；
+   - `cores`：每个自旋核从就绪到停止的 `/proc/stat` 各列 tick 差、`busy_ticks`（同 `procfs.BUSY_COLS`）、`total_ticks`、`busy_frac`。读不到时为 null，原因写在 `cores_unreadable`；
+   - `clk_tck`、`stop`（`control/stop.json` 的原文，§2.3）、`signals`、`problems`。
+6. **测试**：
+   - `tests/envgate/test_spinners.py`：纯函数、监督者的等待与停止逻辑，以及本机真实 fork 的 CLI 的正常与各失败路径。
+   - `tests/launch/test_scenario.py`：本节对场景的接受与拒绝规则，以及 `build_argv` 给出的参数。
+   - `tests/launch/test_launch_e2e.py`：用真实 `capenv.spinners` 的启动 e2e，以及起进程之前的拒绝。
+   - `tests/launch/fakepkgs/capenv/__init__.py` 现在把真实的 `tools/capenv` 接在假包之后：只有 canary、sidecar 是假的，其余 capenv 模块用真的。
 
 ## 审阅记录（r2，2026-11-13）
 

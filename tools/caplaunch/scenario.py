@@ -14,6 +14,7 @@ import re
 from capcommon.exitcodes import ConfigError
 from capcommon.expect import validate_reconcile
 from capcommon.identity import EXPERIMENT_RE, ROLE_RE
+from capcommon.runtree import RunTree
 
 SCHEMA = "capkit.scenario/1"
 
@@ -41,6 +42,10 @@ def probe_proc_kinds():
 #   snapshot: --shm-dir + --snapshot-interval-ms; shm_only: --shm-dir; ready: --ready-file;
 #   port: --port-file (capkit JSON port file); workers: --workers W;
 #   sidecar / canary: orchestrator-filled observer arguments.
+#   pin_table: --pin-table <launch tree>/raw/env/pin_table.json (the orchestrator's copy).
+# Not an argument group: role_fixed {role key: value} that validate_role requires of every role
+# running the tool (its measure_class must be one of the orchestrator's MONITOR_CLASSES when
+# given; asserted in orchestrator.py, which imports this module).
 TOOL_TABLE = {
     "capload": {"loop": True, "tiers": True, "snapshot": True, "ready": True, "port": False,
                 "workers": True},
@@ -55,6 +60,12 @@ TOOL_TABLE = {
     # --ready-file: INTERFACES 2.2 ("all long-lived processes"); optional in B4's parsers.
     "capenv.sidecar": {"origin": True, "shm_only": True, "sidecar": True, "ready": True},
     "capenv.canary": {"origin": True, "canary": True, "ready": True},
+    # C13 positive control / V1-c/d load (INTERFACES errata SB-B1-3): an aux observer role (its
+    # spin processes stay unregistered monitor children); one started process, no snapshots.
+    "capenv.spinners": {"origin": True, "ready": True, "pin_table": True,
+                        "role_fixed": {"kind": "aux", "measure_class": "observer",
+                                       "expected_procs": 1, "asyncio": False,
+                                       "uses_grpc": False, "snapshots": "none"}},
     # E0(c) HTTP smoke client (this package); identity/--run-dir/--cpus only, no ready file.
     "caplaunch.httpprobe": {},
 }
@@ -63,7 +74,7 @@ MANAGED_FLAGS = ("--experiment", "--arm", "--launch-seq", "--job-id", "--restart
                  "--register-sha", "--role", "--worker", "--run-dir", "--stop-grace-s", "--cpus",
                  "--loop", "--tier-table", "--origin-ns", "--shm-dir", "--snapshot-interval-ms",
                  "--ready-file", "--port-file", "--workers", "--roles-file", "--out-dir",
-                 "--logs-dir", "--cpus-watch", "--out")
+                 "--logs-dir", "--cpus-watch", "--out", "--pin-table")
 
 ROLE_KEYS_REQUIRED = ("role", "launcher", "kind", "start_after", "pin_role", "cpus_needed",
                       "numa", "workers", "expected_procs", "measure_class", "asyncio",
@@ -247,6 +258,9 @@ def validate_role(r, role_names, params):
         if r.get("module") not in TOOL_TABLE or "command" in r:
             _err(where, "capkit roles need module in %s and no command" % sorted(TOOL_TABLE))
         tool = TOOL_TABLE[r["module"]]
+        for k, v in sorted(tool.get("role_fixed", {}).items()):
+            if r[k] != v or type(r[k]) is not type(v):
+                _err(where, "%s needs %s %r (INTERFACES errata SB-B1-3)" % (r["module"], k, v))
         if r["probe_tier"] is not None:
             _err(where, "capkit tools have probe_tier null")
         if "port" in r:
@@ -339,7 +353,46 @@ def validate_scenario(doc):
              "orchestrator sets CAPPROBE_LAG_PERIOD_US from it)" % LAG_PARAM)
     _toposort(out)
     validate_reconcile(doc["reconcile"], set(names))
+    for r in out.values():
+        if r.get("module") == "capenv.spinners":
+            _check_target_role(r, out)
     return out
+
+
+def _flag_values(args, flag):
+    """Values of `flag V` / `flag=V` in a role's args (the item after a bare flag as it is, None
+    when the flag is the last item)."""
+    vals = []
+    for i, a in enumerate(args):
+        if not isinstance(a, str):
+            continue
+        if a == flag:
+            vals.append(args[i + 1] if i + 1 < len(args) else None)
+        elif a.startswith(flag + "="):
+            vals.append(a[len(flag) + 1:])
+    return vals
+
+
+def _check_target_role(r, roles):
+    """capenv.spinners --target-role X (INTERFACES errata SB-B1-3): X is a literal role name of
+    this scenario whose pin_role is X (the tool looks X up among the pin table's roles, the
+    judge's C9/C13 look up the role name), started before this role (in its start_after)."""
+    where = "role %s" % r["role"]
+    vals = _flag_values(r["args"], "--target-role")
+    if len(vals) > 1:
+        _err(where, "--target-role given %d times" % len(vals))
+    if not vals:
+        return
+    x = vals[0]
+    if not isinstance(x, str) or not x or "{" in x:
+        _err(where, "--target-role needs a literal role name, got %r" % (x,))
+    if x not in roles or x == r["role"]:
+        _err(where, "--target-role %s is not another role of this scenario" % x)
+    if roles[x]["pin_role"] != x:
+        _err(where, "--target-role %s: role %s has pin_role %s; the target role's pin_role "
+             "must equal its name" % (x, x, roles[x]["pin_role"]))
+    if x not in r["start_after"]:
+        _err(where, "--target-role %s needs %s in start_after" % (x, x))
 
 
 def _toposort(roles):
@@ -528,4 +581,6 @@ def build_argv(r, ctx, cpus, python_exe, runtime=True):
                  "--logs-dir", s["logs_dir"], "--cpus-watch", s["cpus_watch"]]
     if tool.get("canary"):
         argv += ["--out", ctx.canary["out"]]
+    if tool.get("pin_table"):
+        argv += ["--pin-table", RunTree(ctx.run_dir).env("pin_table.json")]
     return argv + _items(r["args"], name, ctx, runtime)

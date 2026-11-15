@@ -219,3 +219,120 @@ def test_e0_proc_kinds_are_capprobe_process_kinds():
                 assert r["proc_kinds"] == ["frontend", "frontend_openengine",
                                            "frontend_single"], (n, r["role"])
     assert seen >= 2
+
+
+# ---- capenv.spinners (INTERFACES errata SB-B1, design test #26) ------------------------------
+
+def _spin_role(args=("--target-role", "product")):
+    return cf.role("spin", "capkit", "aux", asyncio=False, mclass="observer",
+                   module="capenv.spinners", snapshots="none", start_after=["product"],
+                   args=list(args))
+
+
+def _spin_ctx():
+    ident = Identity("E0", "a", 0, "local-x", 0, "a" * 64, "launch", pid=1)
+    names = [r["role"] for r in cf.default_roles()] + ["spin"]
+    own = {n: {"ready_file": "/T/r/%s" % n, "port_file": "/T/p/%s.port" % n,
+               "report_addr": "/T/p/%s.addr" % n} for n in names}
+    return sc.ArgvContext(ident, "/T", "/T/raw", {}, 1.5, "/shm", 40, "/W/t.json", 123, own,
+                          lambda r: "/T/ports/%s.json" % r, lambda r: "127.0.0.1:99",
+                          sidecar={"roles_file": "R", "out_dir": "O", "logs_dir": "L",
+                                   "cpus_watch": "0-3"}, canary={"out": "C"})
+
+
+def test_spinners_aux_role_is_accepted():
+    roles = sc.validate_scenario(_doc(cf.default_roles() + [_spin_role()]))
+    assert roles["spin"]["kind"] == "aux" and roles["spin"]["module"] == "capenv.spinners"
+    sc.validate_scenario(_doc(cf.default_roles() + [_spin_role(args=())]))
+
+
+@pytest.mark.parametrize("key,val", [("kind", "server"), ("kind", "client")]
+                         + [("measure_class", m) for m in sc.MEASURE_CLASSES if m != "observer"]
+                         + [("expected_procs", 2), ("asyncio", True), ("uses_grpc", True),
+                            ("snapshots", "all")])
+def test_spinners_role_fields_are_fixed(key, val):
+    """errata SB-B1-3: the spinners role is an aux observer with one started process, no asyncio
+    loop, no gRPC and no snapshots; any other value is refused, naming the field."""
+    r = _spin_role()
+    r[key] = val
+    if key == "asyncio":
+        r["loop"] = "asyncio"
+    with pytest.raises(ConfigError, match="capenv.spinners needs %s " % key):
+        sc.validate_scenario(_doc(cf.default_roles() + [r]))
+
+
+def test_tools_with_a_fixed_measure_class_are_monitor_classes():
+    """The orchestrator's import-time assertion: a role_fixed measure_class is one of
+    MONITOR_CLASSES (whose unregistered children are monitor children, not unattributed)."""
+    from caplaunch.orchestrator import MONITOR_CLASSES  # noqa: PLC0415
+    fixed = [t["role_fixed"]["measure_class"] for t in sc.TOOL_TABLE.values()
+             if "measure_class" in t.get("role_fixed", {})]
+    assert fixed and set(fixed) <= set(MONITOR_CLASSES)
+
+
+def _spin_scenario(args, start_after=("product",), product_pin_role="product"):
+    r = _spin_role(args=args)
+    r["start_after"] = list(start_after)
+    roles = cf.default_roles()
+    [p for p in roles if p["role"] == "product"][0]["pin_role"] = product_pin_role
+    return _doc(roles + [r])
+
+
+@pytest.mark.parametrize("args,kw,needle", [
+    (["--target-role", "{own:role}"], {}, "needs a literal role name"),
+    (["--target-role"], {}, "needs a literal role name"),
+    (["--target-role", "nobody"], {}, "is not another role of this scenario"),
+    (["--target-role", "spin"], {}, "is not another role of this scenario"),
+    (["--target-role", "product"], {"product_pin_role": "prod_pin"},
+     "pin_role must equal its name"),
+    (["--target-role", "product"], {"start_after": ()}, "needs product in start_after"),
+    (["--target-role=product"], {"start_after": ("nullsse",)}, "needs product in start_after"),
+    (["--target-role", "product", "--target-role=product"], {}, "given 2 times"),
+])
+def test_spinners_target_role_is_checked_at_scenario_validation(args, kw, needle):
+    """errata SB-B1-3: --target-role X names (literally) another role of the scenario whose
+    pin_role is X and which is in the spinners role's start_after; refused otherwise (exit 3)."""
+    with pytest.raises(ConfigError, match=needle):
+        sc.validate_scenario(_spin_scenario(args, **kw))
+
+
+def test_spinners_target_role_accepted_forms():
+    for args in (["--target-role", "product"], ["--target-role=product"], []):
+        sc.validate_scenario(_spin_scenario(args))
+    sc.validate_scenario(_spin_scenario([], start_after=()))
+
+
+@pytest.mark.parametrize("extra", [["--pin-table", "/W/pin_table.json"],
+                                   ["--pin-table=/W/pin_table.json"]])
+@pytest.mark.parametrize("who", ["spin", "capload", "sidecar"])
+def test_scenario_args_may_not_give_pin_table(extra, who):
+    """--pin-table is orchestrator-managed: a scenario that writes it (spinners or any other
+    capkit tool) is refused."""
+    d = _doc(cf.default_roles() + [_spin_role()])
+    [r for r in d["roles"] if r["role"] == who][0]["args"] += extra
+    with pytest.raises(ConfigError, match="orchestrator-managed flags"):
+        sc.validate_scenario(d)
+
+
+def test_build_argv_gives_spinners_the_launch_trees_pin_table():
+    """build_argv appends --pin-table <T>/raw/env/pin_table.json (the path the orchestrator
+    copies the pin table to) for capenv.spinners only, and the tool's own parser accepts the
+    whole argv."""
+    from capcommon.runtree import RunTree  # noqa: PLC0415
+    from capenv.spinners import build_parser  # noqa: PLC0415
+    roles = sc.validate_scenario(_doc(cf.default_roles() + [_spin_role()]))
+    ctx = _spin_ctx()
+    a = sc.build_argv(roles["spin"], ctx, [6], "py")
+    assert a.count("--pin-table") == 1
+    assert a[a.index("--pin-table") + 1] == RunTree("/T").env("pin_table.json") \
+        == "/T/raw/env/pin_table.json"
+    assert a[a.index("--origin-ns") + 1] == "123" and a[a.index("--ready-file") + 1] == "/T/r/spin"
+    assert a[a.index("--cpus") + 1] == "6" and a[-2:] == ["--target-role", "product"]
+    for flag in ("--out", "--shm-dir", "--tier-table", "--workers", "--port-file", "--loop"):
+        assert flag not in a
+    ns = build_parser().parse_args(a[3:])
+    assert ns.pin_table == "/T/raw/env/pin_table.json" and ns.target_role == "product"
+    assert sc.build_argv(roles["spin"], ctx, [6], "py", runtime=False) == a
+    for n, r in roles.items():
+        if n != "spin":
+            assert "--pin-table" not in sc.build_argv(r, ctx, [0, 1], "py", runtime=False), n
