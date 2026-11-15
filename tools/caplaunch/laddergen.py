@@ -17,7 +17,8 @@ Four modes (exactly one):
   --job-plan <spec>
       job_plan.tsv of one segment: planned then surplus items, mixed by the registered seed.
   --plan-from <registered gate product>
-      job_plan.tsv of the post-gate items a registered gate product lists (never a replace item).
+      job_plan.tsv of the post-gate items a registered gate product lists (never a replace item;
+      launch items and V2-b blocks of a shortfall product).
 """
 
 import argparse
@@ -556,7 +557,12 @@ def job_plan_items(spec):
 
 
 def plan_from_items(a):
-    """Post-gate items of a registered gate product (REGISTRY kind e0_params, sha checked)."""
+    """Post-gate items of a registered gate product (REGISTRY kind e0_params, sha checked):
+    launch items {config, arm, launches, pin} packed --launches-per-job to a job (pinned and
+    unpinned apart), then block items {comparison, configs [[config, arm] x2], blocks, pin true}
+    as blocks of two pinned one-launch jobs sharing one order, block ids
+    '<comparison>-b<rule><round><NN>' (round from the product, so no block id repeats one of the
+    original segment's '<comparison>-bNN' or of an earlier round)."""
     if a.workdir is None or not a.phase_id or not a.seed_base:
         raise LadderError("--plan-from needs --workdir, --phase-id and --seed-base")
     rel, sha, doc = registered(a.workdir, a.plan_from, "e0_params")
@@ -572,23 +578,66 @@ def plan_from_items(a):
     cls = jobplan.check_item_class(classes.pop())
     if not cls.startswith(jobplan.POST_GATE_PREFIX):
         raise LadderError("--plan-from writes post-gate items only, not %r" % cls)
+    rule = cls[len(jobplan.POST_GATE_PREFIX):]
+    tag = rule.replace("_", "")
+    launch_items = [it for it in src if "comparison" not in it]
+    block_items = [it for it in src if "comparison" in it]
     out = []
     for pin in (False, True):
         toks = []
-        for it in src:
+        for it in launch_items:
             if not (isinstance(it.get("config"), str) and ARM_RE.match(str(it.get("arm")))
                     and isinstance(it.get("launches"), int) and it["launches"] > 0
                     and isinstance(it.get("pin"), bool)):
-                raise LadderError("gate product items need config, arm, launches > 0, pin")
+                raise LadderError("gate product items need config, arm, launches > 0, pin "
+                                  "(or comparison, configs, blocks, pin for blocks)")
             if it["pin"] == pin:
                 toks.append((it["config"], it["arm"], it["launches"]))
         for job in _pack(toks, a.launches_per_job, a.seed_base, cls):
             out.append(_job_item(job, cls, pin))
-    rule = cls[len(jobplan.POST_GATE_PREFIX):]
     for k, it in enumerate(out, start=1):
         it["order"] = k
-        it["item_id"] = "%s-%s-%04d" % (a.phase_id, rule.replace("_", ""), k)
+        it["item_id"] = "%s-%s-%04d" % (a.phase_id, tag, k)
+    rnd = doc.get("round")
+    if block_items and not (isinstance(rnd, int) and not isinstance(rnd, bool) and rnd >= 1):
+        raise LadderError("%s lists blocks but no round >= 1" % rel)
+    order = len(out)
+    for it in block_items:
+        _check_block_item(it)
+        for k in range(it["blocks"]):
+            order += 1
+            bid = "%s-b%s%d%02d" % (it["comparison"], tag, rnd, k + 1)
+            out += _block_items(it["comparison"], bid, it["configs"], a.seed_base, cls, order,
+                                "%s-%s-%s" % (a.phase_id, tag, bid))
     return jobplan.validate(out), {"relpath": rel, "sha256": sha}
+
+
+def _check_block_item(it):
+    pair = it.get("configs")
+    if not (isinstance(it.get("comparison"), str) and jobplan.ITEM_ID_RE.match(it["comparison"])
+            and isinstance(pair, list) and len(pair) == 2
+            and all(isinstance(p, list) and len(p) == 2 and isinstance(p[0], str)
+                    and ARM_RE.match(str(p[1])) for p in pair)
+            and isinstance(it.get("blocks"), int) and not isinstance(it["blocks"], bool)
+            and it["blocks"] > 0 and it.get("pin") is True):
+        raise LadderError("gate product block items need comparison, configs [[config, arm], "
+                          "x2], blocks > 0 and pin true")
+
+
+def _block_items(cmp_, bid, pair, seed_base, cls, order, id_prefix):
+    """The two pinned one-launch jobs of block `bid` (slot order by the seed, as in
+    job_plan_items); arms '<arm>.<bid>.<slot>', item ids '<id_prefix>-s<slot>'."""
+    u, _ = seed_u(seed_base, cmp_, bid, 0)
+    first = pair if u < 0.5 else pair[::-1]
+    out = []
+    for slot, (config, arm) in enumerate(first, start=1):
+        barm = "%s.%s.%d" % (arm, bid, slot)
+        if not ARM_RE.match(barm):
+            raise LadderError("block arm %r is not a valid arm name" % barm)
+        out.append({"item_class": cls, "arms": [barm], "launches": 1, "block_id": bid,
+                    "slot": slot, "config_counts": {config: 1}, "pin": True, "order": order,
+                    "item_id": "%s-s%d" % (id_prefix, slot)})
+    return out
 
 
 # ---- main ---------------------------------------------------------------------------------------

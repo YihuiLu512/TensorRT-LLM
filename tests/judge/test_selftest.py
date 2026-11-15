@@ -13,7 +13,7 @@ import sys
 import pytest
 from conftest import PKG, SAMPLES, TOOLS
 
-N_SAMPLES = 50  # entries of make_samples.SAMPLES + empty_tree (test_sample_table_size)
+N_SAMPLES = 52  # entries of make_samples.SAMPLES + empty_tree (test_sample_table_size)
 RUNNER = os.path.join(SAMPLES, "run_selftest.py")
 
 
@@ -102,3 +102,39 @@ def test_tampered_judge_turns_selftest_red(tmp_path, fname, old, new):
     report = json.loads(p.stdout)  # the runner itself completed: red, not a crash
     assert len(report["ran"]) == N_SAMPLES and report["errors"], report
     print(fname, report["errors"])
+
+
+LEVEL_SAMPLES = ["v2_near_stable_level_2p", "v2_sat_overloaded_level_2p"]
+
+
+def test_level_expectations_are_read(tmp_path):
+    """expect.json `levels` (calib-v2 test 22, the two-pass satisfiability samples): with the
+    two-pass composition tampered so that a level inside in both passes composes UNSTABLE, the
+    tier verdicts do not change and only the level expectation of v2_near_stable_level_2p goes
+    red; untampered, both samples pass."""
+    out = tmp_path / "samples"
+    p = subprocess.run([sys.executable, os.path.join(SAMPLES, "make_samples.py"), "--out",
+                        str(out)] + [x for n in LEVEL_SAMPLES for x in ("--only", n)],
+                       capture_output=True, text=True, timeout=300, check=False)
+    assert p.returncode == 0, p.stderr
+    tdir = tmp_path / "tampered_tools_TAMPERED_DO_NOT_USE"
+    shutil.copytree(os.path.join(TOOLS, PKG), tdir / PKG)
+    target = tdir / PKG / "judge.py"
+    old = '    if not a["holds"] and not b["holds"]:\n        return "STABLE", a["keys"]'
+    src = target.read_text()
+    assert src.count(old) == 1  # positive control: the edit hits its target exactly once
+    target.write_text(src.replace(old, old.replace('"STABLE"', '"UNSTABLE"')))
+    reports = {}
+    for tag, tools in (("clean", TOOLS), ("tampered", str(tdir) + os.pathsep + TOOLS)):
+        rt = tmp_path / ("rt-" + tag)
+        rt.mkdir()
+        q = subprocess.run([sys.executable, RUNNER, "--samples", str(out), "--tools", tools,
+                            "--package", PKG, "--tmp", str(rt), "--expect-samples",
+                            str(len(LEVEL_SAMPLES))],
+                           capture_output=True, text=True, timeout=600, check=False)
+        reports[tag] = (q.returncode, json.loads(q.stdout))
+    assert reports["clean"][0] == 0 and not reports["clean"][1]["errors"], reports["clean"]
+    rc, rep = reports["tampered"]
+    assert rc == 1 and sorted(rep["ran"]) == LEVEL_SAMPLES, rep
+    assert rep["errors"] == ["v2_near_stable_level_2p: level 1 verdict 'UNSTABLE' != "
+                             "expected 'STABLE'"], rep

@@ -4,9 +4,10 @@
 
 For every sample W under --samples: copy it to a fresh temp dir, run the judge exactly as
 documented (`python -m <pkg> --tree <T> --workdir <W>`, one tree, no globs), and assert the
-exit code, the listed tier verdicts, that every listed check is RED / NOT_RUN and, when the
-sample lists state_last, the status of the tree's last STATE line (the judge's line must not
-improve on what caplaunch / capjobs recorded before it). Plus:
+exit code, the listed tier verdicts, the listed ladder level verdicts (verdicts.json levels[],
+calibration v2), that every listed check is RED / NOT_RUN and, when the sample lists
+state_last, the status of the tree's last STATE line (the judge's line must not improve on what
+caplaunch / capjobs recorded before it). Plus:
   * the good sample judged a second time -> 12 without a new attempt record; its tree copied
     elsewhere (JUDGED.tsv) -> 12;
   * an INPUT_INVALID sample leaves no judge/ but one judge.attempts/*/ record (attempt.json and
@@ -66,7 +67,8 @@ def compare(name, exp, rc, tree, errs):
     if rc != exp["exit_code"]:
         errs.append("%s: exit %d != expected %d" % (name, rc, exp["exit_code"]))
     tv = exp.get("tier_verdicts") or {}
-    if tv:
+    lv = exp.get("levels") or {}
+    if tv or lv:
         vpath = os.path.join(tree, "judge", "verdicts.json")
         if not os.path.exists(vpath):
             errs.append("%s: no verdicts.json" % name)
@@ -78,6 +80,11 @@ def compare(name, exp, rc, tree, errs):
             if got.get(seq) != want:
                 errs.append("%s: tier %s verdict %r != expected %r" % (name, seq, got.get(seq),
                                                                        want))
+        got = {str(x["level"]): x["verdict"] for x in v.get("levels") or []}
+        for level, want in lv.items():
+            if got.get(level) != want:
+                errs.append("%s: level %s verdict %r != expected %r" % (name, level,
+                                                                        got.get(level), want))
     _compare_localisation(name, exp, tree, errs)
     if "state_last" in exp:
         got = last_state(tree)

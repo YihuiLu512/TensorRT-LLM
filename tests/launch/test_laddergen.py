@@ -387,6 +387,47 @@ def test_plan_from_refuses_every_class_but_post_gate(w, tmp_path, cls):
     assert not os.path.exists(tmp_path / "x.tsv")
 
 
+BLOCK_ITEM = {"item_class": "post_gate:shortfall", "comparison": "s1-vs-s2",
+              "configs": [["s1", "s1x"], ["s2", "s2x"]], "blocks": 2, "pin": True}
+
+
+def test_plan_from_writes_shortfall_blocks_after_the_launch_items(w, tmp_path):
+    """V2-b shortfall blocks (DESIGN 4.5, P2-09b): two pinned one-launch jobs per block sharing
+    one order, after the packed launch items; block ids carry the rule and the round."""
+    p = register(w, "gp.blocks.json", {"schema": L.E0_PARAMS_SCHEMA, "stage": "shortfall",
+                                       "round": 2, "items": [
+        {"item_class": "post_gate:shortfall", "config": "s3", "arm": "s3", "launches": 3,
+         "pin": False}, BLOCK_ITEM]})
+    out = str(tmp_path / "sf.tsv")
+    assert _plan_from(w, p, out) == 0
+    items = jobplan.read(out)
+    single = [it for it in items if it["block_id"] is None]
+    blocks = [it for it in items if it["block_id"] is not None]
+    assert [it["order"] for it in single] == [1, 2] and len(blocks) == 4
+    assert [it["order"] for it in blocks] == [3, 3, 4, 4]
+    for it in blocks:
+        assert it["block_id"] in ("s1-vs-s2-bshortfall201", "s1-vs-s2-bshortfall202")
+        assert it["pin"] is True and it["launches"] == 1
+        cfg, = it["config_counts"]
+        assert it["arms"] == ["%sx.%s.%d" % (cfg, it["block_id"], it["slot"])]
+        assert it["item_id"] == "V0-shortfall-%s-s%d" % (it["block_id"], it["slot"])
+        # slot order by the registered seed (DESIGN 3.4), as in job_plan_items
+        u, _ = L.seed_u("E0v2-V0", "s1-vs-s2", it["block_id"], 0)
+        assert cfg == (["s1", "s2"] if u < 0.5 else ["s2", "s1"])[it["slot"] - 1]
+
+
+@pytest.mark.parametrize("bad", [{"pin": False}, {"blocks": 0}, {"configs": [["s1", "s1x"]]},
+                                 {"comparison": "a b"}, "no_round"])
+def test_plan_from_refuses_a_malformed_block_item(w, tmp_path, bad):
+    doc = {"schema": L.E0_PARAMS_SCHEMA, "stage": "shortfall", "round": 1,
+           "items": [dict(BLOCK_ITEM, **(bad if isinstance(bad, dict) else {}))]}
+    if bad == "no_round":
+        del doc["round"]
+    p = register(w, "gp.bad.%s.json" % len(os.listdir(w.w)), doc)
+    assert _plan_from(w, p, str(tmp_path / "x.tsv")) == 3
+    assert not os.path.exists(tmp_path / "x.tsv")
+
+
 def test_job_plan_format_has_no_replace_class():
     assert not any("replace" in c or "resubmit" in c for c in jobplan.ITEM_CLASSES)
     it = {"order": 1, "item_id": "V0-0001", "item_class": "replace", "arms": ["s1"],

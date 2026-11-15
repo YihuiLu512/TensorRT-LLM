@@ -625,13 +625,20 @@ def build_bootstrap(entries, W, register_path):
 
 # ---- shortfall (P2-09b; DESIGN 4.5) ----------------------------------------------------------
 
+CMP_PREFIX = "cmp:"
+
+
 def _jobs_of(alloc, pin_of, per_job):
-    """Jobs laddergen --plan-from packs `alloc` {config: launches} into (pinned and unpinned
-    launches are packed separately)."""
-    tot = {}
+    """Jobs laddergen --plan-from packs `alloc` {unit: launches or blocks} into: launches of
+    configurations packed per_job to a job (pinned and unpinned separately), two jobs of one
+    launch each per block of a comparison unit (DESIGN 4.5)."""
+    tot, blocks = {}, 0
     for c, n in alloc.items():
+        if c.startswith(CMP_PREFIX):
+            blocks += n
+            continue
         tot[pin_of[c]] = tot.get(pin_of[c], 0) + n
-    return sum(-(-n // per_job) for n in tot.values())
+    return sum(-(-n // per_job) for n in tot.values()) + 2 * blocks
 
 
 def _cap(topup, pin_of, per_job, budget_jobs):
@@ -658,6 +665,8 @@ def _segment_arms(reg, facts, files):
         if rule is not None:
             continue
         for it in items:
+            if it["block_id"] is not None:
+                continue
             for arm in it["arms"]:
                 cfg = arm_config.get(arm)
                 if cfg is None:
@@ -670,6 +679,64 @@ def _segment_arms(reg, facts, files):
                     raise Pilot2Error("configuration %s has two arms or pin values in the "
                                       "segment: %s, %s" % (cfg, prev, (arm, it["pin"])))
     return out
+
+
+def _block_arm(it):
+    """The arm of a block item without its '.<block_id>.<slot>' suffix (laddergen job_plan_items
+    names block arms '<arm>.<block_id>.<slot>')."""
+    suffix = ".%s.%d" % (it["block_id"], it["slot"])
+    if len(it["arms"]) != 1 or not it["arms"][0].endswith(suffix) \
+            or len(it["arms"][0]) == len(suffix) or len(it["config_counts"]) != 1:
+        raise Pilot2Error("block item %s must have one arm '<arm>%s' and one configuration"
+                          % (it["item_id"], suffix))
+    return it["arms"][0][:-len(suffix)]
+
+
+def _segment_pairs(files):
+    """{comparison unit: [[config, arm], [config, arm]]} (sorted by configuration) of the
+    original segment's blocks; every block of a comparison must hold the same pair."""
+    out, slots = {}, {}
+    for _rel, _sha, items, rule in files:
+        if rule is not None:
+            continue
+        for it in items:
+            if it["block_id"] is None:
+                continue
+            key = (_unit_of(it, None), it["block_id"])
+            slots.setdefault(key, []).append([next(iter(it["config_counts"])), _block_arm(it)])
+    for (unit, bid), pair in slots.items():
+        pair = sorted(pair)
+        if len(pair) != 2 or pair[0][0] == pair[1][0]:
+            raise Pilot2Error("block %s must hold two slots of two configurations, got %s"
+                              % (bid, pair))
+        if out.setdefault(unit, pair) != pair:
+            raise Pilot2Error("comparison %s has blocks of different pairs: %s, %s"
+                              % (unit[len(CMP_PREFIX):], out[unit], pair))
+    return out
+
+
+def _loss_units(facts, job_level_only):
+    """{loss unit: lost?} of the segment for q_hat (DESIGN 4.5): a job (non-block item) or a
+    block (both its jobs) is lost when one of its launches is unusable (with --job-level-only:
+    unusable at job level; VOID launches count as usable then). A block on two nodes is
+    unusable."""
+    out = {}
+    for e in _entries(facts):
+        bad = (not e["usable"]) and (e["job_level"] or not job_level_only)
+        f = e["facts"][0]
+        keys = {("block", f["item_class"], f["block_id"])} if f["block_id"] is not None \
+            else {("job", x["item_id"]) for x in e["facts"]}
+        for k in keys:
+            out[k] = out.get(k, False) or bad
+    return out
+
+
+def _shortfall_item(unit, n, arms, pairs):
+    if unit.startswith(CMP_PREFIX):
+        return {"item_class": SHORTFALL_CLASS, "comparison": unit[len(CMP_PREFIX):],
+                "configs": pairs[unit], "blocks": n, "pin": True}
+    return {"item_class": SHORTFALL_CLASS, "config": unit, "arm": arms[unit][0], "launches": n,
+            "pin": arms[unit][1]}
 
 
 def build_shortfall(entries, W, plans, register_path, per_job, phase, segment,
@@ -689,31 +756,26 @@ def build_shortfall(entries, W, plans, register_path, per_job, phase, segment,
     open_items = sorted({f["item_id"] for f in facts if not f["ended"]})
     if open_items:
         raise Pilot2Error("segment items not ended yet: %s" % open_items)
-    if any(f["block_id"] is not None for f in facts):
-        raise Pilot2Error("block (V2-b) segments: shortfall of blocks is not implemented in "
-                          "this sub-batch")
     check_list_matches(entries, sel["selected"], W)
     prior = [x for x in files if x[3] == "shortfall"]
     rnd = len(prior) + 1
     if rnd > MAX_SHORTFALL_ROUNDS:
         raise Pilot2Error("shortfall round %d > %d (N15: stop and report)"
                           % (rnd, MAX_SHORTFALL_ROUNDS))
-    items = {}
-    for f in facts:
-        bad = (not f["usable"]) and (f["job_level"] or not job_level_only)
-        items[f["item_id"]] = items.get(f["item_id"], False) or bad
-    lost, ended = sum(items.values()), len(items)
+    units = _loss_units(facts, job_level_only)
+    lost, ended = sum(units.values()), len(units)
     arms = _segment_arms(reg, facts, files)
+    pairs = _segment_pairs(files)
     topup = {}
     for unit, bu in sel["by_unit"].items():
         n = stats.shortfall_topup(bu["shortfall"], lost, ended)
         if n:
-            if unit not in arms:
-                raise Pilot2Error("configuration %s has a shortfall but no arm in the original "
+            if unit not in arms and unit not in pairs:
+                raise Pilot2Error("%s has a shortfall but no arm (block pair) in the original "
                                   "segment" % unit)
             topup[unit] = n
     prior_jobs = sum(len(x[2]) for x in prior)
-    pin_of = {c: arms[c][1] for c in topup}
+    pin_of = {c: (True if c in pairs else arms[c][1]) for c in topup}
     alloc, capped = _cap(topup, pin_of, per_job, max(0, cap_jobs - prior_jobs))
     q = min(0.5, max(0.05, lost / ended)) if ended else 0.05
     return {"schema": E0_PARAMS_SCHEMA, "experiment": reg["doc"].get("experiment"),
@@ -730,8 +792,7 @@ def build_shortfall(entries, W, plans, register_path, per_job, phase, segment,
             "cap": {"shortfall_cap_jobs": cap_jobs, "prior_jobs": prior_jobs,
                     "launches_per_job": per_job, "jobs": _jobs_of(alloc, pin_of, per_job)},
             "capped": capped,
-            "items": [{"item_class": SHORTFALL_CLASS, "config": c, "arm": arms[c][0],
-                       "launches": n, "pin": arms[c][1]} for c, n in sorted(alloc.items())],
+            "items": [_shortfall_item(c, n, arms, pairs) for c, n in sorted(alloc.items())],
             "select": {k: sel[k] for k in ("selected", "surplus_unused", "unusable")}}
 
 

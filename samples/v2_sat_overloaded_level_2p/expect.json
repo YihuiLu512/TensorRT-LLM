@@ -1,0 +1,14 @@
+{
+ "exit_code": 0,
+ "levels": {
+  "1": "UNSTABLE"
+ },
+ "red_checks": [],
+ "synthetic": true,
+ "tier_verdicts": {
+  "2": "STABLE",
+  "4": "UNSTABLE",
+  "6": "UNSTABLE"
+ },
+ "tree": "runs/Jlocal-sample-v2-sat-overloaded-level-2p-r0-L0_synthetic-a"
+}

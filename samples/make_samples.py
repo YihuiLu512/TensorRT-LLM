@@ -8,8 +8,9 @@ samples come from the first E0 job and replace these as the良品 reference).
     python3.11 make_samples.py --out <new directory>
 
 Topology simulated: capload (load_source, 2 workers) -> nullsse (under_test, P2 probe site F2).
-Tiers: warmup, drain, up r20 (baseline), drain, up r40, drain. Times are synthetic; all
-values come from one deterministic simulation (random.Random seeds fixed).
+Tiers: warmup, drain, up r20 (baseline), drain, up r40, drain (opts two_pass: then down r40,
+drain, the second pass of the r40 level). Times are synthetic; all values come from one
+deterministic simulation (random.Random seeds fixed).
 """
 
 import argparse
@@ -144,13 +145,26 @@ def ladder_doc(config, arm):
             "near": [], "cal": [], "holds": [], "slope": [], "drain_rule": {}}
 
 
-def tier_table_doc():
+def level_seqs(opts):
+    """Tier seqs of the r40 level: tier 4, and tier 6 (its second pass) with opts two_pass."""
+    return (4, 6) if opts.get("two_pass") else (4,)
+
+
+def end_ns(opts):
+    """End of the last drain tier of the sample's tier table."""
+    return (28 if opts.get("two_pass") else 20) * S
+
+
+def tier_table_doc(two_pass=False):
     tiers = [tier(0, "warmup", "warmup", 0, 0, 2 * S, 0, 10),
              tier(1, "drain-01", "drain", 2 * S, 0, 2 * S, 0, 0),
              tier(2, "up-r20", "up", 4 * S, S, 4 * S, S, 20, baseline=True),
              tier(3, "drain-02", "drain", 10 * S, 0, 2 * S, 0, 0),
              tier(4, "up-r40", "up", 12 * S, S, 4 * S, S, 40),
              tier(5, "drain-03", "drain", 18 * S, 0, 2 * S, 0, 0)]
+    if two_pass:
+        tiers += [tier(6, "down-r40", "down", 20 * S, S, 4 * S, S, 40),
+                  tier(7, "drain-04", "drain", 26 * S, 0, 2 * S, 0, 0)]
     return {"schema": "capkit.tiers/1", "experiment": "E0", "name": "synthetic-judge-sample",
             "arrival": {"dist": "fixed", "seed": 20261113},
             "axis": {"name": "R", "load_key": "rate_rps", "unit": "req/s", "order": "asc"},
@@ -168,7 +182,8 @@ class Sim:
         by_tier = {}
         for rid, ts in enumerate(tseq):
             by_tier.setdefault(ts, []).append(rid)
-        timeouts = set(by_tier[4][-5:]) if opts.get("overload") else set()
+        lv = level_seqs(opts)
+        timeouts = {r for s in lv for r in by_tier[s][-5:]} if opts.get("overload") else set()
         if opts.get("c12"):  # every request of capload worker 1 in tier 4 times out
             timeouts = {rid for rid in by_tier[4] if rid % 2 == 1}
         self.short = by_tier[4][0] if opts.get("c4") else None
@@ -202,7 +217,7 @@ class Sim:
             recv = []
             for o in offs:
                 pl = beat.planned_rel_ns(fs + o)
-                extra = (pl - t.start_ns) // 20 if (grow and ts == 4) else 0  # 50 ms per s
+                extra = (pl - t.start_ns) // 20 if (grow and ts in lv) else 0  # 50 ms per s
                 recv.append(pl + 150 * US + rng.randrange(30 * US) + extra)
             recv.append(recv[-1] + 20 * US)  # usage frame
             r["chunks"] = list(enumerate(recv))
@@ -295,7 +310,7 @@ class Builder:
     def build_registered(self):
         W = self.W
         tt_rel = "register/tiers.json"
-        write_plain(os.path.join(W, tt_rel), tier_table_doc())
+        write_plain(os.path.join(W, tt_rel), tier_table_doc(bool(self.opts.get("two_pass"))))
         self.tt = TierTable.load(os.path.join(W, tt_rel))
         sc_rel = "register/schedule.capbin"
         write_schedule(os.path.join(W, sc_rel), self.tt, 100000)
@@ -657,9 +672,10 @@ class Builder:
         self.build_inventory()
         write_json_stamped(self.T.launch_end_json, "capkit.launch_end/1", L, {
             "stop": None, "ready_at_rel_ns": {"capload": -S, "nullsse": -2 * S},
-            "tiers_completed": 5, "gate_outcomes": [], "exit_codes": {"capload": 0,
-                                                                      "nullsse": 0},
-            "ended_mono_ns": ORIGIN + 21 * S, "state": "VALID", "reason": "completed all tiers",
+            "tiers_completed": len(self.tt.tiers) - 1, "gate_outcomes": [],
+            "exit_codes": {"capload": 0, "nullsse": 0},
+            "ended_mono_ns": ORIGIN + end_ns(self.opts) + S, "state": "VALID",
+            "reason": "completed all tiers",
             "leftovers": {"before": [], "after": [], "marker_scan": "synthetic"}})
         # the launch-level outcome caplaunch and then capjobs.launches record before the judge
         append_state(self.T.root, "VALID", "completed all tiers", "caplaunch")
@@ -998,8 +1014,9 @@ class Builder:
 
     # ---- sidecar ---------------------------------------------------------------------------
     def build_sidecar(self):
-        times = [k * S for k in range(-1, 22)]
-        gpu_times = [k * GPU_EVERY_NS for k in range(-1, 22 * S // GPU_EVERY_NS)]
+        n_rows = end_ns(self.opts) // S + 2
+        times = [k * S for k in range(-1, n_rows)]
+        gpu_times = [k * GPU_EVERY_NS for k in range(-1, n_rows * S // GPU_EVERY_NS)]
         sc = self.T.sidecar
         pc = {"ok": True, "gpu_count": 1, "rc": 0, "reason": None,
               "cmd": ["nvidia-smi", "--query-gpu=index", "--format=csv,noheader"]}
@@ -1082,6 +1099,9 @@ GOOD_V = {"2": "STABLE", "4": "STABLE"}
 V2 = {"configs": {ARM: "s1"}, "ladders": {ARM: {}}}
 V2_NEAR = {"configs": {ARM: "s1"}, "ladders": {ARM: {
     "levels": [], "near": [{"rho": 1.0, "seq": 4, "pass": 1}]}}}
+# two_pass samples: the r40 level up (tier 4) and down (tier 6)
+V2_2P = {"configs": {ARM: "s1"}, "ladders": {ARM: {"passes": 2, "levels": [
+    {"level": 1, "rho": 1.0, "load_value": 40.0, "up_seq": 4, "down_seq": 6}]}}}
 SAMPLES = {
     "good": ({}, {"exit_code": 0, "tier_verdicts": GOOD_V, "red_checks": [],
                   "state_last": "VALID"}),
@@ -1206,6 +1226,15 @@ SAMPLES = {
         "exit_code": 0, "tier_verdicts": {"2": "STABLE", "4": "UNSTABLE"}, "red_checks": []}),
     "v2_near_stable": ({"v2": V2_NEAR}, {"exit_code": 0, "tier_verdicts": GOOD_V,
                                          "red_checks": []}),
+    # the two satisfiability samples with both passes of the level (DESIGN-r7a 2.4): an
+    # obviously overloaded level UNSTABLE in both passes, a near-boundary stable level inside in
+    # both passes
+    "v2_sat_overloaded_level_2p": ({"v2": V2_2P, "overload": True, "two_pass": True}, {
+        "exit_code": 0, "tier_verdicts": {"2": "STABLE", "4": "UNSTABLE", "6": "UNSTABLE"},
+        "levels": {"1": "UNSTABLE"}, "red_checks": []}),
+    "v2_near_stable_level_2p": ({"v2": V2_2P, "two_pass": True}, {
+        "exit_code": 0, "tier_verdicts": {"2": "STABLE", "4": "STABLE", "6": "STABLE"},
+        "levels": {"1": "STABLE"}, "red_checks": [], "state_last": "VALID"}),
     "v2_ladder_missing": ({"v2": dict(V2, ladder_broken="missing")}, {"exit_code": 13}),
     "v2_ladder_sha": ({"v2": dict(V2, ladder_broken="sha")}, {"exit_code": 13}),
     "v2_pilot1": ({"v2": V2, "calib_v1": True}, {"exit_code": 13}),

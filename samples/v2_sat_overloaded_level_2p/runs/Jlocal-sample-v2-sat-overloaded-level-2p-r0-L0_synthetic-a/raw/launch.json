@@ -1,0 +1,267 @@
+{
+ "code": {
+  "baseline_sha": "2f22a98d6e",
+  "capkit_sha": "cccccccccccccccccccccccccccccccccccccccc",
+  "probe_tree_sha": null,
+  "snapshot_dir": null
+ },
+ "hw_profile_sha": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+ "identity": {
+  "arm": "synthetic-a",
+  "experiment": "E0",
+  "job_id": "local-sample-v2-sat-overloaded-level-2p",
+  "launch_seq": 0,
+  "pid": null,
+  "register_sha": "c54bd0ebe67d2c86dc8c466cc4e17d569eddb1901efe7d0c9e77d58362a0a777",
+  "restart_count": 0,
+  "role": "launch",
+  "tier_label": null,
+  "tier_seq": null,
+  "worker": 0
+ },
+ "image": {
+  "path": "synthetic.sqsh",
+  "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+ },
+ "origin_lead_ns": 5000000000,
+ "origin_ns": 1000000000000,
+ "probe_tier": {
+  "groups": [
+   "count"
+  ],
+  "tier": "P2"
+ },
+ "prompts": {
+  "relpath": "register/prompts.json",
+  "sha256": "2e03b59f7251c4c4646ea0f542daedf57fecb6aa27fd8d52f6379ff9a40e6672"
+ },
+ "reconcile": {
+  "chains": [
+   {
+    "corrections": [],
+    "gate": null,
+    "hops": [
+     {
+      "role": "capload",
+      "scope": "tier",
+      "source": "summary.counts.ok"
+     },
+     {
+      "role": "nullsse",
+      "scope": "tier",
+      "source": "summary.counts.requests"
+     }
+    ],
+    "include_usage": null,
+    "kind": "requests",
+    "name": "requests"
+   },
+   {
+    "corrections": [],
+    "gate": "product",
+    "hops": [
+     {
+      "role": "capload",
+      "scope": "tier",
+      "source": "summary.frames.frames"
+     },
+     {
+      "role": "nullsse",
+      "scope": "tier",
+      "source": "summary.counts.frames_sent"
+     }
+    ],
+    "include_usage": true,
+    "kind": "chunks",
+    "name": "sse"
+   },
+   {
+    "corrections": [],
+    "gate": "product",
+    "hops": [
+     {
+      "role": "nullsse",
+      "scope": "tier",
+      "source": "slot:count.F2.msgs"
+     }
+    ],
+    "include_usage": null,
+    "kind": "messages",
+    "name": "probe-msgs"
+   }
+  ],
+  "schema": "capkit.reconcile/1"
+ },
+ "register": {
+  "relpath": "register/register.json",
+  "sha256": "c54bd0ebe67d2c86dc8c466cc4e17d569eddb1901efe7d0c9e77d58362a0a777"
+ },
+ "roles": [
+  {
+   "args": [
+    "--synthetic"
+   ],
+   "asyncio": true,
+   "cpus": [
+    2,
+    3
+   ],
+   "expected_procs": 2,
+   "kind": "client",
+   "loop": "asyncio",
+   "measure_class": "load_source",
+   "module": "capload",
+   "probe_tier": null,
+   "role": "capload",
+   "uses_grpc": false,
+   "workers": 2
+  },
+  {
+   "args": [
+    "--synthetic"
+   ],
+   "asyncio": true,
+   "cpus": [
+    4
+   ],
+   "expected_procs": 1,
+   "kind": "server",
+   "loop": "asyncio",
+   "measure_class": "under_test",
+   "module": "capload.nullsse",
+   "probe_tier": "P2",
+   "proc_kinds": [
+    "frontend",
+    "frontend_openengine",
+    "frontend_single"
+   ],
+   "role": "nullsse",
+   "uses_grpc": false,
+   "workers": 1
+  }
+ ],
+ "scenario": {
+  "doc": {
+   "probe_tier": "P2",
+   "prompts": "register/prompts.json",
+   "reconcile": {
+    "chains": [
+     {
+      "corrections": [],
+      "gate": null,
+      "hops": [
+       {
+        "role": "capload",
+        "scope": "tier",
+        "source": "summary.counts.ok"
+       },
+       {
+        "role": "nullsse",
+        "scope": "tier",
+        "source": "summary.counts.requests"
+       }
+      ],
+      "include_usage": null,
+      "kind": "requests",
+      "name": "requests"
+     },
+     {
+      "corrections": [],
+      "gate": "product",
+      "hops": [
+       {
+        "role": "capload",
+        "scope": "tier",
+        "source": "summary.frames.frames"
+       },
+       {
+        "role": "nullsse",
+        "scope": "tier",
+        "source": "summary.counts.frames_sent"
+       }
+      ],
+      "include_usage": true,
+      "kind": "chunks",
+      "name": "sse"
+     },
+     {
+      "corrections": [],
+      "gate": "product",
+      "hops": [
+       {
+        "role": "nullsse",
+        "scope": "tier",
+        "source": "slot:count.F2.msgs"
+       }
+      ],
+      "include_usage": null,
+      "kind": "messages",
+      "name": "probe-msgs"
+     }
+    ],
+    "schema": "capkit.reconcile/1"
+   },
+   "roles": [
+    {
+     "args": [],
+     "asyncio": true,
+     "expected_procs": 2,
+     "kind": "client",
+     "loop": "asyncio",
+     "measure_class": "load_source",
+     "module": "capload",
+     "probe_tier": null,
+     "role": "capload",
+     "uses_grpc": false,
+     "workers": 2
+    },
+    {
+     "args": [],
+     "asyncio": true,
+     "expected_procs": 1,
+     "kind": "server",
+     "loop": "asyncio",
+     "measure_class": "under_test",
+     "module": "capload.nullsse",
+     "probe_tier": "P2",
+     "proc_kinds": [
+      "frontend",
+      "frontend_openengine",
+      "frontend_single"
+     ],
+     "role": "nullsse",
+     "uses_grpc": false,
+     "workers": 1
+    }
+   ],
+   "schedule": "register/schedule.capbin",
+   "schema": "capkit.scenario/1",
+   "stop_order": [
+    "capload",
+    "nullsse"
+   ],
+   "synthetic": true,
+   "tier_table": "register/tiers.json"
+  },
+  "relpath": "register/scenario.json",
+  "sha256": "c5e744357404ac03d0aeb2cfc9c78e9808d73cd4f9d1d1afa50408415c5bde6e"
+ },
+ "schedule": {
+  "relpath": "register/schedule.capbin",
+  "sha256": "39e58017f6ef6d54f2f8203c7014e27accd30d1281c8f9dc7f6a978a0ae02d86"
+ },
+ "schema": "capkit.launch/1",
+ "shm_dir": "/dev/shm/synthetic",
+ "submission": {
+  "job_id": "local-sample-v2-sat-overloaded-level-2p",
+  "restart_count": 0,
+  "submitted_at": "2026-11-13T00:00:10.000Z"
+ },
+ "synthetic": true,
+ "tier_table": {
+  "relpath": "register/tiers.json",
+  "sha256": "ee59e3ad64248c355e4daf67b4e1eb654c6bfb56671f18ed6788768016b46292"
+ },
+ "written_mono_ns": 9885857660489882,
+ "written_wall": "2026-11-15T02:23:53.741Z"
+}

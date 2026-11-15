@@ -494,8 +494,8 @@ def test_select_shortfall_items_queue_after_the_original_segment(tmp_path):
     assert sel["surplus_unused"] == s.rel("T-sf-0003")
 
 
-def blocks(root, nodes=None):
-    s = Seg(root)
+def blocks(root, nodes=None, cap_jobs=40):
+    s = Seg(root, cap_jobs=cap_jobs)
     its = []
     for k in range(1, 5):
         bid = "AA-b%02d" % k
@@ -895,3 +895,99 @@ def test_shortfall_product_feeds_laddergen_plan_from(tmp_path, fake_trees):
     assert sum(it["launches"] for it in items) == d["items"][0]["launches"] == 7
     assert len(items) == d["cap"]["jobs"] == 2
     assert all(it["arms"] == ["a"] and it["pin"] is False for it in items)
+
+
+def run_blocks(s):
+    """b01 loses a job (CANCELLED), b03 runs on two nodes, b02 and b04 are usable: N = 3, 2
+    usable blocks, shortfall 1; 2 of the 4 ended blocks are unusable."""
+    s.run("AA-b01-s1", launches=[("s1", "VALID")], node="n1")
+    s.run("AA-b01-s2", status="CANCELLED")
+    for bid, nodes in (("AA-b02", ("n2", "n2")), ("AA-b03", ("n3", "n4")),
+                       ("AA-b04", ("n5", "n5"))):
+        s.run(bid + "-s1", launches=[("s1", "VOID" if bid == "AA-b02" else "VALID")],
+              node=nodes[0])
+        s.run(bid + "-s2", launches=[("s2", "VALID")], node=nodes[1])
+
+
+@pytest.mark.parametrize("job_level_only", [False, True])
+def test_shortfall_of_blocks_counts_blocks(tmp_path, fake_trees, job_level_only):
+    """V2-b (DESIGN 4.5, P2-09b): the unit is the comparison, q_hat counts blocks (a block is
+    lost when one of its jobs is), the top-up is in blocks of two pinned one-launch jobs. b02
+    has a VOID launch: unusable, except with --job-level-only."""
+    s = blocks(tmp_path)
+    run_blocks(s)
+    code, d, _o = shortfall(s, sel_list(s, job_level_only=job_level_only),
+                            job_level_only=job_level_only)
+    assert code == 0
+    if job_level_only:  # b02 usable; b01 lost (job level); b03 (two nodes) not job level
+        n = stats.shortfall_topup(1, 1, 4)
+        assert d["by_config"]["cmp:AA"]["usable"] == 2 and d["items"][0]["blocks"] == n
+        assert d["q_hat"] == {"lost": 1, "ended": 4, "value": 0.25}
+        return
+    assert d["by_config"]["cmp:AA"] == {"N": 3, "n_all_selected": 0, "usable": 1,
+                                        "shortfall": 2, "topup": d["items"][0]["blocks"],
+                                        "listed": d["items"][0]["blocks"]}
+    assert d["q_hat"] == {"lost": 3, "ended": 4, "value": 0.5}
+    n = stats.shortfall_topup(2, 3, 4)
+    assert d["items"] == [{"item_class": "post_gate:shortfall", "comparison": "AA",
+                           "configs": [["s1", "a"], ["s2", "b"]], "blocks": n, "pin": True}]
+    assert d["cap"]["jobs"] == 2 * n and d["capped"] is False
+
+
+def test_shortfall_of_blocks_caps_two_jobs_per_block(tmp_path, fake_trees):
+    s = blocks(tmp_path, cap_jobs=3)
+    run_blocks(s)
+    code, d, _o = shortfall(s, sel_list(s))
+    assert code == 0 and d["capped"] is True
+    assert d["items"][0]["blocks"] == 1 and d["cap"]["jobs"] == 2
+
+
+def test_shortfall_blocks_feed_laddergen_plan_from_and_queue_after_the_segment(tmp_path,
+                                                                              fake_trees):
+    """The block top-up becomes blocks of a post_gate:shortfall plan (two pinned one-launch
+    jobs per order, new block ids of the comparison); registered and run, its usable blocks
+    fill the comparison's N after the original segment."""
+    from caplaunch import laddergen
+    s = blocks(tmp_path)
+    run_blocks(s)
+    code, d, o = shortfall(s, sel_list(s), out="register/sf.json")
+    assert code == 0
+    ledger.registry_append(s.fw.path("REGISTRY.tsv"), "E0", "register/sf.json", sha256_file(o),
+                           "kind=e0_params;test", registered_at=s.fw.ts())
+    out = s.fw.path("register/plan.sf1.tsv")
+    assert laddergen.main(["--plan-from", o, "--workdir", s.fw.W, "--phase-id", "V2b",
+                           "--seed-base", "t", "--launches-per-job", "1", "--out", out]) == 0
+    items = jobplan.read(out)
+    n = d["items"][0]["blocks"]
+    assert len(items) == 2 * n and {it["order"] for it in items} == set(range(1, n + 1))
+    for it in items:
+        bid = it["block_id"]
+        assert bid.startswith("AA-bshortfall1") and P2._unit_of(it, None) == "cmp:AA"
+        assert it["pin"] is True and it["launches"] == 1 and it["item_class"] == \
+            "post_gate:shortfall"
+        cfg, = it["config_counts"]
+        assert it["arms"] == ["%s.%s.%d" % ({"s1": "a", "s2": "b"}[cfg], bid, it["slot"])]
+    for k in range(1, n + 1):
+        assert sorted(next(iter(x["config_counts"])) for x in items if x["order"] == k) \
+            == ["s1", "s2"]
+    s.plan("plan.sf1", items)  # the same bytes, registered as kind job_plan
+    first = [it for it in items if it["order"] == 1]
+    for it in first:
+        cfg, = it["config_counts"]
+        s.run(it["item_id"], launches=[(cfg, "VALID")], node="n9")
+    sel = s.select()
+    assert sel["by_unit"]["cmp:AA"]["usable"] == 2
+    assert sel["selected"][-2:] == s.rel(first[0]["item_id"]) + s.rel(first[1]["item_id"])
+
+
+def test_shortfall_refuses_a_block_whose_arm_lacks_the_block_suffix(tmp_path, fake_trees):
+    s = Seg(tmp_path)
+    its = [item(1, "BB-b01-s%d" % slot, {cfg: 1}, pin=True, arms=[arm], block="BB-b01",
+                slot=slot) for slot, cfg, arm in ((1, "s1", "a"), (2, "s2", "b"))]
+    s.plan("blocks", its)
+    for it in its:
+        cfg, = it["config_counts"]
+        s.run(it["item_id"], launches=[(cfg, "VALID")], node="n1")
+    code, _d, o = shortfall(s, sel_list(s))
+    assert code == 3 and not os.path.exists(o)
+
