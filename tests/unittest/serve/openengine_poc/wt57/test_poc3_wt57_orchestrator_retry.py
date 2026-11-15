@@ -8,7 +8,8 @@ default of one retry unless a test says otherwise.
 
 * NT-012 (DG-45): a context leg that fails is sent again with a new
   ``disagg_request_id``, which is the id the context engine is given and
-  the generation leg then names; the failed attempt leaves no handoff behind.
+  the generation leg then names; the context engine refuses the first attempt
+  before admitting it, and only the attempt it admits hands its KV cache off.
 * NT-013 (DG-46, DG-47): a generation leg is sent again, to the same
   address, only while its worker frontend cannot be reached; once the
   frontend has answered with an error, or has streamed bytes and then broken
@@ -50,7 +51,8 @@ def _gen_retries(chain) -> int:
     """The orchestrator's count of generation legs it sent again."""
     metrics = requests.get(f"{chain.url}/prometheus/metrics", timeout=30).text
     found = _GEN_RETRIES.search(metrics)
-    return int(float(found.group(1))) if found else 0
+    assert found, "the orchestrator exports no gen_retry_requests_total"
+    return int(float(found.group(1)))
 
 
 @pytest.fixture(scope="module")

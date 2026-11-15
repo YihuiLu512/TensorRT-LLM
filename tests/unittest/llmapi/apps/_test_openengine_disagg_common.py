@@ -136,7 +136,8 @@ def disagg_deployment(
     process_env = {**os.environ, "UCX_NET_DEVICES": "lo", **(env or {})}
     with contextlib.ExitStack() as stack:
         try:
-            # The orchestrator starts first, so its port is taken while the workers start.
+            # The orchestrator starts first: its port is free only while it starts, not
+            # while the workers load their models.
             orchestrator = stack.enter_context(
                 RemoteDisaggOpenAIServer(
                     ctx_servers=[],
@@ -172,7 +173,7 @@ def disagg_deployment(
                             )
                         )
                     )
-            # A worker that exits makes its wait raise at once. The orchestrator's /health
+            # A worker that exits with an error makes its wait raise. The orchestrator's /health
             # answers 200 only once workers have registered.
             for role in ROLES:
                 for worker in workers[role]:

@@ -45,14 +45,17 @@ def test_first_chunk_does_not_wait_for_stream_interval(deployment):
         stream_options={"include_usage": True, "continuous_usage_stats": True},
         extra_body={"ignore_eos": True},
     )
+    chunks = list(stream)
     # Tokens generated so far, at each chunk that has text.
     counts = [
         chunk.usage.completion_tokens
-        for chunk in stream
+        for chunk in chunks
         if chunk.choices and chunk.choices[0].text and chunk.usage is not None
     ]
     assert counts, "no chunk with text"
     assert counts[0] < STREAM_INTERVAL, counts
-    assert counts[-1] == MAX_TOKENS, counts
+    # The last token may have no text, so the total is read from the last usage.
+    usage = [chunk.usage.completion_tokens for chunk in chunks if chunk.usage is not None]
+    assert usage[-1] == MAX_TOKENS, usage
     # stream_interval is in effect: a chunk per iteration would give about MAX_TOKENS chunks.
     assert len(counts) <= 3 + MAX_TOKENS // STREAM_INTERVAL, counts
