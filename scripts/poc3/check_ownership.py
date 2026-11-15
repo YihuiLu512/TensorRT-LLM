@@ -1106,6 +1106,24 @@ OWNERSHIP: dict[str, list[Rule]] = {
             f"{APPS}/_test_openengine_ds_disagg_frontend.py",
             "the skeleton WT-56 wrote, taken over once WT-56 has landed (§3.3)",
         ),
+        # WT-62 registers NT-132 and NT-133 as tests that cancel calls; the harness test that lists
+        # every such test names them too.
+        _exception(
+            f"{CHAIN}/tests/test_expectations.py",
+            "N107 only: name NT-132 and NT-133 among the tests that cancel calls in"
+            f" {_CANCELS_CALLS_TEST}",
+            item="WT-62",
+            changes=(
+                _change(
+                    _CANCELS_CALLS_TEST,
+                    added=(
+                        '        "_test_openengine_ds_disagg_cancel.py::test_abort_stages[*",',
+                        '        "_test_openengine_ds_disagg_cancel.py::'
+                        'test_parked_kv_timeout_and_orphans",',
+                    ),
+                ),
+            ),
+        ),
     ],
     "WT-70": [
         _shared(

@@ -102,6 +102,7 @@ def test_the_exception_lists_exactly_the_line():
     ]
     assert [(n, r.kind) for n, r in check_ownership.owners(PATH)] == [
         ("WT-38", "shared"),
+        ("WT-62", "exception"),
         (ITEM, "exception"),
     ]
 
@@ -129,7 +130,7 @@ OTHERS = ["WT-55", "WT-55-fix2", "WT-55-fix3"]
 def test_no_other_work_item_may_add_the_line(tmp_path, capsys, task):
     base = _show(BASE)
     found, out = _check(tmp_path, capsys, base, _after(base, ANCHOR, ADDED), task)
-    assert found == 1 and f"OUT OF BOUNDS  {PATH}  (owned by WT-38, {ITEM})" in out, out
+    assert found == 1 and f"OUT OF BOUNDS  {PATH}  (owned by WT-38, WT-62, {ITEM})" in out, out
 
 
 # The ways the line can differ from the one allowed: a broader match, another test of the same
@@ -227,8 +228,8 @@ def test_wt55_fix1_may_add_the_line_once(tmp_path, capsys):
     assert "not one of the allowed changes" in out
 
 
-# Work items whose trailers at the base leave the exception in force: those of OTHERS and the
-# item that owns PATH.
+# Work items whose trailers at the base leave the exception in force: those of OTHERS and WT-38,
+# which shares PATH.
 @pytest.mark.parametrize("landed", [*OTHERS, "WT-38"])
 def test_the_exception_is_not_spent_by_another_work_item(tmp_path, capsys, landed):
     base = _show(BASE)
@@ -252,4 +253,4 @@ def test_the_line_cannot_be_added_again_once_wt55_fix1_has_landed(tmp_path, caps
     if task == ITEM:
         assert f"OUT OF BOUNDS  {PATH}  (the exception for {ITEM} is spent" in out
     else:
-        assert f"OUT OF BOUNDS  {PATH}  (owned by WT-38, {ITEM})" in out
+        assert f"OUT OF BOUNDS  {PATH}  (owned by WT-38, WT-62, {ITEM})" in out
