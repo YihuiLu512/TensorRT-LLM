@@ -34,3 +34,19 @@
 - 2026-11-16 01:09:59 跑 tests/capstubs 全目录（约 4 分钟）
 - 2026-11-16 01:12:59 跑 tests/launch 全目录（约 5 分钟）
 - 2026-11-16 01:17:22 FT1-sink 变异 S0–S17 串行（后台，约 10 分钟）
+- 2026-11-16 01:23:18 提交 4d616f7a；开始作业路径 e2e：覆盖清单按 HEAD 生成，e2e-sink-spb（oe_sink 替身包 → S-PB）、e2e-weak-spb（同参数换 capgrpc.load）（约 10 分钟）
+- 2026-11-16 01:27:54 e2e 完成（e2e-sink-spb J9300023、e2e-weak-spb J9300024、e0a-nullsse J9300025 全部 VALID、0 RED）；按 HEAD 重跑 tests/capstubs 全目录（约 3 分钟）
+
+## FT1-sink 结果
+
+- 代码：`tools/capgrpc/oe_sink.py`（新入口 `python -m capgrpc.oe_sink`，LoadWorker / RequestPlan 子类）、`tools/capgrpc/msgplan.py`（`--planned-msgs`）、`capgrpc.loader` 重构（`add_reader_args`、连接钩子、`begin_request` / `end_request`，行为不变）、`capgrpc.common.product_versions`（S-NL 改用同一函数）、`TOOL_TABLE` 一行；勘误 FT1-8～FT1-13；`tools/capgrpc/README.md`。
+- 位置偏离：RUNBOOK §2.1 第 7 行写 `capstubs/oe_sink.py`，实际放 `capgrpc`（理由在勘误 FT1-8）。
+
+### MEASURED（本机；日志在 _local/ft1/logs、_local/ft1/mut-sink、_local/ft1/e2e/runs）
+- tests/capstubs 159 passed（logs/sink-capstubs2.log，HEAD 4d616f7a 之后只改了文档）；tests/grpc 39 passed（sink-grpc）；tests/launch 233 passed（sink-launch）；test_oe_sink.py 31 passed（sink-s4）。
+- 变异 S1～S17 全部被抓到（mut-sink/summary.txt；S0 锚点不唯一未施加，基线即全目录运行）。
+- 作业路径 e2e（覆盖清单 P0-4d616f7a；替身包 e2e/simpkgs-sink 装进一次性 venv）：e2e-sink-spb J9300023（oe_sink engine-event-stream、--connect channel、--planned-msgs）、e2e-weak-spb J9300024（同场景换 capgrpc.load）均 L0 VALID、judge rc 11、0 RED、无 INPUT_INVALID；C3/C5/C6/P-SENT/RECORDS/C9/C10/C11 PASS；两场景只差 drain 的 module、`--tier`/`--connect` 与名字；e0a-nullsse J9300025 回归 VALID、0 RED。
+### INFERRED
+- 真产品包里 oe_sink 走的是同一份客户端代码（替身包里的文件就是探针树里的产品文件原样），所以读路径与计数口径在集群上应一致；导入整库的开销与线程未知。
+### NOT RUN
+- 真 `tensorrt_llm` 安装里导入客户端、真 S-PB 前端模式 + 真 S-FE 下的 `--connect product`（本机只用探针树文件跑过）、oe_sink 读 S-NL、集群上的 E3-3b。
