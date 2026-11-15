@@ -1,0 +1,317 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# End-to-end checks of the disaggregated chain (case-04, trtllm chain, B200; one GPU shared by the
+# context and generation workers, two GPUs for XD-219), three runs of each case. Each junit path
+# is relative to the result directory of its runs, which the work item's status file records.
+# The comment above each entry tags each of its cases:
+# - ok: the chain proof holds.
+# - startup: the case expects the workers not to start; no chain serves a request, so the chain
+#   proof reads incomplete (or no_server) and the case's own assertions are the evidence.
+# - self-routed: the test sends to the workers itself (leg_expect in expectations/), and only the
+#   checks that expectation names are judged.
+# - killed: the test kills one role's engine.
+# - direct: no worker frontend runs; the chain proof does not apply.
+# Generated from the junit files; result and chain_proof are over all runs listed.
+entries:
+  # NT-058 ok: refused by the worker frontend, no Generate call
+  - row: F-10
+    features:
+    - F-10
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_rejects.py::test_multimodal_rejected
+    commit: 0429bcd2793e70716e830aa29aae34c23c9a34ed
+    junit:
+    - b200-1g-chain-s1/b200-1g-chain-s1/job-5963687_0-r0/node0/results/e00/junit/
+    - b200-1g-chain-s2/b200-1g-chain-s2/job-5963690_0-r0/node0/results/e00/junit/
+    - b200-1g-chain-s3/b200-1g-chain-s3/job-5963693_0-r0/node0/results/e00/junit/
+    result: passed
+    chain_proof: ok
+  # NT-064 ok: refused by the worker frontend, no Generate call
+  - row: F-19
+    features:
+    - F-19
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_rejects.py::test_n_gt_1_rejected
+    commit: 0429bcd2793e70716e830aa29aae34c23c9a34ed
+    junit:
+    - b200-1g-chain-s1/b200-1g-chain-s1/job-5963687_0-r0/node0/results/e00/junit/
+    - b200-1g-chain-s2/b200-1g-chain-s2/job-5963690_0-r0/node0/results/e00/junit/
+    - b200-1g-chain-s3/b200-1g-chain-s3/job-5963693_0-r0/node0/results/e00/junit/
+    result: passed
+    chain_proof: ok
+  # XD-219 startup, NT-065 startup: the workers do not start (startup_rejected, CH not judged); the
+  # expected log line is found
+  - row: F-25+WT-52-fix1
+    features:
+    - F-25
+    cases:
+    - accuracy/test_disaggregated_serving.py::TestGPTOSS20B::test_beam_search
+    - unittest/llmapi/apps/_test_openengine_disagg_rejects.py::test_beam_width_startup_rejected
+    commit: 0429bcd2793e70716e830aa29aae34c23c9a34ed
+    junit:
+    - b200-2g-xd219-s1/b200-2g-xd219-s1/job-5963689_0-r0/node0/results/e00/
+    - b200-2g-xd219-s2/b200-2g-xd219-s2/job-5963692_0-r0/node0/results/e00/
+    - b200-2g-xd219-s3/b200-2g-xd219-s3/job-5963695_0-r0/node0/results/e00/
+    - b200-1g-chain-s1/b200-1g-chain-s1/job-5963687_0-r0/node0/results/e00/junit/
+    - b200-1g-chain-s2/b200-1g-chain-s2/job-5963690_0-r0/node0/results/e00/junit/
+    - b200-1g-chain-s3/b200-1g-chain-s3/job-5963693_0-r0/node0/results/e00/junit/
+    result: passed
+    chain_proof: incomplete
+  # NT-066 ok: refused by the worker frontend, no Generate call
+  - row: F-26
+    features:
+    - F-26
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_rejects.py::test_logits_fields_rejected
+    commit: 0429bcd2793e70716e830aa29aae34c23c9a34ed
+    junit:
+    - b200-1g-chain-s1/b200-1g-chain-s1/job-5963687_0-r0/node0/results/e00/junit/
+    - b200-1g-chain-s2/b200-1g-chain-s2/job-5963690_0-r0/node0/results/e00/junit/
+    - b200-1g-chain-s3/b200-1g-chain-s3/job-5963693_0-r0/node0/results/e00/junit/
+    result: passed
+    chain_proof: ok
+  # NT-089 ok: CH-2 is judged exactly (no cancels_calls): every cancelled call reached its engine
+  # before the client left
+  - row: DG-38+WT-52-fix1
+    features:
+    - DG-38
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_cancel.py::test_streaming_disconnect_aborts_the_gen_leg
+    commit: 0429bcd2793e70716e830aa29aae34c23c9a34ed
+    junit:
+    - b200-1g-chain-s1/b200-1g-chain-s1/job-5963687_0-r0/node0/results/e01/junit/
+    - b200-1g-chain-s2/b200-1g-chain-s2/job-5963690_0-r0/node0/results/e01/junit/
+    - b200-1g-chain-s3/b200-1g-chain-s3/job-5963693_0-r0/node0/results/e01/junit/
+    result: passed
+    chain_proof: ok
+  # NT-090 ok on the chain; also passed on the in-process workers (the control form)
+  # Control-form runs (in-process workers, no chain; passed, not in chain_proof):
+  #   b200-1g-none-s1/b200-1g-none-s1/job-5963688_0-r0/node0/results/e02/junit/
+  #   b200-1g-none-s2/b200-1g-none-s2/job-5963691_0-r0/node0/results/e02/junit/
+  #   b200-1g-none-s3/b200-1g-none-s3/job-5963694_0-r0/node0/results/e02/junit/
+  - row: DG-39
+    features:
+    - DG-39
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_cancel.py::test_non_streaming_disconnect_runs_both_legs_to_completion
+    commit: 0429bcd2793e70716e830aa29aae34c23c9a34ed
+    junit:
+    - b200-1g-chain-s1/b200-1g-chain-s1/job-5963687_0-r0/node0/results/e01/junit/
+    - b200-1g-chain-s2/b200-1g-chain-s2/job-5963690_0-r0/node0/results/e01/junit/
+    - b200-1g-chain-s3/b200-1g-chain-s3/job-5963693_0-r0/node0/results/e01/junit/
+    result: passed
+    chain_proof: ok
+  # NT-092 self-routed (direct_ctx_leg, orphans 0); CH-2 exact
+  - row: DG-39c+WT-52-fix1
+    features:
+    - DG-39c
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_cancel.py::test_disconnect_during_prefill_aborts_the_ctx_leg
+    commit: 0429bcd2793e70716e830aa29aae34c23c9a34ed
+    junit:
+    - b200-1g-chain-s1/b200-1g-chain-s1/job-5963687_0-r0/node0/results/e01/junit/
+    - b200-1g-chain-s2/b200-1g-chain-s2/job-5963690_0-r0/node0/results/e01/junit/
+    - b200-1g-chain-s3/b200-1g-chain-s3/job-5963693_0-r0/node0/results/e01/junit/
+    result: passed
+    chain_proof: ok
+  # NT-180 startup: the worker frontends exit at the capabilities step; no chain server runs in the
+  # test process, so its chain_proof reads no_server. NT-040 direct: an engine without a transceiver
+  # refuses disaggregated requests; no worker frontend, the chain proof does not apply
+  - row: DG-84+WT-52-fix1
+    features:
+    - DG-84
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_startup.py::test_role_frontend_refuses_an_engine_without_kv_connector
+    - unittest/llmapi/apps/_test_openengine_disagg_direct.py::test_disagg_request_to_an_engine_without_a_transceiver_is_failed_precondition
+    commit: 0429bcd2793e70716e830aa29aae34c23c9a34ed
+    junit:
+    - b200-1g-chain-s1/b200-1g-chain-s1/job-5963687_0-r0/node0/results/e07/junit/
+    - b200-1g-chain-s2/b200-1g-chain-s2/job-5963690_0-r0/node0/results/e07/junit/
+    - b200-1g-chain-s3/b200-1g-chain-s3/job-5963693_0-r0/node0/results/e07/junit/
+    - b200-1g-none-s1/b200-1g-none-s1/job-5963688_0-r0/node0/results/e00/junit/
+    - b200-1g-none-s2/b200-1g-none-s2/job-5963691_0-r0/node0/results/e00/junit/
+    - b200-1g-none-s3/b200-1g-none-s3/job-5963694_0-r0/node0/results/e00/junit/
+    result: passed
+    chain_proof: incomplete
+  # NT-181 ok. Proof scope: on the GPU tier the test checks that the fields the request body sets
+  # reach both legs' GenerateRequest and that the legs agree outside the per-leg keys; the scan of
+  # every mapped field is the CPU tier's (NT-021)
+  - row: DG-85+WT-52-fix1
+    features:
+    - DG-85
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_leg_consistency.py::test_ctx_and_gen_generate_requests_match_on_real_engines
+    commit: 0429bcd2793e70716e830aa29aae34c23c9a34ed
+    junit:
+    - b200-1g-chain-s1/b200-1g-chain-s1/job-5963687_0-r0/node0/results/e03/junit/
+    - b200-1g-chain-s2/b200-1g-chain-s2/job-5963690_0-r0/node0/results/e03/junit/
+    - b200-1g-chain-s3/b200-1g-chain-s3/job-5963693_0-r0/node0/results/e03/junit/
+    result: passed
+    chain_proof: ok
+  # NT-182 ok: streamed and unstreamed agree on each run; the recorded text is identical on the
+  # chain and on the in-process workers in all six runs (offline comparison, the work item's status
+  # file has the script and its result)
+  # Control-form runs (in-process workers, no chain; passed, not in chain_proof):
+  #   b200-1g-none-s1/b200-1g-none-s1/job-5963688_0-r0/node0/results/e01/junit/
+  #   b200-1g-none-s2/b200-1g-none-s2/job-5963691_0-r0/node0/results/e01/junit/
+  #   b200-1g-none-s3/b200-1g-none-s3/job-5963694_0-r0/node0/results/e01/junit/
+  - row: DG-86+WT-52-fix1
+    features:
+    - DG-86
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_first_token.py::test_stream_and_non_stream_token_sequences_agree
+    commit: 0429bcd2793e70716e830aa29aae34c23c9a34ed
+    junit:
+    - b200-1g-chain-s1/b200-1g-chain-s1/job-5963687_0-r0/node0/results/e02/junit/
+    - b200-1g-chain-s2/b200-1g-chain-s2/job-5963690_0-r0/node0/results/e02/junit/
+    - b200-1g-chain-s3/b200-1g-chain-s3/job-5963693_0-r0/node0/results/e02/junit/
+    result: passed
+    chain_proof: ok
+  # NT-183 killed, NT-184 killed: the killed role's CH-2 and CH-5 read incomplete(killed)
+  - row: DG-87+WT-52-fix1
+    features:
+    - DG-87
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_engine_loss.py::test_ctx_engine_exit_stops_the_frontend_and_drops_the_worker
+    - unittest/llmapi/apps/_test_openengine_disagg_engine_loss.py::test_gen_engine_exit_stops_the_frontend_and_drops_the_worker
+    commit: 0429bcd2793e70716e830aa29aae34c23c9a34ed
+    junit:
+    - b200-1g-chain-s1/b200-1g-chain-s1/job-5963687_0-r0/node0/results/e04/junit/
+    - b200-1g-chain-s2/b200-1g-chain-s2/job-5963690_0-r0/node0/results/e04/junit/
+    - b200-1g-chain-s3/b200-1g-chain-s3/job-5963693_0-r0/node0/results/e04/junit/
+    result: passed
+    chain_proof: ok
+  # NT-185 ok. Its third run is a rerun: the first one was in error at setup, the worker frontend's
+  # port having been taken by another process while its engine started
+  - row: DG-88+WT-52-fix1
+    features:
+    - DG-88
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_rejects.py::test_two_leg_rejections_return_400_naming_the_leg
+    commit: 0429bcd2793e70716e830aa29aae34c23c9a34ed
+    junit:
+    - b200-1g-chain-s1/b200-1g-chain-s1/job-5963687_0-r0/node0/results/e00/junit/
+    - b200-1g-chain-s2/b200-1g-chain-s2/job-5963690_0-r0/node0/results/e00/junit/
+    - b200-1g-chain-s3b/b200-1g-chain-s3b/job-5966073_0-r0/node0/results/e00/junit/
+    result: passed
+    chain_proof: ok
+  # NT-187 self-routed (direct_ctx_leg, orphans 1)
+  - row: DG-90+WT-52-fix1
+    features:
+    - DG-90
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_orphans.py::test_an_unclaimed_handoff_is_reported_as_an_orphan
+    commit: 0429bcd2793e70716e830aa29aae34c23c9a34ed
+    junit:
+    - b200-1g-chain-s1/b200-1g-chain-s1/job-5963687_0-r0/node0/results/e05/junit/
+    - b200-1g-chain-s2/b200-1g-chain-s2/job-5963690_0-r0/node0/results/e05/junit/
+    - b200-1g-chain-s3/b200-1g-chain-s3/job-5963693_0-r0/node0/results/e05/junit/
+    result: passed
+    chain_proof: ok
+  # NT-190 ok: refused by the worker frontend
+  - row: EG-05a
+    features:
+    - EG-05a
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_rejects.py::test_multimodal_request_is_rejected
+    commit: 0429bcd2793e70716e830aa29aae34c23c9a34ed
+    junit:
+    - b200-1g-chain-s1/b200-1g-chain-s1/job-5963687_0-r0/node0/results/e00/junit/
+    - b200-1g-chain-s2/b200-1g-chain-s2/job-5963690_0-r0/node0/results/e00/junit/
+    - b200-1g-chain-s3/b200-1g-chain-s3/job-5963693_0-r0/node0/results/e00/junit/
+    result: passed
+    chain_proof: ok
+  # NT-190 ok: refused by the worker frontend
+  - row: EG-05b+WT-52-fix1
+    features:
+    - EG-05b
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_rejects.py::test_multimodal_request_is_rejected
+    commit: 0429bcd2793e70716e830aa29aae34c23c9a34ed
+    junit:
+    - b200-1g-chain-s1/b200-1g-chain-s1/job-5963687_0-r0/node0/results/e00/junit/
+    - b200-1g-chain-s2/b200-1g-chain-s2/job-5963690_0-r0/node0/results/e00/junit/
+    - b200-1g-chain-s3/b200-1g-chain-s3/job-5963693_0-r0/node0/results/e00/junit/
+    result: passed
+    chain_proof: ok
+  # XD-219 startup: the workers do not start (startup_rejected, CH not judged)
+  - row: EG-06+WT-52-fix1
+    features:
+    - EG-06
+    cases:
+    - accuracy/test_disaggregated_serving.py::TestGPTOSS20B::test_beam_search
+    commit: 0429bcd2793e70716e830aa29aae34c23c9a34ed
+    junit:
+    - b200-2g-xd219-s1/b200-2g-xd219-s1/job-5963689_0-r0/node0/results/e00/
+    - b200-2g-xd219-s2/b200-2g-xd219-s2/job-5963692_0-r0/node0/results/e00/
+    - b200-2g-xd219-s3/b200-2g-xd219-s3/job-5963695_0-r0/node0/results/e00/
+    result: passed
+    chain_proof: incomplete
+  # NT-191 ok: refused by the worker frontend
+  - row: EG-07+WT-52-fix1
+    features:
+    - EG-07
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_rejects.py::test_n_above_one_is_rejected_through_the_orchestrator
+    commit: 0429bcd2793e70716e830aa29aae34c23c9a34ed
+    junit:
+    - b200-1g-chain-s1/b200-1g-chain-s1/job-5963687_0-r0/node0/results/e00/junit/
+    - b200-1g-chain-s2/b200-1g-chain-s2/job-5963690_0-r0/node0/results/e00/junit/
+    - b200-1g-chain-s3/b200-1g-chain-s3/job-5963693_0-r0/node0/results/e00/junit/
+    result: passed
+    chain_proof: ok
+  # NT-192 self-routed (direct_worker): only the generation worker is judged
+  - row: EG-10b
+    features:
+    - EG-10b
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_rejects.py::test_generation_logits_request_is_rejected
+    commit: 0429bcd2793e70716e830aa29aae34c23c9a34ed
+    junit:
+    - b200-1g-chain-s1/b200-1g-chain-s1/job-5963687_0-r0/node0/results/e00/junit/
+    - b200-1g-chain-s2/b200-1g-chain-s2/job-5963690_0-r0/node0/results/e00/junit/
+    - b200-1g-chain-s3/b200-1g-chain-s3/job-5963693_0-r0/node0/results/e00/junit/
+    result: passed
+    chain_proof: ok
+  # NT-197 self-routed (direct_two_leg): CH-1, CH-2 (exact), CH-3, the context leg's CH-4 pair and
+  # CH-5's second half are judged; CH-6 and the orphan count are not. The three stages run one after
+  # another in one test; the evidence of no leak is only that running_requests returns to 0 and that
+  # a new request is served
+  - row: EG-16a+WT-52-fix1
+    features:
+    - EG-16a
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_cancel.py::test_abort_reaches_the_engine_at_each_stage
+    commit: 0429bcd2793e70716e830aa29aae34c23c9a34ed
+    junit:
+    - b200-1g-chain-s1/b200-1g-chain-s1/job-5963687_0-r0/node0/results/e01/junit/
+    - b200-1g-chain-s2/b200-1g-chain-s2/job-5963690_0-r0/node0/results/e01/junit/
+    - b200-1g-chain-s3/b200-1g-chain-s3/job-5963693_0-r0/node0/results/e01/junit/
+    result: passed
+    chain_proof: ok
+  # NT-216 startup: the generation worker does not start (startup_rejected, CH not judged)
+  - row: EG-19+WT-52-fix1
+    features:
+    - EG-19
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_rejects.py::test_remote_tail_config_refused_at_startup
+    commit: 0429bcd2793e70716e830aa29aae34c23c9a34ed
+    junit:
+    - b200-1g-chain-s1/b200-1g-chain-s1/job-5963687_0-r0/node0/results/e00/junit/
+    - b200-1g-chain-s2/b200-1g-chain-s2/job-5963690_0-r0/node0/results/e00/junit/
+    - b200-1g-chain-s3/b200-1g-chain-s3/job-5963693_0-r0/node0/results/e00/junit/
+    result: passed
+    chain_proof: incomplete
+  # NT-204 self-routed (direct_worker), no Generate call
+  - row: EG-29
+    features:
+    - EG-29
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_arbitrary_kv.py::test_data_transceiver_state_endpoint_unsupported
+    commit: 0429bcd2793e70716e830aa29aae34c23c9a34ed
+    junit:
+    - b200-1g-chain-s1/b200-1g-chain-s1/job-5963687_0-r0/node0/results/e06/junit/
+    - b200-1g-chain-s2/b200-1g-chain-s2/job-5963690_0-r0/node0/results/e06/junit/
+    - b200-1g-chain-s3/b200-1g-chain-s3/job-5963693_0-r0/node0/results/e06/junit/
+    result: passed
+    chain_proof: ok
