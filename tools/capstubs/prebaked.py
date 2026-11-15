@@ -156,6 +156,33 @@ def parse_generate_request(buf):
     return rid, n
 
 
+REQUEST_ID_SAMPLES = 8
+
+
+class RequestIdSamples:
+    """The first REQUEST_ID_SAMPLES raw request_id values each tier saw, as text (at most 80
+    characters each): the form the client's ids take (capgrpc.load and capgrpc.oe_sink send the
+    decimal req_id; the product frontend sends its own). Event-time tiers, rejected requests
+    included."""
+
+    def __init__(self, n_tiers, limit=REQUEST_ID_SAMPLES):
+        self.limit = limit
+        self.by_tier = [[] for _ in range(n_tiers)]
+
+    def add(self, seq, rid):
+        got = self.by_tier[seq]
+        if len(got) < self.limit:
+            if isinstance(rid, bytes):
+                rid = rid.decode("utf-8", "backslashreplace")
+            elif not isinstance(rid, str):
+                rid = repr(rid)
+            got.append(rid[:80])
+
+    def summary(self, seq):
+        return {"first": list(self.by_tier[seq]), "limit": self.limit,
+                "attribution": "event time (rejected requests included)"}
+
+
 def decimal_request_id(rid):
     """int(rid) when rid is canonical ASCII decimal (no sign, no leading zero, <= 18 digits;
     capgrpc.load writes str(req_id)), else -1."""

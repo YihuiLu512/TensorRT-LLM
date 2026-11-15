@@ -94,6 +94,51 @@ def test_spb_is_single_process(workers, expected, ok):
             sc.validate_scenario(doc)
 
 
+@pytest.mark.parametrize("workers,expected,ok", [(1, 1, True), (2, 2, False), (1, 2, False)])
+def test_snl_is_single_process_and_gets_the_managed_flags(workers, expected, ok):
+    """S-NL's TOOL_TABLE row (errata FT1-1): one process, port file, ready file, --workers."""
+    doc = _scen(roles=[cf.role("snl", "capkit", "server", module="capstubs.null_llm_server",
+                               args=["--mode", "full"])], stop_order=["snl"])
+    del doc["job_inputs"]
+    doc["roles"][0].update(workers=workers, expected_procs=expected, cpus_needed=workers)
+    if not ok:
+        with pytest.raises(ConfigError, match="runs one process"):
+            sc.validate_scenario(doc)
+        return
+    snl = sc.validate_scenario(doc)["snl"]
+    ctx = _ctx({})
+    ctx.own_files["snl"] = {"ready_file": "/T/ready/snl.json"}
+    argv = sc.build_argv(snl, ctx, [5], "py")
+    assert argv[:3] == ["py", "-m", "capstubs.null_llm_server"]
+    for pair in (["--loop", "asyncio"], ["--tier-table", "/W/t.json"], ["--origin-ns", "7"],
+                 ["--ready-file", "/T/ready/snl.json"], ["--port-file", "/T/ports/snl.json"],
+                 ["--workers", "1"], ["--cpus", "5"], ["--mode", "full"]):
+        assert any(argv[i:i + 2] == pair for i in range(len(argv))), pair
+
+
+@pytest.mark.parametrize("workers,expected,ok", [(1, 1, True), (2, 2, False), (1, 2, False)])
+def test_oe_sink_is_single_process_without_port_file(workers, expected, ok):
+    """oe_sink's TOOL_TABLE row (errata FT1-8): one process, ready file, --workers, no port."""
+    doc = _scen(roles=[cf.role("sink", "capkit", "client", module="capgrpc.oe_sink",
+                               args=["--tier", "generate-stream"])], stop_order=["sink"])
+    del doc["job_inputs"]
+    doc["roles"][0].update(workers=workers, expected_procs=expected, cpus_needed=workers)
+    if not ok:
+        with pytest.raises(ConfigError, match="runs one process"):
+            sc.validate_scenario(doc)
+        return
+    sink = sc.validate_scenario(doc)["sink"]
+    ctx = _ctx({})
+    ctx.own_files["sink"] = {"ready_file": "/T/ready/sink.json"}
+    argv = sc.build_argv(sink, ctx, [5], "py")
+    assert argv[:3] == ["py", "-m", "capgrpc.oe_sink"]
+    for pair in (["--loop", "asyncio"], ["--tier-table", "/W/t.json"], ["--origin-ns", "7"],
+                 ["--ready-file", "/T/ready/sink.json"], ["--workers", "1"], ["--cpus", "5"],
+                 ["--tier", "generate-stream"]):
+        assert any(argv[i:i + 2] == pair for i in range(len(argv))), pair
+    assert "--port-file" not in argv
+
+
 class _Id:
     experiment, arm, launch_seq, job_id, restart_count, register_sha = \
         "E0", "a", 0, "local-t", 0, "f" * 64

@@ -46,9 +46,9 @@ from capgrpc.common import (UNREQUESTED_OPTION, ToolRuntime, add_server_args, bi
                             combine_launch_specs, make_server, resolve_max_unrequested,
                             write_inprocess_ready)
 
-from .prebaked import (SHORT_SITE, WireFormatError, decimal_request_id, load_prebaked,
-                       parse_generate_request, required_shapes, short_amounts, shorted,
-                       uniform_msg_shape)
+from .prebaked import (SHORT_SITE, RequestIdSamples, WireFormatError, decimal_request_id,
+                       load_prebaked, parse_generate_request, required_shapes, short_amounts,
+                       shorted, uniform_msg_shape)
 
 TOOL = "capstubs.prebaked_server"
 
@@ -151,14 +151,17 @@ def validate_args(args, common):
         raise ConfigError("S-FE options %s need --sfe-module" % given)
 
 
-def check_inject_specs(specs):
-    """Every spec targets a known site in a mode that site supports (else exit 3)."""
+def check_inject_specs(specs, site_modes=None, who="S-PB"):
+    """Every spec targets a known site in a mode that site supports (else exit 3). site_modes
+    defaults to S-PB's; S-NL passes its own."""
+    site_modes = SITE_MODES if site_modes is None else site_modes
     for sp in specs:
-        if sp.site not in SITE_MODES:
-            raise ConfigError("inject site %s unknown to S-PB (sites: %s)" % (sp.site, SITES))
-        if sp.mode not in SITE_MODES[sp.site]:
+        if sp.site not in site_modes:
+            raise ConfigError("inject site %s unknown to %s (sites: %s)"
+                              % (sp.site, who, tuple(sorted(site_modes))))
+        if sp.mode not in site_modes[sp.site]:
             raise ConfigError("inject site %s does not support mode %s (supports %s)"
-                              % (sp.site, sp.mode, SITE_MODES[sp.site]))
+                              % (sp.site, sp.mode, site_modes[sp.site]))
 
 
 def plan_streams(tt, prebaked, specs):
@@ -268,6 +271,7 @@ class PrebakedServer:
         self.c_truncated, self.c_rejected, self.c_bumped = z(), z(), z()
         self.c_msgs, self.c_bytes, self.c_tokens, self.c_finished = z(), z(), z(), z()
         self.c_short, self.c_nondec = z(), z()
+        self.rid_samples = RequestIdSamples(nt)
         self.max_pending = z()
         self.rejects = [dict() for _ in range(nt)]  # by event tier
         cap = args.max_stream_records
@@ -311,6 +315,7 @@ class PrebakedServer:
             rid_b, n = parse_generate_request(request)
         except WireFormatError as e:
             raise _Reject("malformed", "GenerateRequest: %s" % e)
+        self.rid_samples.add(ev_seq, rid_b)
         if not n:
             raise _Reject("no_max_tokens", "stopping.max_tokens is unset or 0")
         rid = decimal_request_id(rid_b)
@@ -574,6 +579,7 @@ class PrebakedServer:
                     "attribution": "event time (step planned time)"},
                 "yielded_event_time": rt.slot_delta("backlog.yielded", a["vals"], b["vals"]),
                 "rejects": dict(self.rejects[seq]),
+                "request_id_samples": self.rid_samples.summary(seq),
                 "overflow": {"streams": self.stream_rec.overflow,
                              "steps": self.step_rec.overflow,
                              "lag": rt.lag_records.overflow if rt.lag_records else 0}})

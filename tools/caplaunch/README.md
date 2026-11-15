@@ -16,7 +16,7 @@ E0 配置生成器在 `configs/gen_e0_configs.py`。
 | `caplaunch.laddergen` | `python -m caplaunch.laddergen`:calibration v2 的档位表模板 + 取值 + `ladder.json`(按该期 e_c 核对装箱)、`--plan` 的 K_fit 表、`--job-plan` / `--plan-from` 的 `job_plan.tsv`(`INTERFACES.md` 勘误 calib-v2-A4;`c13pc`、`--request-timeout-ns`、V0-cal 的 `layout: one_each`:勘误 calib-v2-A7) |
 | `caplaunch.httpprobe` | E0(c) HTTP 冒烟客户端(作为场景里的 aux 角色运行):逐帧记录文本增量是否为空;可选 `--started-file`(发第一个请求前写，回答要等到原点之后的场景用它作就绪文件;INTERFACES 勘误 B2B-15) |
 | `caplaunch.smoke` | `python -m caplaunch.smoke`:E0(c) 可行性冒烟各项，输出 `capkit.smoke/2`(PASS / FAIL / RECORDED / NOT_RUN);也可作为场景里的 aux 角色(TOOL_TABLE `caplaunch.smoke`,参数同 httpprobe;`--items` 选项组、`--hold` 写完后等 SIGTERM、`--result-dir` 是 `--out` 的别名;INTERFACES 勘误 B2B-12) |
-| `configs/gen_e0_configs.py`、`configs/gen_e0s_configs.py`(不在本包内) | `configs/e0/*.json`、`configs/e0s/*.json` 的生成器(交付物是生成出的 JSON;改配置请改生成器，生成到新目录后 diff) |
+| `configs/gen_e0_configs.py`、`configs/gen_e0s_configs.py`、`configs/gen_e2a_e3_e4_configs.py`(不在本包内) | `configs/e0/*.json`、`configs/e0s/*.json`、`configs/{e2a,e3,e4}/*.json`(快轨场景模板，INTERFACES 勘误 FT1-15)的生成器(交付物是生成出的 JSON;改配置请改生成器，生成到新目录后 diff) |
 
 ## `python -m caplaunch` 参数
 
@@ -55,6 +55,8 @@ E0 配置生成器在 `configs/gen_e0_configs.py`。
 `measure_class` 为 `load_source`、`observer` 的角色(`MONITOR_CLASSES`)的未登记子孙(例如 sidecar 每次 GPU 查询起的 nvidia-smi)不进入窗口始末 `descendants` 的比较(`pids_stable`),也不进 `roles.json` 的 `unattributed`;它们逐个记在 `raw/procs/monitor_children.json`(pid、ppid、comm、exe、是否为 `--nvidia-smi`、首次/末次看到的时刻、看到次数),每档的扫描另记在 `tier.json` 的 `monitor_descendants`。清单只含某次 /proc 扫描(housekeeping 或窗口边界)碰到的进程。其他类别(`under_test`、`stub_*`)的子孙照旧比较、照旧进 `unattributed`。任何非产品角色下面写快照的未登记进程都进 `unattributed`(`seen_via: probe.snapshot`,带 `registered_ancestor`)。
 
 capkit 工具角色(任何 `measure_class`)的运行时辅助进程按命令行白名单 `AUX_HELPER_RULES`(`multiprocessing` 的 resource tracker、forkserver)归属到该角色(命令行 `python [解释器选项] -c <代码>`，`<代码>` 整串匹配规则；解释器选项只认 `multiprocessing` 从父进程标志带过来的那些与 `-u`，如作业里 `PYTHONDONTWRITEBYTECODE=1` 带来的 `-B`，见 `aux_helper_rule`)：记在 `roles.json` 的 `aux_helpers`(pid、ppid、starttime、cmdline、role、measure_class、`category: aux_helper`、命中的规则),每档扫描记在 `tier.json` 的 `aux_helpers`;不进 `unattributed`,也不进比较用的 `descendants`。白名单在 `launch.json` 的 `orchestrator.aux_helper_rules`。产品角色的子进程不套用白名单。
+
+产品侧注入(INTERFACES 勘误 FT1-18):档位表 `launch_inject` 里指名产品角色的规格就是该角色的 `CAPPROBE_INJECT`(只此一个来源;外层值与角色 `env` 里的 `CAPPROBE_*` 都拒绝),`cross_check` 在起进程之前核对档位、位点、模式、进程类与 `snapshots`;这样的 P1 / P2 角色写快照，编排器把它列进每档的应拷快照，登记的规格记在 `launch.json` 的 `probe_inject`。
 
 清空门轮询落后(多个计划时刻同时到期)时，每次轮询至少与上一次相隔 1.5 个快照周期(不越过门的期限),每个计划时刻仍各有一条记录。
 

@@ -35,7 +35,7 @@ fork 出来、没有 exec 的子进程命令行不变，仍启用（各自归零
 - 只要有 `CAPPROBE_*`，不论哪个进程都校验在场的值：未知的 `CAPPROBE_` 变量名、非法 `CAPPROBE_TIER`、`CAPPROBE_GROUPS` 与 TIER 不符（P0、P1 ⇒ 组为空；P2 ⇒ 组非空；没有 TIER 却有组或注入）、未知组名、坏注入规格、坏 `CAPPROBE_ENTRY`、非正整数周期、相对路径 `CAPPROBE_SHM_DIR` 都报错。
 - 本版本只实现 `count`、`lag` 两组；`bytes`、`queue`、`ts`、`pin` 是已知组名但未实现，打开即报错。
 - 任何组或注入打开时，`CAPPROBE_SHM_DIR`（绝对路径）、`CAPPROBE_INTERVAL_MS`、`CAPPROBE_IDENTITY_FILE` 必需；`lag` 打开时 `CAPPROBE_LAG_PERIOD_US` 必需。
-- 注入只支持位点 `H1`、`H3`、`F2`、`F4`，模式只支持 `busy`、`sleep`、`miscount`；`miscount` 要求 `count` 组打开（否则误计不可见）。注入打开时，四个位点都会经过注入器，没有规格的位点也计 `inject.<site>.hits`。
+- 注入只支持位点 `H1`、`H3`、`F2`、`F4`，模式只支持 `busy`、`sleep`、`miscount`；`miscount` 要求 `count` 组打开（否则误计不可见）。注入打开时，四个位点都会经过注入器，没有规格的位点也计 `inject.<site>.hits`。在编排器下，注入只能经档位表 `launch_inject` 指名产品角色登记（INTERFACES 勘误 FT1-18）。
 
 ## 位点（`capprobe.SITES`）
 

@@ -1,0 +1,171 @@
+{
+ "schema": "capkit.scenario/1",
+ "experiment": "E3",
+ "name": "e3a-mono-r",
+ "tier_table": "04_frontend/E3/register/e3a-mono-r.tiers.json",
+ "schedule": "04_frontend/E3/register/e3a-mono-r.schedule.capbin",
+ "prompts": "04_frontend/E3/register/e3a-mono-r.prompts.json",
+ "probe_tier": null,
+ "probe_groups": [],
+ "stop_grace_s": 10.0,
+ "stop_order": [
+  "snl",
+  "sidecar",
+  "canary"
+ ],
+ "reconcile": {
+  "schema": "capkit.reconcile/1",
+  "chains": [
+   {
+    "name": "requests",
+    "kind": "requests",
+    "gate": null,
+    "include_usage": null,
+    "hops": [
+     {
+      "role": "snl",
+      "source": "summary.counts.streams_accepted",
+      "scope": "tier"
+     }
+    ],
+    "corrections": []
+   }
+  ]
+ },
+ "roles": [
+  {
+   "role": "snl",
+   "launcher": "capkit",
+   "kind": "server",
+   "start_after": [],
+   "pin_role": "snl",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "under_test",
+   "asyncio": true,
+   "uses_grpc": true,
+   "loop": "asyncio",
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [
+    "backlog.pending_msgs",
+    "backlog.active_streams",
+    "backlog.yielded"
+   ],
+   "snapshots": "all",
+   "args": [
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "0",
+    "--mode",
+    "metronome-only",
+    "--model",
+    "{param:model_name}",
+    "--token-source",
+    "fixed",
+    "--token-ids",
+    "{param:snl_token_ids}",
+    "--lag-period-us",
+    "{param:lag_period_us}",
+    "--schedule",
+    "{input:schedule}"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capstubs.null_llm_server",
+   "note": "S-NL metronome-only with --schedule; one process on one core; no servicer, no gRPC traffic (the E3-3a metronome-only dry run)"
+  },
+  {
+   "role": "sidecar",
+   "launcher": "capkit",
+   "kind": "aux",
+   "start_after": [
+    "snl"
+   ],
+   "pin_role": "sidecar",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "observer",
+   "asyncio": false,
+   "uses_grpc": false,
+   "loop": null,
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "--interval-ms",
+    "{param:sidecar_interval_ms}",
+    "--gpu-every-s",
+    "{param:sidecar_gpu_every_s}",
+    "--numa-every-s",
+    "{param:sidecar_numa_every_s}",
+    "--nvidia-smi",
+    "{nvidia_smi}"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capenv.sidecar"
+  },
+  {
+   "role": "canary",
+   "launcher": "capkit",
+   "kind": "aux",
+   "start_after": [],
+   "pin_role": "canary",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "observer",
+   "asyncio": false,
+   "uses_grpc": false,
+   "loop": null,
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "--interval-ms",
+    "{param:canary_interval_ms}"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capenv.canary"
+  }
+ ],
+ "params_required": [
+  "canary_interval_ms",
+  "lag_period_us",
+  "model_name",
+  "sidecar_gpu_every_s",
+  "sidecar_interval_ms",
+  "sidecar_numa_every_s",
+  "snl_token_ids"
+ ],
+ "dims": {
+  "tokenizer": null,
+  "stub": "S-NL (capstubs.null_llm_server --mode metronome-only)",
+  "response_timing_switches": "defaults (not set)",
+  "interpretation": "fast track (FASTTRACK-1117-PLAN v2): exploratory, judged with the E0 round-1 thresholds; rejudge or rerun after E0 v2",
+  "log_sink": "raw/logs on the node-local disk (orchestrator redirect)"
+ },
+ "note": "E3-3a e3a-mono-r: S-NL metronome-only, the same-process dry run (metronome, NullLlm and queues, no servicer, no gRPC traffic): register with the values of e3a-snl-kc-r to give the 'with / without metronome' pair; no load role, so C3 and P-SENT are NOT_RUN (errata FT1-6). TEMPLATE: every TBD value is filled at registration from the E1 / E2a results (fast track, exploratory)"
+}

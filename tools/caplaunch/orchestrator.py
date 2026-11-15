@@ -226,13 +226,15 @@ class Launch:
     def _check_outer_probe_env(self):
         """Config errors before anything is written or started: an outer value that contradicts
         what this orchestrator sets (version-report variables for every role; capprobe switches
-        for product roles), and an outer CAPPROBE_INJECT when the scenario has product roles (no
-        scenario field carries a product-side injection, so it is never passed through)."""
+        for product roles), and an outer CAPPROBE_INJECT when the scenario has product roles
+        (product-side injection is registered only in the tier table's launch_inject, errata
+        FT1-18; an outer value is never passed through)."""
         sw = list(self._version_env().items())
         if any(d["launcher"] == "product" for d in self.roles.values()):
             if os.environ.get(INJECT_ENV):
-                raise ConfigError("environment %s=%r: product-side injection is not supported by "
-                                  "this orchestrator" % (INJECT_ENV, os.environ[INJECT_ENV]))
+                raise ConfigError("environment %s=%r: product-side injection is registered only "
+                                  "in the tier table's launch_inject"
+                                  % (INJECT_ENV, os.environ[INJECT_ENV]))
             sw += self._probe_switches()
         for key, val in sw:
             if val is not None and key in os.environ and os.environ[key] != val:
@@ -546,6 +548,8 @@ class Launch:
                      "baseline_sha": _opt(a.baseline_sha), "snapshot_dir": _opt(a.snapshot_dir)},
             "image": {"path": _opt(a.image_path), "sha256": _opt(a.image_sha256)},
             "probe_tier": {"tier": self.scen["probe_tier"], "groups": self.scen["probe_groups"]},
+            "probe_inject": {n: [s.to_dict() for s in self._product_inject(d)]
+                             for n, d in self.roles.items() if self._product_inject(d)},
             "roles": roles, "reconcile": self.scen["reconcile"],
             "hw_profile_sha": _opt(a.hw_profile_sha), "submission": sub,
             "overlay_manifest": self.overlay_record, "nvidia_smi": self.nvsmi_record,
@@ -607,7 +611,15 @@ class Launch:
             env["CAPPROBE_INTERVAL_MS"] = str(self.a.snapshot_interval_ms)
             env["CAPPROBE_IDENTITY_FILE"] = self.tree.procs("identity", "%s.json" % d["role"])
             env["CAPPROBE_ROLE_HINT"] = d["role"]
+            env.pop(INJECT_ENV, None)  # an outer one is refused (_check_outer_probe_env)
+            specs = self._product_inject(d)
+            if specs:
+                env[INJECT_ENV] = ";".join(s.to_text() for s in specs)
         return env
+
+    def _product_inject(self, d):
+        """The product-side injection registered for role d (scenario.product_inject_specs)."""
+        return sc.product_inject_specs(d, self.tt)
 
     def _entry_rule(self, d, argv, env):
         """CAPPROBE_ENTRY rule of a product role: names exactly the command line `argv` it is
@@ -895,13 +907,14 @@ class Launch:
     # ---- window boundaries (INTERFACES 5.4) ---------------------------------------------------
     def _snapshot_procs(self, roles=None):
         """Registered procs that are expected to write snapshots (role snapshots scope; a
-        product role only when it writes them at all, scenario.product_writes_snapshots)."""
+        product role only when it writes them at all, scenario.product_writes_snapshots: P2, or
+        a registered product-side injection)."""
         out = []
         for p in self.procs:
             d = self.roles[p["role"]]
             if roles is not None and p["role"] not in roles:
                 continue
-            if d["launcher"] == "product" and not sc.product_writes_snapshots(d):
+            if d["launcher"] == "product" and not sc.product_writes_snapshots(d, self.tt):
                 continue
             if d["snapshots"] == "all" or (d["snapshots"] == "workers"
                                            and p["discovered_via"] != "launched"):
@@ -1429,7 +1442,9 @@ class Launch:
                                                         "CAPPROBE_SHM_DIR", "CAPPROBE_INTERVAL_MS",
                                                         "CAPPROBE_IDENTITY_FILE",
                                                         "CAPPROBE_ROLE_HINT",
-                                                        probe_entry.ENV_VAR]},
+                                                        probe_entry.ENV_VAR,
+                                                        INJECT_ENV + " (roles in launch.json "
+                                                        "probe_inject)"]},
             "stub": d["stub"],
             "load_shape": {"tier_table": self.tt.name, "axis": axis, "dist": self.tt.dist,
                            "seed": self.tt.seed,

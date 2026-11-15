@@ -24,18 +24,27 @@ _CAPPROBE_SITES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(_
 
 
 @functools.lru_cache(maxsize=None)
-def probe_proc_kinds():
-    """capprobe's process kinds (PROC_KINDS of tools/capprobe/sites.py). sites.py is loaded
-    alone, by path: importing the capprobe package would parse this process's CAPPROBE_*."""
+def _probe_sites():
+    """What caplaunch reads from tools/capprobe/sites.py: the process kinds (PROC_KINDS), the
+    injection sites with the process kind that passes each (INJECT_SITES, SITES[..].proc_kind)
+    and the injection modes capprobe accepts (PROBE_INJECT_MODES). sites.py is loaded alone, by
+    path: importing the capprobe package would parse this process's CAPPROBE_*."""
     try:
         spec = importlib.util.spec_from_file_location("_caplaunch_capprobe_sites",
                                                       _CAPPROBE_SITES)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-        return frozenset(mod.PROC_KINDS)
-    except (OSError, AttributeError) as e:
-        raise ConfigError("cannot read capprobe process kinds from %s: %s"
+        return {"proc_kinds": frozenset(mod.PROC_KINDS),
+                "inject_sites": {s: mod.SITES[s]["proc_kind"] for s in mod.INJECT_SITES},
+                "inject_modes": tuple(mod.PROBE_INJECT_MODES)}
+    except (OSError, AttributeError, KeyError) as e:
+        raise ConfigError("cannot read capprobe process kinds and injection sites from %s: %s"
                           % (_CAPPROBE_SITES, e)) from e
+
+
+def probe_proc_kinds():
+    """capprobe's process kinds (PROC_KINDS of tools/capprobe/sites.py)."""
+    return _probe_sites()["proc_kinds"]
 
 # Which INTERFACES.md 11 argument groups each capkit tool takes. identity, --run-dir,
 # --stop-grace-s and --cpus ("common") are passed to every capkit tool.
@@ -62,6 +71,12 @@ TOOL_TABLE = {
     # S-PB (errata B2B-3): takes --workers, which must be 1 (one process, expected_procs 1).
     "capstubs.prebaked_server": {"loop": True, "tiers": True, "snapshot": True, "ready": True,
                                  "port": True, "workers": True, "single": True},
+    # S-NL (errata FT1-1): one process like S-PB; every mode binds a port (metronome-only too).
+    "capstubs.null_llm_server": {"loop": True, "tiers": True, "snapshot": True, "ready": True,
+                                 "port": True, "workers": True, "single": True},
+    # oe_sink (errata FT1-8): capgrpc.load's reader in one process; no port file.
+    "capgrpc.oe_sink": {"loop": True, "tiers": True, "snapshot": True, "ready": True,
+                        "port": False, "workers": True, "single": True},
     # --ready-file: INTERFACES 2.2 ("all long-lived processes"); optional in B4's parsers.
     "capenv.sidecar": {"origin": True, "shm_only": True, "sidecar": True, "ready": True},
     "capenv.canary": {"origin": True, "canary": True, "ready": True},
@@ -98,13 +113,28 @@ PROBE_TIERS = ("P0", "P1", "P2")
 LAG_PARAM = "lag_period_us"
 
 
-def product_writes_snapshots(r):
+def product_inject_specs(r, tier_table):
+    """The product-side injection registered for role `r` (errata FT1-18): the tier table's
+    launch_inject entries naming a product role. They become that role's CAPPROBE_INJECT; nothing
+    else reaches a product process (the orchestrator refuses an outer CAPPROBE_INJECT and
+    validate_role refuses CAPPROBE_* in a role's env), so without such entries the switch is
+    off. cross_check refuses product entries anywhere else and checks site, mode and tier."""
+    if r["launcher"] != "product" or tier_table is None:
+        return []
+    return [s for s in tier_table.launch_inject if s.role == r["role"]]
+
+
+def product_writes_snapshots(r, tier_table=None):
     """Whether a role's processes write snapshots through capprobe: a product role with probe
-    tier P2 (a probe group on). P0 / P1 turn no group on, and CAPPROBE_INJECT (the other switch
-    that makes capprobe write) reaches no product process: the orchestrator refuses an outer one
-    and validate_role refuses CAPPROBE_* in a role's env, so their processes never write a
-    snapshot whatever the role's snapshots scope says."""
-    return r["launcher"] == "product" and r["probe_tier"] == "P2"
+    tier P2 (a probe group on), or with a registered product-side injection (P1 or P2;
+    product_inject_specs; capprobe writes a snapshot whenever a group or an injection is on).
+    P0 / P1 without injection turn nothing on, so their processes never write a snapshot
+    whatever the role's snapshots scope says. `tier_table` None = the scenario alone (only the
+    P2 rule can be applied; cross_check applies the rest)."""
+    if r["launcher"] != "product":
+        return False
+    return r["probe_tier"] == "P2" or (r["probe_tier"] in ("P1", "P2")
+                                       and bool(product_inject_specs(r, tier_table)))
 LOOPS = ("asyncio", "uvloop")
 READY_KINDS = ("capkit_ready", "plain_port_file", "report_addr", "http_get", "file_exists")
 PORT_KINDS = ("plain_port_file", "report_addr", "none")
@@ -479,10 +509,48 @@ def cross_check(doc, roles, tier_table, pin_roles, snapshot_interval_ns):
     for spec in list(tier_table.launch_inject) + [s for t in tier_table.tiers for s in t.inject]:
         if spec.role not in roles:
             _err("tier table inject", "role %s is not in the scenario" % spec.role)
+    _check_product_inject(doc, roles, tier_table)
     if doc["experiment"] != tier_table.experiment:
         _err("top", "experiment %s != tier table experiment %s"
              % (doc["experiment"], tier_table.experiment))
     return cpus_of
+
+
+def _check_product_inject(doc, roles, tier_table):
+    """Product-side injection (errata FT1-18): a tier-table spec naming a product role is passed
+    to that role's process as CAPPROBE_INJECT, which capprobe reads once at import. So it must be
+    launch-level, the probe patch must be deployed (P1 / P2), the site and mode must be ones
+    capprobe implements, the site must be one the role's declared process kinds pass (else the
+    heartbeat could only stay at zero), miscount needs the count group, and the role's
+    processes then write snapshots (snapshots all, as for P2)."""
+    info = _probe_sites()
+    for t in tier_table.tiers:
+        for spec in t.inject:
+            if roles[spec.role]["launcher"] == "product":
+                _err("tier table inject", "tier %d names product role %s: capprobe reads its "
+                     "injection once at import, so product-side injection is launch-level only "
+                     "(launch_inject)" % (t.seq, spec.role))
+    for spec in tier_table.launch_inject:
+        r = roles[spec.role]
+        if r["launcher"] != "product":
+            continue
+        where = "launch_inject %s %s" % (spec.role, spec.site)
+        if r["probe_tier"] not in ("P1", "P2"):
+            _err(where, "product-side injection needs probe_tier P1 or P2 (the probe patch); "
+                 "the role has %s" % r["probe_tier"])
+        if spec.site not in info["inject_sites"]:
+            _err(where, "capprobe injects only at %s" % sorted(info["inject_sites"]))
+        if spec.mode not in info["inject_modes"]:
+            _err(where, "mode %s is not supported in product code (capprobe: %s)"
+                 % (spec.mode, list(info["inject_modes"])))
+        if spec.mode == "miscount" and "count" not in doc["probe_groups"]:
+            _err(where, "miscount needs the count probe group on")
+        kind = info["inject_sites"][spec.site]
+        if kind not in r["proc_kinds"]:
+            _err(where, "site %s is passed by process kind %s, which the role does not "
+                 "declare in proc_kinds %s" % (spec.site, kind, r["proc_kinds"]))
+        if r["snapshots"] != "all":
+            _err(where, "a product role with injection writes snapshots; snapshots must be all")
 
 
 class ArgvContext:

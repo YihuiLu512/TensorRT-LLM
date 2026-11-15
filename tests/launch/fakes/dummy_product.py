@@ -33,6 +33,19 @@ def probe_child():
     w.stop()
 
 
+def probe_sites_loop(sites, every_ms, stop):
+    """Emulate a probed product path (errata FT1-18): import the real capprobe (it reads the
+    CAPPROBE_* switches the orchestrator set, once) and pass each named count site every
+    `every_ms` ms through its guarded call, as the probe patch does."""
+    import capprobe  # noqa: PLC0415
+
+    calls = [(getattr(capprobe, "ON_" + s), getattr(capprobe, s)) for s in sites]
+    while not stop.wait(every_ms / 1000):
+        for on, fn in calls:
+            if on:
+                fn()
+
+
 def entry_report(path):
     """Record whether this process is the CAPPROBE_ENTRY process (capcommon.probe_entry, the
     rule capprobe applies at import)."""
@@ -64,6 +77,8 @@ def main():
     p.add_argument("--role-child", action="store_true", help=argparse.SUPPRESS)
     p.add_argument("--entry-report", help="dir: main.json (this process), spawn.json (a "
                    "multiprocessing spawn child)")
+    p.add_argument("--probe-sites", help="comma list of capprobe count sites to pass")
+    p.add_argument("--probe-every-ms", type=float, default=5.0)
     a = p.parse_args()
     if a.role_child:
         return probe_child()
@@ -92,6 +107,10 @@ def main():
 
     srv = http.server.ThreadingHTTPServer((a.host, 0), H)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
+    if a.probe_sites:
+        import capprobe  # noqa: F401, PLC0415  (switches parsed before the role is ready)
+        threading.Thread(target=probe_sites_loop, name="dummy-probe-sites", daemon=True,
+                         args=(a.probe_sites.split(","), a.probe_every_ms, stop)).start()
     kids = []
     if a.spawn_child:
         kids.append(subprocess.Popen([sys.executable, "-c", "import time; time.sleep(600)"]))

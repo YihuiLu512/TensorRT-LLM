@@ -1,0 +1,312 @@
+{
+ "schema": "capkit.scenario/1",
+ "experiment": "E4",
+ "name": "e4bp-md",
+ "tier_table": "04_frontend/E4/register/e4bp-md.tiers.json",
+ "schedule": "04_frontend/E4/register/e4bp-md.schedule.capbin",
+ "prompts": "04_frontend/E4/register/e4bp-md.prompts.json",
+ "probe_tier": "P0",
+ "probe_groups": [],
+ "stop_grace_s": 10.0,
+ "stop_order": [
+  "capload",
+  "frontend",
+  "snl",
+  "sidecar",
+  "canary"
+ ],
+ "reconcile": {
+  "schema": "capkit.reconcile/1",
+  "chains": [
+   {
+    "name": "requests",
+    "kind": "requests",
+    "gate": null,
+    "include_usage": null,
+    "hops": [
+     {
+      "role": "capload",
+      "source": "summary.counts.ok",
+      "scope": "tier"
+     },
+     {
+      "role": "snl",
+      "source": "summary.counts.streams_accepted",
+      "scope": "tier"
+     }
+    ],
+    "corrections": []
+   }
+  ]
+ },
+ "roles": [
+  {
+   "role": "snl",
+   "launcher": "capkit",
+   "kind": "server",
+   "start_after": [],
+   "pin_role": "snl",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "stub_out_of_domain",
+   "asyncio": true,
+   "uses_grpc": true,
+   "loop": "asyncio",
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [
+    "backlog.pending_msgs",
+    "backlog.active_streams",
+    "backlog.yielded"
+   ],
+   "snapshots": "all",
+   "args": [
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "0",
+    "--mode",
+    "full",
+    "--model",
+    "{param:tokenizer_dir}",
+    "--token-source",
+    "fixed",
+    "--token-ids",
+    "{param:snl_token_ids}",
+    "--lag-period-us",
+    "{param:lag_period_us}",
+    "--tokenizer",
+    "{param:tokenizer_dir}",
+    "--trust-remote-code",
+    "false",
+    "--tokenizer-mode",
+    "auto"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capstubs.null_llm_server",
+   "note": "S-NL full behind the frontend (no --schedule); one process on one core"
+  },
+  {
+   "role": "frontend",
+   "launcher": "product",
+   "kind": "server",
+   "start_after": [
+    "snl"
+   ],
+   "pin_role": "frontend",
+   "cpus_needed": 11,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "under_test",
+   "asyncio": true,
+   "uses_grpc": true,
+   "loop": "uvloop",
+   "probe_tier": "P0",
+   "readiness": [
+    {
+     "kind": "report_addr"
+    },
+    {
+     "kind": "http_get",
+     "path": "/health",
+     "expect_status": 200,
+     "timeout_s": 2.0
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "{param:tokenizer_dir}",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "0",
+    "--report_addr",
+    "{own:report_addr}",
+    "--openengine-endpoint",
+    "{addr:snl}",
+    "--num_serve_frontends",
+    "1",
+    "--num_postprocess_workers",
+    "0",
+    "--num_input_processor_workers",
+    "8"
+   ],
+   "env": {},
+   "proc_kinds": [
+    "frontend",
+    "frontend_openengine",
+    "frontend_single"
+   ],
+   "command": [
+    "{param:trtllm_serve}"
+   ],
+   "port": {
+    "kind": "report_addr",
+    "host": "127.0.0.1"
+   },
+   "note": "card E4 main tier: 11 cores = 1 event loop + 8 input-processor threads + 2 for grpcio's threads (unverified)"
+  },
+  {
+   "role": "capload",
+   "launcher": "capkit",
+   "kind": "client",
+   "start_after": [
+    "frontend"
+   ],
+   "pin_role": "capload",
+   "cpus_needed": 4,
+   "numa": null,
+   "workers": 4,
+   "expected_procs": 5,
+   "measure_class": "load_source",
+   "asyncio": true,
+   "uses_grpc": false,
+   "loop": "asyncio",
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [
+    "backlog.inflight"
+   ],
+   "snapshots": "all",
+   "args": [
+    "--target",
+    "{addr:frontend}",
+    "--model",
+    "{param:tokenizer_dir}",
+    "--endpoint",
+    "/v1/completions",
+    "--schedule",
+    "{input:schedule}",
+    "--prompts",
+    "{input:prompts}",
+    "--conn-policy",
+    "keepalive",
+    "--pool-pick",
+    "{param:capload_pool_pick}",
+    "--pool-seed",
+    "{param:capload_pool_seed}",
+    "--pool-reset",
+    "{param:capload_pool_reset}",
+    "--recv-mode",
+    "count",
+    "--chunk-sample-mod",
+    "{param:capload_chunk_sample_mod}",
+    "--fionread-every-ms",
+    "{param:capload_fionread_every_ms}",
+    "--lag-period-us",
+    "{param:lag_period_us}",
+    "--max-records-per-worker",
+    "{param:capload_max_records_per_worker}"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capload",
+   "note": "capload, 4 workers (parent + 4); --model = the frontend's served model name (the tokenizer dir it was given)"
+  },
+  {
+   "role": "sidecar",
+   "launcher": "capkit",
+   "kind": "aux",
+   "start_after": [
+    "capload"
+   ],
+   "pin_role": "sidecar",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "observer",
+   "asyncio": false,
+   "uses_grpc": false,
+   "loop": null,
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "--interval-ms",
+    "{param:sidecar_interval_ms}",
+    "--gpu-every-s",
+    "{param:sidecar_gpu_every_s}",
+    "--numa-every-s",
+    "{param:sidecar_numa_every_s}",
+    "--nvidia-smi",
+    "{nvidia_smi}"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capenv.sidecar"
+  },
+  {
+   "role": "canary",
+   "launcher": "capkit",
+   "kind": "aux",
+   "start_after": [],
+   "pin_role": "canary",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "observer",
+   "asyncio": false,
+   "uses_grpc": false,
+   "loop": null,
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "--interval-ms",
+    "{param:canary_interval_ms}"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capenv.canary"
+  }
+ ],
+ "params_required": [
+  "canary_interval_ms",
+  "capload_chunk_sample_mod",
+  "capload_fionread_every_ms",
+  "capload_max_records_per_worker",
+  "capload_pool_pick",
+  "capload_pool_reset",
+  "capload_pool_seed",
+  "lag_period_us",
+  "sidecar_gpu_every_s",
+  "sidecar_interval_ms",
+  "sidecar_numa_every_s",
+  "snl_token_ids",
+  "tokenizer_dir",
+  "trtllm_serve"
+ ],
+ "dims": {
+  "tokenizer": "TBD-by-registration (configs/tokenizers/GLM-5.3-Flash)",
+  "stub": "S-NL (capstubs.null_llm_server --mode full, product tokenizer)",
+  "response_timing_switches": "defaults (not set)",
+  "interpretation": "fast track (FASTTRACK-1117-PLAN v2): exploratory, judged with the E0 round-1 thresholds; rejudge or rerun after E0 v2",
+  "log_sink": "raw/logs on the node-local disk (orchestrator redirect)"
+ },
+ "note": "E4-4b' e4bp-md: capload (4 workers) -> trtllm-serve new-arch frontend (1 frontend, postproc pool off; under test, 11 cores) -> one S-NL (capstubs.null_llm_server --mode full, product tokenizer) on one core. TEMPLATE: every TBD value is filled at registration from the E1 / E2a results (fast track, exploratory)"
+}

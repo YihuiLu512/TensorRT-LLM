@@ -161,6 +161,10 @@ def test_reader_end_to_end_with_schedule(launch):
     assert opts[UNREQUESTED_OPTION] >= 1 and opts["source"].startswith("default")
     assert opts[PENDING_OPTION] == opts[PENDING_HARD_OPTION] == GRPC_INT_MAX
     assert all(docs[0]["grpc_server_options"] == opts for docs in sp.values())
+    # raw request_id samples: the reader's decimal req_ids (event-time tier, at most 8)
+    sent = {str(r) for r in reqs["req_id"]}
+    assert all(set(docs[0]["request_id_samples"]["first"]) <= sent for docs in sp.values())
+    assert sum(len(docs[0]["request_id_samples"]["first"]) for docs in sp.values()) > 0
     steps, _ = launch.records("spb", "steps")
     assert sum(steps["msgs"]) == total(sp, "counts.msgs_sent") == total(sp, "beat.enqueued")
     # injection heartbeats: send.msg once per message, beat.step once per step
@@ -213,6 +217,7 @@ def test_exact_bytes_step_timing_and_tier_attribution(launch):
     assert [(r, t, tok) for r, t, _f, tok in rows] == [(-1, 0, 5), (up_rid, 0, 7)]
     ev = launch.summaries("spb")
     assert ev[0][0]["counts"]["request_id_not_decimal"] == 1
+    assert ev[0][0]["request_id_samples"]["first"] == ["cmpl-x", str(up_rid)]
     assert ev[0][0]["counts"]["streams_accepted"] == 2 and ev[0][0]["tier_attribution"] == "event"
     # with --schedule: the planned tier of the req_id (2), whatever the arrival time
     st2, _ = launch.records("spbs", "streams")
@@ -220,6 +225,9 @@ def test_exact_bytes_step_timing_and_tier_attribution(launch):
     sc = launch.summaries("spbs")
     assert sc[2][0]["counts"]["streams_accepted"] == 1 and sc[0][0]["counts"][
         "streams_accepted"] == 0
+    # the samples go by arrival (event) tier, whatever the planned tier
+    assert sc[0][0]["request_id_samples"]["first"] == [str(up_rid)]
+    assert sc[2][0]["request_id_samples"]["first"] == []
     # no message before its planned step; the finished message comes on the last token step
     bs = BeatSchedule(tt)
     for (r, _t, first, _tok), name in zip(rows, ("ev_text", "ev_up")):
@@ -260,6 +268,8 @@ def test_rejections_and_other_methods(launch):
     assert rej == {"malformed": 1, "no_max_tokens": 2, "no_prebaked_stream": 1,
                    "request_id_not_in_schedule": 2}
     assert total(sp, "counts.streams_rejected") == 6
+    # every parsed request is sampled, rejected ones included (the malformed one has no id)
+    assert sp[0][0]["request_id_samples"]["first"] == ["1", "1", "1", "cmpl-1", "999999", "1"]
     assert total(sp, "counts.streams_accepted") == total(sp, "counts.streams_completed") == 1
     inj = [e for e in sp[0][0]["inject"] if e["site"] == "short.req"]
     assert inj[0]["hits_delta"] == 1  # the short switch is consulted for accepted requests only

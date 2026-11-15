@@ -116,7 +116,8 @@ def pick_cpus(roles):
     return out
 
 
-def make_workdir(tmp, tdoc, roles, stop_order=None, params_required=(), reconcile=None):
+def make_workdir(tmp, tdoc, roles, stop_order=None, params_required=(), reconcile=None,
+                 probe_tier="P0"):
     """A minimal <W>: tier table, schedule, prompts, scenario, register.json, pin table."""
     W = os.path.join(str(tmp), "W")
     os.makedirs(os.path.join(W, "reg"), exist_ok=True)
@@ -131,7 +132,7 @@ def make_workdir(tmp, tdoc, roles, stop_order=None, params_required=(), reconcil
     names = [r["role"] for r in roles]
     scen = {"schema": "capkit.scenario/1", "experiment": "E0", "name": "t",
             "tier_table": "reg/tiers.json", "schedule": "reg/schedule.capbin",
-            "prompts": "reg/prompts.json", "probe_tier": "P0", "probe_groups": [],
+            "prompts": "reg/prompts.json", "probe_tier": probe_tier, "probe_groups": [],
             "stop_grace_s": 1.0, "stop_order": stop_order or names,
             "reconcile": reconcile or {"schema": "capkit.reconcile/1", "chains": [
                 {"name": "requests", "kind": "requests", "gate": None, "include_usage": None,
