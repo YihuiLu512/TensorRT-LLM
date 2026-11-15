@@ -32,7 +32,8 @@ FIX1, FIX2 = "WT-57-fix1", "WT-57-fix2"
 # Items taken as landed: every dependency of the rows below but WT-57 and its fixes.
 LANDED = LINK | {"WT-52", "WT-54"}
 
-# The rows WT-57 keeps whole, and their cases are not looked at here.
+# The rows WT-57 owed whole before the split, their cases not looked at here; all but DG-43+rest
+# (TO_R11) stay with WT-57.
 KEPT_WHOLE = {
     *("F-01+rest", "F-07", "F-34+rest", "F-38", "DG-13+rest", "F-02+rest", "F-08", "F-14+rest"),
     *("F-24", "F-03", "F-04", "F-27", "DG-15", "F-28", "DG-05", "DG-42", "F-05a+rest", "DG-07"),
@@ -98,9 +99,9 @@ def _owed(task, landed, rows):
 # --- the rows of feature_deps.yaml --------------------------------------------------------------
 
 
-def test_the_lists_are_the_rows_wt57_owed_before_the_split():
-    # Appendix AF6: 61 whole rows and 6 partial ones stay, 5 + 2 go to WT-57-fix1, 15 + 6 + 2 to
-    # WT-57-fix2; DG-43+rest goes to R11.
+def test_the_lists_add_up_to_the_89_rows_wt57_owed():
+    # 61 whole rows and 6 partial ones stay, 5 + 2 go to WT-57-fix1, 15 + 6 + 2 to WT-57-fix2;
+    # DG-43+rest goes to R11.
     assert (len(KEPT_WHOLE), len(PARTIAL), len(FIX1_WHOLE), len(BOTH), len(FIX2_WHOLE)) == (
         61,
         6,
@@ -211,11 +212,16 @@ def test_r11_verifies_dg43_rest_and_wt57_does_not(rows, raw_rows):
     ]
     assert TO_R11 not in _owed("WT-57", LANDED, rows)
     assert TO_R11 in _owed("WT-60", LANDED | {"WT-57"}, rows)
+    # How R11 verifies it is a note on the row, which names WT-60.
+    (note,) = raw_rows[TO_R11]["notes"]
+    assert "NT-011" in note and "DQ-02" in note
+    assert TO_R11 in {row.id for row in _result("WT-60", LANDED | {"WT-57"}, rows).noted}
 
 
 def test_the_r12_rows_wt57_fix1_writes_wait_for_it(rows, raw_rows):
     for row_id in R12_WAITING:
         assert raw_rows[row_id]["deps"] == ["link", "WT-57", FIX1], row_id
+        assert raw_rows[row_id]["author"] == [FIX1], row_id
         assert rows[row_id].assignee == "WT-61", row_id
     landed = LANDED | {"WT-57"}
     assert R12_WAITING <= {row.id for row in _result("WT-61", landed, rows).too_early}
@@ -260,7 +266,13 @@ def test_pending_on_a_constructed_history(tmp_path, capsys):
     land(FIX2)
     assert owed(FIX1) & (FIX1_OWES | FIX2_OWES) == FIX1_OWES
     land(FIX1)
-    assert TO_R11 in owed("WT-60")
+    r11_rows = {
+        row["id"]
+        for row in yaml.safe_load(pending_e2e.FEATURE_DEPS.read_text())["rows"]
+        if "r11-prereqs" in row["deps"]
+    }
+    assert len(r11_rows) == 17
+    assert owed("WT-60") >= r11_rows | {TO_R11}
 
 
 # --- the split, group, verifier and wait rules on a made-up table -------------------------------
@@ -422,37 +434,56 @@ def test_group_additions_append_fixes_and_refuse_what_they_cannot_add():
             sync_feature_deps.add_group_members(groups, additions)
 
 
-def test_a_verifier_becomes_the_fixed_verifier_of_its_row():
-    rows = _derive(verifiers=[("EG-ZZY", "WT-60")])
+def test_a_verifier_becomes_the_fixed_verifier_of_its_row_with_its_note():
+    rows = _derive(verifiers=[("EG-ZZY", "WT-60", "how")])
     assert rows["EG-ZZY"]["assignee"] == "WT-60" and rows["EG-ZZY"]["deps"] == ["link", "WT-57"]
     assert list(rows["EG-ZZY"])[:7] == [
         *("id", "features", "cases", "author", "deps", "chain", "assignee")
     ]
-    assert sync_feature_deps.VERIFIERS == ((TO_R11, "WT-60"),)
+    assert rows["EG-ZZY"]["notes"] == ["how"] and rows["EG-ZZY"]["author"] == ["WT-57"]
+    # A note of the tables stays first.
+    rows = _derive(
+        deps="链路、WT-57；补充用例 XD-020 随 PB-3", verifiers=[("EG-ZZY", "WT-60", "how")]
+    )
+    assert rows["EG-ZZY"]["notes"] == ["补充用例 XD-020 随 PB-3", "how"]
+    assert [entry[:2] for entry in sync_feature_deps.VERIFIERS] == [(TO_R11, "WT-60")]
 
 
 @pytest.mark.parametrize(
-    "verifiers, message",
+    "verifiers, splits, message",
     [
-        ([("EG-ZZQ", "WT-60")], "no such row"),
-        ([("EG-ZZY", "WT-65")], "verifies no row of the tables"),
-        ([("EG-ZZY", "WT-6")], "verifies no row of the tables"),
-        ([("EG-ZZZ", "WT-61")], "has a fixed verifier"),
-        ([("EG-ZZV", "WT-60")], "deferred"),
-        ([("DS-ZZ", "WT-60")], "case-03"),
-        ([("EG-ZZY", "WT-60"), ("EG-ZZY", "WT-61")], "two verifiers of one row"),
+        ([("EG-ZZQ", "WT-60", "x")], (), "no such row"),
+        ([("EG-ZZY", "WT-65", "x")], (), "verifies no row of the tables"),
+        ([("EG-ZZY", "WT-6", "x")], (), "verifies no row of the tables"),
+        ([("EG-ZZY", "WT-60", " ")], (), "no note says how"),
+        ([("EG-ZZZ", "WT-61", "x")], (), "has a fixed verifier"),
+        ([("EG-ZZV", "WT-60", "x")], (), "deferred"),
+        ([("DS-ZZ", "WT-60", "x")], (), "case-03"),
+        ([("EG-ZZY", "WT-60", "x"), ("EG-ZZY", "WT-61", "x")], (), "two verifiers of one row"),
+        # A split refuses a row with a fixed verifier; the verifier cannot come after the split.
+        ([("EG-ZZY", "WT-60", "x")], [("EG-ZZY", ("XD-082",), FIX2)], "a split names or adds"),
+        ([(f"EG-ZZY+{FIX2}", "WT-60", "x")], [("EG-ZZY", ("XD-082",), FIX2)], "a split names"),
+        (
+            [("EG-ZZY", "WT-60", "x")],
+            [("EG-ZZY", ("*", "NT-003", "NT-081", "XD-082"), FIX2)],
+            "a split",
+        ),
+        ([("EG-ZZX+rest", "WT-60", "x")], [("EG-ZZX+rest", ("XD-312",), FIX2)], "a split names"),
     ],
-    ids=["no-row", "unknown-verifier", "malformed", "has-one", "deferred", "case-03", "twice"],
+    ids=[
+        *("no-row", "unknown-verifier", "malformed", "no-note", "has-one", "deferred", "case-03"),
+        *("twice", "split-row", "split-product", "whole-split-row", "split-rest-row"),
+    ],
 )
-def test_a_verifier_the_row_cannot_take_is_refused(verifiers, message):
+def test_a_verifier_the_row_cannot_take_is_refused(verifiers, splits, message):
     with pytest.raises(ValueError, match=message):
-        _derive(verifiers=verifiers)
+        _derive(splits, verifiers=verifiers)
 
 
 def test_a_wait_makes_a_row_with_a_fixed_verifier_also_wait_for_the_item():
     rows = _derive(waits=[("EG-ZZW", FIX1), ("EG-ZZZ", "WT-55-fix1")])
     assert rows["EG-ZZW"]["deps"] == ["link", "WT-57", FIX1]
-    assert rows["EG-ZZW"]["assignee"] == "WT-61" and rows["EG-ZZW"]["author"] == ["WT-57"]
+    assert rows["EG-ZZW"]["assignee"] == "WT-61" and rows["EG-ZZW"]["author"] == [FIX1]
     assert rows["EG-ZZZ"]["deps"] == ["r11-prereqs", "WT-55-fix1"]
     assert set(sync_feature_deps.ROW_WAITS) == {(row_id, FIX1) for row_id in R12_WAITING}
 
@@ -477,8 +508,40 @@ def test_a_wait_the_row_cannot_take_is_refused(waits, message):
 
 
 def test_a_verifier_set_after_the_tables_can_also_wait():
-    rows = _derive(verifiers=[("EG-ZZY", "WT-60")], waits=[("EG-ZZY", FIX1)])
+    rows = _derive(verifiers=[("EG-ZZY", "WT-60", "x")], waits=[("EG-ZZY", FIX1)])
     assert rows["EG-ZZY"]["assignee"] == "WT-60" and rows["EG-ZZY"]["deps"][-1] == FIX1
+
+
+def test_a_split_row_cannot_wait():
+    # It has no fixed verifier: a split refuses one, and VERIFIERS refuses the split rows.
+    for splits in (
+        [("EG-ZZY", ("XD-082",), FIX2)],
+        [("EG-ZZY", ("*", "NT-003", "NT-081", "XD-082"), FIX2)],
+    ):
+        with pytest.raises(ValueError, match="has no fixed verifier"):
+            _derive(splits, waits=[("EG-ZZY", FIX1)])
+
+
+@pytest.mark.parametrize("deps", ["不设 E2E：x", "链路；R12 验收", "链路（只在 B200）、WT-57"])
+def test_a_missing_rest_row_is_reported_as_missing_first(deps):
+    with pytest.raises(ValueError, match=r"split of EG-ZZY\+rest: no such row"):
+        _derive([("EG-ZZY+rest", ("*", "NT-003"), FIX1)], deps)
+
+
+def test_a_fix_in_the_group_table_is_refused():
+    with pytest.raises(ValueError, match="fixes go in GROUP_ADDITIONS"):
+        sync_feature_deps.derive_groups(
+            TABLES.replace("WT-37、WT-57 |", "WT-37、WT-57、WT-57-fix1 |")
+        )
+
+
+def test_applying_splits_leaves_the_authors_it_is_given_alone():
+    authors = {"NT-003": "WT-57", "NT-081": "WT-57", "XD-082": "existing"}
+    before = dict(authors)
+    _, deps, _, after = sync_feature_deps._apply_splits(
+        "EG-ZZY", "EG-ZZY", "case-04", list(authors), authors, ["link"], [(("*", *authors), FIX1)]
+    )
+    assert authors == before and after == dict.fromkeys(authors, FIX1) and deps == ["link", FIX1]
 
 
 # --- ownership ----------------------------------------------------------------------------------
