@@ -10,9 +10,9 @@ reports.
 - NT-177 (DG-45): a context leg that fails once is sent again by the
   orchestrator with a new ``disagg_request_id``, and the context worker passes
   the new id on to its engine; the generation leg pulls with that id.
-- NT-178 (DG-88): each request parameter the case-03 module expects the chain
-  to refuse is refused with HTTP 400 before any Generate call, through the
-  orchestrator, with the same error body shape.
+- NT-178 (DG-88): each request parameter the case-03 module expects the ds
+  profile to refuse (``DS_REFUSED``) is refused with HTTP 400 before any
+  Generate call, through the orchestrator, with the same error body shape.
 """
 
 from __future__ import annotations
@@ -77,7 +77,9 @@ def test_ctx_retry_uses_new_disagg_request_id(chain):
     assert gen_calls[0].kv.session.session_id == resent
 
 
-# What the case-03 module's NT-119 and NT-120 send, as completions or chat request fields.
+# What the case-03 module's NT-119 and NT-120 send through the orchestrator, as completions or
+# chat request fields, except the image input: the CPU chain's model has no image modality, so
+# the front end refuses it before the engine's profile applies.
 DS_REFUSED = {
     "logprobs": ("/v1/completions", {"logprobs": 1}),
     "repetition_penalty": ("/v1/completions", {"repetition_penalty": 1.2}),
@@ -92,6 +94,12 @@ DS_REFUSED = {
     ),
     "priority": ("/v1/completions", {"priority": 0.5}),
     "cache_salt": ("/v1/chat/completions", {"cache_salt": "salt"}),
+    "return_context_logits": ("/v1/completions", {"return_context_logits": True}),
+    "scheduling_params": ("/v1/chat/completions", {"agent_hierarchy": [["planner", 1]]}),
+    "lora": (
+        "/v1/completions",
+        {"lora_request": {"lora_name": "adapter", "lora_int_id": 1, "lora_path": "/nonexistent"}},
+    ),
     "n2": ("/v1/completions", {"n": 2}),
     "best_of2": ("/v1/completions", {"n": 1, "best_of": 2}),
 }
@@ -99,7 +107,8 @@ DS_REFUSED = {
 
 def _body(path: str, fields: dict) -> dict:
     if path == "/v1/chat/completions":
-        return {"messages": [{"role": "user", "content": PROMPT}], "max_tokens": 4, **fields}
+        messages = [{"role": "user", "content": PROMPT}]
+        return {"messages": messages, "max_tokens": 4, **fields}
     return {"prompt": PROMPT, "max_tokens": 4, **fields}
 
 

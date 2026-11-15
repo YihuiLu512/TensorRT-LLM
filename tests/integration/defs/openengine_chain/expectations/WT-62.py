@@ -42,6 +42,12 @@ EXPECTATIONS = [
         "it reads each worker frontend's own GET endpoints only",
     ),
     _entry(
+        _BASIC + "test_worker_frontend_endpoints_direct*",
+        LEG_EXPECT,
+        "it sends to the worker frontends themselves",
+        leg=DIRECT_WORKER,
+    ),
+    _entry(
         _BASIC + "test_health_generate_and_aggregated_direct*",
         LEG_EXPECT,
         "it sends an aggregated request and /health_generate to one worker frontend itself",
@@ -168,7 +174,7 @@ EXPECTATIONS = [
         leg=DIRECT_TWO_LEG,
     ),
     _entry(
-        _CANCEL + "test_abort_stages*",
+        _CANCEL + "test_abort_stages[*",
         CANCELS_CALLS,
         "it leaves requests while they wait, prefill or decode",
     ),

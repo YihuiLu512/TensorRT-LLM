@@ -14,7 +14,7 @@ GPUs 2-3):
   orchestrator in front of a context and a generation ``trtllm-serve`` worker (started with
   ``--server_role``, registered through the orchestrator's HTTP cluster), each a worker front
   end with the DeepSeek-V4.1 tokenizer and parsers in front of a ds-engine OpenEngine server.
-  :class:`DsDisaggChain` starts it through the chain harness.
+  :func:`ds_disagg_chain` starts it through the chain harness.
 
 A pytest session serves one form: the chain when ``TRTLLM_TEST_OPENENGINE_CHAIN=ds``, form K
 when the variable is unset (:func:`session_form`). A test shared by the two forms (``K+链`` in
@@ -22,10 +22,12 @@ the plan) runs once in each session. Both forms take the ds-engine command from
 ``TRTLLM_TEST_DS_SERVE_CMD`` (for example ``python3 -m dsv4_serve``, with the ds-engine's
 ``python`` directory on ``PYTHONPATH``), the engine options :data:`ENGINE_ARGS` and the
 per-role configurations :data:`CONTEXT_CONFIG` and :data:`GENERATION_CONFIG` (DSpark speculative
-decoding, block reuse on the context worker), so the two forms are a like-for-like comparison.
-A test changes them through a :class:`Group` of its own. An engine group holds all four GPUs,
-so a file starts the module's default group once (:func:`served`) and a test that needs another
-group starts it after stopping the default one (:func:`own_group`).
+decoding, block reuse on the context worker). Only the chain's worker front ends take the
+tokenizer and parser options. A test changes the engine options and configurations through a
+:class:`Group` of its own. An engine group holds all four GPUs, so :class:`Groups` keeps one
+group up at a time: a file's tests share the default group (:func:`served`), and a fixture that
+needs another group asks :class:`Groups` for it, which stops the group that is up first. Groups
+change in fixtures only: the chain proof reads the orchestrator from the start of a test's call.
 
 Needs ``${LLM_MODELS_ROOT}/DeepSeek-V4.1-Flash-NVFP4``.
 """
@@ -43,6 +45,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import warnings
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -257,14 +260,6 @@ class DsNative:
         """The log file of process ``name`` (``context``, ``generation`` or ``proxy``)."""
         return self.workdir / f"{name}.log"
 
-    def kill(self, name: str) -> None:
-        """Kill process ``name``'s process group (SIGKILL) and wait for its leader."""
-        proc = self._running[name]
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(proc.pid, signal.SIGKILL)
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.wait(timeout=NATIVE_STOP_TIMEOUT_S)
-
     def __enter__(self) -> DsNative:
         try:
             for process in self.processes:
@@ -318,12 +313,17 @@ class DsNative:
         for proc in self._running.values():
             with contextlib.suppress(subprocess.TimeoutExpired):
                 proc.wait(timeout=max(0.0, deadline - time.monotonic()))
-        for proc in self._running.values():
+        survivors = []
+        for name, proc in self._running.items():
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(proc.pid, signal.SIGKILL)
-            with contextlib.suppress(subprocess.TimeoutExpired):
+            try:
                 proc.wait(timeout=NATIVE_STOP_TIMEOUT_S)
+            except subprocess.TimeoutExpired:
+                survivors.append(f"{name} (pid {proc.pid})")
         self._running.clear()
+        if survivors:
+            warnings.warn(f"form K: still running after SIGKILL: {', '.join(survivors)}")
 
 
 @dataclass
@@ -373,25 +373,14 @@ def model_path() -> str:
 
     try:
         path = get_model_path(MODEL_DIR)
-    except TypeError:  # no LLM_MODELS_ROOT
-        pytest.skip("LLM_MODELS_ROOT is not set")
-    if not os.path.isdir(path):
-        pytest.skip(f"{path} is not a directory")
+    except TypeError:  # llm_models_root() found no models root
+        pytest.skip("no models root: set LLM_MODELS_ROOT")
+    assert os.path.isdir(path), f"{path} is not a directory"
     return path
 
 
-@pytest.fixture(scope="module")
-def ds_native(model_path):
-    """Form K, per test file."""
-    ds = ds_command()
-    if not ds:
-        pytest.skip(f"form K needs {ENV_DS_SERVE_CMD}")
-    with DsNative(ds, model_path) as native:
-        yield Served(native.url, form=FORM_K, native=native)
-
-
 def chain_serve_args() -> list[str]:
-    """The ``trtllm-serve`` options of the aggregated chain form, besides the model."""
+    """The ``trtllm-serve`` options of one aggregated worker over all four GPUs, besides the model."""
     return [
         "--tp_size",
         "4",
@@ -580,25 +569,41 @@ def served(groups) -> Served:
     return groups.get()
 
 
+def engine_server_info(endpoint: str):
+    """The engine's ``ServerInfo`` message."""
+    import grpc
+
+    from tensorrt_llm.grpc.openengine.bindings import openengine_pb2_grpc, server_pb2
+
+    with grpc.insecure_channel(endpoint) as channel:
+        control = openengine_pb2_grpc.ControlStub(channel)
+        return control.GetServerInfo(server_pb2.GetServerInfoRequest(), timeout=60)
+
+
 def engine_extras(endpoint: str) -> tuple[dict, dict]:
     """The engine's ``ServerInfo.extra`` and ``ModelInfo.extra``."""
     import grpc
 
-    from tensorrt_llm.grpc.openengine.bindings import model_pb2, openengine_pb2_grpc, server_pb2
+    from tensorrt_llm.grpc.openengine.bindings import model_pb2, openengine_pb2_grpc
     from tensorrt_llm.grpc.openengine_conventions import struct_to_dict
 
+    server = engine_server_info(endpoint)
     with grpc.insecure_channel(endpoint) as channel:
         control = openengine_pb2_grpc.ControlStub(channel)
-        server = control.GetServerInfo(server_pb2.GetServerInfoRequest(), timeout=60)
         model = control.GetModelInfo(model_pb2.GetModelInfoRequest(), timeout=60)
     return struct_to_dict(server.extra), struct_to_dict(model.extra)
 
 
 def engine_counter(endpoint: str, key: str) -> int:
-    """Counter ``key`` the ds engine at ``endpoint`` reports in ``Control.GetLoad``."""
+    """Counter ``key`` the ds engine at ``endpoint`` reports in ``Control.GetLoad``.
+
+    A counter the engine does not report fails the test instead of reading as 0.
+    """
     from openengine_chain import direct_replay
 
-    return int(float(direct_replay.get_load(endpoint).get("attributes", {}).get(key, 0)))
+    attributes = direct_replay.get_load(endpoint).get("attributes", {})
+    assert key in attributes, f"the engine at {endpoint} reports no {key}: {sorted(attributes)}"
+    return int(float(attributes[key]))
 
 
 def only_chain(served: Served, why: str) -> None:
@@ -792,10 +797,15 @@ def metrics_served(groups) -> Served:
 
 
 @pytest.mark.parametrize("endpoint", ["version", "health", "server_info", "metrics", "prometheus"])
-def test_worker_frontend_endpoints_direct(metrics_served, endpoint):
-    """NT-106 (F-05b, F-05c, F-06, F-42a, F-42b, DG-89): each worker front end's own endpoints.
+def test_worker_frontend_endpoints_direct(metrics_served, endpoint, record_property):
+    """NT-106 (F-05b, F-05c, F-06, F-42a, F-42b, F-43, DG-89): each worker front end's endpoints.
 
-    The workers return per-request perf metrics, which mounts ``/prometheus/metrics``.
+    The workers return per-request perf metrics, which mounts ``/prometheus/metrics``. In
+    ``/server_info`` each field the ds engine's ``ServerInfo`` reports (the batch size, the KV
+    block size, the context engine's KV endpoint) must equal it; the fields it does not report
+    are recorded in the ``server_info_from_frontend`` property. ``/metrics`` holds snapshots
+    derived from ``GetLoad`` only (DV-18); ``/kv_cache_events`` is read once and recorded (the
+    ds engine has no KV events).
     """
     served = metrics_served
     path = {
@@ -811,10 +821,37 @@ def test_worker_frontend_endpoints_direct(metrics_served, endpoint):
         if endpoint == "version":
             assert response.json().get("version"), response.text
         elif endpoint == "server_info":
-            info = response.json()
-            assert int(info["tokens_per_block"]) > 0, info
-            if role == "context":
-                params = info.get("disaggregated_params") or {}
-                assert params.get("ctx_info_endpoint"), info
+            _check_server_info(served, role, response.json(), record_property)
         elif endpoint == "metrics":
-            assert isinstance(response.json(), list), response.text[:2000]
+            snapshots = response.json()
+            assert isinstance(snapshots, list), response.text[:2000]
+            record_property(
+                f"metrics_keys_{role}", json.dumps(sorted(snapshots[-1]) if snapshots else [])
+            )
+            events = requests.get(f"{url}/kv_cache_events", timeout=60)
+            record_property(f"kv_cache_events_{role}", f"{events.status_code} {events.text[:200]}")
+
+
+def _check_server_info(served: Served, role: str, info: dict, record_property) -> None:
+    """DG-89: ``/server_info`` against the ``role`` ds engine's ``ServerInfo``."""
+    engine = engine_server_info(served.engines[role])
+    assert int(info["tokens_per_block"]) > 0, info
+    from_frontend = []
+    if engine.capacity.max_running_requests:
+        assert info["max_batch_size"] == engine.capacity.max_running_requests, (info, engine)
+    else:
+        from_frontend.append("max_batch_size")
+    if engine.capacity.kv_block_size:
+        assert info["tokens_per_block"] == engine.capacity.kv_block_size, (info, engine)
+    else:
+        from_frontend.append("tokens_per_block")
+    if role == "context":
+        (text,) = info["disaggregated_params"]["ctx_info_endpoint"]
+        endpoints = engine.kv_connector.local_endpoints
+        if endpoints:
+            # The engine's first endpoint, in whichever notation the front end writes it.
+            first = endpoints[0]
+            assert first.host in text and text.endswith(f":{first.port}"), (text, first)
+        else:
+            from_frontend.append("ctx_info_endpoint")
+    record_property(f"server_info_from_frontend_{role}", ",".join(from_frontend) or "none")

@@ -11,7 +11,9 @@ outputs send them one after the other. The forms, fixtures and environment are t
 from __future__ import annotations
 
 import inspect
+import json
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import pytest
 
@@ -41,8 +43,12 @@ def tokenizer(model_path):
 
 @dataclass
 class Completion:
-    """One ``/v1/completions`` answer. ``chunk_tokens`` (streamed with continuous usage only)
-    holds how many output tokens each chunk that carried a choice added."""
+    """One ``/v1/completions`` answer.
+
+    Streamed only: ``chunks`` counts the chunks that carried a choice, ``done`` says whether the
+    stream ended with ``[DONE]``, and ``chunk_tokens`` (with continuous usage) holds how many
+    output tokens each chunk with a choice added.
+    """
 
     text: str
     finish_reason: str | None
@@ -50,6 +56,8 @@ class Completion:
     usage: object
     token_ids: list[int] | None
     chunk_tokens: list[int] = field(default_factory=list)
+    chunks: int = 0
+    done: bool = False
 
 
 def complete(served, stream: bool = False, *, continuous: bool = False, **request) -> Completion:
@@ -76,25 +84,43 @@ def complete(served, stream: bool = False, *, continuous: bool = False, **reques
             out.usage,
             getattr(choice, "token_ids", None),
         )
-    options = {"include_usage": True, "continuous_usage_stats": continuous}
-    text, finish, stop_reason, usage, token_ids, chunk_tokens = "", None, None, None, None, []
+    # Streamed over plain HTTP, so that whether the stream ended with [DONE] is seen.
+    import requests
+
+    body = {**request.pop("extra_body", {}), **request, "stream": True}
+    body["stream_options"] = {"include_usage": True, "continuous_usage_stats": continuous}
+    out = Completion("", None, None, None, None)
     counted = 0
-    for chunk in call(stream=True, stream_options=options, **request):
-        usage = chunk.usage or usage
-        if not chunk.choices:
-            continue
-        choice = chunk.choices[0]
-        assert finish is None, "a chunk after the output finished"
-        text += choice.text or ""
-        ids = getattr(choice, "token_ids", None)
-        if ids is not None:
-            token_ids = (token_ids or []) + list(ids)
-        if continuous and chunk.usage is not None:
-            chunk_tokens.append(chunk.usage.completion_tokens - counted)
-            counted = chunk.usage.completion_tokens
-        finish = choice.finish_reason
-        stop_reason = getattr(choice, "stop_reason", None)
-    return Completion(text, finish, stop_reason, usage, token_ids, chunk_tokens)
+    headers = {"Authorization": f"Bearer {basic.DUMMY_API_KEY}"}
+    url = f"{served.url}/v1/completions"
+    with requests.post(url, json=body, headers=headers, stream=True, timeout=600) as response:
+        assert response.status_code == 200, (response.status_code, response.text[:2000])
+        for line in response.iter_lines():
+            if not line.startswith(b"data:"):
+                continue
+            data = line[5:].strip()
+            if data == b"[DONE]":
+                out.done = True
+                continue
+            assert not out.done, "a chunk after [DONE]"
+            chunk = json.loads(data)
+            assert "error" not in chunk, chunk
+            if chunk.get("usage"):
+                out.usage = SimpleNamespace(**chunk["usage"])
+            if not chunk.get("choices"):
+                continue
+            choice = chunk["choices"][0]
+            assert out.finish_reason is None, "a chunk after the output finished"
+            out.chunks += 1
+            out.text += choice.get("text") or ""
+            if choice.get("token_ids") is not None:
+                out.token_ids = (out.token_ids or []) + list(choice["token_ids"])
+            if continuous and chunk.get("usage"):
+                out.chunk_tokens.append(chunk["usage"]["completion_tokens"] - counted)
+                counted = chunk["usage"]["completion_tokens"]
+            out.finish_reason = choice.get("finish_reason")
+            out.stop_reason = choice.get("stop_reason")
+    return out
 
 
 def greedy_ids(served, **request) -> list[int]:
@@ -112,18 +138,30 @@ def rendered_chat(tokenizer, content: str) -> str:
     )
 
 
-def check_context_ended(served, stream: bool, out: Completion, stop_reason=None) -> None:
+CONTEXT_ENDED_STREAM_SHAPE = "context_ended_stream_shape"
+
+
+def check_context_ended(
+    served, stream: bool, out: Completion, record_property, stop_reason=None
+) -> None:
     """``out`` is a request the context leg ended with ``stop`` at its first token.
 
-    The response carries no output text, and ``stop_reason`` unless it is ``None``. Streamed
-    through the chain, the disaggregated server does not forward the context worker's finished
-    response: the stream is ``[DONE]`` alone, with no choice and no usage (form K's ds proxy
-    sends the response as one chunk).
+    The response carries no output text, at most the one token that ended it, and
+    ``stop_reason`` unless it is ``None``; a stream ends with ``[DONE]``. Streamed through the
+    chain, the response may also be ``[DONE]`` alone, with no choice and no usage: the
+    disaggregated server does not forward the context worker's finished response (a known
+    difference to form K, under review). Which of the two a stream was is recorded in the
+    property ``context_ended_stream_shape`` (``done_only`` or ``finish_chunk``).
     """
-    if stream and served.chain:
-        assert (out.text, out.finish_reason, out.usage) == ("", None, None), out
-        return
-    assert out.finish_reason == "stop" and out.text == "", out
+    assert out.text == "", out
+    if stream:
+        assert out.done, out
+        shape = "finish_chunk" if out.chunks else "done_only"
+        record_property(CONTEXT_ENDED_STREAM_SHAPE, shape)
+        if shape == "done_only" and served.chain:
+            assert out.usage is None, out
+            return
+    assert out.finish_reason == "stop", out
     assert out.usage.completion_tokens <= 1, out
     if stop_reason is not None:
         assert out.stop_reason == stop_reason, out
@@ -132,9 +170,11 @@ def check_context_ended(served, stream: bool, out: Completion, stop_reason=None)
 def test_sampling_params(served):
     """NT-110 (F-11, DS-S05): ``top_k=1`` samples the greedy output; ``temperature`` varies it.
 
-    Only deterministic properties are asserted: ``top_k=1`` at ``temperature=1`` gives the
-    ``temperature=0`` output, and several samples at ``temperature=1`` are not all the same.
-    ``top_p`` and ``min_p`` requests succeed (the sampled distribution is not checked).
+    ``top_k=1`` at ``temperature=1`` gives the ``temperature=0`` output (deterministic). Four
+    samples at ``temperature=1`` are not all the same: a probabilistic check, which fails with
+    sampling working only if four independent 24-token continuations of a story prompt
+    coincide, with probability at most ``max_s p(s)**3`` over continuations ``s``. ``top_p``
+    and ``min_p`` requests succeed; the distributions they sample from are not checked.
     """
     greedy = complete(served, max_tokens=24)
     top_k_1 = complete(served, max_tokens=24, temperature=1.0, top_k=1)
@@ -151,15 +191,19 @@ def test_sampling_params(served):
 def test_seed(served, api):
     """NT-111 (F-12, DS-S06): the same request with the same seed, sent alone twice, is the same.
 
-    The ds-engine's samples depend on the batch a request runs in, so the two requests are sent
-    one after the other (UV-62: with other requests in the batch they differ).
+    The ds-engine's samples depend on the batch a request runs in, so the requests are sent one
+    after the other (UV-62: with other requests in the batch they differ). So that a request
+    that is not sampled at all does not pass, four other seeds must not all give the first
+    seed's output (probabilistic, as the sample check of NT-110).
     """
-    request = {"max_tokens": 32, "temperature": 1.0, "seed": 1234}
+    request = {"max_tokens": 32, "temperature": 1.0}
     if api == "completions":
         request["prompt"] = "Write a short poem about the sea.\n"
-    sampled = [basic.generate(served, api, False, **request)[0] for _ in range(2)]
+    sampled = [basic.generate(served, api, False, seed=1234, **request)[0] for _ in range(2)]
     assert sampled[0], sampled
     assert sampled[0] == sampled[1], sampled
+    others = {basic.generate(served, api, False, seed=seed, **request)[0] for seed in range(4)}
+    assert others != {sampled[0]}, (sampled[0], others)
 
 
 @pytest.mark.parametrize("stream", [False, True], ids=["non_stream", "stream"])
@@ -168,8 +212,8 @@ def test_max_tokens_and_length(served, stream):
 
     The output has exactly ``max_tokens`` tokens; ``max_tokens=1`` (the context leg's first
     token, then a generation leg with nothing left to generate) is the first token of the longer
-    output; a ``max_tokens`` above what ``max_seq_len`` leaves after the prompt is accepted and
-    the output stays within it.
+    output. A ``max_tokens`` above what ``max_seq_len`` leaves after the prompt is accepted; the
+    answer ends on its own long before that, so the clamp itself is not reached.
     """
     longer = complete(served, stream, max_tokens=12)
     assert longer.finish_reason == "length", longer
@@ -228,7 +272,7 @@ def test_stop_token_ids_and_ignore_eos(served, tokenizer, stream, record_propert
     first = complete(served, **request)
     assert first.usage.completion_tokens <= 1, ("the greedy first token is not EOS", first)
     out = complete(served, stream, **request)
-    check_context_ended(served, stream, out)
+    check_context_ended(served, stream, out, record_property)
     record_property("eos_first_stop_reason", repr(out.stop_reason))
 
 
@@ -255,8 +299,9 @@ def _stop_string(text: str) -> tuple[str, int]:
 def test_stop_strings(served, stream, include):
     """NT-114 (F-17): the output ends at the first stop string that occurs.
 
-    The stop string is a word of the greedy output past its first tokens, so the match is on the
-    generation leg. Listed after one that never occurs, it ends the output just the same.
+    The stop string is a word of the greedy output past its first 16 characters, normally past
+    the first token, which the context leg makes. Listed after one that never occurs, it ends the
+    output just the same.
     ``include_stop_str_in_output`` keeps the stop string at the end of the text.
     """
     greedy = complete(served, max_tokens=48)
@@ -273,13 +318,12 @@ def test_stop_strings(served, stream, include):
 
 
 @pytest.mark.parametrize("stream", [False, True], ids=["non_stream", "stream"])
-def test_first_token_stop_skips_gen(served, stream):
+def test_first_token_stop_skips_gen(served, stream, record_property):
     """NT-115 (DG-16, DS-S10): a request that stops at its first token never reaches generation.
 
     The greedy first token is made a stop token id: the context leg ends the request with
     ``stop`` (:func:`check_context_ended`). On the chain the context engine sends no PrefillReady
-    for it and the generation engine gets no call (form K: the ds proxy returns the context
-    worker's response).
+    for it and the generation engine gets no call; in form K only the response is checked.
     """
     from tensorrt_llm.grpc.openengine_conventions import (
         COUNTER_GENERATE_RECEIVED,
@@ -298,7 +342,7 @@ def test_first_token_stop_skips_gen(served, stream):
 
     before = counters()
     out = complete(served, stream, max_tokens=16, stop_token_ids=[first])
-    check_context_ended(served, stream, out, first)
+    check_context_ended(served, stream, out, record_property, first)
     assert counters() == before, (before, counters())
 
 
@@ -307,16 +351,18 @@ def test_decode_options(served, tokenizer):
 
     With ``detokenize=False`` the output is token ids and no text; with ``skip_special_tokens``
     on or off the text is the tokenizer's decode of those ids, streamed or not. The output runs
-    past EOS (``ignore_eos``), so it holds special tokens.
+    past EOS (``ignore_eos``) and holds special tokens: the two decodes differ.
     """
     basic.only_chain(served, "the options under test are the worker front end's")
     prompt = rendered_chat(tokenizer, "Say hello in one word.")
     request = {"prompt": prompt, "max_tokens": 48, "ignore_eos": True, "add_special_tokens": False}
     token_ids = greedy_ids(served, **request)
-    special = set(tokenizer.tokenizer.all_special_ids)
-    assert set(token_ids) & special, f"the output holds no special token: {token_ids}"
-    for skip in (True, False):
-        expected = tokenizer.decode(token_ids, skip_special_tokens=skip)
+    decoded = {
+        skip: tokenizer.decode(token_ids, skip_special_tokens=skip) for skip in (True, False)
+    }
+    # Otherwise the two settings could not be told apart.
+    assert decoded[True] != decoded[False], f"the output holds no special token: {token_ids}"
+    for skip, expected in decoded.items():
         for stream in (False, True):
             out = complete(served, stream, skip_special_tokens=skip, **request)
             assert (out.text, out.finish_reason) == (expected, "length"), (skip, stream, out)

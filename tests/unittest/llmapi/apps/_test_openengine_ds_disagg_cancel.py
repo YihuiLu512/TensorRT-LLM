@@ -177,8 +177,16 @@ def _engine_args(**values) -> tuple[str, ...]:
 # chunks of one KV-cache page, so that a LONG_PROMPT keeps it busy for seconds.
 CANCEL_GROUP = basic.Group(engine_args=_engine_args(max_batch_size=1, max_num_tokens=128))
 LONG_PROMPT_TOKENS = 30000
-# A generation leg this long decodes for far longer than a cancel takes to arrive.
-LONG_DECODE = 4000
+# A generation leg this long (within the default --max_seq_len) decodes for far longer than a
+# cancel takes to arrive; _leave_decoding checks that from the rate it streams at.
+LONG_DECODE = 30000
+# How long _leave_decoding reads the stream before it leaves.
+READ_S = 3.0
+# The most tokens a decoding step of the generation engine outputs (DSpark: its drafts and one
+# more); _leave_decoding takes a streamed chunk to hold at most one step's tokens.
+TOKENS_PER_STEP = 1 + basic.GENERATION_CONFIG["speculative_config"]["max_draft_len"]
+# A left decode must have this many cancel windows of tokens left to decode.
+UNFINISHED_MARGIN = 3
 # Long context legs sent at most until one waits: the context engine runs one per rank.
 MAX_LONG_LEGS = 4
 PREFILL_STARTS_S = 120
@@ -214,6 +222,15 @@ class _Left:
     def check(self, what: str) -> None:
         assert not self.handed_off(), f"a long prefill ended {what}; the prompt is too short here"
 
+    def logged_left(self, left: int) -> None:
+        """Form K: the ds context worker logged ``left`` requests whose client left."""
+        if not self.served.chain:
+            _wait(
+                lambda: _log_count(self.served, "context", LEFT_LOG) >= self.logged + left,
+                f"the context worker to log {left} left requests",
+                CANCEL_ARRIVES_S,
+            )
+
     def ended(self, left: int) -> None:
         """``left`` legs have been left; each ended on the context engine without a handoff."""
         _wait(
@@ -222,12 +239,7 @@ class _Left:
             CANCEL_ARRIVES_S,
         )
         self.check("after its client left")
-        if not self.served.chain:
-            _wait(
-                lambda: _log_count(self.served, "context", LEFT_LOG) >= self.logged + left,
-                f"the context worker to log {left} left requests",
-                CANCEL_ARRIVES_S,
-            )
+        self.logged_left(left)
 
 
 def _leave_waiting(served: basic.Served) -> None:
@@ -253,7 +265,10 @@ def _leave_waiting(served: basic.Served) -> None:
             "the waiting call to end",
             CANCEL_ARRIVES_S,
         )
+        # One fewer call with no handoff (the chain), and the left one logged (form K): the
+        # waiting call ended, not a prefilling one.
         left.check("before its client left")
+        left.logged_left(1)
     left.ended(len(legs))
 
 
@@ -271,8 +286,18 @@ def _leave_prefilling(served: basic.Served) -> None:
     left.ended(1)
 
 
-def _leave_decoding(served: basic.Served) -> None:
-    """Stream a request through the orchestrator and leave once its generation leg decodes."""
+def _leave_decoding(served: basic.Served) -> str:
+    """Stream a request through the orchestrator and leave once its generation leg decodes.
+
+    The stream is read for READ_S after its first text. Each chunk holds at most
+    TOKENS_PER_STEP tokens, which bounds the decode rate from above; at that rate the decode
+    must still have UNFINISHED_MARGIN cancel windows of tokens left, so that its call ending
+    within one window is the cancel and not its natural end. Form K's ds generation worker also
+    logs the request whose client left.
+
+    Returns:
+        The stream's reading, for the test's record.
+    """
     body = {
         "model": MODEL_NAME,
         "prompt": basic.COMPLETION_PROMPT,
@@ -280,6 +305,7 @@ def _leave_decoding(served: basic.Served) -> None:
         "ignore_eos": True,
         "stream": True,
     }
+    logged = None if served.chain else _log_count(served, "generation", LEFT_LOG)
     with requests.post(
         f"{served.url}/v1/completions",
         json=body,
@@ -288,15 +314,38 @@ def _leave_decoding(served: basic.Served) -> None:
         stream=True,
     ) as response:
         assert response.status_code == 200, response.text
+        chunks, first = 0, None
         for line in response.iter_lines(decode_unicode=True):
-            if line and line.startswith("data: ") and line != "data: [DONE]":
-                choices = json.loads(line[len("data: ") :]).get("choices") or [{}]
-                if choices[0].get("text"):
-                    break
+            if not line or not line.startswith("data: ") or line == "data: [DONE]":
+                continue
+            choices = json.loads(line[len("data: ") :]).get("choices") or []
+            if not choices:
+                continue
+            if first is None:
+                if not choices[0].get("text"):
+                    continue
+                first = time.monotonic()
+            chunks += 1
+            if time.monotonic() - first >= READ_S:
+                break
         else:
-            raise AssertionError("the stream ended before any text")
+            raise AssertionError(f"the stream ended within {READ_S} s of its first text")
+        read_s = time.monotonic() - first
         _wait(lambda: _total(served, "generation") == 1, "the decode to run", DECODE_STARTS_S)
+    most = TOKENS_PER_STEP * chunks
+    left_s = (LONG_DECODE - most) * read_s / most
+    reading = f"{chunks} chunks in {read_s:.1f} s: at least {left_s:.0f} s of decode left"
+    assert left_s > UNFINISHED_MARGIN * CANCEL_ARRIVES_S, (
+        f"{reading}; the decode could end by itself within the cancel window: raise LONG_DECODE"
+    )
     _wait(lambda: _total(served, "generation") == 0, "the decode call to end", CANCEL_ARRIVES_S)
+    if not served.chain:
+        _wait(
+            lambda: _log_count(served, "generation", LEFT_LOG) > logged,
+            "the generation worker to log the left request",
+            CANCEL_ARRIVES_S,
+        )
+    return reading
 
 
 @pytest.fixture
@@ -305,19 +354,21 @@ def cancel_served(groups) -> basic.Served:
 
 
 @pytest.mark.parametrize("stage", ["queued", "prefill", "decode"])
-def test_abort_stages(cancel_served, stage):
+def test_abort_stages(cancel_served, stage, record_property):
     """NT-132 (DG-38, DG-39c, DS-S11, DS-S12): a request left in any stage ends on its engine.
 
     ``queued`` and ``prefill`` send context legs to the context worker itself and leave one
     while it waits behind long prefills or while it prefills: its call ends on the context
     engine before a handoff. ``decode`` streams a request through the orchestrator (form K: the
-    ds proxy) and leaves once its generation leg decodes: the generation call ends long before
-    its last token. Then the engines serve a request through the orchestrator.
+    ds proxy) and leaves once its generation leg decodes: the generation call ends while, at
+    the rate it streamed at, it still had tokens to decode for several cancel windows. Then the
+    engines serve a request through the orchestrator.
     """
     served = cancel_served
-    {"queued": _leave_waiting, "prefill": _leave_prefilling, "decode": _leave_decoding}[stage](
-        served
-    )
+    if stage == "decode":
+        record_property("decode_left", _leave_decoding(served))
+    else:
+        {"queued": _leave_waiting, "prefill": _leave_prefilling}[stage](served)
     _serves(served)
 
 
@@ -386,8 +437,9 @@ def test_parked_kv_timeout_and_orphans(parked_served, record_property):
     stays parked on the context engine, whose parking timeout is short here. On the chain the
     engines' counters show one more orphan handoff per leg, and aborting a parked request, or a
     request id the engines do not know, is no error. Once the timeout passed, the context
-    engine logs each KV as dropped, and a generation leg that pulls one fails naming it. Then
-    the engines serve a request through the orchestrator.
+    engine logs each KV as dropped (on the chain also the aborted ones: the abort left them
+    parked), and a generation leg that pulls one fails naming it. Then the engines serve a
+    request through the orchestrator.
     """
     served, dumps = parked_served
     if served.chain:

@@ -5,8 +5,9 @@
 The chain's worker front ends refuse, with HTTP 400 and before any Generate call, the request
 parameters the ds engine does not declare; through the orchestrator the error names the context
 leg, and the client sees the context worker's status and message unchanged. Form K, the
-ds-engine's own deployment, accepts some of them and ignores them, and refuses others; its ds
-proxy answers a worker's refusal with HTTP 500 that quotes the worker's status. Each test
+ds-engine's own deployment, accepts some of them (HTTP 200; whether they take effect is not
+checked) and refuses others; its ds proxy wraps the worker's HTTP 400 in an HTTP 500 that
+quotes it, so a test of form K asserts that 500. Each test
 checks the form its session serves. The forms, fixtures and environment are those of
 ``_test_openengine_ds_disagg_basic.py``.
 
@@ -21,6 +22,7 @@ import os
 import secrets
 import subprocess  # nosec B404
 import sys
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -33,6 +35,9 @@ from tensorrt_llm.grpc.openengine_conventions import (
 )
 
 from . import _test_openengine_ds_disagg_basic as basic
+
+# The chain harness's engine readings.
+__extra_import_path__ = ["~/tests/integration/defs"]
 
 MODEL_NAME = basic.MODEL_NAME
 # The module's fixtures.
@@ -47,6 +52,7 @@ COMPLETIONS = "/v1/completions"
 CHAT = "/v1/chat/completions"
 REQUEST_TIMEOUT_S = 300
 FRONTEND_EXIT_TIMEOUT_S = 600
+LOG_WAIT_S = 30
 CTX_LEG = "the context leg (context_only) of a disaggregated request"
 # Form K's per-token logprob when the engine returns none.
 PLACEHOLDER_LOGPROB = -9999.0
@@ -81,31 +87,61 @@ WEATHER_TOOL = {
 K_ACCEPTS = "accepts"
 K_PLACEHOLDER = "placeholder logprobs"
 K_REFUSES = "refuses"
-# Parameter -> (path, request fields, text the chain's refusal names, what form K does).
+# Parameter -> (path, request fields, text the chain's refusal names, what form K does, text
+# form K's refusal names).
 UNSUPPORTED = {
-    "image_url": (CHAT, {"messages": IMAGE_MESSAGES}, "image inputs", K_REFUSES),
+    "image_url": (
+        CHAT,
+        {"messages": IMAGE_MESSAGES},
+        "image inputs",
+        K_REFUSES,
+        "Multimodal content",
+    ),
     "repetition_penalty": (
         COMPLETIONS,
         {"repetition_penalty": 1.2},
         "repetition_penalty",
         K_ACCEPTS,
+        None,
     ),
-    "presence_penalty": (COMPLETIONS, {"presence_penalty": 0.5}, "presence_penalty", K_ACCEPTS),
-    "frequency_penalty": (COMPLETIONS, {"frequency_penalty": 0.5}, "frequency_penalty", K_ACCEPTS),
-    "min_tokens": (COMPLETIONS, {"min_tokens": 1}, "min_tokens", K_ACCEPTS),
-    "logprobs": (COMPLETIONS, {"logprobs": 1}, "logprobs", K_PLACEHOLDER),
-    "logit_bias": (COMPLETIONS, {"logit_bias": {"5": 1.0}}, "logit_bias", K_REFUSES),
+    "presence_penalty": (
+        COMPLETIONS,
+        {"presence_penalty": 0.5},
+        "presence_penalty",
+        K_ACCEPTS,
+        None,
+    ),
+    "frequency_penalty": (
+        COMPLETIONS,
+        {"frequency_penalty": 0.5},
+        "frequency_penalty",
+        K_ACCEPTS,
+        None,
+    ),
+    "min_tokens": (COMPLETIONS, {"min_tokens": 1}, "min_tokens", K_ACCEPTS, None),
+    "logprobs": (COMPLETIONS, {"logprobs": 1}, "logprobs", K_PLACEHOLDER, None),
+    "logit_bias": (
+        COMPLETIONS,
+        {"logit_bias": {"5": 1.0}},
+        "logit_bias",
+        K_REFUSES,
+        "logit_bias",
+    ),
     "guided_json": (
         COMPLETIONS,
         {"response_format": {"type": "json", "schema": {"type": "object"}}},
         "guided_decoding",
         K_ACCEPTS,
+        None,
     ),
+    # Row F-26 names generation logits, but the HTTP API has no field that asks for them:
+    # the logits a request can ask for over HTTP are the context logits.
     "return_context_logits": (
         COMPLETIONS,
         {"return_context_logits": True},
         "return_context_logits",
         K_REFUSES,
+        "return_context_logits",
     ),
     # Form K's workers run without a reasoning parser, which the budget needs there.
     "thinking_token_budget": (
@@ -113,20 +149,23 @@ UNSUPPORTED = {
         {"thinking_token_budget": 8},
         "thinking_token_budget",
         K_REFUSES,
+        "thinking_token_budget",
     ),
-    "cache_salt": (CHAT, {"cache_salt": "salt"}, "cache_salt", K_ACCEPTS),
-    "priority": (COMPLETIONS, {"priority": 0.5}, "priority", K_ACCEPTS),
+    "cache_salt": (CHAT, {"cache_salt": "salt"}, "cache_salt", K_ACCEPTS, None),
+    "priority": (COMPLETIONS, {"priority": 0.5}, "priority", K_ACCEPTS, None),
     "scheduling_params": (
         CHAT,
         {"agent_hierarchy": [["planner", 1]]},
         "scheduling_params.agent_hierarchy",
         K_ACCEPTS,
+        None,
     ),
     "lora": (
         COMPLETIONS,
         {"lora_request": {"lora_name": "adapter", "lora_int_id": 1, "lora_path": "/nonexistent"}},
         "lora_request",
         K_REFUSES,
+        "LoRA",
     ),
 }
 # The ids of the context legs a test sends to a worker itself.
@@ -168,20 +207,35 @@ def _context_leg(body: dict) -> dict:
     return {**body, "disaggregated_params": params}
 
 
+def _generate_received(endpoint: str) -> int:
+    """The Generate calls the engine at ``endpoint`` has received; it must report the count.
+
+    The count includes calls it refused. A refused request is answered after the refusal,
+    so a reading taken once the answer is in is final.
+    """
+    from openengine_chain import direct_replay
+
+    attributes = direct_replay.get_load(endpoint).get("attributes", {})
+    assert COUNTER_GENERATE_RECEIVED in attributes, (endpoint, attributes)
+    return int(float(attributes[COUNTER_GENERATE_RECEIVED]))
+
+
 def _generate_calls(served: basic.Served) -> dict[str, int]:
     """The Generate calls each of the chain's engines has received; empty in form K."""
     if not served.chain:
         return {}
-    return {
-        role: basic.engine_counter(endpoint, COUNTER_GENERATE_RECEIVED)
-        for role, endpoint in served.engines.items()
-    }
+    assert set(served.engines) == set(basic.ROLES), served.engines
+    return {role: _generate_received(endpoint) for role, endpoint in served.engines.items()}
 
 
-def _k_relays_refusal(response: requests.Response) -> None:
-    """Form K's ds proxy answers a worker's HTTP 400 with HTTP 500 that quotes the 400."""
+def _k_relays_refusal(response: requests.Response, named: str) -> None:
+    """Form K's refusal naming ``named``: the ds proxy wraps the worker's 400 in a 500.
+
+    The proxy's message quotes the worker's status and answer.
+    """
     assert response.status_code == 500, (response.status_code, response.text[:2000])
-    assert "HTTP 400" in _message(response), response.text[:2000]
+    message = _message(response)
+    assert "HTTP 400" in message and named in message, response.text[:2000]
 
 
 def _chain_refuses(served: basic.Served, response: requests.Response, *named: str) -> str:
@@ -201,15 +255,17 @@ def test_engine_unsupported_params_rejected(served, name):
 
     The chain refuses it with HTTP 400 naming the context leg and the parameter, before any
     Generate call; the client sees the context worker's own status and message unchanged.
-    Form K accepts it (ignored; logprobs come back as placeholders) or refuses it.
+    Form K accepts it (HTTP 200; logprobs come back as placeholders, whether the other
+    parameters take effect is not checked) or refuses it, naming it.
     """
-    path, fields, named, k_does = UNSUPPORTED[name]
+    path, fields, named, k_does, k_named = UNSUPPORTED[name]
     body = _body(path, fields)
     before = _generate_calls(served)
     response = _post(served.url, path, body)
     if not served.chain:
         if k_does == K_REFUSES:
-            _k_relays_refusal(response)
+            # The ds proxy wraps the worker's 400 in a 500.
+            _k_relays_refusal(response, k_named)
             return
         assert response.status_code == 200, response.text[:2000]
         if k_does == K_PLACEHOLDER:
@@ -251,7 +307,8 @@ def test_n_best_of_rejected(served, name):
             assert response.status_code == 200, response.text[:2000]
             assert len(response.json()["choices"]) == 1, response.text[:2000]
         else:
-            # The ds proxy names the worker whose call failed: the generation worker.
+            # The ds proxy answers a worker's failure with a 500 naming the worker whose call
+            # failed: the generation worker.
             gen_port = urlsplit(served.workers["generation"]).port
             assert response.status_code == 500, response.text[:2000]
             assert f":{gen_port}/" in _message(response), response.text[:2000]
@@ -282,9 +339,10 @@ def test_profile_endpoints_rejected_direct(served):
 
 
 def test_tool_choice_required_rejected(served):
-    """NT-123 (DG-63): ``tool_choice: required`` is refused by both forms, before any Generate call.
+    """NT-123 (DG-63): ``tool_choice: required`` is refused by both forms.
 
-    The chain answers 4xx; form K's worker answers 400, which its ds proxy relays as 500.
+    The chain answers 4xx naming ``tool_choice``, before any Generate call. Form K's worker
+    answers 400 naming it, which the ds proxy wraps in a 500.
     """
     body = _body(
         CHAT,
@@ -300,10 +358,11 @@ def test_tool_choice_required_rejected(served):
     before = _generate_calls(served)
     response = _post(served.url, CHAT, body)
     if not served.chain:
-        _k_relays_refusal(response)
-        assert "tool_choice" in _message(response), response.text[:2000]
+        # The ds proxy wraps the worker's 400 in a 500.
+        _k_relays_refusal(response, "tool_choice")
         return
     assert 400 <= response.status_code < 500, (response.status_code, response.text[:2000])
+    assert "tool_choice" in _message(response), response.text[:2000]
     assert _generate_calls(served) == before
 
 
@@ -366,14 +425,18 @@ def test_startup_rejects(startup_served, model_path, tmp_path, name):
     A context worker started with ``max_beam_width > 1`` or the resource governor does not
     start: its front end refuses the option, and the chain's expectations table reads the
     reason from its log. A worker front end with ``--enable_sleep_mode`` exits at its option
-    check. With an OTLP endpoint the worker starts and serves: tracing covers the front end
-    only. Form K is compared on the beam width only: its workers start, warn and ignore it.
+    check. With an OTLP endpoint the worker starts and serves a request; whether it exports
+    spans is not checked. Form K is compared on the beam width only: its context worker logs
+    that it ignores the option, and the group serves a request.
     The workers under test are started by the test itself, after the fixture stopped the
     module's engine group.
     """
     if startup_served is not None:
-        log = startup_served.native.log("context").read_text(errors="replace")
-        assert K_BEAM_WARNING in log
+        log = startup_served.native.log("context")
+        deadline = time.monotonic() + LOG_WAIT_S
+        while K_BEAM_WARNING not in log.read_text(errors="replace"):
+            assert time.monotonic() < deadline, f"{log} has no {K_BEAM_WARNING!r}"
+            time.sleep(1)
         text, _, _ = basic.generate(startup_served, "completions", False, max_tokens=4)
         assert text, text
         return

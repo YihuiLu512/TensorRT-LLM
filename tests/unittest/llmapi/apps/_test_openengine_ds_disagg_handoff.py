@@ -41,6 +41,9 @@ from tensorrt_llm.grpc.openengine_conventions import (
 
 from . import _test_openengine_ds_disagg_basic as basic
 
+# The chain harness's engine readings.
+__extra_import_path__ = ["~/tests/integration/defs"]
+
 MODEL_NAME = basic.MODEL_NAME
 # The module's fixtures.
 model_path = basic.model_path
@@ -53,6 +56,7 @@ pytestmark = [pytest.mark.threadleak(enabled=False)]
 COMPLETIONS = "/v1/completions"
 REQUEST_TIMEOUT_S = 300
 FRONTEND_EXIT_TIMEOUT_S = 600
+COUNTER_WAIT_S = 30
 # An unfinished sentence: its first token is not the end of the sequence.
 PROMPT = "The sky looks blue on a clear day because"
 LEG_MAX_TOKENS = 16
@@ -65,6 +69,15 @@ NO_PARKED_KV = re.compile(r"no (parked KV|KV parked)")
 OUT_OF_VOCAB_ID = 1 << 24
 # The ids of the context legs a test sends to a worker itself.
 _DISAGG_REQUEST_IDS = itertools.count(DISAGG_REQUEST_ID_MIN + secrets.randbelow(1 << 30) * 1024)
+
+
+def _generate_received(endpoint: str) -> int:
+    """The Generate calls the engine at ``endpoint`` has received; it must report the count."""
+    from openengine_chain import direct_replay
+
+    attributes = direct_replay.get_load(endpoint).get("attributes", {})
+    assert COUNTER_GENERATE_RECEIVED in attributes, (endpoint, attributes)
+    return int(float(attributes[COUNTER_GENERATE_RECEIVED]))
 
 
 def _post(url: str, body: dict, headers: dict | None = None) -> requests.Response:
@@ -223,8 +236,8 @@ def test_direct_handoff_silent_behaviors(served, case):
 
     Both forms: a handoff whose ``draft_tokens`` are cut short is served; one whose
     ``ctx_dp_rank`` names the other context rank is served with the output of the unaltered
-    handoff (serial greedy requests); a disagg_request_id sent on two context legs is pulled
-    once.
+    handoff (serial greedy requests); of two context legs sent with the same disagg_request_id,
+    the handoff of the second is served.
     """
     if case == "duplicate_id":
         disagg_request_id = next(_DISAGG_REQUEST_IDS)
@@ -247,6 +260,12 @@ def test_direct_handoff_silent_behaviors(served, case):
 
 
 INVALID_PROMPTS = ("empty", "too_long", "out_of_vocab")
+# What the refusal of each invalid prompt names.
+INVALID_PROMPT_NAMED = {
+    "empty": re.compile(r"(?i)empty|at least one token"),
+    "too_long": re.compile(r"(?i)max_seq_len|maximum context length"),
+    "out_of_vocab": re.compile(r"(?i)vocab"),
+}
 
 
 def _invalid_prompt(case: str):
@@ -261,13 +280,14 @@ def _invalid_prompt(case: str):
 def test_invalid_prompt_rejected(served, case):
     """NT-140 (DS-R04, DG-41): an empty prompt, one longer than the engines take, an id out of vocabulary.
 
-    The context worker answers the context leg 400. On the chain the client sees, through the
-    orchestrator, that status and message unchanged; form K's ds proxy answers 500 quoting the
-    400. Only that request fails: the next one is served.
+    The context worker answers the context leg 400 naming what is wrong. On the chain the client
+    sees, through the orchestrator, that status and message unchanged; form K's ds proxy wraps
+    the 400 in a 500 quoting it. Only that request fails: the next one is served.
     """
     body = {"model": MODEL_NAME, "prompt": _invalid_prompt(case), "max_tokens": 4}
     direct = _context_leg(served, prompt=body["prompt"], max_tokens=4)
     assert direct.status_code == 400, (direct.status_code, direct.text[:2000])
+    assert INVALID_PROMPT_NAMED[case].search(_message(direct)), direct.text[:2000]
     response = _post(served.url, body)
     if served.chain:
         assert (response.status_code, _message(response)) == (400, _message(direct)), (
@@ -276,13 +296,17 @@ def test_invalid_prompt_rejected(served, case):
             direct.text[:2000],
         )
     else:
+        # The ds proxy wraps the worker's 400 in a 500.
         assert response.status_code == 500, (response.status_code, response.text[:2000])
-        assert "HTTP 400" in _message(response), response.text[:2000]
+        message = _message(response)
+        assert "HTTP 400" in message, response.text[:2000]
+        assert INVALID_PROMPT_NAMED[case].search(message), response.text[:2000]
     text, _, _ = basic.generate(served, "completions", False, max_tokens=4)
     assert text, text
 
 
 AUTH_KEY = secrets.token_hex(32)
+AUTH_REFUSED = "Invalid internal disaggregated request authentication"
 # The chain with the internal request authentication: the orchestrator signs each handoff.
 AUTH_GROUP = basic.Group(
     context={"internal_request_auth_key": AUTH_KEY},
@@ -321,16 +345,17 @@ def test_direct_handoff_auth_and_multimodal_attributes(auth_served):
 
     With the internal request authentication on, a generation leg sent to the generation worker
     without the orchestrator's signature, with a wrong one, or with handoff attributes changed
-    after signing is answered 4xx; a signed one whose handoff attributes hold
-    ``trtllm_decode_preparation`` (a multimodal request) is answered 400 naming it. None of them
-    reaches the engine. The handoff signed unchanged is then served.
+    after signing is answered 4xx naming the failed authentication; a signed one whose handoff
+    attributes hold ``trtllm_decode_preparation`` (a multimodal request) is answered 400 naming
+    it. The generation engine's Generate count is unchanged after them. The handoff signed
+    unchanged is then served.
     """
     from tensorrt_llm.serve.disagg_auth import INTERNAL_DISAGG_AUTH_HEADER
 
     served = auth_served
     answer = _handed_off(_context_leg(served))
     body = _generation_leg(answer)
-    before = basic.engine_counter(served.engines["generation"], COUNTER_GENERATE_RECEIVED)
+    before = _generate_received(served.engines["generation"])
 
     wrong = {INTERNAL_DISAGG_AUTH_HEADER: "sha256=" + "0" * 64}
     noted = _with_attributes(answer, test_note="signed")
@@ -338,12 +363,13 @@ def test_direct_handoff_auth_and_multimodal_attributes(auth_served):
     for request, headers in ((body, None), (body, wrong), (changed, _signed(noted))):
         response = _generate(served, request, headers)
         assert 400 <= response.status_code < 500, (response.status_code, response.text[:2000])
+        assert AUTH_REFUSED in _message(response), response.text[:2000]
     multimodal = _with_attributes(answer, **{HANDOFF_DECODE_PREPARATION: {"positions": [0]}})
     response = _generate(served, multimodal, _signed(multimodal))
     assert response.status_code == 400, response.text[:2000]
     assert HANDOFF_DECODE_PREPARATION in _message(response), response.text[:2000]
-    after = basic.engine_counter(served.engines["generation"], COUNTER_GENERATE_RECEIVED)
-    assert after == before
+    # Each refusal is answered before any Generate call it would make, so one reading is final.
+    assert _generate_received(served.engines["generation"]) == before
 
     _text(_generate(served, body, _signed(body)))
 
@@ -364,12 +390,26 @@ def test_mismatched_spec_config_pull_fails(spec_mismatch_served):
     """NT-141 (DS-U04, DG-41): a generation worker with another speculative configuration.
 
     Both forms: its pull of the context worker's handoff fails, as the two KV layouts differ;
-    the request ends with HTTP 5xx and the engine's reason, after both legs ran.
+    the request ends with HTTP 5xx and the engine's reason. On the chain, both engines have
+    received the request's leg.
     """
+    served = spec_mismatch_served
+    before = {role: _generate_received(e) for role, e in served.engines.items()}
     body = {"model": MODEL_NAME, "prompt": PROMPT, "max_tokens": 8, "temperature": 0.0}
-    response = _post(spec_mismatch_served.url, body)
+    response = _post(served.url, body)
+    # Form K: the ds proxy answers a worker's failure with a 500 quoting it.
     assert response.status_code >= 500, (response.status_code, response.text[:2000])
     assert LAYOUTS_DIFFER in response.text, response.text[:2000]
+    if not served.chain:
+        return
+    assert set(before) == set(basic.ROLES), served.engines
+    deadline = time.monotonic() + COUNTER_WAIT_S
+    while True:
+        now = {role: _generate_received(e) for role, e in served.engines.items()}
+        if all(now[role] > before[role] for role in basic.ROLES):
+            break
+        assert time.monotonic() < deadline, (before, now)
+        time.sleep(1)
 
 
 def _serve_command() -> list[str]:
@@ -444,7 +484,7 @@ def test_role_startup_check(no_group, model_path, tmp_path):
 
     Started with ``--server_role context`` or ``--server_role generation`` in front of a ds
     engine started without a role, the front end exits at its startup check of the engine,
-    naming what the role needs; the engine keeps serving. No Generate call is made. The test
+    naming what the role needs; the engine keeps serving and reports no Generate call. The test
     starts the engine and the front ends itself, after the fixture stopped the module's engine
     group.
     """
@@ -477,7 +517,8 @@ def test_role_startup_check(no_group, model_path, tmp_path):
             assert f"a {role.upper()} worker needs" in output, output[-4000:]
         assert engine.poll() is None
         assert _serving(endpoint)
-        assert basic.engine_counter(endpoint, COUNTER_GENERATE_RECEIVED) == 0
+        # Read after both front ends exited, so one reading is final.
+        assert _generate_received(endpoint) == 0
 
 
 @pytest.fixture(scope="module")
@@ -526,18 +567,33 @@ def static_workers(groups, form, model_path, tmp_path_factory):
         )
 
 
+# What the refusal of a leg sent to the other role says: the ds server's, its OpenEngine
+# validation's, or its engine's wording.
+ROLE_MISMATCH = {
+    "context_only": re.compile(
+        r"without a context role|context_only request sent to a generation instance"
+        r"|context_only request on a non-context instance"
+    ),
+    "generation_only": re.compile(
+        r"without a generation role|generation_only request\) sent to a context instance"
+        r"|generation_only request on a non-generation instance"
+    ),
+}
+
+
 @pytest.mark.parametrize("case", ("gen_to_ctx", "ctx_to_gen"))
 def test_role_mismatch_static_urls(static_workers, case):
-    """NT-138 (DS-R01, DS-R03): a leg sent to the worker of the other role is answered 400.
+    """NT-138 (DS-R01, DS-R03): a leg sent directly to the worker of the other role is answered 400.
 
-    The workers are listed by URL, without ``--server_role``: the engine checks the role. A
-    ``generation_only`` leg sent to the context worker, and a ``context_only`` leg sent to the
-    generation worker, are each answered 400 naming the request type. Both forms.
+    No orchestrator takes part: the test sends the leg itself. On the chain the worker front
+    ends run without ``--server_role`` and each engine has its role; in form K the ds workers
+    have theirs. A ``generation_only`` leg sent to the context worker, and a ``context_only``
+    leg sent to the generation worker, are each answered 400 naming the role mismatch.
     """
     served = static_workers
     if case == "ctx_to_gen":
         response = _context_leg(served, url=served.workers["generation"])
-        named = "context_only"
+        named = ROLE_MISMATCH["context_only"]
     else:
         # A handoff of the right shape that no context leg made: the role is checked first.
         unknown = next(_DISAGG_REQUEST_IDS)
@@ -551,6 +607,6 @@ def test_role_mismatch_static_urls(static_workers, case):
         }
         body = {"model": MODEL_NAME, "prompt": [1000, 1001], "max_tokens": 4}
         response = _post(served.workers["context"], {**body, "disaggregated_params": params})
-        named = "generation_only"
+        named = ROLE_MISMATCH["generation_only"]
     assert response.status_code == 400, (response.status_code, response.text[:2000])
-    assert named in _message(response), response.text[:2000]
+    assert named.search(_message(response)), response.text[:2000]

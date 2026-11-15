@@ -7,12 +7,12 @@ orchestrator's own switches, and a context leg retried after a worker front end 
 fixtures and environment are those of ``_test_openengine_ds_disagg_basic.py``. Every test here
 runs on the chain only: form K's ds proxy has no worker front ends to register, sign or record.
 
-A test that changes the configuration runs on an engine group of its own, which a fixture starts:
-groups change during a test's setup only, so that the chain proof of the test reads the servers the
-test ran on from start to end. The two-leg requests
-are read from what each worker front end sends its engine (``TRTLLM_OPENENGINE_REQUEST_DUMP_DIR``):
-the ds engine writes no per-request record itself. NT-215 kills a worker front end, so it goes
-last; the module's ``groups`` fixture stops its group.
+A test that changes the configuration runs on an engine group of its own, which a fixture
+starts: groups change during a test's setup only, so that the chain proof of the test reads the
+servers the test ran on from start to end. The two legs' requests are read from what each worker
+front end sends its engine (``TRTLLM_OPENENGINE_REQUEST_DUMP_DIR``): the ds engine writes no
+per-request record itself. NT-215 kills a worker front end, so it goes last; the module's
+``groups`` fixture stops its group.
 """
 
 from __future__ import annotations
@@ -22,8 +22,8 @@ import contextlib
 import json
 import os
 import re
+import secrets
 import shutil
-import signal
 import subprocess
 import time
 from pathlib import Path
@@ -141,16 +141,6 @@ def _frontend_log_text(server) -> str:
     return text
 
 
-def _wait_for_log(server, text: str, timeout: float = RECORD_WAIT_S) -> bool:
-    deadline = time.monotonic() + timeout
-    while True:
-        if text in _frontend_log_text(server):
-            return True
-        if time.monotonic() > deadline:
-            return False
-        time.sleep(0.5)
-
-
 def _completion(served: basic.Served, prompt: str = basic.COMPLETION_PROMPT, **fields):
     body = {"model": MODEL_NAME, "prompt": prompt, "max_tokens": 8, "temperature": 0.0, **fields}
     return requests.post(f"{served.url}/v1/completions", json=body, timeout=REQUEST_TIMEOUT_S)
@@ -217,13 +207,6 @@ def _gen_session(dump: dict) -> dict:
     return dump.get("kv", {}).get("session", {})
 
 
-def _ctx_rank(dump: dict) -> int:
-    """The context attention-DP rank of the hand-off a generation leg's GenerateRequest takes."""
-    session = _gen_session(dump)
-    # Protobuf JSON leaves out a dp_rank of 0; the hand-off's attributes name it too.
-    return int(session.get("attributes_struct", {}).get("ctx_dp_rank", session.get("dp_rank", 0)))
-
-
 def _gen_id(dump: dict) -> str | None:
     """The disagg_request_id of the hand-off a generation leg's GenerateRequest takes."""
     value = _gen_session(dump).get("attributes_struct", {}).get("disagg_request_id")
@@ -279,8 +262,29 @@ def _etcd(etcd: str, workdir: Path):
             proc.wait(timeout=10)
 
 
-def _check_discovery(served: basic.Served) -> None:
-    """Both workers are listed and serve a request; each took the orchestrator's clock offset."""
+def _clock_offset_evidence(served: basic.Served, role: str) -> bool:
+    """Whether the ``role`` worker took the orchestrator's clock offset (``True``), or the
+    orchestrator logged that it discarded the offset as too uncertain to apply (``False``).
+
+    Fails when neither shows within :data:`RECORD_WAIT_S`.
+    """
+    port = served.servers[role].port
+    discarded = re.compile(rf"Steady clock handshake with \S*:{port}/\S* was too slow")
+    orchestrator_log = Path(served.servers["orchestrator"].log_path)
+    deadline = time.monotonic() + RECORD_WAIT_S
+    while True:
+        if OFFSET_LOG in _frontend_log_text(served.servers[role]):
+            return True
+        if orchestrator_log.exists() and discarded.search(
+            orchestrator_log.read_text(errors="replace")
+        ):
+            return False
+        assert time.monotonic() < deadline, f"the {role} front end logged no clock offset"
+        time.sleep(0.5)
+
+
+def _check_discovery(served: basic.Served, record_property) -> None:
+    """Both workers are listed and serve a request; the clock offset of each (DG-54)."""
     info = requests.get(f"{served.url}/cluster_info", timeout=30).json()
     assert info.get("is_ready") is True, info
     for role in ROLES:
@@ -288,14 +292,18 @@ def _check_discovery(served: basic.Served) -> None:
         assert address.endswith(f":{served.servers[role].port}"), (role, info)
     text, finish, _ = basic.generate(served, "completions", False, max_tokens=8)
     assert "Paris" in text and finish in ("stop", "length"), (text, finish)
-    # DG-54: the orchestrator probed each worker's clock and wrote the offset to it.
+    # DG-54: the orchestrator probed each worker's clock and wrote the offset to it, unless the
+    # best round trip was too slow for the offset to be applied.
     for role in ROLES:
-        server = served.servers[role]
         response = requests.get(f"{served.workers[role]}/steady_clock_offset", timeout=60)
         assert response.status_code == 200, (role, response.text)
         body = response.json()
         assert 0 < body["receive_ts"] <= body["transmit_ts"], (role, body)
-        assert _wait_for_log(server, OFFSET_LOG), f"the {role} front end logged no clock offset"
+        if not _clock_offset_evidence(served, role):
+            record_property(
+                f"dg54_no_offset_evidence_{role}",
+                "the orchestrator discarded the clock offset as too slow; none was written",
+            )
 
 
 @pytest.fixture
@@ -320,15 +328,17 @@ def discovery_served(request, groups):
 
 
 @pytest.mark.parametrize("discovery_served", ["etcd", "http"], indirect=True)
-def test_service_discovery(discovery_served):
+def test_service_discovery(discovery_served, record_property):
     """NT-142 (DG-28, DG-29, DG-32, DG-54): the worker front ends register through the cluster.
 
     ``http``: the orchestrator's own HTTP cluster storage, the module's default (every other test
     starts its workers this way too); ``etcd``: an etcd the test starts. Both workers are listed,
-    a request through the orchestrator succeeds, and each worker answers ``/steady_clock_offset``
-    and logged the offset the orchestrator wrote to it.
+    a request through the orchestrator succeeds, and each worker answers ``/steady_clock_offset``.
+    Each worker logged the offset the orchestrator wrote to it, except when the orchestrator
+    logged that it discarded the offset (best round trip too slow): then the test records
+    ``dg54_no_offset_evidence_<role>`` instead.
     """
-    _check_discovery(discovery_served)
+    _check_discovery(discovery_served, record_property)
 
 
 # -- NT-146: the orchestrator's switches -----------------------------------------------------
@@ -340,7 +350,7 @@ SWITCHES = {
     "tokids_ctxbytes": {"gen_tokids_ctxbytes": True},
     "num_workers": {"num_workers": 2},
 }
-# A conversation of several turns, so that stripping the history changes the generation request.
+# A conversation of several turns: gen_strip_message_history has a history to strip.
 CONVERSATION = [
     {"role": "user", "content": "Remember the number 17."},
     {"role": "assistant", "content": "I will remember 17."},
@@ -370,12 +380,13 @@ def alignment_baseline(groups) -> dict[str, str]:
 
 @pytest.fixture
 def switch_served(request, groups, alignment_baseline):
-    """The chain with one switch on; the baseline is read first, on the default group."""
+    """The chain with one switch on, and the switch; the baseline is read first, on the default
+    group."""
     if groups.form != basic.FORM_CHAIN:
         pytest.skip(f"form K: {FORM_K_REASON}")
     front = SWITCHES[request.param]
     if request.param != "num_workers":
-        yield _chain(groups, basic.Group(front=front))
+        yield _chain(groups, basic.Group(front=front)), request.param
         return
     # The fleet's coordinator serves the cluster storage on a port of its own.
     groups.close()
@@ -390,31 +401,53 @@ def switch_served(request, groups, alignment_baseline):
         orchestrator_env=env,
         reserved=(coordinator_port,),
     ) as served:
-        yield served
+        yield served, request.param
+
+
+def _fleet_processes(orchestrator_pid: int) -> list:
+    """The orchestrator's fleet processes (``num_workers``), by their per-process index."""
+    import psutil
+
+    found = []
+    for child in psutil.Process(orchestrator_pid).children(recursive=True):
+        with contextlib.suppress(psutil.NoSuchProcess, psutil.AccessDenied):
+            # serve.DisaggWorkerEnvs.TLLM_DISAGG_WORKER_PROCESS_ID
+            if "TRTLLM_DISAGG_WORKER_PROCESS_ID" in child.environ():
+                found.append(child)
+    return found
 
 
 @pytest.mark.parametrize("switch_served", list(SWITCHES), indirect=True)
 def test_orchestrator_alignment_switches(alignment_baseline, switch_served):
-    """NT-146 (DS-O01, DS-O02, DS-O08): the orchestrator runs with each ds proxy option's twin.
+    """NT-146 (DS-O01, DS-O02, DS-O08): the orchestrator serves with each ds proxy option's twin.
 
-    ``gen_strip_history`` drops the conversation history from the generation request,
-    ``tokids_ctxbytes`` relays the prompt token ids as bytes, ``num_workers`` serves the public
-    port from two orchestrator processes behind one coordinator. Requests succeed and their
-    greedy outputs, sent one at a time, are those with the switches off.
+    The orchestrator is configured with ``gen_strip_message_history``, ``gen_tokids_ctxbytes`` or
+    ``num_workers: 2``. Requests succeed, and their greedy outputs, sent one at a time, are those
+    of the default group, where the options are off. With ``num_workers`` the orchestrator runs
+    two fleet processes. The test does not observe what the first two options change on the way
+    to the generation worker.
     """
-    outputs = _alignment_outputs(switch_served)
+    served, switch = switch_served
+    outputs = _alignment_outputs(served)
     assert outputs == alignment_baseline, (outputs, alignment_baseline)
+    if switch == "num_workers":
+        fleet = _fleet_processes(served.servers["orchestrator"].proc.pid)
+        assert len(fleet) == 2, fleet
 
 
 # -- NT-143: sub-agent affinity -------------------------------------------------------------
 
-# A test-only key: the orchestrator signs the parent-session hint with it, each worker front end
-# re-signs it for its engine, and the context engine verifies it.
-AFFINITY_KEY = "wt62-ds-subagent-affinity-test-key"
+# The orchestrator signs the parent-session hint with it, each worker front end re-signs it for
+# its engine, and the context engine verifies it.
+AFFINITY_KEY = secrets.token_hex(32)
 PARENT_HEADER = "X-Dynamo-Parent-Session-ID"
 SESSION_HEADER = "x-session-id"
-PARENT_SESSION = "parent-0"
 SUBAGENTS = 6
+# The context engine's log line of its conversation statistics (DSV4_SCHED_PROF).
+CONVERSATION_STATS = re.compile(
+    r"attention-DP conversations: (\d+) admissions of a conversation seen before, (\d+) of them "
+    r"on another rank; (\d+) pinned"
+)
 
 
 @pytest.fixture(scope="module")
@@ -425,12 +458,12 @@ def dump_root(groups) -> Path:
     return root
 
 
-def _affinity_group(scope: str, dump_root: Path) -> basic.Group:
+def _affinity_group(scope: str) -> basic.Group:
     """Sub-agent affinity on the context leg (``scope`` ``context``) or on both legs (``both``).
 
     The context engine places a request by its conversation (``DSV4_ADP_CONV_PIN``, with the
     module's attention DP, conversation affinity and block reuse), so it declares sub-agent
-    affinity.
+    affinity, and logs its conversation statistics every scheduling step (``DSV4_SCHED_PROF``).
     """
     conversation = {"router": {"type": "conversation"}}
     front = {
@@ -442,52 +475,73 @@ def _affinity_group(scope: str, dump_root: Path) -> basic.Group:
     if scope == "both":
         front["generation_servers"] = conversation
     worker = {"internal_request_auth_key": AFFINITY_KEY}
-    env = _dump_env(dump_root / f"affinity-{scope}")
-    env["context"] = {**env["context"], "DSV4_ADP_CONV_PIN": "1"}
+    env = {"context": {"DSV4_ADP_CONV_PIN": "1", "DSV4_SCHED_PROF": "1"}}
     return basic.Group(context=worker, generation=worker, env=env, front=front)
 
 
 @pytest.fixture
-def affinity_served(request, groups, dump_root):
-    """The chain with sub-agent affinity of scope ``request.param``, and its generation requests."""
-    scope = request.param
-    served = _chain(groups, _affinity_group(scope, dump_root))
-    return served, dump_root / f"affinity-{scope}" / "generation"
+def affinity_served(request, groups) -> basic.Served:
+    """The chain with sub-agent affinity of scope ``request.param``."""
+    return _chain(groups, _affinity_group(request.param))
+
+
+def _conversation_stats(path: Path) -> tuple[int, int, int]:
+    """The context engine's last logged conversation statistics: seen again, moved, pinned."""
+    found = CONVERSATION_STATS.findall(path.read_text(errors="replace")) if path.exists() else []
+    return tuple(int(n) for n in found[-1]) if found else (0, 0, 0)
 
 
 @pytest.mark.parametrize("affinity_served", ["context", "both"], indirect=True)
-def test_subagent_affinity(affinity_served):
-    """NT-143 (DG-22, DG-35, DS-O06, DS-O07): a sub-agent's request lands with its parent's.
+def test_subagent_affinity(affinity_served, record_property):
+    """NT-143 (DG-22, DG-35, DS-O06, DS-O07): a sub-agent's context leg joins its parent's.
 
-    The context engine declares sub-agent affinity, so the context worker front end re-signs the
-    orchestrator's parent-session hint for it and the ds OpenEngine server verifies it: a hint it
-    could not verify would fail the request. The parent and its sub-agents all succeed, and the
-    context engine places all of them on one attention-DP rank (the hand-off's ``dp_rank``), the
-    parent's: the hint reached ``params["conv"]``. With ``both`` the generation leg gets the hint
-    too, and its front end does not pass it on: the ds engine refuses the hint on a generation
-    request, so the requests' success shows that.
+    The context engine declares sub-agent affinity. A parent and then sub-agents, each with a
+    conversation of its own and the parent's session in the parent header, all succeed. The
+    context engine admits every sub-agent's request as one of a conversation it has seen before,
+    on that conversation's rank: the parent's session, verified and taken as the request's
+    conversation (``params["conv"]``); without it each sub-agent's conversation is new. With
+    ``both`` the generation leg carries the hint as well and the requests still succeed; the ds
+    engine refuses the hint on a generation request, and the generation engine does not declare
+    sub-agent affinity (recorded), so this does not tell which of the two keeps it away.
     """
-    served, gen_dir = affinity_served
+    import uuid
+
+    served = affinity_served
     server_extra, _ = basic.engine_extras(served.engines["context"])
     assert server_extra.get("trtllm_supports_subagent_affinity") is True, server_extra
-    seen = _dumps(gen_dir)
+    gen_extra, _ = basic.engine_extras(served.engines["generation"])
+    record_property(
+        "gen_declares_subagent_affinity", str(gen_extra.get("trtllm_supports_subagent_affinity"))
+    )
+    log = Path(served.servers["context"]._chain_handle.engine_log)
+    before = _conversation_stats(log)
 
-    sessions = [(PARENT_SESSION, None)] + [(f"child-{i}", PARENT_SESSION) for i in range(SUBAGENTS)]
-    for session, parent in sessions:
+    parent = f"nt143-parent-{uuid.uuid4().hex}"
+    sessions = [(parent, None)] + [(f"{parent}-child-{i}", parent) for i in range(SUBAGENTS)]
+    for session, parent_session in sessions:
         headers = {SESSION_HEADER: session}
-        if parent is not None:
-            headers[PARENT_HEADER] = parent
-        question = f"Agent {session}: name one prime number above {len(session) * 7}."
-        response = _chat(served, [{"role": "user", "content": question}], headers=headers)
+        if parent_session is not None:
+            headers[PARENT_HEADER] = parent_session
+        question = f"Agent {session[-8:]}: name one prime number above {len(session) * 7}."
+        response = _chat(
+            served,
+            [{"role": "user", "content": question}],
+            headers=headers,
+            conversation_params={"conversation_id": session},
+        )
         assert response.status_code == 200, (session, response.text)
         (choice,) = response.json()["choices"]
         assert choice["message"]["content"], (session, choice)
 
-    # Each request is one hand-off; the context engine names the rank it parked the KV on.
-    handoffs = _new_dumps(gen_dir, seen, len(sessions))
-    assert len(handoffs) == len(sessions), [_gen_session(d) for d in handoffs]
-    ranks = [_ctx_rank(d) for d in handoffs]
-    assert len(set(ranks)) == 1, ranks
+    deadline = time.monotonic() + RECORD_WAIT_S
+    while True:
+        after = _conversation_stats(log)
+        seen, moved, pinned = (a - b for a, b in zip(after, before))
+        if seen >= SUBAGENTS or time.monotonic() > deadline:
+            break
+        time.sleep(1)
+    record_property("conversation_stats", f"seen {seen}, moved {moved}, pinned {pinned}")
+    assert seen >= SUBAGENTS and moved == 0, (before, after)
 
 
 # -- NT-144, NT-145: perf records, request ids and the two legs' requests --------------------
@@ -550,12 +604,12 @@ def observed_served(groups, dump_root) -> basic.Served:
 def test_perf_metrics_and_request_id(observed_served, dump_root):
     """NT-144 (DG-40, DG-82): front-end perf metrics, and one disagg_request_id end to end.
 
-    A request that asks for its metrics gets them as response headers (not streamed) or as the
-    stream's last event; the orchestrator and both worker front ends write one JSONL record of
-    it each, all ``complete`` and with the orchestrator's ``disagg_request_id``. The ds engine
-    writes no record (it ignores ``return_perf_metrics``); what each engine was sent carries the
-    id: the context leg's GenerateRequest (as a decimal string, the ds engine's ``disagg_id``)
-    and the generation leg's hand-off, which the context engine named after it.
+    A request that asks for its metrics gets them as response headers (not streamed) or as a
+    metrics event of the stream; the orchestrator and both worker front ends write one JSONL
+    record of it each, all ``complete`` and with the orchestrator's ``disagg_request_id``. The
+    ds engine writes no record (it ignores ``return_perf_metrics``); what each engine was sent
+    carries the id: the context leg's GenerateRequest, as a decimal string, and the generation
+    leg's hand-off, whose session id the context engine set to it.
     """
     from tensorrt_llm.serve.perf_metrics import (
         RETURN_METRICS_HEADER,
@@ -602,12 +656,17 @@ def test_perf_metrics_and_request_id(observed_served, dump_root):
     assert all({"ctx_perf_metrics", "gen_perf_metrics"} <= r.keys() for r in mine["disagg"])
 
     # What each engine was sent names the same id.
+    from tensorrt_llm.grpc.openengine_conventions import REQ_DISAGG_REQUEST_ID
+
     legs = {role: _new_dumps(path, seen_dumps[role], 2) for role, path in dirs.items()}
-    assert sorted(_ctx_id(d) for d in legs["context"]) == sorted(str(i) for i in ids), legs
+    assert all(len(found) == 2 for found in legs.values()), legs
+    expected = sorted(str(i) for i in ids)
+    for dump in legs["context"]:
+        assert isinstance(dump.get("extra", {}).get(REQ_DISAGG_REQUEST_ID), str), dump
+    assert sorted(_ctx_id(d) for d in legs["context"]) == expected, legs["context"]
+    assert sorted(_gen_id(d) for d in legs["generation"]) == expected, legs["generation"]
     for dump in legs["generation"]:
-        session = _gen_session(dump)
-        assert _gen_id(dump) in {str(i) for i in ids}, session
-        assert session.get("session_id") == _gen_id(dump), session
+        assert _gen_session(dump).get("session_id") == _gen_id(dump), _gen_session(dump)
 
 
 def _comparable(dump: dict, leg_keys: tuple[str, ...]) -> dict:
@@ -679,8 +738,7 @@ def test_two_leg_request_consistency(observed_served, dump_root):
     For each request through the orchestrator, the context and the generation leg's
     GenerateRequests pair up by ``disagg_request_id``; each holds every sampling and stopping
     field the client set; they are the same but for ``request_id``, the hand-off and the keys
-    only one leg carries (EX-DSG-7). The context leg's ``max_tokens`` is the client's: the ds
-    OpenEngine server limits a context_only request to one token itself.
+    only one leg carries (EX-DSG-7). The context leg's ``max_tokens`` is the client's.
     """
     from tensorrt_llm.grpc.openengine_conventions import (
         REQ_DISAGG_REQUEST_ID,
@@ -702,7 +760,10 @@ def test_two_leg_request_consistency(observed_served, dump_root):
         (prefill,) = _new_dumps(dirs["context"], seen["context"], 1)
         (decode,) = _new_dumps(dirs["generation"], seen["generation"], 1)
         assert prefill["extra"][REQ_REQUEST_TYPE] == "context_only", prefill
-        assert _gen_id(decode) == _ctx_id(prefill), (prefill, decode)
+        assert _ctx_id(prefill) is not None and _gen_id(decode) == _ctx_id(prefill), (
+            prefill,
+            decode,
+        )
         assert prefill["request_id"] != decode["request_id"]
         for dump in (prefill, decode):
             _carries(dump, body)
@@ -713,11 +774,15 @@ def test_two_leg_request_consistency(observed_served, dump_root):
 # -- NT-215: a context leg retried after a context front end dies (last: it kills one) --------
 
 RETRY_REQUESTS = 32
-# Long, distinct prompts keep the context engine busy, so that requests are still in flight on
-# both front ends when one dies; distinct, so that block reuse does not shorten their prefill.
+# Batches to send until the attached front end has context legs in flight.
+RETRY_BATCHES = 3
+# Context legs in flight on the attached front end when it is killed: more than one, so that one
+# finishing between the reading and the kill still leaves a lost leg.
+LOST_LEGS = 2
+# Long prompts keep the context engine busy, so that requests stay in flight on both front ends;
+# distinct, so that block reuse does not shorten their prefill.
 RETRY_PROMPT_WORDS = 1000
 ATTACHED_FRONTEND_ENV = "TLLM_EXECUTOR_FRONTEND_ID"
-IN_FLIGHT_WAIT_S = 120
 
 
 def _retry_group(dump_root: Path) -> basic.Group:
@@ -752,51 +817,78 @@ def retry_served(groups, dump_root) -> basic.Served:
     return _chain(groups, _retry_group(dump_root))
 
 
+def _ctx_legs_in_flight(counter_dir: str, pid: int) -> int:
+    """Context legs front end ``pid`` sent its engine that have not yet had their PrefillReady."""
+    from tensorrt_llm.grpc.openengine_conventions import (
+        BUCKET_CONTEXT_ONLY,
+        SERVE_COUNTER_GENERATE_SENT_BUCKETS,
+        SERVE_COUNTER_PREFILL_READY_RECEIVED,
+    )
+    from tensorrt_llm.serve.openengine_poc import contracts
+
+    counts = contracts.read_serve_counters_by_pid(counter_dir).get(pid, {})
+    sent = counts.get(SERVE_COUNTER_GENERATE_SENT_BUCKETS[BUCKET_CONTEXT_ONLY], 0)
+    return sent - counts.get(SERVE_COUNTER_PREFILL_READY_RECEIVED, 0)
+
+
 def test_ctx_leg_retry_after_ctx_frontend_killed(retry_served, dump_root):
     """NT-215 (DG-45): a context leg lost with its front end is retried under a new id.
 
-    The context worker runs two front ends on one port and one ds engine. One of them is killed
-    while requests are in flight on both; the orchestrator retries each context leg it lost
-    (to the port, where the other front end answers), and every request succeeds. Each attempt
-    the context front ends sent carries a ``disagg_request_id`` of its own, and each request's
-    generation leg takes one of them. Requests sent afterwards succeed too.
+    The context worker runs two front ends on one port and one ds engine. Requests are sent until
+    the attached front end has context legs in flight (its own counters), and it is killed then.
+    Every request succeeds, and the orchestrator counted at least one context retry. The context
+    front ends sent more attempts than there are requests, each with a ``disagg_request_id`` of
+    its own, and each request's generation leg takes one of them. Requests sent afterwards
+    succeed too.
     """
-    from tensorrt_llm.grpc.openengine_conventions import COUNTER_GENERATE_RECEIVED
-
     served = retry_served
     # This is the file's last test: the module's groups fixture stops the group after it.
-    launcher = served.servers["context"]._chain_handle.frontend
-    attached = _attached_frontends(launcher.pid)
-    assert len(attached) == 1, attached
+    handle = served.servers["context"]._chain_handle
+    found = _attached_frontends(handle.frontend.pid)
+    assert len(found) == 1, found
+    (attached,) = found
     dirs = {role: dump_root / "retry" / role for role in ROLES}
     seen = {role: _dumps(path) for role, path in dirs.items()}
     retries = _orchestrator_counter(served, "ctx", "retry_requests")
-    received = basic.engine_counter(served.engines["context"], COUNTER_GENERATE_RECEIVED)
 
+    sent, killed = 0, False
     with concurrent.futures.ThreadPoolExecutor(RETRY_REQUESTS) as pool:
-        futures = [
-            pool.submit(_completion, served, _retry_prompt(i), max_tokens=4)
-            for i in range(RETRY_REQUESTS)
-        ]
-        deadline = time.monotonic() + IN_FLIGHT_WAIT_S
-        ctx_engine = served.engines["context"]
-        while basic.engine_counter(ctx_engine, COUNTER_GENERATE_RECEIVED) == received:
-            assert time.monotonic() < deadline, "no context leg reached the engine"
-            time.sleep(0.05)
-        os.kill(attached[0].pid, signal.SIGKILL)
-        responses = [future.result() for future in futures]
-    for response in responses:
-        assert response.status_code == 200, response.text
-        assert response.json()["choices"][0]["text"], response.text
-    retried = _orchestrator_counter(served, "ctx", "retry_requests") - retries
-    assert retried >= 1, "no context leg was in flight on the killed front end"
+        for _ in range(RETRY_BATCHES):
+            # Legs that ended on the context engine have no PrefillReady: count from here.
+            idle = _ctx_legs_in_flight(handle.counter_dir, attached.pid)
+            futures = [
+                pool.submit(_completion, served, _retry_prompt(sent + i), max_tokens=4)
+                for i in range(RETRY_REQUESTS)
+            ]
+            sent += RETRY_REQUESTS
+            while not all(future.done() for future in futures):
+                if _ctx_legs_in_flight(handle.counter_dir, attached.pid) - idle >= LOST_LEGS:
+                    # psutil checks that the pid is still this process before it signals.
+                    attached.kill()
+                    killed = True
+                    break
+                time.sleep(0.02)
+            for future in futures:
+                response = future.result()
+                assert response.status_code == 200, response.text
+                assert response.json()["choices"][0]["text"], response.text
+            if killed:
+                break
+    assert killed, (
+        f"the attached front end never had {LOST_LEGS} context legs in flight in "
+        f"{RETRY_BATCHES} batches of {RETRY_REQUESTS} requests"
+    )
+    deadline = time.monotonic() + RECORD_WAIT_S
+    while _orchestrator_counter(served, "ctx", "retry_requests") == retries:
+        assert time.monotonic() < deadline, "the orchestrator counted no context retry"
+        time.sleep(0.5)
 
-    ctx_dumps = _new_dumps(dirs["context"], seen["context"], RETRY_REQUESTS)
-    gen_dumps = _new_dumps(dirs["generation"], seen["generation"], RETRY_REQUESTS)
-    attempts = [_ctx_id(d) for d in ctx_dumps]
-    handoffs = [_gen_id(d) for d in gen_dumps]
-    assert len(attempts) == len(set(attempts)), sorted(attempts)
-    assert len(handoffs) == RETRY_REQUESTS, handoffs
+    # A lost attempt and its retry are both among what the context front ends sent.
+    attempts = [_ctx_id(d) for d in _new_dumps(dirs["context"], seen["context"], sent + 1)]
+    handoffs = [_gen_id(d) for d in _new_dumps(dirs["generation"], seen["generation"], sent)]
+    assert None not in attempts and len(attempts) == len(set(attempts)), sorted(map(str, attempts))
+    assert len(attempts) > sent, (len(attempts), sent)
+    assert len(handoffs) == sent and len(set(handoffs)) == sent, handoffs
     assert set(handoffs) <= set(attempts), (handoffs, attempts)
 
     for i in range(4):

@@ -48,7 +48,7 @@ GSM8K_SYSTEM_PROMPT = (
     "End your response with a final line exactly in the form #### <answer>."
 )
 GSM8K_FILTERS = ("strict-match", "flexible-extract")
-# Every run of GSM8K-200 must score above this, on both filters.
+# Every run of GSM8K-200 must score above this, on both filters (DQ-41).
 GSM8K_GATE = 95.0
 # deepseek_v41_gsm8k.py's gate (reference 97.0 for 200 samples): computed and reported only.
 ORIGINAL_REFERENCE = 97.0
@@ -60,8 +60,11 @@ SMOKE_CONCURRENCY = 8
 
 ENV_PAIR_DIR = "TRTLLM_TEST_DS_GSM8K_PAIR_DIR"
 ENV_ROUNDS = "TRTLLM_TEST_DS_GSM8K_ROUNDS"
+# The paired comparison's rounds and margin: the judgement WT-33 proposed for DQ-41 from form K's
+# N-0 baseline (PoC-S3 status, appendix C3: three rounds per form, the chain's mean strict-match
+# score at least form K's minus 1.0, that is two questions), within the rule of three runs per
+# arm for a first measurement.
 DEFAULT_ROUNDS = 3
-# The chain's mean strict-match score may be at most this far below form K's (2 questions).
 PAIRED_MARGIN = 1.0
 
 
@@ -90,12 +93,14 @@ class Gsm8kRun:
 
 
 def _dataset_path() -> str:
+    """The GSM8K dataset; skipped without a models root, failed when the root lacks it."""
     from ..test_llm import llm_models_root
 
     root = llm_models_root()
-    path = os.path.join(root, "datasets/openai/gsm8k") if root else ""
-    if not os.path.isdir(path):
-        pytest.skip(f"no GSM8K dataset at {path!r}")
+    if root is None:
+        pytest.skip("no models root: LLM_MODELS_ROOT is not set or does not exist")
+    path = os.path.join(root, "datasets/openai/gsm8k")
+    assert os.path.isdir(path), f"no GSM8K dataset at {path} under the models root"
     return path
 
 
@@ -301,9 +306,10 @@ def test_gsm8k_200_paired_native_vs_chain(
     """NT-108 (F-36): GSM8K-200 in rounds on both forms, every round > 95, the chain paired with K.
 
     This session runs ``TRTLLM_TEST_DS_GSM8K_ROUNDS`` rounds (default 3) on its form and appends
-    each to ``gsm8k_<form>.jsonl`` in ``TRTLLM_TEST_DS_GSM8K_PAIR_DIR``. Form K's session runs
-    first; the chain's session then pairs its rounds with form K's, round for round, and requires
-    the chain's mean strict-match score to be at least form K's minus one point (two questions).
+    each to ``gsm8k_<form>.jsonl`` in ``TRTLLM_TEST_DS_GSM8K_PAIR_DIR`` (without it, form K's
+    session only checks its rounds and the chain's session fails). Form K's session runs first;
+    the chain's session then pairs its rounds with form K's, round for round, and requires the
+    chain's mean strict-match score to be at least form K's minus one point (two questions).
     The questions only one form answered right are reported per round, not judged. Sessions may
     alternate (K, chain, K, chain, ...): the chain's session judges every round recorded so far.
     """
@@ -381,9 +387,10 @@ def test_two_endpoint_parity(served, record_property):
 
     Each prompt goes, one request at a time, to the context worker as an aggregated request
     (the reference) and to the disaggregated server (the candidate). Reported per prompt: whether
-    the first tokens agree, and the longest common prefix of the greedy outputs, in tokens (in
-    characters where an endpoint returns no token ids). Only reported: serving output is not
-    deterministic from run to run, so no threshold is set.
+    the first tokens agree, and the longest common prefix of the greedy outputs, in tokens
+    (where an endpoint returns no token ids, in characters, and the first character stands for
+    the first token). Only reported: serving output is not deterministic from run to run, so no
+    threshold is set; the test fails only when an endpoint returns no output.
     """
     reference = served.client(served.workers["context"])
     candidate = served.client()
@@ -515,9 +522,9 @@ def gen_dep2_served(groups) -> basic.Served:
 def _smoke_and_gsm8k(served, tokenizer, tmp_path, monkeypatch, layout: str) -> None:
     """deepseek_v41's smoke prompts and GSM8K-200 on the chain's engine group ``served``.
 
-    Each smoke prompt, non-streamed and streamed, gives the expected answer and stops, with more
-    than one output token (the generation leg produced some) and one hand-off: the context
-    engine sent one PrefillReady and the generation engine took one generation-only call. The
+    Each smoke prompt, non-streamed and streamed, gives the expected answer and stops with more
+    than one output token, and makes one hand-off: the context engine sent one PrefillReady and
+    the generation engine took one generation-only call. The
     long prompt is longer than twice the engines' ``--max_num_tokens``. GSM8K-200 must score
     above 95 on both filters. The DSpark acceptance length is not read: the chain carries no
     speculative-decoding statistics.

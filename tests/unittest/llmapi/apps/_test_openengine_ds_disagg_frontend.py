@@ -221,10 +221,10 @@ def _cached_tokens(usage) -> int:
 def test_usage_and_cached_tokens(served, api):
     """NT-126 (F-30, F-34, DG-86, DS-S14, DS-S15, DS-I10): usage, and the context leg's cached tokens.
 
-    The second turn of a conversation finds the first turn's prompt in the context engine's
-    reused blocks: its ``cached_tokens``, which comes from the context leg, is above 0 and below
-    the prompt. Streamed with ``include_usage`` it has the usage of the unstreamed answer, and
-    ``completion_tokens`` counts the context leg's first token once.
+    The second turn of a conversation finds the first turn's prompt in reused blocks (only the
+    context engine reuses blocks): its ``cached_tokens`` is above 0 and below the prompt.
+    Streamed with ``include_usage`` it has the prompt and completion token counts of the
+    unstreamed answer, and ``completion_tokens`` counts the context leg's first token once.
     """
     max_tokens = 8
     question = "Which sea does river 3 flow into?"
@@ -396,10 +396,12 @@ def conversation_served(groups) -> basic.Served:
 def test_conversation_id_reaches_engine(conversation_served, record_property):
     """NT-129 (F-44c, DS-S18b, DS-O10): a request's conversation reaches the context engine.
 
-    The requests of one conversation, with unrelated prompts, carry its id (the chain:
-    ``conversation_params``, which becomes the engine request's ``conversation_id``; form K: the
-    session header the ds worker hashes). The context engine counts each request after the first
-    as an admission of a conversation seen before, and places it on the conversation's rank.
+    The requests of one conversation carry its id (the chain: ``conversation_params``, which
+    becomes the engine request's ``conversation_id``; form K: the session header the ds worker
+    hashes). Their prompts share no KV-cache page with any request before them, so no rank
+    holds a prefix of them. The context engine counts each request after the first as an
+    admission of a conversation seen before, and, with no prefix to follow, pins it to the
+    conversation's rank (``DSV4_ADP_CONV_PIN``); none moves to another rank.
     """
     import time
     import uuid
@@ -413,7 +415,8 @@ def test_conversation_id_reaches_engine(conversation_served, record_property):
             served,
             "completions",
             False,
-            prompt=prompt,
+            # The conversation id first: no earlier request shares the prompt's first page.
+            prompt=f"[{conversation}] {prompt}",
             max_tokens=4,
             conversation_params={"conversation_id": conversation},
             extra_headers={"x-correlation-id": conversation},
@@ -428,7 +431,7 @@ def test_conversation_id_reaches_engine(conversation_served, record_property):
             break
         time.sleep(1)
     record_property("conversation_stats", f"seen {seen}, moved {moved}, pinned {pinned}")
-    assert seen >= again and moved == 0, (before, after)
+    assert seen >= again and pinned >= again and moved == 0, (before, after)
 
 
 LONG_CONTEXT_TOKENS = 128000
@@ -618,7 +621,9 @@ def test_multi_frontend_and_affinity_port(multi_frontend_served):
 
     served = multi_frontend_served
     conversations = _conversations()
-    rounds = 3
+    # By chance alone, two conversations of four requests each keep to one front end each,
+    # and different ones, once in 128 runs.
+    rounds = 4
     gen_before = sum(_sent_by_pid(served, "generation", BUCKET_GENERATION_ONLY).values())
     reached: dict[str, set[int]] = {c: set() for c in conversations.values()}
     for _ in range(rounds):
@@ -647,5 +652,11 @@ def test_multi_frontend_and_affinity_port(multi_frontend_served):
             reached[conversation] |= set(grown)
     assert all(len(pids) == 1 for pids in reached.values()), reached
     assert len(set.union(*reached.values())) == FRONTENDS, reached
-    gen_after = sum(_sent_by_pid(served, "generation", BUCKET_GENERATION_ONLY).values())
-    assert gen_after - gen_before == rounds * FRONTENDS, (gen_before, gen_after)
+    want = gen_before + rounds * FRONTENDS
+    deadline = time.monotonic() + COUNTER_WAIT_S
+    while True:
+        gen_after = sum(_sent_by_pid(served, "generation", BUCKET_GENERATION_ONLY).values())
+        if gen_after >= want or time.monotonic() > deadline:
+            break
+        time.sleep(0.5)
+    assert gen_after == want, (gen_before, gen_after)
