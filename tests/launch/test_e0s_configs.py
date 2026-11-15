@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""configs/e0s (E0 supplementary smoke items 1 and 2) and the job-input form of the S-FE
+"""configs/e0s (E0 supplementary smoke items 1, 2 and 3) and the job-input form of the S-FE
 fingerprint in configs/e0 (SEAMS SM-6): generators reproduce the shipped files, scenarios
 validate, templates expand, and the S-PB arm's numbers fit what S-PB accepts (no processes)."""
 
@@ -13,6 +13,7 @@ import pytest
 
 import conftest as cf
 from capcommon import jobinputs as JI
+from capcommon.templates import placeholders
 from capcommon.tiers import TierTable
 from caplaunch import scenario as sc
 from caplaunch import tiergen
@@ -45,6 +46,7 @@ def _scenarios(d):
 
 def test_e0s_scenarios_validate_and_templates_expand():
     assert _scenarios(E0S) == ["e0s-import-probe.scenario.json",
+                               "e0s-snl-frontend.scenario.json",
                                "e0s-spb-frontend.scenario.json"]
     for n in _scenarios(E0S):
         doc = _load(E0S, n)
@@ -55,8 +57,9 @@ def test_e0s_scenarios_validate_and_templates_expand():
         assert set(todo["values"]) == tiergen.tbd_names(tpl)
         vals = {k: 1000 * cf.MS if k.endswith("_ns") else (2.0 if k.startswith("rate") else 4)
                 for k in todo["values"]}
-        vals.update(gate_poll_ns=100 * cf.MS, gate_max_snapshot_age_ns=200 * cf.MS,
-                    beat_ns=10 * cf.MS)
+        vals.update(gate_poll_ns=100 * cf.MS, gate_max_snapshot_age_ns=200 * cf.MS)
+        if "beat_ns" in vals:
+            vals["beat_ns"] = 10 * cf.MS
         tt = TierTable.from_doc(tiergen.expand(tpl, vals))
         assert tt.tiers[-1].kind == "drain"
         for rd in tt.default_gate["readings"]:
@@ -120,3 +123,43 @@ def test_frontend_arms_take_the_fingerprint_from_the_job_input():
                 assert not any(isinstance(x, str) and x.startswith(("--trust_remote_code",
                                                                     "--config"))
                                for x in fe), n
+
+
+def test_snl_arm_is_the_minimal_stage0_smoke_behind_the_real_frontend():
+    """Item (3) (RUNBOOK-stage2 1.4, design 5.2 stage 0): S-NL minimal with the product server
+    module, the frontend's tokenizer settings and the tokenizer dir as model name; no --schedule
+    (the frontend's request ids); one /v1/completions httpprobe request, answered on arrival so
+    the probe is ready on its result file; streams capacity covers the probe request."""
+    doc = _load(E0S, "e0s-snl-frontend.scenario.json")
+    rs = {r["role"]: r for r in doc["roles"]}
+    assert "job_inputs" not in doc
+    a = rs["snl"]["args"]
+    assert a[a.index("--mode") + 1] == "minimal"
+    assert "--schedule" not in a and "--server-module" not in a
+    i = a.index("--tokenizer")
+    assert a[i:i + 6] == ["--tokenizer", "{param:tokenizer_dir}", "--trust-remote-code",
+                          "false", "--tokenizer-mode", "auto"]
+    assert a[a.index("--model") + 1] == "{param:tokenizer_dir}"
+    assert a[a.index("--max-stream-records") + 1] == "{param:snl_max_stream_records}"
+    assert rs["snl"]["workers"] == rs["snl"]["expected_procs"] == 1
+    fe = rs["frontend"]["args"]
+    assert fe[fe.index("--openengine-endpoint") + 1] == "{addr:snl}"
+    spb_fe = {r["role"]: r for r in _load(E0S, "e0s-spb-frontend.scenario.json")["roles"]}
+    assert [x for x in fe if x != "{addr:snl}"] == \
+        [x for x in spb_fe["frontend"]["args"] if x != "{addr:spb}"]
+    probe = rs["httpprobe"]
+    pa = probe["args"]
+    assert "--started-file" not in pa
+    assert probe["readiness"] == [{"kind": "file_exists", "path": pa[pa.index("--result") + 1]}]
+    reqs = _load(E0S, "e0s-snl-httpprobe.requests.json")
+    assert [r["endpoint"] for r in reqs] == ["/v1/completions"]
+    tpl = _load(E0S, "e0s-snl-frontend.tiers.template.json")
+    assert tpl["common"]["beat_ns"] == 0  # minimal mode has no beat
+    gate_roles = {t["role"] for rd in tpl["default_gate"]["readings"] for t in rd["terms"]}
+    assert gate_roles == {"capload", "snl"}
+    used = set()
+    for r in doc["roles"]:
+        for x in r["args"] + r.get("command", []):
+            if isinstance(x, str):
+                used.update(n for k, n in placeholders(x) if k == "param")
+    assert sorted(used) == doc["params_required"]

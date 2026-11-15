@@ -1,0 +1,15 @@
+[
+ {
+  "name": "completions-stream",
+  "endpoint": "/v1/completions",
+  "body": {
+   "model": "TBD:served-model-name",
+   "prompt": "Hello",
+   "max_tokens": 16,
+   "stream": true,
+   "stream_options": {
+    "include_usage": true
+   }
+  }
+ }
+]

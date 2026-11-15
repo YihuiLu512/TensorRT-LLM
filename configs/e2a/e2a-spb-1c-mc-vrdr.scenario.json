@@ -1,0 +1,289 @@
+{
+ "schema": "capkit.scenario/1",
+ "experiment": "E2a",
+ "name": "e2a-spb-1c-mc-vrdr",
+ "tier_table": "03_calib/E2a/register/e2a-spb-1c-mc-vrdr.tiers.json",
+ "schedule": "03_calib/E2a/register/e2a-spb-1c-mc-vrdr.schedule.capbin",
+ "prompts": "03_calib/E2a/register/e2a-spb-1c-mc-vrdr.prompts.json",
+ "probe_tier": null,
+ "probe_groups": [],
+ "stop_grace_s": 10.0,
+ "stop_order": [
+  "reader",
+  "spb",
+  "sidecar",
+  "canary"
+ ],
+ "reconcile": {
+  "schema": "capkit.reconcile/1",
+  "chains": [
+   {
+    "name": "requests",
+    "kind": "requests",
+    "gate": null,
+    "include_usage": null,
+    "hops": [
+     {
+      "role": "reader",
+      "source": "summary.counts.ok",
+      "scope": "tier"
+     },
+     {
+      "role": "spb",
+      "source": "summary.counts.streams_accepted",
+      "scope": "tier"
+     }
+    ],
+    "corrections": []
+   },
+   {
+    "name": "messages",
+    "kind": "messages",
+    "gate": "product",
+    "include_usage": null,
+    "hops": [
+     {
+      "role": "spb",
+      "source": "summary.counts.msgs_sent",
+      "scope": "tier"
+     },
+     {
+      "role": "reader",
+      "source": "summary.msgs.msgs",
+      "scope": "tier"
+     }
+    ],
+    "corrections": [
+     {
+      "name": "finished_spb",
+      "per_request": 1,
+      "hop": "spb"
+     },
+     {
+      "name": "finished_reader",
+      "per_request": 1,
+      "hop": "reader"
+     }
+    ]
+   }
+  ]
+ },
+ "roles": [
+  {
+   "role": "spb",
+   "launcher": "capkit",
+   "kind": "server",
+   "start_after": [],
+   "pin_role": "spb",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "under_test",
+   "asyncio": true,
+   "uses_grpc": true,
+   "loop": "asyncio",
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [
+    "backlog.pending_msgs",
+    "backlog.active_streams",
+    "backlog.yielded"
+   ],
+   "snapshots": "all",
+   "args": [
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "0",
+    "--prebaked",
+    "{input:prebaked}",
+    "--lag-period-us",
+    "{param:lag_period_us}",
+    "--schedule",
+    "{input:schedule}"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capstubs.prebaked_server",
+   "note": "S-PB direct mode with --schedule; one process on one core"
+  },
+  {
+   "role": "reader",
+   "launcher": "capkit",
+   "kind": "client",
+   "start_after": [
+    "spb"
+   ],
+   "pin_role": "reader",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "load_source",
+   "asyncio": true,
+   "uses_grpc": true,
+   "loop": "asyncio",
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [
+    "backlog.inflight",
+    "backlog.active_streams",
+    "backlog.read"
+   ],
+   "snapshots": "all",
+   "args": [
+    "--target-port-file",
+    "{port_file:spb}",
+    "--method",
+    "/openengine.v1.Inference/Generate",
+    "--channels-per-worker",
+    "1",
+    "--request-format",
+    "openengine",
+    "--request-bytes",
+    "{input:request_bytes}",
+    "--in-process",
+    "--msg-sample-mod",
+    "{param:msg_sample_mod}",
+    "--schedule",
+    "{input:schedule}",
+    "--lag-period-us",
+    "{param:lag_period_us}",
+    "--max-records-per-worker",
+    "{param:reader_max_records_per_worker}",
+    "--planned-msgs",
+    "--max-msg-records-per-worker",
+    "{param:reader_max_msg_records_per_worker}"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capgrpc.load",
+   "note": "capgrpc.load single-connection shape: one process, one channel"
+  },
+  {
+   "role": "sidecar",
+   "launcher": "capkit",
+   "kind": "aux",
+   "start_after": [
+    "reader"
+   ],
+   "pin_role": "sidecar",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "observer",
+   "asyncio": false,
+   "uses_grpc": false,
+   "loop": null,
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "--interval-ms",
+    "{param:sidecar_interval_ms}",
+    "--gpu-every-s",
+    "{param:sidecar_gpu_every_s}",
+    "--numa-every-s",
+    "{param:sidecar_numa_every_s}",
+    "--nvidia-smi",
+    "{nvidia_smi}"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capenv.sidecar"
+  },
+  {
+   "role": "canary",
+   "launcher": "capkit",
+   "kind": "aux",
+   "start_after": [],
+   "pin_role": "canary",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "observer",
+   "asyncio": false,
+   "uses_grpc": false,
+   "loop": null,
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "--interval-ms",
+    "{param:canary_interval_ms}"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capenv.canary"
+  }
+ ],
+ "params_required": [
+  "canary_interval_ms",
+  "lag_period_us",
+  "model_name",
+  "msg_sample_mod",
+  "reader_max_msg_records_per_worker",
+  "reader_max_records_per_worker",
+  "sidecar_gpu_every_s",
+  "sidecar_interval_ms",
+  "sidecar_numa_every_s",
+  "spb_prompt_tokens",
+  "spb_token_ids"
+ ],
+ "dims": {
+  "tokenizer": null,
+  "stub": "S-PB (capstubs.prebaked_server, direct mode)",
+  "response_timing_switches": "defaults (not set)",
+  "interpretation": "fast track (FASTTRACK-1117-PLAN v2): exploratory, judged with the E0 round-1 thresholds; rejudge or rerun after E0 v2",
+  "log_sink": "raw/logs on the node-local disk (orchestrator redirect)"
+ },
+ "note": "E2a e2a-spb-1c-mc-vrdr: capgrpc.load -> one S-PB (capstubs.prebaked_server, direct mode), single-connection shape (the shape E3-3b / E4 readers see; the weak-reader reference). TEMPLATE: every TBD value is filled at registration from the E1 / E2a results (fast track, exploratory)",
+ "job_inputs": {
+  "prebaked": {
+   "args": [
+    "--pb2-module",
+    "tensorrt_llm.grpc.openengine._generated.generation_pb2",
+    "--tier-table",
+    "{input:tier_table}",
+    "--token-ids",
+    "{param:spb_token_ids}",
+    "--prompt-tokens",
+    "{param:spb_prompt_tokens}"
+   ]
+  },
+  "request_bytes": {
+   "args": [
+    "openengine",
+    "--pb2-module",
+    "tensorrt_llm.grpc.openengine._generated.generation_pb2",
+    "--prompts",
+    "{input:prompts}",
+    "--tier-table",
+    "{input:tier_table}",
+    "--model",
+    "{param:model_name}"
+   ]
+  }
+ }
+}

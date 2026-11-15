@@ -1,0 +1,244 @@
+{
+ "schema": "capkit.tiers_template/1",
+ "experiment": "E2a",
+ "name": "e2a-snl-1c-mc-vstub",
+ "arrival": {
+  "dist": "fixed",
+  "seed": "TBD:arrival_seed"
+ },
+ "axis": {
+  "name": "M",
+  "load_key": "nominal_msgs_per_s",
+  "unit": "msg/s",
+  "order": "asc"
+ },
+ "request_timeout_ns": "TBD:request_timeout_ns",
+ "default_gate": {
+  "mode": "enforce",
+  "rule": "abs_max",
+  "readings": [
+   {
+    "name": "grpc_in_flight",
+    "terms": [
+     {
+      "role": "snl",
+      "slot": "backlog.yielded",
+      "sign": 1,
+      "agg": "sum"
+     },
+     {
+      "role": "reader",
+      "slot": "backlog.read",
+      "sign": -1,
+      "agg": "sum"
+     }
+    ],
+    "abs_max": 0
+   },
+   {
+    "name": "snl_pending",
+    "terms": [
+     {
+      "role": "snl",
+      "slot": "backlog.pending_msgs",
+      "sign": 1,
+      "agg": "sum"
+     }
+    ],
+    "abs_max": 0
+   },
+   {
+    "name": "snl_active",
+    "terms": [
+     {
+      "role": "snl",
+      "slot": "backlog.active_streams",
+      "sign": 1,
+      "agg": "sum"
+     }
+    ],
+    "abs_max": 0
+   },
+   {
+    "name": "reader_active",
+    "terms": [
+     {
+      "role": "reader",
+      "slot": "backlog.active_streams",
+      "sign": 1,
+      "agg": "sum"
+     }
+    ],
+    "abs_max": 0
+   },
+   {
+    "name": "reader_inflight",
+    "terms": [
+     {
+      "role": "reader",
+      "slot": "backlog.inflight",
+      "sign": 1,
+      "agg": "sum"
+     }
+    ],
+    "abs_max": 0
+   }
+  ],
+  "poll_ns": "TBD:gate_poll_ns",
+  "settle_polls": "TBD:gate_settle_polls",
+  "deadline_guard_ns": "TBD:gate_deadline_guard_ns",
+  "max_snapshot_age_ns": "TBD:gate_max_snapshot_age_ns"
+ },
+ "launch_inject": [
+  {
+   "role": "snl",
+   "site": "send.msg",
+   "mode": "busy",
+   "delta_ns": "TBD:delta_ns"
+  }
+ ],
+ "common": {
+  "max_tokens": "TBD:n_tokens",
+  "beat_ns": "TBD:beat_ns",
+  "tokens_per_msg": 1,
+  "stream_interval": 1,
+  "prompt_set": "short"
+ },
+ "tiers": [
+  {
+   "label": "warmup",
+   "kind": "warmup",
+   "ramp_ns": 0,
+   "window_ns": "TBD:warmup_ns",
+   "tail_ns": 0,
+   "streams_c": "TBD:c_warmup",
+   "rate_rps": "from_streams_c"
+  },
+  {
+   "label": "drain-01",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-01",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": true,
+   "streams_c": "TBD:c_0",
+   "rate_rps": "from_streams_c"
+  },
+  {
+   "label": "drain-02",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-02",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": false,
+   "streams_c": "TBD:c_1",
+   "rate_rps": "from_streams_c"
+  },
+  {
+   "label": "drain-03",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-03",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": false,
+   "streams_c": "TBD:c_2",
+   "rate_rps": "from_streams_c"
+  },
+  {
+   "label": "drain-04",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-04",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": false,
+   "streams_c": "TBD:c_3",
+   "rate_rps": "from_streams_c"
+  },
+  {
+   "label": "drain-05",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-05",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": false,
+   "streams_c": "TBD:c_4",
+   "rate_rps": "from_streams_c"
+  },
+  {
+   "label": "drain-06",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-06",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": false,
+   "streams_c": "TBD:c_5",
+   "rate_rps": "from_streams_c"
+  },
+  {
+   "label": "drain-07",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-07",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": false,
+   "streams_c": "TBD:c_6",
+   "rate_rps": "from_streams_c"
+  },
+  {
+   "label": "drain-08",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-08",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": false,
+   "streams_c": "TBD:c_7",
+   "rate_rps": "from_streams_c"
+  },
+  {
+   "label": "drain-09",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  }
+ ],
+ "note": "M axis, fixed C path: k = 1, finite streams of n_tokens renewed at C / stream duration, beat fixed, C_0 < C_1 < ... (doubling); register once per output length (two values, design 2.1); V: busy delta at the stub's send.msg (every message); TEMPLATE: every TBD value is filled at registration from the E1 / E2a results (fast track, exploratory)"
+}

@@ -50,3 +50,6 @@
 - 真产品包里 oe_sink 走的是同一份客户端代码（替身包里的文件就是探针树里的产品文件原样），所以读路径与计数口径在集群上应一致；导入整库的开销与线程未知。
 ### NOT RUN
 - 真 `tensorrt_llm` 安装里导入客户端、真 S-PB 前端模式 + 真 S-FE 下的 `--connect product`（本机只用探针树文件跑过）、oe_sink 读 S-NL、集群上的 E3-3b。
+- 2026-11-16 01:41:46 FT1-scen 开始：读完快轨计划、E2/E3/E4 卡、gen_e0/gen_e0s、E0 补充冒烟登记与计划、S-NL/oe_sink 参数；开始写 gen_e0s 第 3 项与 E2a/E3/E4 生成器（约 60 分钟）
+- 2026-11-16 01:55:01 FT1-scen 首跑 test_e2a_e3_e4_configs.py + test_e0s_configs.py（约 1–2 分钟）
+- 2026-11-16 01:58:19 FT1-scen 跑 tests/launch 全目录（约 5 分钟）

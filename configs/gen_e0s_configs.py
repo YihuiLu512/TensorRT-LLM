@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Generator of configs/e0s/*.json: the E0 supplementary smoke (RUNBOOK-stage2 1.4) items
-(1) import probe and (2) S-PB + real frontend. The JSON files are the deliverable; rerun into a
-NEW dir and diff.
+(1) import probe, (2) S-PB + real frontend and (3) S-NL minimal + real OpenEngineServer + real
+frontend. The JSON files are the deliverable; rerun into a NEW dir and diff.
 
 Usage: python configs/gen_e0s_configs.py <new output dir>
 """
@@ -174,6 +174,52 @@ w("e0s-spb-frontend.scenario.json", scen(
        "(capjobs.launches). The origin lead must cover the serial start-up: importprobe's two "
        "cold imports, S-PB importing the S-FE module, the frontend start (configs/e0s/README.md)."))
 
+# ---------------- (3) S-NL minimal + real OpenEngineServer + real frontend ----------------
+# S-NL loads the tokenizer with the product's loader, with the same fixed settings as the
+# fingerprint above (what the frontend role's argv implies); change together.
+SNL_TOKENIZER = ["--tokenizer", "{param:tokenizer_dir}", "--trust-remote-code", "false",
+                 "--tokenizer-mode", "auto"]
+snl = role("snl", "capkit", "server", "stub_out_of_domain", True, "asyncio", True, None,
+           CAPKIT_READY, ["backlog.pending_msgs", "backlog.active_streams", "backlog.yielded"],
+           "all",
+           ["--host", "127.0.0.1", "--port", "0", "--mode", "minimal",
+            "--model", "{param:tokenizer_dir}", "--token-source", "fixed",
+            "--token-ids", "{param:snl_token_ids}", "--lag-period-us", "{param:lag_period_us}",
+            "--max-stream-records", "{param:snl_max_stream_records}"] + SNL_TOKENIZER,
+           start_after=["importprobe"], module="capstubs.null_llm_server",
+           note="S-NL minimal (errata FT1-1): the real OpenEngineServer and servicer on NullLlm, "
+                "every step queued on arrival (no beat); the product server module is the "
+                "default (tensorrt_llm.grpc.openengine.server); --model = the tokenizer dir "
+                "(the frontend's served model name, as a real engine serves its model dir). "
+                "No --schedule: the frontend's "
+                "request ids are not schedule ids, so streams are filed by arrival time; "
+                "--max-stream-records >= the schedule's rows + the httpprobe request")
+fe3 = dict(fe, start_after=["snl"],
+           args=[a if a != "{addr:spb}" else "{addr:snl}" for a in fe["args"]],
+           note="as e0c-frontend-http, connected to S-NL minimal")
+probe3 = role("httpprobe", "capkit", "aux", "observer", False, None, False, None,
+              [{"kind": "file_exists", "path": "{run_dir}/raw/httpprobe.json"}], [], "none",
+              ["--addr", "{addr:frontend}", "--requests", "{param:httpprobe_requests_json}",
+               "--timeout-s", "{param:httpprobe_timeout_s}",
+               "--result", "{run_dir}/raw/httpprobe.json", "--hold"],
+              start_after=["frontend"], module="caplaunch.httpprobe",
+              note="one /v1/completions request (e0s-snl-httpprobe.requests.json). S-NL minimal "
+                   "answers on arrival (no beat), so the result is written before the origin "
+                   "(as e0c with S-FE)")
+w("e0s-snl-frontend.scenario.json", scen(
+  "e0s-snl-frontend", [importprobe(), snl, fe3, probe3, dict(cl2)],
+  ["capload", "httpprobe", "frontend", "snl", "importprobe"],
+  IMPORT_PARAMS + ["snl_token_ids", "snl_max_stream_records", "tokenizer_dir",
+                   "trtllm_serve", "httpprobe_requests_json", "httpprobe_timeout_s"]
+  + CAPLOAD_PARAMS, REQ_ONLY(), "S-NL minimal (capstubs.null_llm_server --mode minimal)",
+  tok="TBD-by-registration (configs/tokenizers/<name>)",
+  note="E0 supplementary smoke item (3) (design 5.2 stage 0, D:203): real tokenizer + frontend "
+       "+ the real OpenEngineServer on NullLlm answer one /v1/completions (httpprobe, before the "
+       "origin); capload places one low warmup rate and a gated drain. If this item fails, "
+       "E3-3a and the E8 ladder base use S-FE and E2a drops its S-NL arms (RUNBOOK-stage2 1.4). "
+       "The origin lead must cover importprobe's two cold imports, S-NL importing the product "
+       "and loading the tokenizer, and the frontend start (configs/e0s/README.md)."))
+
 # ---------------- tier-table templates ----------------
 def gate_t(readings):
     return {"mode": "enforce", "rule": "abs_max", "readings": readings,
@@ -211,6 +257,17 @@ w("e0s-spb-frontend.tiers.template.json", tpl(
             rd("spb_pending", ("spb", "backlog.pending_msgs", 1))]),
     "max_tokens 16 = the httpprobe requests' max_tokens (S-PB rejects a max_tokens without a "
     "prebaked stream); beat_ns > 0 (S-PB has no asap pacing)"))
+w("e0s-snl-frontend.tiers.template.json", tpl(
+    "e0s-snl-frontend", {"max_tokens": "TBD:max_tokens", "tokens_per_msg": 1,
+                         "stream_interval": 1, "prompt_set": "short", "beat_ns": 0},
+    gate_t([rd("loadgen_inflight", ("capload", "backlog.inflight", 1)),
+            rd("snl_active", ("snl", "backlog.active_streams", 1)),
+            rd("snl_pending", ("snl", "backlog.pending_msgs", 1))]),
+    "S-NL minimal has no beat (beat_ns 0) and serves any max_tokens"))
+w("e0s-snl-httpprobe.requests.json", [
+    {"name": "completions-stream", "endpoint": "/v1/completions",
+     "body": {"model": "TBD:served-model-name", "prompt": "Hello", "max_tokens": 16,
+              "stream": True, "stream_options": {"include_usage": True}}}])
 
 # ---------------- import probe config (caplaunch.smoke, env items) ----------------
 w("e0s-smoke.json", {
