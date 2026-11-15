@@ -20,6 +20,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from ._test_openengine_disagg_per_role import (
+    OWN_GPU_KV_CACHE,
     attention_dp_roles,
     complete,
     deployment,
@@ -39,7 +40,7 @@ def test_kv_balanced_admission_on_the_generation_side(tmp_path):
     with deployment(
         tmp_path,
         model_dir(MODEL),
-        config={"kv_cache_config": {"free_gpu_memory_fraction": 0.5, "enable_block_reuse": False}},
+        config={"kv_cache_config": OWN_GPU_KV_CACHE},
         roles=attention_dp_roles({"enable_kv_balanced_admission": True}),
     ) as served:
         with ThreadPoolExecutor(max_workers=REQUESTS) as pool:

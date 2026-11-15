@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-"""The chain proof of the multi-GPU disaggregated tests that send a leg themselves or leave early.
+"""The chain proof of the disaggregated transceiver tests that send a leg themselves or leave early.
 
 The other tests of these files send every request through the
 disaggregated server, so both legs carry traffic and need no entry.

@@ -16,7 +16,7 @@ property, so that the two runs can be set side by side.
   requests sent at once all complete, so each request frees its batch slot.
 - NT-209 (EG-01g): Eagle3 with a dynamic draft tree on both workers.
 
-Needs two GPUs of Hopper or later (NT-209: Blackwell, and 140 GB each) and
+Needs two GPUs of Hopper or later (NT-209: Blackwell, and 140000 MiB each) and
 the models under ``LLM_MODELS_ROOT`` that each test names.
 """
 
@@ -26,6 +26,8 @@ import pytest
 import torch
 
 from ._test_openengine_disagg_per_role import (
+    OWN_GPU_KV_CACHE,
+    TWO_GPUS,
     Deployment,
     Role,
     complete,
@@ -38,8 +40,6 @@ pytestmark = [pytest.mark.threadleak(enabled=False)]
 
 PROMPT = "The capital of France is"
 ANSWER = "Paris"
-TWO_GPUS = {"context": Role(gpus="0"), "generation": Role(gpus="1")}
-OWN_GPU_KV_CACHE = {"free_gpu_memory_fraction": 0.5, "enable_block_reuse": False}
 
 
 def _with_config(context: dict, generation: dict) -> dict[str, Role]:
@@ -124,8 +124,8 @@ def test_dynamic_tree_draft_tokens_cross_handoff(tmp_path, record_property):
     needs_gpus(2)
     if torch.cuda.get_device_capability(0) < (10, 0):
         pytest.skip("the dynamic draft tree needs Blackwell")
-    if torch.cuda.get_device_properties(0).total_memory < 140_000 * 2**20:
-        pytest.skip("Qwen3-30B-A3B with its draft model needs 140 GB of GPU memory")
+    if any(torch.cuda.get_device_properties(i).total_memory < 140_000 * 2**20 for i in (0, 1)):
+        pytest.skip("Qwen3-30B-A3B with its draft model needs 140000 MiB on each GPU")
     spec = {
         "decoding_type": "Eagle3",
         "max_draft_len": 4,

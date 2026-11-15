@@ -22,8 +22,9 @@ import pytest
 import requests
 
 from ._test_openengine_disagg_per_role import (
+    OWN_GPU_KV_CACHE,
     REQUEST_TIMEOUT_S,
-    Role,
+    TWO_GPUS,
     deployment,
     model_dir,
     needs_gpus,
@@ -39,13 +40,11 @@ MAX_TOKENS = 256
 def test_harmony_chat_context_first(tmp_path):
     """NT-098 (DG-67): unstreamed and streamed Harmony chats both answer, on the same prompt."""
     needs_gpus(2)
-    roles = {"context": Role(gpus="0"), "generation": Role(gpus="1")}
-    config = {"kv_cache_config": {"free_gpu_memory_fraction": 0.5, "enable_block_reuse": False}}
     with deployment(
         tmp_path,
         model_dir("gpt_oss/gpt-oss-20b"),
-        config=config,
-        roles=roles,
+        config={"kv_cache_config": OWN_GPU_KV_CACHE},
+        roles=TWO_GPUS,
         env=tiktoken_env(),
     ) as served:
         body = {

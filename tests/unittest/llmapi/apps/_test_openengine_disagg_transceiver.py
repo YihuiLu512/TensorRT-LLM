@@ -11,15 +11,16 @@ read the engines' ``Control.GetLoad``.
 - NT-198 (EG-16b): the test sends a context leg to the context worker itself
   and no generation leg. The context worker's KV cache holds one such prompt,
   not two, so the request that follows through the orchestrator is only
-  scheduled once ``kv_transfer_timeout_ms`` has freed the unclaimed blocks.
-  The expectations table says the test leaves one handoff unclaimed
+  scheduled once ``kv_transfer_timeout_ms`` has freed the unclaimed blocks:
+  the test checks it waited about that long. The expectations table says the test leaves one handoff unclaimed
   (``leg_expect: direct_ctx_leg``).
 - NT-199 (EG-16c): a streamed request with a long prompt is left as soon as
-  the orchestrator counts its context leg completed, while the generation
-  leg takes the KV cache over; the generation leg ends early, and the
-  workers serve the next request. The test records the orchestrator's
-  generation-leg counts over the request (``gen_leg_counts``), so that the
-  runs of both forms can be set side by side.
+  the orchestrator counts its context leg completed, about when the
+  generation leg starts on the KV cache handed over; whether the transfer is
+  still under way then is not controlled. The workers then serve the next
+  request. The test records the orchestrator's generation-leg counts over
+  the request (``gen_leg_counts``), so that the runs of both forms can be set
+  side by side.
 - NT-202 (EG-22b, EG-22c, EG-22d, EP-04): both workers use the C++
   transceiver runtime with KV cache manager V1 and the backend of the
   parameter; a request answers correctly. The number of KV transfer rows the
@@ -42,7 +43,9 @@ from tensorrt_llm.grpc.openengine_conventions import DISAGG_REQUEST_ID_MIN
 
 from ._test_openengine_disagg_per_role import (
     CHAIN,
+    OWN_GPU_KV_CACHE,
     REQUEST_TIMEOUT_S,
+    TWO_GPUS,
     Deployment,
     Role,
     complete,
@@ -56,10 +59,11 @@ from ._test_openengine_disagg_per_role import (
 pytestmark = [pytest.mark.threadleak(enabled=False)]
 
 MODEL = os.path.join("Qwen3", "Qwen3-0.6B")
-TWO_GPUS = {"context": Role(gpus="0"), "generation": Role(gpus="1")}
 # Prompts as token ids, so that their KV-cache size is exact.
 LONG_PROMPT_TOKENS = 640
-TRANSFER_TIMEOUT_MS = 5000
+TRANSFER_TIMEOUT_MS = 10000
+# How much sooner than the transfer timeout the follow-up request may be served.
+TIMEOUT_SLACK_S = 2
 CANCEL_PROMPT_TOKENS = 16000
 CANCEL_DECODE_TOKENS = 512
 SETTLE_S = 120
@@ -108,17 +112,21 @@ def test_kv_transfer_timeout_frees_the_context_side(tmp_path):
         left = time.monotonic()
         # Needs the blocks the unclaimed context leg holds until its transfer times out.
         answer = complete(served, _prompt(LONG_PROMPT_TOKENS, offset=7))
+        waited = time.monotonic() - left
         assert answer["choices"][0]["text"], answer
-        assert time.monotonic() - left < SETTLE_S
+        assert TRANSFER_TIMEOUT_MS / 1000 - TIMEOUT_SLACK_S <= waited < SETTLE_S, waited
 
 
-def _orchestrator_count(served: Deployment, name: str) -> int:
+def _orchestrator_counts(served: Deployment) -> dict[str, int]:
+    """The orchestrator's ``<name>_total`` counters, from one scrape, by ``<name>``."""
     text = requests.get(served.url("prometheus", "metrics"), timeout=10).text
-    return sum(
-        int(float(line.split()[-1]))
-        for line in text.splitlines()
-        if line.split("{", 1)[0].split(" ", 1)[0] == f"{name}_total"
-    )
+    counts: dict[str, int] = {}
+    for line in text.splitlines():
+        name = line.split("{", 1)[0].split(" ", 1)[0]
+        if name.endswith("_total") and not line.startswith("#"):
+            name = name.removesuffix("_total")
+            counts[name] = counts.get(name, 0) + int(float(line.split()[-1]))
+    return counts
 
 
 def _engines_idle(served: Deployment) -> bool:
@@ -133,12 +141,13 @@ def test_cancel_during_transfer_is_the_same_on_both_forms(tmp_path, record_prope
     with deployment(
         tmp_path,
         model_dir(MODEL),
-        config={"kv_cache_config": {"free_gpu_memory_fraction": 0.5, "enable_block_reuse": False}},
+        # The prompt is prefilled in one piece.
+        config={"kv_cache_config": OWN_GPU_KV_CACHE, "max_num_tokens": CANCEL_PROMPT_TOKENS + 64},
         roles=TWO_GPUS,
     ) as served:
         names = ("gen_total_requests", "gen_completed_requests", "gen_error_requests")
-        before = {name: _orchestrator_count(served, name) for name in names}
-        completed = _orchestrator_count(served, "ctx_completed_requests")
+        before = _orchestrator_counts(served)
+        completed = before.get("ctx_completed_requests", 0)
         body = {
             "model": served.model,
             "prompt": _prompt(CANCEL_PROMPT_TOKENS),
@@ -155,14 +164,15 @@ def test_cancel_during_transfer_is_the_same_on_both_forms(tmp_path, record_prope
         ) as response:
             assert response.status_code == 200, response.text
             wait_for(
-                lambda: _orchestrator_count(served, "ctx_completed_requests") > completed,
+                lambda: _orchestrator_counts(served).get("ctx_completed_requests", 0) > completed,
                 "the context leg to complete",
                 REQUEST_TIMEOUT_S,
                 interval=0.05,
             )
         # Leaving the block closed the connection unread; let the orchestrator see it.
         time.sleep(5)
-        counts = {name: _orchestrator_count(served, name) - before[name] for name in names}
+        after = _orchestrator_counts(served)
+        counts = {name: after.get(name, 0) - before.get(name, 0) for name in names}
         record_property("gen_leg_counts", json.dumps(counts, sort_keys=True))
         if CHAIN:
             wait_for(lambda: _engines_idle(served), "the engines to end the legs", SETTLE_S)

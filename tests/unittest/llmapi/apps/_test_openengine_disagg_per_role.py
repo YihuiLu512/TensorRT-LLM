@@ -39,9 +39,6 @@ from openengine_chain import direct_replay as dr  # noqa: E402
 from openengine_chain import launch  # noqa: E402
 
 CHAIN = os.environ.get("TRTLLM_TEST_OPENENGINE_CHAIN", "none") not in ("", "none")
-chain_only = pytest.mark.skipif(
-    not CHAIN, reason="reads the OpenEngine engines; set TRTLLM_TEST_OPENENGINE_CHAIN"
-)
 ENGINE_READY_TIMEOUT_S = 1800
 REQUEST_TIMEOUT_S = 300
 REGISTER_TIMEOUT_S = 120
@@ -53,11 +50,16 @@ BASE_CONFIG: Mapping[str, Any] = {
     "disable_overlap_scheduler": True,
     "cuda_graph_config": None,
 }
+# For a worker with a GPU of its own.
+OWN_GPU_KV_CACHE: Mapping[str, Any] = {"free_gpu_memory_fraction": 0.5, "enable_block_reuse": False}
 
 
 @dataclasses.dataclass(frozen=True)
 class Role:
-    """What one role's worker gets on top of the shared settings."""
+    """What one role's worker gets on top of the shared settings.
+
+    ``gpus`` lists indices into the GPUs this process sees, comma-separated.
+    """
 
     config: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     gpus: str | None = None
@@ -84,14 +86,21 @@ def needs_gpus(count: int) -> None:
         pytest.skip(f"needs {count} GPUs")
 
 
-def attention_dp_roles(generation_dp_config: Mapping[str, Any]) -> dict[str, Role]:
-    """Two GPUs per role with attention DP; the generation worker also gets ``generation_dp_config``."""
+TWO_GPUS = {"context": Role(gpus="0"), "generation": Role(gpus="1")}
+
+
+def attention_dp_roles(
+    generation_dp_config: Mapping[str, Any], context_dp_config: Mapping[str, Any] | None = None
+) -> dict[str, Role]:
+    """Two GPUs per role with attention DP, and each role's ``attention_dp_config``."""
     adp = {"tensor_parallel_size": 2, "enable_attention_dp": True}
+
+    def config(dp_config: Mapping[str, Any] | None) -> dict[str, Any]:
+        return {**adp, "attention_dp_config": dict(dp_config)} if dp_config else adp
+
     return {
-        "context": Role(config=adp, gpus="0,1"),
-        "generation": Role(
-            config={**adp, "attention_dp_config": dict(generation_dp_config)}, gpus="2,3"
-        ),
+        "context": Role(config=config(context_dp_config), gpus="0,1"),
+        "generation": Role(config=config(generation_dp_config), gpus="2,3"),
     }
 
 
@@ -100,22 +109,13 @@ class Deployment:
     model: str
     orchestrator: RemoteDisaggOpenAIServer
     workers: dict[str, RemoteOpenAIServer]
-    logs: dict[str, Path]
 
     @property
     def ctx(self) -> RemoteOpenAIServer:
         return self.workers["context"]
 
-    @property
-    def gen(self) -> RemoteOpenAIServer:
-        return self.workers["generation"]
-
     def url(self, *parts: str) -> str:
         return self.orchestrator.url_for(*parts)
-
-    def log(self, role: str) -> str:
-        path = self.logs[role]
-        return path.read_text(errors="replace") if path.exists() else ""
 
 
 def complete(served: Deployment, prompt, max_tokens: int = 16, **extra) -> dict:
@@ -140,15 +140,20 @@ def load(server: RemoteOpenAIServer) -> dict:
     return dr.get_load(server._chain_handle.engine_endpoint)
 
 
-def counter(server: RemoteOpenAIServer, key: str) -> int:
-    return int(load(server).get("attributes", {}).get(key, 0))
-
-
 def wait_for(condition, what: str, timeout: float, interval: float = 0.2) -> None:
     deadline = time.monotonic() + timeout
     while not condition():
         assert time.monotonic() < deadline, f"timed out after {timeout} s waiting for {what}"
         time.sleep(interval)
+
+
+def _physical_gpus(gpus: str, env: Mapping[str, str]) -> str:
+    """``gpus`` (indices into the GPUs ``env`` makes visible) as ``CUDA_VISIBLE_DEVICES``."""
+    visible = env.get("CUDA_VISIBLE_DEVICES")
+    if visible is None:
+        return gpus
+    listed = [gpu.strip() for gpu in visible.split(",") if gpu.strip()]
+    return ",".join(listed[int(index)] for index in gpus.split(","))
 
 
 def _registered(orchestrator: RemoteDisaggOpenAIServer) -> bool:
@@ -166,7 +171,6 @@ def deployment(
     *,
     config: Mapping[str, Any] | None = None,
     roles: Mapping[str, Role] | None = None,
-    orchestrator_config: Mapping[str, Any] | None = None,
     env: Mapping[str, str] | None = None,
 ) -> Iterator[Deployment]:
     """Start the two workers and the orchestrator; ``config`` is merged over :data:`BASE_CONFIG`."""
@@ -178,13 +182,12 @@ def deployment(
     shared = {**BASE_CONFIG, **(config or {})}
     # The workers run on this host: loopback is the only TCP device UCX needs.
     base_env = {**os.environ, "UCX_NET_DEVICES": "lo", **(env or {})}
-    logs = {role: directory / f"output_{role}.log" for role in ROLES}
 
     def worker(role: str, port: int) -> RemoteOpenAIServer:
         own = (roles or {}).get(role, Role())
         worker_env = {**base_env, **own.env}
         if own.gpus is not None:
-            worker_env["CUDA_VISIBLE_DEVICES"] = own.gpus
+            worker_env["CUDA_VISIBLE_DEVICES"] = _physical_gpus(own.gpus, base_env)
         worker_config = {
             **shared,
             **own.config,
@@ -198,7 +201,7 @@ def deployment(
             cli_args=["--server_role", role],
             llmapi_launch=False,
             extra_config=worker_config,
-            log_path=str(logs[role]),
+            log_path=str(directory / f"output_{role}.log"),
             wait=False,
         )
 
@@ -207,7 +210,6 @@ def deployment(
         "port": disagg_port,
         "disagg_cluster": cluster,
         "internal_request_auth_key": auth_key,
-        **(orchestrator_config or {}),
     }
     with worker("context", ctx_port) as ctx, worker("generation", gen_port) as gen:
         with RemoteDisaggOpenAIServer(
@@ -224,4 +226,4 @@ def deployment(
             wait_for(
                 lambda: _registered(orchestrator), "the workers to register", REGISTER_TIMEOUT_S
             )
-            yield Deployment(model, orchestrator, {"context": ctx, "generation": gen}, logs)
+            yield Deployment(model, orchestrator, {"context": ctx, "generation": gen})
