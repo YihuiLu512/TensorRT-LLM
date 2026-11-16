@@ -975,10 +975,11 @@ def _check_server_info(served: Served, role: str, info: dict) -> None:
             problems.append("ctx_info_endpoint is not one endpoint")
         else:
             # The engine's first endpoint, in whichever notation the front end writes it: with or
-            # without a scheme, an IPv6 host in brackets.
+            # without a scheme, an IPv6 host in brackets. Host names compare without case, as
+            # the parsed one is lowercase.
             first = endpoints[0]
             text = texts[0]
             parts = urllib.parse.urlsplit(text if "://" in text else f"//{text}")
-            if (parts.hostname, parts.port) != (first.host.strip("[]"), first.port):
+            if (parts.hostname, parts.port) != (first.host.strip("[]").lower(), first.port):
                 problems.append("ctx_info_endpoint is not the engine's first KV endpoint")
     assert not problems, (problems, info, engine)
