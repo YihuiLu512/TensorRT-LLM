@@ -61,7 +61,9 @@ DEFAULT_ENGINE_READY_TIMEOUT_S = 7200.0
 FRONTEND_READY_TIMEOUT_S = 60
 TERMINATE_GRACE_S = 30.0
 # How long processes killed at shutdown may take to disappear before they count as survivors.
-SURVIVOR_WAIT_S = 5.0
+# A process holding GPUs exits only once their memory is freed, which takes a large-model
+# engine well over 5 s after SIGKILL.
+SURVIVOR_WAIT_S = 60.0
 LOG_TAIL_BYTES = 16384
 # Engine starts per server: a start that lost the gRPC port the harness picked is retried on
 # a new port.
@@ -460,8 +462,10 @@ class LoggedProcess:
         problems = []
         if self.proc.poll() is None:
             problems.append(f"{self.role} pid {self.pid} still running after SIGKILL")
-        deadline = time.monotonic() + SURVIVOR_WAIT_S
+        started = time.monotonic()
+        deadline = started + SURVIVOR_WAIT_S
         survivors = left()
+        lingered = sorted(survivors)
         while survivors and time.monotonic() < deadline:
             # Processes started since the SIGKILL above get theirs here.
             for pid in survivors:
@@ -472,6 +476,11 @@ class LoggedProcess:
         if survivors:
             problems.append(
                 f"{self.role} pid {self.pid}: processes {sorted(survivors)} survived SIGKILL"
+            )
+        elif lingered:
+            self.notes.append(
+                f"{self.role} pid {self.pid}: processes {lingered} took "
+                f"{time.monotonic() - started:.1f} s to exit after SIGKILL"
             )
         table = _live_processes()
         exited = {pid for pid, start in self._known.items() if table.get(pid, ())[2:] != (start,)}

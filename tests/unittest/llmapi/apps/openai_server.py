@@ -172,11 +172,18 @@ class RemoteOpenAIServer:
     def _wait_for_server(self, *, url: str, timeout: float):
         # run health check on the first rank only.
         start = time.time()
+        # A server outside the chain while one is selected, such as the
+        # disaggregated server that chain workers register with.
+        watch_workers = self._chain_handle is None and bool(
+            os.environ.get("TRTLLM_TEST_OPENENGINE_CHAIN")
+            or os.environ.get("TRTLLM_TEST_OPENENGINE_TOPOLOGY"))
         while True:
             if self._chain_handle is not None:
                 self._check_chain_start(start, timeout)
                 # A restarted front end serves on another port.
                 url = self.url_for("health")
+            elif watch_workers:
+                self._check_chain_workers(start, timeout)
             try:
                 if self.rank == 0:
                     if self._health_status(url) == 200:
@@ -228,6 +235,18 @@ class RemoteOpenAIServer:
             self._restart_chain_frontend(problem)
         if time.time() - start > timeout:
             raise RuntimeError("Server failed to start in time.")
+
+    def _check_chain_workers(self, start: float, timeout: float):
+        # Checked before every /health request: a server outside the chain may
+        # answer it with another status, such as 503, while it waits for workers.
+        from openengine_chain.remote import exited_workers
+        exited = exited_workers()
+        if not exited and time.time() - start <= timeout:
+            return
+        self.terminate()
+        if exited:
+            raise RuntimeError("Server failed to start: " + "; ".join(exited))
+        raise RuntimeError("Server failed to start in time.")
 
     def _restart_chain_frontend(self, problem: str):
         """Restart the chain's front end on a new port, if the port was picked here."""

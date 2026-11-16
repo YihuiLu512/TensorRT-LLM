@@ -14,6 +14,9 @@ example ``_test_openai_chat.py::test_beam_search*``.
 A ``leg_expect`` entry says how the chain proof of a test run against a
 disaggregated server is judged (see ``proof.judge_disagg``); without one, both
 legs must carry traffic.
+
+A ``time_limit`` entry gives the test ``seconds`` in place of the limit of its
+own ``timeout`` mark (the pytest plugin adds the mark at collection).
 """
 
 from __future__ import annotations
@@ -43,8 +46,19 @@ CANCELS_CALLS = "cancels_calls"
 SKIP = "skip"
 # How the chain proof of a disaggregated test is judged: ``leg`` is one of LEG_VALUES.
 LEG_EXPECT = "leg_expect"
+# The test may run for ``seconds`` instead of the limit of its own timeout mark, for
+# example because the chain starts its two workers' engines one after the other.
+TIME_LIMIT = "time_limit"
 
-KINDS = (HTTP_STATUS, STARTUP_REJECTED, NO_ENGINE_TRAFFIC, CANCELS_CALLS, SKIP, LEG_EXPECT)
+KINDS = (
+    HTTP_STATUS,
+    STARTUP_REJECTED,
+    NO_ENGINE_TRAFFIC,
+    CANCELS_CALLS,
+    SKIP,
+    LEG_EXPECT,
+    TIME_LIMIT,
+)
 # Kinds that decide a test's outcome; at most one may apply to a test.
 OUTCOME_KINDS = (HTTP_STATUS, STARTUP_REJECTED, SKIP)
 
@@ -101,6 +115,7 @@ class Expectation:
     killed: tuple[str, ...] = ()
     orphans: int | None = None
     direct_requests: int | None = None
+    seconds: int | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
@@ -121,6 +136,14 @@ class Expectation:
         unknown = set(self.chains) - set(cv.CHAINS)
         if unknown or not self.chains:
             raise ValueError(f"{self.wt}: {self.match!r}: bad chains {self.chains!r}")
+        if (self.kind == TIME_LIMIT) != (self.seconds is not None):
+            raise ValueError(
+                f"{self.wt}: {self.match!r}: seconds is required for, and only for, {TIME_LIMIT}"
+            )
+        if self.seconds is not None and (type(self.seconds) is not int or self.seconds <= 0):
+            raise ValueError(
+                f"{self.wt}: {self.match!r}: seconds must be a positive int, not {self.seconds!r}"
+            )
         self._check_leg()
 
     def _check_leg(self) -> None:
@@ -203,7 +226,7 @@ def applicable(expectations: Iterable[Expectation], nodeid: str, chain: str) -> 
     """The expectations for one test; more than one outcome-deciding entry is an error."""
     tid = short_id(nodeid)
     found = [e for e in expectations if e.matches(tid, chain)]
-    for kinds in (OUTCOME_KINDS, (LEG_EXPECT,)):
+    for kinds in (OUTCOME_KINDS, (LEG_EXPECT,), (TIME_LIMIT,)):
         clashing = [e for e in found if e.kind in kinds]
         if len(clashing) > 1:
             raise ValueError(
@@ -220,6 +243,11 @@ def outcome_expectation(found: Sequence[Expectation]) -> Expectation | None:
 def leg_expectation(found: Sequence[Expectation]) -> Expectation | None:
     """The test's ``leg_expect`` entry; :func:`applicable` allows at most one."""
     return next((e for e in found if e.kind == LEG_EXPECT), None)
+
+
+def time_limit(found: Sequence[Expectation]) -> Expectation | None:
+    """The test's ``time_limit`` entry; :func:`applicable` allows at most one."""
+    return next((e for e in found if e.kind == TIME_LIMIT), None)
 
 
 def http_status_of(error: BaseException) -> int | None:

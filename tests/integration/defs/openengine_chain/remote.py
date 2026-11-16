@@ -23,6 +23,7 @@ from .launch import (
     _address,
     _results_dir,
     _stop_waits,
+    handles_since,
     launch_serve_command,
     launch_serve_commands,
     pick_port,
@@ -94,6 +95,27 @@ def launch_for_remote_server(
         if chain == cv.CHAIN_NONE:
             return None
     return launch_serve_command(launch_cmd, env=env, sink=sink)
+
+
+def exited_workers() -> list[str]:
+    """Why each disaggregated-server worker started here, and not stopped, has exited.
+
+    A server outside the chain, such as the disaggregated server those workers
+    register with, cannot tell that one has exited: without this it waits for
+    the worker until its own limit.
+    """
+    reasons = []
+    for handle in handles_since(0):
+        if not handle.alive or handle.role is None:
+            continue
+        rc = handle.poll()
+        if rc is None:
+            continue
+        why = handle.frontend_port_problem() or (
+            f"logs {handle.frontend_log} and {handle.engine_log}"
+        )
+        reasons.append(f"the {handle.role} worker on port {handle.port} exited ({rc}): {why}")
+    return reasons
 
 
 def visible_gpus(env: Mapping[str, str]) -> list[str]:

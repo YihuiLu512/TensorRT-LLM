@@ -225,6 +225,10 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
         decide = ex.outcome_expectation(found)
         if decide is not None and decide.kind == ex.SKIP:
             item.add_marker(pytest.mark.skip(reason=f"{decide.wt}: {decide.reason}"))
+        limit = ex.time_limit(found)
+        if limit is not None:
+            # First among the item's own marks, so pytest-timeout reads it before the test's.
+            item.add_marker(pytest.mark.timeout(limit.seconds), append=False)
 
 
 @pytest.hookimpl(hookwrapper=True)
