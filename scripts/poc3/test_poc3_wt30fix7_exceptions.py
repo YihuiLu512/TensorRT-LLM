@@ -319,6 +319,11 @@ def test_every_exception_listing_its_changes_is_for_one_work_item():
         (f"{poc}/wt70/test_poc3_wt70_arms.py", "WT-71"),
         (f"{check_ownership.CHAIN}/tests/test_expectations.py", "WT-62"),
         (f"{check_ownership.CHAIN}/tests/test_expectations.py", "WT-57-fix1"),
+        (f"{check_ownership.CHAIN}/expectations/__init__.py", "WT-60-fix1"),
+        (f"{check_ownership.CHAIN}/pytest_plugin.py", "WT-60-fix1"),
+        (f"{check_ownership.CHAIN}/launch.py", "WT-60-fix1"),
+        (f"{check_ownership.CHAIN}/remote.py", "WT-60-fix1"),
+        (f"{check_ownership.APPS}/openai_server.py", "WT-60-fix1"),
     }
     assert check_ownership.NAMED_FIXES == [
         "WT-30-fix15",
@@ -326,6 +331,7 @@ def test_every_exception_listing_its_changes_is_for_one_work_item():
         "WT-53-fix1",
         "WT-55-fix1",
         "WT-57-fix1",
+        "WT-60-fix1",
     ]
 
 

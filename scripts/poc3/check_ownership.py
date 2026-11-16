@@ -22,21 +22,25 @@ under a ``shared`` or ``exception`` rule of its own), ``shared`` (this item may
 change only the part the note names; the rest of the file belongs to its owner,
 which may be another item or code outside PoC-S3) or ``exception`` (a one-off
 allowance the note describes). An ``exception`` may also limit what it allows,
-in one of three forms (patterns are regular expressions in which ``\d`` and
+in one of four forms (patterns are regular expressions in which ``\d`` and
 ``\w`` match ASCII characters only):
 
 - ``lines``: the range may only replace lines of that file in place, each
   removed and each added line matching one of the patterns in full;
 - ``changes``: each hunk of the range's diff (``-U0``) must be one of the
   listed changes, each listed change used at most once: in the top-level
-  statement the change names, with the same number of removed and of added
-  lines, each matching its counterpart in the change in full, in order;
+  statement the change names (or, for a change that names the statements it
+  touches instead, touching exactly those), with the same number of removed
+  and of added lines, each matching its counterpart in the change in full, in
+  order;
 - ``redact``: each hunk of the range's diff (``-U0``) replaces lines in place,
   as many added as removed, each added line differing from its removed
   counterpart only where it has one of the listed placeholders, each standing
   for a whole path start its pattern matches (see :func:`_redacts`); with a
   ``header``, one hunk may instead add only that line, as the second line of
-  the file.
+  the file;
+- ``blob``: the range creates the file, absent at the merge base, as a regular
+  file that is not executable with exactly the content of that git blob.
 
 A top-level statement runs from its first line (its first decorator) up to the
 line before the next top-level statement of any kind. A ``def`` or ``class`` is
@@ -46,12 +50,16 @@ A hunk lies in a named statement when its removed lines lie in it in the file at
 the merge base, and its added lines lie in it in the file at the head; a hunk
 that only adds lines must also follow or precede a line of that statement at the
 merge base, and the file must be Python the interpreter running the check parses
-at both. A ``changes`` exception may also list the statements it renames, each
-from one name to another: the file must have a statement by the first name and
-none by the second at the merge base, and the other way round at the head; the
-changes are matched as if the statement already went by the second at the
-merge base. With any form nothing
-else about the file may change (its mode or final newline, for example);
+at both. A hunk touches the statements its removed lines lie in at the merge
+base, those its added lines lie in at the head and, when it removes nothing,
+the one the line it follows lies in at the merge base; lines in no named
+statement (a module docstring, say) count as one more. A ``changes``
+exception may also list the statements it renames, each from one name to
+another: the file must have a statement by the first name and none by the
+second at the merge base, and the other way round at the head; the changes
+are matched as if the statement already went by the second at the merge base.
+With any form nothing else about the file may change (its mode or final
+newline, for example);
 otherwise the path is out of bounds. Paths changed under ``shared`` and
 ``exception`` rules are listed for a reviewer to check by hand.
 A pattern starting with ``!`` excludes paths from the rules before it.
@@ -109,8 +117,11 @@ class Change(NamedTuple):
     removed: tuple[str, ...]  # patterns of its removed lines, in order
     added: tuple[str, ...]  # patterns of its added lines, in order
     # The top-level statement it lies in (see _hunk_regions); one the exception renames goes by
-    # its name at the head.
+    # its name at the head. Empty for a change that names ``around`` instead.
     within: str
+    # Instead of ``within``: every top-level statement the hunk touches (see _hunk_touches), None
+    # standing for lines in no named statement.
+    around: tuple[str | None, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -135,6 +146,9 @@ class Rule:
     # For an exception: the one work item it allows (a fix by its own name), until that item has
     # landed; empty for the work item whose entry lists it and all of that item's fixes.
     item: str = ""
+    # For an exception: the git blob id of the file, which the range must create with exactly
+    # this content (a regular, non-executable file absent at the merge base).
+    blob: str = ""
 
 
 def _own(*patterns: str, repo: str = TRTLLM) -> list[Rule]:
@@ -155,11 +169,19 @@ def _exception(
     item: str = "",
     redact: tuple[tuple[str, str], ...] = (),
     header: str = "",
+    blob: str = "",
 ) -> Rule:
     if item:
         parse_task(item)  # raises ValueError for a name that is not a work item
-    if sum(map(bool, (lines, changes, redact))) > 1:
-        raise ValueError(f"{pattern}: an exception lists one of lines, changes and redact")
+    if sum(map(bool, (lines, changes, redact, blob))) > 1:
+        raise ValueError(
+            f"{pattern}: an exception lists one of lines, changes and redact, or a blob alone"
+        )
+    if blob and not re.fullmatch(r"[0-9a-f]{40}", blob):
+        raise ValueError(f"{pattern}: an exception's blob is a full git blob id, not {blob!r}")
+    for change in changes:
+        if bool(change.within) == bool(change.around):
+            raise ValueError(f"{pattern}: a change names either the statement it lies in or around")
     if header and not redact:
         raise ValueError(f"{pattern}: an exception adds a header line only with redact")
     for placeholder, start in redact:
@@ -181,7 +203,9 @@ def _exception(
             raise ValueError(
                 f"{pattern}: renaming {old} to {new} needs a change in {new}, none in {old}"
             )
-    return Rule(pattern, "exception", note, repo, lines, changes, renames, redact, header, item)
+    return Rule(
+        pattern, "exception", note, repo, lines, changes, renames, redact, header, item, blob
+    )
 
 
 def _change(within: str, removed: tuple[str, ...] = (), added: tuple[str, ...] = ()) -> Change:
@@ -190,6 +214,22 @@ def _change(within: str, removed: tuple[str, ...] = (), added: tuple[str, ...] =
         tuple(re.escape(line) for line in removed),
         tuple(re.escape(line) for line in added),
         within,
+    )
+
+
+def _change_around(
+    around: tuple[str | None, ...], removed: tuple[str, ...] = (), added: tuple[str, ...] = ()
+) -> Change:
+    """A hunk touching exactly the statements ``around`` that removes ``removed`` and adds ``added``.
+
+    For a hunk that adds a top-level statement, or a comment or docstring
+    outside one, which no single statement holds at both ends.
+    """
+    return Change(
+        tuple(re.escape(line) for line in removed),
+        tuple(re.escape(line) for line in added),
+        "",
+        tuple(around),
     )
 
 
@@ -222,6 +262,9 @@ INVARIANT_ADDITIONS = "scripts/poc3/invariant_additions.yaml"
 # Gate files only WT-30 and its fixes may change (see the module docstring).
 GATE_FILES = ("scripts/poc3/**", f"!{INVARIANT_ADDITIONS}", "!scripts/poc3/wt54_*")
 EXISTING_TESTS = "add tests; existing assertions unchanged (tasks.md §0.3)"
+WT60_FIX1 = "WT-60-fix1"
+# The git blob id of the harness's self-tests of its waits that WT-60-fix1 adds.
+WT60_FIX1_TEST_WAITS = "0101d96484c318e1b6b3b7f0ab5718acc3c3125a"
 
 
 def _per_item(item: str) -> list[Rule]:
@@ -1181,7 +1224,234 @@ OWNERSHIP: dict[str, list[Rule]] = {
             ),
         ),
     ],
-    "WT-60": [],
+    # WT-60-fix1 (N132): XD-313's time limit on the chain (the expectations and the plugin,
+    # WT-38's), SURVIVOR_WAIT_S and the exit note (launch.py), and the orchestrator's wait for
+    # chain workers that have exited (remote.py, openai_server.py; WT-37's), with the harness's
+    # self-tests of the three in a new file.
+    "WT-60": [
+        _exception(
+            f"{CHAIN}/expectations/__init__.py",
+            "WT-60-fix1 only: the time_limit kind (TIME_LIMIT, KINDS, Expectation.seconds and its"
+            " checks, applicable, time_limit)",
+            item=WT60_FIX1,
+            changes=(
+                _change_around(
+                    (None,),
+                    added=(
+                        "",
+                        "A ``time_limit`` entry gives the test ``seconds`` in place of the limit"
+                        " of its",
+                        "own ``timeout`` mark (the pytest plugin adds the mark at collection).",
+                    ),
+                ),
+                _change_around(
+                    ("LEG_EXPECT", "TIME_LIMIT"),
+                    added=(
+                        "# The test may run for ``seconds`` instead of the limit of its own"
+                        " timeout mark, for",
+                        "# example because the chain starts its two workers' engines one after"
+                        " the other.",
+                        'TIME_LIMIT = "time_limit"',
+                    ),
+                ),
+                _change(
+                    "KINDS",
+                    (
+                        "KINDS = (HTTP_STATUS, STARTUP_REJECTED, NO_ENGINE_TRAFFIC, CANCELS_CALLS,"
+                        " SKIP, LEG_EXPECT)",
+                    ),
+                    (
+                        "KINDS = (",
+                        "    HTTP_STATUS,",
+                        "    STARTUP_REJECTED,",
+                        "    NO_ENGINE_TRAFFIC,",
+                        "    CANCELS_CALLS,",
+                        "    SKIP,",
+                        "    LEG_EXPECT,",
+                        "    TIME_LIMIT,",
+                        ")",
+                    ),
+                ),
+                _change("Expectation", added=("    seconds: int | None = None",)),
+                _change(
+                    "Expectation",
+                    added=(
+                        "        if (self.kind == TIME_LIMIT) != (self.seconds is not None):",
+                        "            raise ValueError(",
+                        '                f"{self.wt}: {self.match!r}: seconds is required for,'
+                        ' and only for, {TIME_LIMIT}"',
+                        "            )",
+                        "        if self.seconds is not None and (type(self.seconds) is not int"
+                        " or self.seconds <= 0):",
+                        "            raise ValueError(",
+                        '                f"{self.wt}: {self.match!r}: seconds must be a positive'
+                        ' int, not {self.seconds!r}"',
+                        "            )",
+                    ),
+                ),
+                _change(
+                    "applicable",
+                    ("    for kinds in (OUTCOME_KINDS, (LEG_EXPECT,)):",),
+                    ("    for kinds in (OUTCOME_KINDS, (LEG_EXPECT,), (TIME_LIMIT,)):",),
+                ),
+                _change_around(
+                    ("leg_expectation", "time_limit"),
+                    added=(
+                        "def time_limit(found: Sequence[Expectation]) -> Expectation | None:",
+                        '    """The test\'s ``time_limit`` entry; :func:`applicable` allows at most'
+                        ' one."""',
+                        "    return next((e for e in found if e.kind == TIME_LIMIT), None)",
+                        "",
+                        "",
+                    ),
+                ),
+            ),
+        ),
+        _exception(
+            f"{CHAIN}/pytest_plugin.py",
+            "WT-60-fix1 only: the timeout mark of a time_limit entry in"
+            " pytest_collection_modifyitems",
+            item=WT60_FIX1,
+            changes=(
+                _change(
+                    "pytest_collection_modifyitems",
+                    added=(
+                        "        limit = ex.time_limit(found)",
+                        "        if limit is not None:",
+                        "            # First among the item's own marks, so pytest-timeout reads it"
+                        " before the test's.",
+                        "            item.add_marker(pytest.mark.timeout(limit.seconds),"
+                        " append=False)",
+                    ),
+                ),
+            ),
+        ),
+        _exception(
+            f"{CHAIN}/launch.py",
+            "WT-60-fix1 only: SURVIVOR_WAIT_S and the note of processes slow to exit in"
+            " LoggedProcess.stop",
+            item=WT60_FIX1,
+            changes=(
+                _change_around(
+                    ("TERMINATE_GRACE_S", "SURVIVOR_WAIT_S"),
+                    ("SURVIVOR_WAIT_S = 5.0",),
+                    (
+                        "# A process holding GPUs exits only once their memory is freed, which"
+                        " takes a large-model",
+                        "# engine well over 5 s after SIGKILL.",
+                        "SURVIVOR_WAIT_S = 60.0",
+                    ),
+                ),
+                _change(
+                    "LoggedProcess",
+                    ("        deadline = time.monotonic() + SURVIVOR_WAIT_S",),
+                    (
+                        "        started = time.monotonic()",
+                        "        deadline = started + SURVIVOR_WAIT_S",
+                    ),
+                ),
+                _change("LoggedProcess", added=("        lingered = sorted(survivors)",)),
+                _change(
+                    "LoggedProcess",
+                    added=(
+                        "        elif lingered:",
+                        "            self.notes.append(",
+                        '                f"{self.role} pid {self.pid}: processes {lingered} took "',
+                        '                f"{time.monotonic() - started:.1f} s to exit after'
+                        ' SIGKILL"',
+                        "            )",
+                    ),
+                ),
+            ),
+        ),
+        _exception(
+            f"{CHAIN}/remote.py",
+            "WT-60-fix1 only: exited_workers and its import of handles_since",
+            item=WT60_FIX1,
+            changes=(
+                _change("import", added=("    handles_since,",)),
+                _change_around(
+                    ("launch_for_remote_server", "exited_workers"),
+                    added=(
+                        "def exited_workers() -> list[str]:",
+                        '    """Why each disaggregated-server worker started here, and not'
+                        " stopped, has exited.",
+                        "",
+                        "    A server outside the chain, such as the disaggregated server those"
+                        " workers",
+                        "    register with, cannot tell that one has exited: without this it"
+                        " waits for",
+                        "    the worker until its own limit.",
+                        '    """',
+                        "    reasons = []",
+                        "    for handle in handles_since(0):",
+                        "        if not handle.alive or handle.role is None:",
+                        "            continue",
+                        "        rc = handle.poll()",
+                        "        if rc is None:",
+                        "            continue",
+                        "        why = handle.frontend_port_problem() or (",
+                        '            f"logs {handle.frontend_log} and {handle.engine_log}"',
+                        "        )",
+                        '        reasons.append(f"the {handle.role} worker on port {handle.port}'
+                        ' exited ({rc}): {why}")',
+                        "    return reasons",
+                        "",
+                        "",
+                    ),
+                ),
+            ),
+        ),
+        _exception(
+            f"{APPS}/openai_server.py",
+            "WT-60-fix1 only: watch_workers and _check_chain_workers in RemoteOpenAIServer",
+            item=WT60_FIX1,
+            changes=(
+                _change(
+                    "RemoteOpenAIServer",
+                    added=(
+                        "        # A server outside the chain while one is selected, such as the",
+                        "        # disaggregated server that chain workers register with.",
+                        "        watch_workers = self._chain_handle is None and bool(",
+                        '            os.environ.get("TRTLLM_TEST_OPENENGINE_CHAIN")',
+                        '            or os.environ.get("TRTLLM_TEST_OPENENGINE_TOPOLOGY"))',
+                    ),
+                ),
+                _change(
+                    "RemoteOpenAIServer",
+                    added=(
+                        "            elif watch_workers:",
+                        "                self._check_chain_workers(start, timeout)",
+                    ),
+                ),
+                _change(
+                    "RemoteOpenAIServer",
+                    added=(
+                        "    def _check_chain_workers(self, start: float, timeout: float):",
+                        "        # Checked before every /health request: a server outside the"
+                        " chain may",
+                        "        # answer it with another status, such as 503, while it waits"
+                        " for workers.",
+                        "        from openengine_chain.remote import exited_workers",
+                        "        exited = exited_workers()",
+                        "        if not exited and time.time() - start <= timeout:",
+                        "            return",
+                        "        self.terminate()",
+                        "        if exited:",
+                        '            raise RuntimeError("Server failed to start: " + "; ".join(exited))',
+                        '        raise RuntimeError("Server failed to start in time.")',
+                        "",
+                    ),
+                ),
+            ),
+        ),
+        _exception(
+            f"{CHAIN}/tests/test_waits.py",
+            "WT-60-fix1 only: creating the harness's self-tests of its waits, as registered",
+            item=WT60_FIX1,
+            blob=WT60_FIX1_TEST_WAITS,
+        ),
+    ],
     "WT-61": [],
     "WT-62": _own(
         f"{APPS}/_test_openengine_ds_disagg_*.py",
@@ -1292,6 +1562,8 @@ def _named_fixes(table: dict[str, list[Rule]]) -> list[str]:
                 raise ValueError(f"{rule.pattern}: an exception listing changes names no item")
             if rule.redact and not rule.item:
                 raise ValueError(f"{rule.pattern}: an exception listing placeholders names no item")
+            if rule.blob and not rule.item:
+                raise ValueError(f"{rule.pattern}: an exception creating a file names no item")
             if not rule.item:
                 continue
             if parse_task(rule.item)[0] != name:
@@ -1449,6 +1721,28 @@ def _hunk_regions(base: list[str | None], head: list[str | None], span: list[int
     return {name for name in names if name is not None}
 
 
+def _hunk_touches(
+    base: list[str | None], head: list[str | None], span: list[int]
+) -> set[str | None] | None:
+    """Every top-level statement a hunk touches, given the regions of the file; None if none fit.
+
+    ``span`` is the hunk's (old start, old count, new start, new count). The
+    hunk touches the statements its removed lines lie in at the merge base,
+    those its added lines lie in at the head, and, when it removes nothing, the
+    one the line it follows lies in at the merge base. None in the set stands
+    for lines in no named statement, the lines before the first statement
+    included.
+    """
+    old_start, old_count, new_start, new_count = span
+    if old_start - 1 + old_count > len(base) or new_start - 1 + new_count > len(head):
+        return None
+    touched = set(base[old_start - 1 : old_start - 1 + old_count])
+    if not old_count:
+        touched.add(base[old_start - 1] if old_start else None)
+    touched.update(head[new_start - 1 : new_start - 1 + new_count])
+    return touched
+
+
 def _regions_at(repo_dir: str, rev: str, path: str) -> list[str | None] | None:
     """:func:`_regions` of ``path`` at ``rev``; None when it cannot be read or parsed."""
     found = run_git(repo_dir, "show", f"{rev}:{path}", check=False)
@@ -1519,11 +1813,14 @@ def disallowed_lines(
         f":(top,literal){path}",
     ).stdout.decode("utf-8", errors="replace")
     patterns = [re.compile(line, re.ASCII) for line in rule.lines]
+    if rule.blob:
+        return _created_differently(rule, repo_dir, base_ref, head_ref, path)
     unused = [
         (
             [re.compile(p, re.ASCII) for p in change.removed],
             [re.compile(p, re.ASCII) for p in change.added],
             change.within,
+            set(change.around),
         )
         for change in rule.changes
     ]
@@ -1543,13 +1840,20 @@ def disallowed_lines(
         renamed = dict(rule.renames)
         base_regions = [renamed.get(name, name) for name in base_regions]
     bad = []
-    # The hunk being read: its header, the statements it lies in, its removed and added lines.
-    hunk: tuple[str, set[str], list[str], list[str]] | None = None
+    # The hunk being read: its header, the statement it lies in (see _hunk_regions), the
+    # statements it touches (see _hunk_touches), its removed and added lines.
+    hunk: tuple[str, set[str], set[str | None] | None, list[str], list[str]] | None = None
 
-    def matches(change: tuple, where: set[str], removed: list[str], added: list[str]) -> bool:
-        old, new, within = change
+    def matches(
+        change: tuple,
+        where: set[str],
+        touched: set[str | None] | None,
+        removed: list[str],
+        added: list[str],
+    ) -> bool:
+        old, new, within, around = change
         return (
-            within in where
+            (touched == around if around else within in where)
             and len(old) == len(removed)
             and len(new) == len(added)
             and all(p.fullmatch(line) for p, line in zip(old, removed))
@@ -1559,7 +1863,7 @@ def disallowed_lines(
     def end_hunk() -> None:
         if hunk is None or not (rule.changes or rule.redact):
             return
-        header, where, removed, added = hunk
+        header, where, touched, removed, added = hunk
         if rule.redact:
             span = _HUNK.match(header)
             if span is None:
@@ -1578,7 +1882,9 @@ def disallowed_lines(
                     if not _redacts(rule.redact, old, new)
                 )
             return
-        index = next((i for i, c in enumerate(unused) if matches(c, where, removed, added)), None)
+        index = next(
+            (i for i, c in enumerate(unused) if matches(c, where, touched, removed, added)), None
+        )
         if index is None:
             bad.append(f"{header}: not one of the allowed changes")
         else:
@@ -1591,7 +1897,8 @@ def disallowed_lines(
             # (old start, old count, new start, new count); a missing count is 1.
             span = [int(n) if n is not None else 1 for n in match.groups()] if match else None
             where = _hunk_regions(base_regions, head_regions, span) if span else set()
-            hunk = (line, where, [], [])
+            touched = _hunk_touches(base_regions, head_regions, span) if span else None
+            hunk = (line, where, touched, [], [])
             if span is None:
                 bad.append(f"{line}: not a hunk header")
             elif rule.lines and span[:2] != span[2:]:
@@ -1600,12 +1907,33 @@ def disallowed_lines(
             if not line.startswith(_PLAIN_HEADER):
                 bad.append(line)
         elif line[:1] in ("+", "-"):
-            hunk[2 if line[0] == "-" else 3].append(line[1:])
+            hunk[3 if line[0] == "-" else 4].append(line[1:])
             if rule.lines and not any(p.fullmatch(line[1:]) for p in patterns):
                 bad.append(line)
         else:
             bad.append(line)  # "\ No newline at end of file", or anything unexpected
     end_hunk()
+    return bad
+
+
+def _created_differently(
+    rule: Rule, repo_dir: str, base_ref: str, head_ref: str, path: str
+) -> list[str]:
+    """How ``base_ref...head_ref`` differs from creating ``path`` as the blob ``rule`` names."""
+    merge_base = run_git(repo_dir, "merge-base", base_ref, head_ref).stdout.decode().strip()
+    bad = []
+
+    def entry(rev: str) -> str:
+        found = run_git(
+            repo_dir, "ls-tree", "-z", "--full-name", rev, "--", f":(top,literal){path}"
+        )
+        return found.stdout.decode("utf-8", errors="replace")
+
+    if entry(merge_base):
+        bad.append(f"{path} exists at the merge base")
+    at_head = entry(head_ref)
+    if at_head != f"100644 blob {rule.blob}\t{path}\0":
+        bad.append(f"{path} at the head is not the regular file {rule.blob}: {at_head!r}")
     return bad
 
 
@@ -1650,7 +1978,7 @@ def check(task: str, revision_range: str, repo_dir: str = ".", repo: str | None 
                 " has landed at the base)"
             )
             status = 1
-        elif (rule.lines or rule.changes or rule.redact) and (
+        elif (rule.lines or rule.changes or rule.redact or rule.blob) and (
             bad := disallowed_lines(rule, repo_dir, base_ref, head_ref, path)
         ):
             print(
