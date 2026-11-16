@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# No entry. This work item's end-to-end tests run DeepSeek-V4.1-Flash on the ds engine (case-03), the
+# context and the generation engine on two GPUs each, which a one-GPU runner entry cannot start. Its
+# runs are described in verified/WT-62.yaml.

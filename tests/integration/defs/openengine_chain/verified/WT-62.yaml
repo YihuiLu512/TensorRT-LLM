@@ -1,0 +1,2310 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# End-to-end checks of case-03: DeepSeek-V4.1-Flash on the ds engine, one node of four GB300 GPUs,
+# the context engine on GPUs 0-1 (attention DP) and the generation engine on GPUs 2-3. Each case
+# ran three rounds on the chain (TRTLLM_TEST_OPENENGINE_CHAIN=ds) and, unless only the chain
+# serves it, three rounds in form K (the ds proxy and workers). Each junit path is relative to the
+# result directory of the work item's runs, which its status file records: run-<job>/r<round>-none/
+# holds form K's junit and run-<job>/r<round>-ds/junit/ the chain's. The cases that later commits
+# changed or affected ran again at the last of them, and their entries name that commit; a row with
+# cases at both commits has an entry for each.
+entries:
+  # NT-101: K and chain ran
+  - row: F-01@03
+    features:
+    - F-01
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_chat_and_completions_basic
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-109: K and chain ran
+  - row: F-01@03
+    features:
+    - F-01
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_gsm8k.py::test_two_endpoint_parity
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901714/r1-ds/junit/
+    - run-1901714/r1-none/
+    - run-1901714/r2-ds/junit/
+    - run-1901714/r2-none/
+    - run-1901714/r3-ds/junit/
+    - run-1901714/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-101, NT-102, NT-217: K and chain ran
+  # NT-102 fails on the chain, 3 runs of 3: a completion with echo fails in the orchestrator (an
+  # existing defect, N77). Form K passes.
+  - row: F-02@03
+    features:
+    - F-02
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_chat_and_completions_basic
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_completions_echo
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_gsm8k.py::test_deepseek_v41_smoke_and_gsm8k_ctx_dep2_gen_tp2
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    - run-1896144/r1-ds/junit/
+    - run-1896144/r1-none/
+    - run-1896144/r2-ds/junit/
+    - run-1896144/r2-none/
+    - run-1896144/r3-ds/junit/
+    - run-1896144/r3-none/
+    result: failed
+    chain_proof: ok
+  # NT-109: K and chain ran
+  - row: F-02@03
+    features:
+    - F-02
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_gsm8k.py::test_two_endpoint_parity
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901714/r1-ds/junit/
+    - run-1901714/r1-none/
+    - run-1901714/r2-ds/junit/
+    - run-1901714/r2-none/
+    - run-1901714/r3-ds/junit/
+    - run-1901714/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-103: chain ran
+  - row: F-03@03
+    features:
+    - F-03
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_responses_and_messages
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-103: chain ran
+  - row: F-04@03
+    features:
+    - F-04
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_responses_and_messages
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-105: chain ran
+  - row: F-05a@03
+    features:
+    - F-05a
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_models_and_model_name
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-106: chain ran
+  # NT-106 [server_info] fails on the chain, 3 runs of 3: the ds engine reports no KV block size in
+  # its ServerInfo (an existing defect, Z3). The other endpoints pass. The test is the chain's only:
+  # form K has no worker front ends.
+  - row: F-05b@03
+    features:
+    - F-05b
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_worker_frontend_endpoints_direct
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901714/r1-ds/junit/
+    - run-1901714/r1-none/
+    - run-1901714/r2-ds/junit/
+    - run-1901714/r2-none/
+    - run-1901714/r3-ds/junit/
+    - run-1901714/r3-none/
+    result: failed
+    chain_proof: ok
+  # NT-106: chain ran
+  # NT-106 [server_info] fails on the chain, 3 runs of 3: the ds engine reports no KV block size in
+  # its ServerInfo (an existing defect, Z3). The other endpoints pass. The test is the chain's only:
+  # form K has no worker front ends.
+  - row: F-05c@03
+    features:
+    - F-05c
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_worker_frontend_endpoints_direct
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901714/r1-ds/junit/
+    - run-1901714/r1-none/
+    - run-1901714/r2-ds/junit/
+    - run-1901714/r2-none/
+    - run-1901714/r3-ds/junit/
+    - run-1901714/r3-none/
+    result: failed
+    chain_proof: ok
+  # NT-107: K and chain ran
+  # NT-107 passes on both forms; its chain proof is incomplete: the /health_generate call makes a
+  # Generate call that no HTTP request of the front end counts.
+  - row: F-05d@03
+    features:
+    - F-05d
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_health_generate_and_aggregated_direct
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    result: passed
+    chain_proof: incomplete
+  # NT-106: chain ran
+  # NT-106 [server_info] fails on the chain, 3 runs of 3: the ds engine reports no KV block size in
+  # its ServerInfo (an existing defect, Z3). The other endpoints pass. The test is the chain's only:
+  # form K has no worker front ends.
+  - row: F-06@03
+    features:
+    - F-06
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_worker_frontend_endpoints_direct
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901714/r1-ds/junit/
+    - run-1901714/r1-none/
+    - run-1901714/r2-ds/junit/
+    - run-1901714/r2-none/
+    - run-1901714/r3-ds/junit/
+    - run-1901714/r3-none/
+    result: failed
+    chain_proof: ok
+  # NT-100, NT-124: chain ran
+  # NT-176 is WT-56's CPU case.
+  - row: F-07@03
+    features:
+    - F-07
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_startup_tokenizer_and_fingerprint
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_frontend.py::test_chat_template_and_kwargs
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    - run-1893572/r1-ds/junit/
+    - run-1893572/r1-none/
+    - run-1893572/r2-ds/junit/
+    - run-1893572/r2-none/
+    - run-1893572/r3-ds/junit/
+    - run-1893572/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-117: chain ran
+  # NT-117 fails on the chain, 3 runs of 3: truncate_prompt_tokens has no effect, as the
+  # DeepSeek-V4.1 input processor encodes the prompt without it (an existing defect).
+  - row: F-08@03
+    features:
+    - F-08
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_sampling.py::test_token_id_prompt_and_truncate
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    result: failed
+    chain_proof: ok
+  # NT-117, NT-217: chain ran
+  # NT-117 fails on the chain, 3 runs of 3: truncate_prompt_tokens has no effect, as the
+  # DeepSeek-V4.1 input processor encodes the prompt without it (an existing defect).
+  - row: F-09@03
+    features:
+    - F-09
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_sampling.py::test_token_id_prompt_and_truncate
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_gsm8k.py::test_deepseek_v41_smoke_and_gsm8k_ctx_dep2_gen_tp2
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    - run-1896144/r1-ds/junit/
+    - run-1896144/r1-none/
+    - run-1896144/r2-ds/junit/
+    - run-1896144/r2-none/
+    - run-1896144/r3-ds/junit/
+    - run-1896144/r3-none/
+    result: failed
+    chain_proof: ok
+  # NT-119: K and chain ran
+  - row: F-10@03
+    features:
+    - F-10
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_engine_unsupported_params_rejected
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893991/r1-ds/junit/
+    - run-1893991/r1-none/
+    - run-1893991/r2-ds/junit/
+    - run-1893991/r2-none/
+    - run-1893991/r3-ds/junit/
+    - run-1893991/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-110: K and chain ran
+  - row: F-11@03
+    features:
+    - F-11
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_sampling.py::test_sampling_params
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-111: K and chain ran
+  - row: F-12@03
+    features:
+    - F-12
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_sampling.py::test_seed
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901714/r1-ds/junit/
+    - run-1901714/r1-none/
+    - run-1901714/r2-ds/junit/
+    - run-1901714/r2-none/
+    - run-1901714/r3-ds/junit/
+    - run-1901714/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-119: K and chain ran
+  - row: F-13@03
+    features:
+    - F-13
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_engine_unsupported_params_rejected
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893991/r1-ds/junit/
+    - run-1893991/r1-none/
+    - run-1893991/r2-ds/junit/
+    - run-1893991/r2-none/
+    - run-1893991/r3-ds/junit/
+    - run-1893991/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-112: K and chain ran
+  - row: F-14@03
+    features:
+    - F-14
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_sampling.py::test_max_tokens_and_length
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-119: K and chain ran
+  - row: F-15@03
+    features:
+    - F-15
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_engine_unsupported_params_rejected
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893991/r1-ds/junit/
+    - run-1893991/r1-none/
+    - run-1893991/r2-ds/junit/
+    - run-1893991/r2-none/
+    - run-1893991/r3-ds/junit/
+    - run-1893991/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-113: K and chain ran
+  - row: F-16@03
+    features:
+    - F-16
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_sampling.py::test_stop_token_ids_and_ignore_eos
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-114: K and chain ran
+  - row: F-17@03
+    features:
+    - F-17
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_sampling.py::test_stop_strings
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-113: K and chain ran
+  - row: F-18@03
+    features:
+    - F-18
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_sampling.py::test_stop_token_ids_and_ignore_eos
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-120: K and chain ran
+  - row: F-19@03
+    features:
+    - F-19
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_n_best_of_rejected
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893991/r1-ds/junit/
+    - run-1893991/r1-none/
+    - run-1893991/r2-ds/junit/
+    - run-1893991/r2-none/
+    - run-1893991/r3-ds/junit/
+    - run-1893991/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-119: K and chain ran
+  - row: F-20@03
+    features:
+    - F-20
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_engine_unsupported_params_rejected
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893991/r1-ds/junit/
+    - run-1893991/r1-none/
+    - run-1893991/r2-ds/junit/
+    - run-1893991/r2-none/
+    - run-1893991/r3-ds/junit/
+    - run-1893991/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-119: K and chain ran
+  - row: F-22@03
+    features:
+    - F-22
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_engine_unsupported_params_rejected
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893991/r1-ds/junit/
+    - run-1893991/r1-none/
+    - run-1893991/r2-ds/junit/
+    - run-1893991/r2-none/
+    - run-1893991/r3-ds/junit/
+    - run-1893991/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-119: K and chain ran
+  - row: F-23@03
+    features:
+    - F-23
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_engine_unsupported_params_rejected
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893991/r1-ds/junit/
+    - run-1893991/r1-none/
+    - run-1893991/r2-ds/junit/
+    - run-1893991/r2-none/
+    - run-1893991/r3-ds/junit/
+    - run-1893991/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-116: chain ran
+  - row: F-24@03
+    features:
+    - F-24
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_sampling.py::test_decode_options
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-121: K and chain ran
+  # NT-121: the [beam] and [resource_governor] workers do not start (startup_rejected, CH not
+  # judged); [sleep_mode] starts no server. [otlp] starts and serves, as measured: per U40 the
+  # measurement stands, and the plan's row and UV-41 are to be updated by the coordinator. Form K
+  # runs [beam] only: its worker warns that it ignores the option and serves.
+  - row: F-25@03
+    features:
+    - F-25
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_startup_rejects
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901715/r1-ds/junit/
+    - run-1901715/r1-none/
+    - run-1901715/r2-ds/junit/
+    - run-1901715/r2-none/
+    - run-1901715/r3-ds/junit/
+    - run-1901715/r3-none/
+    result: passed
+    chain_proof: incomplete
+  # NT-119: K and chain ran
+  - row: F-26@03
+    features:
+    - F-26
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_engine_unsupported_params_rejected
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893991/r1-ds/junit/
+    - run-1893991/r1-none/
+    - run-1893991/r2-ds/junit/
+    - run-1893991/r2-none/
+    - run-1893991/r3-ds/junit/
+    - run-1893991/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-125: chain ran
+  - row: F-27@03
+    features:
+    - F-27
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_frontend.py::test_reasoning_and_tools
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893572/r1-ds/junit/
+    - run-1893572/r1-none/
+    - run-1893572/r2-ds/junit/
+    - run-1893572/r2-none/
+    - run-1893572/r3-ds/junit/
+    - run-1893572/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-125: chain ran
+  - row: F-28@03
+    features:
+    - F-28
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_frontend.py::test_reasoning_and_tools
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893572/r1-ds/junit/
+    - run-1893572/r1-none/
+    - run-1893572/r2-ds/junit/
+    - run-1893572/r2-none/
+    - run-1893572/r3-ds/junit/
+    - run-1893572/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-119: K and chain ran
+  - row: F-29@03
+    features:
+    - F-29
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_engine_unsupported_params_rejected
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893991/r1-ds/junit/
+    - run-1893991/r1-none/
+    - run-1893991/r2-ds/junit/
+    - run-1893991/r2-none/
+    - run-1893991/r3-ds/junit/
+    - run-1893991/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-126: K and chain ran
+  - row: F-30@03
+    features:
+    - F-30
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_frontend.py::test_usage_and_cached_tokens
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901714/r1-ds/junit/
+    - run-1901714/r1-none/
+    - run-1901714/r2-ds/junit/
+    - run-1901714/r2-none/
+    - run-1901714/r3-ds/junit/
+    - run-1901714/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-130, NT-217: K and chain ran
+  - row: F-31@03
+    features:
+    - F-31
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_frontend.py::test_dspark_draft_handoff
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_gsm8k.py::test_deepseek_v41_smoke_and_gsm8k_ctx_dep2_gen_tp2
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893572/r1-ds/junit/
+    - run-1893572/r1-none/
+    - run-1893572/r2-ds/junit/
+    - run-1893572/r2-none/
+    - run-1893572/r3-ds/junit/
+    - run-1893572/r3-none/
+    - run-1896144/r1-ds/junit/
+    - run-1896144/r1-none/
+    - run-1896144/r2-ds/junit/
+    - run-1896144/r2-none/
+    - run-1896144/r3-ds/junit/
+    - run-1896144/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-217, NT-218: chain ran
+  - row: F-32@03
+    features:
+    - F-32
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_gsm8k.py::test_deepseek_v41_smoke_and_gsm8k_ctx_dep2_gen_tp2
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_gsm8k.py::test_deepseek_v41_smoke_and_gsm8k_ctx_dep2_gen_dep2
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1896144/r1-ds/junit/
+    - run-1896144/r1-none/
+    - run-1896144/r2-ds/junit/
+    - run-1896144/r2-none/
+    - run-1896144/r3-ds/junit/
+    - run-1896144/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-217: chain ran
+  - row: F-33@03
+    features:
+    - F-33
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_gsm8k.py::test_deepseek_v41_smoke_and_gsm8k_ctx_dep2_gen_tp2
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1896144/r1-ds/junit/
+    - run-1896144/r1-none/
+    - run-1896144/r2-ds/junit/
+    - run-1896144/r2-none/
+    - run-1896144/r3-ds/junit/
+    - run-1896144/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-126: K and chain ran
+  - row: F-34@03
+    features:
+    - F-34
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_frontend.py::test_usage_and_cached_tokens
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901714/r1-ds/junit/
+    - run-1901714/r1-none/
+    - run-1901714/r2-ds/junit/
+    - run-1901714/r2-none/
+    - run-1901714/r3-ds/junit/
+    - run-1901714/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-119: K and chain ran
+  - row: F-35@03
+    features:
+    - F-35
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_engine_unsupported_params_rejected
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893991/r1-ds/junit/
+    - run-1893991/r1-none/
+    - run-1893991/r2-ds/junit/
+    - run-1893991/r2-none/
+    - run-1893991/r3-ds/junit/
+    - run-1893991/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-108, NT-217: K and chain ran
+  # NT-108: the chain's session judges every round recorded so far. After one pair it failed (95.5
+  # against form K's 97.0); after three pairs it passed (a mean of 96.5 against 97.0, every round
+  # above 95). The chain's junit listed is the third session's.
+  - row: F-36@03
+    features:
+    - F-36
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_gsm8k.py::test_gsm8k_200_paired_native_vs_chain
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_gsm8k.py::test_deepseek_v41_smoke_and_gsm8k_ctx_dep2_gen_tp2
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1896144/r1-ds/junit/
+    - run-1896144/r1-none/
+    - run-1896144/r2-ds/junit/
+    - run-1896144/r2-none/
+    - run-1896144/r3-ds/junit/
+    - run-1896144/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-131: K and chain ran
+  - row: F-37@03
+    features:
+    - F-37
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_frontend.py::test_long_context_smoke
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893572/r1-ds/junit/
+    - run-1893572/r1-none/
+    - run-1893572/r2-ds/junit/
+    - run-1893572/r2-none/
+    - run-1893572/r3-ds/junit/
+    - run-1893572/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-127: chain ran
+  - row: F-38@03
+    features:
+    - F-38
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_frontend.py::test_postproc_workers_and_hook
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893572/r1-ds/junit/
+    - run-1893572/r1-none/
+    - run-1893572/r2-ds/junit/
+    - run-1893572/r2-none/
+    - run-1893572/r3-ds/junit/
+    - run-1893572/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-128: chain ran
+  - row: F-39@03
+    features:
+    - F-39
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_frontend.py::test_multi_frontend_and_affinity_port
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901714/r1-ds/junit/
+    - run-1901714/r1-none/
+    - run-1901714/r2-ds/junit/
+    - run-1901714/r2-none/
+    - run-1901714/r3-ds/junit/
+    - run-1901714/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-127: chain ran
+  - row: F-40@03
+    features:
+    - F-40
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_frontend.py::test_postproc_workers_and_hook
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893572/r1-ds/junit/
+    - run-1893572/r1-none/
+    - run-1893572/r2-ds/junit/
+    - run-1893572/r2-none/
+    - run-1893572/r3-ds/junit/
+    - run-1893572/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-106: chain ran
+  # NT-106 [server_info] fails on the chain, 3 runs of 3: the ds engine reports no KV block size in
+  # its ServerInfo (an existing defect, Z3). The other endpoints pass. The test is the chain's only:
+  # form K has no worker front ends.
+  - row: F-42a@03
+    features:
+    - F-42a
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_worker_frontend_endpoints_direct
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901714/r1-ds/junit/
+    - run-1901714/r1-none/
+    - run-1901714/r2-ds/junit/
+    - run-1901714/r2-none/
+    - run-1901714/r3-ds/junit/
+    - run-1901714/r3-none/
+    result: failed
+    chain_proof: ok
+  # NT-106: chain ran
+  # NT-106 [server_info] fails on the chain, 3 runs of 3: the ds engine reports no KV block size in
+  # its ServerInfo (an existing defect, Z3). The other endpoints pass. The test is the chain's only:
+  # form K has no worker front ends.
+  - row: F-42b@03
+    features:
+    - F-42b
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_worker_frontend_endpoints_direct
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901714/r1-ds/junit/
+    - run-1901714/r1-none/
+    - run-1901714/r2-ds/junit/
+    - run-1901714/r2-none/
+    - run-1901714/r3-ds/junit/
+    - run-1901714/r3-none/
+    result: failed
+    chain_proof: ok
+  # NT-119: K and chain ran
+  - row: F-44a@03
+    features:
+    - F-44a
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_engine_unsupported_params_rejected
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893991/r1-ds/junit/
+    - run-1893991/r1-none/
+    - run-1893991/r2-ds/junit/
+    - run-1893991/r2-none/
+    - run-1893991/r3-ds/junit/
+    - run-1893991/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-119: K and chain ran
+  - row: F-44b@03
+    features:
+    - F-44b
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_engine_unsupported_params_rejected
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893991/r1-ds/junit/
+    - run-1893991/r1-none/
+    - run-1893991/r2-ds/junit/
+    - run-1893991/r2-none/
+    - run-1893991/r3-ds/junit/
+    - run-1893991/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-129: K and chain ran
+  - row: F-44c@03
+    features:
+    - F-44c
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_frontend.py::test_conversation_id_reaches_engine
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893572/r1-ds/junit/
+    - run-1893572/r1-none/
+    - run-1893572/r2-ds/junit/
+    - run-1893572/r2-none/
+    - run-1893572/r3-ds/junit/
+    - run-1893572/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-121: K and chain ran
+  # NT-121: the [beam] and [resource_governor] workers do not start (startup_rejected, CH not
+  # judged); [sleep_mode] starts no server. [otlp] starts and serves, as measured: per U40 the
+  # measurement stands, and the plan's row and UV-41 are to be updated by the coordinator. Form K
+  # runs [beam] only: its worker warns that it ignores the option and serves.
+  - row: F-45@03
+    features:
+    - F-45
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_startup_rejects
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901715/r1-ds/junit/
+    - run-1901715/r1-none/
+    - run-1901715/r2-ds/junit/
+    - run-1901715/r2-none/
+    - run-1901715/r3-ds/junit/
+    - run-1901715/r3-none/
+    result: passed
+    chain_proof: incomplete
+  # NT-119: K and chain ran
+  - row: F-46@03
+    features:
+    - F-46
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_engine_unsupported_params_rejected
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893991/r1-ds/junit/
+    - run-1893991/r1-none/
+    - run-1893991/r2-ds/junit/
+    - run-1893991/r2-none/
+    - run-1893991/r3-ds/junit/
+    - run-1893991/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-121: K and chain ran
+  # NT-121: the [beam] and [resource_governor] workers do not start (startup_rejected, CH not
+  # judged); [sleep_mode] starts no server. [otlp] starts and serves, as measured: per U40 the
+  # measurement stands, and the plan's row and UV-41 are to be updated by the coordinator. Form K
+  # runs [beam] only: its worker warns that it ignores the option and serves.
+  - row: F-47a@03
+    features:
+    - F-47a
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_startup_rejects
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901715/r1-ds/junit/
+    - run-1901715/r1-none/
+    - run-1901715/r2-ds/junit/
+    - run-1901715/r2-none/
+    - run-1901715/r3-ds/junit/
+    - run-1901715/r3-none/
+    result: passed
+    chain_proof: incomplete
+  # NT-121: K and chain ran
+  # NT-121: the [beam] and [resource_governor] workers do not start (startup_rejected, CH not
+  # judged); [sleep_mode] starts no server. [otlp] starts and serves, as measured: per U40 the
+  # measurement stands, and the plan's row and UV-41 are to be updated by the coordinator. Form K
+  # runs [beam] only: its worker warns that it ignores the option and serves.
+  - row: F-47b@03
+    features:
+    - F-47b
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_startup_rejects
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901715/r1-ds/junit/
+    - run-1901715/r1-none/
+    - run-1901715/r2-ds/junit/
+    - run-1901715/r2-none/
+    - run-1901715/r3-ds/junit/
+    - run-1901715/r3-none/
+    result: passed
+    chain_proof: incomplete
+  # NT-122: K and chain ran
+  - row: F-47c@03
+    features:
+    - F-47c
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_profile_endpoints_rejected_direct
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893991/r1-ds/junit/
+    - run-1893991/r1-none/
+    - run-1893991/r2-ds/junit/
+    - run-1893991/r2-none/
+    - run-1893991/r3-ds/junit/
+    - run-1893991/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-104: chain ran
+  - row: DG-05@03
+    features:
+    - DG-05
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_messages_count_tokens
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-101, NT-217: K and chain ran
+  - row: DG-12@03
+    features:
+    - DG-12
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_chat_and_completions_basic
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_gsm8k.py::test_deepseek_v41_smoke_and_gsm8k_ctx_dep2_gen_tp2
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    - run-1896144/r1-ds/junit/
+    - run-1896144/r1-none/
+    - run-1896144/r2-ds/junit/
+    - run-1896144/r2-none/
+    - run-1896144/r3-ds/junit/
+    - run-1896144/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-101, NT-217: K and chain ran
+  - row: DG-13@03
+    features:
+    - DG-13
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_chat_and_completions_basic
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_gsm8k.py::test_deepseek_v41_smoke_and_gsm8k_ctx_dep2_gen_tp2
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    - run-1896144/r1-ds/junit/
+    - run-1896144/r1-none/
+    - run-1896144/r2-ds/junit/
+    - run-1896144/r2-none/
+    - run-1896144/r3-ds/junit/
+    - run-1896144/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-115: K and chain ran
+  - row: DG-16@03
+    features:
+    - DG-16
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_sampling.py::test_first_token_stop_skips_gen
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-143: chain ran
+  # NT-143 [both]: whether the generation leg passes the sub-agent hint on to its engine cannot be
+  # observed from outside; that part is not verified.
+  - row: DG-22@03
+    features:
+    - DG-22
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cluster.py::test_subagent_affinity
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886045/r1-ds/junit/
+    - run-1886045/r1-none/
+    - run-1886045/r2-ds/junit/
+    - run-1886045/r2-none/
+    - run-1886045/r3-ds/junit/
+    - run-1886045/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-128: chain ran
+  - row: DG-23@03
+    features:
+    - DG-23
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_frontend.py::test_multi_frontend_and_affinity_port
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901714/r1-ds/junit/
+    - run-1901714/r1-none/
+    - run-1901714/r2-ds/junit/
+    - run-1901714/r2-none/
+    - run-1901714/r3-ds/junit/
+    - run-1901714/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-142: chain ran
+  - row: DG-28@03
+    features:
+    - DG-28
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cluster.py::test_service_discovery
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901715/r1-ds/junit/
+    - run-1901715/r1-none/
+    - run-1901715/r2-ds/junit/
+    - run-1901715/r2-none/
+    - run-1901715/r3-ds/junit/
+    - run-1901715/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-142: chain ran
+  - row: DG-29@03
+    features:
+    - DG-29
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cluster.py::test_service_discovery
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901715/r1-ds/junit/
+    - run-1901715/r1-none/
+    - run-1901715/r2-ds/junit/
+    - run-1901715/r2-none/
+    - run-1901715/r3-ds/junit/
+    - run-1901715/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-142: chain ran
+  - row: DG-32@03
+    features:
+    - DG-32
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cluster.py::test_service_discovery
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901715/r1-ds/junit/
+    - run-1901715/r1-none/
+    - run-1901715/r2-ds/junit/
+    - run-1901715/r2-none/
+    - run-1901715/r3-ds/junit/
+    - run-1901715/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-137: chain ran
+  - row: DG-34@03
+    features:
+    - DG-34
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_handoff.py::test_direct_handoff_auth_and_multimodal_attributes
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1891432/r1-ds/junit/
+    - run-1891432/r1-none/
+    - run-1891432/r2-ds/junit/
+    - run-1891432/r2-none/
+    - run-1891432/r3-ds/junit/
+    - run-1891432/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-143: chain ran
+  # NT-143 [both]: whether the generation leg passes the sub-agent hint on to its engine cannot be
+  # observed from outside; that part is not verified.
+  - row: DG-35@03
+    features:
+    - DG-35
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cluster.py::test_subagent_affinity
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886045/r1-ds/junit/
+    - run-1886045/r1-none/
+    - run-1886045/r2-ds/junit/
+    - run-1886045/r2-none/
+    - run-1886045/r3-ds/junit/
+    - run-1886045/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-137: chain ran
+  - row: DG-37@03
+    features:
+    - DG-37
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_handoff.py::test_direct_handoff_auth_and_multimodal_attributes
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1891432/r1-ds/junit/
+    - run-1891432/r1-none/
+    - run-1891432/r2-ds/junit/
+    - run-1891432/r2-none/
+    - run-1891432/r3-ds/junit/
+    - run-1891432/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-132: K and chain ran
+  # NT-132 [decode] fails in form K, 3 runs of 3: the ds generation worker cancels a streamed
+  # request without the log line the test waits for. The chain passes all three stages, and form K
+  # passes [queued] and [prefill]. WT-62-fix1 changes form K's evidence.
+  - row: DG-38@03
+    features:
+    - DG-38
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cancel.py::test_abort_stages
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901715/r1-ds/junit/
+    - run-1901715/r1-none/
+    - run-1901715/r2-ds/junit/
+    - run-1901715/r2-none/
+    - run-1901715/r3-ds/junit/
+    - run-1901715/r3-none/
+    result: failed
+    chain_proof: ok
+  # NT-132: K and chain ran
+  # NT-132 [decode] fails in form K, 3 runs of 3: the ds generation worker cancels a streamed
+  # request without the log line the test waits for. The chain passes all three stages, and form K
+  # passes [queued] and [prefill]. WT-62-fix1 changes form K's evidence.
+  - row: DG-39c@03
+    features:
+    - DG-39c
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cancel.py::test_abort_stages
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901715/r1-ds/junit/
+    - run-1901715/r1-none/
+    - run-1901715/r2-ds/junit/
+    - run-1901715/r2-none/
+    - run-1901715/r3-ds/junit/
+    - run-1901715/r3-none/
+    result: failed
+    chain_proof: ok
+  # NT-119, NT-140, NT-141: K and chain ran
+  # NT-141 has no expectation entry: the test asserts the failed pull itself, and its chain proof
+  # holds. The plan's proof column is to be updated by the coordinator.
+  - row: DG-41@03
+    features:
+    - DG-41
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_engine_unsupported_params_rejected
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_handoff.py::test_invalid_prompt_rejected
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_handoff.py::test_mismatched_spec_config_pull_fails
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1891432/r1-ds/junit/
+    - run-1891432/r1-none/
+    - run-1891432/r2-ds/junit/
+    - run-1891432/r2-none/
+    - run-1891432/r3-ds/junit/
+    - run-1891432/r3-none/
+    - run-1893991/r1-ds/junit/
+    - run-1893991/r1-none/
+    - run-1893991/r2-ds/junit/
+    - run-1893991/r2-none/
+    - run-1893991/r3-ds/junit/
+    - run-1893991/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-215: chain ran
+  # NT-215 fails on the chain, 3 runs of 3: with ignore_eos the model's four tokens are all special
+  # tokens, the text is empty, and the test stops in its first batch, before the retry it checks.
+  # WT-62-fix1 changes the check.
+  - row: DG-45@03
+    features:
+    - DG-45
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cluster.py::test_ctx_leg_retry_after_ctx_frontend_killed
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901715/r1-ds/junit/
+    - run-1901715/r1-none/
+    - run-1901715/r2-ds/junit/
+    - run-1901715/r2-none/
+    - run-1901715/r3-ds/junit/
+    - run-1901715/r3-none/
+    result: failed
+    chain_proof: ok
+  # NT-144: chain ran
+  - row: DG-40@03
+    features:
+    - DG-40
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cluster.py::test_perf_metrics_and_request_id
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886045/r1-ds/junit/
+    - run-1886045/r1-none/
+    - run-1886045/r2-ds/junit/
+    - run-1886045/r2-none/
+    - run-1886045/r3-ds/junit/
+    - run-1886045/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-142: chain ran
+  - row: DG-54@03
+    features:
+    - DG-54
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cluster.py::test_service_discovery
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901715/r1-ds/junit/
+    - run-1901715/r1-none/
+    - run-1901715/r2-ds/junit/
+    - run-1901715/r2-none/
+    - run-1901715/r3-ds/junit/
+    - run-1901715/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-123: K and chain ran
+  - row: DG-63@03
+    features:
+    - DG-63
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_tool_choice_required_rejected
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893991/r1-ds/junit/
+    - run-1893991/r1-none/
+    - run-1893991/r2-ds/junit/
+    - run-1893991/r2-none/
+    - run-1893991/r3-ds/junit/
+    - run-1893991/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-125: chain ran
+  - row: DG-65@03
+    features:
+    - DG-65
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_frontend.py::test_reasoning_and_tools
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893572/r1-ds/junit/
+    - run-1893572/r1-none/
+    - run-1893572/r2-ds/junit/
+    - run-1893572/r2-none/
+    - run-1893572/r3-ds/junit/
+    - run-1893572/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-105: chain ran
+  - row: DG-80@03
+    features:
+    - DG-80
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_models_and_model_name
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-144: chain ran
+  - row: DG-82@03
+    features:
+    - DG-82
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cluster.py::test_perf_metrics_and_request_id
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886045/r1-ds/junit/
+    - run-1886045/r1-none/
+    - run-1886045/r2-ds/junit/
+    - run-1886045/r2-none/
+    - run-1886045/r3-ds/junit/
+    - run-1886045/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-101, NT-137: K and chain ran
+  # NT-150 to NT-156 (the ds OpenEngine server on its MockEngine) are WT-42's cases.
+  - row: DG-83@03
+    features:
+    - DG-83
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_chat_and_completions_basic
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_handoff.py::test_direct_handoff_auth_and_multimodal_attributes
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    - run-1891432/r1-ds/junit/
+    - run-1891432/r1-none/
+    - run-1891432/r2-ds/junit/
+    - run-1891432/r2-none/
+    - run-1891432/r3-ds/junit/
+    - run-1891432/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-139: chain ran
+  # NT-139: the worker front ends exit at their startup check, so no chain server runs (no_server).
+  # NT-150 to NT-156 (the ds OpenEngine server on its MockEngine) are WT-42's cases.
+  - row: DG-84@03
+    features:
+    - DG-84
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_handoff.py::test_role_startup_check
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1891432/r1-ds/junit/
+    - run-1891432/r1-none/
+    - run-1891432/r2-ds/junit/
+    - run-1891432/r2-none/
+    - run-1891432/r3-ds/junit/
+    - run-1891432/r3-none/
+    result: passed
+    chain_proof: incomplete
+  # NT-145: chain ran
+  - row: DG-85@03
+    features:
+    - DG-85
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cluster.py::test_two_leg_request_consistency
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886045/r1-ds/junit/
+    - run-1886045/r1-none/
+    - run-1886045/r2-ds/junit/
+    - run-1886045/r2-none/
+    - run-1886045/r3-ds/junit/
+    - run-1886045/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-101: K and chain ran
+  - row: DG-86@03
+    features:
+    - DG-86
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_chat_and_completions_basic
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-126: K and chain ran
+  - row: DG-86@03
+    features:
+    - DG-86
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_frontend.py::test_usage_and_cached_tokens
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901714/r1-ds/junit/
+    - run-1901714/r1-none/
+    - run-1901714/r2-ds/junit/
+    - run-1901714/r2-none/
+    - run-1901714/r3-ds/junit/
+    - run-1901714/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-134: chain ran
+  # NT-134: the context engine is killed before the generation leg is sent; the variant with the
+  # generation request already in flight is added by WT-62-fix1 (U42).
+  - row: DG-87@03
+    features:
+    - DG-87
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cancel.py::test_engine_loss
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1888773/r1-ds/junit/
+    - run-1888773/r1-none/
+    - run-1888773/r2-ds/junit/
+    - run-1888773/r2-none/
+    - run-1888773/r3-ds/junit/
+    - run-1888773/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-119, NT-120: K and chain ran
+  - row: DG-88@03
+    features:
+    - DG-88
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_engine_unsupported_params_rejected
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_n_best_of_rejected
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893991/r1-ds/junit/
+    - run-1893991/r1-none/
+    - run-1893991/r2-ds/junit/
+    - run-1893991/r2-none/
+    - run-1893991/r3-ds/junit/
+    - run-1893991/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-106: chain ran
+  # NT-106 [server_info] fails on the chain, 3 runs of 3: the ds engine reports no KV block size in
+  # its ServerInfo (an existing defect, Z3). The other endpoints pass. The test is the chain's only:
+  # form K has no worker front ends.
+  - row: DG-89@03
+    features:
+    - DG-89
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_worker_frontend_endpoints_direct
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901714/r1-ds/junit/
+    - run-1901714/r1-none/
+    - run-1901714/r2-ds/junit/
+    - run-1901714/r2-none/
+    - run-1901714/r3-ds/junit/
+    - run-1901714/r3-none/
+    result: failed
+    chain_proof: ok
+  # NT-133: K and chain ran
+  - row: DG-90@03
+    features:
+    - DG-90
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cancel.py::test_parked_kv_timeout_and_orphans
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1888773/r1-ds/junit/
+    - run-1888773/r1-none/
+    - run-1888773/r2-ds/junit/
+    - run-1888773/r2-none/
+    - run-1888773/r3-ds/junit/
+    - run-1888773/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-101: K and chain ran
+  # NT-042 and NT-043 (direct gRPC to the ds engines) are WT-42's cases.
+  # NT-150 to NT-156 (the ds OpenEngine server on its MockEngine) are WT-42's cases.
+  - row: DS-S01
+    features:
+    - DS-S01
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_chat_and_completions_basic
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-101: K and chain ran
+  # NT-042 and NT-043 (direct gRPC to the ds engines) are WT-42's cases.
+  # NT-150 to NT-156 (the ds OpenEngine server on its MockEngine) are WT-42's cases.
+  - row: DS-S02
+    features:
+    - DS-S02
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_chat_and_completions_basic
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-107: K and chain ran
+  # NT-107 passes on both forms; its chain proof is incomplete: the /health_generate call makes a
+  # Generate call that no HTTP request of the front end counts.
+  - row: DS-S03
+    features:
+    - DS-S03
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_health_generate_and_aggregated_direct
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    result: passed
+    chain_proof: incomplete
+  # NT-112: K and chain ran
+  - row: DS-S04
+    features:
+    - DS-S04
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_sampling.py::test_max_tokens_and_length
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-110: K and chain ran
+  - row: DS-S05
+    features:
+    - DS-S05
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_sampling.py::test_sampling_params
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-111: K and chain ran
+  - row: DS-S06
+    features:
+    - DS-S06
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_sampling.py::test_seed
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901714/r1-ds/junit/
+    - run-1901714/r1-none/
+    - run-1901714/r2-ds/junit/
+    - run-1901714/r2-none/
+    - run-1901714/r3-ds/junit/
+    - run-1901714/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-113: K and chain ran
+  - row: DS-S07
+    features:
+    - DS-S07
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_sampling.py::test_stop_token_ids_and_ignore_eos
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-113: K and chain ran
+  - row: DS-S08
+    features:
+    - DS-S08
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_sampling.py::test_stop_token_ids_and_ignore_eos
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-119: K and chain ran
+  # NT-150 to NT-156 (the ds OpenEngine server on its MockEngine) are WT-42's cases.
+  - row: DS-S09
+    features:
+    - DS-S09
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_engine_unsupported_params_rejected
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893991/r1-ds/junit/
+    - run-1893991/r1-none/
+    - run-1893991/r2-ds/junit/
+    - run-1893991/r2-none/
+    - run-1893991/r3-ds/junit/
+    - run-1893991/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-115: K and chain ran
+  # NT-042 and NT-043 (direct gRPC to the ds engines) are WT-42's cases.
+  # NT-150 to NT-156 (the ds OpenEngine server on its MockEngine) are WT-42's cases.
+  - row: DS-S10
+    features:
+    - DS-S10
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_sampling.py::test_first_token_stop_skips_gen
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-112, NT-113, NT-135: K and chain ran
+  - row: DS-S11
+    features:
+    - DS-S11
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_sampling.py::test_max_tokens_and_length
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_sampling.py::test_stop_token_ids_and_ignore_eos
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_handoff.py::test_direct_handoff_engine_errors
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    - run-1891432/r1-ds/junit/
+    - run-1891432/r1-none/
+    - run-1891432/r2-ds/junit/
+    - run-1891432/r2-none/
+    - run-1891432/r3-ds/junit/
+    - run-1891432/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-132: K and chain ran
+  # NT-132 [decode] fails in form K, 3 runs of 3: the ds generation worker cancels a streamed
+  # request without the log line the test waits for. The chain passes all three stages, and form K
+  # passes [queued] and [prefill]. WT-62-fix1 changes form K's evidence.
+  - row: DS-S11
+    features:
+    - DS-S11
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cancel.py::test_abort_stages
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901715/r1-ds/junit/
+    - run-1901715/r1-none/
+    - run-1901715/r2-ds/junit/
+    - run-1901715/r2-none/
+    - run-1901715/r3-ds/junit/
+    - run-1901715/r3-none/
+    result: failed
+    chain_proof: ok
+  # NT-132: K and chain ran
+  # NT-132 [decode] fails in form K, 3 runs of 3: the ds generation worker cancels a streamed
+  # request without the log line the test waits for. The chain passes all three stages, and form K
+  # passes [queued] and [prefill]. WT-62-fix1 changes form K's evidence.
+  # NT-042 and NT-043 (direct gRPC to the ds engines) are WT-42's cases.
+  - row: DS-S12
+    features:
+    - DS-S12
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cancel.py::test_abort_stages
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901715/r1-ds/junit/
+    - run-1901715/r1-none/
+    - run-1901715/r2-ds/junit/
+    - run-1901715/r2-none/
+    - run-1901715/r3-ds/junit/
+    - run-1901715/r3-none/
+    result: failed
+    chain_proof: ok
+  # NT-133, NT-134, NT-135: K and chain ran
+  # NT-134: the context engine is killed before the generation leg is sent; the variant with the
+  # generation request already in flight is added by WT-62-fix1 (U42).
+  # NT-042 and NT-043 (direct gRPC to the ds engines) are WT-42's cases.
+  - row: DS-S13
+    features:
+    - DS-S13
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cancel.py::test_parked_kv_timeout_and_orphans
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cancel.py::test_engine_loss
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_handoff.py::test_direct_handoff_engine_errors
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1888773/r1-ds/junit/
+    - run-1888773/r1-none/
+    - run-1888773/r2-ds/junit/
+    - run-1888773/r2-none/
+    - run-1888773/r3-ds/junit/
+    - run-1888773/r3-none/
+    - run-1891432/r1-ds/junit/
+    - run-1891432/r1-none/
+    - run-1891432/r2-ds/junit/
+    - run-1891432/r2-none/
+    - run-1891432/r3-ds/junit/
+    - run-1891432/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-126: K and chain ran
+  - row: DS-S14
+    features:
+    - DS-S14
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_frontend.py::test_usage_and_cached_tokens
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901714/r1-ds/junit/
+    - run-1901714/r1-none/
+    - run-1901714/r2-ds/junit/
+    - run-1901714/r2-none/
+    - run-1901714/r3-ds/junit/
+    - run-1901714/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-126: K and chain ran
+  - row: DS-S15
+    features:
+    - DS-S15
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_frontend.py::test_usage_and_cached_tokens
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901714/r1-ds/junit/
+    - run-1901714/r1-none/
+    - run-1901714/r2-ds/junit/
+    - run-1901714/r2-none/
+    - run-1901714/r3-ds/junit/
+    - run-1901714/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-130, NT-217: K and chain ran
+  - row: DS-S16
+    features:
+    - DS-S16
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_frontend.py::test_dspark_draft_handoff
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_gsm8k.py::test_deepseek_v41_smoke_and_gsm8k_ctx_dep2_gen_tp2
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893572/r1-ds/junit/
+    - run-1893572/r1-none/
+    - run-1893572/r2-ds/junit/
+    - run-1893572/r2-none/
+    - run-1893572/r3-ds/junit/
+    - run-1893572/r3-none/
+    - run-1896144/r1-ds/junit/
+    - run-1896144/r1-none/
+    - run-1896144/r2-ds/junit/
+    - run-1896144/r2-none/
+    - run-1896144/r3-ds/junit/
+    - run-1896144/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-118: K and chain ran
+  - row: DS-S17
+    features:
+    - DS-S17
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_sampling.py::test_stream_interval
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901714/r1-ds/junit/
+    - run-1901714/r1-none/
+    - run-1901714/r2-ds/junit/
+    - run-1901714/r2-none/
+    - run-1901714/r3-ds/junit/
+    - run-1901714/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-129: K and chain ran
+  - row: DS-S18b
+    features:
+    - DS-S18b
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_frontend.py::test_conversation_id_reaches_engine
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893572/r1-ds/junit/
+    - run-1893572/r1-none/
+    - run-1893572/r2-ds/junit/
+    - run-1893572/r2-none/
+    - run-1893572/r3-ds/junit/
+    - run-1893572/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-217, NT-218: chain ran
+  - row: DS-S19c
+    features:
+    - DS-S19c
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_gsm8k.py::test_deepseek_v41_smoke_and_gsm8k_ctx_dep2_gen_tp2
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_gsm8k.py::test_deepseek_v41_smoke_and_gsm8k_ctx_dep2_gen_dep2
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1896144/r1-ds/junit/
+    - run-1896144/r1-none/
+    - run-1896144/r2-ds/junit/
+    - run-1896144/r2-none/
+    - run-1896144/r3-ds/junit/
+    - run-1896144/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-133: K and chain ran
+  # NT-150 to NT-156 (the ds OpenEngine server on its MockEngine) are WT-42's cases.
+  - row: DS-S20a
+    features:
+    - DS-S20a
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cancel.py::test_parked_kv_timeout_and_orphans
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1888773/r1-ds/junit/
+    - run-1888773/r1-none/
+    - run-1888773/r2-ds/junit/
+    - run-1888773/r2-none/
+    - run-1888773/r3-ds/junit/
+    - run-1888773/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-138: K and chain ran
+  # NT-150 to NT-156 (the ds OpenEngine server on its MockEngine) are WT-42's cases.
+  - row: DS-R01
+    features:
+    - DS-R01
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_handoff.py::test_role_mismatch_static_urls
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901715/r1-ds/junit/
+    - run-1901715/r1-none/
+    - run-1901715/r2-ds/junit/
+    - run-1901715/r2-none/
+    - run-1901715/r3-ds/junit/
+    - run-1901715/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-135: K and chain ran
+  # NT-150 to NT-156 (the ds OpenEngine server on its MockEngine) are WT-42's cases.
+  - row: DS-R02
+    features:
+    - DS-R02
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_handoff.py::test_direct_handoff_engine_errors
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1891432/r1-ds/junit/
+    - run-1891432/r1-none/
+    - run-1891432/r2-ds/junit/
+    - run-1891432/r2-none/
+    - run-1891432/r3-ds/junit/
+    - run-1891432/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-138: K and chain ran
+  # NT-150 to NT-156 (the ds OpenEngine server on its MockEngine) are WT-42's cases.
+  - row: DS-R03
+    features:
+    - DS-R03
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_handoff.py::test_role_mismatch_static_urls
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901715/r1-ds/junit/
+    - run-1901715/r1-none/
+    - run-1901715/r2-ds/junit/
+    - run-1901715/r2-none/
+    - run-1901715/r3-ds/junit/
+    - run-1901715/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-140: K and chain ran
+  # NT-150 to NT-156 (the ds OpenEngine server on its MockEngine) are WT-42's cases.
+  - row: DS-R04
+    features:
+    - DS-R04
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_handoff.py::test_invalid_prompt_rejected
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1891432/r1-ds/junit/
+    - run-1891432/r1-none/
+    - run-1891432/r2-ds/junit/
+    - run-1891432/r2-none/
+    - run-1891432/r3-ds/junit/
+    - run-1891432/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-120: K and chain ran
+  # NT-150 to NT-156 (the ds OpenEngine server on its MockEngine) are WT-42's cases.
+  - row: DS-U01
+    features:
+    - DS-U01
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_n_best_of_rejected
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893991/r1-ds/junit/
+    - run-1893991/r1-none/
+    - run-1893991/r2-ds/junit/
+    - run-1893991/r2-none/
+    - run-1893991/r3-ds/junit/
+    - run-1893991/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-135: K and chain ran
+  - row: DS-U02
+    features:
+    - DS-U02
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_handoff.py::test_direct_handoff_engine_errors
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1891432/r1-ds/junit/
+    - run-1891432/r1-none/
+    - run-1891432/r2-ds/junit/
+    - run-1891432/r2-none/
+    - run-1891432/r3-ds/junit/
+    - run-1891432/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-135: K and chain ran
+  - row: DS-U03
+    features:
+    - DS-U03
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_handoff.py::test_direct_handoff_engine_errors
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1891432/r1-ds/junit/
+    - run-1891432/r1-none/
+    - run-1891432/r2-ds/junit/
+    - run-1891432/r2-none/
+    - run-1891432/r3-ds/junit/
+    - run-1891432/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-141: K and chain ran
+  # NT-141 has no expectation entry: the test asserts the failed pull itself, and its chain proof
+  # holds. The plan's proof column is to be updated by the coordinator.
+  - row: DS-U04
+    features:
+    - DS-U04
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_handoff.py::test_mismatched_spec_config_pull_fails
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1891432/r1-ds/junit/
+    - run-1891432/r1-none/
+    - run-1891432/r2-ds/junit/
+    - run-1891432/r2-none/
+    - run-1891432/r3-ds/junit/
+    - run-1891432/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-119: K and chain ran
+  # NT-150 to NT-156 (the ds OpenEngine server on its MockEngine) are WT-42's cases.
+  - row: DS-I01
+    features:
+    - DS-I01
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_engine_unsupported_params_rejected
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893991/r1-ds/junit/
+    - run-1893991/r1-none/
+    - run-1893991/r2-ds/junit/
+    - run-1893991/r2-none/
+    - run-1893991/r3-ds/junit/
+    - run-1893991/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-120: K and chain ran
+  - row: DS-I02
+    features:
+    - DS-I02
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_n_best_of_rejected
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893991/r1-ds/junit/
+    - run-1893991/r1-none/
+    - run-1893991/r2-ds/junit/
+    - run-1893991/r2-none/
+    - run-1893991/r3-ds/junit/
+    - run-1893991/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-119: K and chain ran
+  - row: DS-I03
+    features:
+    - DS-I03
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_engine_unsupported_params_rejected
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893991/r1-ds/junit/
+    - run-1893991/r1-none/
+    - run-1893991/r2-ds/junit/
+    - run-1893991/r2-none/
+    - run-1893991/r3-ds/junit/
+    - run-1893991/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-119: K and chain ran
+  # NT-150 to NT-156 (the ds OpenEngine server on its MockEngine) are WT-42's cases.
+  - row: DS-I04
+    features:
+    - DS-I04
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_rejects.py::test_engine_unsupported_params_rejected
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893991/r1-ds/junit/
+    - run-1893991/r1-none/
+    - run-1893991/r2-ds/junit/
+    - run-1893991/r2-none/
+    - run-1893991/r3-ds/junit/
+    - run-1893991/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-133: K and chain ran
+  # NT-042 and NT-043 (direct gRPC to the ds engines) are WT-42's cases.
+  # NT-150 to NT-156 (the ds OpenEngine server on its MockEngine) are WT-42's cases.
+  - row: DS-I05
+    features:
+    - DS-I05
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cancel.py::test_parked_kv_timeout_and_orphans
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1888773/r1-ds/junit/
+    - run-1888773/r1-none/
+    - run-1888773/r2-ds/junit/
+    - run-1888773/r2-none/
+    - run-1888773/r3-ds/junit/
+    - run-1888773/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-112: K and chain ran
+  - row: DS-I06
+    features:
+    - DS-I06
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_sampling.py::test_max_tokens_and_length
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886043/r1-ds/junit/
+    - run-1886043/r1-none/
+    - run-1886043/r2-ds/junit/
+    - run-1886043/r2-none/
+    - run-1886043/r3-ds/junit/
+    - run-1886043/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-136: K and chain ran
+  - row: DS-I07
+    features:
+    - DS-I07
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_handoff.py::test_direct_handoff_silent_behaviors
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1891432/r1-ds/junit/
+    - run-1891432/r1-none/
+    - run-1891432/r2-ds/junit/
+    - run-1891432/r2-none/
+    - run-1891432/r3-ds/junit/
+    - run-1891432/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-136: K and chain ran
+  - row: DS-I08
+    features:
+    - DS-I08
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_handoff.py::test_direct_handoff_silent_behaviors
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1891432/r1-ds/junit/
+    - run-1891432/r1-none/
+    - run-1891432/r2-ds/junit/
+    - run-1891432/r2-none/
+    - run-1891432/r3-ds/junit/
+    - run-1891432/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-136: K and chain ran
+  - row: DS-I09
+    features:
+    - DS-I09
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_handoff.py::test_direct_handoff_silent_behaviors
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1891432/r1-ds/junit/
+    - run-1891432/r1-none/
+    - run-1891432/r2-ds/junit/
+    - run-1891432/r2-none/
+    - run-1891432/r3-ds/junit/
+    - run-1891432/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-126: K and chain ran
+  # NT-042 and NT-043 (direct gRPC to the ds engines) are WT-42's cases.
+  - row: DS-I10
+    features:
+    - DS-I10
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_frontend.py::test_usage_and_cached_tokens
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901714/r1-ds/junit/
+    - run-1901714/r1-none/
+    - run-1901714/r2-ds/junit/
+    - run-1901714/r2-none/
+    - run-1901714/r3-ds/junit/
+    - run-1901714/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-146: chain ran
+  - row: DS-O01
+    features:
+    - DS-O01
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cluster.py::test_orchestrator_alignment_switches
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886045/r1-ds/junit/
+    - run-1886045/r1-none/
+    - run-1886045/r2-ds/junit/
+    - run-1886045/r2-none/
+    - run-1886045/r3-ds/junit/
+    - run-1886045/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-146: chain ran
+  - row: DS-O02
+    features:
+    - DS-O02
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cluster.py::test_orchestrator_alignment_switches
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886045/r1-ds/junit/
+    - run-1886045/r1-none/
+    - run-1886045/r2-ds/junit/
+    - run-1886045/r2-none/
+    - run-1886045/r3-ds/junit/
+    - run-1886045/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-128: chain ran
+  - row: DS-O04
+    features:
+    - DS-O04
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_frontend.py::test_multi_frontend_and_affinity_port
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901714/r1-ds/junit/
+    - run-1901714/r1-none/
+    - run-1901714/r2-ds/junit/
+    - run-1901714/r2-none/
+    - run-1901714/r3-ds/junit/
+    - run-1901714/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-143: chain ran
+  # NT-143 [both]: whether the generation leg passes the sub-agent hint on to its engine cannot be
+  # observed from outside; that part is not verified.
+  - row: DS-O06
+    features:
+    - DS-O06
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cluster.py::test_subagent_affinity
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886045/r1-ds/junit/
+    - run-1886045/r1-none/
+    - run-1886045/r2-ds/junit/
+    - run-1886045/r2-none/
+    - run-1886045/r3-ds/junit/
+    - run-1886045/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-143: chain ran
+  # NT-143 [both]: whether the generation leg passes the sub-agent hint on to its engine cannot be
+  # observed from outside; that part is not verified.
+  - row: DS-O07
+    features:
+    - DS-O07
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cluster.py::test_subagent_affinity
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886045/r1-ds/junit/
+    - run-1886045/r1-none/
+    - run-1886045/r2-ds/junit/
+    - run-1886045/r2-none/
+    - run-1886045/r3-ds/junit/
+    - run-1886045/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-146: chain ran
+  - row: DS-O08
+    features:
+    - DS-O08
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cluster.py::test_orchestrator_alignment_switches
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1886045/r1-ds/junit/
+    - run-1886045/r1-none/
+    - run-1886045/r2-ds/junit/
+    - run-1886045/r2-none/
+    - run-1886045/r3-ds/junit/
+    - run-1886045/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-128: chain ran
+  - row: DS-O09
+    features:
+    - DS-O09
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_frontend.py::test_multi_frontend_and_affinity_port
+    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    junit:
+    - run-1901714/r1-ds/junit/
+    - run-1901714/r1-none/
+    - run-1901714/r2-ds/junit/
+    - run-1901714/r2-none/
+    - run-1901714/r3-ds/junit/
+    - run-1901714/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-129: K and chain ran
+  - row: DS-O10
+    features:
+    - DS-O10
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_frontend.py::test_conversation_id_reaches_engine
+    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    junit:
+    - run-1893572/r1-ds/junit/
+    - run-1893572/r1-none/
+    - run-1893572/r2-ds/junit/
+    - run-1893572/r2-none/
+    - run-1893572/r3-ds/junit/
+    - run-1893572/r3-none/
+    result: passed
+    chain_proof: ok
