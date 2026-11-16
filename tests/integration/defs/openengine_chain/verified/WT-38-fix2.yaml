@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# End-to-end check of the disaggregated chain (case-04, trtllm chain, B200, one node of 1, 2 or 4
+# GPUs as each test needs) for the generation-only benchmark row that integration round R12 left to
+# this fix: three runs of each case, each the only case of its job, on the commit the entry names.
+# Each junit path is relative to the result directory of its runs, which the work item's status
+# file records. Each case is judged single_side (expectations/WT-38-fix2.py): the generation workers
+# take every request, and the context worker that XD-009 and XD-010 start takes no call.
+# NT-036, the row's CPU test (unittest/grpc/openengine/test_disagg_servicer.py::
+# test_gen_only_benchmark_session_needs_the_engine_env), passed in each of three runs on the same
+# commit without a chain; it has no chain proof, so it is not listed.
+entries:
+  # XD-009 ok, XD-005 ok, XD-010 ok
+  - row: EG-28
+    features:
+    - EG-28
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_benchmark_gen_only_insufficient_kv
+    - disaggregated/test_disaggregated.py::test_disaggregated_benchmark_gen_only
+    - disaggregated/test_disaggregated.py::test_disaggregated_genbs1
+    commit: d7aae845b30e9c66845b2f1a561e85fab3c6c403
+    junit:
+    - b200-1g-xd009/b200-1g-xd009/job-6068215_0-r0/node0/results/e00/outer-junit.xml
+    - b200-1g-xd009/b200-1g-xd009/job-6068215_1-r0/node0/results/e00/outer-junit.xml
+    - b200-1g-xd009/b200-1g-xd009/job-6068215_2-r0/node0/results/e00/outer-junit.xml
+    - b200-2g-xd005/b200-2g-xd005/job-6068218_0-r0/node0/results/e00/outer-junit.xml
+    - b200-2g-xd005/b200-2g-xd005/job-6068218_1-r0/node0/results/e00/outer-junit.xml
+    - b200-2g-xd005/b200-2g-xd005/job-6068218_2-r0/node0/results/e00/outer-junit.xml
+    - b200-4g-xd010/b200-4g-xd010/job-6068219_0-r0/node0/results/e00/outer-junit.xml
+    - b200-4g-xd010/b200-4g-xd010/job-6068219_1-r0/node0/results/e00/outer-junit.xml
+    - b200-4g-xd010/b200-4g-xd010/job-6068219_2-r0/node0/results/e00/outer-junit.xml
+    result: passed
+    chain_proof: ok

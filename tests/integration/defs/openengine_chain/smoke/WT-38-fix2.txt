@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# No entry. The cases this fix verifies run the generation-only benchmark on one to four GPUs and
+# took about 4 to 8 minutes each on the chain, beyond a smoke entry's time budget; the proof rules
+# it changes run in every chain case. Their runs are described in verified/WT-38-fix2.yaml.
