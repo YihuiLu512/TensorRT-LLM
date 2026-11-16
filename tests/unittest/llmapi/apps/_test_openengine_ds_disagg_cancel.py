@@ -11,7 +11,8 @@ kills an engine:
 - NT-133: a handoff no generation leg takes is dropped after the context engine's parking
   timeout, and pulling it afterwards fails with an error.
 - NT-134 (the chain only): a worker whose ds engine is killed stops its front end and leaves the
-  orchestrator's cluster.
+  orchestrator's cluster; a generation leg whose KV is parked on a killed context engine fails,
+  whether it is sent after the kill or already waits on the generation engine.
 
 A test reads the ds engines' load and counters: on the chain over ``Control.GetLoad``, in form K
 from the ds workers' ``/load`` and logs.
@@ -19,6 +20,7 @@ from the ds workers' ``/load`` and logs.
 
 from __future__ import annotations
 
+import concurrent.futures
 import contextlib
 import http.client
 import json
@@ -321,8 +323,10 @@ def _leave_waiting(left: _Left) -> None:
             CANCEL_ARRIVES_S,
         )
         left.mark(f"leg {len(legs) - 1} ended")
-        # One fewer call with no handoff (the chain), and the left one logged (form K): the
-        # waiting call ended, not a prefilling one.
+        # At least one fewer call. What shows it was the waiting call that ended, not a
+        # prefilling one: on the chain no leg has handed off, so none ended its prefill; in
+        # form K the context worker still has prompt tokens to prefill, and logged one left
+        # request.
         left.check("before its client left", prefilling=True)
         left.logged_left(1)
     left.mark("left the other legs")
@@ -352,7 +356,8 @@ def _leave_decoding(served: basic.Served) -> str:
     The stream is read for READ_S after its first text, with the usage in each chunk. At the
     rate its completion tokens grew, the decode must still have UNFINISHED_MARGIN cancel windows
     of tokens left, so that its call ending within one window is the cancel and not its natural
-    end. Form K's ds generation worker also logs the request whose client left.
+    end. In form K the evidence is :func:`_probe_until_decode_ended`, since the ds worker does
+    not log every streamed request whose client left; whether it logged this one is recorded.
 
     Returns:
         The stream's reading, for the test's record.
@@ -404,16 +409,54 @@ def _leave_decoding(served: basic.Served) -> str:
     assert left_s > UNFINISHED_MARGIN * CANCEL_ARRIVES_S, (
         f"{reading}; the decode could end by itself within the cancel window: raise LONG_DECODE"
     )
-    # Form K: the ds worker's /load is not written once its engine idles (see _Left.ended).
     if served.chain:
         _wait(lambda: _total(served, "generation") == 0, "the decode call to end", CANCEL_ARRIVES_S)
     else:
-        _wait(
-            lambda: _log_count(served, "generation", LEFT_LOG) > logged,
-            "the generation worker to log the left request",
-            CANCEL_ARRIVES_S,
-        )
+        reading += "; " + _probe_until_decode_ended(served, time.monotonic() + CANCEL_ARRIVES_S)
+        logged_now = _log_count(served, "generation", LEFT_LOG)
+        reading += f"; the generation worker logged {logged_now - logged} left requests"
     return reading
+
+
+def _probe_until_decode_ended(served: basic.Served, deadline: float) -> str:
+    """Form K: probe requests until the ds generation worker's ``/load`` counts nothing running.
+
+    The ds worker's ``/load`` is written after each scheduling step only, so it keeps a left
+    request once its engine idles (see :meth:`_Left.ended`); a probe request through the ds proxy
+    makes the generation engine step again. The engines of :data:`CANCEL_GROUP` run one request
+    at a time, so a probe waits behind a decode that did not end and does not complete before
+    ``deadline``.
+
+    Returns:
+        The probes' reading, for the test's record.
+    """
+    probes = 0
+    while True:
+        remaining = deadline - time.monotonic()
+        assert remaining > 0, f"the generation worker still ran a call after {probes} probes"
+        try:
+            response = requests.post(
+                f"{served.url}/v1/completions",
+                # Past its first token, so that the generation leg runs: ignore_eos.
+                json={
+                    "model": MODEL_NAME,
+                    "prompt": basic.COMPLETION_PROMPT,
+                    "max_tokens": 4,
+                    "ignore_eos": True,
+                },
+                timeout=remaining,
+            )
+        except requests.Timeout:
+            raise AssertionError(
+                f"a probe did not complete within the cancel window ({probes} probes before): "
+                "the left decode still holds the generation engine"
+            ) from None
+        probes += 1
+        assert response.status_code == 200, response.text
+        running, waiting = _pending(served, "generation")
+        if running == 0:
+            return f"{probes} probes until the generation worker ran nothing (waiting {waiting})"
+        time.sleep(0.2)
 
 
 @pytest.fixture
@@ -617,3 +660,81 @@ def test_engine_loss_pull_from_lost_context(loss_served, record_property):
     response = _generation_leg(served, SHORT_PROMPT, parked, timeout=PULL_FAILS_S)
     record_property("pull_from_lost_context_s", f"{time.monotonic() - start:.1f}")
     assert response.status_code >= 400, (response.status_code, response.text)
+
+
+# The engines run one request at a time, so that a generation leg waits behind a decode.
+SERIAL_GROUP = basic.Group(engine_args=_engine_args(max_batch_size=1))
+# The decode that holds the generation engine: long enough to outlast the steps up to the kill.
+HOLD_TOKENS = 16000
+HOLD_TIMEOUT_S = 600
+QUEUED_S = 60
+
+
+@pytest.fixture
+def serial_loss_served(groups) -> basic.Served:
+    """:data:`SERIAL_GROUP`, started anew: the group that is up stops first, whatever it is."""
+    if groups.form != basic.FORM_CHAIN:
+        pytest.skip("form K: the ds worker serves HTTP from the engine's own process")
+    groups.close()
+    return groups.get(SERIAL_GROUP)
+
+
+def test_engine_loss_with_generation_in_flight(serial_loss_served, record_property):
+    """NT-134 (DS-S13): a generation leg in flight when its context engine is killed fails.
+
+    The generation engine runs one request at a time. A request through the orchestrator
+    decodes HOLD_TOKENS on it; meanwhile the test sends a context leg to the context worker
+    itself, which parks its KV, and then the generation leg that pulls that KV to the
+    generation worker, where it waits for the decode to end. With the generation engine still
+    running one request and holding one waiting, the context ds engine is killed. Once the
+    decode ends, the waiting generation leg ends with an error instead of hanging, and the
+    generation worker still serves.
+    """
+    served = serial_loss_served
+    timeline = []
+    start = time.monotonic()
+
+    def mark(event: str) -> None:
+        timeline.append(f"{time.monotonic() - start:.1f} s {event}")
+
+    hold = {
+        "model": MODEL_NAME,
+        "prompt": basic.COMPLETION_PROMPT,
+        "max_tokens": HOLD_TOKENS,
+        "ignore_eos": True,
+    }
+    with concurrent.futures.ThreadPoolExecutor(2) as pool:
+        holding = pool.submit(
+            requests.post, f"{served.url}/v1/completions", json=hold, timeout=HOLD_TIMEOUT_S
+        )
+        _wait(lambda: _pending(served, "generation")[0] == 1, "the decode to run", DECODE_STARTS_S)
+        mark("decode runs")
+        parked = _context_leg(served, SHORT_PROMPT)[1]
+        mark("context leg parked")
+        pulling = pool.submit(
+            _generation_leg, served, SHORT_PROMPT, parked, HOLD_TIMEOUT_S + PULL_FAILS_S
+        )
+        _wait(
+            lambda: _pending(served, "generation") == (1, 1),
+            "the generation leg to wait behind the decode",
+            QUEUED_S,
+        )
+        mark("generation leg waits")
+        served.servers["context"]._chain_handle.engine.kill()
+        killed = time.monotonic()
+        mark("context engine killed")
+        assert _pending(served, "generation") == (1, 1), "the decode ended before the kill"
+        assert not holding.done(), "the decode ended before the kill"
+        held = holding.result()
+        decoded = time.monotonic()
+        mark("decode ended")
+        assert held.status_code == 200, held.text
+        response = pulling.result()
+    mark(f"generation leg ended with {response.status_code}")
+    record_property("timeline", "; ".join(timeline))
+    record_property("pull_after_kill_s", f"{time.monotonic() - killed:.1f}")
+    record_property("pull_after_decode_s", f"{time.monotonic() - decoded:.1f}")
+    assert response.status_code >= 400, (response.status_code, response.text)
+    generation = served.servers["generation"]._chain_handle
+    assert generation.frontend.poll() is None
+    assert requests.get(f"{served.workers['generation']}/health", timeout=10).status_code == 200

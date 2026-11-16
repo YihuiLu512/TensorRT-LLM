@@ -41,7 +41,7 @@ from tensorrt_llm.grpc.openengine_conventions import (
 
 from . import _test_openengine_ds_disagg_basic as basic
 
-# The chain harness's engine readings.
+# The chain harness: its engine readings, and its port picks for the workers a test starts.
 __extra_import_path__ = ["~/tests/integration/defs"]
 
 MODEL_NAME = basic.MODEL_NAME
@@ -529,10 +529,17 @@ def static_workers(groups, form, model_path, tmp_path_factory):
     if form != basic.FORM_CHAIN:
         yield groups.get()
         return
+    from openengine_chain import launch
+
+    from tensorrt_llm._utils import get_free_ports
+
     from .openai_server import RemoteOpenAIServer
 
     groups.close()
     workdir = tmp_path_factory.mktemp("ds-static")
+    ports = dict(zip(basic.ROLES, get_free_ports(len(basic.ROLES))))
+    # The harness picks the engines' ports as the workers start: not the front ends' ports.
+    launch.reserve_ports(*ports.values())
 
     def worker(role: str) -> RemoteOpenAIServer:
         env = {**os.environ, "CUDA_VISIBLE_DEVICES": basic.ROLE_GPUS[role]}
@@ -542,6 +549,7 @@ def static_workers(groups, form, model_path, tmp_path_factory):
         assert args[:2] == ["--server_role", role], args
         return RemoteOpenAIServer(
             model_path,
+            port=ports[role],
             env=env,
             cli_args=args[2:],
             extra_config=basic.DEFAULT_GROUP.config(role),

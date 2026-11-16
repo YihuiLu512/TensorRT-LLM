@@ -17,6 +17,8 @@ reports.
 
 from __future__ import annotations
 
+import dataclasses
+
 import grpc
 import pytest
 import yaml
@@ -55,6 +57,14 @@ def _delta(before: dict, after: dict, role: str, key: str) -> int:
     counters = after[role]["frontend"]
     assert key in counters, f"the {role} front end reports no {key}: {sorted(counters)}"
     return counters[key] - before[role]["frontend"].get(key, 0)
+
+
+def _orchestrator_max_retries() -> int:
+    """The orchestrator's ``max_retries``: the chain's configuration leaves it at its default."""
+    from tensorrt_llm.llmapi.disagg_utils import DisaggServerConfig
+
+    (field,) = (f for f in dataclasses.fields(DisaggServerConfig) if f.name == "max_retries")
+    return field.default
 
 
 def _disagg_request_id(request) -> str:
@@ -134,8 +144,10 @@ def test_ds_profile_rejects(refusals, name):
     assert CTX_LEG in response.text, response.text
     for role in ("context", "generation"):
         assert _delta(before, after, role, SERVE_COUNTER_GENERATE_SENT) == 0
-    # The orchestrator resends a context leg it got an error for once (max_retries=1).
-    assert 1 <= _delta(before, after, "context", SERVE_COUNTER_HTTP_REJECTED) <= 2
+    # The orchestrator sends a context leg it got an error for again, as often as its
+    # max_retries lets it: each attempt is refused.
+    attempts = 1 + _orchestrator_max_retries()
+    assert _delta(before, after, "context", SERVE_COUNTER_HTTP_REJECTED) == attempts
     assert _delta(before, after, "generation", SERVE_COUNTER_HTTP_REJECTED) == 0
 
 

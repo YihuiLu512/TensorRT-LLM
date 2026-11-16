@@ -45,6 +45,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import urllib.parse
 import warnings
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -744,14 +745,52 @@ def test_startup_tokenizer_and_fingerprint(served, model_path):
     assert [m.id for m in models.data] == [MODEL_NAME]
 
 
+def completion_token_ids(
+    served: Served, prompt: list[int], stream: bool, **request
+) -> tuple[list[int], dict]:
+    """A greedy completion of the token ids ``prompt`` through :attr:`Served.url`, as token ids.
+
+    Returns:
+        The completion's token ids (a stream's joined) and its usage.
+    """
+    body = {"model": MODEL_NAME, "prompt": prompt, "temperature": 0.0, "detokenize": False}
+    body.update(request, stream=stream)
+    if stream:
+        body["stream_options"] = {"include_usage": True}
+    with requests.post(
+        f"{served.url}/v1/completions", json=body, timeout=300, stream=stream
+    ) as response:
+        assert response.status_code == 200, response.text
+        if not stream:
+            out = response.json()
+            return out["choices"][0]["token_ids"], out["usage"]
+        ids, usage = [], None
+        for line in response.iter_lines(decode_unicode=True):
+            if not line or not line.startswith("data: ") or line == "data: [DONE]":
+                continue
+            chunk = json.loads(line[len("data: ") :])
+            usage = chunk.get("usage") or usage
+            for choice in chunk.get("choices") or []:
+                ids += choice.get("token_ids") or []
+        return ids, usage
+
+
+# NT-101's token-id check: tokens generated, and how many of them a second request continues.
+FIRST_TOKEN_REQUEST_TOKENS = 5
+CONTINUED_TOKENS = 2
+
+
 @pytest.mark.parametrize("stream", [False, True], ids=["non_stream", "stream"])
 @pytest.mark.parametrize("api", ["completions", "chat"])
-def test_chat_and_completions_basic(served, api, stream):
+def test_chat_and_completions_basic(served, model_path, api, stream, record_property):
     """NT-101 (F-01, F-02, DG-12, DG-13, DG-83, DG-86, DS-S01, DS-S02): both forms answer.
 
-    The first token, decoded by the context leg and delivered by the generation leg, is in the
-    output once: a request that stops at ``max_tokens`` counts exactly ``max_tokens`` tokens.
-    On the chain the context engine sends a PrefillReady per request.
+    A request that stops at ``max_tokens`` counts exactly ``max_tokens`` tokens. On the chain
+    the context engine sends a PrefillReady per request, and, for completions, the first token,
+    decoded by the context leg and delivered by the generation leg, is in the output once: the
+    output's token ids are as many as its ``completion_tokens``, and a request whose prompt ends
+    with the first of them continues with the second (greedy), which a first token delivered
+    twice, or not at all, does not.
     """
     from tensorrt_llm.grpc.openengine_conventions import COUNTER_PREFILL_READY_SENT
 
@@ -769,6 +808,19 @@ def test_chat_and_completions_basic(served, api, stream):
     if served.chain:
         sent = engine_counter(served.engines["context"], COUNTER_PREFILL_READY_SENT) - before
         assert sent >= 3, sent
+    if served.chain and api == "completions":
+        from tensorrt_llm.tokenizer.deepseek_v41 import DeepseekV41Tokenizer
+
+        prompt = DeepseekV41Tokenizer.from_pretrained(model_path).encode(COMPLETION_PROMPT)
+        ids, usage = completion_token_ids(
+            served, prompt, stream, max_tokens=FIRST_TOKEN_REQUEST_TOKENS, ignore_eos=True
+        )
+        continued, _ = completion_token_ids(
+            served, prompt + ids[:1], False, max_tokens=CONTINUED_TOKENS, ignore_eos=True
+        )
+        record_property("token_ids", json.dumps({"output": ids, "continued": continued}))
+        assert len(ids) == usage["completion_tokens"] == FIRST_TOKEN_REQUEST_TOKENS, (ids, usage)
+        assert continued[0] == ids[1], (ids, continued)
 
 
 @pytest.mark.parametrize("stream", [False, True], ids=["non_stream", "stream"])
@@ -839,14 +891,23 @@ def test_health_generate_and_aggregated_direct(served, role):
         assert requests.get(f"{url}/health_generate", timeout=300).status_code == 200
 
 
-METRICS_GROUP = Group(
-    context={"return_perf_metrics": True}, generation={"return_perf_metrics": True}
-)
+# Per-request perf metrics mount /prometheus/metrics; iteration stats fill /metrics.
+METRICS_CONFIG = {"return_perf_metrics": True, "enable_iter_perf_stats": True}
+METRICS_GROUP = Group(context=METRICS_CONFIG, generation=METRICS_CONFIG)
+# The keys of a /metrics entry a worker front end derives from its engine's GetLoad.
+GETLOAD_ENTRY_KEYS = {
+    "source",
+    "timestamp",
+    "numActiveRequests",
+    "numQueuedRequests",
+    "kvCacheStats",
+}
 
 
 @pytest.fixture
 def metrics_served(groups) -> Served:
-    """The chain with per-request perf metrics on; skipped in form K (no worker front ends)."""
+    """The chain with per-request perf metrics and iteration stats on; skipped in form K (no
+    worker front ends)."""
     if groups.form != FORM_CHAIN:
         pytest.skip("form K: the ds workers are not worker front ends")
     return groups.get(METRICS_GROUP)
@@ -856,12 +917,15 @@ def metrics_served(groups) -> Served:
 def test_worker_frontend_endpoints_direct(metrics_served, endpoint, record_property):
     """NT-106 (F-05b, F-05c, F-06, F-42a, F-42b, F-43, DG-89): each worker front end's endpoints.
 
-    The workers return per-request perf metrics, which mounts ``/prometheus/metrics``. In
-    ``/server_info`` the batch size, the KV block size and the context worker's KV endpoint must
-    be the ones the ds engine reports in its ``ServerInfo``. ``/metrics`` holds snapshots
-    derived from ``GetLoad`` only (DV-18); ``/kv_cache_events`` answers a list, recorded (the ds
-    engine has no KV events).
+    The workers return per-request perf metrics, which mounts ``/prometheus/metrics``, and
+    iteration stats. In ``/server_info`` the batch size, the KV block size and the context
+    worker's KV endpoint must be the ones the ds engine reports in its ``ServerInfo``.
+    ``/metrics`` holds at least one entry, and each is a snapshot derived from ``GetLoad``, with
+    its source and no key besides :data:`GETLOAD_ENTRY_KEYS` (DV-18); ``/kv_cache_events``
+    answers a list, recorded (the ds engine has no KV events).
     """
+    from tensorrt_llm.serve.openengine_poc.metrics import GETLOAD_SOURCE
+
     served = metrics_served
     path = {
         "version": "/version",
@@ -879,10 +943,11 @@ def test_worker_frontend_endpoints_direct(metrics_served, endpoint, record_prope
             _check_server_info(served, role, response.json())
         elif endpoint == "metrics":
             snapshots = response.json()
-            assert isinstance(snapshots, list), response.text[:2000]
-            record_property(
-                f"metrics_keys_{role}", json.dumps(sorted(snapshots[-1]) if snapshots else [])
-            )
+            assert isinstance(snapshots, list) and snapshots, response.text[:2000]
+            record_property(f"metrics_keys_{role}", json.dumps(sorted(snapshots[-1])))
+            for snapshot in snapshots:
+                assert snapshot.get("source") == GETLOAD_SOURCE, (role, snapshot)
+                assert set(snapshot) <= GETLOAD_ENTRY_KEYS, (role, snapshot)
             # The route takes POST only.
             events = requests.post(f"{url}/kv_cache_events", timeout=60)
             assert events.status_code == 200, (role, events.status_code, events.text[:2000])
@@ -909,8 +974,11 @@ def _check_server_info(served: Served, role: str, info: dict) -> None:
         elif len(texts) != 1:
             problems.append("ctx_info_endpoint is not one endpoint")
         else:
-            # The engine's first endpoint, in whichever notation the front end writes it.
+            # The engine's first endpoint, in whichever notation the front end writes it: with or
+            # without a scheme, an IPv6 host in brackets.
             first = endpoints[0]
-            if first.host not in texts[0] or not texts[0].endswith(f":{first.port}"):
+            text = texts[0]
+            parts = urllib.parse.urlsplit(text if "://" in text else f"//{text}")
+            if (parts.hostname, parts.port) != (first.host.strip("[]"), first.port):
                 problems.append("ctx_info_endpoint is not the engine's first KV endpoint")
     assert not problems, (problems, info, engine)

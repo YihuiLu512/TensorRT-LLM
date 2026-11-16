@@ -227,4 +227,11 @@ EXPECTATIONS = [
         "between them",
         leg=DIRECT_TWO_LEG,
     ),
+    _entry(
+        _CANCEL + "test_engine_loss_with_generation_in_flight",
+        LEG_EXPECT,
+        "it sends both legs of the request it checks to the worker frontends itself and kills "
+        "the context ds engine while the generation leg waits",
+        leg=DIRECT_TWO_LEG,
+    ),
 ]

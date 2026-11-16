@@ -817,6 +817,7 @@ def test_two_leg_request_consistency(observed_served, dump_root):
 # -- NT-215: a context leg retried after a context front end dies (last: it kills one) --------
 
 RETRY_REQUESTS = 32
+RETRY_MAX_TOKENS = 4
 # Batches to send until the attached front end has context legs in flight.
 RETRY_BATCHES = 3
 # Context legs in flight on the attached front end when it is killed: more than one, so that one
@@ -875,10 +876,10 @@ def test_ctx_leg_retry_after_ctx_frontend_killed(retry_served, dump_root):
 
     The context worker runs two front ends on one port and one ds engine. Requests are sent until
     the attached front end has context legs in flight (its own counters), and it is killed then.
-    Every request succeeds, and the orchestrator counted at least one context retry. The context
-    front ends sent more attempts than there are requests, each with a ``disagg_request_id`` of
-    its own, and each request's generation leg takes one of them. Requests sent afterwards
-    succeed too.
+    Every request succeeds with all its tokens, and the orchestrator counted at least one context
+    retry. The context front ends sent more attempts than there are requests, each with a
+    ``disagg_request_id`` of its own, and each request's generation leg takes one of them.
+    Requests sent afterwards succeed too.
     """
     served = retry_served
     # This is the file's last test: the module's groups fixture stops the group after it.
@@ -899,7 +900,11 @@ def test_ctx_leg_retry_after_ctx_frontend_killed(retry_served, dump_root):
             # with no generation leg to take a handoff.
             futures = [
                 pool.submit(
-                    _completion, served, _retry_prompt(sent + i), max_tokens=4, ignore_eos=True
+                    _completion,
+                    served,
+                    _retry_prompt(sent + i),
+                    max_tokens=RETRY_MAX_TOKENS,
+                    ignore_eos=True,
                 )
                 for i in range(RETRY_REQUESTS)
             ]
@@ -916,7 +921,10 @@ def test_ctx_leg_retry_after_ctx_frontend_killed(retry_served, dump_root):
             for future in futures:
                 response = future.result()
                 assert response.status_code == 200, response.text
-                assert response.json()["choices"][0]["text"], response.text
+                # Every token generated; not the text, which special tokens can leave empty.
+                body = response.json()
+                assert body["usage"]["completion_tokens"] == RETRY_MAX_TOKENS, response.text
+                assert body["choices"][0]["finish_reason"] == "length", response.text
             if killed:
                 break
     assert killed, (
