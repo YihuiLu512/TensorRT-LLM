@@ -818,8 +818,9 @@ def test_two_leg_request_consistency(observed_served, dump_root):
 
 RETRY_REQUESTS = 32
 RETRY_MAX_TOKENS = 4
-# Batches to send until the attached front end has context legs in flight.
-RETRY_BATCHES = 3
+# Batches to send until the attached front end has context legs in flight; how many requests
+# reach it varies from run to run.
+RETRY_BATCHES = 10
 # Context legs in flight on the attached front end when it is killed: more than one, so that one
 # finishing between the reading and the kill still leaves a lost leg.
 LOST_LEGS = 2
@@ -871,7 +872,7 @@ def _ctx_legs_in_flight(counter_dir: str, pid: int) -> int:
     return sent - counts[SERVE_COUNTER_PREFILL_READY_RECEIVED]
 
 
-def test_ctx_leg_retry_after_ctx_frontend_killed(retry_served, dump_root):
+def test_ctx_leg_retry_after_ctx_frontend_killed(retry_served, dump_root, record_property):
     """NT-215 (DG-45): a context leg lost with its front end is retried under a new id.
 
     The context worker runs two front ends on one port and one ds engine. Requests are sent until
@@ -927,6 +928,9 @@ def test_ctx_leg_retry_after_ctx_frontend_killed(retry_served, dump_root):
                 assert body["choices"][0]["finish_reason"] == "length", response.text
             if killed:
                 break
+    record_property(
+        "kill", f"after {sent // RETRY_REQUESTS} batches; at most {peak} legs in flight"
+    )
     assert killed, (
         f"the attached front end never had {LOST_LEGS} context legs in flight in "
         f"{RETRY_BATCHES} batches of {RETRY_REQUESTS} requests (at most {peak})"
