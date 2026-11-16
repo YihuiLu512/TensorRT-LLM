@@ -200,8 +200,8 @@ def native_processes(
 
     proxy = (*ds, "disaggregated", "-c", configs["proxy"], "-t", str(NATIVE_READY_TIMEOUT_S))
     return [
-        worker("context", ports.context, "0,1"),
-        worker("generation", ports.generation, "2,3"),
+        worker("context", ports.context, ROLE_GPUS["context"]),
+        worker("generation", ports.generation, ROLE_GPUS["generation"]),
         NativeProcess("proxy", proxy),
     ]
 
@@ -381,10 +381,13 @@ def session_form(env: Mapping[str, str] | None = None) -> str:
 
 @pytest.fixture(scope="module")
 def model_path() -> str:
-    from ..test_llm import get_model_path, llm_models_root
+    from utils.llm_data import llm_models_root
 
     if llm_models_root() is None:
         pytest.skip("no models root: set LLM_MODELS_ROOT")
+    # test_llm resolves model paths when it is imported: only with a models root.
+    from ..test_llm import get_model_path
+
     path = get_model_path(MODEL_DIR)
     assert os.path.isdir(path), f"{path} is not a directory"
     return path
@@ -595,7 +598,10 @@ class Groups:
 
 @pytest.fixture(scope="module")
 def form() -> str:
-    """The form this session serves (:func:`session_form`)."""
+    """The form this session serves (:func:`session_form`); skipped in another chain's session."""
+    chain = os.environ.get(ENV_CHAIN) or "none"
+    if chain not in ("ds", "none"):
+        pytest.skip(f"{ENV_CHAIN}={chain}: the DeepSeek-V4.1 module serves the ds chain or form K")
     return session_form()
 
 
@@ -746,7 +752,7 @@ def test_chat_and_completions_basic(served, api, stream):
     before = (
         engine_counter(served.engines["context"], COUNTER_PREFILL_READY_SENT) if served.chain else 0
     )
-    text, finish, usage = generate(served, api, stream, max_tokens=32)
+    text, finish, _ = generate(served, api, stream, max_tokens=32)
     assert "Paris" in text, text
     assert finish in ("stop", "length"), finish
     # Stream and non-stream give the same tokens (greedy).
@@ -847,8 +853,8 @@ def test_worker_frontend_endpoints_direct(metrics_served, endpoint, record_prope
     The workers return per-request perf metrics, which mounts ``/prometheus/metrics``. In
     ``/server_info`` the batch size, the KV block size and the context worker's KV endpoint must
     be the ones the ds engine reports in its ``ServerInfo``. ``/metrics`` holds snapshots
-    derived from ``GetLoad`` only (DV-18); ``/kv_cache_events`` is read once and recorded (the
-    ds engine has no KV events).
+    derived from ``GetLoad`` only (DV-18); ``/kv_cache_events`` answers a list, recorded (the ds
+    engine has no KV events).
     """
     served = metrics_served
     path = {
@@ -871,8 +877,11 @@ def test_worker_frontend_endpoints_direct(metrics_served, endpoint, record_prope
             record_property(
                 f"metrics_keys_{role}", json.dumps(sorted(snapshots[-1]) if snapshots else [])
             )
-            events = requests.get(f"{url}/kv_cache_events", timeout=60)
-            record_property(f"kv_cache_events_{role}", f"{events.status_code} {events.text[:200]}")
+            # The route takes POST only.
+            events = requests.post(f"{url}/kv_cache_events", timeout=60)
+            assert events.status_code == 200, (role, events.status_code, events.text[:2000])
+            assert isinstance(events.json(), list), events.text[:2000]
+            record_property(f"kv_cache_events_{role}", events.text[:200])
 
 
 def _check_server_info(served: Served, role: str, info: dict) -> None:

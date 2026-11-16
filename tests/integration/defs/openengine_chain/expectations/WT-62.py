@@ -156,12 +156,6 @@ EXPECTATIONS = [
         orphans=0,
     ),
     _entry(
-        _HANDOFF + "test_role_mismatch_static_urls[*",
-        LEG_EXPECT,
-        "it sends one leg to the worker frontend of the other role itself, with no orchestrator",
-        leg=DIRECT_WORKER,
-    ),
-    _entry(
         _HANDOFF + "test_role_startup_check",
         NO_ENGINE_TRAFFIC,
         "it starts an engine without a role and worker frontends that must refuse it, itself",

@@ -337,6 +337,7 @@ def test_gsm8k_200_paired_native_vs_chain(
     assert not problems, problems
 
 
+# Prompts the model continues: where it stops at once, the chain returns no output at all.
 PARITY_PROMPTS = (
     basic.COMPLETION_PROMPT,
     "The three primary colors are",
@@ -344,7 +345,7 @@ PARITY_PROMPTS = (
     "Water boils at sea level at a temperature of",
     "Once upon a time, in a village by the sea,",
     "The largest planet in the solar system is",
-    "Translate to French: Good morning, how are you?\n",
+    "Translate to French: Good morning, how are you?\nFrench:",
     "1, 1, 2, 3, 5, 8,",
 )
 PARITY_MAX_TOKENS = 32
@@ -387,8 +388,8 @@ def test_two_endpoint_parity(served, record_property):
     (the reference) and to the disaggregated server (the candidate). Reported per prompt: whether
     the first tokens agree, and the longest common prefix of the greedy outputs, in tokens
     (where an endpoint returns no token ids, in characters, and the first character stands for
-    the first token). Only reported: serving output is not deterministic from run to run, so no
-    threshold is set; the test fails only when an endpoint returns no output.
+    the first token). Only reported, with no threshold: the test fails only when an endpoint
+    returns no output.
     """
     reference = served.client(served.workers["context"])
     candidate = served.client()

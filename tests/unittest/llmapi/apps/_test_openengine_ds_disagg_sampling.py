@@ -214,9 +214,12 @@ def test_seed(served, api):
     that is not sampled at all does not pass, four other seeds must not all give the first
     seed's output (probabilistic, as the sample check of NT-110).
     """
+    # An open request, so that seeds can give different outputs (a factual question need not).
     request = {"max_tokens": 32, "temperature": 1.0}
     if api == "completions":
         request["prompt"] = "Write a short poem about the sea.\n"
+    else:
+        request["messages"] = [{"role": "user", "content": "Write a short poem about the sea."}]
     sampled = [basic.generate(served, api, False, seed=1234, **request)[0] for _ in range(2)]
     assert sampled[0], sampled
     assert sampled[0] == sampled[1], sampled
@@ -440,17 +443,19 @@ def interval_served(groups) -> basic.Served:
     return groups.get(STREAM_INTERVAL_GROUP)
 
 
-def test_stream_interval(interval_served):
+def test_stream_interval(interval_served, record_property):
     """NT-118 (DS-S17): the generation engine streams its tokens ``stream_interval`` at a time.
 
-    The engine sends a chunk once ``stream_interval`` tokens are pending: past the first chunks
-    (the first token) and before the last, each chunk holds at least ``stream_interval`` tokens,
-    and at most ``stream_interval + max_draft_len`` (one DSpark step accepts up to
-    ``max_draft_len + 1`` tokens).
+    The engine sends a chunk once ``stream_interval`` tokens are pending, and sends the tokens
+    of a request's first step and its last ones at once. So the first two chunks (the context
+    leg's first token, the generation engine's first step) and the last may hold fewer; each
+    chunk between holds at least ``stream_interval`` tokens and at most ``stream_interval +
+    max_draft_len`` (one DSpark step accepts up to ``max_draft_len + 1`` tokens).
     """
     out = complete(interval_served, True, continuous=True, max_tokens=96, ignore_eos=True)
     assert out.finish_reason == "length" and out.usage.completion_tokens == 96, out
     counts = [n for n in out.chunk_tokens if n > 0]
+    record_property("chunk_tokens", json.dumps(counts))
     assert sum(counts) == 96, out.chunk_tokens
     middle = counts[2:-1]
     assert len(middle) >= 3, counts

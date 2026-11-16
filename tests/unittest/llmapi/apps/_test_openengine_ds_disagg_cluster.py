@@ -898,8 +898,12 @@ def test_ctx_leg_retry_after_ctx_frontend_killed(retry_served, dump_root):
         for _ in range(RETRY_BATCHES):
             # Legs that ended on the context engine have no PrefillReady: count from here.
             idle = _ctx_legs_in_flight(handle.counter_dir, attached.pid)
+            # ignore_eos: a request whose first token is EOS would end on the context leg,
+            # with no generation leg to take a handoff.
             futures = [
-                pool.submit(_completion, served, _retry_prompt(sent + i), max_tokens=4)
+                pool.submit(
+                    _completion, served, _retry_prompt(sent + i), max_tokens=4, ignore_eos=True
+                )
                 for i in range(RETRY_REQUESTS)
             ]
             sent += RETRY_REQUESTS

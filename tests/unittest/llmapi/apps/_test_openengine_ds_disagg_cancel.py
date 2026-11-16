@@ -197,13 +197,14 @@ def _engine_args(**values) -> tuple[str, ...]:
 # chunks of one KV-cache page, so that a LONG_PROMPT keeps it busy for seconds.
 CANCEL_GROUP = basic.Group(engine_args=_engine_args(max_batch_size=1, max_num_tokens=128))
 LONG_PROMPT_TOKENS = 30000
-# A generation leg this long (within the default --max_seq_len) decodes for far longer than a
-# cancel takes to arrive; _leave_decoding checks that from the rate it streams at.
-LONG_DECODE = 30000
+# A generation leg this long (within --max_seq_len) decodes for far longer than a cancel takes
+# to arrive; _leave_decoding checks that from the rate it streams at.
+LONG_DECODE = 32000
 # How long _leave_decoding reads the stream before it leaves.
 READ_S = 3.0
-# A left decode must have this many cancel windows of tokens left to decode.
-UNFINISHED_MARGIN = 3
+# A left decode must have this many cancel windows of tokens left to decode: past one window
+# its natural end could not be read as the cancel; the second absorbs a faster decode.
+UNFINISHED_MARGIN = 2
 # Long context legs sent at most until one waits: the context engine runs one per rank.
 MAX_LONG_LEGS = 4
 PREFILL_STARTS_S = 120
@@ -262,13 +263,19 @@ class _Left:
             )
 
     def ended(self, left: int) -> None:
-        """``left`` legs have been left; each ended on the context engine without a handoff."""
-        _wait(
-            lambda: _total(self.served, "context") == 0,
-            "the left context calls to end",
-            CANCEL_ARRIVES_S,
-        )
-        self.mark("context calls ended")
+        """``left`` legs have been left; each ended on the context engine without a handoff.
+
+        In form K the ds worker's ``/load`` is written after each scheduling step only, so it
+        keeps the left requests once its engine idles: there the worker's log of each left
+        request is the evidence.
+        """
+        if self.served.chain:
+            _wait(
+                lambda: _total(self.served, "context") == 0,
+                "the left context calls to end",
+                CANCEL_ARRIVES_S,
+            )
+            self.mark("context calls ended")
         self.check("after its client left")
         self.logged_left(left)
 
@@ -383,8 +390,10 @@ def _leave_decoding(served: basic.Served) -> str:
     assert left_s > UNFINISHED_MARGIN * CANCEL_ARRIVES_S, (
         f"{reading}; the decode could end by itself within the cancel window: raise LONG_DECODE"
     )
-    _wait(lambda: _total(served, "generation") == 0, "the decode call to end", CANCEL_ARRIVES_S)
-    if not served.chain:
+    # Form K: the ds worker's /load is not written once its engine idles (see _Left.ended).
+    if served.chain:
+        _wait(lambda: _total(served, "generation") == 0, "the decode call to end", CANCEL_ARRIVES_S)
+    else:
         _wait(
             lambda: _log_count(served, "generation", LEFT_LOG) > logged,
             "the generation worker to log the left request",
