@@ -144,7 +144,9 @@ TOP_KEYS = ("schema", "experiment", "name", "tier_table", "schedule", "prompts",
 TOP_KEYS_OPTIONAL = ("note", "job_inputs")
 DIMS_KEYS = ("tokenizer", "stub", "response_timing_switches", "interpretation", "log_sink")
 
-PH_SIMPLE = ("run_dir", "raw", "nvidia_smi")
+# {origin_ns}: the launch origin (monotonic ns), for product roles that pace themselves on the
+# tier table (S-NX: serve_nx / nx_driver); capkit tools get it as --origin-ns.
+PH_SIMPLE = ("run_dir", "raw", "nvidia_smi", "origin_ns")
 PH_ROLE = ("port_file", "addr")  # reference another role (must be in start_after)
 PH_OWN = ("own",)  # own:port_file | own:report_addr | own:role
 OWN_KEYS = ("port_file", "report_addr", "role", "ready_file")
@@ -588,6 +590,8 @@ def resolve(text, role, ctx, runtime=True):
             return ctx.raw_dir
         if name == "nvidia_smi":
             return ctx.nvidia_smi
+        if name == "origin_ns":
+            return str(ctx.origin_ns)
         if name == "param":
             return ctx.params[arg]
         if name == "port_file":
