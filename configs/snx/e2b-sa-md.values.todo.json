@@ -1,0 +1,29 @@
+{
+ "schema": "capkit.tier_values/1",
+ "values": {
+  "arrival_seed": null,
+  "beat_ns_0": null,
+  "beat_ns_1": null,
+  "beat_ns_2": null,
+  "beat_ns_3": null,
+  "beat_ns_4": null,
+  "beat_ns_5": null,
+  "beat_ns_6": null,
+  "beat_ns_7": null,
+  "beat_ns_warmup": null,
+  "c_fixed": null,
+  "drain_max_wait_ns": null,
+  "gate_deadline_guard_ns": null,
+  "gate_max_snapshot_age_ns": null,
+  "gate_poll_ns": null,
+  "gate_settle_polls": null,
+  "n_tokens": null,
+  "prompt_set": null,
+  "ramp_ns": null,
+  "request_timeout_ns": null,
+  "stream_interval": null,
+  "tail_ns": null,
+  "warmup_ns": null,
+  "window_ns": null
+ }
+}
