@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# No entry. The case this fix verifies, XD-313, starts two engines one after the other on the chain
+# and took up to about 9 minutes, beyond a smoke entry's time budget; the harness waits it changes
+# run in every chain case. Its runs are described in verified/WT-60-fix1.yaml.

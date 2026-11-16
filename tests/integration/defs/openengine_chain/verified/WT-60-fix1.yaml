@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# End-to-end check of the disaggregated chain (case-04, trtllm chain, B200, one node of 2 GPUs) for
+# the row R11 left to this fix: three runs of XD-313, each the only case of its job, on the commit
+# the entry names. Each junit path is relative to the result directory of its runs, which the work
+# item's status file records. With the time limit of expectations/WT-60-fix1.py the case passed in
+# each run; two runs took about 9 minutes, longer than the case's own 300 s limit.
+entries:
+  # XD-313 ok
+  - row: DG-10
+    features:
+    - DG-10
+    cases:
+    - unittest/llmapi/apps/test_disagg_serving_perf_metrics.py::test_completion_metrics
+    commit: b013947903aef6683037297278a46b765d7b3b0f
+    junit:
+    - b200-2g-xd313/b200-2g-xd313/job-6043941_0-r0/node0/results/e00/junit/inner-20261116T215913-1794837553441007141-3066040-test_unittests.py_test_unittests_v2_unittest_llmapi_apps_test_disagg_serving_perf_metrics.py_test_completion_metrics_.xml
+    - b200-2g-xd313/b200-2g-xd313/job-6043941_0-r0/node0/results/e00/outer-junit.xml
+    - b200-2g-xd313/b200-2g-xd313/job-6043941_1-r0/node0/results/e00/junit/inner-20261116T215912-1794837552967175143-3066024-test_unittests.py_test_unittests_v2_unittest_llmapi_apps_test_disagg_serving_perf_metrics.py_test_completion_metrics_.xml
+    - b200-2g-xd313/b200-2g-xd313/job-6043941_1-r0/node0/results/e00/outer-junit.xml
+    - b200-2g-xd313/b200-2g-xd313/job-6043941_2-r0/node0/results/e00/junit/inner-20261116T215749-1794837469038219089-2284772-test_unittests.py_test_unittests_v2_unittest_llmapi_apps_test_disagg_serving_perf_metrics.py_test_completion_metrics_.xml
+    - b200-2g-xd313/b200-2g-xd313/job-6043941_2-r0/node0/results/e00/outer-junit.xml
+    result: passed
+    chain_proof: ok
