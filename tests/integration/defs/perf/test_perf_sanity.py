@@ -2818,8 +2818,11 @@ class AggrTestCmds(NamedTuple):
         for stale_log in warmup_pass_logs(self.test_output_dir, server_idx):
             os.remove(stale_log)
 
-        # The comparison arm of an OpenEngine perf run, or None.
-        arm = openengine_arms.selected_arm()
+        # The comparison arm of an OpenEngine perf run, or None; a ctx_only run under a
+        # disaggregated arm takes the arm's context-worker settings.
+        arm = openengine_arms.single_server_view(
+            openengine_arms.selected_arm(), self.benchmark_mode
+        )
         try:
             server_hostname = "localhost"
             server_addr_path = os.path.join(self.test_output_dir, f"trtllm-serve.{server_idx}.addr")
@@ -4418,6 +4421,47 @@ class AggrGenOnlyNoContextCmds(NamedTuple):
         print_info(f"Server config file {config_path} generated")
         return config_path
 
+    def _launch_arm_gen_worker(
+        self,
+        server_idx: int,
+        cmd: List[str],
+        env: Dict[str, str],
+        gen_log,
+        view: "openengine_arms.Arm",
+        plan: "openengine_arms.ServerPlan",
+    ) -> Tuple["openengine_arms.ArmServer", Optional["openengine_arms.MirrorPump"]]:
+        """Start the gen worker as a disaggregated arm's generation workers start.
+
+        An in-process worker writes gen_server_<i>.log itself, as without an arm.
+        A worker in the chain writes its front end's output to a log of its own,
+        and its engine's output reaches gen_server_<i>.log through a log mirror
+        that the returned pump keeps up to date (perf sanity reads the engine's
+        per-iteration lines there).
+        """
+        ready_timeout = min(
+            self.timeout, server_ready_timeout(DISAGG_SERVER_READY_TIMEOUT, "DISAGG")
+        )
+        server_plan = openengine_arms.ServerPlan(tuple(cmd), plan.config)
+        print_info(f"Gen worker of arm {view.name}")
+        if view.in_process:
+            server = openengine_arms.launch(
+                server_plan, view, env=env, sink=gen_log, ready_timeout=ready_timeout
+            )
+            return server, None
+        frontend_log = os.path.join(self.test_output_dir, f"trtllm-serve.GEN_0.{server_idx}.log")
+        with open(frontend_log, "w") as sink:
+            server = openengine_arms.launch(
+                server_plan, view, env=env, sink=sink, ready_timeout=ready_timeout
+            )
+        pump = openengine_arms.MirrorPump(
+            openengine_arms.LogMirror(
+                openengine_arms.gen_log_source(server, frontend_log),
+                self._gen_worker_log(server_idx),
+            )
+        )
+        pump.start()
+        return server, pump
+
     def run_cmd(self, server_idx: int) -> List[str]:
         """Start the gen worker, then the proxy, then run every client."""
         outputs = []
@@ -4434,16 +4478,34 @@ class AggrGenOnlyNoContextCmds(NamedTuple):
 
         gen_proc = None
         proxy_proc = None
+        # Under a disaggregated arm the gen worker starts as the arm's generation workers do.
+        arm = openengine_arms.disagg_arm(openengine_arms.selected_arm())
+        arm_view = arm_plan = arm_pump = None
         try:
             num_frontends = getattr(gen_cfg, "num_serve_frontends", 1) or 1
+            if arm is not None:
+                arm_view = openengine_arms.role_view(arm, openengine_arms.ROLE_GEN)
+                arm_plan = openengine_arms.prepare_worker(
+                    gen_cmd, arm, openengine_arms.ROLE_GEN, self.test_output_dir
+                )
+                gen_cmd = list(arm_plan.cmd)
+                num_frontends = openengine_arms.worker_frontends(arm_plan)
             gen_addr_path = os.path.join(self.test_output_dir, f"GEN_0.{server_idx}.addr")
             if os.path.exists(gen_addr_path):
                 os.remove(gen_addr_path)
-            if num_frontends > 1:
+            if num_frontends > 1 or (
+                arm_view is not None and openengine_arms.worker_needs_port(arm_view, arm_plan)
+            ):
                 # trtllm-serve refuses port 0 / --report_addr with several
                 # frontends, so reserve the port here and publish it on the
-                # worker's behalf, as DisaggTestCmds does for its workers.
-                gen_port = reserve_multi_frontend_port("localhost")
+                # worker's behalf, as DisaggTestCmds does for its workers. A
+                # worker in an arm's chain gets a free port instead, as an arm's
+                # disaggregated workers do (the chain's front end binds it alone).
+                gen_port = (
+                    reserve_multi_frontend_port("localhost")
+                    if arm_view is None
+                    else openengine_arms.free_port("localhost")
+                )
                 gen_cmd_with_port = add_host_port_to_cmd(gen_cmd, "localhost", gen_port)
                 publish_addr_file(gen_addr_path, "localhost", gen_port)
             else:
@@ -4460,12 +4522,17 @@ class AggrGenOnlyNoContextCmds(NamedTuple):
             # in benchmark gen-only mode, whichever launcher started this test.
             gen_env[GEN_ONLY_NO_CONTEXT_ENV] = "1"
             with open(gen_log_path, "a") as gen_ctx:
-                gen_proc = subprocess.Popen(
-                    gen_cmd_with_port,
-                    env=gen_env,
-                    stdout=gen_ctx,
-                    stderr=subprocess.STDOUT,
-                )
+                if arm_view is None:
+                    gen_proc = subprocess.Popen(
+                        gen_cmd_with_port,
+                        env=gen_env,
+                        stdout=gen_ctx,
+                        stderr=subprocess.STDOUT,
+                    )
+                else:
+                    gen_proc, arm_pump = self._launch_arm_gen_worker(
+                        server_idx, gen_cmd_with_port, gen_env, gen_ctx, arm_view, arm_plan
+                    )
                 gen_host, gen_port = wait_for_reported_addr(gen_addr_path, self.timeout, gen_proc)
 
                 self._write_proxy_config(server_idx, [f"{gen_host}:{gen_port}"])
@@ -4531,6 +4598,8 @@ class AggrGenOnlyNoContextCmds(NamedTuple):
                         )
                         print_info(f"Starting benchmark. cmd is {client_cmd_with_port}")
 
+                        if arm_pump is not None:
+                            arm_pump.pump()
                         gen_log_start_offsets = gen_worker_log_sizes(
                             self.test_output_dir, self.num_gen_servers
                         )
@@ -4543,11 +4612,23 @@ class AggrGenOnlyNoContextCmds(NamedTuple):
                         bench_env["TRTLLM_AGENTX_ARTIFACT_DIR"] = os.path.join(
                             self.test_output_dir, f"agentx.{server_idx}.{client_idx}"
                         )
+                        arm_run = gen_proc.start_run() if arm_view is not None else None
                         output = _run_benchmark_with_log(
                             client_cmd_with_port,
                             bench_env,
                             benchmark_file_path,
                         )
+                        if arm_run is not None:
+                            arm_result = arm_run.finish(
+                                output=output,
+                                client_cmd=client_cmd_with_port,
+                                test_id=(
+                                    f"{openengine_arms.current_test_id()}"
+                                    f"|server={server_idx}|client={client_idx}"
+                                ),
+                                default_dir=self.test_output_dir,
+                            )
+                            print_info(f"Perf arm {arm_view.name} result: {arm_result}")
                         outputs.append(output)
                         pending_device_step_time.append(
                             {
@@ -4601,6 +4682,8 @@ class AggrGenOnlyNoContextCmds(NamedTuple):
                     print_info(f"Stopping {name}")
                     proc.terminate()
                     proc.wait()
+            if arm_pump is not None:
+                arm_pump.stop()
 
         append_gen_worker_device_step_time(
             self.test_output_dir,
@@ -5272,10 +5355,13 @@ class PerfSanityTestConfig:
                     for i, role in enumerate(openengine_arms.WORKER_ROLES)
                 }
                 if disagg_config
-                else {},
+                # ctx_only: the one aggregated server of the context workers' configuration.
+                else {
+                    openengine_arms.ROLE_CTX: max((c.gpus for c in self.server_configs), default=0)
+                },
                 gpus_per_node=disagg_config.hardware.get("gpus_per_node", 0)
                 if disagg_config
-                else 0,
+                else max((c.gpus_per_node for c in self.server_configs), default=0),
             )
         elif arm is not None and (
             self.runtime != "aggr_server"

@@ -21,6 +21,13 @@ the node it runs on, inside one container:
   server's output to ``gen_server_<i>.log`` (no srun step gathers it), and the
   driver touches ``gen_server_<i>.done`` once that pytest exits.
 
+It also runs the one-server modes of the same YAML, test id
+``aggr-<ctx_only|gen_only_no_context>-<config>``: one pytest with no
+``DISAGG_SERVING_TYPE`` starts the one server (the context workers'
+configuration, or one generation worker behind a disaggregated server without
+context workers) and the client, on the GPUs the first worker of that role
+takes in the disaggregated run.
+
 Only the disaggregated comparison arms write that log, so the driver needs
 ``TRTLLM_PERF_ARM`` naming one (``E4-base`` is the arm without the chain), with
 ``TRTLLM_TEST_OPENENGINE_CHAIN`` as that arm requires; every role then loads
@@ -41,6 +48,7 @@ bad arguments or a test the driver cannot run.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import fnmatch
 import importlib.util
 import json
@@ -90,6 +98,12 @@ HARNESS_PACKAGE = "openengine_chain"
 DISAGG_TOPOLOGY = "disagg"
 PLUGIN_OPTION = f"-p {HARNESS_PACKAGE}.pytest_plugin"
 DISAGG_MODES = ("e2e", "gen_only")
+# The modes that run one server of the YAML in one pytest (test id aggr-<mode>-<config>), with
+# the role whose configuration and GPUs that server takes (as perf/openengine_arms.py has them).
+SINGLE_SERVER_MODES = {"ctx_only": "ctx", "gen_only_no_context": "gen"}
+# The role name of that one pytest; it sets no DISAGG_SERVING_TYPE.
+SERVER_ROLE = "SERVER"
+GEN_ONLY_NO_CONTEXT_ENV = "TRTLLM_DISAGG_BENCHMARK_GEN_ONLY"
 TIME_BREAKDOWN_MODIFIER = "time_breakdown"
 # No role runs under an MPI launcher here (a worker with several GPUs spawns its
 # MPI workers itself), so no role gets the launcher's MPI or Slurm variables, as
@@ -128,17 +142,25 @@ class TestPlan:
 
 
 def parse_test_id(test_id: str) -> tuple[str, str]:
-    """``(mode, config stem)`` of ``disagg-<mode>-<config>`` (``disagg_upload`` is refused).
+    """``(mode, config stem)`` of ``disagg-<mode>-<config>`` or ``aggr-<mode>-<config>``.
+
+    ``disagg`` takes the modes :data:`DISAGG_MODES`, ``aggr`` the one-server modes
+    :data:`SINGLE_SERVER_MODES`; the ``_upload`` prefixes are refused.
 
     Raises:
-        DriverError: The id is not a disaggregated test id the driver runs.
+        DriverError: The id is not a test id the driver runs.
     """
     labels = test_id.split("-")
-    if len(labels) < 3 or labels[0] != "disagg":
-        raise DriverError(f"{test_id!r} is not a 'disagg-<mode>-<config>' test id")
+    if len(labels) < 3 or labels[0] not in ("disagg", "aggr"):
+        raise DriverError(
+            f"{test_id!r} is not a 'disagg-<mode>-<config>' or 'aggr-<mode>-<config>' test id"
+        )
     mode = labels[1]
-    if mode not in DISAGG_MODES:
-        raise DriverError(f"{test_id!r}: the driver runs the modes {DISAGG_MODES}, not {mode!r}")
+    modes = DISAGG_MODES if labels[0] == "disagg" else tuple(SINGLE_SERVER_MODES)
+    if mode not in modes:
+        raise DriverError(
+            f"{test_id!r}: the driver runs the {labels[0]} modes {modes}, not {mode!r}"
+        )
     if labels[2] == TIME_BREAKDOWN_MODIFIER:
         raise DriverError(f"{test_id!r}: the driver does not run the time_breakdown modifier")
     return mode, "-".join(labels[2:])
@@ -168,12 +190,17 @@ def load_plan(test_id: str, config_dir: str) -> TestPlan:
     num_gen = int(hardware.get("num_gen_servers") or 0)
     if num_ctx < 1 or num_gen < 1:
         raise DriverError(f"{path}: needs at least one context and one generation server")
-    if benchmark_utils.is_gen_only_no_context(mode, config):
-        raise DriverError(f"{path}: the driver does not run the gen_only_no_context mode")
+    if mode in DISAGG_MODES and benchmark_utils.is_gen_only_no_context(mode, config):
+        raise DriverError(
+            f"{path}: the driver runs gen_only_no_context as the test id "
+            "aggr-gen_only_no_context-<config> only"
+        )
     concurrency = benchmark_utils.parse_positive_concurrency(
         (config.get("benchmark") or {}).get("concurrency_list", "1")
     )
     roles = tuple(f"GEN_{i}" for i in range(num_gen)) + tuple(f"CTX_{i}" for i in range(num_ctx))
+    if mode in SINGLE_SERVER_MODES:
+        roles = (SERVER_ROLE,)
     return TestPlan(
         test_id=test_id,
         mode=mode,
@@ -210,9 +237,18 @@ def count_gpus() -> int:
 def assign_gpus(plan: TestPlan, gpus: Sequence[str]) -> dict[str, list[str]]:
     """GPUs of each worker role, the generation workers' first, none shared.
 
+    The one server of a one-server mode takes the GPUs the first worker of its
+    role takes in the disaggregated run of the same YAML.
+
     Raises:
         DriverError: There are fewer GPUs than the workers take.
     """
+    if plan.mode in SINGLE_SERVER_MODES:
+        layout = assign_gpus(
+            dataclasses.replace(plan, mode=DISAGG_MODES[0], roles=_worker_roles(plan)), gpus
+        )
+        first = "GEN_0" if SINGLE_SERVER_MODES[plan.mode] == "gen" else "CTX_0"
+        return {SERVER_ROLE: layout[first]}
     needed = plan.num_gen * plan.gpus["gen"] + plan.num_ctx * plan.gpus["ctx"]
     if needed > len(gpus):
         raise DriverError(
@@ -227,6 +263,13 @@ def assign_gpus(plan: TestPlan, gpus: Sequence[str]) -> dict[str, list[str]]:
         assignment[role] = list(gpus[cursor : cursor + count])
         cursor += count
     return assignment
+
+
+def _worker_roles(plan: TestPlan) -> tuple[str, ...]:
+    """The worker roles of the disaggregated run of ``plan``'s YAML, generation workers first."""
+    return tuple(f"GEN_{i}" for i in range(plan.num_gen)) + tuple(
+        f"CTX_{i}" for i in range(plan.num_ctx)
+    )
 
 
 def gen_fill_queue_size(plan: TestPlan) -> int:
@@ -259,12 +302,19 @@ def role_env(
     variables.
     A worker also gets its GPUs and the cluster's UCX variables (after clearing
     the ones the submit scripts clear); a ``gen_only`` generation worker gets
-    the fill gate.
+    the fill gate. The one pytest of a one-server mode gets no
+    ``DISAGG_SERVING_TYPE`` (it runs every process of the test), its server's
+    GPUs and UCX variables, and under ``gen_only_no_context`` the generation-only
+    switch the local submit script exports.
     """
     env = {k: v for k, v in base.items() if not k.startswith(_MPI_ENV_PREFIXES)}
     # A role's pytest is not one started by a test.
     env.pop("PYTEST_CURRENT_TEST", None)
     env["DISAGG_SERVING_TYPE"] = role
+    if role == SERVER_ROLE:
+        del env["DISAGG_SERVING_TYPE"]
+        if plan.mode == "gen_only_no_context":
+            env[GEN_ONLY_NO_CONTEXT_ENV] = "1"
     env["DISAGG_CONFIG_FOLDER"] = os.path.dirname(os.path.abspath(plan.config_path))
     env[ENV_SINGLE_NODE] = "1"
     env[ENV_TAG] = tag
@@ -486,7 +536,7 @@ def supervise(
                 run.ended = now
                 if run.role.startswith("GEN_"):
                     touch(os.path.join(test_output_dir, f"gen_server_{run.role[4:]}.done"))
-                if run.role == "BENCHMARK":
+                if run.role in ("BENCHMARK", SERVER_ROLE):
                     benchmark_done = now
                 elif (
                     run.returncode != 0
@@ -577,9 +627,17 @@ def plan_runs(
     output_dir: str,
     run_dir: str,
 ) -> list[RoleRun]:
-    """The four kinds of roles in the order they start: generation, context, server, benchmark."""
+    """The four kinds of roles in the order they start: generation, context, server, benchmark.
+
+    A one-server mode runs its one pytest only.
+    """
     runs = []
-    for role in (*plan.roles, "DISAGG_SERVER", "BENCHMARK"):
+    roles = (
+        plan.roles
+        if plan.mode in SINGLE_SERVER_MODES
+        else (*plan.roles, "DISAGG_SERVER", "BENCHMARK")
+    )
+    for role in roles:
         runs.append(
             RoleRun(
                 role=role,
@@ -609,7 +667,10 @@ def write_report(path: str, report: Mapping) -> None:
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("test_id", help="disagg-<e2e|gen_only>-<config stem>")
+    parser.add_argument(
+        "test_id",
+        help="disagg-<e2e|gen_only>-<config stem> or aggr-<ctx_only|gen_only_no_context>-<config stem>",
+    )
     parser.add_argument("--output-dir", required=True, help="pytest --output-dir of every role")
     parser.add_argument(
         "--config-dir",

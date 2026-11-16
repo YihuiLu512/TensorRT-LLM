@@ -16,7 +16,10 @@ perf sanity cases (no benchmark mode such as ``ctx_only``, no
 ``time_breakdown``) and the legacy serve perf tests; the legacy tests still
 write their usual perf records under the test's own name. The arms of
 :data:`DISAGG_ARMS` take the disaggregated perf sanity cases that
-:func:`check_disagg_case` accepts. The other perf sanity cases, perf sanity
+:func:`check_disagg_case` accepts, which include the one-server modes
+``ctx_only`` and ``gen_only_no_context`` of a disaggregated YAML: their one
+server starts as the arm's settings of its role say, and its results name
+that role view (``E4-chain:ctx``, :func:`result_arm`). The other perf sanity cases, perf sanity
 test ids that upload results, clients other than benchmark_serving (accuracy
 runs included) and the legacy trtllm-bench tests refuse an arm, and the
 arms with a chain refuse the options that the OpenEngine front end's option
@@ -1362,9 +1365,11 @@ def validate_result(doc: Any) -> list[str]:
         extra = sorted(set(doc) - set(_RESULT_KEYS))
         errors.append(f"keys: missing {missing}, unexpected {extra}")
         return errors
-    arm = ARMS.get(doc["arm"])
+    arm = result_arm(doc["arm"]) if isinstance(doc["arm"], str) else None
     if arm is None:
-        errors.append(f"arm {doc['arm']!r} is not one of {list(ARMS)}")
+        errors.append(
+            f"arm {doc['arm']!r} is not one of {list(ARMS)} or <disagg arm>:<role> (result_arm)"
+        )
     elif doc["case"] != arm.case:
         errors.append(f"case {doc['case']!r} is not arm {arm.name}'s {arm.case!r}")
     if not isinstance(doc["test_id"], str) or not doc["test_id"]:
@@ -1467,6 +1472,16 @@ ENV_SINGLE_NODE = "TRTLLM_PERF_SINGLE_NODE"
 # The perf sanity runtime of a disaggregated test and the benchmark modes the disagg arms take.
 DISAGG_RUNTIME = "multi_node_disagg_server"
 DISAGG_ARM_MODES = ("e2e", "gen_only")
+# The modes in which perf sanity runs one server of a disaggregated test's YAML (the aggr-<mode>
+# test ids), with the role whose settings that server takes under a disaggregated arm and the
+# perf sanity runtime of the mode: ctx_only runs the context workers' configuration as an
+# aggregated server, gen_only_no_context one generation worker behind a disaggregated server
+# that has no context worker.
+SINGLE_SERVER_ARM_MODES = {"ctx_only": ROLE_CTX, "gen_only_no_context": ROLE_GEN}
+SINGLE_SERVER_RUNTIMES = {
+    "ctx_only": "aggr_server",
+    "gen_only_no_context": "gen_only_no_context_server",
+}
 SERVER_ROLE_OPTION = "--server_role"
 _SERVER_ROLE_VALUES = {ROLE_CTX: "context", ROLE_GEN: "generation"}
 # Environment variables of a worker that select or tune the KV-cache transfer.
@@ -1512,6 +1527,34 @@ def role_view(arm: Arm, role: str) -> Arm:
     )
 
 
+def single_server_view(arm: Arm | None, benchmark_mode: str | None) -> Arm | None:
+    """The arm the one server of a perf sanity run in ``benchmark_mode`` starts with.
+
+    Under a disaggregated arm, a run in a one-server mode (:data:`SINGLE_SERVER_ARM_MODES`)
+    starts its server as the arm's settings of that mode's role say (:func:`role_view`);
+    any other arm, or none, is returned as it is.
+    """
+    role = SINGLE_SERVER_ARM_MODES.get(benchmark_mode or "")
+    if role is None or disagg_arm(arm) is None:
+        return arm
+    return role_view(arm, role)
+
+
+def result_arm(name: str) -> Arm | None:
+    """The one-server arm a result document names, or ``None`` if it names none.
+
+    One of :data:`ARMS`, or a disaggregated arm's view of one role
+    (``<arm>:<role>``, :func:`role_view`) that a one-server mode starts with.
+    """
+    if name in ARMS:
+        return ARMS[name]
+    base, _, role = name.rpartition(":")
+    arm = DISAGG_ARMS.get(base)
+    if arm is None or arm.topology != TOPOLOGY_DISAGG or role not in WORKER_ROLES:
+        return None
+    return role_view(arm, role)
+
+
 def worker_role(serving_type: str) -> tuple[str, int]:
     """``(role, index)`` of a worker's ``DISAGG_SERVING_TYPE`` such as ``CTX_0`` or ``GEN_1``.
 
@@ -1546,6 +1589,9 @@ def check_disagg_case(
     breakdown, DWDP or ``numactl``: the chain starts its engine and front end
     with a ``trtllm-serve`` command line and cannot split one that a
     ``numactl`` prefix starts, and both arms of a comparison start the same way.
+    A case-04 arm that starts both roles alike (``E4-base``, ``E4-chain`` and
+    their lean variants) also takes the one-server modes ``ctx_only`` and
+    ``gen_only_no_context`` (:data:`SINGLE_SERVER_ARM_MODES`) on their runtimes.
 
     Raises:
         ArmError: The arm is the direct replay tool's, or the test is not one of these.
@@ -1556,12 +1602,24 @@ def check_disagg_case(
             f"{where} is the direct replay tool's arm (openengine_chain/direct_replay_load.py); "
             "perf sanity does not run it"
         )
-    if runtime != DISAGG_RUNTIME:
-        raise ArmError(f"{where} applies to disaggregated cases only, not to runtime {runtime!r}")
-    if benchmark_mode not in DISAGG_ARM_MODES:
+    single_server = benchmark_mode in SINGLE_SERVER_ARM_MODES
+    if single_server and runtime != SINGLE_SERVER_RUNTIMES[benchmark_mode]:
         raise ArmError(
-            f"{where} takes the benchmark modes {', '.join(DISAGG_ARM_MODES)}, "
-            f"not {benchmark_mode!r}"
+            f"{where}: the {benchmark_mode} mode runs on runtime "
+            f"{SINGLE_SERVER_RUNTIMES[benchmark_mode]!r}, not {runtime!r}"
+        )
+    if not single_server and runtime != DISAGG_RUNTIME:
+        raise ArmError(f"{where} applies to disaggregated cases only, not to runtime {runtime!r}")
+    if benchmark_mode not in DISAGG_ARM_MODES and not single_server:
+        modes = (*DISAGG_ARM_MODES, *SINGLE_SERVER_ARM_MODES)
+        raise ArmError(
+            f"{where} takes the benchmark modes {', '.join(modes)}, not {benchmark_mode!r}"
+        )
+    if single_server and (arm.case != CASE_DISAGG or arm.ctx != arm.gen):
+        raise ArmError(
+            f"{where}: the {benchmark_mode} mode runs one server as the arm's "
+            f"{SINGLE_SERVER_ARM_MODES[benchmark_mode]} workers start; only a case-04 arm that "
+            "starts both roles alike takes it"
         )
     if arm.case == CASE_DS and benchmark_mode != "e2e":
         # gen_only rests on trtllm-serve's request queue (TLLM_BENCHMARK_REQ_QUEUES_SIZE),
@@ -1710,6 +1768,42 @@ def mirrors_gen_log(view: Arm, environ: Mapping[str, str] | None = None) -> bool
     """
     env = os.environ if environ is None else environ
     return env.get(ENV_SINGLE_NODE) == "1"
+
+
+class MirrorPump:
+    """Pumps a :class:`LogMirror` in a thread every ``interval_s`` until :meth:`stop`.
+
+    perf sanity's ``gen_only_no_context`` run starts its generation worker in the
+    test's own pytest, and that worker's ``gen_server_<i>.log`` has no other writer;
+    under an arm with a chain the engine's output reaches it through this pump.
+    :meth:`pump` copies at once (before a byte offset of the log is read).
+    """
+
+    def __init__(self, mirror: LogMirror, interval_s: float = 1.0) -> None:
+        self.mirror = mirror
+        self.interval_s = interval_s
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def pump(self) -> int:
+        with self._lock:
+            return self.mirror.pump()
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._loop, name="perf-arm-gen-log", daemon=True)
+        self._thread.start()
+
+    def _loop(self) -> None:
+        while not self._stop.wait(self.interval_s):
+            self.pump()
+
+    def stop(self) -> None:
+        """Stop the thread, then copy what is left."""
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join()
+        self.pump()
 
 
 _SPAWNED_MARK = "multiprocessing.spawn"

@@ -149,8 +149,9 @@ def test_check_disagg_case_accepts(arms, mode):
     "changes, message",
     [
         ({"runtime": "aggr_server"}, "disaggregated cases only"),
-        ({"benchmark_mode": "ctx_only"}, "benchmark modes"),
-        ({"benchmark_mode": "gen_only_no_context"}, "benchmark modes"),
+        # The one-server modes run on their own runtimes (test_poc3_wt70_fix1_modes.py).
+        ({"benchmark_mode": "ctx_only"}, "runs on runtime 'aggr_server'"),
+        ({"benchmark_mode": "gen_only_no_context"}, "runs on runtime 'gen_only_no_context_server'"),
         ({"benchmark_mode": None}, "benchmark modes"),
         ({"time_breakdown": True}, "time_breakdown"),
         ({"dwdp_size": 4}, "DWDP"),
