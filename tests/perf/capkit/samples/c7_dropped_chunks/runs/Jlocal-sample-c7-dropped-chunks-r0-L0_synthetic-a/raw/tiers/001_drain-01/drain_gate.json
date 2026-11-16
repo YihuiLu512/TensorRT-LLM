@@ -1,0 +1,216 @@
+{
+ "action": "none",
+ "deadline_rel_ns": 3800000000,
+ "gate": {
+  "deadline_guard_ns": 200000000,
+  "max_snapshot_age_ns": 400000000,
+  "mode": "enforce",
+  "poll_ns": 200000000,
+  "readings": [
+   {
+    "abs_max": 0,
+    "name": "loadgen_inflight",
+    "terms": [
+     {
+      "agg": "sum",
+      "role": "capload",
+      "sign": 1,
+      "slot": "backlog.inflight"
+     }
+    ]
+   },
+   {
+    "abs_max": 0,
+    "name": "sink_streams",
+    "terms": [
+     {
+      "agg": "sum",
+      "role": "nullsse",
+      "sign": 1,
+      "slot": "backlog.active_streams"
+     }
+    ]
+   }
+  ],
+  "rule": "abs_max",
+  "settle_polls": 2
+ },
+ "identity": {
+  "arm": "synthetic-a",
+  "experiment": "E0",
+  "job_id": "local-sample-c7-dropped-chunks",
+  "launch_seq": 0,
+  "pid": null,
+  "register_sha": "2ebc3730daa7ab2d463ee1377b396a04e637dfc51199734dc4fe6aa535079da0",
+  "restart_count": 0,
+  "role": "launch",
+  "tier_label": "drain-01",
+  "tier_seq": 1,
+  "worker": 0
+ },
+ "n_polls": 2,
+ "passed": true,
+ "polls": [
+  {
+   "actual_rel_ns": 2001000000,
+   "details": {
+    "loadgen_inflight": [
+     {
+      "agg": "sum",
+      "n_procs": 2,
+      "role": "capload",
+      "seqs": [],
+      "sign": 1,
+      "slot": "backlog.inflight",
+      "value": 0
+     }
+    ],
+    "sink_streams": [
+     {
+      "agg": "sum",
+      "n_procs": 1,
+      "role": "nullsse",
+      "seqs": [],
+      "sign": 1,
+      "slot": "backlog.active_streams",
+      "value": 0
+     }
+    ]
+   },
+   "errors": {},
+   "now_ns": 1002001000000,
+   "planned_rel_ns": 2000000000,
+   "snapshots": {
+    "1001": {
+     "launch_key": [
+      "E0",
+      "synthetic-a",
+      0,
+      "local-sample-c7-dropped-chunks",
+      0,
+      "2ebc3730daa7ab2d463ee1377b396a04e637dfc51199734dc4fe6aa535079da0"
+     ],
+     "pid": 1001,
+     "seq": 20,
+     "starttime_ticks": 6001,
+     "t_mono_ns": 1001981000000
+    },
+    "1002": {
+     "launch_key": [
+      "E0",
+      "synthetic-a",
+      0,
+      "local-sample-c7-dropped-chunks",
+      0,
+      "2ebc3730daa7ab2d463ee1377b396a04e637dfc51199734dc4fe6aa535079da0"
+     ],
+     "pid": 1002,
+     "seq": 20,
+     "starttime_ticks": 6002,
+     "t_mono_ns": 1001981000000
+    },
+    "2001": {
+     "launch_key": [
+      "E0",
+      "synthetic-a",
+      0,
+      "local-sample-c7-dropped-chunks",
+      0,
+      "2ebc3730daa7ab2d463ee1377b396a04e637dfc51199734dc4fe6aa535079da0"
+     ],
+     "pid": 2001,
+     "seq": 20,
+     "starttime_ticks": 7001,
+     "t_mono_ns": 1001981000000
+    }
+   },
+   "values": {
+    "loadgen_inflight": 0,
+    "sink_streams": 0
+   }
+  },
+  {
+   "actual_rel_ns": 2201000000,
+   "details": {
+    "loadgen_inflight": [
+     {
+      "agg": "sum",
+      "n_procs": 2,
+      "role": "capload",
+      "seqs": [],
+      "sign": 1,
+      "slot": "backlog.inflight",
+      "value": 0
+     }
+    ],
+    "sink_streams": [
+     {
+      "agg": "sum",
+      "n_procs": 1,
+      "role": "nullsse",
+      "seqs": [],
+      "sign": 1,
+      "slot": "backlog.active_streams",
+      "value": 0
+     }
+    ]
+   },
+   "errors": {},
+   "now_ns": 1002201000000,
+   "planned_rel_ns": 2200000000,
+   "snapshots": {
+    "1001": {
+     "launch_key": [
+      "E0",
+      "synthetic-a",
+      0,
+      "local-sample-c7-dropped-chunks",
+      0,
+      "2ebc3730daa7ab2d463ee1377b396a04e637dfc51199734dc4fe6aa535079da0"
+     ],
+     "pid": 1001,
+     "seq": 22,
+     "starttime_ticks": 6001,
+     "t_mono_ns": 1002181000000
+    },
+    "1002": {
+     "launch_key": [
+      "E0",
+      "synthetic-a",
+      0,
+      "local-sample-c7-dropped-chunks",
+      0,
+      "2ebc3730daa7ab2d463ee1377b396a04e637dfc51199734dc4fe6aa535079da0"
+     ],
+     "pid": 1002,
+     "seq": 22,
+     "starttime_ticks": 6002,
+     "t_mono_ns": 1002181000000
+    },
+    "2001": {
+     "launch_key": [
+      "E0",
+      "synthetic-a",
+      0,
+      "local-sample-c7-dropped-chunks",
+      0,
+      "2ebc3730daa7ab2d463ee1377b396a04e637dfc51199734dc4fe6aa535079da0"
+     ],
+     "pid": 2001,
+     "seq": 22,
+     "starttime_ticks": 7001,
+     "t_mono_ns": 1002181000000
+    }
+   },
+   "values": {
+    "loadgen_inflight": 0,
+    "sink_streams": 0
+   }
+  }
+ ],
+ "schema": "capkit.drain_gate/1",
+ "source": "default",
+ "t_pass_rel_ns": 2200000000,
+ "written_mono_ns": 9882856761441744,
+ "written_wall": "2026-11-15T01:33:52.841Z"
+}

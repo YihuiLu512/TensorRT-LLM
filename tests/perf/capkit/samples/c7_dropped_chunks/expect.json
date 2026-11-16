@@ -1,0 +1,11 @@
+{
+ "exit_code": 10,
+ "red_checks": [
+  "C7"
+ ],
+ "synthetic": true,
+ "tier_verdicts": {
+  "4": "VOID"
+ },
+ "tree": "runs/Jlocal-sample-c7-dropped-chunks-r0-L0_synthetic-a"
+}

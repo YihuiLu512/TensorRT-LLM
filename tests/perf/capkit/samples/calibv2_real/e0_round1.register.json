@@ -1,0 +1,131 @@
+{
+ "arms": [
+  "e0a-nullsse",
+  "e0b-s1-single",
+  "e0b-s2-two-stage",
+  "e0b-s3-aux-thread",
+  "e0b-s4-sleep"
+ ],
+ "calibration": [],
+ "environment": {
+  "chassis_source": "slurm_view",
+  "gpus": 1,
+  "idle_busy_max_frac": 0.02,
+  "idle_window_s": 30,
+  "slurm_view_wait_s": 300
+ },
+ "expected": {
+  "job_budget": 5,
+  "launches_per_arm": 3
+ },
+ "experiment": "E0",
+ "files_by_arm": {
+  "e0a-nullsse": {
+   "prompts": {
+    "relpath": "02_e0/E0/register/e0a-nullsse.prompts.json",
+    "sha256": "8ffa0b738ee45fc05fb31fad3f467822e5774958508afcf28e21a2c3a2cd4d17"
+   },
+   "scenario": {
+    "relpath": "02_e0/E0/register/e0a-nullsse.scenario.json",
+    "sha256": "69a0616e2e0a964d1872e958783ec633bb8fc7ba5ed2743e4fa6cb8faafeb477"
+   },
+   "schedule": {
+    "relpath": "02_e0/E0/register/e0a-nullsse.schedule.capbin",
+    "sha256": "1c5b2b315a2de74a9e83d30a753ea7068ed3059b96e9b21b3dc7537f30b17626"
+   },
+   "tier_table": {
+    "relpath": "02_e0/E0/register/e0a-nullsse.tiers.json",
+    "sha256": "bce13760cad13f7e65422bf24ce927f7dd8717b5b5a28476485eb3b7858b39b6"
+   }
+  },
+  "e0b-s1-single": {
+   "prompts": {
+    "relpath": "02_e0/E0/register/e0b-s1-single.prompts.json",
+    "sha256": "179b6b10f7b6ac5cc223df7fa173cb110f389d2a2eef57b857360700ada28013"
+   },
+   "scenario": {
+    "relpath": "02_e0/E0/register/e0b-s1-single.scenario.json",
+    "sha256": "400437ceecd9651767379dc101395497bf94b94da7a02e75369988edc0d8d283"
+   },
+   "schedule": {
+    "relpath": "02_e0/E0/register/e0b-s1-single.schedule.capbin",
+    "sha256": "fc91714211967a0edd37dc6f4c47d690a38ae83baf41e2798975cdafabe65c9a"
+   },
+   "tier_table": {
+    "relpath": "02_e0/E0/register/e0b-s1-single.tiers.json",
+    "sha256": "ec81c7669640ee609ed613fb8073c527acc2a18e90175ef18c8149a7e483a7e1"
+   }
+  },
+  "e0b-s2-two-stage": {
+   "prompts": {
+    "relpath": "02_e0/E0/register/e0b-s2-two-stage.prompts.json",
+    "sha256": "0d3ab43f987ddb97a0e7cd4d4de530e2e535f82f49908b77cbffeadbe9ababf9"
+   },
+   "scenario": {
+    "relpath": "02_e0/E0/register/e0b-s2-two-stage.scenario.json",
+    "sha256": "9da6a5b0f6e9e0baf161e2147d83b9b9fd3018fe38d2012c28e4e3d274097cca"
+   },
+   "schedule": {
+    "relpath": "02_e0/E0/register/e0b-s2-two-stage.schedule.capbin",
+    "sha256": "275b3937e8315149c8673abb52071d05e062ccb41bcf3468019ef4a1fe34e111"
+   },
+   "tier_table": {
+    "relpath": "02_e0/E0/register/e0b-s2-two-stage.tiers.json",
+    "sha256": "0a9019592fc7614069eb507e409c43b203f4e1996f997b1e5d452611703a2c72"
+   }
+  },
+  "e0b-s3-aux-thread": {
+   "prompts": {
+    "relpath": "02_e0/E0/register/e0b-s3-aux-thread.prompts.json",
+    "sha256": "b74e30276697e6990b411da3a586e3d14f486338e52bff067f701786fd4c4d27"
+   },
+   "scenario": {
+    "relpath": "02_e0/E0/register/e0b-s3-aux-thread.scenario.json",
+    "sha256": "9cb6b68f46530bb281993593cc7af734d33ed1ed88cd75ae084a07b738a099b2"
+   },
+   "schedule": {
+    "relpath": "02_e0/E0/register/e0b-s3-aux-thread.schedule.capbin",
+    "sha256": "b753f5b8b563842b33a0becf5b747547a3f45f069bbd8f0d704d8e0a814ba543"
+   },
+   "tier_table": {
+    "relpath": "02_e0/E0/register/e0b-s3-aux-thread.tiers.json",
+    "sha256": "0a1af90d3e4d52d4eede90673d44b7e45097cc68bc217de97c3ded79dc2e93c5"
+   }
+  },
+  "e0b-s4-sleep": {
+   "prompts": {
+    "relpath": "02_e0/E0/register/e0b-s4-sleep.prompts.json",
+    "sha256": "7fd9b8db96dbc6290f59d63d27c39219cac25ba461e1139435e193c18119ec5f"
+   },
+   "scenario": {
+    "relpath": "02_e0/E0/register/e0b-s4-sleep.scenario.json",
+    "sha256": "f882faa3cf365999672fe68cdf59470f354935c1290a92d38932d07b4827def1"
+   },
+   "schedule": {
+    "relpath": "02_e0/E0/register/e0b-s4-sleep.schedule.capbin",
+    "sha256": "d41921959376bfce93fdf5ea30de914165069bcdd5ee4677e532601c6a727a5f"
+   },
+   "tier_table": {
+    "relpath": "02_e0/E0/register/e0b-s4-sleep.tiers.json",
+    "sha256": "5493107b4416928607b33c766cd101d8db4ba87cc1b2f907baabe3b335d21447"
+   }
+  }
+ },
+ "inline_thresholds": {},
+ "judge": {
+  "checks": [
+   "C1",
+   "C3",
+   "C5",
+   "C6",
+   "C7",
+   "C9",
+   "C10",
+   "C11",
+   "C13"
+  ],
+  "mode": "P+X"
+ },
+ "purpose": "E0 round 1 (a) e0a-nullsse and (b) e0b-s1..s4; one block (every arm once) per job, 3 jobs (d14_rule min_trees=3); values in register/values/; scenarios copied from 01_code configs/e0 at d9c500c72d21; prompts are synthetic token_ids (SEAMS SM-7); front-end arm not run (SM-6/SM-7); E0(b) known-answer reading offline (SM-9); s2 delta swap not in round 1",
+ "schema": "capkit.register/1"
+}

@@ -1,0 +1,25 @@
+{
+ "exit_code": 0,
+ "grade": {
+  "I_status": "LOCALIZED",
+  "grade": "LOWER_BOUND",
+  "role": "capload"
+ },
+ "red_checks": [],
+ "synthetic": true,
+ "tier_localisation": {
+  "4": {
+   "role": "capload",
+   "status": "LOCALIZED",
+   "via": [
+    "I1",
+    "I3"
+   ]
+  }
+ },
+ "tier_verdicts": {
+  "2": "STABLE",
+  "4": "UNSTABLE"
+ },
+ "tree": "runs/Jlocal-sample-i-reader-slow-r0-L0_synthetic-a"
+}

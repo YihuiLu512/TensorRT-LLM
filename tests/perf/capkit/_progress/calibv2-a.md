@@ -1,0 +1,215 @@
+# calibv2-a（Calibration v2 SB-A：pilot/2、统计量、阈值、判定等级、laddergen 与预算闸）进度
+
+- 子批：calibv2-a（标定 v2 子批次 SB-A；设计 `W/02_e0/E0/analysis/calib-v2/DESIGN-r7a.md` §3 的 P2-00～P2-10，含 P2-08a/P2-08b、P2-09b、P2-09c；步骤清单 `calib-v2/impl-steps-SB-A.json`）。
+- WT = `_local/wt-calibv2-a`（分支 capkit-calibv2-a，起点 fae19c43e7cc24f7943611064a0738f2f2bf578c）；C（01_code main）只读；探针树 C/probe-tree 只读（本子批范围不含探针树）。
+- 范围：pilot/2 与统计量（bootstrap 阈值等）、阈值源与档位 regime、判定等级、laddergen、capjobs 预算闸 / 入选与缺额补足 / expect-node-exclude（以 DESIGN-r7a §3 各步「范围」句为验收边界，跨步改动退回）。
+- 契约：WT/INTERFACES.md 末尾新增勘误节「Calibration v2 SB-A: pilot/2, statistics, thresholds, judge levels, laddergen and budget gates」，被覆盖的正文句子加指引注。
+- 流程：RUNBOOK-stage2-draft.md §2.0（自测在前 → 三路自审 → 收敛后合入）；写作时套用累计规则集 RS1～RS22（SR/capkit-J17871/R4/{brief,triage}.md）。
+- 验证环境：venv /home/scratch.yihlu_coreai/tmp/20261106-wt03-venv/venv；每次测试子 shell 内 `ulimit -v 8388608` + `timeout 900`、`python -B`、PYTHONPYCACHEPREFIX=WT/_local/calibv2-a/pyc、PATH 前置 10 个集群命令替身的 fakebin（exit 97）；不同时跑两个 pytest；不加 -x。
+
+## 进度日志
+- 2026-11-15 05:25:57 开工：建 worktree（capkit-calibv2-a @ fae19c43e7cc24f7943611064a0738f2f2bf578c），写本进度日志头。
+- 2026-11-15 05:32:24 SB-A-1 开工：读完 impl-steps 第 1 条、DESIGN-r7a §2.2/2.3/2.6/2.7/2.10/3.1/3.5/4.5、triage §4.1、repro_b2.py；建 _local/calibv2-a（fakebin 十个替身、pyc、logs、tmp、runt.sh）。跑改前基线 tests/judge（约 3～6 分钟）
+- 2026-11-15 05:43:14 stats.py 新增 P2-01 全部原语与 FU-4（t4_boundary 计 UNDETERMINED）；grade 抽出 first_non_stable，calib.build_shapes 改取等级区间下端（FU-3）。本机直跑核对数值（kmax、rank、t_isf、tol_cell 表、shortfall）全部与设计一致。下一步写测试 tests/judge/test_stats_calibv2.py 与 test_calib / test_stats 增补。
+- 2026-11-15 05:46:58 测试写完（test_stats_calibv2.py 新文件；test_stats.py、test_calib.py 增补，test_calib 既有「无下端」用例改为整树无稳定档）。先单跑新/改的三个文件（约 2～4 分钟）
+- 2026-11-15 05:50:34 新/改测试单跑通过（test_stats_calibv2 41、test_stats+test_calib 共 125→改正 1 处期望后全过）。后台跑变异 r1（24 项 + 未变异对照，逐个串行，约 15～25 分钟）
+- 2026-11-15 06:02:59 变异 r1 完成：未变异对照 128 passed；24 项变异全部变红（_local/calibv2-a/mut/r1/summary.txt）。INTERFACES 勘误节「Calibration v2 SB-A …」与 calib-v2-A1 小节已写，§9.6、B2-2E-A-2、B2-R2 第 4 条加指引。跑全量 tests/judge（约 5～6 分钟，后台）
+- 2026-11-15 06:08:57 全量 tests/judge 343 passed（改前 295）。跑 capjudge 样本自测（n=38）与 py_compile（约 3～6 分钟）
+- 2026-11-15 06:10 SB-A-1 收尾（P2-00 + P2-01），实测（MEASURED）：
+  - 改前基线 tests/judge 295 passed（logs/pre；注：运行期间 stats.py 已开始编辑，子进程型用例可能读到中间版本）；改后 tests/judge 343 passed（logs/post，345.8 s）；capjudge 样本自测 n=38 EXIT=0、errors []；py_compile 207/0；fakebin.log 0 行（没碰集群命令）。
+  - 变异 r1（mut/r1/summary.txt）：未变异对照 128 passed；M01～M24 全部变红（FU-4 不计 UNDETERMINED、上限档改回 T4 下端、censored 改回 T4 kind、去掉等级区间核对、去掉非单调提示、tol_cell 常数 0.6 / r4 公式 / 去 Bonferroni、上界换点估计、任一候选通过、t 换正态、1.2533→1、n_eff→n_windows、rank→k、fold_rank 不缩放、补足乘数 1、q̂ 不截断、符号翻转 ≥→>、去计数下限、T5 门槛 7、ICC 上界不截 0、thr_hi 取小端、MAD=0 不回退 SD、kmax 放宽 γ）。
+  - 与设计稿测试表的出入登记在 INTERFACES calib-v2-A1 第 4 条（L=20 的 z_d SD 1.08；TOL 0.1 时约 2/3 unconfirmed；(100 s, 20σ) 1/50 停在 300；r3 逐格比较代替汇总比较）。
+  - 未做（NOT RUN）：第 8 条真实片段子窗部分（属 P2-12）；其余测试目录（本步只改 capjudge 与 tests/judge）。
+- 2026-11-15 06:17:51 SB-A-2 开工：读完 impl-steps 第 2 条、DESIGN-r7a §2.3、§2.11.1～2.11.3、§3.1 P2-02/P2-03、§3.2、§3.4、§3.5 第 17/22/25/34 条与 inputs/thresholds/calib/judge 现码。先写 capjudge/nullz.py，再改 inputs.py、ledger.py、judge.py。
+- 2026-11-15 06:20:57 nullz.py、inputs.py（arm_config / arm_threshold_config / ladder / v1 拒收 / inline 拒收）、ledger kinds、judge.py 记两种配置已写。跑一遍 tests/judge 看现有样本（全用 pilot/1）受影响面（约 6 分钟，后台）
+- 2026-11-15 06:34:21 测试写完（tests/judge/test_calibv2_sources.py 新文件；test_calib 改 v1 接受用例为拒收；ledger 新 kinds 测试；make_samples 加 v2 选项；samples/calibv2_real 三份真实片段）。单跑新测试文件（约 1～3 分钟）
+- 2026-11-15 06:38:18 新测试单跑 64 passed；test_calib+test_intervene 余 16 失败全是样本仍登记 pilot/1 ⇒ 判定器 INPUT_INVALID（预期）。后台跑变异 r2（22 项 + 未变异对照，逐个串行，约 15～20 分钟），期间写 INTERFACES 勘误
+- 2026-11-15 06:46:20 变异 r2：22 项中 21 项变红（对照见 r2b：judge 对照 11 failed 都是样本 pilot/1 的构建器用例；N01/N02 为 14，多出 3 条）；N19（ladder 登记成别的 kind 不报错）存活 ⇒ 补测试后 r2b 变红；N16 与 NONE 因两个测试目录 conftest 冲突收集出错，r2b 分目录重跑均变红 / 对照全过。改 thresholds.py docstring、capjudge README 加指引。跑全量 tests/judge（约 5 分钟，后台）
+- 2026-11-15 06:54:20 SB-A-2 收尾（P2-02 + P2-03），实测（MEASURED）：
+  - tests/judge：46 failed / 361 passed（logs/a2post，281 s）；改前（SB-A-1 收尾）343 passed。46 条逐条归因（脚本按回溯分类）：20 条回溯含「v1 calibration is not a threshold source」、17 条「has not been judged」（构建器 / 分析脚本读的样本树没判成）、3 条判定器退出 13、1 条 verdicts.json 不存在（test_pilot_refuses_verdicts_without_the_launch_state_check，同因）——全部是默认合成样本仍登记 capkit.pilot/1 ⇒ 判定器按 P2-02 拒收（INTERFACES calib-v2-A2 第 7、8 条）。名单：
+    - tests/judge/test_analysis.py::test_boundary_cli_writes_product_and_record
+    - tests/judge/test_analysis.py::test_boundary_keeps_the_judges_t4_next_to_the_cut_interval
+    - tests/judge/test_analysis.py::test_boundary_cli_excludes_a_launch_marked_void_after_judging
+    - tests/judge/test_analysis.py::test_boundary_cli_rejects_uncommitted_judgements
+    - tests/judge/test_analysis.py::test_e1_report_cli_sink_health_against_registered_bands
+    - tests/judge/test_calib.py::test_near_boundary_builder_tags_every_band_with_the_regime
+    - tests/judge/test_calib.py::test_near_boundary_builder_leaves_out_saturated_tiers[sat_overloaded_tier]
+    - tests/judge/test_calib.py::test_near_boundary_builder_leaves_out_saturated_tiers[i_conflict]
+    - tests/judge/test_calib.py::test_loadgen_band_builder
+    - tests/judge/test_calib.py::test_loadgen_band_builder_uses_stable_tiers_only
+    - tests/judge/test_calib.py::test_loadgen_band_maximum_is_measured_only_when_the_role_was_localised[i_reader_slow-False-capload]
+    - tests/judge/test_calib.py::test_loadgen_band_maximum_is_measured_only_when_the_role_was_localised[i_server_slow-True-nullsse]
+    - tests/judge/test_calib.py::test_shape_builder_leaves_out_undetermined_tiers
+    - tests/judge/test_calib.py::test_stub_calib_builder
+    - tests/judge/test_calib.py::test_shape_builder_never_leaves_a_launch_out_of_the_maximum
+    - tests/judge/test_calib.py::test_shape_builder_takes_the_tier_below_the_first_non_stable
+    - tests/judge/test_intervene.py::test_mode_p_x_writes_not_requested
+    - tests/judge/test_intervene.py::test_intervene_cli_on_a_judged_control_launch
+    - tests/judge/test_intervene.py::test_load_launch_uses_the_interval_cut_at_the_tool_limit
+    - tests/judge/test_intervene.py::test_intervene_excludes_launches_marked_void_after_judging
+    - tests/judge/test_intervene.py::test_intervene_cli_rejects_p_x_trees_and_globs
+    - tests/judge/test_judge_once.py::test_input_invalid_leaves_a_record_and_the_tree_stays_judgeable
+    - tests/judge/test_judge_once.py::test_second_judgement_is_refused_and_writes_nothing
+    - tests/judge/test_judge_once.py::test_exception_leaves_an_error_record_and_no_judge_dir
+    - tests/judge/test_judge_once.py::test_judge_dir_created_meanwhile_loses_the_race
+    - tests/judge/test_judge_once.py::test_ledger_row_added_meanwhile_loses_the_race
+    - tests/judge/test_judge_once.py::test_judge_never_improves_on_an_earlier_void
+    - tests/judge/test_judge_once.py::test_env_invalid_before_the_judge_stays_env_invalid
+    - tests/judge/test_judge_once.py::test_upstream_not_run_makes_every_tier_not_run
+    - tests/judge/test_judge_once.py::test_leftovers_in_launch_end_void_the_launch
+    - tests/judge/test_judge_once.py::test_no_state_line_before_the_judge_is_input_invalid
+    - tests/judge/test_judge_once.py::test_commit_interrupted_after_the_rename_is_completed_by_the_next_run[state]
+    - tests/judge/test_judge_once.py::test_commit_interrupted_after_the_rename_is_completed_by_the_next_run[ledger]
+    - tests/judge/test_judge_once.py::test_commit_of_a_live_writer_is_not_completed
+    - tests/judge/test_pilot.py::test_pilot_from_good_sample
+    - tests/judge/test_pilot.py::test_pilot_excludes_red_tier
+    - tests/judge/test_pilot.py::test_d14_true_from_idle_window_and_load_tiers
+    - tests/judge/test_pilot.py::test_d14_false_when_idle_softirq_is_not_close_to_zero
+    - tests/judge/test_pilot.py::test_d14_no_conclusion_without_the_idle_reading
+    - tests/judge/test_pilot.py::test_d14_rule_registered_after_the_data_gives_no_conclusion
+    - tests/judge/test_pilot.py::test_pilot_excludes_a_tree_recorded_void_before_the_judge
+    - tests/judge/test_pilot.py::test_pilot_excludes_a_tree_whose_state_turned_void_after_judging
+    - tests/judge/test_pilot.py::test_pilot_refuses_verdicts_without_the_launch_state_check
+    - tests/judge/test_pilot.py::test_d14_offline_core_makes_the_tier_reading_incomplete_not_a_crash
+    - tests/judge/test_selftest.py::test_generated_samples_pass
+    - tests/judge/test_selftest.py::test_committed_samples_pass
+  - 新测试 tests/judge/test_calibv2_sources.py 65 passed；tests/capcommon 191 passed；tests/jobs 221 passed；py_compile 209/0；fakebin.log 0 行。
+  - capjudge 样本自测（n=38）：35 个样本得 13（期望各自的退出码），即上面同一原因；empty_tree 照旧；三个本就期望 13 的样本退出码仍对，但 input_calib_invalid、input_identity_mismatch 现在先因 pilot/1 被拒而得 13（calibration[0] 在前），原意的检查被遮住，换源时要复核。
+  - 变异 r2 + r2b（mut/r2、mut/r2b/summary.txt）：22 项全部变红（N19 补测试后变红；N16 分测试目录后两边都红）；对照：judge 两文件 11 failed（都是 test_calib 的样本构建器用例，同上原因）/ 132 passed，ledger 9 passed。
+  - 未做（NOT RUN）：把默认样本换成 v2 源并更新期望（要等 SB-A-3 的 X / C13 改读 nullz）；I 相关样本要等 P2-13（SB-C）；tests/launch 等其余目录（本步未改其代码）。
+- 2026-11-15 07:07:36 SB-A-3 开工：读完 impl-steps 第 3 条、DESIGN-r7a §2.2/2.4/2.9/2.11.1～2.11.3、P2-04～P2-06、§3.4、§3.5 第 6/9/10/14/15/16/18/19 条与 symptoms/checks/judge/nullz/inputs/grade 现码。先改 symptoms（_trend_z、Record、X1 |norm−1|、level_switch_ratio），再改 checks（C13 上限、C13-MEAN）、judge（CONTRA、levels、boundary、t7、batch）。
+- 2026-11-15 07:19:31 symptoms/checks/judge 改完；新测试 tests/judge/test_judge_levels.py 的 P2-04 部分 7 条已过（含真实两级切换片段 samples/calibv2_real/j5940628_l1_t4_requests.json：z −1.577、比值 5.13）。接着写 X1 / C13 / 级合成 / b / T7 测试。
+- 2026-11-15 07:23:48 test_judge_levels.py 52 passed。样本生成器默认改为 v2 源（bootstrap pilot/2 + d14_result；calib_v1 选项保留旧 pilot/1）。后台跑全量 tests/judge（约 5～6 分钟），期间写 INTERFACES calib-v2-A3。
+- 2026-11-15 07:32:30 全量 tests/judge（改样本规则文件名之前）23 failed / 436 passed（46→23：其余是已提交样本仍为 pilot/1、I 样本、regime_nb 样本、test_pilot 的 d14_rule 文件名冲突，已改名）。按新缺省生成样本自测只剩 I 5 个与 regime_nb 2 个不符。INTERFACES calib-v2-A3 与指引已写。后台跑变异 r3（27 项 + 对照，逐个串行，每项约 15 s）。
+- 2026-11-15 07:38:19 变异 r3：27 项中 25 项变红；P04（X1 不按计划请求数）补测试后在 r3b 变红；P15（inside 改成含端点）是等价变异（端点按定义是 STABLE / UNSTABLE，不影响任何标记），保留存活并记录。后台跑全量 tests/judge（约 5～6 分钟）。
+- 2026-11-15 07:46 SB-A-3 收尾（P2-04 x-zd + P2-05 c13-cap + P2-06 judge-levels），实测（MEASURED）：
+  - tests/judge：14 failed / 448 passed（logs/a3full2，319.6 s）；SB-A-2 收尾时 46 failed / 361 passed。剩下 14 条逐条归因：10 条读已提交样本目录（test_analysis 5、test_intervene 5，样本仍登记 pilot/1 ⇒ 13）；test_calib 2 条是 I 样本（i_reader_slow、i_server_slow；P2-13 之前 I1 读不到 i1_calibration ⇒ I NOT_RUN）；test_selftest 2 条（已提交样本同上；按新缺省生成的样本只剩 I 的 5 个与 regime_nb_good / regime_nb_missing 不符）。
+  - 新文件 tests/judge/test_judge_levels.py 55 passed（含真实树 J5940628-r0-L2 的 C13 用例，本机实跑、未跳过）；tests/capcommon 191 passed；py_compile 210/0；fakebin.log 0 行。
+  - capjudge 已提交样本自测（n=38）：仍是 pilot/1 ⇒ 13（74 条错误，与 SB-A-2 同一原因，本步没有重新生成已提交样本）。
+  - 变异 r3（mut/r3/summary.txt，27 项）：25 项变红；P04（X1 不按计划请求数取容差）补测试 test_x1_tolerance_uses_the_tiers_planned_requests 后 r3b 变红；P15（inside 含端点）是等价变异，存活。
+  - 真实数据核对：J5940628:L1 档 4 请求逐秒序列 z_d = −1.577、D = −36 293.75 ns、level_switch_ratio = 5.126（设计稿 −1.58、−36.3 µs、5.13）；J5940628:L2 五个负载档 C13 读数 −0.0094～+0.0007，全部 PASS。
+  - 未做（NOT RUN）：已提交样本目录重新生成与 I / regime_nb 样本改写（P2-10、P2-13）；tests/launch 等其余目录（本步没改它们的代码）。
+- 2026-11-15 07:54:32 SB-A-4 开工：读完 impl-steps 第 4 条、DESIGN-r7a P2-07/P2-08a/P2-08b、§3.2、§3.4、§4.1、§4.2、§4.5、§4.6 与测试第 12/24/33/36/37/39 条；现码 tiergen、tiers、submit、remote、cdbexclude、envfiles、capkit_inner.sh、ledger。先写 capcommon/jobplan.py 与 ledger BUDGET，再写 caplaunch/laddergen.py，再改 capjobs（remote sinfo、exclude --all-but/--also-exclude、pin-next、--expect-node、预算闸）。fakebin 加 sinfo 替身（第 11 个，同样 exit 97）。
+- 2026-11-15 08:05:23 代码初稿写完：capcommon/jobplan.py（新）、ledger BUDGET、caplaunch/laddergen.py（新；V0 计时行 K=24 表长 13264 s 通过、K=26 14308 s 失败；V0-cal 1474 s / time_budget 7610 s 与 plan_r7 一致；--plan 的 S_fit_by_K 与 plan_r4 逐项相等）、capjobs/nodes.py、capjobs/budget.py（新）、submit（gates、--expect-node、--plan-item、--cluster-utc-offset、exclude --all-but/--also-exclude、pin-next、reconcile 补 JOB_ID）、envfiles job --expect-node、capkit_inner.sh、remote 加 sinfo。接着写测试（tests/launch/test_laddergen.py、tests/jobs/test_budget_gates.py、tests/jobs/test_pinning.py）。
+- 2026-11-15 08:14:35 新测试三文件（test_laddergen 23、test_budget_gates 30、test_pinning 13）与 test_scripts 两条新用例全部通过；现在逐目录跑 tests/jobs、tests/capcommon、tests/launch（launch 约数分钟）。
+- 2026-11-15 08:17:43 tests/jobs 267 passed、tests/capcommon 191 passed（+ 新 test_budget_ledger 9）。后台跑 tests/launch（约 4～6 分钟）。
+- 2026-11-15 08:25:44 INTERFACES calib-v2-A4 与三处正文指引、jobs/README、caplaunch/README 已写。tests/launch 全量：9 failed / 203 passed——7 条 test_aux_helper 是 TMPDIR 过长（AF_UNIX path too long，换短 TMPDIR /tmp/a4l 后 64 passed），2 条 test_fingerprint 需要 WT 里的 probe-tree（本 worktree 没有），都与本步无关。后台跑变异 r4（24 项 + 对照，逐个串行，每项约 3～20 s）。
+- 2026-11-15 08:39 SB-A-4 收尾（P2-07 laddergen + P2-08a expect-node-exclude + P2-08b plan-budget-gates），实测（MEASURED）：
+  - 新测试：tests/launch/test_laddergen.py 24 passed；tests/jobs/test_budget_gates.py 30 passed；tests/jobs/test_pinning.py 13 passed；tests/capcommon/test_budget_ledger.py 9 passed；tests/jobs/test_scripts.py 新增 3 条（含参数化）在 36 passed 内。
+  - 全量：tests/jobs 267 passed（logs/a4full）；tests/capcommon 191 passed；tests/launch 203 passed / 9 failed——7 条 test_aux_helper 是 TMPDIR 过长（AF_UNIX path too long；同一文件换短 TMPDIR /tmp/a4l 后 64 passed），2 条 test_fingerprint 要 WT/probe-tree（本 worktree 没有），与本步无关。py_compile 210/0；capjudge 未改，只做了 import 冒烟；fakebin.log 0 行。
+  - 实测数：V0 计时行 K=24、S=90、e_c 0.30 表长 13 264 s 通过（time_budget 13 940 s），K=26 14 308 s 失败；V0-cal 1474 s、4 次一作业 time_budget 7610 s；--plan 的 S_fit_by_K 与 plan_r4.json 逐项相等；tiergen 写出的档位表 sha256 = ladder.json 的 tier_table_sha256。
+  - 变异 r4 / r4b / r4c（mut/muts4.py，25 项）：全部变红。r4 的对照因多目录同跑 conftest 撞名与快照拒收软链而无效，改 run_mut4.sh（逐文件跑、configs/jobs 拷贝）后 r4b 对照全过；r4b 存活 Q12b（作业条件去掉，K=26 仍被 time_budget 拒）、Q20（--all-but 目标不在 node_list 的检查去掉，原测试目标同时不在 sinfo）——补测试后 r4c 变红。
+  - 未做（NOT RUN）：tests/judge 与其余目录（本步没改它们的代码）；真实集群上的 sinfo / scontrol 输出格式（只用桩）；pc 槽按 §4.1 为 130 s 而非 §4.2 写的 90 s（勘误 A4 第 1 条注明）。
+- 2026-11-15 08:41:44 SB-A-5 开工：读 impl-steps 第 5 条与 DESIGN-r7a §2.11.3、§2.12、§3.1 P2-09/09b/09c/10、§3.2、§3.3、§4.2、§4.5、§3.5 测试条目。
+- 2026-11-15 08:59:25 读完设计；d14 真实回放原型（15 棵树、约 10 s）读数与 pilot.json 8e823f12 相等、12 棵完整、结论 false。开始写 tools/capjudge/pilot2.py（框架、_select、d14、bootstrap、shortfall），先骨架再分段。
+- 2026-11-15 09:17:57 pilot2.py 三个子命令与 _select 写完；tests/judge/test_pilot2.py 29 passed（bootstrap 第 40 条、_select 第 31 条、shortfall 第 35 条）。接着写第 13 条框架拒收、第 27/34 条真实 d14、第 23 条取消计数。
+- 2026-11-15 09:22:53 后台跑变异 r5（28 项 + 对照，逐个串行，每项约 20 s，合计约 10 分钟），期间写 INTERFACES 勘误 A5。
+- 2026-11-15 09:30:03 变异 r5：28 项全部变红，对照 49 passed（mut/r5/summary.txt）。接着做第 22 条：判定器加 thresholds 窗口核对、make_samples 加 v2 自测样本并重新生成已提交样本。
+- 2026-11-15 09:31:45 12 个 v2 自测样本逐个判过、退出码全部符合期望（tmp/a5/s22/r1）。全量重新生成样本到 tmp/a5/s22/full 并跑自测（约 3～5 分钟）。
+- 2026-11-15 09:36:09 已提交样本按 v2 缺省重新生成（50 个，新增 12 个 v2 样本；regime_nb 两个改期望 13）。自测：50 个都跑了，只有 5 个 I 样本不符（P2-13 属 SB-C），runner 退出码 1（selftest.sh 的 EXIT 打印读的是 $(date) 的 $?，不可信，以 run_selftest 的 errors 为准）。
+- 2026-11-15 09:40:59 INTERFACES calib-v2-A5 与 SB-A 收尾清单、两处正文指引、capjudge README、samples README 已写。开始逐目录全量：tests/judge（约 6 分钟，后台）。
+- 2026-11-15 09:51:53 全量 tests/judge（logs/a5full，450 s）：12 failed / 499 passed。归因：test_selftest 4 条是样本数常量 38（改为 50，见下次运行）；其余 8 条全是 I 样本（P2-13，SB-C）：test_calib 2、test_analysis 2、test_intervene 2、test_selftest 生成/已提交 2。SB-A-4 收尾时为 14 failed / 448 passed。补了 shortfall→laddergen --plan-from 往返测试与判定器窗口核对测试，重跑 test_pilot2、test_calibv2_sources、test_selftest。
+- 2026-11-15 09:58:45 test_selftest（logs/a5c，326 s）：6 passed / 2 failed；两条失败的 errors 只来自 5 个 I 样本（P2-13）。后台跑变异 r5b（判定器窗口核对 3 项 + 对照）。
+- 2026-11-15 10:01 SB-A-5 收尾（P2-09 pilot2-d14 + P2-09b shortfall + P2-09c bootstrap + P2-10 selftest-and-docs），实测（MEASURED）：
+  - 新文件 tools/capjudge/pilot2.py（框架、_select、d14、bootstrap、shortfall、v0_cancelled）与 tests/judge/test_pilot2.py（第 13、23、27、31、34、35、40 条 + shortfall→laddergen --plan-from 往返）：50 passed（logs/a5d）。
+  - 第 27 条真实回放：本机读第一轮 15 棵树，`pilot2 d14` 读数与 pilot.json 8e823f12 的 d14_softirq.readings 逐字相等、结论 false、完整树 12 棵、launch_verdict VALID 0 棵（CLI 实跑 + 测试）。
+  - 判定器新增 thresholds 阶段 pilot/2 的窗口核对（inputs._check_threshold_window）；test_calibv2_sources 66 passed。
+  - 已提交样本重新生成为 50 个（新增 12 个 v2 样本，regime_nb 两个期望改 13）；自测 50 个都跑了，errors 只来自 5 个 I 样本（P2-13，SB-C）。
+  - 全量 tests/judge（logs/a5full，改样本数常量前）12 failed / 499 passed；改后 test_selftest 6 passed / 2 failed（logs/a5c）。剩余 8 条失败全是 I 样本（test_calib 2、test_analysis 2、test_intervene 2、test_selftest 2），属 P2-13。
+  - 变异 r5（28 项，pilot2）与 r5b（3 项，判定器窗口核对）全部变红，对照全过（mut/r5/summary.txt、mut/r5b/summary.txt）。
+  - fakebin.log 0 行；py_compile 本步改动文件 6/0。
+  - 推断（INFERRED）：shift 条目按「全部入选」处理是否满足 P2-11 的一一对应取代，要到 SB-C 才能核。
+  - 未做（NOT RUN）：第 21 条作业路径 e2e（本 worktree 没有 probe-tree 覆盖清单）；V2-b 区组段的缺额补足；tests/launch、tests/jobs、tests/capcommon 等目录（本步没改它们的代码）。
+- 2026-11-15 10:12:18 SB-A-5 续：补第 21 条作业路径 e2e（脚本在 _local/calibv2-a/e2e，从 wt-fix-sm1718 的 e2e 拷来改写：laddergen --kind e2e、v2 登记表与门产物、submit --dry-run 过 P2-08b 全部门、桩 ssh 与 statvfs；一个作业两次启动，L1 的 --hw-profile-sha 与 e0_d14 不符以得 INPUT_INVALID；预计作业约 55 分钟，后台跑）
+- 2026-11-15 10:18:02 第 21 条 e2e 正式跑（runs/e2e-J9400011，覆盖清单 ovl/P0-bc60637c，HEAD bc60637c）：build 试跑 runs/build-try1 已过 dry-run 全部门（scontrol+sinfo 桩、statvfs 桩）与真提交；作业两次启动各约 27 分钟、再判定，合计约 60～65 分钟，后台
+- 2026-11-15 10:35:23 区组缺额补足已实现（pilot2 shortfall 区组单位、laddergen --plan-from 区组条目）；test_pilot2 55 passed、test_laddergen 30 passed；跑变异 r5c（9 项 + 对照，约 4 分钟）
+- 2026-11-15 10:41:15 变异 r5c（mut/r5c/summary.txt）：9 项全部变红、对照 55+30 passed。两遍可满足性样本 v2_sat_overloaded_level_2p、v2_near_stable_level_2p 已生成进 samples/（make_samples 选项 two_pass；旧样本按新生成器重建后除时间戳外逐字节相同，抽查 v2_good、v2_sat_overloaded_level），run_selftest 加 levels 期望；INTERFACES 勘误 A5b 起草（e2e 结果待填）。等 e2e L0 结束后跑 tests/judge 全量。
+- 2026-11-15 10:46:50 提交 3a4ce547（区组缺额补足、两遍样本；判定器要求 tools/ 干净才写 code sha，未提交时各档 NOT_RUN——所以 e2e 判定前先提交）。L0 树的副本在 3a4ce547 上预判：VALID、级 0 STABLE、级 2 UNSTABLE、级 1 CONTRA。后台跑全量 tests/judge（约 8 分钟）
+- 2026-11-15 11:20 SB-A-5 续收尾（区组缺额补足、两遍可满足性样本、第 21 条 e2e），实测（MEASURED）：
+  - 第 21 条 e2e（_local/calibv2-a/e2e，runs/e2e-J9400011，check.py RESULT PASS）：laddergen e2e 22 档、表长 1610 s、全部 streams_c null；submit --dry-run 六道门全过（桩 scontrol+sinfo、桩 statvfs，不写 BUDGET），真提交 BUDGET 两行；作业 sbatch rc 0，L0、L1 都 VALID 拷回；L0 判定 rc 0、VALID，级 0 STABLE、级 2 UNSTABLE、级 1 CONTRA，b 19.13、T7 μ̂ 17.88；L1（画像 sha 与标定 environment 不符）判定 rc 13 INPUT_INVALID（calibration environment）。提交时代码 bc60637c，判定时 3a4ce547（tools/ 只差 pilot2.py、laddergen.py）。fakebin.log 3 行（作业内 simgate）。
+  - 区组缺额补足：test_pilot2 55 passed、test_laddergen 30 passed；变异 r5c 9 项全部变红、对照全过。
+  - 两遍样本：自测 52 个都跑了，errors 只来自 5 个 I 样本（P2-13，SB-C）；test_selftest 新用例（篡改两遍合成只让级期望变红）通过。
+  - 全量 tests/judge（a5r2，HEAD 3a4ce547）：9 failed / 510 passed——8 条是 5 个 I 样本（P2-13）、1 条是新用例的断言写错（ran 是 [名, rc] 对），已改，单跑通过（a5r4）。
+  - 全量 tests/launch（短 TMPDIR /tmp/a5l2）：2 failed / 217 passed，2 条 test_fingerprint 要 probe-tree（本 worktree 没有）。
+  - 附带：_local/calibv2-a/runt.sh、selftest.sh 的 EXIT 改为先存 $?（原来读的是 $(date) 的退出码）。
+  - 未做（NOT RUN）：tests/jobs、tests/capcommon 等（本次没改 capjobs、capcommon）；I 样本与 shift 一一对应取代仍属 SB-C。
+- 2026-11-15 11:20:17 全量验证开工（HEAD e5de57bf）：建 probe-tree 软链（只供测试，不提交）、短 TMPDIR /home/scratch.yihlu_coreai/tmp/20261114-capkit-sm1718/calibv2-a；先跑 e0a-nullsse / e0b-s1-single 作业路径 e2e（脚本拷自 wt-fix-sm1718 e2e，放 _local/calibv2-a/e2e/*_e0*），再逐目录全量测试。
+- 2026-11-15 11:29:22 e0b-s1-single 作业路径 e2e（J9500001）在 build 处 submit 退出 3：A4 把带 `expected` 段的登记表一律门控，而已登记的 E0 第一轮 / e0w60 / E1 登记表都是 v1 的 `expected = {job_budget, launches_per_arm}`。修：budget.gated 只门控有 arm_config 或 expected 含 v1 两键之外键的登记表（勘误 calib-v2-A6）；test_budget_gates 新增 8 例 38 passed；变异 mut/v1gate 两项都变红。
+- 2026-11-15 11:31:01 e0 作业路径 e2e（HEAD 14f28710，覆盖清单 e2e/ovl/P0-14f28710）：e0b-s1-single J9500011、e0a-nullsse J9500012 都 L0 VALID（222 / 318 文件）、judge rc 11 NOT_RUN、RED 0、无 INPUT_INVALID。后台逐目录全量测试（logs/full，11 个目录串行，约 20～25 分钟），同时做 pilot2 副本回放与 laddergen。
+- 2026-11-15 11:37:01 pilot2 d14 副本回放（replay/d14，15 棵第一轮树副本）：rc 0，readings 与 W/02_e0/E0/analysis/pilot.json（8e823f12）逐字相等、结论 false、完整 12 棵。接着做 bootstrap 副本回放（replay/boot：副本里把第一轮登记表改写成 v2 形状（arm_config、每臂 ladder 全部负载档为 cal、calibration = 上一步 e0_d14.json、expected.bootstrap_rule），树副本里登记表 sha 等长替换，v2 判定器重判后跑 bootstrap；约 15～25 分钟）。
+- 2026-11-15 11:56:09 进度：全量测试（logs/full，HEAD 14f28710）除 launch 1 条（test_tool_runtime_helper_is_attributed_not_unattributed[job-env]，drain_gate_timeout，跑在 replay 判定同时段）与 judge 8 条（I 样本，P2-13/SB-C，同 SB-A-5 收尾）外全过；d14 副本回放（E0 第一轮、E1-0）读数与 pilot.json / e1_noise.json 相等；bootstrap 副本回放 rc 0 产出 pilot/2；V0-cal / V0 档位表与 10 个作业 dry-run 全过（v0tables/r6）；e0w60 J5940628:L2 副本 v2 重判 rc 10 VOID（tier 6 SM-18 取消），唯一 NOT_RUN（t7）有原因。接着单跑 launch 偶发用例、selftest、patchcheck、py_compile、bash -n。
+- 2026-11-15 12:10 SB-A 全量验证收尾（代码 HEAD 14f28710；本条只改进度日志），实测（MEASURED）：
+  - 修复 1 处（提交 14f28710，勘误 calib-v2-A6）：A4 把有 `expected` 段的登记表一律门控，已登记的 E0 第一轮 / e0w60 / E1 登记表（`expected = {job_budget, launches_per_arm}`、无 arm_config）提交会在门 ① 退出 3（e0b-s1-single e2e J9500001 复现）；改为只门控有 arm_config 或 expected 含 v1 两键之外键的登记表。新增 8 例，变异 mut/v1gate 两项都变红。
+  - 测试目录逐个（logs/full，HEAD 14f28710）：capcommon 200、capload 33、capprobe 159、envgate 71、grpc 53、jobs 275、nullsse 4、sidecar 5 全过；launch 218/1 failed（test_tool_runtime_helper_is_attributed_not_unattributed[job-env]，drain_gate_timeout，与副本回放同时段）——单跑 3 次各 3 passed（logs/flake1～3），整目录重跑 219 passed（logs/l2）；judge 511 passed / 8 failed，全是 5 个 I 样本（P2-13，SB-C；同 SB-A-5 收尾）。
+  - selftest（logs/st，--expect-samples 52）：ran 52，errors 只来自 i_conflict、i_reader_slow、i_reader_slow_real_pins、i_server_slow、sat_spin_thread_same_process（同上）；py_compile 220/0；patchcheck PASS（violations []，探针树只读）；bash -n 3/0；fakebin.log 9 行（全是作业内 simgate 的 exit 97 替身）。
+  - 作业路径 e2e（e2e/run_e0.sh，覆盖清单 P0-14f28710）：e0b-s1-single J9500011、e0a-nullsse J9500012 都 L0 VALID，judge rc 11，RED 0，无 INPUT_INVALID。
+  - pilot2 d14 副本回放：E0 第一轮 15 棵（replay/d14）读数与 W/02_e0/E0/analysis/pilot.json（8e823f12）逐字相等、结论 false、完整 12；E1-0 15 棵（replay/e1；副本登记表去掉 v1 pilot 标定，否则按设计 INPUT_INVALID）读数与 03_calib/E1/analysis/e1_noise.json 逐字相等、结论 false、完整 15。
+  - pilot2 bootstrap 副本回放（replay/boot：副本登记表改 v2 形状、全部负载档标 cal、等长替换登记表 sha、v2 判定器重判 15 棵 rc 0）：rc 0，capkit.pilot/2 stage bootstrap，nullz.validate 接受；读数含过载档，不是阈值估计。
+  - laddergen V0-cal / V0（v0tables/r6）：V0-cal 4 个配置 cal 表 1474 s、4 次一作业 time_budget 7610 s；V0 s1-pc / fix / c13-pc（pc）660 s、e2e 1872 s、计时行 K 24 S 90 表 13264 s、time_budget 13940 s；10 个作业 submit --dry-run 全部 rc 0、维护门 pass，桩真提交也全 rc 0。
+  - e0w60 J5940628:L2 副本 v2 重判（replay/w60）：无崩溃，rc 10 VOID（tier 6 的 SM-18 取消，C3/C5/C6 RED，与原判同因），级 0、1 STABLE，唯一 NOT_RUN（t7）带原因。
+  - 未修（交主会话）：① laddergen --job-plan 对 V0-cal 按种子混装出 {s1:2,…} 的作业，DESIGN §4.2 写的是每作业每配置各 1 次（本次手写计划）；② s1-pc 的 request_timeout null 只能靠基模板写字面 null（laddergen 无选项）；③ c13-pc 的表（两档 0.3、无过载）没有对应 kind，用 pc 表代测时长；④ 5 个 I 样本属 P2-13（SB-C）。
+- 2026-11-15 12:15:36 SB-A-6-verify-gaps 开工（HEAD 27c597aa）：读完 DESIGN-r7a §3.4/§4.1/§4.2、ERRATA-after-r7a E1/E2、STATUS 12:07 决定、laddergen/tiergen/run_selftest 与 8 条失败用例。计划：(a) 8 条 I 样本用例 xfail(strict) 拆分到参数级、run_selftest 加 P2-13 延后清单；(b) --job-plan 加 layout one_each（V0cal 强制）；(c) --request-timeout-ns（null 为登记的 null、tiergen 认 registered_nulls）与 kind c13pc；(d) INTERFACES calib-v2-A7。
+- 2026-11-15 12:21:11 代码与测试初稿完成（laddergen 54 passed、test_v0_tables_fit 6 passed）；跑 judge 的 xfail 用例与 selftest 新用例（约 3～5 分钟）
+- 2026-11-15 12:22:34 后台跑变异 r6（mut/muts6.py，27 项 + 对照，逐个串行，约 5 分钟）；同时写 INTERFACES calib-v2-A7
+- 2026-11-15 12:31:17 提交 730f5ea7；变异 r6 27 项（S01～S05、J01～J08、T01～T10、C01～C03）中 25 项红，J07、T07 补测试后 r6b 红，对照 r6c 全过。后台逐个跑 tests/judge（约 8 分钟）、tests/jobs、tests/launch 与 selftest（52）
+- 2026-11-15 12:44:32 全量（HEAD 730f5ea7）：tests/judge 1 failed / 516 passed / 6 xfailed——X2 篡改用例只在 I 样本档 4 上变红，整份延后后失去信号；改为按样本只延后依赖 I 的期望部分（I 定位、等级；i_conflict 另有档 4 判定）。tests/jobs 281 passed、tests/launch 244 passed、selftest 52 ran / errors []、py_compile 221/0。
+- 2026-11-15 12:58 SB-A-6-verify-gaps 收尾（提交 730f5ea7、8fb7ad93 与本次；勘误 calib-v2-A7），实测（MEASURED）：
+  - (a) I 样本：6 条用例 xfail(strict)（test_analysis 2、test_intervene 2、test_calib 参数化 2；全量里 6 xfailed）；run_selftest 的 DEFERRED_P2_13 按样本只延后依赖 I 的期望部分（I 定位、等级；i_conflict 另加档 4 判定）。第一版整份延后让 X2 篡改用例失去信号（tests/judge 1 failed，logs/a6v），改为按部分延后后 test_selftest.py 14 passed（logs/a6w，344 s）。selftest（logs/a6v，--expect-samples 52）：ran 52、errors []，deferred 段列 5 个样本（4/6/9/7/8 条不符）。
+  - (b) laddergen --job-plan：spec 新增 layout（mixed | one_each）与 phase；V0cal 必须 one_each，每作业每配置各 1 次、作业内顺序按种子；不带 phase 的混装确会让同一配置在一个作业里出现两次（测试断言）。
+  - (c) --request-timeout-ns {null,<ns>}（pc 必填）、基础模板超时必须是 TBD、基础取值 null 拒收、登记的 null（registered_nulls，仅 request_timeout_ns）tiergen 接受；kind c13pc（pc 去掉过载档）；tests/jobs/test_v0_tables_fit.py：pc null / pc 60 s / c13pc × 1、2 次一作业，submit --dry-run 在生成的 time_budget_s 处 rc 0、少 1 s rc 3。
+  - 全量（HEAD 730f5ea7）：tests/jobs 281 passed、tests/launch 244 passed（短 TMPDIR，含 probe-tree 软链）、tests/judge 516 passed / 6 xfailed / 1 failed（即上面的篡改用例，8fb7ad93 已修，test_selftest.py 重跑 14 passed）；py_compile 221/0；fakebin.log 9 行（与之前相同，全是旧 e2e 的 simgate）。
+  - 变异：r6（muts6.py，27 项）25 红，J07（layout 不核）、T07（tiergen 不核可空名字）补测试后 r6b 红，对照 r6c 全过；r6d（muts6b.py，按部分延后 8 项）7 红，S06（i_conflict 档 4 不列）把清单用例改为逐项相等后 r6e 红（清单用例与 test_generated_samples_pass 都红），对照 r6e 全过。
+  - 未做（NOT RUN）：tests/judge 全量在 8fb7ad93 上没有整目录重跑（只重跑 test_selftest.py；两次提交之间只改 run_selftest.py 与 test_selftest.py）；laddergen --plan-from 没有 one_each（V0-cal 作业级补足丢 ≥ 2 个作业时补足作业可能同一配置两次，A7 第 6 条）；c13pc 保留基线档是推断（INFERRED，A7 第 4 条）。
+- 2026-11-15 12:58:09 全量验证（HEAD e7d6d0ce）开工：后台逐目录跑 tests（logs/v7，约 25 分钟），随后 selftest / py_compile / patchcheck / bash -n；同时重做 V0-cal / V0 档位表（laddergen one_each、s1-pc null 超时、c13pc）与 e0 作业路径 e2e。
+- 2026-11-15 13:16:20 v7 全部 10 个测试目录全过（judge 518 passed / 6 xfailed）；接着 selftest + py_compile，然后 e0 作业路径 e2e、w60 副本重判。
+- 2026-11-15 13:17:30 selftest 52 ran / errors []（deferred 5 个 I 样本）、py_compile 221/0；开跑 e0 作业路径 e2e（e0b-s1-single J9500021，覆盖清单 P0-e7d6d0ce，约 3～5 分钟）
+- 2026-11-15 13:19:47 e0b-s1-single J9500021：L0 VALID 拷回 222 文件，但判定 rc 10 VOID——drain-01 的 C11 RED（轮询 1.0/1.1 s 实际 1.143/1.284 s，t_pass 记实际时刻 1.284 s > 下一个计划点 1.2 s，判定器按 t_pass 重算出 3 个计划轮询、实际 2 个）。orchestrator / gate / C11 在 SB-A 未改（git diff fae19c43..HEAD 为空），属既有接缝、与负载相关；先跑 e0a-nullsse J9500022，再重跑 e0b J9500023 看是否复现。
+- 2026-11-15 13:21:30 e0b 重跑 J9500023 判定 rc 11、RED 0（C11 全 PASS）、无 INPUT_INVALID；e0a-nullsse J9500022 rc 11、RED 0。开跑 e0w60 J5940628:L2 新副本 v2 重判（replay/w60-e7d6d0ce，约 3 分钟）
+- 2026-11-15 13:25 SB-A 全量验证（代码 HEAD e7d6d0ce；本条只改进度日志），实测（MEASURED）：
+  - 测试目录逐个（logs/v7）：capcommon 200、capload 33、capprobe 159、envgate 71、grpc 53、jobs 281、nullsse 4、sidecar 5、launch 244、judge 518 passed + 6 xfailed（XFAIL_I_P2_13，strict）；无失败，launch 无偶发。
+  - selftest（logs/v7，--expect-samples 52）：EXIT 0，ran 52、errors []，deferred 5 个 I 样本（DEFERRED_P2_13）；py_compile 221/0；patchcheck --rev HEAD EXIT 0、PASS、violations []，探针树 HEAD 与 porcelain 前后不变；bash -n 3/0。
+  - V0-cal / V0 档位表（v0tables/r7，gen_v0_r7.py）：V0-cal 由 `laddergen --job-plan`（phase V0cal、layout one_each）生成并登记，4 个作业每个 4 配置各 1 次；cal 表 1474 s、time_budget 7610 s；s1-pc 表 request_timeout_ns = null，s1/s2/s4-fix = 60 s（660 s 表）；c13-pc 用 `--kind c13pc`（无过载档，表 460 s）；计时行 K 24 S 90 表 13264 s、time_budget 13940 s；10 个作业 submit --dry-run 全部 rc 0、维护门 pass，桩真提交全 rc 0。
+  - e0 作业路径 e2e（覆盖清单 P0-e7d6d0ce）：e0a-nullsse J9500022 L0 VALID、judge rc 11、RED 0、无 INPUT_INVALID；e0b-s1-single J9500021 L0 VALID 但判定 rc 10（drain-01 C11 RED：轮询迟到 > poll_ns，t_pass 记实际时刻，判定器按 t_pass 重算计划轮询多出 1 个；orchestrator / gate / C11 在 SB-A 未改，既有接缝），重跑 J9500023 judge rc 11、RED 0、C11 全 PASS、无 INPUT_INVALID。
+  - pilot2 d14（同一 E0 第一轮副本 replay/d14 在 HEAD 重跑）：rc 0，d14_softirq 与 environment 与 W/02_e0/E0/analysis/pilot.json（8e823f12）逐字相等，与 14f28710 产物全键相等；bootstrap（replay/boot 在 HEAD 重跑）rc 0，capkit.pilot/2 stage bootstrap，与 14f28710 产物全键相等，nullz.validate('pilot') 接受。
+  - e0w60 J5940628:L2 新副本 v2 重判（replay/w60-e7d6d0ce）：无崩溃，rc 10 VOID（tier 6 SM-18 的 C3/C5/C6 RED），唯一 NOT_RUN（t7）带原因，checks.tsv 的 NOT_RUN 行都有说明；verdicts 去掉时间戳后与 14f28710 副本相同。
+  - 沿用的旧证据：E1-0 d14 副本回放（replay/e1，14f28710）——14f28710..HEAD 只改了 caplaunch（laddergen、tiergen、README），capjudge / capcommon 没有任何 import 到 caplaunch，所以仍有效（INFERRED，按 import 闭包）。
+  - fakebin.log 18 行，全部是作业内 simgate 替身（exit 97）；无残留进程。
+  - 交主会话：C11 轮询迟到接缝（J9500021）是新的既有接缝，未改代码（不在 SB-A 范围，需定 t_pass 取计划时刻还是判定器容忍迟到）。
+- 2026-11-15 14:44:30 R1 修复开工（HEAD 439442d7）：F1–F14，按 triage.md 第 4 节逐项读码、先写会红的测试再修。
+- 2026-11-15 15:10:39 F1–F12、F14 代码与测试初稿已改，接着 F13（README）、勘误 A8，然后跑受影响的测试文件。
+- 2026-11-15 15:23:22 R1 修复：受影响测试文件单跑全过（logs/r1f）；后台跑变异 r7（mut/muts7.py，28 项 + 对照，逐个串行，约 15 分钟），期间写勘误 A8。
+- 2026-11-15 15:31:46 R1 修复（F1–F14，triage.md 第 4 节）代码、测试、勘误 calib-v2-A8 写完：受影响文件单跑全过（logs/r1f）；变异 r7（mut/muts7.py，28 项）全部变红、对照除 test_pinning 2 条外全过（那 2 条是副本目录下找不到仓库外输入 02d_cdb_b200.csv，与变异无关；pinning 类变异按多出的目标用例判红）。偏离清单之处：F8 的范围按「本段」（同一 budget_id 下从本段原段计划首行到下一份未给出的原段计划为止）而非整个 budget_id，否则 V1-b B 段的补足要把 A 段计划一起给、混成一段（A8 第 8 条）；F11 的锁覆盖六道门到本次提交返回（比「门 ② 到 RESERVED 行」更宽）；F14 的 STAT_KEY 改锚后行为不变（角色段本身接受换行），未加测试。提交后跑全量验证。
+- 2026-11-15 15:32:45 提交 e9523af6；全量验证开工：后台逐目录跑 tests（logs/v8，约 25 分钟），随后 selftest / py_compile / patchcheck / bash -n、e0 作业路径 e2e、pilot2 副本回放、V0 档位表、w60 重判。
+- 2026-11-15 15:52:47 v8：10 个测试目录全过（judge 524 passed + 6 xfailed）、selftest 52/errors []、py_compile 221/0、patchcheck rc 0 violations []、bash -n 3/0；d14 副本回放与 e7d6d0ce 产物全等，bootstrap 副本回放与 e7d6d0ce 产物全键相等。接着建覆盖清单 P0-e9523af6，跑 e0a-nullsse / e0b-s1-single 作业路径 e2e（J9500031/32，约 5 分钟）。
+- 2026-11-15 15:58 R1 修复收尾（提交 e9523af6；勘误 calib-v2-A8；本条只改进度日志），实测（MEASURED）：
+  - 测试目录逐个（logs/v8，HEAD e9523af6）：capcommon 200、capload 33、capprobe 159、envgate 71、grpc 53、jobs 287、nullsse 4、sidecar 5、launch 245、judge 524 passed + 6 xfailed（XFAIL_I_P2_13，strict）；无失败，launch 无偶发。
+  - selftest（logs/v8，--expect-samples 52）：EXIT 0，ran 52、errors []，deferred 5 个 I 样本；py_compile 221/0；patchcheck --rev HEAD EXIT 0、violations []，探针树 HEAD 与 porcelain 前后不变；bash -n 3/0。
+  - 变异 r7（mut/muts7.py，28 项，每个 F 项至少一项）：全部变红。对照：test_pinning 在副本目录下有 2 条因仓库外输入 02d_cdb_b200.csv 路径不存在而失败（与 R1 改动无关，原 worktree 下全过），pinning 类变异按多出的目标用例判红（逐个核过失败用例名）；其余对照全过。
+  - 作业路径 e2e（覆盖清单 e2e/ovl/P0-e9523af6）：e0b-s1-single J9500031、e0a-nullsse J9500032 都 L0 VALID（222 / 318 文件）、judge rc 11（NOT_RUN，无 D14 与 c13_cap 时的预期）、RED 0、无 INPUT_INVALID。
+  - pilot2 d14（replay/d14 同一副本）：rc 0，d14_softirq.readings 与 W/02_e0/E0/analysis/pilot.json 逐字相等、结论 false，与 e7d6d0ce 产物全等；bootstrap（replay/boot）rc 0，capkit.pilot/2 stage bootstrap，nullz.validate 接受，与 e7d6d0ce 产物全键相等（含 c13_cap.launch_mean 0.06606）。推断（INFERRED）：副本登记表把全部负载档标为 cal，所以「全部被判负载档」与「入选 cal 档」在这批树上是同一组档，F9 的口径改动在这里不改变数值。
+  - V0-cal / V0 档位表（v0tables/r8，gen_v0_r7.py）：与 r7 同表长与 time_budget（cal 1474 s / 7610 s；pc 660 s；c13pc 460 s；计时行 13264 s / 13940 s；e2e 1872 s）；s1-pc 取值文件 request_timeout_ns null + registered_nulls，s1-fix 60 s；10 个作业 submit --dry-run 全部 rc 0、桩真提交全 rc 0（BUDGET.tsv 10 RESERVED + 10 JOB_ID，真提交建了 BUDGET.tsv.lock）。
+  - e0w60 J5940628:L2 新副本 v2 重判（replay/w60-e9523af6）：无崩溃，rc 10 VOID（C3/C5/C6 RED，与原判同因），级 0、1 STABLE、级 2 VOID，唯一 NOT_RUN 是 t7（原因「no req_first_lag_p50_ns trend on the slope tiers」）；verdicts 除 written_mono_ns / written_wall 外与 e7d6d0ce 副本相同。
+  - fakebin.log 24 行，新增 6 行都是 e2e 作业内 simgate 的替身调用（exit 97），与以往同形；无残留进程。
+  - 偏离修复清单之处（交 R2 与主会话）：F8 的范围按「本段」而非整个 budget_id（V1-b A、B 两段共用 budget_id，按整个 budget_id 会让 B 段补足必须连 A 段计划一起给、混成一段）；F11 的锁从门 ① 持有到本次提交返回（比「门 ② 到 RESERVED 行」更宽）；F14 的 STAT_KEY 改锚后行为不变（角色段 `[^:|*]+` 本身接受换行），没有加对应测试。
+  - 未做（NOT RUN）：R2 三路自审（按流程由主会话开）；真实集群上的 sinfo / scontrol 输出（只用桩）。
+- 2026-11-15 17:42:38 R2 修复开工（HEAD 0a7d3aa0）：F15–F28，按 R2 triage.md 第 4 节逐项读码、先写会红的测试再修。
+- 2026-11-15 18:32:38 F22：重新生成 13 个带 ladder 的 v2 样本到 _local/calibv2-a/regen-r2/new（约 3～5 分钟）
+- 2026-11-15 18:42:24 代码与测试初稿完成（F15–F28 与全量核对扫出项），13 个 v2 样本已重新生成；接着写勘误 calib-v2-A9 与指引注，然后跑全量验证与变异。
+- 2026-11-15 18:50:37 提交 16dd2088；后台逐目录全量测试（logs/v9，full.sh，约 25 分钟），随后 selftest；期间准备变异脚本 mut/muts9.py。
+- 2026-11-15 19:10:44 v9（HEAD 16dd2088 + test_intervene 措辞断言，未提交）：10 个测试目录全过（judge 536 passed + 6 xfailed）、selftest 52 / errors 0 / deferred 5、py_compile 221/0。把 test_intervene 改动并入同一提交（amend），接着跑变异 r9（mut/muts9.py，28 项）。
+- 2026-11-15 19:18:54 变异 r9（28 项）：25 项红；F25a/F25b（软链目标内容不是 JSON，读时就被拒）与 F19c（无用例）存活，补强 test_pinning 软链用例（目标改为合法日志行）、新增 test_a_run_root_that_cannot_be_read_is_no_loss 后 r9b 全红（F19d 新增）；对照 r9b 逐文件：除 test_pinning 2 条（副本目录找不到仓库外输入 02d_cdb_b200.csv，同 R1）外全过。提交（amend）后跑作业路径 e2e 与副本回放。
+- 2026-11-15 19:23:36 副本回放完成（d14 与 e9523af6 产物全等、bootstrap boot-r2 rc 0、w60-259498a3 rc 10）；建覆盖清单 P0-259498a3，跑 V0 档位表 r9 与 e0 作业路径 e2e（J9500041/42，约 10 分钟）。
+- 2026-11-15 19:26:29 e0 作业路径 e2e（P0-259498a3）：J9500041 e0b-s1-single、J9500042 e0a-nullsse 都 L0 VALID、judge rc 11、RED 0、无 INPUT_INVALID。后台跑第 21 条 v2 作业路径 e2e（run.sh J9400021，laddergen ladder + F22 档位表 sha 实测，约 60 分钟），期间跑 V0 档位表 r9。
+- 2026-11-15 19:35:41 全量核对补一处（RS33 同类的反方向）：F17 的种子 / 清单一致性只比同一条序列（同一 key 且与本次 --plan 有共同计划的记录），否则别的期复用同一比较名会被误拒；补用例与变异 F17c（r9c 红）。amend 提交；e2e J9400021 的快照代码是 259498a3（与新 HEAD 只差 pin-next 与测试 / 文档，e2e 不经 pin-next），判定用新 HEAD。
+- 2026-11-15 20:25 R2 修复收尾（提交 67eedca3；勘误 calib-v2-A9；本条只改进度日志），实测（MEASURED）：
+  - 修复 F15–F28 与全量核对扫出项（pin-next 非区组条目按日志归属、pin 日志非对象行 ⇒ 3、`_d14_ref` / `verdicts.json` / `--job-plan` spec 的类型核对、RESERVED 写失败时补 `ENDED SUBMIT_FAILED`、`runtree.tree_dir_glob` 与 `ledger.plan_job_env_value` 单一定义、F17 只比同一条序列）。13 个带 ladder 的 v2 样本重新生成（文件集合与 expect.json 不变；旧目录改名保存在 _local/calibv2-a/regen-r2/pre）。
+  - 测试目录逐个（logs/v9，代码 16dd2088 + test_intervene 措辞断言）：capcommon 200、capload 33、capprobe 159、envgate 71、grpc 53、jobs 294、nullsse 4、sidecar 5、launch 252、judge 536 passed + 6 xfailed（XFAIL_I_P2_13）；之后的两次 amend 只改 test_pinning / test_pilot2 / submit.py pin-next / INTERFACES：test_pinning 18、test_pilot2 67 单跑全过，tests/jobs 整目录重跑 294 passed（logs/v9b，HEAD 67eedca3）。launch 无偶发。
+  - selftest（logs/v9，--expect-samples 52）：EXIT 0，ran 52、errors 0、deferred 5；py_compile 221/0；patchcheck --rev HEAD EXIT 0、PASS、violations []（第一次因 PYTHONPATH 写成相对路径找不到模块，已重跑），探针树 HEAD 与 porcelain 不变；bash -n 3/0。
+  - 变异 r9（mut/muts9.py，28 项）25 红；F25a/F25b、F19c 存活，补强用例后 r9b 红（另加 F19d）；r9c：F17（含两种去掉序列范围的写法 F17b/F17c）红。对照 r9b 逐文件：除 test_pinning 2 条（副本目录找不到仓库外输入 02d_cdb_b200.csv，同 R1）外全过。F27 的 C13_STAT 改名、F28 / F26 的说明改动没有行为，未做变异。
+  - 作业路径 e2e（覆盖清单 P0-259498a3）：e0b-s1-single J9500041、e0a-nullsse J9500042 都 L0 VALID、judge rc 11、RED 0、无 INPUT_INVALID。第 21 条 v2 e2e J9400021（判定代码 67eedca3）：check.py RESULT PASS；L0 VALID（laddergen 写的 tier_table_sha256 在作业路径上与登记的档位表相等）、级 0 STABLE / 级 1 CONTRA / 级 2 UNSTABLE、b 19.13、t7 μ̂ 17.98、skipped []；L1 按设计 13 INPUT_INVALID（标定环境）。
+  - pilot2 d14（replay/d14）：rc 0，与 e9523af6 产物全等，readings 与 W/02_e0/E0/analysis/pilot.json 逐字相等、结论 false。bootstrap（replay/boot-r2，mk_boot2.py：ladder 补 sha 与臂、登记表加 budget_id、台账与快照重建，15 棵重判）：rc 0，capkit.pilot/2 stage bootstrap，`nullz.validate` 接受；x_const / ratio_tol / c13_cap / max_abs / d14 / rule 与 e9523af6 产物相等，差异只在 environment.judge_sha、register sha、各输入 verdicts sha 与新增 universe {items 3, jobs 3}；少列一棵 ⇒ 3（missing 列出该树）。
+  - V0-cal / V0 档位表（v0tables/r9，gen_v0_r7.py）：去掉 sha / 路径字段后与 r8 全等；10 个作业 submit --dry-run rc 0、桩真提交 rc 0。
+  - e0w60 J5940628:L2 新副本 v2 重判（replay/w60-259498a3，mk_w60b.py 给 ladder 补 tier_table_sha256 与 arm）：无崩溃，rc 10 VOID（与原判同因），级 0、1 STABLE、级 2 VOID；verdicts 中每个 NOT_RUN 都带原因（唯一 NOT_RUN 是 t7：「no req_first_lag_p50_ns trend on the usable slope tiers」，skipped []）；与 e9523af6 副本相比只差 identity（登记表 sha）与 t7 的措辞 / skipped 字段。
+  - fakebin.log 33 行，新增 9 行都是 e2e 作业内 simgate 的 scontrol / squeue 替身（exit 97）；无残留进程。
+  - 推断（INFERRED）：e0 e2e 与 boot-r2 重判用的是 259498a3，与 67eedca3 只差 pin-next（e0 作业路径与判定器不经它）、测试与 INTERFACES，结论仍适用。
+  - 偏离修复清单之处：F15 另加「非区组条目已在日志里记在别的 key 下 ⇒ 3」；F17 只比与本次 --plan 有共同计划的记录（否则别的期复用比较名会被误拒）；F20 另在 RESERVED 写失败时补 ENDED SUBMIT_FAILED（不占并发名额）；F22 的 arm 照核（本仓库的生成脚本 --arm 都给 files_by_arm 的键）；F19 的「判定尝试已结束」按 attempt.json 判，没有 attempt.json 的尝试（还在跑）与有 judge/ 而无台账行的树按未判定处理（退出 3）。

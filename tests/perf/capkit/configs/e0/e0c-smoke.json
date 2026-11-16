@@ -1,0 +1,74 @@
+{
+ "schema": "capkit.smoke_config/1",
+ "import_probe": {
+  "code": "import tensorrt_llm, sys; print(tensorrt_llm.__version__)",
+  "timeout_s": 600
+ },
+ "interpreters": [
+  "python",
+  "python_capkit"
+ ],
+ "loopback": {
+  "duration_s": 10,
+  "msg_bytes": 256
+ },
+ "httpprobe_out": "raw/httpprobe.json",
+ "httpprobe_requests": 2,
+ "topologies": [
+  {
+   "name": "E4-old-arch",
+   "roles": {
+    "loadgen": {
+     "param": "cores_loadgen"
+    },
+    "server": {
+     "param": "cores_server"
+    },
+    "postproc": {
+     "param": "cores_postproc"
+    },
+    "observers": {
+     "param": "cores_observers"
+    }
+   }
+  },
+  {
+   "name": "E5-new-arch-frontend",
+   "roles": {
+    "loadgen": {
+     "param": "cores_loadgen"
+    },
+    "frontend": {
+     "param": "cores_frontend"
+    },
+    "sfe": {
+     "param": "cores_sfe"
+    },
+    "observers": {
+     "param": "cores_observers"
+    }
+   }
+  },
+  {
+   "name": "E6-E9-max",
+   "roles": {
+    "loadgen": {
+     "param": "cores_loadgen"
+    },
+    "frontend": {
+     "param": "cores_frontend"
+    },
+    "engine_side": {
+     "param": "cores_engine_side"
+    },
+    "stubs": {
+     "param": "cores_stubs"
+    },
+    "observers": {
+     "param": "cores_observers"
+    }
+   }
+  }
+ ],
+ "note": "core counts per role come from the registered pin plan (--param cores_<role>=N); a topology with any missing count is NOT_RUN, never guessed"
+}

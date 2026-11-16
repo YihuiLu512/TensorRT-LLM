@@ -1,0 +1,31 @@
+# B2-grpc 进度(capload-grpc / nullgrpc / selfcheck relay / reqbytes)
+
+- 2026-11-13 开始：读 INTERFACES.md、设计文档相关节。
+- 已读 INTERFACES §0-§12、capcommon 相关模块、设计稿 §2.2/§2.4/E0/E1/§7、陷阱清单;下一步：设计包结构并写代码
+- 设计决定(2026-11-13):
+  - 包名偏差：INTERFACES §1.1/§11 写的是 capgrpc.load / capgrpc.nullgrpc / capselfcheck.relay，但本任务允许写的目录是 tools/capload_grpc、tools/nullgrpc、tools/selfcheck。按允许目录写：`python -m capload_grpc`(负载器/排空端)、`python -m capload_grpc.reqbytes`(请求字节文件)、`python -m nullgrpc`、`python -m selfcheck.relay`。共享运行时放 capload_grpc/common.py,nullgrpc 与 selfcheck 只 import 它(改名时只改两处 import)。最终报告列为偏差。
+  - 多进程：--workers W 时父进程 spawn W 个子进程(子进程经 Pipe 收父进程的 stop 消息，不靠转发信号，避免重复信号被当成第二次信号);--in-process 时单进程(弱读者模式 = --in-process --workers 1 --channels-per-worker 1)。父进程也写快照(全部 SLOTS 为 0 + self.children_alive)。expected_procs = W+1(或 --in-process 时 1)。
+  - 服务端用通用处理器接收任意方法路径(不加 --method 参数)。
+  - 逐行记录容量：requests 用 --max-records-per-worker;msgs(--stamped)按时间表与 expect 精确算出;nullgrpc streams 按 count_schedule_rows(档位表) 算;steps 按 BeatSchedule.n_steps。
+- 下一步：写 capload_grpc/__init__.py、common.py
+- common.py 完成(raw grpc 工具、ToolRuntime、supervisor);下一步 load.py
+- reqbytes.py 已写;下一步 load.py
+- load.py: CLI、RequestPlan、LoadWorker 已写;下一步 输出与 main
+- nullgrpc/__init__、__main__ 已写;下一步 nullgrpc/server.py
+- nullgrpc/server.py 已写;下一步 selfcheck/relay.py
+- selfcheck/relay.py 已写;下一步 tests/grpc/conftest.py + 冒烟
+- tests/grpc/conftest.py、test_chain.py 已写;正在首次运行 test_chain
+- test_chain 第一项(节拍源→中继→排空端对账)已通过;修 drop 对照测试
+- test_relay_modes.py 已写，正在运行
+- relay 模式 5 项通过(修了 aux 线程预建顺序 bug);观察数值裕量
+- relay 指标(MEASURED 功能性): baseline 每消息 85.7us;busy2ms 2100us;sleep2ms 2181us(loop CPU 86ms≪600ms);aux 134us、loop lag q99 5.8ms vs 0.46ms;两级串联 per_msg≈2.1ms=max(δ)。aux 断言改为 lag>3x、per_msg>1.2x。下一步 test_channels/test_rawbytes/test_reqbytes/test_cli
+- test_channels 3 项通过(独立连接 3 vs 共用对照 1;多进程 2x2=4);下一步 test_rawbytes/test_reqbytes/test_cli
+- test_rawbytes/test_reqbytes 4 项通过;test_cli 已写，运行中
+- test_cli 11 项通过;跑全套
+- 全套 25 passed rc=0;下一步破坏性自测(scratchpad 副本 sab_TAMPERED_DO_NOT_USE)
+- 破坏性自测 7/7 变红(脚本 scratchpad/sab_TAMPERED_DO_NOT_USE/run.py);下一步：未用 import 检查、README
+- 链路测试加了共用 gate 代码的门评估(运行中至少一次不满足、结束全 0);capload_grpc/README.md 已写;下一步 nullgrpc/selfcheck README
+- 三份 README 已写;正在重复跑全套两次查稳定性
+- 完成(2026-11-13):全套 tests/grpc 25 passed(连续 3 次 rc=0,各约 86 s);破坏性自测 7/7 变红;无残留进程;未提交 git。
+- 产物：tools/capload_grpc/{__init__,__main__,common,load,reqbytes}.py+README;tools/nullgrpc/{__init__,__main__,server}.py+README;tools/selfcheck/{__init__,relay}.py+README;tests/grpc/{conftest,test_chain,test_channels,test_relay_modes,test_rawbytes,test_reqbytes,test_cli}.py
+- 未决/偏差(详见最终报告):包名(capgrpc/capselfcheck → capload_grpc/nullgrpc/selfcheck);expected_procs=W+1(监督者);多进程时 aux 线程名在 info.workers[k].aux_threads;gRPC 负载器 tokens=-1、无 short_output;超时从计划时刻起算;新增 raw 格式;uvloop 路径与真 pb2 的 openengine 构建 NOT RUN。

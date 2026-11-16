@@ -1,0 +1,78 @@
+{
+ "apps_check": {
+  "status": "PASS",
+  "why": "0 compute process(es)"
+ },
+ "compute_apps": [],
+ "count_check": {
+  "status": "PASS",
+  "why": "visible 1, requested 1"
+ },
+ "expected_gpus": 1,
+ "gpu_count": 1,
+ "gpus": [
+  {
+   "bus_id": "0000:1B:00.0",
+   "driver": "0",
+   "index": 0,
+   "mem_total_mib": 183359,
+   "mem_used_mib": 0,
+   "name": "synthetic",
+   "util_pct": 0,
+   "uuid": "GPU-synthetic"
+  }
+ ],
+ "identity": {
+  "arm": "synthetic-a",
+  "experiment": "E0",
+  "job_id": "local-sample-regime-nb-good",
+  "launch_seq": 0,
+  "pid": null,
+  "register_sha": "b204496ff70796e7c0ff93d9fecb22a0c3cd5bb287fd873fd87820eae8e8fc3c",
+  "restart_count": 0,
+  "role": "jobs",
+  "tier_label": null,
+  "tier_seq": null,
+  "worker": 0
+ },
+ "nvidia_smi": "/usr/bin/nvidia-smi",
+ "outcome": "PASS",
+ "passed": true,
+ "positive_control": {
+  "status": "PASS",
+  "why": "listed 1 GPU(s)"
+ },
+ "positive_control_ok": true,
+ "queries": [
+  {
+   "cmd": [
+    "/usr/bin/nvidia-smi",
+    "--query-gpu=index,uuid,pci.bus_id,name,memory.total,memory.used,utilization.gpu,driver_version",
+    "--format=csv,noheader,nounits"
+   ],
+   "rc": 0,
+   "reason": null,
+   "stderr": "",
+   "stdout": "0, GPU-synthetic, 00000000:1B:00.0, synthetic, 183359, 0, 0, 0\n",
+   "stdout_sha256": "153f0c80b9dfd44d61cc7f3992b39dd3a5e34c3e7e8d09aa854f0a8926e47033"
+  },
+  {
+   "cmd": [
+    "/usr/bin/nvidia-smi",
+    "--query-compute-apps=gpu_bus_id,pid,used_memory",
+    "--format=csv,noheader,nounits"
+   ],
+   "rc": 0,
+   "reason": null,
+   "stderr": "",
+   "stdout": "",
+   "stdout_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+ ],
+ "reasons": [],
+ "schema": "capkit.gpu_idle/1",
+ "status": "PASS",
+ "visible_gpus": 1,
+ "written_mono_ns": 9882862777699553,
+ "written_wall": "2026-11-15T01:33:58.858Z"
+}

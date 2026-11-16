@@ -1,0 +1,300 @@
+{
+ "abs_end_ns": 1010000000000,
+ "abs_start_ns": 1004000000000,
+ "abs_window_end_ns": 1009000000000,
+ "abs_window_start_ns": 1005000000000,
+ "identity": {
+  "arm": "synthetic-a",
+  "experiment": "E0",
+  "job_id": "local-sample-i-reader-slow-real-pins",
+  "launch_seq": 0,
+  "pid": null,
+  "register_sha": "0182e981f2a0b89a74cc533e6124374a8b8889a73aa5acb23487a69444b77358",
+  "restart_count": 0,
+  "role": "launch",
+  "tier_label": "up-r20",
+  "tier_seq": 2,
+  "worker": 0
+ },
+ "incomplete": null,
+ "nic_counters": {
+  "wend": {
+   "lo": {
+    "rx_bytes": 0,
+    "tx_bytes": 0
+   }
+  },
+  "wstart": {
+   "lo": {
+    "rx_bytes": 0,
+    "tx_bytes": 0
+   }
+  }
+ },
+ "pids_stable": true,
+ "scans": {
+  "wend": {
+   "aux_helpers": [
+    [
+     1003,
+     6003,
+     "capload"
+    ]
+   ],
+   "descendants": [],
+   "monitor_descendants": [],
+   "registered_live": [
+    [
+     1000,
+     6000
+    ],
+    [
+     1001,
+     6001
+    ],
+    [
+     1002,
+     6002
+    ],
+    [
+     2001,
+     7001
+    ]
+   ],
+   "registered_total": 4,
+   "t_mono_ns": 1009000000000
+  },
+  "wstart": {
+   "aux_helpers": [
+    [
+     1003,
+     6003,
+     "capload"
+    ]
+   ],
+   "descendants": [],
+   "monitor_descendants": [],
+   "registered_live": [
+    [
+     1000,
+     6000
+    ],
+    [
+     1001,
+     6001
+    ],
+    [
+     1002,
+     6002
+    ],
+    [
+     2001,
+     7001
+    ]
+   ],
+   "registered_total": 4,
+   "t_mono_ns": 1005000000000
+  }
+ },
+ "schema": "capkit.tier/1",
+ "snapshot_copies": [
+  {
+   "file": "capload.1000.wend.bin",
+   "offset_from_boundary_ns": 30000000,
+   "pid": 1000,
+   "role": "capload",
+   "seq": 91,
+   "t_mono_ns": 1009030000000,
+   "which": "wend"
+  },
+  {
+   "file": "capload.1001.wend.bin",
+   "offset_from_boundary_ns": 30000000,
+   "pid": 1001,
+   "role": "capload",
+   "seq": 91,
+   "t_mono_ns": 1009030000000,
+   "which": "wend"
+  },
+  {
+   "file": "capload.1002.wend.bin",
+   "offset_from_boundary_ns": 30000000,
+   "pid": 1002,
+   "role": "capload",
+   "seq": 91,
+   "t_mono_ns": 1009030000000,
+   "which": "wend"
+  },
+  {
+   "file": "nullsse.2001.wend.bin",
+   "offset_from_boundary_ns": 30000000,
+   "pid": 2001,
+   "role": "nullsse",
+   "seq": 91,
+   "t_mono_ns": 1009030000000,
+   "which": "wend"
+  },
+  {
+   "file": "capload.1000.wstart.bin",
+   "offset_from_boundary_ns": 30000000,
+   "pid": 1000,
+   "role": "capload",
+   "seq": 51,
+   "t_mono_ns": 1005030000000,
+   "which": "wstart"
+  },
+  {
+   "file": "capload.1001.wstart.bin",
+   "offset_from_boundary_ns": 30000000,
+   "pid": 1001,
+   "role": "capload",
+   "seq": 51,
+   "t_mono_ns": 1005030000000,
+   "which": "wstart"
+  },
+  {
+   "file": "capload.1002.wstart.bin",
+   "offset_from_boundary_ns": 30000000,
+   "pid": 1002,
+   "role": "capload",
+   "seq": 51,
+   "t_mono_ns": 1005030000000,
+   "which": "wstart"
+  },
+  {
+   "file": "nullsse.2001.wstart.bin",
+   "offset_from_boundary_ns": 30000000,
+   "pid": 2001,
+   "role": "nullsse",
+   "seq": 51,
+   "t_mono_ns": 1005030000000,
+   "which": "wstart"
+  }
+ ],
+ "thread_rules_sha": "0000000000000000000000000000000000000000000000000000000000000000",
+ "threads": {
+  "wend": {
+   "1000": [
+    {
+     "class": "python",
+     "comm": "python",
+     "cpus_allowed": "2-3",
+     "identified_as": "event_loop",
+     "py_name": null,
+     "tid": 1000
+    }
+   ],
+   "1001": [
+    {
+     "class": "python",
+     "comm": "python",
+     "cpus_allowed": "2-3",
+     "identified_as": "event_loop",
+     "py_name": null,
+     "tid": 1001
+    }
+   ],
+   "1002": [
+    {
+     "class": "python",
+     "comm": "python",
+     "cpus_allowed": "2-3",
+     "identified_as": "event_loop",
+     "py_name": null,
+     "tid": 1002
+    }
+   ],
+   "2001": [
+    {
+     "class": "python",
+     "comm": "python",
+     "cpus_allowed": "4",
+     "identified_as": "event_loop",
+     "py_name": null,
+     "tid": 2001
+    },
+    {
+     "class": "python",
+     "comm": "capkit-snap",
+     "cpus_allowed": "4",
+     "identified_as": "snapshot_writer",
+     "py_name": null,
+     "tid": 2002
+    }
+   ]
+  },
+  "wstart": {
+   "1000": [
+    {
+     "class": "python",
+     "comm": "python",
+     "cpus_allowed": "2-3",
+     "identified_as": "event_loop",
+     "py_name": null,
+     "tid": 1000
+    }
+   ],
+   "1001": [
+    {
+     "class": "python",
+     "comm": "python",
+     "cpus_allowed": "2-3",
+     "identified_as": "event_loop",
+     "py_name": null,
+     "tid": 1001
+    }
+   ],
+   "1002": [
+    {
+     "class": "python",
+     "comm": "python",
+     "cpus_allowed": "2-3",
+     "identified_as": "event_loop",
+     "py_name": null,
+     "tid": 1002
+    }
+   ],
+   "2001": [
+    {
+     "class": "python",
+     "comm": "python",
+     "cpus_allowed": "4",
+     "identified_as": "event_loop",
+     "py_name": null,
+     "tid": 2001
+    },
+    {
+     "class": "python",
+     "comm": "capkit-snap",
+     "cpus_allowed": "4",
+     "identified_as": "snapshot_writer",
+     "py_name": null,
+     "tid": 2002
+    }
+   ]
+  }
+ },
+ "tier": {
+  "baseline": true,
+  "beat_ns": 20000000,
+  "gate": null,
+  "inject": [],
+  "kind": "up",
+  "label": "up-r20",
+  "load_value": 20.0,
+  "max_tokens": 3,
+  "note": "synthetic",
+  "prompt_set": "tok8",
+  "ramp_ns": 1000000000,
+  "rate_rps": 20.0,
+  "seq": 2,
+  "start_ns": 4000000000,
+  "stream_interval": 1,
+  "streams_c": null,
+  "tail_ns": 1000000000,
+  "tokens_per_msg": 1,
+  "window_ns": 4000000000
+ },
+ "written_mono_ns": 9882860755292718,
+ "written_wall": "2026-11-15T01:33:56.835Z"
+}

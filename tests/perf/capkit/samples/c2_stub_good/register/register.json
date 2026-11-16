@@ -1,0 +1,76 @@
+{
+ "arms": [
+  "synthetic-a"
+ ],
+ "calibration": [
+  {
+   "kind": "pilot",
+   "relpath": "register/pilot2.json",
+   "sha256": "5d210fddef19e1d12afd43b4d044fa897d39d08350ed4665ef345f0a29e13dfe"
+  },
+  {
+   "kind": "d14_result",
+   "relpath": "register/e0_d14.json",
+   "sha256": "ec92419c0237b024b9e5ca716e6cbf989df8e362e879e8e0251667c14df6e545"
+  },
+  {
+   "bind": {
+    "capload": "capload-r"
+   },
+   "kind": "loadgen_band",
+   "relpath": "register/loadgen_band.json",
+   "sha256": "858ae51d62b92718523cf8e913d44680346be2eddd23c9c5027b074b362de001"
+  },
+  {
+   "bind": {
+    "nullsse": "nullsse-r"
+   },
+   "kind": "stub_calib",
+   "relpath": "register/stub_calib.json",
+   "sha256": "0444f41b7826609ca46031dccaaf00b9cf451d7034b248db6fee0ccadfe43961"
+  }
+ ],
+ "expected": {
+  "job_budget": 0,
+  "launches_per_arm": 1
+ },
+ "experiment": "E0",
+ "files": {
+  "prompts": {
+   "relpath": "register/prompts.json",
+   "sha256": "2e03b59f7251c4c4646ea0f542daedf57fecb6aa27fd8d52f6379ff9a40e6672"
+  },
+  "scenario": {
+   "relpath": "register/scenario.json",
+   "sha256": "60c957bb885d76759110a02dc3c743f576ade17eea9a4717a70b9804e973728e"
+  },
+  "schedule": {
+   "relpath": "register/schedule.capbin",
+   "sha256": "4275dc232d95f33bcf6c5eca28ea37bc306bb49ad15e15037f98c84a920346b4"
+  },
+  "tier_table": {
+   "relpath": "register/tiers.json",
+   "sha256": "9ec2e9504387d851b23a6054f90df5b2f04de7e8eb81493c87e89591cb70e2a9"
+  }
+ },
+ "judge": {
+  "checks": [
+   "C1",
+   "C2",
+   "C3",
+   "C4",
+   "C5",
+   "C6",
+   "C7",
+   "C8",
+   "C9",
+   "C10",
+   "C11",
+   "C12",
+   "GPU-IDLE"
+  ],
+  "mode": "P+X"
+ },
+ "schema": "capkit.register/1",
+ "synthetic": true
+}

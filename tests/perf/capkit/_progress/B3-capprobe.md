@@ -1,0 +1,22 @@
+# B3-capprobe 进度
+
+- 2026-11-13 开始:无先前进度。正在读 INTERFACES.md(§0-2、§6、§7、§11)。
+- 读 INTERFACES §0-2/§6/§7/§11/§12、capcommon snapshot/inject/versions/aio 完成;下一步读设计稿 §2.4
+- 已读设计稿 §2.4/E0/§7;已查 9fd3822a00..2f22a98d6e:cpp/** 无变化,37 个 tensorrt_llm/**.py,另有 tensorrt_llm/grpc/openengine/README.md 改动(非 package_data,setup.py:210-218 不含它)→ overlay 需要显式放行参数。下一步:核对位点行号
+- 位点核对(2f22a98d6e):H1 responses_utils.py:3537 ✓;H3 openai_server.py:3060-3063 ✓(只在 completions 流;chat 流不经此处);F2 stream.py:266 `return read.result()` ✓(_read 也被 _end_after_terminal 调用);F4 facade.py:1603 ✓(仅非 pool 路径;pool 路径出队在 _feed:1405);Lfe launch.py:135 ✓(run() 内 gc.disable 之后);multi_frontend 458/576 是 uvloop.run(...) 调用处,实际安装放在 _run_launcher:483 / _run_attached:645 的 _maybe_disable_gc() 之后(漂移:须在循环内安装)。
+- 设计决定:探针调用形式 `if _capprobe.ON_<site>: _capprobe.<site>()`;lag 用 `if _capprobe.LAG: _capprobe.install_loop_lag("<site>")`;lag 位点 Lfe/Lmfl/Lmfa 各自独立槽;F4 只计事件项(不计 _END 与异常项)。
+- 下一步:打补丁(probe-tree),再写 tools/capprobe(sites/config/__init__/decode/overlay/patchcheck)。
+- 补丁已打到 probe-tree 工作树(未提交):6 文件 +20 行;if 行号 stream.py:267 openai_server.py:3064 facade.py:1628 launch.py:135 multi_frontend.py:485/649 responses_utils.py:3539;python3.11 compile 通过。下一步写 tools/capprobe
+- 已写 tools/capprobe/sites.py(SITES/SITE_NOTES/SLOTS)、config.py(环境变量解析,全部违规→CapprobeConfigError(RuntimeError));下一步 __init__.py(运行时)
+- __init__.py 已写,冒烟通过(计数/注入心跳/lag/版本自报);下一步 decode.py、patchcheck.py、overlay.py
+- patchcheck.py 写好,对 probe-tree 工作树 PASS(7/7 位点,rc=0);下一步 overlay.py
+- overlay.py 写好(P0 需 --export-dir;新增可选 --allow-unshipped/--sites);发现镜像提交 9fd3822a00 不是 2f22a98d6e 的祖先(侧枝),不强制祖先关系,只记录 image_is_ancestor_of_target。下一步:tests/capprobe
+- tests: conftest、test_config 已写;正在跑
+- 修 bug:aux_thread 注入须先 prestart_aux 再 set_launch_specs(测试发现);runtime 测试已写
+- tests 全部 84 passed(config/runtime/patchcheck/overlay);下一步:提交 probe-tree 补丁、真实树 overlay 冒烟(P0 带 --allow-unshipped)、README、破坏性自测
+- 真实树 P0 overlay 冒烟:不放行 README.md→rc=3;放行→rc=0,37 文件,sha 全对,导出=基线 blob。P2 在补丁未提交时被拒(预期)。决定:不在 probe-tree 提交(TRT-LLM pre-commit 钩子可能重排 import/改行号;留给 integrator)
+- 正在跑破坏性自测(scratchpad/b3/sabotage.py,14 组)
+- 破坏性自测 14/14 变红(首轮 12/14:patchcheck 的别名检查与 overlay 的逐字节核对没有测试覆盖,已补 3 个测试);全套 87 passed。下一步:README.md、过一遍 off 路径成本、残留进程检查、最终报告
+- 测试辅助函数移到 tests/capprobe/probe_testutil.py(测试文件不再 from conftest import);单目录 87 passed。与 tests/capcommon 合跑时 capcommon 的测试 `from conftest import` 会拿到别的目录的 conftest(收集期 ImportError)——capcommon 测试的写法问题,已记入未决。
+- 完成(2026-11-13):tools/capprobe(__init__/config/sites/decode/patchcheck/overlay/README)+ tests/capprobe(87 passed)+ probe-tree 补丁(6 文件 +20 行,未提交)。破坏性自测 14/14 变红。真实树 patchcheck PASS 7/7;真实树 P0 overlay rc=0(需 --allow-unshipped README.md)。pgrep:无本组件残留进程(在跑的 pytest 属于其他组件)。
+- 未决:见最终报告(P1 无版本自报、--sites/--export-dir/--allow-unshipped 为新增参数、aio/identity 超出 §1.2 导入白名单、H3 不覆盖 chat 流、F4 不覆盖池路径、探针树补丁待 integrator 提交且注意 TRT-LLM pre-commit 钩子会改行号)。

@@ -1,0 +1,62 @@
+{
+ "schema": "capkit.tiers_template/1",
+ "experiment": "E0",
+ "name": "e0c-frontend-http",
+ "arrival": {
+  "dist": "fixed",
+  "seed": "TBD:arrival_seed"
+ },
+ "axis": {
+  "name": "R",
+  "load_key": "rate_rps",
+  "unit": "req/s",
+  "order": "asc"
+ },
+ "request_timeout_ns": "TBD:request_timeout_ns",
+ "default_gate": {
+  "mode": "enforce",
+  "rule": "abs_max",
+  "readings": [
+   {
+    "name": "loadgen_inflight",
+    "terms": [
+     {
+      "role": "capload",
+      "slot": "backlog.inflight",
+      "sign": 1,
+      "agg": "sum"
+     }
+    ],
+    "abs_max": 0
+   }
+  ],
+  "poll_ns": "TBD:gate_poll_ns",
+  "settle_polls": "TBD:gate_settle_polls",
+  "deadline_guard_ns": "TBD:gate_deadline_guard_ns",
+  "max_snapshot_age_ns": "TBD:gate_max_snapshot_age_ns"
+ },
+ "launch_inject": [],
+ "common": {
+  "max_tokens": "TBD:max_tokens",
+  "tokens_per_msg": 1,
+  "stream_interval": 1,
+  "prompt_set": "short",
+  "beat_ns": 0
+ },
+ "tiers": [
+  {
+   "label": "warmup",
+   "kind": "warmup",
+   "ramp_ns": 0,
+   "window_ns": "TBD:hold_ns",
+   "tail_ns": 0,
+   "rate_rps": "TBD:rate_warmup"
+  },
+  {
+   "label": "drain-01",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  }
+ ],
+ "note": "first light only: one low capload rate through the frontend, then a gated drain"
+}

@@ -1,0 +1,90 @@
+{
+ "aux_helpers": [
+  {
+   "category": "aux_helper",
+   "cmdline": [
+    "python",
+    "-c",
+    "from multiprocessing.resource_tracker import main;main(9)"
+   ],
+   "first_seen_mono_ns": 997000000000,
+   "measure_class": "load_source",
+   "pid": 1003,
+   "ppid": 1001,
+   "role": "capload",
+   "rule": "mp_resource_tracker",
+   "starttime_ticks": 6003
+  }
+ ],
+ "generation": 1,
+ "identity": {
+  "arm": "synthetic-a",
+  "experiment": "E0",
+  "job_id": "local-sample-c9-pinning",
+  "launch_seq": 0,
+  "pid": null,
+  "register_sha": "2ebc3730daa7ab2d463ee1377b396a04e637dfc51199734dc4fe6aa535079da0",
+  "restart_count": 0,
+  "role": "launch",
+  "tier_label": null,
+  "tier_seq": null,
+  "worker": 0
+ },
+ "procs": [
+  {
+   "cmdline": [
+    "python",
+    "-m",
+    "capload"
+   ],
+   "cpus": [
+    2
+   ],
+   "discovered_via": "ready.children",
+   "parent_pid": 900,
+   "pid": 1001,
+   "registered_mono_ns": 996000000000,
+   "role": "capload",
+   "starttime_ticks": 6001,
+   "worker": 0
+  },
+  {
+   "cmdline": [
+    "python",
+    "-m",
+    "capload"
+   ],
+   "cpus": [
+    3
+   ],
+   "discovered_via": "ready.children",
+   "parent_pid": 900,
+   "pid": 1002,
+   "registered_mono_ns": 996000000000,
+   "role": "capload",
+   "starttime_ticks": 6002,
+   "worker": 1
+  },
+  {
+   "cmdline": [
+    "python",
+    "-m",
+    "nullsse"
+   ],
+   "cpus": [
+    4
+   ],
+   "discovered_via": "ready.children",
+   "parent_pid": 900,
+   "pid": 2001,
+   "registered_mono_ns": 996000000000,
+   "role": "nullsse",
+   "starttime_ticks": 7001,
+   "worker": 0
+  }
+ ],
+ "schema": "capkit.roles/1",
+ "unattributed": [],
+ "written_mono_ns": 9882857167277557,
+ "written_wall": "2026-11-15T01:33:53.247Z"
+}

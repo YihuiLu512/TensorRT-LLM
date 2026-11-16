@@ -1,0 +1,63 @@
+{
+ "clk_tck": 100,
+ "cpus_watch": [
+  2,
+  3,
+  4
+ ],
+ "final": true,
+ "freq_source": "synthetic",
+ "gpu_every_ns": 2000000000,
+ "gpu_positive_control": {
+  "cmd": [
+   "nvidia-smi",
+   "--query-gpu=index",
+   "--format=csv,noheader"
+  ],
+  "gpu_count": 1,
+  "ok": true,
+  "rc": 0,
+  "reason": null
+ },
+ "identity": {
+  "arm": "synthetic-a",
+  "experiment": "E0",
+  "job_id": "local-sample-probe-tier-mismatch",
+  "launch_seq": 0,
+  "pid": null,
+  "register_sha": "2ebc3730daa7ab2d463ee1377b396a04e637dfc51199734dc4fe6aa535079da0",
+  "restart_count": 0,
+  "role": "sidecar",
+  "tier_label": null,
+  "tier_seq": null,
+  "worker": 0
+ },
+ "interval_ns": 1000000000,
+ "logs_dir": "synthetic",
+ "numa_every_ns": 0,
+ "origin_ns": 1000000000000,
+ "own_cpu_ns": 0,
+ "page_kb": 4,
+ "pids_gone": [],
+ "roles_errors": [],
+ "roles_file": "synthetic",
+ "roles_generations": [],
+ "rows": {
+  "cpus": 69,
+  "gpu": 12,
+  "logs": 0,
+  "procs": 0,
+  "snapshots": 69,
+  "threads": 92,
+  "tids": 0
+ },
+ "schema": "capkit.sidecar.meta/1",
+ "shm_dir": "synthetic",
+ "started_wall": "synthetic",
+ "stats": {},
+ "stop": null,
+ "unreadable": {},
+ "unregistered_snapshot_pids": [],
+ "written_mono_ns": 9882859401051944,
+ "written_wall": "2026-11-15T01:33:55.481Z"
+}

@@ -1,0 +1,690 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+"""caplaunch.laddergen (calib-v2 DESIGN-r7a P2-07; tests 12 and 33 of its 3.5): tier tables,
+ladder.json, drain slots, packing against the phase's e_c, K_fit, job plans (no processes)."""
+
+import hashlib
+import json
+import math
+import os
+import types
+
+import pytest
+
+import conftest as cf
+from capcommon import jobplan, ledger
+from capcommon.hashing import sha256_file
+from capcommon.tiers import TierTable
+from caplaunch import laddergen as L
+from caplaunch import tiergen
+
+TEMPLATE = os.path.join(cf.C, "configs", "e0", "e0b-s1-single.tiers.template.json")
+BASE_VALUES = {"gate_poll_ns": 50 * cf.MS, "gate_settle_polls": 3,
+               "gate_deadline_guard_ns": 100 * cf.MS, "gate_max_snapshot_age_ns": 200 * cf.MS,
+               "arrival_seed": 7, "request_timeout_ns": 60_000 * cf.MS, "beat_ns": 10 * cf.MS,
+               "n_tokens": 32, "delta_ns": cf.MS}
+R4_SFIT = os.path.join(cf.C, "samples", "calibv2_real", "plan_r4_S_fit_by_K.json")
+C0 = 19.09
+
+
+@pytest.fixture
+def w(tmp_path):
+    d = tmp_path / "W"
+    d.mkdir()
+    bv = tmp_path / "base.values.json"
+    bv.write_text(json.dumps({"schema": tiergen.VALUES_SCHEMA, "values": BASE_VALUES}))
+    return types.SimpleNamespace(root=str(tmp_path), w=str(d), base_values=str(bv))
+
+
+def argv(w, kind, out, *extra, phase="V0", center=("--center-literal", str(C0)), **kw):
+    a = ["--kind", kind, "--phase", phase, "--config", kw.get("config", "s1@1ms"),
+         "--arm", kw.get("arm", "s1"), "--name", kw.get("name", "t-" + kind),
+         "--base-template", TEMPLATE, "--base-values", w.base_values, "--workdir", w.w,
+         "--out-dir", out, "--launches-per-job", str(kw.get("per_job", 1))] + list(center)
+    return a + list(extra)
+
+
+def ns(w, kind, out, *extra, **kw):
+    return L.build_parser().parse_args(argv(w, kind, out, *extra, **kw))
+
+
+LADDER = ("--settle-s", "90", "--K", "24", "--span-half", "0.03", "--seed-base", "E0v2-t",
+          "--block-id", "b01", "--slot", "1")
+
+
+def gen(w, kind, *extra, **kw):
+    files, summary = L.generate(ns(w, kind, w.root, *extra, **kw))
+    name = kw.get("name", "t-" + kind)
+    tpl = json.loads(files[name + ".tiers.template.json"])
+    vals = json.loads(files[name + ".values.json"])["values"]
+    lad = json.loads(files[name + ".ladder.json"])
+    return files, summary, tpl, vals, lad, tiergen.expand(tpl, vals)
+
+
+def register(w, rel, doc, kind="e0_params"):
+    p = os.path.join(w.w, rel)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w") as f:
+        json.dump(doc, f)
+    ledger.registry_append(os.path.join(w.w, "REGISTRY.tsv"), "E0", rel, sha256_file(p),
+                           "kind=%s;" % kind)
+    return p
+
+
+def judge_accepts(lad_doc, doc, tmp, config="s1@1ms", arm="s1"):
+    """capjudge.inputs._load_ladder (the judge's own check) on the generated pair; the tier
+    table is written as tiergen writes it and registered under that sha."""
+    from capjudge import inputs  # noqa: PLC0415
+    tp, lp = os.path.join(tmp, "tt.json"), os.path.join(tmp, "lad.json")
+    with open(tp, "w") as f:
+        f.write(json.dumps(doc, sort_keys=True, indent=1) + "\n")
+    with open(lp, "w") as f:
+        json.dump(lad_doc, f)
+    ctx = types.SimpleNamespace(ladder_path=lp, config=config, tt=TierTable.load(tp),
+                                ident=types.SimpleNamespace(arm=arm),
+                                register_files={"tier_table": {"sha256": sha256_file(tp)}})
+    return inputs._load_ladder(ctx)
+
+
+# ---- test 12: determinism, loads, seed, tiergen, ramp, drain slots ------------------------------
+
+def test_same_seed_same_bytes_and_tiergen_writes_the_recorded_table(w, tmp_path):
+    a1, _ = L.generate(ns(w, "ladder", w.root, *LADDER))
+    a2, _ = L.generate(ns(w, "ladder", w.root, *LADDER))
+    assert a1 == a2
+    out = tmp_path / "o"
+    out.mkdir()
+    assert L.main(argv(w, "ladder", str(out), *LADDER)) == 0
+    assert L.main(argv(w, "ladder", str(out), *LADDER)) == 3  # never overwrites
+    tt = str(out / "t-ladder.tiers.json")
+    assert tiergen.main(["--template", str(out / "t-ladder.tiers.template.json"),
+                         "--values", str(out / "t-ladder.values.json"), "--out", tt]) == 0
+    lad = json.load(open(out / "t-ladder.ladder.json"))
+    assert sha256_file(tt) == lad["tier_table_sha256"]
+    TierTable.load(tt)
+    other, _ = L.generate(ns(w, "ladder", w.root, *LADDER[:-1], "2"))
+    assert other != a1  # another slot, another u
+
+
+def test_ladder_levels_loads_ramp_and_roles(w, tmp_path):
+    _f, _s, _t, _v, lad, doc = gen(w, "ladder", *LADDER)
+    tiers = doc["tiers"]
+    u = lad["u"]
+    sha = hashlib.sha256(b"E0v2-t|s1@1ms|b01|1").hexdigest()
+    assert lad["seed"]["sha"] == sha and u == int(sha[:13], 16) / 16 ** 13
+    assert len(lad["levels"]) == 24 and lad["passes"] == 2
+    for k, lv in enumerate(lad["levels"]):
+        rho = 1 - 0.03 + 0.0025 * (k + u)
+        assert lv["level"] == k and abs(lv["rho"] - rho) <= 1e-12
+        for q in (lv["up_seq"], lv["down_seq"]):
+            assert abs(tiers[q]["load_value"] - rho * C0) <= 1e-9 * rho * C0
+            assert tiers[q]["ramp_ns"] == (4 + 90) * 10 ** 9
+        assert tiers[lv["up_seq"]]["load_value"] == tiers[lv["down_seq"]]["load_value"]
+        assert tiers[lv["up_seq"]]["kind"] == "up" and tiers[lv["down_seq"]]["kind"] == "down"
+    assert [s["rho"] for s in lad["slope"]] == [1.05, 1.10, 1.20]
+    assert all(tiers[s["seq"]]["ramp_ns"] == 8 * 10 ** 9 for s in lad["slope"])
+    assert tiers[lad["baseline_seq"]]["baseline"] is True
+    assert tiers[lad["baseline_seq"]]["load_value"] == pytest.approx(0.3 * C0, rel=1e-12)
+    assert doc["axis"]["load_key"] == "rate_rps"
+    assert all(t["streams_c"] is None for t in tiers)
+    judge_accepts(lad, doc, str(tmp_path))
+
+
+def test_u_is_close_to_uniform_across_slots():
+    us = [L.seed_u("E0v2-V2b", "s1@1ms", "AA-b%02d" % b, s)[0] for b in range(500)
+          for s in (1, 2)]
+    assert abs(sum(us) / len(us) - 0.5) < 0.03
+    bins = [sum(1 for u in us if k / 10 <= u < (k + 1) / 10) for k in range(10)]
+    assert max(bins) < 140 and min(bins) > 60  # 100 expected per bin
+
+
+def test_drain_slots_follow_the_formula_with_the_phase_e_c(w):
+    _f, _s, _t, _v, lad, doc = gen(w, "ladder", *LADDER)
+    tiers = doc["tiers"]
+    assert lad["drain_rule"]["e_c"] == 0.30
+    for t in tiers[1:]:
+        if t["kind"] != "drain":
+            continue
+        prev = tiers[t["seq"] - 1]
+        rho = 0.3 if prev["kind"] == "warmup" else prev["load_value"] / C0
+        length = (prev["ramp_ns"] + prev["window_ns"] + prev["tail_ns"]) / 1e9
+        want = max(60, math.ceil((1.5 * max(0.0, rho * 1.3 - 1) * length + 30) / 10) * 10)
+        assert t["window_ns"] == want * 10 ** 9, t["label"]
+    top = tiers[lad["levels"][-1]["up_seq"] + 1]["window_ns"] // 10 ** 9
+    assert top == 110  # rho 1.0275 + u h: B = 0.336 x 156 s ~ 52 s -> ceil10(108.7)
+    assert L.drain_slot_s(1.5, 0.3, 70, bracket=True) == 180
+    assert L.drain_slot_s(0.6, 0.3, 156) == 60
+
+
+def test_the_centre_comes_only_from_a_registered_e0_params(w, tmp_path):
+    doc = {"schema": L.E0_PARAMS_SCHEMA, "stage": "bracket", "by_config": {"s1@1ms": {"c1": 20.0}}}
+    p = register(w, "02_e0/E0/register/v2/V1a1/e0_params.bracket.json", doc)
+    extra = ("--settle-s", "30")
+    _f, _s, _t, _v, lad, d = gen(w, "refine", *extra, phase="V1a2", center=(
+        "--center", p, "--center-key", "c1", "--e-c", "0.02"))
+    assert lad["c_lad"] == 20.0 and lad["center_source"] == {
+        "relpath": "02_e0/E0/register/v2/V1a1/e0_params.bracket.json",
+        "sha256": sha256_file(p), "key": "c1"}
+    assert [round(lv["rho"], 6) for lv in lad["levels"]][::10] == [0.95, 1.0, 1.05]
+    assert all(lv["down_seq"] is None for lv in lad["levels"])
+    judge_accepts(lad, d, str(tmp_path))
+    bad = dict(doc, by_config={"s1@1ms": {"c1": 21.0}})
+    unreg = os.path.join(w.w, "unregistered.json")
+    with open(unreg, "w") as f:
+        json.dump(bad, f)
+    for center, msg in (((unreg, "c1"), "not in REGISTRY"), ((p, "c_hat"), "stage")):
+        with pytest.raises(L.LadderError, match=msg):
+            L.generate(ns(w, "refine", w.root, *extra, phase="V1a2", center=(
+                "--center", center[0], "--center-key", center[1], "--e-c", "0.02")))
+    with open(p, "w") as f:  # changed after registration: the sha no longer matches
+        json.dump(bad, f)
+    with pytest.raises(L.LadderError, match="not in REGISTRY"):
+        L.generate(ns(w, "refine", w.root, *extra, phase="V1a2", center=(
+            "--center", p, "--center-key", "c1", "--e-c", "0.02")))
+    for kind in ("refine", "hold", "null"):
+        with pytest.raises(L.LadderError, match="center-literal"):
+            L.generate(ns(w, kind, w.root, *extra, "--rho-top", "0.98", phase="V2n"))
+
+
+# ---- test 12 (r7 / r7a): packing at the phase's e_c, K_fit, V0-cal ------------------------------
+
+def test_v0_full_length_timing_row_fits_at_k24_and_not_at_k26(w, tmp_path):
+    """DESIGN-r7a 4.2: K = 24, S = 90 s, e_c = 0.30 fits; K = 26 does not (only fits / does not
+    fit is asserted, never the table length)."""
+    _f, summary, *_ = gen(w, "ladder", *LADDER)
+    assert summary["packing"]["time_budget_s"] <= 14400
+    out = tmp_path / "o26"
+    out.mkdir()
+    k26 = ("--settle-s", "90", "--K", "26", "--span-half", "0.0325", "--seed-base", "E0v2-t",
+           "--block-id", "b01", "--slot", "1")
+    with pytest.raises(L.LadderError, match="does not fit"):
+        L.generate(ns(w, "ladder", str(out), *k26))
+    assert L.main(argv(w, "ladder", str(out), *k26)) == 3 and os.listdir(out) == []
+    # the same K = 26 table fits at V2-b's e_c (0.01): the refusal comes from the V0 e_c
+    L.generate(ns(w, "ladder", w.root, *k26, phase="V2b"))
+    with pytest.raises(L.LadderError, match="registers e_c"):
+        L.generate(ns(w, "ladder", w.root, *k26, "--e-c", "0.01"))
+    with pytest.raises(L.LadderError, match="no registered e_c"):
+        L.generate(ns(w, "ladder", w.root, *LADDER, phase="V1a2"))
+
+
+def test_job_condition_binds_where_the_time_budget_does_not(w):
+    """DESIGN 4.1: n (T + 6.5) + job_overhead_s_max <= 14340 is checked on its own: with a
+    registered overhead of 1100 s the K = 24 row fails it while capjobs' time budget passes."""
+    _f, summary, *_ = gen(w, "ladder", *LADDER)
+    assert summary["packing"]["time_budget_s"] <= 14400
+    with pytest.raises(L.LadderError, match="job condition"):
+        L.generate(ns(w, "ladder", w.root, *LADDER, "--job-overhead-s-max", "1100"))
+    with pytest.raises(L.LadderError, match="job-overhead-s-max must be"):
+        L.generate(ns(w, "ladder", w.root, *LADDER, "--job-overhead-s-max", "700"))
+
+
+def test_capjobs_time_budget_is_checked_too(w):
+    with pytest.raises(L.LadderError, match="time budget"):
+        L.generate(ns(w, "cal", w.root, "--settle-s", "30", "--time-limit-s", "7600",
+                      phase="V0cal", per_job=4))
+    _f, summary, *_ = gen(w, "cal", "--settle-s", "30", phase="V0cal", per_job=4)
+    assert summary["packing"]["time_budget_s"] == 7610  # r7/out/plan_r7.json v0_cal
+
+
+def test_plan_k_fit_matches_plan_r4(w, capsys):
+    want = json.load(open(R4_SFIT))["S_fit_by_K"]
+    assert L.s_fit_by_k(L.JOB_OVERHEAD_FLOOR_S) == want
+    assert L.main(["--plan", "--settle-s", "90", "--K", "28"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["S_fit_by_K"] == want and out["K_fit"] == 28 and out["fits"] is True
+    assert L.k_fit(390, L.JOB_OVERHEAD_FLOOR_S) == 12 and L.k_fit(400, 763.5) is None
+    assert L.main(["--plan", "--job-overhead-s-max", "500"]) == 3
+
+
+def test_cal_kind_tier_order_as_v0_cal(w, tmp_path):
+    _f, summary, _t, _v, lad, doc = gen(w, "cal", "--settle-s", "30", phase="V0cal", per_job=4)
+    tiers = doc["tiers"]
+    loads = [t for t in tiers if t["kind"] in ("up", "down")]
+    assert [round(t["load_value"] / C0, 6) for t in loads] == [0.3, 0.3, 0.4, 0.5, 0.6, 0.6, 0.5,
+                                                               0.4, 0.3]
+    assert [t["kind"] for t in loads] == ["up"] * 5 + ["down"] * 4
+    assert loads[0]["seq"] == lad["baseline_seq"]
+    assert [(c["rho"], c["pass"]) for c in lad["cal"]] == [
+        (0.3, 1), (0.4, 1), (0.5, 1), (0.6, 1), (0.6, 2), (0.5, 2), (0.4, 2), (0.3, 2)]
+    assert [c["seq"] for c in lad["cal"]] == [t["seq"] for t in loads[1:]]
+    assert lad["levels"] == [] and lad["slope"] == [] and lad["u"] is None
+    assert all(t["ramp_ns"] == 34 * 10 ** 9 for t in loads)
+    assert summary["table_s"] == 1474  # r7/out/plan_r7.json v0_cal launch_table_s
+    judge_accepts(lad, doc, str(tmp_path))
+
+
+@pytest.mark.parametrize("kind,extra,phase", [
+    ("refine", ("--settle-s", "30"), "V1a2"),
+    ("bracket", ("--settle-s", "30", "--rho-first", "0.56", "--ratio", "1.25", "--n-levels", "6"),
+     "V1a1"),
+    ("hold", ("--settle-s", "30", "--seed-base", "E0v2-V1b", "--block-id", "A0001", "--slot", "1"),
+     "V1b"),
+    ("null", ("--settle-s", "90", "--rho-top", "0.98"), "V2n"),
+    ("pc", ("--settle-s", "4", "--request-timeout-ns", "null"), "V0"),
+    ("c13pc", ("--settle-s", "4"), "V0"),
+    ("e2e", ("--settle-s", "30", "--seed-base", "E0v2-V0", "--block-id", "e1", "--slot", "1"),
+     "V0")])
+def test_every_kind_generates_a_table_the_judge_reads(w, tmp_path, kind, extra, phase):
+    center = ("--center-literal", str(C0))
+    if kind in ("refine", "hold", "null"):
+        stage, key = {"refine": ("bracket", "c1"), "hold": ("capacity", "c_hat"),
+                      "null": ("settle", "c_n")}[kind]
+        p = register(w, "e0p.%s.json" % kind, {"schema": L.E0_PARAMS_SCHEMA, "stage": stage,
+                                               "by_config": {"s1@1ms": {key: C0}}})
+        center = ("--center", p, "--center-key", key)
+    if phase in ("V1a1", "V1a2"):
+        center = center + ("--e-c", "0.02")
+    _f, _s, _t, _v, lad, doc = gen(w, kind, *extra, phase=phase, center=center)
+    judge_accepts(lad, doc, str(tmp_path))
+    tiers = doc["tiers"]
+    if kind == "hold":
+        assert sorted(h["rho"] for h in lad["holds"]) == [0.95, 0.98, 0.99]
+        for h in lad["holds"]:
+            t = tiers[h["seq"]]
+            assert (t["ramp_ns"], t["window_ns"], h["hold_ns"]) == (0, 600 * 10 ** 9,
+                                                                    600 * 10 ** 9)
+            assert tiers[h["seq"] - 1]["window_ns"] == 60 * 10 ** 9  # 60 s slot before a hold
+    if kind == "null":
+        assert [(n["rho"], n["pass"]) for n in lad["near"]] == [
+            (0.9, 1), (0.95, 1), (0.98, 1), (0.98, 1), (0.98, 1), (0.98, 2), (0.98, 2),
+            (0.98, 2), (0.95, 2), (0.9, 2)]
+        assert [(c["rho"], c["pass"]) for c in lad["cal"]] == [(0.3, 2)]
+    if kind == "bracket":
+        over = [lv for lv in lad["levels"] if lv["rho"] * 1.02 > 1]
+        assert over and all(tiers[lv["up_seq"] + 1]["window_ns"] == 180 * 10 ** 9 for lv in over)
+        assert round(lad["levels"][-1]["rho"], 3) == 1.709
+    if kind == "pc":
+        assert [s["rho"] for s in lad["slope"]] == [1.5] and len(lad["cal"]) == 2
+    if kind == "c13pc":
+        assert lad["slope"] == [] and lad["levels"] == [] and len(lad["cal"]) == 2
+    if kind == "e2e":
+        assert [round(lv["rho"] - lad["h"] * lad["u"], 9) for lv in lad["levels"]] == [
+            0.5, 1.0, 1.5]
+
+
+def test_hold_order_follows_the_seed(w):
+    p = register(w, "e0p.capacity.json", {"schema": L.E0_PARAMS_SCHEMA, "stage": "capacity",
+                                          "by_config": {"s1@1ms": {"c_hat": C0}}})
+    center = ("--center", p, "--center-key", "c_hat")
+    seen = set()
+    for slot in range(1, 13):
+        args = ("--settle-s", "30", "--seed-base", "E0v2-V1b", "--block-id", "A0001", "--slot",
+                str(slot))
+        lad = gen(w, "hold", *args, phase="V1b", center=center)[4]
+        lad2 = gen(w, "hold", *args, phase="V1b", center=center)[4]
+        assert lad == lad2
+        seen.add(tuple(h["rho"] for h in lad["holds"]))
+    assert len(seen) >= 3
+
+
+# ---- job plans (DESIGN 3.2, 4.5) and test 33: no replace path -----------------------------------
+
+SPEC = {"schema": L.SPEC_SCHEMA, "phase_id": "V1b-A", "seed_base": "E0v2-V1b-20261115",
+        "launches_per_job": 4, "pin": False,
+        "configs": [{"config": "s1@1ms", "arm": "s1", "planned": 6, "surplus": 2},
+                    {"config": "s2", "arm": "s2", "planned": 6, "surplus": 2}],
+        "blocks": [{"comparison": "AA", "configs": [["s1@1ms", "aa1"], ["s1@1ms", "aa2"]],
+                    "planned": 3, "surplus": 1}]}
+
+
+def test_job_plan_mixes_planned_then_surplus_by_the_seed(w, tmp_path):
+    items = L.job_plan_items(json.loads(json.dumps(SPEC)))
+    assert items == L.job_plan_items(json.loads(json.dumps(SPEC)))
+    classes = [it["item_class"] for it in items]
+    assert classes == sorted(classes, key=["planned", "surplus"].index)
+    orders = [it["order"] for it in items]
+    assert sorted(set(orders)) == list(range(1, max(orders) + 1))
+    single = [it for it in items if it["block_id"] is None]
+    assert sum(it["launches"] for it in single if it["item_class"] == "planned") == 12
+    assert sum(it["launches"] for it in single if it["item_class"] == "surplus") == 4
+    assert any(len(it["config_counts"]) == 2 for it in single)  # configs mixed in a job
+    assert all(not it["pin"] for it in single)
+    blocks = [it for it in items if it["block_id"] is not None]
+    assert len(blocks) == 8 and all(it["pin"] and it["launches"] == 1 for it in blocks)
+    for o in {it["order"] for it in blocks}:
+        pair = [it for it in blocks if it["order"] == o]
+        assert sorted(it["slot"] for it in pair) == [1, 2] and len({it["block_id"]
+                                                                    for it in pair}) == 1
+    other = L.job_plan_items(dict(json.loads(json.dumps(SPEC)), seed_base="other"))
+    assert [it["config_counts"] for it in other] != [it["config_counts"] for it in items]
+    out = tmp_path / "plan.tsv"
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps(SPEC))
+    assert L.main(["--job-plan", str(spec), "--out", str(out)]) == 0
+    assert jobplan.read(str(out)) == items
+    assert L.main(["--job-plan", str(spec), "--out", str(out)]) == 3  # never overwrites
+
+
+def _gate_product(w, cls, rel="02_e0/E0/register/v2/V0/e0_params.shortfall.A.r1.json",
+                  rnd=1):
+    doc = {"schema": L.E0_PARAMS_SCHEMA, "stage": "shortfall", "round": rnd, "items": [
+        {"item_class": cls, "config": "s1@1ms", "arm": "s1", "launches": 3, "pin": False},
+        {"item_class": cls, "config": "s2", "arm": "s2", "launches": 2, "pin": False}]}
+    if rnd is None:
+        del doc["round"]
+    return register(w, rel, doc)
+
+
+def _plan_from(w, product, out):
+    return L.main(["--plan-from", product, "--workdir", w.w, "--phase-id", "V0", "--seed-base",
+                   "E0v2-V0", "--launches-per-job", "2", "--out", out])
+
+
+def test_plan_from_only_takes_a_registered_gate_product(w, tmp_path, capsys):
+    p = _gate_product(w, "post_gate:shortfall")
+    out = str(tmp_path / "sf.tsv")
+    assert _plan_from(w, p, out) == 0
+    items = jobplan.read(out)
+    assert {it["item_class"] for it in items} == {"post_gate:shortfall"}
+    assert sum(it["launches"] for it in items) == 5 and [it["order"] for it in items] == [1, 2, 3]
+    assert [it["item_id"] for it in items] == ["V0-shortfall-r1-%04d" % k for k in (1, 2, 3)]
+    assert json.loads(capsys.readouterr().out)["gate_product"]["sha256"] == sha256_file(p)
+    # not registered, or changed after registration -> fail, nothing written
+    unreg = tmp_path / "unreg.json"
+    unreg.write_text(open(p).read())
+    assert _plan_from(w, str(unreg), str(tmp_path / "x1.tsv")) == 3
+    with open(p, "a") as f:
+        f.write(" ")
+    assert _plan_from(w, p, str(tmp_path / "x2.tsv")) == 3
+    assert not os.path.exists(tmp_path / "x1.tsv") and not os.path.exists(tmp_path / "x2.tsv")
+
+
+def test_plan_from_item_ids_carry_the_round(w, tmp_path):
+    """RS25: two rounds of one phase never share an item id; a product without an int round
+    >= 1 is refused (launch items too, not only blocks)."""
+    ids = []
+    for rnd in (1, 2):
+        p = _gate_product(w, "post_gate:shortfall", rel="gp.r%d.json" % rnd, rnd=rnd)
+        out = str(tmp_path / ("sf%d.tsv" % rnd))
+        assert _plan_from(w, p, out) == 0
+        ids.append([it["item_id"] for it in jobplan.read(out)])
+    assert ids[1] == [x.replace("-r1-", "-r2-") for x in ids[0]] and not set(ids[0]) & set(ids[1])
+    for k, rnd in enumerate((None, 0, True, "1", 1.0)):
+        p = _gate_product(w, "post_gate:shortfall", rel="gp.bad%d.json" % k, rnd=rnd)
+        assert _plan_from(w, p, str(tmp_path / ("x%d.tsv" % k))) == 3, rnd
+        assert not os.path.exists(tmp_path / ("x%d.tsv" % k))
+
+
+def test_plan_from_launches_per_job_must_equal_the_products_cap(w, tmp_path):
+    """calibv2a-RS33: a shortfall product sized its job cap with cap.launches_per_job; another
+    --launches-per-job (which would pack more jobs than the cap) fails and writes nothing."""
+    for k, (cap, rc) in enumerate((({"launches_per_job": 4}, 3), ({"launches_per_job": 2}, 0),
+                                   ({}, 0), ([2], 3), ("2", 3))):
+        p = register(w, "gp.cap%d.json" % k, {
+            "schema": L.E0_PARAMS_SCHEMA, "stage": "shortfall", "round": 1, "cap": cap,
+            "items": [{"item_class": "post_gate:shortfall", "config": "s1@1ms", "arm": "s1",
+                       "launches": 3, "pin": False}]})
+        out = str(tmp_path / ("cap%d.tsv" % k))
+        assert _plan_from(w, p, out) == rc, cap
+        assert os.path.exists(out) == (rc == 0)
+
+
+@pytest.mark.parametrize("by_config", [["s1@1ms"], {"s1@1ms": [20.0]}, "x"])
+def test_a_center_file_of_the_wrong_shape_is_refused(w, by_config):
+    """calibv2a-RS36: by_config (or its entry) not an object -> LadderError (exit 3)."""
+    p = register(w, "02_e0/E0/register/v2/V1a1/e0_params.bad.json", {
+        "schema": L.E0_PARAMS_SCHEMA, "stage": "bracket", "by_config": by_config})
+    with pytest.raises(L.LadderError, match="has no by_config"):
+        L.generate(ns(w, "refine", w.root, "--settle-s", "30", phase="V1a2", center=(
+            "--center", p, "--center-key", "c1", "--e-c", "0.02")))
+
+
+@pytest.mark.parametrize("cls", ["replace", "post_gate:replace", "planned", "surplus"])
+def test_plan_from_refuses_every_class_but_post_gate(w, tmp_path, cls):
+    p = _gate_product(w, cls, rel="gp.%s.json" % cls.replace(":", "_"))
+    assert _plan_from(w, p, str(tmp_path / "x.tsv")) == 3
+    assert not os.path.exists(tmp_path / "x.tsv")
+
+
+BLOCK_ITEM = {"item_class": "post_gate:shortfall", "comparison": "s1-vs-s2",
+              "configs": [["s1", "s1x"], ["s2", "s2x"]], "blocks": 2, "pin": True}
+
+
+def test_plan_from_writes_shortfall_blocks_after_the_launch_items(w, tmp_path):
+    """V2-b shortfall blocks (DESIGN 4.5, P2-09b): two pinned one-launch jobs per block sharing
+    one order, after the packed launch items; block ids carry the rule and the round."""
+    p = register(w, "gp.blocks.json", {"schema": L.E0_PARAMS_SCHEMA, "stage": "shortfall",
+                                       "round": 2, "items": [
+        {"item_class": "post_gate:shortfall", "config": "s3", "arm": "s3", "launches": 3,
+         "pin": False}, BLOCK_ITEM]})
+    out = str(tmp_path / "sf.tsv")
+    assert _plan_from(w, p, out) == 0
+    items = jobplan.read(out)
+    single = [it for it in items if it["block_id"] is None]
+    blocks = [it for it in items if it["block_id"] is not None]
+    assert [it["order"] for it in single] == [1, 2] and len(blocks) == 4
+    assert [it["item_id"] for it in single] == ["V0-shortfall-r2-0001", "V0-shortfall-r2-0002"]
+    assert [it["order"] for it in blocks] == [3, 3, 4, 4]
+    for it in blocks:
+        assert it["block_id"] in ("s1-vs-s2-bshortfall201", "s1-vs-s2-bshortfall202")
+        assert it["pin"] is True and it["launches"] == 1
+        cfg, = it["config_counts"]
+        assert it["arms"] == ["%sx.%s.%d" % (cfg, it["block_id"], it["slot"])]
+        assert it["item_id"] == "V0-shortfall-%s-s%d" % (it["block_id"], it["slot"])
+        # slot order by the registered seed (DESIGN 3.4), as in job_plan_items
+        u, _ = L.seed_u("E0v2-V0", "s1-vs-s2", it["block_id"], 0)
+        assert cfg == (["s1", "s2"] if u < 0.5 else ["s2", "s1"])[it["slot"] - 1]
+
+
+@pytest.mark.parametrize("bad", [{"pin": False}, {"blocks": 0}, {"configs": [["s1", "s1x"]]},
+                                 {"comparison": "a b"}, "no_round"])
+def test_plan_from_refuses_a_malformed_block_item(w, tmp_path, bad):
+    doc = {"schema": L.E0_PARAMS_SCHEMA, "stage": "shortfall", "round": 1,
+           "items": [dict(BLOCK_ITEM, **(bad if isinstance(bad, dict) else {}))]}
+    if bad == "no_round":
+        del doc["round"]
+    p = register(w, "gp.bad.%s.json" % len(os.listdir(w.w)), doc)
+    assert _plan_from(w, p, str(tmp_path / "x.tsv")) == 3
+    assert not os.path.exists(tmp_path / "x.tsv")
+
+
+def test_job_plan_format_has_no_replace_class():
+    assert not any("replace" in c or "resubmit" in c for c in jobplan.ITEM_CLASSES)
+    it = {"order": 1, "item_id": "V0-0001", "item_class": "replace", "arms": ["s1"],
+          "launches": 1, "block_id": None, "slot": None, "config_counts": {"s1": 1}, "pin": False}
+    with pytest.raises(jobplan.JobPlanError, match="no replace"):
+        jobplan.format_tsv([it])
+    with pytest.raises(jobplan.JobPlanError, match="order"):
+        jobplan.validate([dict(it, item_class="planned", order=2)])
+    with pytest.raises(jobplan.JobPlanError, match="surplus"):
+        jobplan.validate([dict(it, item_class="surplus"),
+                          dict(it, item_class="planned", order=2, item_id="V0-0002")])
+    with pytest.raises(jobplan.JobPlanError, match="share an order"):
+        jobplan.validate([dict(it, item_class="planned"),
+                          dict(it, item_class="planned", item_id="V0-0002")])
+
+
+# ---- V0 tables of DESIGN 4.2: s1-pc / s*-fix request timeout, c13-pc (erratum calib-v2-A7) ------
+
+PC = ("--settle-s", "4")
+
+
+def _write(w, kind, *extra, **kw):
+    out = os.path.join(w.root, "o-%s-%d" % (kind, len(os.listdir(w.root))))
+    os.mkdir(out)
+    assert L.main(argv(w, kind, out, *extra, **kw)) == 0
+    name = kw.get("name", "t-" + kind)
+    return out, name
+
+
+def _tiergen(out, name):
+    tt = os.path.join(out, name + ".tiers.json")
+    rc = tiergen.main(["--template", os.path.join(out, name + ".tiers.template.json"),
+                       "--values", os.path.join(out, name + ".values.json"), "--out", tt])
+    return rc, tt
+
+
+def test_pc_null_timeout_is_a_registered_null_tiergen_accepts(w):
+    out, name = _write(w, "pc", *PC, "--request-timeout-ns", "null")
+    tpl = json.load(open(os.path.join(out, name + ".tiers.template.json")))
+    vals = json.load(open(os.path.join(out, name + ".values.json")))
+    assert tpl["request_timeout_ns"] == "TBD:request_timeout_ns"
+    assert vals["values"]["request_timeout_ns"] is None
+    assert vals["registered_nulls"] == ["request_timeout_ns"]
+    rc, tt = _tiergen(out, name)
+    assert rc == 0 and TierTable.load(tt).request_timeout_ns is None
+    lad = json.load(open(os.path.join(out, name + ".ladder.json")))
+    assert sha256_file(tt) == lad["tier_table_sha256"]
+
+
+def test_pc_fix_timeout_is_written_as_a_value(w):
+    out, name = _write(w, "pc", *PC, "--request-timeout-ns", str(60 * 10 ** 9))
+    vals = json.load(open(os.path.join(out, name + ".values.json")))
+    assert vals["values"]["request_timeout_ns"] == 60 * 10 ** 9 and "registered_nulls" not in vals
+    rc, tt = _tiergen(out, name)
+    assert rc == 0 and TierTable.load(tt).request_timeout_ns == 60 * 10 ** 9
+
+
+@pytest.mark.parametrize("extra", [(), ("--request-timeout-ns", "0"),
+                                   ("--request-timeout-ns", "-5"),
+                                   ("--request-timeout-ns", "None"),
+                                   ("--request-timeout-ns", "6e10")])
+def test_pc_needs_an_explicit_valid_timeout(w, tmp_path, extra):
+    with pytest.raises(L.LadderError, match="request-timeout-ns"):
+        L.generate(ns(w, "pc", w.root, *PC, *extra))
+
+
+def test_other_kinds_take_the_timeout_from_base_values_and_refuse_a_null_there(w, tmp_path):
+    vals = gen(w, "c13pc", *PC)[3]
+    assert vals["request_timeout_ns"] == 60 * 10 ** 9
+    bv = tmp_path / "null.values.json"
+    bv.write_text(json.dumps({"schema": tiergen.VALUES_SCHEMA,
+                              "values": dict(BASE_VALUES, request_timeout_ns=None)}))
+    w2 = types.SimpleNamespace(root=w.root, w=w.w, base_values=str(bv))
+    with pytest.raises(L.LadderError, match="is null"):
+        L.generate(ns(w2, "c13pc", w.root, *PC))
+    vals = gen(w2, "c13pc", *PC, "--request-timeout-ns", "null")[3]
+    assert vals["request_timeout_ns"] is None
+
+
+@pytest.mark.parametrize("literal", [None, 60 * 10 ** 9])
+def test_a_literal_timeout_in_the_base_template_is_refused(w, tmp_path, literal):
+    tpl = json.load(open(TEMPLATE))
+    tpl["request_timeout_ns"] = literal
+    p = tmp_path / "literal.tiers.template.json"
+    p.write_text(json.dumps(tpl))
+    a = ns(w, "pc", w.root, *PC, "--request-timeout-ns", "null")
+    a.base_template = str(p)
+    with pytest.raises(L.LadderError, match="not a literal"):
+        L.generate(a)
+
+
+@pytest.mark.parametrize("vals,reg", [
+    ({"request_timeout_ns": None}, None),  # an unfilled checklist entry
+    # registers a name that cannot be null (the timeout's own null is registered)
+    ({"request_timeout_ns": None, "beat_ns": None}, ["request_timeout_ns", "beat_ns"]),
+    ({"request_timeout_ns": 5}, ["request_timeout_ns"]),  # registered but not null
+    ({"request_timeout_ns": None}, "request_timeout_ns"),  # not a list
+    ({"request_timeout_ns": None}, ["request_timeout_ns", "request_timeout_ns"])])
+def test_tiergen_accepts_only_a_registered_null_timeout(w, vals, reg):
+    out, name = _write(w, "pc", *PC, "--request-timeout-ns", "null")
+    vp = os.path.join(out, name + ".values.json")
+    doc = json.load(open(vp))
+    doc["values"].update(vals)
+    if reg is None:
+        del doc["registered_nulls"]
+    else:
+        doc["registered_nulls"] = reg
+    with open(vp, "w") as f:
+        json.dump(doc, f)
+    rc, tt = _tiergen(out, name)
+    assert rc == 3 and not os.path.exists(tt)
+
+
+def test_c13pc_is_the_pc_table_without_the_overload_tier(w, tmp_path):
+    _f, summary, _t, _v, lad, doc = gen(w, "c13pc", *PC)
+    _fp, summary_pc, _tp, _vp, lad_pc, doc_pc = gen(w, "pc", *PC, "--request-timeout-ns", "null")
+    loads = [t for t in doc["tiers"] if t["kind"] in ("up", "down")]
+    assert [round(t["load_value"] / C0, 6) for t in loads] == [0.3, 0.3, 0.3]
+    assert [t["kind"] for t in loads] == ["up", "down", "down"]
+    assert [t["label"] for t in doc["tiers"]] == ["warmup", "d01", "base", "d02", "sub1", "d03",
+                                                  "sub2", "d04"]
+    assert all(t["ramp_ns"] == 8 * 10 ** 9 for t in loads)
+    assert [(c["rho"], c["pass"]) for c in lad["cal"]] == [(0.3, 1), (0.3, 2)]
+    assert lad["baseline_seq"] == loads[0]["seq"] and lad["kind"] == "c13pc"
+    assert all(v == 60 for v in lad["drain_rule"]["slot_s_by_seq"].values())
+    labels_pc = [t["label"] for t in doc_pc["tiers"]]
+    assert "over" in labels_pc and "over" not in [t["label"] for t in doc["tiers"]]
+    assert summary["table_s"] < summary_pc["table_s"]
+    judge_accepts(lad, doc, str(tmp_path))
+
+
+# ---- V0-cal job plan (DESIGN 4.2: every job runs every configuration exactly once) ------------
+
+V0CAL_SPEC = {"schema": L.SPEC_SCHEMA, "phase_id": "V0cal-A", "phase": "V0cal",
+              "layout": "one_each", "seed_base": "E0v2-V0cal-20261115", "launches_per_job": 4,
+              "pin": False,
+              "configs": [{"config": c, "arm": a, "planned": 4} for c, a in (
+                  ("s1@1ms", "s1"), ("s1-uvloop", "s1uv"), ("s2", "s2"), ("s4", "s4"))]}
+
+
+def _spec(**over):
+    return dict(json.loads(json.dumps(V0CAL_SPEC)), **over)
+
+
+def test_v0cal_job_plan_runs_every_configuration_once_per_job(tmp_path):
+    items = L.job_plan_items(_spec())
+    assert items == L.job_plan_items(_spec())
+    assert len(items) == 4 and [it["order"] for it in items] == [1, 2, 3, 4]
+    for it in items:
+        assert it["launches"] == 4 and it["item_class"] == "planned" and not it["pin"]
+        assert it["config_counts"] == {"s1@1ms": 1, "s1-uvloop": 1, "s2": 1, "s4": 1}
+        assert sorted(it["arms"]) == ["s1", "s1uv", "s2", "s4"]
+    assert len({tuple(it["arms"]) for it in items}) > 1  # the launch order follows the seed
+    other = L.job_plan_items(_spec(seed_base="E0v2-V0cal-other"))
+    assert [it["arms"] for it in other] != [it["arms"] for it in items]
+    spec = tmp_path / "spec.json"
+    spec.write_text(json.dumps(_spec()))
+    out = tmp_path / "plan.tsv"
+    assert L.main(["--job-plan", str(spec), "--out", str(out)]) == 0
+    assert jobplan.read(str(out)) == items
+
+
+def test_v0cal_phase_refuses_the_mixed_layout_which_doubles_a_config(tmp_path):
+    with pytest.raises(L.LadderError, match="one_each"):
+        L.job_plan_items(_spec(layout="mixed"))
+    spec = _spec()
+    del spec["layout"]
+    with pytest.raises(L.LadderError, match="one_each"):
+        L.job_plan_items(spec)
+    del spec["phase"]  # without the phase the seed-mixed layout may put a config twice in a job
+    mixed = L.job_plan_items(spec)
+    assert any(max(it["config_counts"].values()) > 1 for it in mixed)
+
+
+@pytest.mark.parametrize("over,match", [
+    ({"launches_per_job": 3}, "launches_per_job"),
+    ({"layout": "round_robin", "phase": None}, "spec layout must be"),
+    ({"layout": "mixed", "phase": "V9"}, "spec phase must be"),
+    ({"configs": V0CAL_SPEC["configs"][:3] + [dict(V0CAL_SPEC["configs"][3], planned=3)]},
+     "same planned count"),
+    ({"configs": V0CAL_SPEC["configs"][:3] + [dict(V0CAL_SPEC["configs"][0], arm="s1b")],
+      }, "distinct"),
+    # calibv2a-RS36: a spec of the wrong shape is a LadderError too (exit 3), not a TypeError
+    ({"configs": 4}, "configs and blocks must be lists"),
+    ({"blocks": {"comparison": "AA"}}, "configs and blocks must be lists"),
+    ({"layout": "mixed", "phase": None, "configs": [], "blocks": [
+        {"comparison": "AA", "configs": [["s1", "a"], ["s2", "b"]], "planned": "2"}]},
+     "planned / surplus must be ints")])
+def test_one_each_refusals(over, match):
+    with pytest.raises(L.LadderError, match=match):
+        L.job_plan_items(_spec(**over))
+
+
+def test_tiergen_registered_nulls_rule_by_itself():
+    ok = {"values": {"request_timeout_ns": None, "beat_ns": 1}, "registered_nulls":
+          ["request_timeout_ns"]}
+    assert tiergen.unset_values(ok) == []
+    assert tiergen.unset_values({"values": {"request_timeout_ns": None}}) == ["request_timeout_ns"]
+    for bad, match in (
+            ({"values": {"beat_ns": None}, "registered_nulls": ["beat_ns"]}, "cannot be null"),
+            ({"values": {"request_timeout_ns": 1}, "registered_nulls": ["request_timeout_ns"]},
+             "not null"),
+            ({"values": {}, "registered_nulls": ["request_timeout_ns"]}, "not null"),
+            ({"values": {"request_timeout_ns": None}, "registered_nulls": "request_timeout_ns"},
+             "list"),
+            ({"values": {"request_timeout_ns": None},
+              "registered_nulls": ["request_timeout_ns"] * 2}, "distinct")):
+        with pytest.raises(tiergen.ConfigError, match=match):
+            tiergen.unset_values(bad)

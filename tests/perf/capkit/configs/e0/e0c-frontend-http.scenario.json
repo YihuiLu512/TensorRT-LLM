@@ -1,0 +1,295 @@
+{
+ "schema": "capkit.scenario/1",
+ "experiment": "E0",
+ "name": "e0c-frontend-http",
+ "tier_table": "02_e0/E0/register/e0c-frontend-http.tiers.json",
+ "schedule": "02_e0/E0/register/e0c-frontend-http.schedule.capbin",
+ "prompts": "02_e0/E0/register/e0c-frontend-http.prompts.json",
+ "probe_tier": "P0",
+ "probe_groups": [],
+ "stop_grace_s": 10.0,
+ "stop_order": [
+  "capload",
+  "httpprobe",
+  "frontend",
+  "sfe"
+ ],
+ "reconcile": {
+  "schema": "capkit.reconcile/1",
+  "chains": [
+   {
+    "name": "requests",
+    "kind": "requests",
+    "gate": null,
+    "include_usage": null,
+    "hops": [
+     {
+      "role": "capload",
+      "source": "summary.counts.ok",
+      "scope": "tier"
+     }
+    ],
+    "corrections": []
+   }
+  ]
+ },
+ "roles": [
+  {
+   "role": "sfe",
+   "launcher": "product",
+   "kind": "server",
+   "start_after": [],
+   "pin_role": "sfe",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "stub_out_of_domain",
+   "asyncio": true,
+   "uses_grpc": true,
+   "loop": "asyncio",
+   "probe_tier": "P0",
+   "readiness": [
+    {
+     "kind": "plain_port_file"
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "--profile",
+    "trtllm-like",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "0",
+    "--port-file",
+    "{own:port_file}",
+    "--model",
+    "{param:sfe_model}",
+    "--max-context-length",
+    "{param:sfe_max_context_length}",
+    "--tokens-per-step",
+    "{param:sfe_tokens_per_step}",
+    "--step-delay",
+    "{param:sfe_step_delay_s}",
+    {
+     "splice_json": "{input:fingerprint}",
+     "key": "sfe_args"
+    }
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "command": [
+    "{param:python}",
+    "{param:sfe_script}"
+   ],
+   "port": {
+    "kind": "plain_port_file",
+    "host": "127.0.0.1"
+   },
+   "note": "S-FE = tests/unittest/grpc/openengine_client/fake_openengine.py (CLI :1966-1984 at 2f22a98d6e; --port-file writes a plain port line, :2030-2034); fingerprint args from the job input fingerprint (python -m capstubs.fingerprint in the job after the gate), never hand-copied"
+  },
+  {
+   "role": "frontend",
+   "launcher": "product",
+   "kind": "server",
+   "start_after": [
+    "sfe"
+   ],
+   "pin_role": "frontend",
+   "cpus_needed": 2,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "under_test",
+   "asyncio": true,
+   "uses_grpc": true,
+   "loop": "uvloop",
+   "probe_tier": "P0",
+   "readiness": [
+    {
+     "kind": "report_addr"
+    },
+    {
+     "kind": "http_get",
+     "path": "/health",
+     "expect_status": 200,
+     "timeout_s": 2.0
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "{param:tokenizer_dir}",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "0",
+    "--report_addr",
+    "{own:report_addr}",
+    "--openengine-endpoint",
+    "{addr:sfe}",
+    "--num_serve_frontends",
+    "1",
+    "--num_postprocess_workers",
+    "0"
+   ],
+   "env": {},
+   "proc_kinds": [
+    "frontend",
+    "frontend_openengine",
+    "frontend_single"
+   ],
+   "command": [
+    "{param:trtllm_serve}"
+   ],
+   "port": {
+    "kind": "report_addr",
+    "host": "127.0.0.1"
+   },
+   "note": "options at 2f22a98d6e: --openengine-endpoint serve.py:1343, --num_serve_frontends :1187, --num_postprocess_workers :1180, --report_addr :1442; uvloop per openengine_poc/launch.py:142. expected_procs=1 is unverified: E0(c) smoke lists the real child processes (P0 children cannot self-report, INTERFACES 12 U-5)"
+  },
+  {
+   "role": "httpprobe",
+   "launcher": "capkit",
+   "kind": "aux",
+   "start_after": [
+    "frontend"
+   ],
+   "pin_role": "httpprobe",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "observer",
+   "asyncio": false,
+   "uses_grpc": false,
+   "loop": null,
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "file_exists",
+     "path": "{run_dir}/raw/httpprobe.json"
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "--addr",
+    "{addr:frontend}",
+    "--requests",
+    "{param:httpprobe_requests_json}",
+    "--timeout-s",
+    "{param:httpprobe_timeout_s}",
+    "--result",
+    "{run_dir}/raw/httpprobe.json",
+    "--hold"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "caplaunch.httpprobe",
+   "note": "sends each request once (completions + chat, streaming) and records per-frame text deltas; caplaunch.smoke --tree reads raw/httpprobe.json"
+  },
+  {
+   "role": "capload",
+   "launcher": "capkit",
+   "kind": "client",
+   "start_after": [
+    "frontend"
+   ],
+   "pin_role": "capload",
+   "cpus_needed": 2,
+   "numa": null,
+   "workers": 2,
+   "expected_procs": 3,
+   "measure_class": "load_source",
+   "asyncio": true,
+   "uses_grpc": false,
+   "loop": "asyncio",
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [
+    "backlog.inflight"
+   ],
+   "snapshots": "all",
+   "args": [
+    "--target",
+    "{addr:frontend}",
+    "--model",
+    "{param:tokenizer_dir}",
+    "--endpoint",
+    "/v1/completions",
+    "--schedule",
+    "{input:schedule}",
+    "--prompts",
+    "{input:prompts}",
+    "--conn-policy",
+    "keepalive",
+    "--pool-pick",
+    "{param:capload_pool_pick}",
+    "--pool-seed",
+    "{param:capload_pool_seed}",
+    "--pool-reset",
+    "{param:capload_pool_reset}",
+    "--recv-mode",
+    "count",
+    "--chunk-sample-mod",
+    "{param:capload_chunk_sample_mod}",
+    "--fionread-every-ms",
+    "{param:capload_fionread_every_ms}",
+    "--lag-period-us",
+    "{param:lag_period_us}",
+    "--max-records-per-worker",
+    "{param:capload_max_records_per_worker}"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capload",
+   "note": "--model = the frontend's served model name (default: the model dir it was given)"
+  }
+ ],
+ "params_required": [
+  "capload_chunk_sample_mod",
+  "capload_fionread_every_ms",
+  "capload_max_records_per_worker",
+  "capload_pool_pick",
+  "capload_pool_reset",
+  "capload_pool_seed",
+  "httpprobe_requests_json",
+  "httpprobe_timeout_s",
+  "lag_period_us",
+  "python",
+  "sfe_max_context_length",
+  "sfe_model",
+  "sfe_script",
+  "sfe_step_delay_s",
+  "sfe_tokens_per_step",
+  "tokenizer_dir",
+  "trtllm_serve"
+ ],
+ "dims": {
+  "tokenizer": "TBD-by-registration (configs/tokenizers/<name>)",
+  "stub": "S-FE (fake_openengine.py, zero changes)",
+  "response_timing_switches": "defaults (not set)",
+  "interpretation": "E0 round 1: method self-check / pilot; not a capacity result",
+  "log_sink": "raw/logs on the node-local disk (orchestrator redirect)"
+ },
+ "note": "E0 (c): real tokenizer + frontend + S-FE answer /v1/completions and /v1/chat/completions; empty-delta frames recorded (X2 premise); access-log lines counted by caplaunch.smoke --tree. httpprobe is ready (its result written) before the origin; capload then places one low warmup rate and a drain, because the tier-table schema needs a drain tier with a gate and only capload publishes a backlog slot here.",
+ "job_inputs": {
+  "fingerprint": {
+   "args": [
+    "--tokenizer",
+    "{param:tokenizer_dir}",
+    "--trust-remote-code",
+    "false",
+    "--tokenizer-mode",
+    "auto"
+   ]
+  }
+ }
+}

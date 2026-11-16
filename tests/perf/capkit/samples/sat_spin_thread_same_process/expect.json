@@ -1,0 +1,26 @@
+{
+ "exit_code": 0,
+ "grade": {
+  "I_status": "LOCALIZED",
+  "finding": "domain_saturated",
+  "grade": "LOCALIZED",
+  "role": "nullsse"
+ },
+ "red_checks": [],
+ "synthetic": true,
+ "tier_localisation": {
+  "4": {
+   "finding": "domain_saturated",
+   "role": "nullsse",
+   "status": "LOCALIZED",
+   "via": [
+    "I1"
+   ]
+  }
+ },
+ "tier_verdicts": {
+  "2": "STABLE",
+  "4": "UNSTABLE"
+ },
+ "tree": "runs/Jlocal-sample-sat-spin-thread-same-process-r0-L0_synthetic-a"
+}

@@ -1,0 +1,8 @@
+{
+ "schema": "capkit.smoke_config/1",
+ "import_probe": {
+  "code": "import tensorrt_llm, uvloop, grpc_health.v1.health_pb2, sys; print(tensorrt_llm.__version__)",
+  "timeout_s": 600
+ },
+ "note": "RUNBOOK-stage2 1.4 item (1): only the env items run (--items env)"
+}

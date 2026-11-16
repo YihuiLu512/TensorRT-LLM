@@ -1,0 +1,39 @@
+# capkit-ft1 合入 main 的进度与冲突记录
+
+- 任务：把 `capkit-ft1`（head 4c59bbcb8d452039828a0b03eeda1209e74bdfa3，起点 b2-spb 756b9e7f；快轨 FT1：S-NL、oe_sink、E0 冒烟第 3 项与 E2a/E3/E4 场景模板、产品侧注入）`--no-ff` 合入 main（fb61526dd3627d46f583919242cb2d4b8f90f9f9 = b3b3368e SB-A + b2-spb 合并 91c6e683）。
+- 授权：FASTTRACK-1117-PLAN v2（11-15 23:4x 批准）；DECISIONS 第十五次答复（合入、本地测试、单个短冒烟不触发自审）。
+- 工作树：`01_code/_local/wt-merge-ft1`，分支 `capkit-merge-ft1`。
+
+## 日志
+
+- 2026-11-16 03:30:59 建 worktree，`git merge --no-ff --no-commit capkit-ft1`：只有 INTERFACES.md 内容冲突（3 处）；其余双方都改的文件自动合并（tests/launch/test_launch_e2e.py、tools/capgrpc/common.py、tools/caplaunch/README.md、tools/caplaunch/orchestrator.py、tools/caplaunch/scenario.py、tools/capstubs/README.md、tools/capstubs/prebaked_server.py）。
+- 2026-11-16 03:33:23 解冲突与语义修复写完（见下表），合并提交前先跑 tests/capstubs（约 4 分钟；临时软链 WT/probe-tree）
+- tests/capstubs（解冲突与 S1、S2 修复后、合并提交前）：161 passed（logs/merge-ft1/pre/t_capstubs.log）。
+
+## 冲突与处理
+
+| # | 文件 | 两边各改了什么 | 处理 |
+|---|---|---|---|
+| 1 | `INTERFACES.md` §11 命令表（`capgrpc.load`、`capgrpc.nullgrpc`、`capselfcheck.relay` 三行） | main（SM-18）给 nullgrpc、relay 两行加 `--max-unrequested-s`；FT1 给 load 一行加 `--planned-msgs` 指向（FT1-9） | 逐行取改过的一边（与 merge-base 756b9e7f 逐行比对确认每行只有一边改了）：load 取 FT1，nullgrpc、relay 取 main |
+| 2 | `INTERFACES.md` §10.2 `measure_class` 一行 | main（SB-B1-3）给 `observer` 加「自旋器」；FT1 给域外桩加 S-NL 三种模式指向（FT1-1）、给 E2a/E3/E4 加指向（FT1-15） | 合成一行：FT1 的文字 + main 的「自旋器（勘误 SB-B1-3）」 |
+| 3 | `INTERFACES.md` 勘误末尾 | main 追加 SM-16 … 「合入 b2-spb 到 main（M-SPB-n）」；FT1 追加「Fast track FT1 …」一节 | 全留，main 的在前、FT1 一节在后，其后新增「合入 capkit-ft1 到 main（勘误 M-FT1-n）」一节 |
+
+其余双方都改的 7 个文件文本自动合并；`tools/capstubs/prebaked_server.py` 的自动合并结果核对过：main 的 M-SPB-1（`--max-unrequested-s`、`grpc_server_options`）与 FT1 的 `check_inject_specs(specs, site_modes, who)` 互不相干。
+
+## 文本无冲突、语义上要对齐的地方
+
+| # | 问题 | 处理 |
+|---|---|---|
+| S1 | (a) SM-18：main 的 `make_server(reuseport, max_unrequested_s)` 第二个参数必填。FT1 里建 gRPC server 的地方：S-NL `metronome-only` 的占端口空 server 仍是 `make_server(reuseport=False)`（合入后该模式 TypeError，`test_metronome_only_dry_run` 会挂）；S-NL `minimal`/`full` 的 server 由产品 `OpenEngineServer` 自建；`oe_sink` 只建客户端 channel | 照 S-PB（M-SPB-1）改 S-NL：可选 `--max-unrequested-s`（只用于 `metronome-only`，产品模式给了即退出码 3——产品 server 的排队选项正是 E3/SM-19 要测的，不改），`resolve_max_unrequested` 定值传入 `make_server`，就绪文件与每档自报 `grpc_server_options`（产品模式 `null`）。测试与文档见勘误 M-FT1-1 |
+| S2 | (b) `submit.time_budget(plan, renv, job_input_kinds=None)`（M-SPB-2）：FT1 没有调用 `time_budget` / `in_job_bound_s` / `laddergen` 的代码 | 不改；FT1 的 E2a/E3/E4 模板都声明 `job_inputs`，以后若经 laddergen 装箱要按种类数传入，记为 follow-up（M-FT1-4） |
+| S3 | (c) 真前端发非十进制 request_id（j2 实测 22/22），S-PB/S-NL 带 `--schedule` 会全拒。核对 E3-3b 直连：`oe_sink --request-format openengine` 两档都把十进制 `str(req_id)` 交给产品客户端类；产品 `OpenEngineClient.generate` 只在 request_id 为空时补 `new_request_id()`，`to_generate_request` 原样抄 `EngineRequest.request_id`（读探针树 `openengine_client/client.py:370-371`、`openengine_poc/engine_client_impl.py:84-91`）⇒ 十进制 id 到得了 S-PB | 成立的是「十进制可达」：E3-3b 模板保持 S-PB 带 `--schedule`，不改生成器；E4 / e0s 前端臂本来就不带。加测试：`test_oe_sink.py` 两档断言 S-PB 收到的样本都是所发 `req_id`、原始格式断言样本非十进制（M-FT1-3） |
+| S4 | 桩没有记录原始 request_id 原文（只有 `request_id_not_decimal` 计数） | S-PB、S-NL 每档自报加 `request_id_samples`（事件档最先 8 个原文，含被拒）；测试见 M-FT1-5，文档 `tools/capstubs/README.md`、勘误 M-FT1-2 |
+- 2026-11-16 03:38:00 合并提交 0379cffa；开跑全量验证 r1 `MAINV_WT=<WT> fullv_all.sh merge-ft1/r1 52`（12 个测试目录 + selftest 52 + patchcheck + py_compile + bash -n，约 30 分钟，后台）
+- 2026-11-16 04:03:43 r1 全量验证（HEAD 0379cffa，logs/merge-ft1/r1/summary.txt）全绿，首跑即过、无重跑：capcommon 203、capload 33、capprobe 171、capstubs 161、envgate 111、grpc 56、jobs 346、judge 542 + 6 xfailed、launch 491、nullsse 4、sidecar 5；selftest ran 52 / errors 0 / deferred 5（DEFERRED_P2_13）；patchcheck PASS（7 位点 / 8 处，0 violations）；py_compile 252/0；bash -n 3/0；fakebin.log 0 行。临时软链 WT/probe-tree 改名为 _local/merge-ft1/probe-tree.link-fv1。
+- 2026-11-16 04:03:43 作业路径 e2e 五臂（_local/merge-ft1/e2e/run_fv.sh，由 wt-ft1/_local/ft1/e2e 改路径拷来，TMPDIR=/home/scratch.yihlu_coreai/tmp/20261114-capkit-sm1718/merge-ft1；覆盖清单 e2e/ovl/P0-0379cffa.json；J9700001–05，约 15 分钟，后台）
+- 2026-11-16 04:08:54 作业路径 e2e（HEAD 0379cffa，覆盖清单 _local/merge-ft1/e2e/ovl/P0-0379cffa.json）：五臂 submit rc 0、sbatch rc 0、L0 VALID、无 INPUT_INVALID。e2e-spb-null J9700002（PASS 38 / NOT_RUN 22）、e2e-snl-full J9700003（38/22）、e2e-sink-spb J9700004（43/17）、e2e-snl-mono J9700005（28/32）judge rc 11、0 RED。e0a-nullsse J9700001 有 1 条 RED：C11 第 6 档 drain-04 的门「polls 2 ≠ 计划 3」（门第 2 次轮询比计划晚约 33 ms，t_pass−start = 132.75 ms、poll_ns 100 ms；本机 load average ≈ 9.7，D0 的全量测试同时在跑）——判为本机负载造成的时序抖动，不是合并问题：该臂单独重跑 1 次 J9700011，PASS 27 / NOT_RUN 11、0 RED、judge rc 11。各臂相对 FT1 的 fv 运行（J9300051–55）都只多 1 条 NOT_RUN（main SB-A 新增的 C13-MEAN），与 merge-spb 记录一致。
+- S-PB / S-NL 新自报字段在 e2e 树里（MEASURED）：e2e-sink-spb 的 S-PB 每档 `request_id_samples.first` = 读者所发的十进制 req_id（warmup ['0'…'7']、up-sub ['50'…'57']），`grpc_server_options` 缺省 18 s；e2e-snl-full 的 S-NL 样本同为十进制、`grpc_server_options` 为 null（产品模式）；e2e-snl-mono 的 S-NL 样本为空（无 RPC）、`grpc_server_options` 缺省 18 s（S1 修复在作业路径上生效）。
+
+## 结论
+
+全绿（e0a 一次时序抖动重跑后过），快进 main 到本分支。合并提交 0379cffa973a31b12a0bbdc89340be7723f61546（父：fb61526d、4c59bbcb）。合入时改的两处见 S1（M-FT1-1）、S4（M-FT1-2）；S3 核对成立、只加测试（M-FT1-3）；S2 不改、记 follow-up（M-FT1-4）。

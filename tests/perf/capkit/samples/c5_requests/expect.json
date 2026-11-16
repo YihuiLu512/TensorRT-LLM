@@ -1,0 +1,11 @@
+{
+ "exit_code": 10,
+ "red_checks": [
+  "C5"
+ ],
+ "synthetic": true,
+ "tier_verdicts": {
+  "4": "VOID"
+ },
+ "tree": "runs/Jlocal-sample-c5-requests-r0-L0_synthetic-a"
+}

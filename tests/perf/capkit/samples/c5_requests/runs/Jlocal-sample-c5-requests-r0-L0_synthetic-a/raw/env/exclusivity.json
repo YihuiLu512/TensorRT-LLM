@@ -1,0 +1,69 @@
+{
+ "expected_items": 1,
+ "identity": {
+  "arm": "synthetic-a",
+  "experiment": "E0",
+  "job_id": "local-sample-c5-requests",
+  "launch_seq": 0,
+  "pid": null,
+  "register_sha": "2ebc3730daa7ab2d463ee1377b396a04e637dfc51199734dc4fe6aa535079da0",
+  "restart_count": 0,
+  "role": "gate",
+  "tier_label": null,
+  "tier_seq": null,
+  "worker": 0
+ },
+ "items": [
+  {
+   "cmd": [
+    "read",
+    "/proc/stat",
+    "x2"
+   ],
+   "detail": {
+    "busy_cores": [],
+    "checked_cores": 3,
+    "expected_cores": 3,
+    "max_frac": 0.02,
+    "missing": [],
+    "per_core": {
+     "2": {
+      "busy_frac": 0.001,
+      "busy_ticks": 3,
+      "irq_ticks": 0,
+      "softirq_ticks": 0,
+      "total_ticks": 3000
+     },
+     "3": {
+      "busy_frac": 0.001,
+      "busy_ticks": 3,
+      "irq_ticks": 0,
+      "softirq_ticks": 0,
+      "total_ticks": 3000
+     },
+     "4": {
+      "busy_frac": 0.001,
+      "busy_ticks": 3,
+      "irq_ticks": 0,
+      "softirq_ticks": 0,
+      "total_ticks": 3000
+     }
+    },
+    "window_ns": 30000000000
+   },
+   "id": 6,
+   "passed": true,
+   "rc": 0,
+   "source": "container",
+   "status": "PASS",
+   "stdout_sha": null
+  }
+ ],
+ "phase": "pre",
+ "positive_control_ok": true,
+ "schema": "capkit.exclusivity/1",
+ "slurm_view_error": null,
+ "slurm_view_file": "synthetic",
+ "written_mono_ns": 9882856216684151,
+ "written_wall": "2026-11-15T01:33:52.297Z"
+}

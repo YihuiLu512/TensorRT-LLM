@@ -1,0 +1,38 @@
+{
+ "identity": {
+  "arm": "synthetic-a",
+  "experiment": "E0",
+  "job_id": "local-sample-c2-stub-loop-lag",
+  "launch_seq": 0,
+  "pid": 2001,
+  "register_sha": "9a68b633fb986e95dc39f2d97e318c1d5f6ecf22560c630eb3508e3ddcb5c2b0",
+  "restart_count": 0,
+  "role": "nullsse",
+  "tier_label": null,
+  "tier_seq": null,
+  "worker": 0
+ },
+ "schema": "capkit.version_record/1",
+ "source": "ready_file",
+ "versions": {
+  "capkit_code_sha": "cccccccccccccccccccccccccccccccccccccccc",
+  "env": {},
+  "executable": "/usr/bin/python3",
+  "gc_enabled": true,
+  "grpc": null,
+  "implementation": "cpython",
+  "loop_impl": "asyncio.unix_events._UnixSelectorEventLoop",
+  "pid": 2001,
+  "probe_groups": [
+   "count"
+  ],
+  "probe_patch_sha": "ffffffffffffffffffffffffffffffffffffffff",
+  "probe_tier": "P2",
+  "protobuf": null,
+  "protobuf_impl": null,
+  "python": "3.12.3 synthetic",
+  "switchinterval_s": 0.005
+ },
+ "written_mono_ns": 9882861860466306,
+ "written_wall": "2026-11-15T01:33:57.941Z"
+}

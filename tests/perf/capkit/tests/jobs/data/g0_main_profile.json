@@ -1,0 +1,7 @@
+{"schema": "capkit.cdb_main_profile/1", "name": "G0",
+ "note": "Test fixture mirroring the G0 grouping key of 00_plan/cluster-probe/20261113/05_dgxb200_groups.md; not a registered spec.",
+ "fields": {"system.product_name": "DGXB200", "cpu.product_name": "INTEL(R) XEON(R) PLATINUM 8570",
+            "cpu.cores_per_socket": "56", "cpu.threads_per_core": "2", "system.cpu_socket_count": "2",
+            "system.logical_cpu_count": "224", "system.memory_size_gb": "2016", "gpu.product_name": "NVIDIA B200",
+            "system.nvidia_driver_version": "615.71.10", "system.os_kernel_version": "6.8.0-139-generic",
+            "system.iommu_enabled": "True", "system.nic_count": "14", "system.mellanox_nic_count": "16"}}
