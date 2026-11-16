@@ -358,17 +358,19 @@ def read_engine_load(handle) -> dict[str, int] | None:
     }
 
 
-def read_counters(handle) -> Counters:
+def read_counters(handle, role: str | None = None) -> Counters:
     """Both counters of a running chain; the values read at shutdown once it has stopped.
 
-    For a handle with a role, also the version 4 counters of both sides
-    (``serve``, ``engine_v4``). A front end that has sent calls but published
-    no per-bucket count does not count them; neither does an engine whose
-    ``GetLoad`` has none of ENGINE_V4_COUNTERS.
+    For a worker, also the version 4 counters of both sides (``serve``,
+    ``engine_v4``). A handle with a role is a worker; ``role`` names the role of
+    one that has none of its own, as a cross_node test's worker takes its
+    node's. A front end that has sent calls but published no per-bucket count
+    does not count them; neither does an engine whose ``GetLoad`` has none of
+    ENGINE_V4_COUNTERS.
     """
     if not handle.alive:
         return handle.final_counters or Counters(None, None)
-    if getattr(handle, "role", None) is None:
+    if (role or getattr(handle, "role", None)) is None:
         frontend = read_frontend_counter(handle)
         return Counters(
             frontend=frontend,
@@ -924,16 +926,33 @@ def _role_buckets(role: str, rule: LegRule) -> tuple[str, ...]:
 
 
 def _needed_roles(rule: LegRule, present: set[str]) -> tuple[str, ...]:
-    """The roles whose engines must take at least one call under ``rule``."""
+    """The roles whose engines must take at least one call under ``rule``.
+
+    A ``single_side`` test runs the generation side alone if it has generation
+    workers (the generation-only benchmark mode), else the context side alone
+    (``ctx_only``).
+    """
     if rule.no_engine_traffic or rule.leg == "direct_worker":
         return ()
     needed = {
         "gen_zero_ok": {CTX},
         "ctx_zero_ok": {GEN},
-        "single_side": present,
+        "single_side": {GEN} if GEN in present else present,
         "direct_ctx_leg": {CTX},
     }.get(rule.leg, set(ROLES))
     return tuple(r for r in ROLES if r in needed and r not in rule.killed)
+
+
+def _idle_roles(rule: LegRule, present: set[str]) -> tuple[str, ...]:
+    """The roles whose engines must take no call under ``rule``.
+
+    In the generation-only benchmark mode (``single_side`` with generation
+    workers) the generation workers take every request without a context leg,
+    so context workers its configuration starts stay idle.
+    """
+    if rule.leg == "single_side" and GEN in present and CTX in present:
+        return (CTX,)
+    return ()
 
 
 def _judged_legs(legs: Sequence[Leg], rule: LegRule) -> list[Leg]:
@@ -1202,8 +1221,29 @@ def _check_frontend_requests(
 
 
 def _check_role_traffic(add, sums: Mapping, role: str, rule: LegRule) -> None:
-    """CH-3's sum: ``role``'s engines took at least one call of its buckets."""
-    if role not in _needed_roles(rule, {r for r in ROLES if sums[r]["legs"]}):
+    """CH-3's sum: ``role``'s engines took at least one call of its buckets, or none if idle."""
+    present = {r for r in ROLES if sums[r]["legs"]}
+    if role in _idle_roles(rule, present):
+        accepted = sums[role]["counts"][ENGINE_ACCEPTED]
+        if accepted is None:
+            add("CH-3", role, INCOMPLETE, f"a {role} engine reports no per-bucket counter")
+        elif accepted:
+            add(
+                "CH-3",
+                role,
+                FAIL,
+                f"the {role} engines accepted {accepted} calls in the generation-only benchmark "
+                "mode, which sends every request to the generation workers",
+            )
+        else:
+            add(
+                "CH-3",
+                role,
+                OK,
+                f"no call reached the {role} engines, as in the generation-only benchmark mode",
+            )
+        return
+    if role not in _needed_roles(rule, present):
         return
     if not sums[role]["legs"]:
         add("CH-3", role, FAIL, f"no {role} worker ran in the chain")

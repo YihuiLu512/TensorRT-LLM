@@ -1330,3 +1330,191 @@ def test_worker_lists_that_could_not_be_read_are_left_out(monkeypatch, unread, m
     for i in unread:
         lists[i] = None
     assert _watch_readings(monkeypatch, lists).members == members
+
+
+# ----------------------------------------------------------------------------- gen-only benchmark
+
+
+def _gen_only(ctx_calls=0, gen_calls=64, with_ctx=True):
+    """The generation-only benchmark mode: generation calls without a context leg.
+
+    ``with_ctx``: the configuration starts a context worker as well. The default
+    counts are those R12 read for test_disaggregated_benchmark_gen_only_insufficient_kv.
+    """
+    gen = Worker(GEN, 8002)
+    gen.take(gen_calls)
+    workers = [gen]
+    if with_ctx:
+        ctx = Worker(CTX, 8001)
+        ctx.take(ctx_calls)
+        workers.insert(0, ctx)
+    return workers, _orchestrator(ctx_calls, gen_calls, workers=workers)
+
+
+@pytest.mark.parametrize("with_ctx", [True, False], ids=["idle-ctx", "no-ctx"])
+def test_single_side_proves_the_generation_only_benchmark_mode(with_ctx):
+    workers, orchestrator = _gen_only(with_ctx=with_ctx)
+    result = _judge(workers, orchestrator, rule=P.LegRule(leg=ex.SINGLE_SIDE))
+    assert result.status == P.OK, result.details()
+    statuses = {(n, r): c.status for n, r, c in result.checks}
+    assert statuses[("CH-3", GEN)] == P.OK
+    assert statuses.get(("CH-3", CTX)) == (P.OK if with_ctx else None)
+    # Unregistered, the idle (or missing) context side and the hand-offs nobody sent fail.
+    unregistered = _failed(_judge(workers, orchestrator))
+    assert {("CH-3", CTX), ("CH-4", None)} <= unregistered, unregistered
+
+
+def test_single_side_fails_a_context_worker_that_takes_calls_in_the_generation_only_mode():
+    workers, orchestrator = _gen_only(ctx_calls=1)
+    result = _judge(workers, orchestrator, rule=P.LegRule(leg=ex.SINGLE_SIDE))
+    assert ("CH-3", CTX) in _failed(result), result.details()
+
+
+@pytest.mark.parametrize(
+    "make, role",
+    [
+        # The context side alone (ctx_only): its worker must take calls.
+        (lambda: ([Worker(CTX, 8001)], _orchestrator(0, 0)), CTX),
+        # The generation-only mode: an idle context worker does not excuse idle generation ones.
+        (lambda: _gen_only(gen_calls=0), GEN),
+    ],
+    ids=["ctx_only", "gen-only"],
+)
+def test_single_side_still_needs_calls_on_the_side_that_runs(make, role):
+    workers, orchestrator = make()
+    result = _judge(workers, orchestrator, rule=P.LegRule(leg=ex.SINGLE_SIDE))
+    assert ("CH-3", role) in _failed(result), result.details()
+
+
+def test_an_idle_context_worker_without_a_bucket_counter_is_not_proven_idle():
+    workers, orchestrator = _gen_only()
+    sums = P.role_sums([w.leg() for w in workers])
+    sums[CTX]["counts"][P.ENGINE_ACCEPTED] = None
+    statuses = {
+        (n, r): c.status
+        for n, r, c in P.judge_roles(sums, orchestrator, P.LegRule(leg=ex.SINGLE_SIDE))
+    }
+    assert statuses[("CH-3", CTX)] == P.INCOMPLETE
+
+
+def test_the_generation_only_benchmark_tests_are_registered_single_side():
+    table = [e for e in ex.load() if e.wt == "WT-38-fix2"]
+    for name in (
+        "test_disaggregated_benchmark_gen_only",
+        "test_disaggregated_benchmark_gen_only_insufficient_kv",
+        "test_disaggregated_genbs1",
+    ):
+        found = ex.applicable(table, f"disaggregated/test_disaggregated.py::{name}", "trtllm")
+        assert [e.leg for e in found] == [ex.SINGLE_SIDE], name
+
+
+# ----------------------------------------------------------------------------- a worker without a role
+
+
+def test_a_worker_without_a_role_of_its_own_reads_its_v4_counters_for_the_role_given(monkeypatch):
+    handle = types.SimpleNamespace(role=None, alive=True)
+    counts = dict.fromkeys((*P.SERVE_V4_COUNTERS, P.cv.FRONTEND_COUNTER_FIELD), 0)
+    counts.update({P.cv.FRONTEND_COUNTER_FIELD: 1, SENT[P.BUCKET_CONTEXT_ONLY]: 1})
+    monkeypatch.setattr(P, "read_frontend_counts", lambda h: counts)
+    load = dict.fromkeys((P.ENGINE_ACCEPTED, *P.ENGINE_V4_COUNTERS), 1)
+    load[P.cv.ENGINE_COUNTER_KEY] = 1
+    monkeypatch.setattr(P, "read_engine_load", lambda h: load)
+    monkeypatch.setattr(P, "read_frontend_counter", lambda h: 1)
+    monkeypatch.setattr(P, "read_engine_counter", lambda h: 1)
+    assert P.read_counters(handle) == P.Counters(1, 1)
+    counters = P.read_counters(handle, role=CTX)
+    assert (counters.frontend, counters.engine) == (1, 1)
+    assert counters.serve[SENT[P.BUCKET_CONTEXT_ONLY]] == 1
+    assert counters.engine_v4[P.ENGINE_PREFILL_READY_SENT] == 1
+
+
+CROSS_NODE_TEST = """
+import pytest
+from openengine_chain import proof as P
+from plugin_support import FakeHandle
+
+
+class Worker(FakeHandle):
+    # Started without --server_role, as the fixed-port multi-node tests start their workers.
+    def __init__(self, port):
+        super().__init__()
+        self.host = "localhost"
+        self.port = port
+        self.info = P.EngineInfo(f"w-{port}", True)
+        self.serve = dict.fromkeys(P.SERVE_V4_COUNTERS, 0)
+        self.v4 = dict.fromkeys((P.ENGINE_ACCEPTED, *P.ENGINE_V4_COUNTERS), 0)
+        self.take(0)
+
+    def take(self, n):
+        for key in (
+            P.SERVE_HTTP_RECEIVED[P.BUCKET_CONTEXT_ONLY],
+            P.SERVE_SENT_BUCKETS[P.BUCKET_CONTEXT_ONLY],
+            P.SERVE_PREFILL_READY_RECEIVED,
+        ):
+            self.serve[key] += n
+        for key in (
+            P.ENGINE_ACCEPTED,
+            P.ENGINE_ACCEPTED_BUCKETS[P.BUCKET_CONTEXT_ONLY],
+            P.ENGINE_PREFILL_READY_SENT,
+        ):
+            self.v4[key] += n
+        c = self.counters
+        self.counters = P.Counters(
+            c.frontend + n, c.engine + n, serve=dict(self.serve), engine_v4=dict(self.v4)
+        )
+
+
+@pytest.fixture(scope="module")
+def worker():
+    w = Worker(8001)
+    yield w
+    w.end()
+
+
+def test_completion(worker):
+    worker.take(1)
+"""
+
+
+def test_a_cross_node_worker_without_a_role_is_proven_by_its_v4_counters(
+    pytester, monkeypatch, tmp_path
+):
+    """BA4: the fixed-port multi-node tests start their workers without --server_role."""
+    import plugin_support
+    from openengine_chain import conventions as cv
+    from openengine_chain import pytest_plugin as plugin
+
+    plugin_support.install(monkeypatch)
+
+    def read_counters(handle, role=None):
+        # As proof.read_counters: the version 4 counters only for a worker of a known role.
+        if not handle.alive:
+            return handle.final_counters
+        if (role or getattr(handle, "role", None)) is None:
+            return P.Counters(handle.counters.frontend, handle.counters.engine)
+        return handle.counters
+
+    monkeypatch.setattr(P, "read_counters", read_counters)
+    monkeypatch.setattr(P, "find_orchestrators", lambda root: [])
+    monkeypatch.setattr(P, "inprocess_workers", lambda root: [])
+    monkeypatch.setattr(P, "engine_info", lambda h: h.info)
+    table = [
+        ex.Expectation("WT-38", "test_cross.py::test_*", ex.LEG_EXPECT, "r", leg=ex.CROSS_NODE)
+    ]
+    monkeypatch.setattr(plugin, "_WATCH_INTERVAL_S", 0.05)
+    monkeypatch.setattr(ex, "load", lambda directory=None: list(table))
+    monkeypatch.setenv(cv.ENV_CHAIN, "trtllm")
+    monkeypatch.setenv("SLURM_NODEID", "0")
+    monkeypatch.delenv(cv.ENV_RESULTS_DIR, raising=False)
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.delenv("TRTLLM_TEST_OPENENGINE_NEGATIVE_CONTROL", raising=False)
+    monkeypatch.syspath_prepend(os.path.dirname(os.path.abspath(plugin_support.__file__)))
+    pytester.makepyfile(test_cross=CROSS_NODE_TEST)
+    xml = tmp_path / "junit.xml"
+    pytester.runpytest_inprocess("-p", cv.PLUGIN_MODULE, f"--junitxml={xml}")
+    outcome, props = _cases(str(xml))["test_completion"]
+    assert (outcome, props["chain_proof"]) == ("passed", "ok"), props
+    assert props["leg_expectation"] == "cross_node:met on this node", props
+    ctx = json.loads(props["chain_leg_counts"])["roles"][CTX]["counts"]
+    assert ctx[P.ENGINE_ACCEPTED_BUCKETS[P.BUCKET_CONTEXT_ONLY]] == 1
+    assert ctx[HTTP[P.BUCKET_CONTEXT_ONLY]] == 1

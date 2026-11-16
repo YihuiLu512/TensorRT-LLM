@@ -67,7 +67,9 @@ OUTCOME_KINDS = (HTTP_STATUS, STARTUP_REJECTED, SKIP)
 # - ctx_zero_ok: the disaggregated server may prefill locally, so the context role may get
 #   no call and the generation workers may get aggregated calls.
 # - single_side: only one side runs: the context side alone, or the generation side alone
-#   in the generation-only benchmark mode.
+#   in the generation-only benchmark mode. With generation workers the test is judged as the
+#   latter: the generation role must get calls, and context workers its configuration
+#   starts must get none.
 # - direct_worker: the test sends to one worker front end itself, not through the
 #   disaggregated server; ``direct_requests`` is the number of aggregated calls its generation
 #   requests make (one per request unless a request with n > 1 is split into one call per

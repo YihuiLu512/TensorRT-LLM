@@ -246,8 +246,11 @@ def pytest_runtest_teardown(item: pytest.Item):
     yield
 
 
-def _safe_counters(handle, details: list[str]) -> proof.Counters:
+def _safe_counters(handle, details: list[str], role: str | None = None) -> proof.Counters:
+    """The handle's counters; ``role`` is the worker role of a handle without one of its own."""
     try:
+        if role is not None and getattr(handle, "role", None) is None:
+            return proof.read_counters(handle, role=role)
         return proof.read_counters(handle)
     except Exception as error:  # noqa: BLE001 - an unreadable counter only makes the proof incomplete
         details.append(f"reading counters failed: {error!r}")
@@ -447,13 +450,10 @@ def pytest_runtest_call(item: pytest.Item):
         return
     seq = next_seq()
     details: list[str] = []
-    before = {id(h): _safe_counters(h, details) for h in _chain_handles(seq)}
     rule = ex.leg_expectation(item.stash.get(_FOUND, []))
-    watch = _Watch(
-        seq,
-        disagg=rule is not None,
-        node_role=_node_role(rule.leg) if rule is not None else None,
-    )
+    node_role = _node_role(rule.leg) if rule is not None else None
+    before = {id(h): _safe_counters(h, details, node_role) for h in _chain_handles(seq)}
+    watch = _Watch(seq, disagg=rule is not None, node_role=node_role)
     try:
         yield
     finally:
@@ -653,7 +653,7 @@ def _prove_disagg(
     for attempt in range(_SETTLE_TRIES):
         legs = []
         for h in handles:
-            end = _safe_counters(h, details)
+            end = _safe_counters(h, details, roles[id(h)])
             start = before.get(id(h))
             start = proof.zero_like(end) if start is None else proof.counting_start(start, end)
             role = roles[id(h)] or "agg"
