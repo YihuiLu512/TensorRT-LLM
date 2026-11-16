@@ -137,7 +137,7 @@ def test_drain_loop_counts(tmp_path, consumer, hmac):
         assert t["parsed_msgs"] == 0
     doc = st.summary({"mode": "test"})
     assert doc["tiers"]["0"]["msgs"] == 2 and doc["mode"] == "test"
-    rec = open(os.path.join(str(tmp_path), "nxd.lane0.recvs.bin"), "rb").read()
+    rec = open(os.path.join(str(tmp_path), "nxd.lane0.recvs.rec"), "rb").read()
     assert len(rec) == 2 * nx_driver.RECV_REC.size
 
 
@@ -154,7 +154,7 @@ def test_send_loop_open_loop(tmp_path, monkeypatch):
     t = st.tiers[0]
     assert t["planned"] == 3 and t["sent"] == 3 and t["send_lag_ns_max"] >= 10 ** 8
     st.sends.flush()
-    assert os.path.getsize(os.path.join(str(tmp_path), "nxd.lane0.sends.bin")) == \
+    assert os.path.getsize(os.path.join(str(tmp_path), "nxd.lane0.sends.rec")) == \
         3 * nx_driver.SEND_REC.size
 
 

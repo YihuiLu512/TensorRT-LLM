@@ -139,7 +139,7 @@ def test_grid_wake_lag_and_idle_block(run, tmp_path):
     ex.enqueue_request({"client_id": 2, "max_tokens": 3})
     collect(ex, 1)
     ex.shutdown()
-    steps = read_records(os.path.join(str(tmp_path), "snx.%d.steps.bin" % os.getpid()), "steps")
+    steps = read_records(os.path.join(str(tmp_path), "snx.%d.steps.rec" % os.getpid()), "steps")
     anchor = steps[0]["planned_ns"]
     for r in steps:
         assert (r["planned_ns"] - anchor) % (5 * MS) == 0  # one absolute grid
@@ -167,7 +167,7 @@ def test_cancel_emits_a_cancelled_final(run, tmp_path):
     got = collect(ex, 1)[9]
     assert got[-1]["reason"] == "cancelled" and ex.counts["cancelled"] == 1
     ex.shutdown()
-    reqs = read_records(os.path.join(str(tmp_path), "snx.%d.reqs.bin" % os.getpid()), "reqs")
+    reqs = read_records(os.path.join(str(tmp_path), "snx.%d.reqs.rec" % os.getpid()), "reqs")
     assert reqs[-1]["cancelled"] == 1 and reqs[-1]["tokens"] < 1000
 
 
@@ -180,8 +180,8 @@ def test_prefill_budget_fcfs_chunks_and_delay(run, tmp_path):
     collect(ex, 2)
     ex.shutdown()
     reqs = {r["client_id"]: r for r in
-            read_records(os.path.join(str(tmp_path), "snx.%d.reqs.bin" % os.getpid()), "reqs")}
-    steps = read_records(os.path.join(str(tmp_path), "snx.%d.steps.bin" % os.getpid()), "steps")
+            read_records(os.path.join(str(tmp_path), "snx.%d.reqs.rec" % os.getpid()), "reqs")}
+    steps = read_records(os.path.join(str(tmp_path), "snx.%d.steps.rec" % os.getpid()), "steps")
     t0 = reqs[1]["take_step"]
     assert [s["prefill_tokens"] for s in steps[:4]] == [4, 4, 4, 1]
     # r1 prefill done in round t0+2 (4+4+2), first response one round later; r2 done in t0+3
@@ -196,7 +196,7 @@ def test_max_active_cap(run, tmp_path):
     ex.start()
     collect(ex, 5)
     ex.shutdown()
-    steps = read_records(os.path.join(str(tmp_path), "snx.%d.steps.bin" % os.getpid()), "steps")
+    steps = read_records(os.path.join(str(tmp_path), "snx.%d.steps.rec" % os.getpid()), "steps")
     assert max(s["active"] for s in steps) <= 2 and steps[0]["queued_after"] == 3
 
 
@@ -205,7 +205,7 @@ def test_busy_loop_charges_step_cpu(run, tmp_path):
     ex.enqueue_request({"client_id": 1, "max_tokens": 5})
     collect(ex, 1)
     ex.shutdown()
-    steps = read_records(os.path.join(str(tmp_path), "snx.%d.steps.bin" % os.getpid()), "steps")
+    steps = read_records(os.path.join(str(tmp_path), "snx.%d.steps.rec" % os.getpid()), "steps")
     assert all(s["busy_iters"] > 0 and s["wall_ns"] >= 2 * MS for s in steps)
 
 
@@ -234,7 +234,7 @@ def test_take_lag_and_summary(run, tmp_path):
     time.sleep(0.05)  # responses pile up: the first take is late
     collect(ex, 3)
     ex.shutdown()
-    takes = read_records(os.path.join(str(tmp_path), "snx.%d.takes.bin" % os.getpid()), "takes")
+    takes = read_records(os.path.join(str(tmp_path), "snx.%d.takes.rec" % os.getpid()), "takes")
     assert takes[0]["return_ns"] - takes[0]["oldest_planned_ns"] >= 30 * MS
     assert sum(t["responses"] for t in takes) == 15
     doc = summarize(str(tmp_path))

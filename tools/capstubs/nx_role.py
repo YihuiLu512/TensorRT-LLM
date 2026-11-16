@@ -40,7 +40,7 @@ from capcommon.cli import add_common_args, common_from_args
 from capcommon.exitcodes import OK, STOPPED_EARLY, CapkitError, ConfigError
 
 from . import nx_driver as nxd
-from .null_executor import LiveReader, read_records
+from .null_executor import REC_EXT, LiveReader, read_records
 
 TOOL = "capstubs.nx_role"
 SLOTS = {
@@ -292,7 +292,7 @@ class NxRole:
         """[(req_id, client_id, tier_seq)] of every send of this launch (own lane + drains)."""
         st = nxd.SEND_REC
         out = []
-        for p in sorted(glob.glob(os.path.join(self.args.nxd_dir, "nxd.*.sends.bin"))):
+        for p in sorted(glob.glob(os.path.join(self.args.nxd_dir, "nxd.*.sends" + REC_EXT))):
             with open(p, "rb") as f:
                 data = f.read()
             for i in range(len(data) // st.size):
@@ -307,7 +307,7 @@ class NxRole:
         nxd.write_json(os.path.join(a.nxd_dir, "nxd.%s.summary.json" % self.stats.name),
                        self.stats.summary(extra))
         done, cancelled = set(), set()
-        for _pid, path in _engine_files(a.snx_out_dir, "reqs.bin"):
+        for _pid, path in _engine_files(a.snx_out_dir, "reqs" + REC_EXT):
             for r in read_records(path, "reqs"):
                 (cancelled if r["cancelled"] else done).add(r["client_id"])
         planned, sent, ok, cancel = {}, {}, {}, {}

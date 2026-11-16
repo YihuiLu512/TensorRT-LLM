@@ -28,8 +28,8 @@ Self-report (files under out_dir, one set per process: snx.<pid>.*): meta.json a
 thread ids), fixed-size binary records appended in chunks -- steps (wake lag = start - planned,
 wall and thread CPU of the step, takes, releases), takes (each await_responses call: how many
 responses, and the take lag = now - planned time of the oldest pending response), reqs (one per
-finished request) -- and summary.json at shutdown. `python -m capstubs.null_executor summarize`
-turns them into per-tier summaries.
+finished request; *.rec) -- and summary.json at shutdown.
+`python -m capstubs.null_executor summarize` turns them into per-tier summaries.
 
 The product is reached only through an adapter (capstubs.snx_product.ProductAdapter); this module
 imports nothing from tensorrt_llm, so its logic is testable on the VM with a fake adapter.
@@ -69,6 +69,8 @@ REQ_REC = struct.Struct("<qqqqqqqqiiib")
 REQ_FIELDS = ("req_id", "client_id", "enqueue_ns", "take_step", "take_planned_ns",
               "first_emit_step", "finish_step", "finish_planned_ns", "tokens", "responses",
               "prompt_len", "cancelled")
+# Record files end in .rec, not .bin: capjudge reads every raw/**/*.bin as a capkit snapshot.
+REC_EXT = ".rec"
 RECORDS = {"steps": (STEP_REC, STEP_FIELDS), "takes": (TAKE_REC, TAKE_FIELDS),
            "reqs": (REQ_REC, REQ_FIELDS)}
 # snx.<pid>.live: one record rewritten in place (mmap) after every enqueue, step and take, for a
@@ -413,7 +415,7 @@ class NullExecutor:
         if out_dir:
             os.makedirs(out_dir, exist_ok=True)
         fb = self.cfg.flush_bytes
-        self.rec = {kind: RecordFile(self.prefix + "." + kind + ".bin" if out_dir else None, st,
+        self.rec = {kind: RecordFile(self.prefix + "." + kind + REC_EXT if out_dir else None, st,
                                      fb)
                     for kind, (st, _f) in RECORDS.items()}
         if self.prefix:
@@ -856,8 +858,8 @@ def load_dir(d):
             with open(p + ".summary.json", "r", encoding="utf-8") as f:
                 e["summary"] = json.load(f)
         for kind in RECORDS:
-            e[kind] = read_records(p + "." + kind + ".bin", kind) \
-                if os.path.exists(p + "." + kind + ".bin") else []
+            e[kind] = read_records(p + "." + kind + REC_EXT, kind) \
+                if os.path.exists(p + "." + kind + REC_EXT) else []
         out[pid] = e
     return out
 

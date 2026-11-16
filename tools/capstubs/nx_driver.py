@@ -47,7 +47,8 @@ import time
 
 from capcommon.exitcodes import ConfigError
 
-from .null_executor import (ENV_VAR, NS, RecordFile, SCHEMA_CONFIG, SnxConfig, tier_shape)
+from .null_executor import (ENV_VAR, NS, REC_EXT, RecordFile, SCHEMA_CONFIG, SnxConfig,
+                            tier_shape)
 
 SCHEMA_SUMMARY = "capkit.nxd_summary/1"
 SCHEMA_READY = "capkit.nxd_ready/1"
@@ -174,9 +175,9 @@ class LaneStats:
         self.sample_every = sample_every
         self.lock = threading.Lock()
         self.tiers = {}
-        self.sends = RecordFile(os.path.join(out_dir, "nxd.%s.sends.bin" % name), SEND_REC,
+        self.sends = RecordFile(os.path.join(out_dir, ("nxd.%s.sends" + REC_EXT) % name), SEND_REC,
                                 1 << 16)
-        self.recvs = RecordFile(os.path.join(out_dir, "nxd.%s.recvs.bin" % name), RECV_REC,
+        self.recvs = RecordFile(os.path.join(out_dir, ("nxd.%s.recvs" + REC_EXT) % name), RECV_REC,
                                 1 << 16)
         self.errors = []
         self.sentinel = False
