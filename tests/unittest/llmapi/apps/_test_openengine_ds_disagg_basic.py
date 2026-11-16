@@ -599,10 +599,10 @@ class Groups:
 @pytest.fixture(scope="module")
 def form() -> str:
     """The form this session serves (:func:`session_form`); skipped in another chain's session."""
-    chain = os.environ.get(ENV_CHAIN) or "none"
-    if chain not in ("ds", "none"):
-        pytest.skip(f"{ENV_CHAIN}={chain}: the DeepSeek-V4.1 module serves the ds chain or form K")
-    return session_form()
+    try:
+        return session_form()
+    except ValueError as error:
+        pytest.skip(str(error))
 
 
 @pytest.fixture(scope="module")

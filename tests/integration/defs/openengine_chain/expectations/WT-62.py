@@ -39,7 +39,7 @@ EXPECTATIONS = [
     _entry(
         _BASIC + "test_worker_frontend_endpoints_direct*",
         NO_ENGINE_TRAFFIC,
-        "it reads each worker frontend's own GET endpoints only",
+        "it reads each worker frontend's own endpoints only, with no Generate call",
     ),
     _entry(
         _BASIC + "test_worker_frontend_endpoints_direct*",

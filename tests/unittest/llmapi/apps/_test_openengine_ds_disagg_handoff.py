@@ -440,8 +440,7 @@ def _engine_without_kv_transfer(model: str, workdir: Path):
     Yields its gRPC address once it serves; stops its process group at the end.
     """
     ds = basic.ds_command()
-    if not ds:
-        pytest.skip(f"needs {basic.ENV_DS_SERVE_CMD}")
+    assert ds, f"needs {basic.ENV_DS_SERVE_CMD}"
     port = basic.free_ports(1)[0]
     endpoint = f"127.0.0.1:{port}"
     argv = [*ds, model, "--grpc", "--grpc-protocol", "openengine", "--host", "127.0.0.1"]

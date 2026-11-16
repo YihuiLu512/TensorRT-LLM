@@ -148,6 +148,13 @@ def _pending(served: basic.Served, role: str) -> tuple[int, int | None]:
     return int(load["running"]), int(load["waiting"])
 
 
+def _prefilling(served: basic.Served) -> bool:
+    """Form K: the ds context worker has admitted prompt tokens it has not prefilled yet."""
+    load = requests.get(f"{served.workers['context']}/load", timeout=30).json()
+    assert "pending_tokens" in load, f"the context worker's /load has no pending_tokens: {load}"
+    return int(load["pending_tokens"]) > 0
+
+
 def _queued(served: basic.Served, role: str) -> int:
     """The ``role`` ds engine's waiting requests, once it reports them."""
     found = []
@@ -227,8 +234,9 @@ def _total(served: basic.Served, role: str) -> int:
 class _Left:
     """Checks that the context legs the test leaves end without a handoff.
 
-    On the chain the context engine's PrefillReady count stays where it was; in form K the ds
-    context worker logs each request whose client left. ``timeline`` holds when each step of the
+    On the chain the context engine's PrefillReady count stays where it was. In form K, which
+    has no such count, the ds context worker still has prompt tokens to prefill before a leg is
+    left, and logs each request whose client left. ``timeline`` holds when each step of the
     test happened, in seconds after the first leg was sent, for the test's record.
     """
 
@@ -248,10 +256,16 @@ class _Left:
     def handed_off(self) -> bool:
         return self.served.chain and _handoffs(self.served) != self.handoffs
 
-    def check(self, what: str) -> None:
+    def check(self, what: str, prefilling: bool = False) -> None:
+        """No leg has handed off; with ``prefilling``, form K's context worker still prefills."""
         handed_off = self.handed_off()
         self.mark(f"checked {what}: {'handed off' if handed_off else 'no handoff'}")
         assert not handed_off, f"a long prefill ended {what}; the prompt is too short here"
+        if prefilling and not self.served.chain:
+            assert _prefilling(self.served), (
+                f"the context worker had no prompt left to prefill {what}; the prompt is too "
+                "short here"
+            )
 
     def logged_left(self, left: int) -> None:
         """Form K: the ds context worker logged ``left`` requests whose client left."""
@@ -295,7 +309,7 @@ def _leave_waiting(left: _Left) -> None:
                 f"{len(legs)} context calls",
                 PREFILL_STARTS_S,
             )
-            left.check("before a leg waited")
+            left.check("before a leg waited", prefilling=True)
             if _queued(served, "context"):
                 left.mark(f"leg {len(legs) - 1} waits")
                 break
@@ -309,7 +323,7 @@ def _leave_waiting(left: _Left) -> None:
         left.mark(f"leg {len(legs) - 1} ended")
         # One fewer call with no handoff (the chain), and the left one logged (form K): the
         # waiting call ended, not a prefilling one.
-        left.check("before its client left")
+        left.check("before its client left", prefilling=True)
         left.logged_left(1)
     left.mark("left the other legs")
     left.ended(len(legs))
@@ -326,7 +340,7 @@ def _leave_prefilling(left: _Left) -> None:
             PREFILL_STARTS_S,
         )
         left.mark("leg 0 runs")
-        left.check("before its client left")
+        left.check("before its client left", prefilling=True)
         leg.close()
     left.mark("left leg 0")
     left.ended(1)
@@ -415,7 +429,7 @@ def test_abort_stages(cancel_served, stage, record_property):
     while it waits behind long prefills or while it prefills: its call ends on the context
     engine before a handoff. ``decode`` streams a request through the orchestrator (form K: the
     ds proxy) and leaves once its generation leg decodes: the generation call ends while, at
-    the rate it streamed at, it still had tokens to decode for several cancel windows. Then the
+    the rate it streamed at, it still had tokens to decode for UNFINISHED_MARGIN cancel windows. Then the
     engines serve a request through the orchestrator.
     """
     served = cancel_served

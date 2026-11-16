@@ -361,8 +361,7 @@ def discovery_served(request, groups):
         yield groups.get()
         return
     etcd = shutil.which("etcd")
-    if etcd is None:
-        pytest.skip("no etcd executable on PATH: DG-29 is not verified in this run")
+    assert etcd is not None, "no etcd executable on PATH: DG-29 needs one"
     groups.close()
     workdir = groups.workdir / "etcd"
     with _etcd(etcd, workdir) as (uri, ports):
@@ -896,7 +895,7 @@ def test_ctx_leg_retry_after_ctx_frontend_killed(retry_served, dump_root):
     sent, killed, peak = 0, False, 0
     with concurrent.futures.ThreadPoolExecutor(RETRY_REQUESTS) as pool:
         for _ in range(RETRY_BATCHES):
-            # Legs that ended on the context engine have no PrefillReady: count from here.
+            # Count from here: a leg that ended without a PrefillReady stays in the count.
             idle = _ctx_legs_in_flight(handle.counter_dir, attached.pid)
             # ignore_eos: a request whose first token is EOS would end on the context leg,
             # with no generation leg to take a handoff.

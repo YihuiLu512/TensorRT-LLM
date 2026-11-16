@@ -220,13 +220,14 @@ def _cached_tokens(usage) -> int:
 
 
 @pytest.mark.parametrize("api", ["completions", "chat"])
-def test_usage_and_cached_tokens(served, api):
+def test_usage_and_cached_tokens(served, api, record_property):
     """NT-126 (F-30, F-34, DG-86, DS-S14, DS-S15, DS-I10): usage, and the context leg's cached tokens.
 
     The second turn of a conversation finds the first turn's prompt in reused blocks (only the
     context engine reuses blocks): its ``cached_tokens`` is above 0 and below the prompt.
     Streamed with ``include_usage`` it has the prompt and completion token counts of the
     unstreamed answer, and ``completion_tokens`` counts the context leg's first token once.
+    The second turn's prompt and cached tokens are recorded, to compare the two forms' runs.
     """
     max_tokens = 8
     question = "Which sea does river 3 flow into?"
@@ -254,6 +255,18 @@ def test_usage_and_cached_tokens(served, api):
         assert usage.total_tokens == usage.prompt_tokens + usage.completion_tokens, (stream, usage)
         assert 0 < _cached_tokens(usage) < usage.prompt_tokens, (stream, usage)
         usages[stream] = usage
+    record_property(
+        "second_turn_usage",
+        json.dumps(
+            {
+                "stream" if stream else "non_stream": {
+                    "prompt_tokens": usage.prompt_tokens,
+                    "cached_tokens": _cached_tokens(usage),
+                }
+                for stream, usage in usages.items()
+            }
+        ),
+    )
     assert usages[True].prompt_tokens == usages[False].prompt_tokens, usages
 
 

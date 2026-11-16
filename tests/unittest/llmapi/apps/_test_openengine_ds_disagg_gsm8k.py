@@ -92,7 +92,7 @@ class Gsm8kRun:
 
 def _dataset_path() -> str:
     """The GSM8K dataset; skipped without a models root, failed when the root lacks it."""
-    from ..test_llm import llm_models_root
+    from utils.llm_data import llm_models_root
 
     root = llm_models_root()
     if root is None:
@@ -352,7 +352,7 @@ PARITY_MAX_TOKENS = 32
 
 
 def _greedy(client, prompt: str) -> tuple[list[int] | None, str]:
-    """The greedy output's token ids (``None`` when the endpoint returns none) and text."""
+    """The greedy output's token ids (``None`` when the endpoint returns none) and its text."""
     out = client.completions.create(
         model=MODEL_NAME,
         prompt=prompt,
@@ -360,16 +360,15 @@ def _greedy(client, prompt: str) -> tuple[list[int] | None, str]:
         temperature=0.0,
         extra_body={"detokenize": False},
     )
-    ids = getattr(out.choices[0], "token_ids", None)
+    ids = getattr(out.choices[0], "token_ids", None) or None
     text = out.choices[0].text
-    if ids:
-        return ids, text
     if not text:
+        # An endpoint that returns token ids may return no text with them.
         out = client.completions.create(
             model=MODEL_NAME, prompt=prompt, max_tokens=PARITY_MAX_TOKENS, temperature=0.0
         )
         text = out.choices[0].text
-    return None, text
+    return ids, text
 
 
 def _common_prefix(a, b) -> int:
