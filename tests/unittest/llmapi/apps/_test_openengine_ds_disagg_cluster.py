@@ -75,12 +75,10 @@ def _ds_disagg_chain(
     """
     from openengine_chain import launch
 
-    from tensorrt_llm._utils import get_free_ports
-
     from .openai_server import RemoteDisaggOpenAIServer, RemoteOpenAIServer
 
     workdir.mkdir(parents=True, exist_ok=True)
-    disagg_port, ctx_port, gen_port = get_free_ports(3)
+    disagg_port, ctx_port, gen_port = basic.free_ports_besides(3, reserved)
     launch.reserve_ports(disagg_port, ctx_port, gen_port, *reserved)
     cluster = {"cluster_name": "", **cluster}
     cluster.setdefault("cluster_uri", f"http://localhost:{disagg_port}")

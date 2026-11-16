@@ -46,7 +46,7 @@ import subprocess
 import tempfile
 import time
 import warnings
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -140,6 +140,16 @@ def free_ports(count: int) -> list[int]:
         for s in sockets:
             s.bind(("127.0.0.1", 0))
         return [s.getsockname()[1] for s in sockets]
+
+
+def free_ports_besides(count: int, taken: Iterable[int]) -> list[int]:
+    """``count`` free ports (:func:`free_ports`), none of them in ``taken``."""
+    taken = set(taken)
+    for _ in range(100):
+        ports = free_ports(count)
+        if taken.isdisjoint(ports):
+            return ports
+    raise RuntimeError(f"no {count} free ports besides {sorted(taken)}")
 
 
 @dataclass(frozen=True)
@@ -524,8 +534,7 @@ def start_form(form: str, model: str, workdir: str | os.PathLike, group: Group =
             yield served
         return
     ds = ds_command()
-    if not ds:
-        pytest.skip(f"form K needs {ENV_DS_SERVE_CMD}")
+    assert ds, f"form K needs {ENV_DS_SERVE_CMD}"
     native = _start_native(ds, model, Path(workdir), group)
     try:
         yield Served(
@@ -578,9 +587,6 @@ class Groups:
             served = stack.enter_context(
                 start_form(self.form, self.model, self.workdir / f"group{self._count}", group)
             )
-        except pytest.skip.Exception:
-            stack.close()
-            raise
         except Exception as error:
             stack.close()
             self._failed.append((group, error))

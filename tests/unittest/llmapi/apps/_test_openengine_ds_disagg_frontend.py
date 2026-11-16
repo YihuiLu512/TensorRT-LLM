@@ -246,28 +246,32 @@ def test_usage_and_cached_tokens(served, api, record_property):
                 {"role": "user", "content": "And river 4?"},
             ]
         }
-    usages = {}
-    for stream in (False, True):
-        _, finish, usage = basic.generate(
+    answers = {
+        stream: basic.generate(
             served, api, stream, max_tokens=max_tokens, ignore_eos=True, **second
         )
-        assert finish == "length" and usage.completion_tokens == max_tokens, (stream, finish, usage)
-        assert usage.total_tokens == usage.prompt_tokens + usage.completion_tokens, (stream, usage)
-        assert 0 < _cached_tokens(usage) < usage.prompt_tokens, (stream, usage)
-        usages[stream] = usage
+        for stream in (False, True)
+    }
+    # Recorded before the checks, so that a failing run still leaves its numbers.
     record_property(
         "second_turn_usage",
         json.dumps(
             {
                 "stream" if stream else "non_stream": {
-                    "prompt_tokens": usage.prompt_tokens,
-                    "cached_tokens": _cached_tokens(usage),
+                    "prompt_tokens": getattr(usage, "prompt_tokens", None),
+                    "cached_tokens": getattr(
+                        getattr(usage, "prompt_tokens_details", None), "cached_tokens", None
+                    ),
                 }
-                for stream, usage in usages.items()
+                for stream, (_, _, usage) in answers.items()
             }
         ),
     )
-    assert usages[True].prompt_tokens == usages[False].prompt_tokens, usages
+    for stream, (_, finish, usage) in answers.items():
+        assert finish == "length" and usage.completion_tokens == max_tokens, (stream, finish, usage)
+        assert usage.total_tokens == usage.prompt_tokens + usage.completion_tokens, (stream, usage)
+        assert 0 < _cached_tokens(usage) < usage.prompt_tokens, (stream, usage)
+    assert answers[True][2].prompt_tokens == answers[False][2].prompt_tokens, answers
 
 
 # Decoded tokens of the DSpark test: several draft-and-verify steps.
@@ -534,14 +538,12 @@ def _start_multi_frontend_chain(stack, model: str, workdir, group: basic.Group) 
 
     from openengine_chain import launch
 
-    from tensorrt_llm._utils import get_free_ports
-
     from .openai_server import RemoteDisaggOpenAIServer, RemoteOpenAIServer
 
     workdir = Path(workdir)
     workdir.mkdir(parents=True, exist_ok=True)
     ctx_port, affinity_ports = _port_with_affinity_ports()
-    disagg_port, gen_port = get_free_ports(2)
+    disagg_port, gen_port = basic.free_ports_besides(2, (ctx_port, *affinity_ports))
     launch.reserve_ports(disagg_port, ctx_port, gen_port, *affinity_ports)
     cluster = {"cluster_uri": f"http://localhost:{disagg_port}", "cluster_name": ""}
 

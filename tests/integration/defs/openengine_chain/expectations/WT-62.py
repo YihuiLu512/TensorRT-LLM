@@ -105,9 +105,9 @@ EXPECTATIONS = [
         "the request is refused by a worker frontend",
     ),
     _entry(
-        _REJECTS + "test_startup_rejects*",
+        _REJECTS + "test_startup_rejects[sleep_mode]",
         NO_ENGINE_TRAFFIC,
-        "it starts workers that must refuse to start, or checks the front end's command line",
+        "it checks the worker front end's command line, which exits before serving",
     ),
     _entry(
         _REJECTS + "test_startup_rejects[beam]",

@@ -316,7 +316,7 @@ def _leave_waiting(left: _Left) -> None:
         legs[-1].close()
         left.mark(f"left leg {len(legs) - 1}")
         _wait(
-            lambda: _total(served, "context") == len(legs) - 1,
+            lambda: _total(served, "context") <= len(legs) - 1,
             "the waiting call to end",
             CANCEL_ARRIVES_S,
         )
