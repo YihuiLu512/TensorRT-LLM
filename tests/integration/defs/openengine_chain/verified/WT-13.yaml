@@ -32,12 +32,12 @@ entries:
           - unittest/llmapi/apps/_test_openai_chat.py::test_single_chat_session[pytorch-no_extra_options-enable_processpool]
     commit: 30effc7b33e390bf7569be683c89a3ade61d8ae8
     junit:
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p1-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p1-r0/obligations/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p2-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p2-r0/obligations/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p3-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p3-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p1-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p1-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p2-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p2-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p3-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p3-r0/obligations/junit/
     result: passed
     chain_proof: ok
   - row: F-40
@@ -75,11 +75,11 @@ entries:
       - unittest/llmapi/apps/_test_openai_post_processor.py::test_completions_streaming[uppercase-enable_processpool]
     commit: 30effc7b33e390bf7569be683c89a3ade61d8ae8
     junit:
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p1-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p1-r0/obligations/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p2-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p2-r0/obligations/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p3-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p3-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p1-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p1-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p2-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p2-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p3-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17723/data/stage-00/test-00/01_impl/e2e/results/e2e-5727073/p3-r0/obligations/junit/
     result: passed
     chain_proof: ok

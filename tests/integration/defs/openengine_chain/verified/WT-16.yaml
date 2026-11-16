@@ -24,12 +24,12 @@ entries:
       - unittest/llmapi/apps/_test_openai_chat_multimodal.py::test_single_chat_session_image_embed
     commit: 5228148f51163aa8c09435172e985817f999ca32
     junit:
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p1-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p1-r0/obligations/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p2-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p2-r0/obligations/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p3-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p3-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p1-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p1-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p2-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p2-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p3-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p3-r0/obligations/junit/
     result: passed
     chain_proof: ok
   - row: F-46
@@ -39,11 +39,11 @@ entries:
       - unittest/llmapi/apps/_test_trtllm_serve_lora.py::test_trtllm_serve_lora_completion
     commit: 5228148f51163aa8c09435172e985817f999ca32
     junit:
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p1-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p1-r0/obligations/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p2-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p2-r0/obligations/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p3-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p3-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p1-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p1-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p2-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p2-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p3-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17726/data/stage-00/test-00/02_gpu-smoke/results/e2e-5729708/p3-r0/obligations/junit/
     result: passed
     chain_proof: ok

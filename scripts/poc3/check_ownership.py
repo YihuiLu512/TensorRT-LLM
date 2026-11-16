@@ -22,7 +22,7 @@ under a ``shared`` or ``exception`` rule of its own), ``shared`` (this item may
 change only the part the note names; the rest of the file belongs to its owner,
 which may be another item or code outside PoC-S3) or ``exception`` (a one-off
 allowance the note describes). An ``exception`` may also limit what it allows,
-in one of two forms (patterns are regular expressions in which ``\d`` and
+in one of three forms (patterns are regular expressions in which ``\d`` and
 ``\w`` match ASCII characters only):
 
 - ``lines``: the range may only replace lines of that file in place, each
@@ -30,7 +30,13 @@ in one of two forms (patterns are regular expressions in which ``\d`` and
 - ``changes``: each hunk of the range's diff (``-U0``) must be one of the
   listed changes, each listed change used at most once: in the top-level
   statement the change names, with the same number of removed and of added
-  lines, each matching its counterpart in the change in full, in order.
+  lines, each matching its counterpart in the change in full, in order;
+- ``redact``: each hunk of the range's diff (``-U0``) replaces lines in place,
+  as many added as removed, each added line differing from its removed
+  counterpart only where it has one of the listed placeholders, each standing
+  for a whole path start its pattern matches (see :func:`_redacts`); with a
+  ``header``, one hunk may instead add only that line, as the second line of
+  the file.
 
 A top-level statement runs from its first line (its first decorator) up to the
 line before the next top-level statement of any kind. A ``def`` or ``class`` is
@@ -44,7 +50,7 @@ at both. A ``changes`` exception may also list the statements it renames, each
 from one name to another: the file must have a statement by the first name and
 none by the second at the merge base, and the other way round at the head; the
 changes are matched as if the statement already went by the second at the
-merge base. With either form nothing
+merge base. With any form nothing
 else about the file may change (its mode or final newline, for example);
 otherwise the path is out of bounds. Paths changed under ``shared`` and
 ``exception`` rules are listed for a reviewer to check by hand.
@@ -121,6 +127,11 @@ class Rule:
     # With changes: the top-level statements the hunks rename, as (name at the merge base, name at
     # the head). A change names a renamed statement by its name at the head.
     renames: tuple[tuple[str, str], ...] = ()
+    # For an exception: the placeholders that may stand for the start of a path in lines replaced
+    # in place, each with the pattern of the starts it stands for, and the one line that may be
+    # added as the file's second line.
+    redact: tuple[tuple[str, str], ...] = ()
+    header: str = ""
     # For an exception: the one work item it allows (a fix by its own name), until that item has
     # landed; empty for the work item whose entry lists it and all of that item's fixes.
     item: str = ""
@@ -142,11 +153,21 @@ def _exception(
     changes: tuple[Change, ...] = (),
     renames: tuple[tuple[str, str], ...] = (),
     item: str = "",
+    redact: tuple[tuple[str, str], ...] = (),
+    header: str = "",
 ) -> Rule:
     if item:
         parse_task(item)  # raises ValueError for a name that is not a work item
-    if lines and changes:
-        raise ValueError(f"{pattern}: an exception lists lines or changes, not both")
+    if sum(map(bool, (lines, changes, redact))) > 1:
+        raise ValueError(f"{pattern}: an exception lists one of lines, changes and redact")
+    if header and not redact:
+        raise ValueError(f"{pattern}: an exception adds a header line only with redact")
+    for placeholder, start in redact:
+        if not placeholder or not start:
+            raise ValueError(
+                f"{pattern}: an exception's placeholders and their patterns are not empty"
+            )
+        re.compile(start, re.ASCII)  # raises re.error for a pattern that is not one
     if renames and not changes:
         raise ValueError(f"{pattern}: an exception renames statements only with its changes")
     olds, news = {old for old, _ in renames}, {new for _, new in renames}
@@ -160,7 +181,7 @@ def _exception(
             raise ValueError(
                 f"{pattern}: renaming {old} to {new} needs a change in {new}, none in {old}"
             )
-    return Rule(pattern, "exception", note, repo, lines, changes, renames, item)
+    return Rule(pattern, "exception", note, repo, lines, changes, renames, redact, header, item)
 
 
 def _change(within: str, removed: tuple[str, ...] = (), added: tuple[str, ...] = ()) -> Change:
@@ -216,13 +237,66 @@ def _per_item(item: str) -> list[Rule]:
     )
 
 
+# U41 (N127, N128): records in which WT-30-fix15 may only put a placeholder in place of the start
+# of each path on a local disk under /home: <scratch-1> for a disk whose name ends in _1,
+# <scratch> for any other. In the driver scripts the placeholders are ${SCRATCH1:?} and
+# ${SCRATCH:?}, which bash does not read as redirections, and the scripts may also get a fixed
+# second line saying what they stand for.
+REDACTED_RECORDS = tuple(
+    f"{CHAIN}/verified/{name}.yaml"
+    for name in (
+        "WT-03",
+        "WT-03-fix1",
+        "WT-05-fix1",
+        "WT-09-fix1",
+        "WT-10",
+        "WT-10-fix1",
+        "WT-11",
+        "WT-12",
+        "WT-13",
+        "WT-15",
+        "WT-16",
+        "WT-20-R2",
+        "WT-20-R3",
+    )
+) + tuple(f"{CHAIN}/records/{name}/README.md" for name in ("WT-31", "WT-33", "WT-34"))
+REDACTED_SCRIPTS = tuple(
+    f"{CHAIN}/records/WT-31/scripts/{name}"
+    for name in ("collect.sbatch", "collect.sh", "r10_shard.sbatch", "submit.sh")
+)
+_DISK_1 = r"/home/\w[\w.-]*_1"
+_DISK = r"/home/\w[\w.-]*(?<!_1)"
+REDACTED_PLACEHOLDERS = (("<scratch-1>", _DISK_1), ("<scratch>", _DISK))
+REDACTED_SCRIPT_PLACEHOLDERS = (("${SCRATCH1:?}", _DISK_1), ("${SCRATCH:?}", _DISK))
+REDACTED_HEADER = (
+    "# Historical copy kept as a record, not meant to be run again: SCRATCH and SCRATCH1 stand for"
+    " the local disks it used to name."
+)
+_REDACTED = "U41 only: the start of paths under /home replaced by <scratch> or <scratch-1>"
+
+
 # Built from each card's change-scope row (改动范围) and the shared-file table of tasks.md §0.3.
 # Where a card leaves a file name to its work item, this table fixes one (direct_replay*.py,
 # cpu_disagg_chain*.py, check_case_lists.py, handoff*.py, wt54_*, records/<item>/, and the ds
 # scripts dev/openengine_disagg* and dev/openengine_stress*).
 OWNERSHIP: dict[str, list[Rule]] = {
     "WT-30": _own(*GATE_FILES)
-    + [_exception(INVARIANT_ADDITIONS, "only creating it with an empty list of additions")],
+    + [_exception(INVARIANT_ADDITIONS, "only creating it with an empty list of additions")]
+    + [
+        _exception(path, _REDACTED, item="WT-30-fix15", redact=REDACTED_PLACEHOLDERS)
+        for path in REDACTED_RECORDS
+    ]
+    + [
+        _exception(
+            path,
+            "U41 only: the start of paths under /home replaced by ${SCRATCH:?} or ${SCRATCH1:?},"
+            " and the line that says so",
+            item="WT-30-fix15",
+            redact=REDACTED_SCRIPT_PLACEHOLDERS,
+            header=REDACTED_HEADER,
+        )
+        for path in REDACTED_SCRIPTS
+    ],
     "WT-31": [],
     # WT-32 creates the NT-041 file; §3.3 makes NT-041 WT-40's to finish and re-run.
     "WT-32": _own(f"{CHAIN}/direct_replay*.py", f"{OE_SERVER_TESTS}/_test_direct_handoff.py"),
@@ -1208,14 +1282,16 @@ def _named_fixes(table: dict[str, list[Rule]]) -> list[str]:
     """The fixes the exceptions of ``table`` are for, in the order of the table.
 
     Raises:
-        ValueError: An exception lists its changes but no work item, or is for neither the work
-            item it is listed under nor one of that item's fixes.
+        ValueError: An exception lists its changes or placeholders but no work item, or is for
+            neither the work item it is listed under nor one of that item's fixes.
     """
     fixes: list[str] = []
     for name, rules in table.items():
         for rule in rules:
             if rule.changes and not rule.item:
                 raise ValueError(f"{rule.pattern}: an exception listing changes names no item")
+            if rule.redact and not rule.item:
+                raise ValueError(f"{rule.pattern}: an exception listing placeholders names no item")
             if not rule.item:
                 continue
             if parse_task(rule.item)[0] != name:
@@ -1386,6 +1462,29 @@ def _regions_at(repo_dir: str, rev: str, path: str) -> list[str | None] | None:
         return None
 
 
+def _redacts(placeholders: tuple[tuple[str, str], ...], removed: str, added: str) -> bool:
+    """Whether ``added`` is ``removed`` with the start of one or more paths replaced.
+
+    Each placeholder in ``added`` stands for a path start in ``removed`` that its
+    pattern matches in full: one that neither follows a word character, ``.`` or
+    ``/``, nor goes on with anything but ``/``, ``:``, white space, ``}`` or the
+    end of the line. The rest of the two lines is the same. A line with U+FFFD, which every byte that is not UTF-8
+    reads as, does not count.
+    """
+    if "\ufffd" in removed or "\ufffd" in added:
+        return False
+    starts = dict(placeholders)
+    alternatives = "|".join(re.escape(p) for p in sorted(starts, key=len, reverse=True))
+    parts = re.split(f"({alternatives})", added)
+    if len(parts) == 1:
+        return False
+    pattern = "".join(
+        rf"(?<![\w./])(?:{starts[part]})(?=[/:\s}}]|$)" if i % 2 else re.escape(part)
+        for i, part in enumerate(parts)
+    )
+    return re.fullmatch(pattern, removed, re.ASCII) is not None
+
+
 def disallowed_lines(
     rule: Rule, repo_dir: str, base_ref: str, head_ref: str, path: str
 ) -> list[str]:
@@ -1395,7 +1494,9 @@ def disallowed_lines(
     every hunk replaces lines in place (as many removed as added, at the same
     line number) and every removed and added line matches one of
     ``rule.lines``; with ``rule.changes``, every hunk is one of the changes,
-    none used twice.
+    none used twice; with ``rule.redact``, every hunk replaces lines in place,
+    each added line redacting its removed counterpart (:func:`_redacts`),
+    except one hunk that adds ``rule.header`` as the second line of the file.
     """
     # Bytes, not text mode: universal newlines would hide a CRLF line ending. --text: a file git
     # takes for binary (core.bigFileThreshold, a -diff attribute) is still diffed by line.
@@ -1456,9 +1557,27 @@ def disallowed_lines(
         )
 
     def end_hunk() -> None:
-        if hunk is None or not rule.changes:
+        if hunk is None or not (rule.changes or rule.redact):
             return
         header, where, removed, added = hunk
+        if rule.redact:
+            span = _HUNK.match(header)
+            if span is None:
+                return  # reported as not a hunk header
+            # A hunk that adds the header and nothing else must add it right after the first line;
+            # only one hunk of a diff can.
+            if rule.header and added == [rule.header]:
+                if span.group(1, 3) != ("1", "2"):
+                    bad.append(f"{header}: the header is not added as the second line")
+            elif len(removed) != len(added) or not removed:
+                bad.append(f"{header}: not a replacement in place")
+            else:
+                bad.extend(
+                    f"{header}: +{new} does not redact -{old}"
+                    for old, new in zip(removed, added)
+                    if not _redacts(rule.redact, old, new)
+                )
+            return
         index = next((i for i, c in enumerate(unused) if matches(c, where, removed, added)), None)
         if index is None:
             bad.append(f"{header}: not one of the allowed changes")
@@ -1531,7 +1650,7 @@ def check(task: str, revision_range: str, repo_dir: str = ".", repo: str | None 
                 " has landed at the base)"
             )
             status = 1
-        elif (rule.lines or rule.changes) and (
+        elif (rule.lines or rule.changes or rule.redact) and (
             bad := disallowed_lines(rule, repo_dir, base_ref, head_ref, path)
         ):
             print(

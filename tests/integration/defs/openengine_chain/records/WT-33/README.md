@@ -9,8 +9,8 @@ before the case-03 GPU steps of later work items start (milestone M30, gate G3).
 ds-engine is `0163a5d9c58b31681ee03054d01c17d8fc7e96b8`; TRT-LLM is the stage03 integration branch at
 `9b4022dd0dfe7581dd0580750d79f3261d7fc5be`. File:line references to ds-engine are at that commit. Seven-digit
 numbers in parentheses are Slurm job ids. Cluster names, node names, paths on the cluster, disk room, logs and job
-scripts are in the local evidence directory `/home/scratch.yihlu_coreai/workfile/feat_dev-J17876/data/stage-00/test-00/`
-and in appendix C of `/home/scratch.yihlu_coreai/dev/feat-dev-J17503/tmp/data/stage-03/test-00/STATUS.md`; they are
+scripts are in the local evidence directory `<scratch>/workfile/feat_dev-J17876/data/stage-00/test-00/`
+and in appendix C of `<scratch>/dev/feat-dev-J17503/tmp/data/stage-03/test-00/STATUS.md`; they are
 not repeated here.
 
 ## Gate G3

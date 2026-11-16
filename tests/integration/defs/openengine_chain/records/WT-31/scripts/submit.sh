@@ -1,4 +1,5 @@
 #!/bin/bash
+# Historical copy kept as a record, not meant to be run again: SCRATCH and SCRATCH1 stand for the local disks it used to name.
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 # WT-31 (R10): submit one shard array of the control-form baseline from the cluster's login node.
@@ -82,9 +83,9 @@ COUNT=$(grep -c . "$CASES" || true)
 [[ $MODE == probe ]] && ARRAY=${ARRAY:-0}
 ARRAY=${ARRAY:-0-$((COUNT - 1))%4}
 SCRIPTS=$(cd "$(dirname "$0")" && pwd)
-BASE=${R10_BASE:-/home/scratch.yihlu_coreai/tmp/20261113-wt31-r10}
+BASE=${R10_BASE:-${SCRATCH:?}/tmp/20261113-wt31-r10}
 HEAD_COMMIT=${R10_HEAD_COMMIT:-9b4022dd0dfe7581dd0580750d79f3261d7fc5be}
-SHARED_MOUNTS=${R10_SHARED_MOUNTS:-/home/scratch.yihlu_coreai:/home/scratch.yihlu_coreai_1}
+SHARED_MOUNTS=${R10_SHARED_MOUNTS:-${SCRATCH:?}:${SCRATCH1:?}}
 [[ $HEAD_COMMIT =~ ^[0-9a-f]{40}$ ]] || { echo "R10_HEAD_COMMIT is not a full sha: $HEAD_COMMIT" >&2; exit 64; }
 [[ -z ${R10_B200_IMAGE_STAT:-} || ( -n ${R10_B200_IMAGE:-} && $R10_B200_IMAGE_STAT =~ ^[0-9]+:[0-9]+$ ) ]] \
     || { echo 'R10_B200_IMAGE_STAT needs R10_B200_IMAGE and the form <size>:<mtime>' >&2; exit 64; }
@@ -141,13 +142,13 @@ ENV+=",LLM_MODELS_ROOT=$LLM_MODELS_ROOT,MODELS_MOUNT=$MODELS_MOUNT,LOCAL_PARENT=
 ENV+=",JOB_BUDGET=$JOB_BUDGET,SHARED_MOUNTS=$SHARED_MOUNTS"
 case $KEY in
     b200-*|2node-*)
-        IMAGE=/home/scratch.yihlu_coreai/build/e17503-9fd3822a00-x86-sm100-cv2.ready.sqsh
+        IMAGE=${SCRATCH:?}/build/e17503-9fd3822a00-x86-sm100-cv2.ready.sqsh
         SHA=a098ea8bed607cad155f5078e5b041ff81bc6ecc07ed360adf6184749f357b38
         IMAGE_STAT=29234315264:1794216097  # size:mtime of the file whose sha256 is SHA
         if [[ -n ${R10_B200_IMAGE:-} ]]; then IMAGE=$R10_B200_IMAGE IMAGE_STAT=${R10_B200_IMAGE_STAT:-}; fi
         EXPECT='B200' ;;
     hopper-*)
-        IMAGE=/home/scratch.yihlu_coreai/build/e17503-9fd3822a00-x86-sm90-cv2.ready.sqsh
+        IMAGE=${SCRATCH:?}/build/e17503-9fd3822a00-x86-sm90-cv2.ready.sqsh
         SHA=aacc73567223f2536e044e6bbf231198fe5be8467c7c56d9803865114521733a
         IMAGE_STAT=28794388480:1794576492
         EXPECT='H100|H200' ;;

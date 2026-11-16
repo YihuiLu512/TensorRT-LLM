@@ -43,12 +43,12 @@ entries:
       - unittest/llmapi/apps/_test_openai_responses_entrypoint.py::test_get_non_existent_response_id[Qwen3/Qwen3-0.6B]
     commit: d085edbeafbf26f8cb8d6bd65a9f3f98c4e0663d
     junit:
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/junit/
     result: passed
     chain_proof: ok
   - row: F-15+F-16
@@ -97,12 +97,12 @@ entries:
       - unittest/llmapi/apps/_test_trtllm_serve_top_logprobs.py::test_completion_top5_logprobs[pytorch]
     commit: d085edbeafbf26f8cb8d6bd65a9f3f98c4e0663d
     junit:
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/junit/
     result: passed
     chain_proof: ok
   - row: F-17+F-18+F-30
@@ -139,12 +139,12 @@ entries:
       - unittest/llmapi/apps/_test_openai_completions.py::test_single_completion_with_too_long_prompt[pytorch-disable_processpool]
     commit: d085edbeafbf26f8cb8d6bd65a9f3f98c4e0663d
     junit:
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/junit/
     result: passed
     chain_proof: ok
   - row: F-17+F-18+F-30
@@ -156,12 +156,12 @@ entries:
       - unittest/llmapi/apps/_test_openengine_wt12.py::test_stop_string_variants[include_stop-stream]
     commit: 0fdeeeafbb78b5447bc52deb4e42eabc8bd9d323
     junit:
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5728538/p1-r0/wt12/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5728538/p1-r0/wt12/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5728538/p2-r0/wt12/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5728538/p2-r0/wt12/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5728538/p3-r0/wt12/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5728538/p3-r0/wt12/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5728538/p1-r0/wt12/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5728538/p1-r0/wt12/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5728538/p2-r0/wt12/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5728538/p2-r0/wt12/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5728538/p3-r0/wt12/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5728538/p3-r0/wt12/junit/
     result: passed
     chain_proof: ok
   - row: F-20+F-21
@@ -200,12 +200,12 @@ entries:
       - unittest/llmapi/apps/_test_trtllm_serve_top_logprobs.py::test_completion_top5_logprobs[pytorch]
     commit: d085edbeafbf26f8cb8d6bd65a9f3f98c4e0663d
     junit:
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/junit/
     result: passed
     chain_proof: ok
   - row: F-24
@@ -242,12 +242,12 @@ entries:
       - unittest/llmapi/apps/_test_openai_completions.py::test_single_completion_with_too_long_prompt[pytorch-disable_processpool]
     commit: d085edbeafbf26f8cb8d6bd65a9f3f98c4e0663d
     junit:
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/junit/
     result: passed
     chain_proof: ok
   - row: F-24
@@ -259,12 +259,12 @@ entries:
       - unittest/llmapi/apps/_test_openengine_wt12.py::test_detokenize_options[spaces-skip]
     commit: 0fdeeeafbb78b5447bc52deb4e42eabc8bd9d323
     junit:
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5728538/p1-r0/wt12/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5728538/p1-r0/wt12/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5728538/p2-r0/wt12/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5728538/p2-r0/wt12/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5728538/p3-r0/wt12/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5728538/p3-r0/wt12/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5728538/p1-r0/wt12/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5728538/p1-r0/wt12/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5728538/p2-r0/wt12/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5728538/p2-r0/wt12/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5728538/p3-r0/wt12/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5728538/p3-r0/wt12/junit/
     result: passed
     chain_proof: ok
   - row: F-27+F-28
@@ -299,12 +299,12 @@ entries:
       - unittest/llmapi/apps/_test_openai_tool_call.py::test_tool_parser_streaming
     commit: d085edbeafbf26f8cb8d6bd65a9f3f98c4e0663d
     junit:
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/junit/
     result: passed
     chain_proof: ok
   - row: F-29
@@ -316,11 +316,11 @@ entries:
       - unittest/llmapi/apps/_test_openengine_wt11_mapping.py::test_thinking_token_budget_responses
     commit: d085edbeafbf26f8cb8d6bd65a9f3f98c4e0663d
     junit:
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p1-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p2-r0/obligations/junit/
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17722/data/stage-00/test-00/03_e2e/results/e2e-5727087/p3-r0/obligations/junit/
     result: passed
     chain_proof: ok

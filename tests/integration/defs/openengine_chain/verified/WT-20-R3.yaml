@@ -32,12 +32,12 @@ entries:
     # integration branch; glm eda0ca679c. Each of the three runs lists only these cases.
     commit: f566e816d0876ec6e9ad384055fe2c97b53ad9b2
     junit:
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17740/data/stage-00/test-00/03_verify/logs/job-5752393/t1-r0/chain/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17740/data/stage-00/test-00/03_verify/logs/job-5752393/t1-r0/chain/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17740/data/stage-00/test-00/03_verify/logs/job-5752393/t2-r0/chain/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17740/data/stage-00/test-00/03_verify/logs/job-5752393/t2-r0/chain/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17740/data/stage-00/test-00/03_verify/logs/job-5752393/t3-r0/chain/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17740/data/stage-00/test-00/03_verify/logs/job-5752393/t3-r0/chain/junit/
+      - <scratch>/workfile/feat_dev-J17740/data/stage-00/test-00/03_verify/logs/job-5752393/t1-r0/chain/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17740/data/stage-00/test-00/03_verify/logs/job-5752393/t1-r0/chain/junit/
+      - <scratch>/workfile/feat_dev-J17740/data/stage-00/test-00/03_verify/logs/job-5752393/t2-r0/chain/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17740/data/stage-00/test-00/03_verify/logs/job-5752393/t2-r0/chain/junit/
+      - <scratch>/workfile/feat_dev-J17740/data/stage-00/test-00/03_verify/logs/job-5752393/t3-r0/chain/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17740/data/stage-00/test-00/03_verify/logs/job-5752393/t3-r0/chain/junit/
     result: passed
     chain_proof: ok
   - row: F-17+F-30+F-19-case01
@@ -48,8 +48,8 @@ entries:
       - unittest/llmapi/apps/_test_openengine_glm53.py::test_usage_and_cached_tokens[glm-chat]
     commit: 5c648719a3112b0b47bba683bab1fb484aaddcad
     junit:
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/A_case01_functional/glm-5827253-r0/results/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/A_case01_functional/glm-5827253-r0/results/junit/
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/A_case01_functional/glm-5827253-r0/results/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/A_case01_functional/glm-5827253-r0/results/junit/
     result: passed
     chain_proof: ok
   - row: F-15-case01
@@ -58,8 +58,8 @@ entries:
       - unittest/llmapi/apps/_test_openengine_glm53.py::test_sampling_and_stop[glm]
     commit: 5c648719a3112b0b47bba683bab1fb484aaddcad
     junit:
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/A_case01_functional/glm-5827253-r0/results/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/A_case01_functional/glm-5827253-r0/results/junit/
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/A_case01_functional/glm-5827253-r0/results/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/A_case01_functional/glm-5827253-r0/results/junit/
     result: passed
     chain_proof: ok
   - row: F-31+F-36+F-37+GLM
@@ -84,14 +84,14 @@ entries:
       - unittest/llmapi/apps/_test_openengine_glm53.py::test_gsm8k_over_chain[glm-adp_mtp3]
     commit: 5c648719a3112b0b47bba683bab1fb484aaddcad
     junit:
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/A_case01_functional/glm-5827253-r0/results/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/A_case01_functional/glm-5827253-r0/results/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/B1_case01_gsm8k_tp4ep4/glm-5827641-r0/results/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/B1_case01_gsm8k_tp4ep4/glm-5827641-r0/results/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/B2_case01_gsm8k_mtp3/glm-5827642-r0/results/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/B2_case01_gsm8k_mtp3/glm-5827642-r0/results/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/B3_case01_gsm8k_adp_mtp3/glm-5827668-r0/results/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/B3_case01_gsm8k_adp_mtp3/glm-5827668-r0/results/junit/
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/A_case01_functional/glm-5827253-r0/results/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/A_case01_functional/glm-5827253-r0/results/junit/
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/B1_case01_gsm8k_tp4ep4/glm-5827641-r0/results/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/B1_case01_gsm8k_tp4ep4/glm-5827641-r0/results/junit/
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/B2_case01_gsm8k_mtp3/glm-5827642-r0/results/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/B2_case01_gsm8k_mtp3/glm-5827642-r0/results/junit/
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/B3_case01_gsm8k_adp_mtp3/glm-5827668-r0/results/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/B3_case01_gsm8k_adp_mtp3/glm-5827668-r0/results/junit/
     result: passed
     chain_proof: ok
   - row: F-31+F-36+F-37+GLM
@@ -114,10 +114,10 @@ entries:
       - unittest/llmapi/apps/_test_openengine_glm53.py::test_gsm8k_over_chain[trtllm-adp_mtp3_fp8kv]
     commit: 5c648719a3112b0b47bba683bab1fb484aaddcad
     junit:
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/C_case02_functional/trtllm-5827254-r0/results/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/C_case02_functional/trtllm-5827254-r0/results/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/D_case02_gsm8k/trtllm-5827257-r0/results/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/D_case02_gsm8k/trtllm-5827257-r0/results/junit/
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/C_case02_functional/trtllm-5827254-r0/results/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/C_case02_functional/trtllm-5827254-r0/results/junit/
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/D_case02_gsm8k/trtllm-5827257-r0/results/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/D_case02_gsm8k/trtllm-5827257-r0/results/junit/
     result: passed
     chain_proof: ok
   - row: F-31+F-36+F-37+GLM
@@ -127,10 +127,10 @@ entries:
       - unittest/llmapi/apps/_test_openengine_glm53.py::test_gsm8k_over_chain[trtllm-mtp3]
     commit: 5c648719a3112b0b47bba683bab1fb484aaddcad
     junit:
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RD2_case02_gsm8k_mtp3/trtllm-5828707-r0/results/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RD2_case02_gsm8k_mtp3/trtllm-5828707-r0/results/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RD_case02_gsm8k_tp4ep4/trtllm-5828304-r0/results/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RD_case02_gsm8k_tp4ep4/trtllm-5828304-r0/results/junit/
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RD2_case02_gsm8k_mtp3/trtllm-5828707-r0/results/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RD2_case02_gsm8k_mtp3/trtllm-5828707-r0/results/junit/
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RD_case02_gsm8k_tp4ep4/trtllm-5828304-r0/results/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RD_case02_gsm8k_tp4ep4/trtllm-5828304-r0/results/junit/
     result: passed
     chain_proof: ok
   - row: F-17+F-30+F-19-case01
@@ -139,8 +139,8 @@ entries:
       - unittest/llmapi/apps/_test_openengine_glm53.py::test_n_best_of[glm]
     commit: 259419ce2255e247f658682d9580cda7681d7e0d
     junit:
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RA_case01_n_best_of/glm-5828940-r0/results/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RA_case01_n_best_of/glm-5828940-r0/results/junit/
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RA_case01_n_best_of/glm-5828940-r0/results/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RA_case01_n_best_of/glm-5828940-r0/results/junit/
     result: passed
     chain_proof: ok
   - row: F-31+F-36+F-37+GLM
@@ -149,8 +149,8 @@ entries:
       - unittest/llmapi/apps/_test_openengine_glm53.py::test_n_best_of[trtllm]
     commit: 259419ce2255e247f658682d9580cda7681d7e0d
     junit:
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RC_case02_n_best_of/trtllm-5828941-r0/results/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RC_case02_n_best_of/trtllm-5828941-r0/results/junit/
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RC_case02_n_best_of/trtllm-5828941-r0/results/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RC_case02_n_best_of/trtllm-5828941-r0/results/junit/
     result: passed
     chain_proof: ok
   # WT-05's tests on the TRT-LLM chain (Qwen3-0.6B, 1xB200) after the priority test's change; the
@@ -172,7 +172,7 @@ entries:
       - unittest/llmapi/apps/_test_openengine_wt05_scheduling.py::test_option_reaches_the_engine_or_is_refused[thinking_token_budget]
     commit: 259419ce2255e247f658682d9580cda7681d7e0d
     junit:
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RW_case02_wt05/trtllm-5828942-r0/results/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RW_case02_wt05/trtllm-5828942-r0/results/junit/
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RW_case02_wt05/trtllm-5828942-r0/results/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17727/data/stage-00/test-01/01_exec/results/RW_case02_wt05/trtllm-5828942-r0/results/junit/
     result: passed
     chain_proof: ok

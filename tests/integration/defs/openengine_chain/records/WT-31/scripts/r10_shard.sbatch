@@ -1,4 +1,5 @@
 #!/bin/bash
+# Historical copy kept as a record, not meant to be run again: SCRATCH and SCRATCH1 stand for the local disks it used to name.
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 # WT-31 (R10): run one shard of the control-form baseline (no chain switch) on the allocated
@@ -36,7 +37,7 @@ done
 [[ $IMAGE_SHA256 =~ ^[0-9a-f]{64}$ ]] || exit 64
 [[ $SRC == /* && $LIST == /* && $RESULT_ROOT == /* && $IMAGE == /* && $DRIVER_DIR == /* ]] || exit 64
 [[ $MODELS_MOUNT == /* && $LOCAL_PARENT == /* && $LLM_MODELS_ROOT == "$MODELS_MOUNT"/* ]] || exit 64
-SHARED_MOUNTS=${SHARED_MOUNTS:-/home/scratch.yihlu_coreai:/home/scratch.yihlu_coreai_1}
+SHARED_MOUNTS=${SHARED_MOUNTS:-${SCRATCH:?}:${SCRATCH1:?}}
 IFS=: read -ra SHARED <<< "$SHARED_MOUNTS"
 (( ${#SHARED[@]} > 0 )) || exit 64
 for path in "$SRC" "$LIST" "$RESULT_ROOT" "$IMAGE" "$DRIVER_DIR" "$MODELS_MOUNT" "$LOCAL_PARENT" "${SHARED[@]}"; do

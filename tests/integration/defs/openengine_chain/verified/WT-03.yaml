@@ -31,12 +31,12 @@ entries:
           - unittest/llmapi/apps/_test_openai_chat.py::test_chat_cached_tokens_stream[pytorch-no_extra_options-enable_processpool]
     commit: 77b65bc6b167681393607bff70f09b8621019c27
     junit:
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p1/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p1/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p2/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p2/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p3/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p3/junit/
+      - <scratch>/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p1/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p1/junit/
+      - <scratch>/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p2/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p2/junit/
+      - <scratch>/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p3/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p3/junit/
     result: passed
     chain_proof: incomplete
   - row: T17
@@ -44,8 +44,8 @@ entries:
     cases: [examples/serve/test_serve.py::test_config_override_precedence]
     commit: 77b65bc6b167681393607bff70f09b8621019c27
     junit:
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p1/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p2/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p3/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p1/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p2/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17714/data/stage-00/test-00/04_rebase-retest/results/final/obl-p3/outer-junit.xml
     result: passed
     chain_proof: incomplete

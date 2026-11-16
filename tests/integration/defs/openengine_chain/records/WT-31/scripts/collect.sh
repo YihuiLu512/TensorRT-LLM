@@ -1,4 +1,5 @@
 #!/bin/bash
+# Historical copy kept as a record, not meant to be run again: SCRATCH and SCRATCH1 stand for the local disks it used to name.
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 # Collect the exact pytest node ids of the R10 test files on a CPU node, inside the sm100 image
@@ -10,7 +11,7 @@
 set -uo pipefail
 export TZ=Asia/Shanghai GIT_OPTIONAL_LOCKS=0
 not_run() { printf 'NOT RUN: %s\n' "$*" >&2; exit 65; }
-SRC=${SRC:-/home/scratch.yihlu_coreai/tmp/20261113-wt31-r10/src}
+SRC=${SRC:-${SCRATCH:?}/tmp/20261113-wt31-r10/src}
 HEAD_COMMIT=${HEAD_COMMIT:-9b4022dd0dfe7581dd0580750d79f3261d7fc5be}  # the commit the shards run
 FILES=(
     disaggregated/test_disaggregated.py
@@ -75,7 +76,7 @@ mkdir -p "$PARENT" && mkdir "$RES" || not_run 'result dir exists'
 # before the shell's last lines are written.
 exec > >(trap '' TERM; exec tee "$RES/driver.log") 2>&1
 IMAGE_COMMIT=9fd3822a0019d23a2a6b372a219e0e3d51a1a95d
-READY=/home/scratch.yihlu_coreai/build/e17503-9fd3822a00-x86-sm100-cv2.ready.sqsh
+READY=${SCRATCH:?}/build/e17503-9fd3822a00-x86-sm100-cv2.ready.sqsh
 READY_SHA=a098ea8bed607cad155f5078e5b041ff81bc6ecc07ed360adf6184749f357b38
 printf 'START %s job=%s node=%s src_head=%s\n' "$(date -Is)" "$SLURM_JOB_ID" "$(hostname)" "$(git -C "$SRC" rev-parse HEAD)"
 [[ $(git -C "$SRC" rev-parse HEAD) == "$HEAD_COMMIT" ]] || not_run "source HEAD is not $HEAD_COMMIT"
@@ -102,8 +103,8 @@ timeout 900s cp "$READY" "$LOCAL/ready.sqsh" || not_run 'image copy'
 [[ $(timeout 900s sha256sum "$LOCAL/ready.sqsh" | cut -d' ' -f1) == "$READY_SHA" ]] || not_run 'image checksum'
 ROOTFS=j17874-collect-$SLURM_JOB_ID
 timeout 900s enroot create --name "$ROOTFS" "$LOCAL/ready.sqsh" || not_run 'enroot create'
-timeout 1800s enroot start --mount /home/scratch.yihlu_coreai:/home/scratch.yihlu_coreai \
-    --mount /home/scratch.yihlu_coreai_1:/home/scratch.yihlu_coreai_1 \
+timeout 1800s enroot start --mount ${SCRATCH:?}:${SCRATCH:?} \
+    --mount ${SCRATCH1:?}:${SCRATCH1:?} \
     --mount "$MODELS_MOUNT:$MODELS_MOUNT:none:bind,ro" \
     --mount "$SRC:$SRC:none:bind,ro" --root --rw "$ROOTFS" -- bash "$SCRIPT" --container "$RES" "$LLM_MODELS_ROOT"
 rc=$?

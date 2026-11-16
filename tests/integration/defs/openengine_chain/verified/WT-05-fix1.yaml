@@ -19,11 +19,11 @@ entries:
       - unittest/llmapi/apps/_test_openengine_wt05_scheduling.py::test_option_reaches_the_engine_or_is_refused[thinking_token_budget]
     commit: efca512ff2ff3ebfbf39be036f6dfab1989ee968
     junit:
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17735/data/stage-00/test-00/01_selftest/results/e2e-r9-chain-5729742/chain-1/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17735/data/stage-00/test-00/01_selftest/results/e2e-r9-chain-5729742/chain-1/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17735/data/stage-00/test-00/01_selftest/results/e2e-r9-chain-5729742/chain-2/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17735/data/stage-00/test-00/01_selftest/results/e2e-r9-chain-5729742/chain-2/junit/
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17735/data/stage-00/test-00/01_selftest/results/e2e-r9-chain-5729742/chain-3/outer-junit.xml
-      - /home/scratch.yihlu_coreai/workfile/feat_dev-J17735/data/stage-00/test-00/01_selftest/results/e2e-r9-chain-5729742/chain-3/junit/
+      - <scratch>/workfile/feat_dev-J17735/data/stage-00/test-00/01_selftest/results/e2e-r9-chain-5729742/chain-1/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17735/data/stage-00/test-00/01_selftest/results/e2e-r9-chain-5729742/chain-1/junit/
+      - <scratch>/workfile/feat_dev-J17735/data/stage-00/test-00/01_selftest/results/e2e-r9-chain-5729742/chain-2/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17735/data/stage-00/test-00/01_selftest/results/e2e-r9-chain-5729742/chain-2/junit/
+      - <scratch>/workfile/feat_dev-J17735/data/stage-00/test-00/01_selftest/results/e2e-r9-chain-5729742/chain-3/outer-junit.xml
+      - <scratch>/workfile/feat_dev-J17735/data/stage-00/test-00/01_selftest/results/e2e-r9-chain-5729742/chain-3/junit/
     result: passed
     chain_proof: ok

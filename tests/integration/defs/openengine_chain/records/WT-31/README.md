@@ -13,9 +13,9 @@ except XD-311 was run again on another cluster (2-node group rerun below).
   (Hopper), both built from `9fd3822a00`.
 - Drivers: `scripts/`. The 11-entry reruns of the first run (below) used them as committed in
   `115ad0e039` (frozen copy
-  `/home/scratch.yihlu_coreai/tmp/20261113-wt31-r10/drivers/284da90b1b64d69390c75beec69add1b5dfa574a/`,
+  `<scratch>/tmp/20261113-wt31-r10/drivers/284da90b1b64d69390c75beec69add1b5dfa574a/`,
   the same files); the first run, including the shards run again, used an earlier, unpushed version (frozen copy
-  `/home/scratch.yihlu_coreai/tmp/20261113-wt31-r10/drivers/ed53945ee86f37c5f0d0e8de28723b3aa065b23b/`)
+  `<scratch>/tmp/20261113-wt31-r10/drivers/ed53945ee86f37c5f0d0e8de28723b3aa065b23b/`)
   that lacked the per-entry `timeout(1)`, `--src-rw`, `--clean-slurm-env` and some bookkeeping
   fixes.
 - Results: `r10_results.tsv`, one line per pytest entry after the header (169 lines; `xd` repeats
@@ -29,7 +29,7 @@ except XD-311 was run again on another cluster (2-node group rerun below).
   `scripts/summarize_r10.py`. `waived_in` lists the platforms `waives.txt` waives the entry on
   (`any` = all, `-` = none). `time_s` is empty where no junit was written. The 2-node rerun has its
   own table, `r10_2node_rerun.tsv` (2-node group rerun below).
-- Raw logs and per-entry junit: `/home/scratch.yihlu_coreai/tmp/20261113-wt31-r10/results/`.
+- Raw logs and per-entry junit: `<scratch>/tmp/20261113-wt31-r10/results/`.
 
 ## Totals (verdict)
 
@@ -119,7 +119,7 @@ XD-311 was not rerun. Results: `r10_2node_rerun.tsv`, one line per rerun entry, 
 `r10_results.tsv` except `rerun_*`: `outcome` and `time_s` are node 0's, as
 `scripts/summarize_r10.py` reports them for these jobs, and `verdict` / `reason` come from reading
 the logs. Raw logs and per-entry junit:
-`/home/scratch.yihlu_coreai/tmp/20261114-wt31fix1-eg39/results/`.
+`<scratch>/tmp/20261114-wt31fix1-eg39/results/`.
 
 | Group | passed | not-runnable | entries |
 |---|---|---|---|

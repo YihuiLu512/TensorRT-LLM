@@ -13,7 +13,7 @@ the request and the executor emitting its first response. At concurrency 1 the w
 and lies outside that span. Why the engine takes longer on the chain arms was not measured.
 
 Readings are in `readings.json`. Seven-digit numbers in parentheses are Slurm job ids. The local evidence
-directory `/home/scratch.yihlu_coreai/tmp/20261114-wt34-u4probe/` keeps the probe tree (`src/`), the probe
+directory `<scratch>/tmp/20261114-wt34-u4probe/` keeps the probe tree (`src/`), the probe
 commits as patches (`analysis/probe-patches/`), the job inputs and logs (`runs/`), the per-request tables
 (`analysis/a1/`) and the script that derives `readings.json` from them (`analysis/make_records_readings.py`);
 cluster details are not repeated here.
