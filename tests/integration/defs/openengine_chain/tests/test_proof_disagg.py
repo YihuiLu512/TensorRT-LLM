@@ -1518,3 +1518,17 @@ def test_a_cross_node_worker_without_a_role_is_proven_by_its_v4_counters(
     ctx = json.loads(props["chain_leg_counts"])["roles"][CTX]["counts"]
     assert ctx[P.ENGINE_ACCEPTED_BUCKETS[P.BUCKET_CONTEXT_ONLY]] == 1
     assert ctx[HTTP[P.BUCKET_CONTEXT_ONLY]] == 1
+
+
+def test_the_generation_only_benchmark_mode_needs_its_disaggregated_server_s_counts():
+    workers, _ = _gen_only()
+    statuses = {
+        (n, r): c.status
+        for n, r, c in _judge(workers, None, rule=P.LegRule(leg=ex.SINGLE_SIDE)).checks
+    }
+    assert statuses[("CH-5", GEN)] == P.INCOMPLETE
+    # Without generation workers (ctx_only) there is no disaggregated server to compare with.
+    ctx = Worker(CTX, 8001)
+    ctx.take(2, P.BUCKET_AGGREGATED)
+    alone = _judge([ctx], None, rule=P.LegRule(leg=ex.SINGLE_SIDE))
+    assert alone.status == P.OK, alone.details()

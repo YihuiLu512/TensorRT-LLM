@@ -1321,8 +1321,9 @@ def judge_roles(sums: Mapping, orchestrator: OrchestratorReading | None, rule: L
             buckets = (ROLE_BUCKET[role],) + ((BUCKET_AGGREGATED,) if role == GEN else ())
             got = [sums[role]["counts"][SERVE_HTTP_RECEIVED[b]] for b in buckets]
             if orchestrator is None:
-                if rule.leg != "single_side":
-                    # A ctx_only benchmark has no disaggregated server: only the second half holds.
+                if rule.leg != "single_side" or sums[GEN]["legs"]:
+                    # A ctx_only benchmark (single_side without generation workers) has no
+                    # disaggregated server: only the second half holds.
                     add(
                         "CH-5",
                         role,
