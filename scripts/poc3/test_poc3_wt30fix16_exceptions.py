@@ -184,6 +184,7 @@ def test_the_hunks_allowed_are_those_of_the_reference_change():
 
 
 def test_the_reference_change_is_as_registered():
+    _show(REF, CREATED)  # skips without REF
     for path, blob in CHANGED.items():
         assert _git(TOP, "rev-parse", f"{REF}:{path}").strip() == blob, path
     created = _git(TOP, "ls-tree", "--full-tree", REF, "--", CREATED)
@@ -298,6 +299,46 @@ def test_a_change_around_statements_needs_exactly_those(tmp_path, around, allowe
     )
     found = check_ownership.disallowed_lines(rule, str(repo), sha, "HEAD", path)
     assert (found == []) == allowed, found
+
+
+# The hunks moved into the body of another function or method, where each cuts it in two: the
+# rest of that body goes to the function the hunk adds. Each hunk is the same lines as the
+# reference's and touches the same statements.
+CUTS = {
+    # time_limit right after leg_expectation's docstring.
+    "time_limit": (
+        f"{CHAIN}/expectations/__init__.py",
+        "def time_limit(",
+        '    """The test\'s ``leg_expect`` entry; :func:`applicable` allows at most one."""',
+    ),
+    # exited_workers right after launch_for_remote_server's first line of code.
+    "exited_workers": (f"{CHAIN}/remote.py", "def exited_workers(", "    chain = resolve_chain()"),
+    # _check_chain_workers in RemoteOpenAIServer.terminate, after its early return.
+    "check_chain_workers": (
+        f"{APPS}/openai_server.py",
+        "    def _check_chain_workers(",
+        "            return",
+    ),
+}
+
+
+@pytest.mark.parametrize("cut", CUTS)
+def test_wt60_fix1_may_not_cut_a_function_in_two(tmp_path, capsys, cut):
+    path, first, after = CUTS[cut]
+    ref = _ref()
+    lines = ref[path].split("\n")
+    (hunk,) = [(s, c) for p, s, c in _hunks() if p == path and lines[s - 1].startswith(first)]
+    moved = lines[hunk[0] - 1 : hunk[0] - 1 + hunk[1]]
+    rest = lines[: hunk[0] - 1] + lines[hunk[0] - 1 + hunk[1] :]
+    if cut == "check_chain_workers":
+        start = rest.index("    def terminate(self):")
+        at = start + rest[start:].index(after)
+    else:
+        at = rest.index(after)
+    head = "\n".join(rest[: at + 1] + moved + rest[at + 1 :])
+    compile(head, path, "exec")
+    found, out = _check(tmp_path, capsys, _base(), {**ref, path: head})
+    _refused(found, out, path, "moves from")
 
 
 # A hunk made twice: the import of handles_since once more right after the first.
@@ -434,3 +475,40 @@ REGIONS = [None, "A", "A", "B"]
 )
 def test_the_statements_a_hunk_touches(span, after, touched):
     assert check_ownership._hunk_touches(REGIONS, after, span) == touched
+
+
+# _moved_lines on a two-line function f whose first line a hunk replaces: (scopes at the head,
+# lines at the head, renamed statements, whether a line moves).
+MOVES = {
+    "same": (["f", "f"], ["def f(x):", "    return x"], {}, False),
+    "renamed": (["g", "g"], ["def g(x):", "    return x"], {"f": "g"}, False),
+    "renamed-unmapped": (["g", "g"], ["def g(x):", "    return x"], {}, True),
+    "to-another": (["f", "h"], ["def f(x):", "    return x"], {}, True),
+    "blank": (["f", "h"], ["def f(x):", "    "], {}, False),
+    "comment": (["f", "h"], ["def f(x):", "    # x"], {}, False),
+    "nested": (["C", "C.m"], ["class C:", "    return x"], {}, True),
+}
+
+
+@pytest.mark.parametrize("case", MOVES)
+def test_the_lines_a_change_moves(case):
+    scopes, lines, renamed, moves = MOVES[case]
+    found = check_ownership._moved_lines(["f", "f"], (scopes, lines), [[1, 1, 1, 1]], renamed)
+    assert bool(found) == moves, found
+
+
+def test_the_scopes_of_a_source():
+    source = "import os\n\n\nclass C:\n    @staticmethod\n    def m():\n        pass\n\n\ndef f():\n    pass\n"
+    assert check_ownership._scopes(source) == [
+        "",
+        "",
+        "",
+        "C",
+        "C.m",
+        "C.m",
+        "C.m",
+        "",
+        "",
+        "f",
+        "f",
+    ]

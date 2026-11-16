@@ -58,8 +58,11 @@ exception may also list the statements it renames, each from one name to
 another: the file must have a statement by the first name and none by the
 second at the merge base, and the other way round at the head; the changes
 are matched as if the statement already went by the second at the merge base.
-With any form nothing else about the file may change (its mode or final
-newline, for example);
+With ``changes``, no hunk may cut a ``def`` or ``class`` in two either: every
+line the range leaves as it is, except a blank or comment line, lies in the
+same (innermost) ``def`` or ``class`` at the head as at the merge base, a
+renamed statement going by its new name. With any form nothing else about the
+file may change (its mode or final newline, for example);
 otherwise the path is out of bounds. Paths changed under ``shared`` and
 ``exception`` rules are listed for a reviewer to check by hand.
 A pattern starting with ``!`` excludes paths from the rules before it.
@@ -1756,6 +1759,79 @@ def _regions_at(repo_dir: str, rev: str, path: str) -> list[str | None] | None:
         return None
 
 
+def _scopes(source: str) -> list[str]:
+    """The dotted name of the innermost ``def`` or ``class`` each line of ``source`` lies in.
+
+    Index 0 is line 1; a line in none is ``""`` (the module). A ``def`` or
+    ``class`` runs from its first decorator to its last line.
+
+    Raises:
+        SyntaxError, ValueError: ``source`` is not Python.
+    """
+    count = len(source.split("\n")) - (1 if source.endswith("\n") else 0)
+    scopes = [""] * count
+
+    def visit(node: ast.AST, prefix: str) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                name = f"{prefix}{child.name}"
+                start = min([child.lineno] + [d.lineno for d in child.decorator_list])
+                scopes[start - 1 : child.end_lineno] = [name] * (child.end_lineno - start + 1)
+                visit(child, f"{name}.")
+            else:
+                visit(child, prefix)
+
+    visit(ast.parse(source), "")
+    return scopes
+
+
+def _scopes_at(repo_dir: str, rev: str, path: str) -> tuple[list[str], list[str]] | None:
+    """:func:`_scopes` of ``path`` at ``rev`` and its lines; None when it cannot be parsed."""
+    found = run_git(repo_dir, "show", f"{rev}:{path}", check=False)
+    if found.returncode != 0:
+        return None
+    try:
+        source = found.stdout.decode()
+        return _scopes(source), source.split("\n")
+    except (SyntaxError, ValueError, RuntimeError, MemoryError):
+        return None
+
+
+def _moved_lines(
+    base: list[str], head: tuple[list[str], list[str]], spans: list[list[int]], renamed: dict
+) -> list[str]:
+    """The lines of code no hunk changes that lie in another ``def`` or ``class`` at the head.
+
+    ``base`` holds the :func:`_scopes` of the file at the merge base, ``head``
+    those at the head and its lines, ``spans`` the (old start, old count, new
+    start, new count) of every hunk of the diff in order, ``renamed`` the names
+    of renamed top-level statements at the merge base mapped to those at the
+    head. Blank lines and comment lines may move.
+    """
+    scopes, lines = head
+    moved = []
+    pairs = []
+    old_next = new_next = 1  # the next line no hunk changes, at the merge base and at the head
+    for old_start, old_count, new_start, new_count in spans:
+        old_end = old_start if not old_count else old_start - 1
+        new_end = new_start if not new_count else new_start - 1
+        pairs += zip(range(old_next, old_end + 1), range(new_next, new_end + 1))
+        old_next, new_next = old_start + max(old_count, 1), new_start + max(new_count, 1)
+    pairs += zip(range(old_next, len(base) + 1), range(new_next, len(scopes) + 1))
+    for old, new in pairs:
+        text = lines[new - 1].strip()
+        if not text or text.startswith("#"):
+            continue
+        first, dot, rest = base[old - 1].partition(".")
+        was = renamed.get(first, first) + dot + rest
+        if was != scopes[new - 1]:
+            moved.append(
+                f"line {new} at the head, {text!r}, moves from {was or 'the module'} to"
+                f" {scopes[new - 1] or 'the module'}"
+            )
+    return moved
+
+
 def _redacts(placeholders: tuple[tuple[str, str], ...], removed: str, added: str) -> bool:
     """Whether ``added`` is ``removed`` with the start of one or more paths replaced.
 
@@ -1788,9 +1864,12 @@ def disallowed_lines(
     every hunk replaces lines in place (as many removed as added, at the same
     line number) and every removed and added line matches one of
     ``rule.lines``; with ``rule.changes``, every hunk is one of the changes,
-    none used twice; with ``rule.redact``, every hunk replaces lines in place,
-    each added line redacting its removed counterpart (:func:`_redacts`),
-    except one hunk that adds ``rule.header`` as the second line of the file.
+    none used twice, and no line the diff leaves as it is moves to another
+    ``def`` or ``class`` (:func:`_moved_lines`); with ``rule.redact``, every
+    hunk replaces lines in place, each added line redacting its removed
+    counterpart (:func:`_redacts`), except one hunk that adds ``rule.header``
+    as the second line of the file; with ``rule.blob``, the range creates the
+    file as that blob (:func:`_created_differently`).
     """
     # Bytes, not text mode: universal newlines would hide a CRLF line ending. --text: a file git
     # takes for binary (core.bigFileThreshold, a -diff attribute) is still diffed by line.
@@ -1826,11 +1905,14 @@ def disallowed_lines(
     ]
     base_regions: list[str | None] | None = []
     head_regions: list[str | None] | None = []
+    renamed: dict[str, str] = {}
     if rule.changes:
         merge_base = run_git(repo_dir, "merge-base", base_ref, head_ref).stdout.decode().strip()
         base_regions = _regions_at(repo_dir, merge_base, path)
         head_regions = _regions_at(repo_dir, head_ref, path)
-        if base_regions is None or head_regions is None:
+        base_scopes = _scopes_at(repo_dir, merge_base, path)
+        head_scopes = _scopes_at(repo_dir, head_ref, path)
+        if None in (base_regions, head_regions, base_scopes, head_scopes):
             return [f"{path} is not Python this interpreter parses, at the merge base or the head"]
         for old, new in rule.renames:
             if old not in base_regions or new in base_regions:
@@ -1840,6 +1922,7 @@ def disallowed_lines(
         renamed = dict(rule.renames)
         base_regions = [renamed.get(name, name) for name in base_regions]
     bad = []
+    spans: list[list[int]] = []  # of every hunk, for _moved_lines
     # The hunk being read: its header, the statement it lies in (see _hunk_regions), the
     # statements it touches (see _hunk_touches), its removed and added lines.
     hunk: tuple[str, set[str], set[str | None] | None, list[str], list[str]] | None = None
@@ -1896,6 +1979,8 @@ def disallowed_lines(
             match = _HUNK.match(line)
             # (old start, old count, new start, new count); a missing count is 1.
             span = [int(n) if n is not None else 1 for n in match.groups()] if match else None
+            if span:
+                spans.append(span)
             where = _hunk_regions(base_regions, head_regions, span) if span else set()
             touched = _hunk_touches(base_regions, head_regions, span) if span else None
             hunk = (line, where, touched, [], [])
@@ -1913,6 +1998,8 @@ def disallowed_lines(
         else:
             bad.append(line)  # "\ No newline at end of file", or anything unexpected
     end_hunk()
+    if rule.changes and not bad:
+        bad.extend(_moved_lines(base_scopes[0], head_scopes, spans, renamed))
     return bad
 
 
