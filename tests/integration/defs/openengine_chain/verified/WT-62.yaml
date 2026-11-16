@@ -1493,11 +1493,8 @@ entries:
     commit: dca6d4bce95ce8f2fc1c142a25a01725cfbe23e9
     junit:
     - run-1908880/r1-ds/junit/
-    - run-1908880/r1-none/
     - run-1908880/r2-ds/junit/
-    - run-1908880/r2-none/
     - run-1908880/r3-ds/junit/
-    - run-1908880/r3-none/
     result: passed
     chain_proof: incomplete
   # NT-119, NT-120: K and chain ran
@@ -1827,11 +1824,8 @@ entries:
     commit: dca6d4bce95ce8f2fc1c142a25a01725cfbe23e9
     junit:
     - run-1908880/r1-ds/junit/
-    - run-1908880/r1-none/
     - run-1908880/r2-ds/junit/
-    - run-1908880/r2-none/
     - run-1908880/r3-ds/junit/
-    - run-1908880/r3-none/
     result: passed
     chain_proof: incomplete
   # NT-126: K and chain ran
