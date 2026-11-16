@@ -1,0 +1,177 @@
+{
+ "schema": "capkit.scenario/1",
+ "experiment": "E2b",
+ "name": "e2b-sa-r",
+ "tier_table": "05_engine/E2b/register/e2b-sa-r.tiers.json",
+ "schedule": "05_engine/E2b/register/e2b-sa-r.schedule.capbin",
+ "prompts": "05_engine/E2b/register/e2b-sa-r.prompts.json",
+ "probe_tier": null,
+ "probe_groups": [],
+ "stop_grace_s": 10.0,
+ "stop_order": [
+  "nx",
+  "sidecar",
+  "canary"
+ ],
+ "reconcile": {
+  "schema": "capkit.reconcile/1",
+  "chains": [
+   {
+    "name": "requests",
+    "kind": "requests",
+    "gate": null,
+    "include_usage": null,
+    "hops": [
+     {
+      "role": "nx",
+      "source": "summary.counts.ok",
+      "scope": "tier"
+     }
+    ],
+    "corrections": []
+   }
+  ]
+ },
+ "roles": [
+  {
+   "role": "nx",
+   "launcher": "capkit",
+   "kind": "client",
+   "start_after": [],
+   "pin_role": "nx",
+   "cpus_needed": 2,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "under_test",
+   "asyncio": true,
+   "uses_grpc": false,
+   "loop": "asyncio",
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [
+    "backlog.inflight",
+    "backlog.engine_open",
+    "backlog.pending_keys"
+   ],
+   "snapshots": "all",
+   "args": [
+    "--mode",
+    "standalone",
+    "--schedule",
+    "{input:schedule}",
+    "--nxd-dir",
+    "{raw}/nxd",
+    "--snx-out-dir",
+    "{raw}/snx",
+    "--lag-period-us",
+    "{param:lag_period_us}",
+    "--prompt-len",
+    "{param:nx_prompt_len}",
+    "--tail-s",
+    "{param:nx_tail_s}",
+    "--set",
+    "busy_ns_per_step={param:snx_busy_ns_per_step}",
+    "--set",
+    "first_response_delay_steps={param:snx_first_response_delay_steps}",
+    "--set",
+    "idle_restart=\"grid\""
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capstubs.nx_role",
+   "note": "nx_role standalone: NullExecutor in process, self-drained, no IPC; 2 cores"
+  },
+  {
+   "role": "sidecar",
+   "launcher": "capkit",
+   "kind": "aux",
+   "start_after": [
+    "nx"
+   ],
+   "pin_role": "sidecar",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "observer",
+   "asyncio": false,
+   "uses_grpc": false,
+   "loop": null,
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "--interval-ms",
+    "{param:sidecar_interval_ms}",
+    "--gpu-every-s",
+    "{param:sidecar_gpu_every_s}",
+    "--numa-every-s",
+    "{param:sidecar_numa_every_s}",
+    "--nvidia-smi",
+    "{nvidia_smi}"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capenv.sidecar"
+  },
+  {
+   "role": "canary",
+   "launcher": "capkit",
+   "kind": "aux",
+   "start_after": [],
+   "pin_role": "canary",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "observer",
+   "asyncio": false,
+   "uses_grpc": false,
+   "loop": null,
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "--interval-ms",
+    "{param:canary_interval_ms}"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capenv.canary"
+  }
+ ],
+ "params_required": [
+  "canary_interval_ms",
+  "lag_period_us",
+  "nx_prompt_len",
+  "nx_tail_s",
+  "sidecar_gpu_every_s",
+  "sidecar_interval_ms",
+  "sidecar_numa_every_s",
+  "snx_busy_ns_per_step",
+  "snx_first_response_delay_steps"
+ ],
+ "dims": {
+  "tokenizer": "TBD-by-registration (configs/tokenizers/GLM-5.3-Flash)",
+  "stub": "S-NX (capstubs NullExecutor in the product rank 0 worker; capkit.snx_config/1 from the tier table + SNX_SET params)",
+  "response_timing_switches": "S-NX: first_response_delay_steps / busy_ns_per_step params; the rest defaults",
+  "interpretation": "REPLAN-20261116 R1 coverage round: exploratory, one launch per point",
+  "log_sink": "raw/logs on the node-local disk (orchestrator redirect)"
+ },
+ "note": "E2b e2b-sa-r: S-NX calibration, standalone: no IPC, no consumer, no other thread on the lock; the per-step thread CPU table comes from the NullExecutor self-report (snx.*.steps.bin, summarize). TEMPLATE: every TBD value is filled at registration (REPLAN-20261116 R1 coverage round: one launch per point, exploratory)"
+}
