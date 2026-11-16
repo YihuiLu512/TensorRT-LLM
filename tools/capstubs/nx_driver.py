@@ -3,7 +3,7 @@
 """S-NX minimal driver without HTTP (design 7 `nx_driver.py`; E2b, E7).
 
     python -m capstubs.nx_driver standalone ...   # E2b part 1: no IPC, no consumer
-    python -m capstubs.nx_driver proxy ...        # E2b part 2 / E7: product proxy <-> ZMQ <-> NullWorker
+    python -m capstubs.nx_driver proxy ...        # E2b part 2 / E7: proxy <-> ZMQ <-> NullWorker
     python -m capstubs.nx_driver drain ...        # (internal) one attached result lane, K >= 2
 
 Arrivals come from a capkit tier table + arrival schedule (capcommon.schedule; one row = one

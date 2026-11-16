@@ -29,6 +29,7 @@ drains cannot tell which request a message belongs to). The nx_driver files (nxd
 import argparse
 import asyncio
 import glob
+import json
 import os
 import sys
 import threading
@@ -83,6 +84,9 @@ def build_parser():
     g.add_argument("--lanes", type=int, default=1)
     g.add_argument("--drain-cpus", default="")
     g.add_argument("--python", default=sys.executable)
+    g.add_argument("--keep-launcher-env", action="store_true",
+                   help="keep SLURM_* / PMI_* / PMIX_* (default: removed before the product is "
+                        "imported; serve_nx.scrub_launcher_env)")
     return p
 
 
@@ -317,10 +321,20 @@ class NxRole:
                 cancel[seq] = cancel.get(seq, 0) + 1
         from capcommon.hashing import sha256_file  # noqa: PLC0415
         sched_sha = sha256_file(a.schedule)
+        keys = ("msgs", "bytes", "parsed_msgs", "responses", "finals")
         with self.stats.lock:
-            zmq = {k: {"msgs": t["msgs"], "bytes": t["bytes"], "parsed_msgs": t["parsed_msgs"],
-                       "responses": t["responses"], "finals": t["finals"]}
-                   for k, t in self.stats.tiers.items()}
+            zmq = {k: {q: t[q] for q in keys} for k, t in self.stats.tiers.items()}
+        for fid in range(1, a.lanes + 1 if a.lanes >= 2 else 1):  # the drains' own summaries
+            path = os.path.join(a.nxd_dir, "nxd.lane%d.summary.json" % fid)
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    tiers = json.load(f)["tiers"]
+            except (OSError, ValueError, KeyError):
+                continue
+            for k, t in tiers.items():
+                z = zmq.setdefault(int(k), {q: 0 for q in keys})
+                for q in keys:
+                    z[q] += int(t.get(q, 0))
         for seq in sorted(rt.end_marks):
             P, S, O, X = (d.get(seq, 0) for d in (planned, sent, ok, cancel))
             fails = []
@@ -350,7 +364,10 @@ def main(argv=None):
         common = common_from_args(args)
         validate_args(args)
         stopper = StopController()
+        from .serve_nx import scrub_launcher_env  # noqa: PLC0415
+        scrubbed = [] if args.keep_launcher_env else scrub_launcher_env()
         role = NxRole(args, common, stopper)
+        role.info["launcher_env_removed"] = scrubbed
         role.build()
         if stopper.requested:
             role.shutdown()

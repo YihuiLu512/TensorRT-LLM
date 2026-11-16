@@ -175,3 +175,11 @@ def test_stream_interval_yaml(tmp_path):
     assert serve_nx.with_stream_interval(["m", "--config", "x"], 20, str(tmp_path))[1]
     assert serve_nx.with_stream_interval(["m"], 20, "")[1]
     assert serve_nx.with_stream_interval(["m"], 0, str(tmp_path))[1]
+
+
+def test_scrub_launcher_env():
+    env = {"SLURM_JOB_ID": "1", "SLURMD_NODENAME": "n", "PMIX_RANK": "0", "PMI_FD": "3",
+           "OMPI_MCA_x": "y", "OPAL_PREFIX": "/o", "TRTLLM_CAPKIT_SNX": "{}"}
+    assert serve_nx.scrub_launcher_env(env) == ["PMIX_RANK", "PMI_FD", "SLURMD_NODENAME",
+                                                "SLURM_JOB_ID"]
+    assert set(env) == {"OMPI_MCA_x", "OPAL_PREFIX", "TRTLLM_CAPKIT_SNX"}

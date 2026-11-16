@@ -85,6 +85,8 @@
     "127.0.0.1",
     "--max_seq_len",
     "{param:nx_max_seq_len}",
+    "--gpus_per_node",
+    "1",
     "--grpc",
     "--grpc-protocol",
     "openengine"
@@ -160,6 +162,8 @@
     "127.0.0.1",
     "--max_seq_len",
     "{param:nx_max_seq_len}",
+    "--gpus_per_node",
+    "1",
     "--openengine-endpoint",
     "{addr:host}",
     "--num_serve_frontends",

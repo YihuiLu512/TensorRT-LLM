@@ -90,6 +90,8 @@
     "127.0.0.1",
     "--max_seq_len",
     "{param:nx_max_seq_len}",
+    "--gpus_per_node",
+    "1",
     "--num_serve_frontends",
     "1",
     "--num_postprocess_workers",

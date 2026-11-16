@@ -113,13 +113,15 @@ def serve_nx(name, serve_args, start_after=(), cpus=4, readiness=None, proc_kind
              note=""):
     """python -m capstubs.serve_nx (product role): trtllm-serve with the rank 0 worker's
     PyExecutor replaced by a NullExecutor; it picks its own port and reports host:port once the
-    port accepts (trtllm-serve's --report_addr refuses multi-frontend and gRPC serving)."""
+    port accepts (trtllm-serve's --report_addr refuses multi-frontend and gRPC serving).
+    --gpus_per_node 1: trtllm-serve otherwise counts the node's GPUs (and refuses none)."""
     args = ["--tier-table", "{input:tier_table}", "--origin-ns", "{origin_ns}",
             "--out-dir", "{raw}/snx", "--record", "{raw}/snx/%s.serve_nx.json" % name,
             "--stream-interval", "{param:nx_stream_interval}",
             "--pick-port", "--report-host", "127.0.0.1", "--report-addr", "{own:report_addr}"] \
         + SNX_SET + ["--", "{param:tokenizer_dir}", "--host", "127.0.0.1",
-                     "--max_seq_len", "{param:nx_max_seq_len}"] + list(serve_args)
+                     "--max_seq_len", "{param:nx_max_seq_len}", "--gpus_per_node", "1"] \
+        + list(serve_args)
     return role(name, "product", "server", "under_test", True, "uvloop", True, "P0",
                 readiness or [{"kind": "report_addr"}], [], "none", args,
                 command=["{param:python}", "-m", "capstubs.serve_nx"],

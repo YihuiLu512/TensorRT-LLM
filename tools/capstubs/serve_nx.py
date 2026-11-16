@@ -54,6 +54,9 @@ def build_parser():
     p.add_argument("--patch-cuda-stream", choices=("auto", "never"), default="auto",
                    help="auto: dummy torch.cuda.Stream when torch.cuda.is_available() is false")
     p.add_argument("--record", help="write the resolved config and argv here (JSON)")
+    p.add_argument("--keep-launcher-env", action="store_true",
+                   help="keep SLURM_* / PMI_* / PMIX_* (default: removed before the product "
+                        "starts, so its MPI worker spawn runs as a singleton)")
     p.add_argument("--stream-interval", type=int,
                    help="LLM API stream_interval: writes <out-dir>/serve_nx.<pid>.llm_api.yaml "
                         "and appends --config <it> (the serve arguments must not have --config)")
@@ -157,6 +160,22 @@ def with_stream_interval(serve_args, s, out_dir):
     return serve_args + ["--config", path], None
 
 
+# A Slurm step's launcher variables: with them in the environment, the MPI library the product's
+# MpiPoolSession uses (MPI_Comm_spawn of the rank 0 worker) may take the process for an srun
+# direct launch and hang or abort under `srun --mpi=none`; without them it starts as a singleton.
+LAUNCHER_ENV_PREFIXES = ("SLURM_", "SLURMD_", "PMIX_", "PMI_")
+
+
+def scrub_launcher_env(environ=None):
+    """Remove the Slurm / PMI launcher variables from `environ` (default os.environ) before the
+    product is imported; returns the sorted names removed."""
+    env = os.environ if environ is None else environ
+    gone = sorted(k for k in env if k.startswith(LAUNCHER_ENV_PREFIXES))
+    for k in gone:
+        del env[k]
+    return gone
+
+
 def apply_patches(patch_cuda_stream="auto"):
     """Point GenerationExecutorProxy's worker_cls default at NullWorker; returns what was done."""
     from tensorrt_llm.executor.proxy import GenerationExecutorProxy  # noqa: PLC0415
@@ -219,7 +238,9 @@ def main(argv=None):
                 return 3
             serve_args = serve_args + ["--port", str(pick_free_port(a.report_host))]
         os.environ[ENV_VAR] = json.dumps(cfg.to_doc(), sort_keys=True)
+        scrubbed = [] if a.keep_launcher_env else scrub_launcher_env()
         done = apply_patches(a.patch_cuda_stream)
+        done["launcher_env_removed"] = scrubbed
         if a.report_addr:
             port = flag_value(serve_args, "--port")
             if port is None or not port.isdigit() or int(port) == 0:
