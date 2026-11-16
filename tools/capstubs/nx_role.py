@@ -40,6 +40,7 @@ from capcommon.cli import add_common_args, common_from_args
 from capcommon.exitcodes import OK, STOPPED_EARLY, CapkitError, ConfigError
 
 from . import nx_driver as nxd
+from .affinity import add_split_args, split_role_cpus
 from .null_executor import REC_EXT, LiveReader, read_records
 
 TOOL = "capstubs.nx_role"
@@ -87,6 +88,7 @@ def build_parser():
     g.add_argument("--keep-launcher-env", action="store_true",
                    help="keep SLURM_* / PMI_* / PMIX_* (default: removed before the product is "
                         "imported; serve_nx.scrub_launcher_env)")
+    add_split_args(g)
     return p
 
 
@@ -108,6 +110,10 @@ def validate_args(args):
         raise ConfigError("--lanes / --consumer are proxy options")
     if args.lanes < 1 or args.poll_ms < 1 or args.tail_s < 0:
         raise ConfigError("--lanes and --poll-ms must be >= 1, --tail-s >= 0")
+    if args.mode == "standalone" and args.worker_cores:
+        raise ConfigError("--worker-cores is a proxy option (standalone has no worker)")
+    if args.worker_cores < 0 or args.procmon_cores < 0 or args.procmon_interval_ms < 10:
+        raise ConfigError("--worker-cores / --procmon-cores >= 0, --procmon-interval-ms >= 10")
 
 
 def _engine_files(snx_dir, kind, exclude_pid=None):
@@ -164,6 +170,10 @@ class NxRole:
     # -- engine --------------------------------------------------------------------------------
     def build(self):
         """Blocking: construct the engine (and the drains) before the event loop runs."""
+        if self.args.worker_cores or self.args.procmon_out:
+            wk, self.info["affinity"] = split_role_cpus(self.args, self.args.python)
+            if wk:
+                self.da.set = list(self.da.set) + ["worker_cpus=%s" % json.dumps(wk)]
         if self.args.mode == "standalone":
             self._build_standalone()
         else:

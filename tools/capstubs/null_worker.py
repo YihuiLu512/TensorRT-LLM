@@ -19,14 +19,18 @@ from tensorrt_llm.executor.worker import GenerationExecutorWorker
 
 from capcommon.exitcodes import ConfigError
 
+from .affinity import pin_all_tasks
 from .null_executor import NullExecutor, SnxConfig
 from .snx_product import ProductAdapter
 
 
 def build_null_executor(llm_args, cfg=None):
     """A started NullExecutor for this worker: config from TRTLLM_CAPKIT_SNX unless given,
-    tier table loaded from it, stream_interval cross-checked against llm_args."""
+    tier table loaded from it, stream_interval cross-checked against llm_args. With
+    cfg.worker_cpus every thread of this process is pinned there first (rank 0's own cores;
+    serve_nx / nx_role --worker-cores), and the before / after affinity goes into meta.json."""
     cfg = cfg or SnxConfig.from_env()
+    pin = pin_all_tasks(cfg.worker_cpus) if cfg.worker_cpus else None
     tt = None
     if cfg.tier_table:
         from capcommon.tiers import TierTable  # noqa: PLC0415
@@ -34,7 +38,7 @@ def build_null_executor(llm_args, cfg=None):
     llm_s = getattr(llm_args, "stream_interval", None) if llm_args is not None else None
     max_seq_len = getattr(llm_args, "max_seq_len", None) if llm_args is not None else None
     return NullExecutor(cfg, ProductAdapter(), tier_table=tt, llm_stream_interval=llm_s,
-                        max_seq_len=max_seq_len or cfg.max_seq_len)
+                        max_seq_len=max_seq_len or cfg.max_seq_len, pin_info=pin)
 
 
 class NullWorker(GenerationExecutorWorker):

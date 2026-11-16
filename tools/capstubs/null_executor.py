@@ -50,6 +50,8 @@ import time
 
 from capcommon.exitcodes import ConfigError
 
+from .affinity import thread_names
+
 SCHEMA_CONFIG = "capkit.snx_config/1"
 SCHEMA_META = "capkit.snx_meta/1"
 SCHEMA_SUMMARY = "capkit.snx_summary/1"
@@ -104,6 +106,7 @@ class SnxConfig:
     prefill_spill_frac: float = 0.0
     max_active: int = 0
     max_seq_len: int = 131072
+    worker_cpus: list = dataclasses.field(default_factory=list)
     flush_bytes: int = 1 << 16
     flush_interval_ms: int = 500
     note: str = ""
@@ -125,6 +128,8 @@ class SnxConfig:
         if not self.token_ids or any(not isinstance(t, int) or isinstance(t, bool) or t < 0
                                      for t in self.token_ids):
             raise ConfigError("snx config: token_ids must be a non-empty list of ints >= 0")
+        if any(not isinstance(c, int) or isinstance(c, bool) or c < 0 for c in self.worker_cpus):
+            raise ConfigError("snx config: worker_cpus must be a list of cpu numbers >= 0")
         if self.idle_restart not in ("grid", "immediate"):
             raise ConfigError("snx config: idle_restart must be grid or immediate")
         for kw in self.k_mix:
@@ -357,8 +362,9 @@ class NullExecutor:
 
     def __init__(self, cfg, adapter, *, tier_table=None, llm_stream_interval=None,
                  max_seq_len=None, clock=time.monotonic_ns, self_drain=False,
-                 arrival_hook=None, start=True):
+                 arrival_hook=None, start=True, pin_info=None):
         self.cfg = cfg
+        self.pin_info = pin_info
         self.adapter = adapter
         self.clock = clock
         self.tt = tier_table
@@ -398,6 +404,7 @@ class NullExecutor:
         self.counts = collections.Counter()
         self.max_wake_lag_ns = 0
         self.thread_ids = {}
+        self._names_seen = {}  # native_id -> Python thread name, every name ever seen
         self._last_flush = clock()
         self._live = None
         self._live_lock = threading.Lock()
@@ -449,6 +456,7 @@ class NullExecutor:
         os.replace(tmp, path)
 
     def meta_doc(self):
+        self._names_seen.update(thread_names())
         return {"schema": SCHEMA_META, "pid": os.getpid(), "config": self.cfg.to_doc(),
                 "stream_interval": self.stream_interval, "max_seq_len": self.max_seq_len,
                 "k_of_tier": {str(k): v for k, v in sorted(self.k_of_tier.items())},
@@ -456,6 +464,7 @@ class NullExecutor:
                 "records": {k: {"format": st.format, "size": st.size, "fields": list(f)}
                             for k, (st, f) in RECORDS.items()},
                 "threads": self.thread_ids, "self_drain": self.self_drain,
+                "affinity": {"now": sorted(os.sched_getaffinity(0)), "pin": self.pin_info},
                 "adapter": getattr(self.adapter, "name", type(self.adapter).__name__),
                 "clock": "time.monotonic_ns"}
 
@@ -550,6 +559,7 @@ class NullExecutor:
         self._write_json("summary.json", self.summary_doc())
 
     def summary_doc(self):
+        self._names_seen.update(thread_names())
         c = dict(self.counts)
         c.update({"step_records": self.rec["steps"].n, "take_records": self.rec["takes"].n,
                   "req_records": self.rec["reqs"].n})
@@ -558,7 +568,9 @@ class NullExecutor:
                 "queued_at_end": len(self._queue), "pending_keys_at_end": len(self.responses),
                 "fatal_error": None if self._event_loop_error is None
                 else repr(self._event_loop_error),
-                "stream_interval": self.stream_interval}
+                "stream_interval": self.stream_interval,
+                "thread_names": dict(self._names_seen),
+                "affinity_end": sorted(os.sched_getaffinity(0))}
 
     # ---- the step thread -----------------------------------------------------------------
     def _run(self):
