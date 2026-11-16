@@ -60,6 +60,8 @@ def build_parser():
     p.add_argument("--stream-interval", type=int,
                    help="LLM API stream_interval: writes <out-dir>/serve_nx.<pid>.llm_api.yaml "
                         "and appends --config <it> (the serve arguments must not have --config)")
+    from capstubs.affinity import add_split_args  # noqa: PLC0415
+    add_split_args(p)
     return p
 
 
@@ -237,10 +239,22 @@ def main(argv=None):
                 print("serve_nx: --pick-port with --port in the serve arguments", file=sys.stderr)
                 return 3
             serve_args = serve_args + ["--port", str(pick_free_port(a.report_host))]
+        affinity = None
+        if a.worker_cores or a.procmon_out:
+            from capstubs.affinity import split_role_cpus  # noqa: PLC0415
+            try:
+                wk, affinity = split_role_cpus(a, sys.executable)
+                if wk:
+                    cfg.worker_cpus = wk
+                    cfg.validate()
+            except Exception as e:  # noqa: BLE001 -- refuse the start like a config problem
+                print("serve_nx: core split refused: %s" % e, file=sys.stderr)
+                return 3
         os.environ[ENV_VAR] = json.dumps(cfg.to_doc(), sort_keys=True)
         scrubbed = [] if a.keep_launcher_env else scrub_launcher_env()
         done = apply_patches(a.patch_cuda_stream)
         done["launcher_env_removed"] = scrubbed
+        done["affinity"] = affinity
         if a.report_addr:
             port = flag_value(serve_args, "--port")
             if port is None or not port.isdigit() or int(port) == 0:
