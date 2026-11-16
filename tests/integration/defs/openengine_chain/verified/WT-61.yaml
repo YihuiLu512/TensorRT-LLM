@@ -1,0 +1,161 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# End-to-end checks of the disaggregated chain (case-04, trtllm chain, B200) in integration round
+# R12, the second feature batch: three runs of each case, all on the commit each entry names.
+# Single-node cases use one node of 1 to 8 GPUs; the cases of EG-39 use two nodes of 8 GPUs each.
+# Each junit path is relative to the result directory of its runs, which the work item's status
+# file records. For a two-node case the path names the first node's outer junit; the chain proof
+# of such a run merges both nodes' readings (runner.py --summarize-only).
+# The comment above each entry tags each of its cases:
+# - ok: the chain proof holds.
+# - skip: an inner test was skipped, for the reason given below the tags.
+# - incomplete: the case passed and the chain proof is incomplete, for the reason given below.
+# Hopper (H200 and H100, sm90 image with the same Python files), run as supplementary evidence and
+#   not listed: XD-042, XD-049, XD-050, XD-051 and XD-122 passed in each run with the chain proof
+#   ok.
+# Owed but not listed:
+# - EG-28: XD-005, XD-009 and XD-010 passed in each run, and the chain proof fails in each: in
+#   these gen-only runs no context worker is called (XD-005 starts none, XD-009 and XD-010 start
+#   one that receives no request), while none of the three declares a single-side leg
+#   expectation, so CH-3 and CH-4 fail on the context side. Left to a fix item. NT-036 (a CPU
+#   test, no chain) passed in each run.
+# - EG-37: NT-212 skips its test in each run: the image has no Ray, which the test needs.
+entries:
+  # NT-209 ok
+  - row: EG-01g
+    features:
+    - EG-01g
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_spec.py::test_dynamic_tree_draft_tokens_cross_handoff
+    commit: 317d6c10b5a49920d1c8dfcebde79db30f031d44
+    junit:
+    - b200-2g-ch-a/b200-2g-ch-a/job-6042408_0-r0/node0/results/e01/outer-junit.xml
+    - b200-2g-ch-a/b200-2g-ch-a/job-6042408_1-r0/node0/results/e01/outer-junit.xml
+    - b200-2g-ch-a/b200-2g-ch-a/job-6042408_2-r0/node0/results/e01/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # NT-202[UCX] ok, NT-202[MOONCAKE] ok, NT-202[MPI] skip, see below
+  # NT-202[MPI]: skipped in each run (UV-57): with the MPI backend the deployment of two separate
+  #   trtllm-serve workers does not become ready
+  - row: EG-22b
+    features:
+    - EG-22b
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_transceiver.py::test_cpp_runtime_backends
+    commit: 317d6c10b5a49920d1c8dfcebde79db30f031d44
+    junit:
+    - b200-2g-ch-a/b200-2g-ch-a/job-6042408_0-r0/node0/results/e00/outer-junit.xml
+    - b200-2g-ch-a/b200-2g-ch-a/job-6042408_1-r0/node0/results/e00/outer-junit.xml
+    - b200-2g-ch-a/b200-2g-ch-a/job-6042408_2-r0/node0/results/e00/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # NT-202[UCX] ok, NT-202[MOONCAKE] ok, NT-202[MPI] skip, see below
+  # NT-202[MPI]: skipped in each run (UV-57): with the MPI backend the deployment of two separate
+  #   trtllm-serve workers does not become ready
+  - row: EG-22c
+    features:
+    - EG-22c
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_transceiver.py::test_cpp_runtime_backends
+    commit: 317d6c10b5a49920d1c8dfcebde79db30f031d44
+    junit:
+    - b200-2g-ch-a/b200-2g-ch-a/job-6042408_0-r0/node0/results/e00/outer-junit.xml
+    - b200-2g-ch-a/b200-2g-ch-a/job-6042408_1-r0/node0/results/e00/outer-junit.xml
+    - b200-2g-ch-a/b200-2g-ch-a/job-6042408_2-r0/node0/results/e00/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # NT-202[UCX] ok, NT-202[MOONCAKE] ok, NT-202[MPI] skip, see below
+  # NT-202[MPI]: skipped in each run (UV-57): with the MPI backend the deployment of two separate
+  #   trtllm-serve workers does not become ready
+  - row: EG-22d
+    features:
+    - EG-22d
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_transceiver.py::test_cpp_runtime_backends
+    commit: 317d6c10b5a49920d1c8dfcebde79db30f031d44
+    junit:
+    - b200-2g-ch-a/b200-2g-ch-a/job-6042408_0-r0/node0/results/e00/outer-junit.xml
+    - b200-2g-ch-a/b200-2g-ch-a/job-6042408_1-r0/node0/results/e00/outer-junit.xml
+    - b200-2g-ch-a/b200-2g-ch-a/job-6042408_2-r0/node0/results/e00/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # NT-208 ok
+  - row: EG-33
+    features:
+    - EG-33
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_topology.py::test_kv_balanced_admission_on_the_generation_side
+    commit: 317d6c10b5a49920d1c8dfcebde79db30f031d44
+    junit:
+    - b200-4g-ch-a/b200-4g-ch-a/job-6042439_0-r0/node0/results/e03/outer-junit.xml
+    - b200-4g-ch-a/b200-4g-ch-a/job-6042439_1-r0/node0/results/e03/outer-junit.xml
+    - b200-4g-ch-a/b200-4g-ch-a/job-6042439_2-r0/node0/results/e03/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # NT-210 ok
+  - row: EG-34
+    features:
+    - EG-34
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_engine_combos.py::test_sliding_window_attention_two_legs
+    commit: 317d6c10b5a49920d1c8dfcebde79db30f031d44
+    junit:
+    - b200-2g-ch-a/b200-2g-ch-a/job-6042408_0-r0/node0/results/e02/outer-junit.xml
+    - b200-2g-ch-a/b200-2g-ch-a/job-6042408_1-r0/node0/results/e02/outer-junit.xml
+    - b200-2g-ch-a/b200-2g-ch-a/job-6042408_2-r0/node0/results/e02/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # NT-211 ok
+  - row: EG-36
+    features:
+    - EG-36
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_engine_combos.py::test_kv_cache_connector_with_disagg_prefill
+    commit: 317d6c10b5a49920d1c8dfcebde79db30f031d44
+    junit:
+    - b200-1g-ch-b/b200-1g-ch-b/job-6042379_0-r0/node0/results/e03/outer-junit.xml
+    - b200-1g-ch-b/b200-1g-ch-b/job-6042379_1-r0/node0/results/e03/outer-junit.xml
+    - b200-1g-ch-b/b200-1g-ch-b/job-6042379_2-r0/node0/results/e03/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # NT-213 ok
+  - row: EG-38
+    features:
+    - EG-38
+    cases:
+    - unittest/llmapi/apps/_test_openengine_disagg_engine_combos.py::test_kv_routing_accounts_for_in_transfer
+    commit: 317d6c10b5a49920d1c8dfcebde79db30f031d44
+    junit:
+    - b200-4g-ch-a/b200-4g-ch-a/job-6042439_0-r0/node0/results/e04/outer-junit.xml
+    - b200-4g-ch-a/b200-4g-ch-a/job-6042439_1-r0/node0/results/e04/outer-junit.xml
+    - b200-4g-ch-a/b200-4g-ch-a/job-6042439_2-r0/node0/results/e04/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-301 incomplete, XD-309 incomplete, see below
+  # XD-301 and XD-309: passed in each run (two nodes, the context worker on the first and the
+  #   generation worker on the second). Both nodes' readings hold CH-1, CH-2 and CH-6, but CH-3,
+  #   CH-4 and CH-5 are incomplete: in these fixed-port variants the per-bucket counts of the
+  #   engines and front ends are read as unknown, though each front end's counter file holds its
+  #   final counts. The service-discovery variant (XD-310) reads them on two nodes, so the gap is
+  #   in this variant's readings, not in merging two nodes; left to the proof's owner.
+  # UCX on two nodes: these cases pass only with UCX limited to the nodes' Ethernet port
+  #   (UCX_NET_DEVICES set to it, UCX_RNDV_SCHEME=auto, UCX_CUDA_IPC_ENABLE_MNNVL=n); with the
+  #   default device choice the cross-node KV transfer fails. The test removes UCX_NET_DEVICES from
+  #   its workers' environment, so the runs set it again when each process starts, outside the
+  #   repository.
+  - row: EG-39
+    features:
+    - EG-39
+    cases:
+    - test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp2pp1-gen_tp2pp1]
+    - test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp1pp1-gen_tp1pp1]
+    commit: 317d6c10b5a49920d1c8dfcebde79db30f031d44
+    junit:
+    - 2node-8g-ch-a/2node-8g-ch-a/job-6048021_0-r0/node0/results/e00/node-0/outer-junit.xml
+    - 2node-8g-ch-a/2node-8g-ch-a/job-6048021_1-r0/node0/results/e00/node-0/outer-junit.xml
+    - 2node-8g-ch-a/2node-8g-ch-a/job-6048021_2-r0/node0/results/e00/node-0/outer-junit.xml
+    - 2node-8g-ch-b/2node-8g-ch-b/job-6048036_0-r0/node0/results/e02/node-0/outer-junit.xml
+    - 2node-8g-ch-b/2node-8g-ch-b/job-6048036_1-r0/node0/results/e02/node-0/outer-junit.xml
+    - 2node-8g-ch-b/2node-8g-ch-b/job-6048036_2-r0/node0/results/e02/node-0/outer-junit.xml
+    result: passed
+    chain_proof: incomplete
