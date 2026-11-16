@@ -1,0 +1,936 @@
+{
+ "schema": "capkit.scenario/1",
+ "experiment": "E6",
+ "name": "e6-iii-n4-r",
+ "tier_table": "04_frontend/E6/register/e6-iii-n4-r.tiers.json",
+ "schedule": "04_frontend/E6/register/e6-iii-n4-r.schedule.capbin",
+ "prompts": "04_frontend/E6/register/e6-iii-n4-r.prompts.json",
+ "probe_tier": "P0",
+ "probe_groups": [],
+ "stop_grace_s": 10.0,
+ "stop_order": [
+  "capload0",
+  "capload1",
+  "capload2",
+  "capload3",
+  "frontend0",
+  "frontend1",
+  "frontend2",
+  "frontend3",
+  "spb0",
+  "spb1",
+  "spb2",
+  "spb3",
+  "sidecar",
+  "canary"
+ ],
+ "reconcile": {
+  "schema": "capkit.reconcile/1",
+  "chains": [
+   {
+    "name": "requests0",
+    "kind": "requests",
+    "gate": null,
+    "include_usage": null,
+    "hops": [
+     {
+      "role": "capload0",
+      "source": "summary.counts.ok",
+      "scope": "tier"
+     },
+     {
+      "role": "spb0",
+      "source": "summary.counts.streams_accepted",
+      "scope": "tier"
+     }
+    ],
+    "corrections": []
+   },
+   {
+    "name": "requests1",
+    "kind": "requests",
+    "gate": null,
+    "include_usage": null,
+    "hops": [
+     {
+      "role": "capload1",
+      "source": "summary.counts.ok",
+      "scope": "tier"
+     },
+     {
+      "role": "spb1",
+      "source": "summary.counts.streams_accepted",
+      "scope": "tier"
+     }
+    ],
+    "corrections": []
+   },
+   {
+    "name": "requests2",
+    "kind": "requests",
+    "gate": null,
+    "include_usage": null,
+    "hops": [
+     {
+      "role": "capload2",
+      "source": "summary.counts.ok",
+      "scope": "tier"
+     },
+     {
+      "role": "spb2",
+      "source": "summary.counts.streams_accepted",
+      "scope": "tier"
+     }
+    ],
+    "corrections": []
+   },
+   {
+    "name": "requests3",
+    "kind": "requests",
+    "gate": null,
+    "include_usage": null,
+    "hops": [
+     {
+      "role": "capload3",
+      "source": "summary.counts.ok",
+      "scope": "tier"
+     },
+     {
+      "role": "spb3",
+      "source": "summary.counts.streams_accepted",
+      "scope": "tier"
+     }
+    ],
+    "corrections": []
+   }
+  ]
+ },
+ "roles": [
+  {
+   "role": "spb0",
+   "launcher": "capkit",
+   "kind": "server",
+   "start_after": [],
+   "pin_role": "spb0",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "stub_out_of_domain",
+   "asyncio": true,
+   "uses_grpc": true,
+   "loop": "asyncio",
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [
+    "backlog.pending_msgs",
+    "backlog.active_streams",
+    "backlog.yielded"
+   ],
+   "snapshots": "all",
+   "args": [
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "0",
+    "--prebaked",
+    "{input:prebaked}",
+    "--lag-period-us",
+    "{param:lag_period_us}",
+    "--sfe-module",
+    "{param:sfe_module}",
+    "--sfe-profile",
+    "trtllm-like",
+    "--model",
+    "{param:tokenizer_dir}",
+    "--max-context-length",
+    "{param:sfe_max_context_length}",
+    {
+     "splice_json": "{input:fingerprint}",
+     "key": "sfe_args"
+    }
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capstubs.prebaked_server",
+   "note": "S-PB frontend mode for frontend0 only (E6 arm iii: one stub per frontend); one process on one core"
+  },
+  {
+   "role": "frontend0",
+   "launcher": "product",
+   "kind": "server",
+   "start_after": [
+    "spb0"
+   ],
+   "pin_role": "frontend0",
+   "cpus_needed": 11,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "under_test",
+   "asyncio": true,
+   "uses_grpc": true,
+   "loop": "uvloop",
+   "probe_tier": "P0",
+   "readiness": [
+    {
+     "kind": "report_addr"
+    },
+    {
+     "kind": "http_get",
+     "path": "/health",
+     "expect_status": 200,
+     "timeout_s": 2.0
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "{param:tokenizer_dir}",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "0",
+    "--report_addr",
+    "{own:report_addr}",
+    "--openengine-endpoint",
+    "{addr:spb0}",
+    "--num_serve_frontends",
+    "1",
+    "--num_postprocess_workers",
+    "0",
+    "--num_input_processor_workers",
+    "8"
+   ],
+   "env": {},
+   "proc_kinds": [
+    "frontend",
+    "frontend_openengine",
+    "frontend_single"
+   ],
+   "command": [
+    "{param:trtllm_serve}"
+   ],
+   "port": {
+    "kind": "report_addr",
+    "host": "127.0.0.1"
+   },
+   "note": "E6 arm iii frontend 0: an independent single-frontend trtllm-serve (card E4 main tier, 11 cores = 1 event loop + 8 input-processor threads + 2 for grpcio's threads, unverified)"
+  },
+  {
+   "role": "capload0",
+   "launcher": "capkit",
+   "kind": "client",
+   "start_after": [
+    "frontend0"
+   ],
+   "pin_role": "capload0",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 2,
+   "measure_class": "load_source",
+   "asyncio": true,
+   "uses_grpc": false,
+   "loop": "asyncio",
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [
+    "backlog.inflight"
+   ],
+   "snapshots": "all",
+   "args": [
+    "--target",
+    "{addr:frontend0}",
+    "--model",
+    "{param:tokenizer_dir}",
+    "--endpoint",
+    "/v1/completions",
+    "--schedule",
+    "{input:schedule}",
+    "--prompts",
+    "{input:prompts}",
+    "--conn-policy",
+    "keepalive",
+    "--pool-pick",
+    "{param:capload_pool_pick}",
+    "--pool-seed",
+    "{param:capload_pool_seed}",
+    "--pool-reset",
+    "{param:capload_pool_reset}",
+    "--recv-mode",
+    "count",
+    "--chunk-sample-mod",
+    "{param:capload_chunk_sample_mod}",
+    "--fionread-every-ms",
+    "{param:capload_fionread_every_ms}",
+    "--lag-period-us",
+    "{param:lag_period_us}",
+    "--max-records-per-worker",
+    "{param:capload_max_records_per_worker}"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capload",
+   "note": "capload for frontend0 only, 1 workers (parent + 1); the full registered schedule (tier load = load per frontend)"
+  },
+  {
+   "role": "spb1",
+   "launcher": "capkit",
+   "kind": "server",
+   "start_after": [],
+   "pin_role": "spb1",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "stub_out_of_domain",
+   "asyncio": true,
+   "uses_grpc": true,
+   "loop": "asyncio",
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [
+    "backlog.pending_msgs",
+    "backlog.active_streams",
+    "backlog.yielded"
+   ],
+   "snapshots": "all",
+   "args": [
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "0",
+    "--prebaked",
+    "{input:prebaked}",
+    "--lag-period-us",
+    "{param:lag_period_us}",
+    "--sfe-module",
+    "{param:sfe_module}",
+    "--sfe-profile",
+    "trtllm-like",
+    "--model",
+    "{param:tokenizer_dir}",
+    "--max-context-length",
+    "{param:sfe_max_context_length}",
+    {
+     "splice_json": "{input:fingerprint}",
+     "key": "sfe_args"
+    }
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capstubs.prebaked_server",
+   "note": "S-PB frontend mode for frontend1 only (E6 arm iii: one stub per frontend); one process on one core"
+  },
+  {
+   "role": "frontend1",
+   "launcher": "product",
+   "kind": "server",
+   "start_after": [
+    "spb1"
+   ],
+   "pin_role": "frontend1",
+   "cpus_needed": 11,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "under_test",
+   "asyncio": true,
+   "uses_grpc": true,
+   "loop": "uvloop",
+   "probe_tier": "P0",
+   "readiness": [
+    {
+     "kind": "report_addr"
+    },
+    {
+     "kind": "http_get",
+     "path": "/health",
+     "expect_status": 200,
+     "timeout_s": 2.0
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "{param:tokenizer_dir}",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "0",
+    "--report_addr",
+    "{own:report_addr}",
+    "--openengine-endpoint",
+    "{addr:spb1}",
+    "--num_serve_frontends",
+    "1",
+    "--num_postprocess_workers",
+    "0",
+    "--num_input_processor_workers",
+    "8"
+   ],
+   "env": {},
+   "proc_kinds": [
+    "frontend",
+    "frontend_openengine",
+    "frontend_single"
+   ],
+   "command": [
+    "{param:trtllm_serve}"
+   ],
+   "port": {
+    "kind": "report_addr",
+    "host": "127.0.0.1"
+   },
+   "note": "E6 arm iii frontend 1: an independent single-frontend trtllm-serve (card E4 main tier, 11 cores = 1 event loop + 8 input-processor threads + 2 for grpcio's threads, unverified)"
+  },
+  {
+   "role": "capload1",
+   "launcher": "capkit",
+   "kind": "client",
+   "start_after": [
+    "frontend1"
+   ],
+   "pin_role": "capload1",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 2,
+   "measure_class": "load_source",
+   "asyncio": true,
+   "uses_grpc": false,
+   "loop": "asyncio",
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [
+    "backlog.inflight"
+   ],
+   "snapshots": "all",
+   "args": [
+    "--target",
+    "{addr:frontend1}",
+    "--model",
+    "{param:tokenizer_dir}",
+    "--endpoint",
+    "/v1/completions",
+    "--schedule",
+    "{input:schedule}",
+    "--prompts",
+    "{input:prompts}",
+    "--conn-policy",
+    "keepalive",
+    "--pool-pick",
+    "{param:capload_pool_pick}",
+    "--pool-seed",
+    "{param:capload_pool_seed}",
+    "--pool-reset",
+    "{param:capload_pool_reset}",
+    "--recv-mode",
+    "count",
+    "--chunk-sample-mod",
+    "{param:capload_chunk_sample_mod}",
+    "--fionread-every-ms",
+    "{param:capload_fionread_every_ms}",
+    "--lag-period-us",
+    "{param:lag_period_us}",
+    "--max-records-per-worker",
+    "{param:capload_max_records_per_worker}"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capload",
+   "note": "capload for frontend1 only, 1 workers (parent + 1); the full registered schedule (tier load = load per frontend)"
+  },
+  {
+   "role": "spb2",
+   "launcher": "capkit",
+   "kind": "server",
+   "start_after": [],
+   "pin_role": "spb2",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "stub_out_of_domain",
+   "asyncio": true,
+   "uses_grpc": true,
+   "loop": "asyncio",
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [
+    "backlog.pending_msgs",
+    "backlog.active_streams",
+    "backlog.yielded"
+   ],
+   "snapshots": "all",
+   "args": [
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "0",
+    "--prebaked",
+    "{input:prebaked}",
+    "--lag-period-us",
+    "{param:lag_period_us}",
+    "--sfe-module",
+    "{param:sfe_module}",
+    "--sfe-profile",
+    "trtllm-like",
+    "--model",
+    "{param:tokenizer_dir}",
+    "--max-context-length",
+    "{param:sfe_max_context_length}",
+    {
+     "splice_json": "{input:fingerprint}",
+     "key": "sfe_args"
+    }
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capstubs.prebaked_server",
+   "note": "S-PB frontend mode for frontend2 only (E6 arm iii: one stub per frontend); one process on one core"
+  },
+  {
+   "role": "frontend2",
+   "launcher": "product",
+   "kind": "server",
+   "start_after": [
+    "spb2"
+   ],
+   "pin_role": "frontend2",
+   "cpus_needed": 11,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "under_test",
+   "asyncio": true,
+   "uses_grpc": true,
+   "loop": "uvloop",
+   "probe_tier": "P0",
+   "readiness": [
+    {
+     "kind": "report_addr"
+    },
+    {
+     "kind": "http_get",
+     "path": "/health",
+     "expect_status": 200,
+     "timeout_s": 2.0
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "{param:tokenizer_dir}",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "0",
+    "--report_addr",
+    "{own:report_addr}",
+    "--openengine-endpoint",
+    "{addr:spb2}",
+    "--num_serve_frontends",
+    "1",
+    "--num_postprocess_workers",
+    "0",
+    "--num_input_processor_workers",
+    "8"
+   ],
+   "env": {},
+   "proc_kinds": [
+    "frontend",
+    "frontend_openengine",
+    "frontend_single"
+   ],
+   "command": [
+    "{param:trtllm_serve}"
+   ],
+   "port": {
+    "kind": "report_addr",
+    "host": "127.0.0.1"
+   },
+   "note": "E6 arm iii frontend 2: an independent single-frontend trtllm-serve (card E4 main tier, 11 cores = 1 event loop + 8 input-processor threads + 2 for grpcio's threads, unverified)"
+  },
+  {
+   "role": "capload2",
+   "launcher": "capkit",
+   "kind": "client",
+   "start_after": [
+    "frontend2"
+   ],
+   "pin_role": "capload2",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 2,
+   "measure_class": "load_source",
+   "asyncio": true,
+   "uses_grpc": false,
+   "loop": "asyncio",
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [
+    "backlog.inflight"
+   ],
+   "snapshots": "all",
+   "args": [
+    "--target",
+    "{addr:frontend2}",
+    "--model",
+    "{param:tokenizer_dir}",
+    "--endpoint",
+    "/v1/completions",
+    "--schedule",
+    "{input:schedule}",
+    "--prompts",
+    "{input:prompts}",
+    "--conn-policy",
+    "keepalive",
+    "--pool-pick",
+    "{param:capload_pool_pick}",
+    "--pool-seed",
+    "{param:capload_pool_seed}",
+    "--pool-reset",
+    "{param:capload_pool_reset}",
+    "--recv-mode",
+    "count",
+    "--chunk-sample-mod",
+    "{param:capload_chunk_sample_mod}",
+    "--fionread-every-ms",
+    "{param:capload_fionread_every_ms}",
+    "--lag-period-us",
+    "{param:lag_period_us}",
+    "--max-records-per-worker",
+    "{param:capload_max_records_per_worker}"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capload",
+   "note": "capload for frontend2 only, 1 workers (parent + 1); the full registered schedule (tier load = load per frontend)"
+  },
+  {
+   "role": "spb3",
+   "launcher": "capkit",
+   "kind": "server",
+   "start_after": [],
+   "pin_role": "spb3",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "stub_out_of_domain",
+   "asyncio": true,
+   "uses_grpc": true,
+   "loop": "asyncio",
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [
+    "backlog.pending_msgs",
+    "backlog.active_streams",
+    "backlog.yielded"
+   ],
+   "snapshots": "all",
+   "args": [
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "0",
+    "--prebaked",
+    "{input:prebaked}",
+    "--lag-period-us",
+    "{param:lag_period_us}",
+    "--sfe-module",
+    "{param:sfe_module}",
+    "--sfe-profile",
+    "trtllm-like",
+    "--model",
+    "{param:tokenizer_dir}",
+    "--max-context-length",
+    "{param:sfe_max_context_length}",
+    {
+     "splice_json": "{input:fingerprint}",
+     "key": "sfe_args"
+    }
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capstubs.prebaked_server",
+   "note": "S-PB frontend mode for frontend3 only (E6 arm iii: one stub per frontend); one process on one core"
+  },
+  {
+   "role": "frontend3",
+   "launcher": "product",
+   "kind": "server",
+   "start_after": [
+    "spb3"
+   ],
+   "pin_role": "frontend3",
+   "cpus_needed": 11,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "under_test",
+   "asyncio": true,
+   "uses_grpc": true,
+   "loop": "uvloop",
+   "probe_tier": "P0",
+   "readiness": [
+    {
+     "kind": "report_addr"
+    },
+    {
+     "kind": "http_get",
+     "path": "/health",
+     "expect_status": 200,
+     "timeout_s": 2.0
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "{param:tokenizer_dir}",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "0",
+    "--report_addr",
+    "{own:report_addr}",
+    "--openengine-endpoint",
+    "{addr:spb3}",
+    "--num_serve_frontends",
+    "1",
+    "--num_postprocess_workers",
+    "0",
+    "--num_input_processor_workers",
+    "8"
+   ],
+   "env": {},
+   "proc_kinds": [
+    "frontend",
+    "frontend_openengine",
+    "frontend_single"
+   ],
+   "command": [
+    "{param:trtllm_serve}"
+   ],
+   "port": {
+    "kind": "report_addr",
+    "host": "127.0.0.1"
+   },
+   "note": "E6 arm iii frontend 3: an independent single-frontend trtllm-serve (card E4 main tier, 11 cores = 1 event loop + 8 input-processor threads + 2 for grpcio's threads, unverified)"
+  },
+  {
+   "role": "capload3",
+   "launcher": "capkit",
+   "kind": "client",
+   "start_after": [
+    "frontend3"
+   ],
+   "pin_role": "capload3",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 2,
+   "measure_class": "load_source",
+   "asyncio": true,
+   "uses_grpc": false,
+   "loop": "asyncio",
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [
+    "backlog.inflight"
+   ],
+   "snapshots": "all",
+   "args": [
+    "--target",
+    "{addr:frontend3}",
+    "--model",
+    "{param:tokenizer_dir}",
+    "--endpoint",
+    "/v1/completions",
+    "--schedule",
+    "{input:schedule}",
+    "--prompts",
+    "{input:prompts}",
+    "--conn-policy",
+    "keepalive",
+    "--pool-pick",
+    "{param:capload_pool_pick}",
+    "--pool-seed",
+    "{param:capload_pool_seed}",
+    "--pool-reset",
+    "{param:capload_pool_reset}",
+    "--recv-mode",
+    "count",
+    "--chunk-sample-mod",
+    "{param:capload_chunk_sample_mod}",
+    "--fionread-every-ms",
+    "{param:capload_fionread_every_ms}",
+    "--lag-period-us",
+    "{param:lag_period_us}",
+    "--max-records-per-worker",
+    "{param:capload_max_records_per_worker}"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capload",
+   "note": "capload for frontend3 only, 1 workers (parent + 1); the full registered schedule (tier load = load per frontend)"
+  },
+  {
+   "role": "sidecar",
+   "launcher": "capkit",
+   "kind": "aux",
+   "start_after": [
+    "capload0",
+    "capload1",
+    "capload2",
+    "capload3"
+   ],
+   "pin_role": "sidecar",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "observer",
+   "asyncio": false,
+   "uses_grpc": false,
+   "loop": null,
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "--interval-ms",
+    "{param:sidecar_interval_ms}",
+    "--gpu-every-s",
+    "{param:sidecar_gpu_every_s}",
+    "--numa-every-s",
+    "{param:sidecar_numa_every_s}",
+    "--nvidia-smi",
+    "{nvidia_smi}"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capenv.sidecar"
+  },
+  {
+   "role": "canary",
+   "launcher": "capkit",
+   "kind": "aux",
+   "start_after": [],
+   "pin_role": "canary",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "observer",
+   "asyncio": false,
+   "uses_grpc": false,
+   "loop": null,
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "--interval-ms",
+    "{param:canary_interval_ms}"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capenv.canary"
+  }
+ ],
+ "params_required": [
+  "canary_interval_ms",
+  "capload_chunk_sample_mod",
+  "capload_fionread_every_ms",
+  "capload_max_records_per_worker",
+  "capload_pool_pick",
+  "capload_pool_reset",
+  "capload_pool_seed",
+  "lag_period_us",
+  "sfe_max_context_length",
+  "sfe_module",
+  "sidecar_gpu_every_s",
+  "sidecar_interval_ms",
+  "sidecar_numa_every_s",
+  "spb_prompt_tokens",
+  "spb_token_ids",
+  "tokenizer_dir",
+  "trtllm_serve"
+ ],
+ "dims": {
+  "tokenizer": "TBD-by-registration (configs/tokenizers/GLM-5.3-Flash)",
+  "stub": "S-PB (capstubs.prebaked_server, frontend mode), one per frontend",
+  "response_timing_switches": "defaults (not set)",
+  "interpretation": "coverage round (REPLAN-20261116): exploratory, offline readout; rejudge with the formal rules later",
+  "log_sink": "raw/logs on the node-local disk (orchestrator redirect)"
+ },
+ "note": "E6 arm (iii) e6-iii-n4-r: 4 independent copies of the E4-4b chain, capload<i> (1 workers) -> trtllm-serve new-arch frontend<i> (1 frontend, postproc pool off; under test, 11 cores) -> spb<i> (S-PB frontend mode, one core); no shared stub, no multi-frontend mechanism, explicit per-frontend targets (no connection landing); 54 cores in all. TEMPLATE: every TBD value is filled at registration (coverage round, exploratory)",
+ "job_inputs": {
+  "fingerprint": {
+   "args": [
+    "--tokenizer",
+    "{param:tokenizer_dir}",
+    "--trust-remote-code",
+    "false",
+    "--tokenizer-mode",
+    "auto"
+   ]
+  },
+  "prebaked": {
+   "args": [
+    "--pb2-module",
+    "tensorrt_llm.grpc.openengine._generated.generation_pb2",
+    "--tier-table",
+    "{input:tier_table}",
+    "--token-ids",
+    "{param:spb_token_ids}",
+    "--prompt-tokens",
+    "{param:spb_prompt_tokens}"
+   ]
+  }
+ }
+}

@@ -1,0 +1,252 @@
+{
+ "schema": "capkit.tiers_template/1",
+ "experiment": "E6",
+ "name": "e6-iii-n4-r",
+ "arrival": {
+  "dist": "fixed",
+  "seed": "TBD:arrival_seed"
+ },
+ "axis": {
+  "name": "R",
+  "load_key": "rate_rps",
+  "unit": "req/s",
+  "order": "asc"
+ },
+ "request_timeout_ns": "TBD:request_timeout_ns",
+ "default_gate": {
+  "mode": "enforce",
+  "rule": "abs_max",
+  "readings": [
+   {
+    "name": "loadgen_inflight",
+    "terms": [
+     {
+      "role": "capload0",
+      "slot": "backlog.inflight",
+      "sign": 1,
+      "agg": "sum"
+     },
+     {
+      "role": "capload1",
+      "slot": "backlog.inflight",
+      "sign": 1,
+      "agg": "sum"
+     },
+     {
+      "role": "capload2",
+      "slot": "backlog.inflight",
+      "sign": 1,
+      "agg": "sum"
+     },
+     {
+      "role": "capload3",
+      "slot": "backlog.inflight",
+      "sign": 1,
+      "agg": "sum"
+     }
+    ],
+    "abs_max": 0
+   },
+   {
+    "name": "spb_pending",
+    "terms": [
+     {
+      "role": "spb0",
+      "slot": "backlog.pending_msgs",
+      "sign": 1,
+      "agg": "sum"
+     },
+     {
+      "role": "spb1",
+      "slot": "backlog.pending_msgs",
+      "sign": 1,
+      "agg": "sum"
+     },
+     {
+      "role": "spb2",
+      "slot": "backlog.pending_msgs",
+      "sign": 1,
+      "agg": "sum"
+     },
+     {
+      "role": "spb3",
+      "slot": "backlog.pending_msgs",
+      "sign": 1,
+      "agg": "sum"
+     }
+    ],
+    "abs_max": 0
+   },
+   {
+    "name": "spb_active",
+    "terms": [
+     {
+      "role": "spb0",
+      "slot": "backlog.active_streams",
+      "sign": 1,
+      "agg": "sum"
+     },
+     {
+      "role": "spb1",
+      "slot": "backlog.active_streams",
+      "sign": 1,
+      "agg": "sum"
+     },
+     {
+      "role": "spb2",
+      "slot": "backlog.active_streams",
+      "sign": 1,
+      "agg": "sum"
+     },
+     {
+      "role": "spb3",
+      "slot": "backlog.active_streams",
+      "sign": 1,
+      "agg": "sum"
+     }
+    ],
+    "abs_max": 0
+   }
+  ],
+  "poll_ns": "TBD:gate_poll_ns",
+  "settle_polls": "TBD:gate_settle_polls",
+  "deadline_guard_ns": "TBD:gate_deadline_guard_ns",
+  "max_snapshot_age_ns": "TBD:gate_max_snapshot_age_ns"
+ },
+ "launch_inject": [],
+ "common": {
+  "max_tokens": 1,
+  "beat_ns": "TBD:beat_ns",
+  "tokens_per_msg": 1,
+  "stream_interval": 1,
+  "prompt_set": "tid128"
+ },
+ "tiers": [
+  {
+   "label": "warmup",
+   "kind": "warmup",
+   "ramp_ns": 0,
+   "window_ns": "TBD:warmup_ns",
+   "tail_ns": 0,
+   "rate_rps": "TBD:rate_warmup"
+  },
+  {
+   "label": "drain-01",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-01",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": true,
+   "rate_rps": "TBD:rate_0"
+  },
+  {
+   "label": "drain-02",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-02",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": false,
+   "rate_rps": "TBD:rate_1"
+  },
+  {
+   "label": "drain-03",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-03",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": false,
+   "rate_rps": "TBD:rate_2"
+  },
+  {
+   "label": "drain-04",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-04",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": false,
+   "rate_rps": "TBD:rate_3"
+  },
+  {
+   "label": "drain-05",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-05",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": false,
+   "rate_rps": "TBD:rate_4"
+  },
+  {
+   "label": "drain-06",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-06",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": false,
+   "rate_rps": "TBD:rate_5"
+  },
+  {
+   "label": "drain-07",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-07",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": false,
+   "rate_rps": "TBD:rate_6"
+  },
+  {
+   "label": "drain-08",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-08",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": false,
+   "rate_rps": "TBD:rate_7"
+  },
+  {
+   "label": "drain-09",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  }
+ ],
+ "note": "R axis (as configs/e4 e4b-r): max_tokens 1, rate doubling; the rate is PER FRONTEND (every capload role runs the whole schedule); group load = 4 x the tier value; TEMPLATE: every TBD value is filled at registration (coverage round, exploratory)"
+}
