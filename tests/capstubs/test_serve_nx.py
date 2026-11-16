@@ -166,3 +166,12 @@ def test_driver_snx_config_forces_table_and_origin(tmp_path):
     assert isinstance(cfg, SnxConfig)
     assert (cfg.tier_table, cfg.origin_ns, cfg.beat_ns, cfg.out_dir) == \
         ("/t.json", 123, 3000000, "/o")
+
+
+def test_stream_interval_yaml(tmp_path):
+    args, why = serve_nx.with_stream_interval(["m"], 20, str(tmp_path))
+    assert why is None and args[:2] == ["m", "--config"]
+    assert open(args[2]).read() == "stream_interval: 20\n"
+    assert serve_nx.with_stream_interval(["m", "--config", "x"], 20, str(tmp_path))[1]
+    assert serve_nx.with_stream_interval(["m"], 20, "")[1]
+    assert serve_nx.with_stream_interval(["m"], 0, str(tmp_path))[1]

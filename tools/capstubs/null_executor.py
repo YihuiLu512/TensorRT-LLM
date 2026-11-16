@@ -40,6 +40,7 @@ import bisect
 import collections
 import dataclasses
 import json
+import mmap
 import os
 import random
 import struct
@@ -70,6 +71,12 @@ REQ_FIELDS = ("req_id", "client_id", "enqueue_ns", "take_step", "take_planned_ns
               "prompt_len", "cancelled")
 RECORDS = {"steps": (STEP_REC, STEP_FIELDS), "takes": (TAKE_REC, TAKE_FIELDS),
            "reqs": (REQ_REC, REQ_FIELDS)}
+# snx.<pid>.live: one record rewritten in place (mmap) after every enqueue, step and take, for a
+# driver in another process (capstubs.nx_role's drain gate). `gen` is a seqlock: odd while a
+# write is in progress; a reader retries until it reads the same even gen before and after.
+LIVE_REC = struct.Struct("<qqqqqqqq")
+LIVE_FIELDS = ("gen", "t_ns", "enqueued", "taken", "finished", "active", "queued",
+               "pending_keys")
 
 
 @dataclasses.dataclass
@@ -301,6 +308,33 @@ def read_records(path, kind):
     return [dict(zip(fields, st.unpack_from(data, i * st.size))) for i in range(n)]
 
 
+class LiveReader:
+    """Reads another process's snx.<pid>.live record (LIVE_FIELDS dict, or None while the file is
+    missing or every retry saw a write in progress)."""
+
+    def __init__(self, path):
+        self.path = path
+        self._m = None
+
+    def read(self, retries=8):
+        if self._m is None:
+            try:
+                with open(self.path, "rb") as f:
+                    self._m = mmap.mmap(f.fileno(), LIVE_REC.size, access=mmap.ACCESS_READ)
+            except (OSError, ValueError):
+                return None
+        for _ in range(retries):
+            a = LIVE_REC.unpack_from(self._m, 0)
+            if a[0] % 2 == 0 and a[0] > 0 and LIVE_REC.unpack_from(self._m, 0)[0] == a[0]:
+                return dict(zip(LIVE_FIELDS, a))
+        return None
+
+    def close(self):
+        if self._m is not None:
+            self._m.close()
+            self._m = None
+
+
 class _Req:
     __slots__ = ("req_id", "llm", "client_id", "max_new", "prompt_len", "prompt_ids", "enq_ns",
                  "take_step", "take_planned", "produced", "iter", "k", "first_k", "rng",
@@ -363,6 +397,9 @@ class NullExecutor:
         self.max_wake_lag_ns = 0
         self.thread_ids = {}
         self._last_flush = clock()
+        self._live = None
+        self._live_lock = threading.Lock()
+        self._live_gen = 0
         self._files_open(cfg.out_dir)
         self._thread = threading.Thread(target=self._run, name="snx_step", daemon=True)
         if start:
@@ -379,6 +416,25 @@ class NullExecutor:
         self.rec = {kind: RecordFile(self.prefix + "." + kind + ".bin" if out_dir else None, st,
                                      fb)
                     for kind, (st, _f) in RECORDS.items()}
+        if self.prefix:
+            with open(self.prefix + ".live", "w+b") as f:
+                f.write(bytes(LIVE_REC.size))
+                f.flush()
+                self._live = mmap.mmap(f.fileno(), LIVE_REC.size)
+
+    def _live_update(self):
+        """Rewrite the live record (counters are read without the step lock: a snapshot)."""
+        if self._live is None:
+            return
+        c = self.counts
+        with self._live_lock:
+            g = self._live_gen + 1
+            LIVE_REC.pack_into(self._live, 0, g, 0, 0, 0, 0, 0, 0, 0)
+            g += 1
+            self._live_gen = g
+            LIVE_REC.pack_into(self._live, 0, g, self.clock(), self._next_id - 1, c["taken"],
+                               c["finished"], len(self._active), len(self._queue),
+                               len(self.responses))
 
     def _write_json(self, name, doc):
         if not self.prefix:
@@ -419,6 +475,7 @@ class NullExecutor:
             self._next_id += 1
             self._queue.append((req_id, request, now))
             self._req_cv.notify()
+        self._live_update()
         return req_id
 
     def enqueue_requests(self, requests):
@@ -454,6 +511,7 @@ class NullExecutor:
                 self._oldest_planned = 0
         if out:
             self.rec["takes"].add(call, self.clock(), oldest, len(out), keys)
+            self._live_update()
         return out
 
     def get_latest_iteration_stats(self):
@@ -733,6 +791,7 @@ class NullExecutor:
         if self.self_drain and out:
             got = self.await_responses(timeout=0)
             cnt["self_drained"] += len(got)
+        self._live_update()
         return prefill
 
 

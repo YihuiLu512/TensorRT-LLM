@@ -51,8 +51,8 @@ from .null_executor import (ENV_VAR, NS, RecordFile, SCHEMA_CONFIG, SnxConfig, t
 
 SCHEMA_SUMMARY = "capkit.nxd_summary/1"
 SCHEMA_READY = "capkit.nxd_ready/1"
-SEND_REC = struct.Struct("<qqqh")
-SEND_FIELDS = ("req_id", "planned_ns", "sent_ns", "tier_seq")
+SEND_REC = struct.Struct("<qqqqh")
+SEND_FIELDS = ("req_id", "client_id", "planned_ns", "sent_ns", "tier_seq")
 RECV_REC = struct.Struct("<qii")
 RECV_FIELDS = ("recv_ns", "bytes", "responses")
 CONSUMERS = ("raw", "deserialize", "product")
@@ -194,7 +194,7 @@ class LaneStats:
         for _i, _p, seq in rows:
             self._t(seq)["planned"] += 1
 
-    def sent(self, req_id, planned_ns, sent_ns, seq):
+    def sent(self, req_id, planned_ns, sent_ns, seq, client_id=-1):
         lag = sent_ns - planned_ns
         with self.lock:
             t = self._t(seq)
@@ -202,7 +202,7 @@ class LaneStats:
             t["send_lag_ns_sum"] += lag
             if lag > t["send_lag_ns_max"]:
                 t["send_lag_ns_max"] = lag
-        self.sends.add(req_id, planned_ns, sent_ns, seq)
+        self.sends.add(req_id, client_id, planned_ns, sent_ns, seq)
 
     def received(self, now, nbytes, responses=-1, finals=0, errors=0):
         seq = self.plan.tier_seq_at(now)
@@ -307,11 +307,11 @@ def send_loop(plan, rows, submit, stats, stop, end_id):
         if stop.is_set():
             return
         try:
-            submit(make_request(plan, req_id, seq, end_id))
+            cid = submit(make_request(plan, req_id, seq, end_id))
         except Exception as e:  # noqa: BLE001 -- recorded; the run continues
             stats.errors.append("submit %d: %r" % (req_id, e))
             continue
-        stats.sent(req_id, planned, clock(), seq)
+        stats.sent(req_id, planned, clock(), seq, -1 if cid is None else cid)
 
 
 def raw_class(base, stats, consumer, sample_every, stop):
@@ -332,6 +332,7 @@ def submit_raw(proxy):
     def submit(req):
         req.set_id(proxy._get_next_client_id())
         proxy._send_request(req)
+        return req.id
     return submit
 
 
@@ -380,36 +381,41 @@ def run_standalone(a, holder):
     ex = []
 
     def arrivals(now):
-        while pos[0] < len(rows) and rows[pos[0]][1] <= now:
+        while pos[0] < len(rows) and rows[pos[0]][1] <= now and not ex[0].is_shutdown:
             req_id, planned, seq = rows[pos[0]]
             pos[0] += 1
             r = tllm.Request(input_token_ids=plan.prompt, max_tokens=plan.max_tokens[seq],
                              streaming=True, end_id=-1, client_id=req_id)
             ex[0].enqueue_request(r)
-            stats.sent(req_id, planned, time.monotonic_ns(), seq)
+            stats.sent(req_id, planned, time.monotonic_ns(), seq, req_id)
 
     ex.append(NullExecutor(cfg, ProductAdapter(), tier_table=plan.tt,
                            llm_stream_interval=a.stream_interval or None, self_drain=True,
                            arrival_hook=arrivals, start=False))
     write_json(os.path.join(a.out_dir, "nxd.standalone.ready.json"),
                {"schema": SCHEMA_READY, "pid": os.getpid(), "mode": "standalone"})
+    late = time.monotonic_ns() - a.origin_ns
     ex[0].start()
-    _finish(a, holder, [stats], {"mode": "standalone", "snx_counts": None})
+    _finish(a, holder, [stats], {"mode": "standalone", "ready_after_origin_ns": late})
     ex[0].shutdown()
     return 0
 
 
 def _lane_submit(proxy, consumer):
     if consumer == "product":
-        return lambda req: proxy.submit(req)  # the GenerationResult is dropped
+        def submit(req):
+            proxy.submit(req)  # the GenerationResult is dropped
+            return req.id
+        return submit
     proxy._start_dispatch_threads()
     return submit_raw(proxy)
 
 
-def run_proxy(a, holder):
+def start_proxy(a, plan, stats, stop):
+    """The product proxy with a NullWorker (SNX config into the environment first). Returns
+    (proxy, extra) where extra describes it; lanes >= 2 starts K + 1 serving lanes."""
     from pathlib import Path  # noqa: PLC0415
     cfg = snx_config(a)
-    plan = Plan(a)
     _ks, s = tier_shape(plan.tt, cfg)
     os.environ[ENV_VAR] = json.dumps(cfg.to_doc(), sort_keys=True)
     from tensorrt_llm.executor.postproc_worker import PostprocWorkerConfig  # noqa: PLC0415
@@ -417,13 +423,13 @@ def run_proxy(a, holder):
     from tensorrt_llm.llmapi.llm_args import TorchLlmArgs  # noqa: PLC0415
 
     from .null_worker import NullWorker  # noqa: PLC0415
+    from .serve_nx import patch_cuda_stream_if_no_cuda  # noqa: PLC0415
+    cuda_patched = patch_cuda_stream_if_no_cuda()
     lanes = a.lanes
     if lanes < 1:
         raise ConfigError("--lanes must be >= 1")
     llm_args = TorchLlmArgs(model=a.model, max_seq_len=a.max_seq_len, stream_interval=s,
                             num_serve_frontends=lanes + 1 if lanes >= 2 else 1)
-    stop = threading.Event()
-    stats = LaneStats(plan, a.out_dir, "lane0", a.consumer, a.sample_every)
     base = GenerationExecutorProxy
     cls = base if a.consumer == "product" or lanes >= 2 else \
         raw_class(base, stats, a.consumer, a.sample_every, stop)
@@ -431,31 +437,62 @@ def run_proxy(a, holder):
     proxy = cls({"hf_model_dir": Path(a.model), "tokenizer": None, "llm_args": llm_args},
                 model_world_size=1, worker_cls=NullWorker,
                 postproc_worker_config=PostprocWorkerConfig(), is_llm_executor=True)
-    extra = {"mode": "proxy", "lanes": lanes, "proxy_class": cls.__name__,
-             "proxy_start_s": (time.monotonic_ns() - t0) / NS}
+    extra = {"mode": "proxy", "lanes": lanes, "consumer": a.consumer,
+             "proxy_class": cls.__name__, "proxy_start_s": (time.monotonic_ns() - t0) / NS,
+             "cuda_stream_patched": cuda_patched, "stream_interval": s,
+             "ready_after_origin_ns": time.monotonic_ns() - a.origin_ns}
+    return proxy, extra
+
+
+def spawn_drains(a, proxy, out_dir, stopped):
+    """K attached drain subprocesses (lanes >= 2), each sending its share of the rows; returns
+    the Popen list once every one wrote its ready file. stopped(): poll for an abort."""
+    info_path = os.path.join(out_dir, "nxd.attach_info.json")
+    write_json(info_path, proxy.multi_frontend_attach_info())
+    cpus = a.drain_cpus.split(";") if a.drain_cpus else []
+    children = []
+    for fid in range(1, a.lanes + 1):
+        argv = [a.python, "-m", "capstubs.nx_driver", "drain",
+                "--attach-info", info_path, "--frontend-id", str(fid),
+                "--lanes", str(a.lanes), "--consumer", a.consumer,
+                "--sample-every", str(a.sample_every), "--tier-table", a.tier_table,
+                "--schedule", a.schedule, "--origin-ns", str(a.origin_ns),
+                "--prompt-len", str(a.prompt_len),
+                "--prompt-first-id", str(a.prompt_first_id), "--end-id", str(a.end_id),
+                "--out-dir", out_dir, "--tail-s", str(a.tail_s)]
+        if len(cpus) >= fid and cpus[fid - 1]:
+            argv = ["taskset", "-c", cpus[fid - 1]] + argv
+        children.append(subprocess.Popen(argv))  # nosec B603
+    for fid in range(1, a.lanes + 1):
+        p = os.path.join(out_dir, "nxd.lane%d.ready.json" % fid)
+        while not os.path.exists(p):
+            time.sleep(0.2)
+            if stopped() or any(c.poll() is not None for c in children):
+                stop_children(children)
+                raise RuntimeError("drain lane %d did not get ready" % fid)
+    return children
+
+
+def stop_children(children, timeout=30):
+    for c in children:
+        if c.poll() is None:
+            c.send_signal(signal.SIGTERM)
+    for c in children:
+        try:
+            c.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            c.kill()
+
+
+def run_proxy(a, holder):
+    plan = Plan(a)
+    stop = threading.Event()
+    stats = LaneStats(plan, a.out_dir, "lane0", a.consumer, a.sample_every)
+    proxy, extra = start_proxy(a, plan, stats, stop)
     children = []
     try:
-        if lanes >= 2:
-            info_path = os.path.join(a.out_dir, "nxd.attach_info.json")
-            write_json(info_path, proxy.multi_frontend_attach_info())
-            cpus = a.drain_cpus.split(";") if a.drain_cpus else []
-            for fid in range(1, lanes + 1):
-                argv = [a.python, "-m", "capstubs.nx_driver", "drain",
-                        "--attach-info", info_path, "--frontend-id", str(fid),
-                        "--lanes", str(lanes), "--consumer", a.consumer,
-                        "--sample-every", str(a.sample_every), "--tier-table", a.tier_table,
-                        "--schedule", a.schedule, "--origin-ns", str(a.origin_ns),
-                        "--prompt-len", str(a.prompt_len),
-                        "--prompt-first-id", str(a.prompt_first_id), "--end-id", str(a.end_id),
-                        "--out-dir", a.out_dir, "--tail-s", str(a.tail_s)]
-                if len(cpus) >= fid and cpus[fid - 1]:
-                    argv = ["taskset", "-c", cpus[fid - 1]] + argv
-                children.append(subprocess.Popen(argv))  # nosec B603
-            for fid in range(1, lanes + 1):
-                p = os.path.join(a.out_dir, "nxd.lane%d.ready.json" % fid)
-                while not os.path.exists(p):
-                    if holder.stop.wait(0.2) or any(c.poll() is not None for c in children):
-                        raise RuntimeError("drain lane %d did not get ready" % fid)
+        if a.lanes >= 2:
+            children = spawn_drains(a, proxy, a.out_dir, holder.stop.is_set)
             lane_stats = []
         else:
             submit = _lane_submit(proxy, a.consumer)
@@ -464,23 +501,17 @@ def run_proxy(a, holder):
                              args=(plan, plan.rows, submit, stats, stop, a.end_id)).start()
             lane_stats = [stats]
         write_json(os.path.join(a.out_dir, "nxd.ready.json"),
-                   {"schema": SCHEMA_READY, "pid": os.getpid(), "mode": "proxy",
-                    "lanes": lanes, "children": [c.pid for c in children], **extra})
+                   {"schema": SCHEMA_READY, "pid": os.getpid(),
+                    "children": [c.pid for c in children], **extra})
         if lane_stats:
             _finish(a, holder, lane_stats, extra)
-        else:
-            while not holder.stop.is_set():
+        else:  # the drains write their own summaries; wait as _finish does
+            holder.wait_until(plan.end_abs + int(a.tail_s * NS))
+            while not a.no_hold and not holder.stop.is_set():
                 holder.stop.wait(0.5)
     finally:
         stop.set()
-        for c in children:
-            if c.poll() is None:
-                c.send_signal(signal.SIGTERM)
-        for c in children:
-            try:
-                c.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                c.kill()
+        stop_children(children)
         proxy.shutdown()
     return 0
 

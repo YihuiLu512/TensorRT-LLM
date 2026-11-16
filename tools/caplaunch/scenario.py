@@ -77,6 +77,10 @@ TOOL_TABLE = {
     # oe_sink (errata FT1-8): capgrpc.load's reader in one process; no port file.
     "capgrpc.oe_sink": {"loop": True, "tiers": True, "snapshot": True, "ready": True,
                         "port": False, "workers": True, "single": True},
+    # S-NX driver as a capkit tool (E2b, E7): one started process (proxy mode also starts the
+    # product's MPI worker and, with --lanes K >= 2, K drain subprocesses: monitor children).
+    "capstubs.nx_role": {"loop": True, "tiers": True, "snapshot": True, "ready": True,
+                         "port": False, "workers": False, "single": True},
     # --ready-file: INTERFACES 2.2 ("all long-lived processes"); optional in B4's parsers.
     "capenv.sidecar": {"origin": True, "shm_only": True, "sidecar": True, "ready": True},
     "capenv.canary": {"origin": True, "canary": True, "ready": True},

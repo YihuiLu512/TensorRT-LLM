@@ -54,6 +54,9 @@ def build_parser():
     p.add_argument("--patch-cuda-stream", choices=("auto", "never"), default="auto",
                    help="auto: dummy torch.cuda.Stream when torch.cuda.is_available() is false")
     p.add_argument("--record", help="write the resolved config and argv here (JSON)")
+    p.add_argument("--stream-interval", type=int,
+                   help="LLM API stream_interval: writes <out-dir>/serve_nx.<pid>.llm_api.yaml "
+                        "and appends --config <it> (the serve arguments must not have --config)")
     return p
 
 
@@ -139,6 +142,21 @@ def start_reporter(path, host, port, timeout_s):
     return t
 
 
+def with_stream_interval(serve_args, s, out_dir):
+    """(serve args + ["--config", <yaml with stream_interval: s>], None) or (args, why)."""
+    if s < 1:
+        return serve_args, "--stream-interval must be >= 1"
+    if any(x in ("--config", "--extra_llm_api_options") or
+           x.startswith(("--config=", "--extra_llm_api_options=")) for x in serve_args):
+        return serve_args, "--stream-interval with --config in the serve arguments"
+    if not out_dir:
+        return serve_args, "--stream-interval needs --out-dir (the YAML is written there)"
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, "serve_nx.%d.llm_api.yaml" % os.getpid())
+    write_atomic(path, "stream_interval: %d\n" % s)
+    return serve_args + ["--config", path], None
+
+
 def apply_patches(patch_cuda_stream="auto"):
     """Point GenerationExecutorProxy's worker_cls default at NullWorker; returns what was done."""
     from tensorrt_llm.executor.proxy import GenerationExecutorProxy  # noqa: PLC0415
@@ -153,14 +171,22 @@ def apply_patches(patch_cuda_stream="auto"):
     done = {"worker_cls": "%s.%s" % (NullWorker.__module__, NullWorker.__qualname__),
             "cuda_stream_patched": False}
     if patch_cuda_stream == "auto":
-        import torch  # noqa: PLC0415
-        if not torch.cuda.is_available():
-            class _NoCudaStream:  # still a type: the product annotates `torch.cuda.Stream | None`
-                def __init__(self, *args, **kwargs):
-                    pass
-            torch.cuda.Stream = _NoCudaStream
-            done["cuda_stream_patched"] = True
+        done["cuda_stream_patched"] = patch_cuda_stream_if_no_cuda()
     return done
+
+
+def patch_cuda_stream_if_no_cuda():
+    """Replace torch.cuda.Stream with a dummy type when CUDA is not available (the proxy builds
+    one unconditionally before it submits the workers); True when patched."""
+    import torch  # noqa: PLC0415
+    if torch.cuda.is_available():
+        return False
+
+    class _NoCudaStream:  # still a type: the product annotates `torch.cuda.Stream | None`
+        def __init__(self, *args, **kwargs):
+            pass
+    torch.cuda.Stream = _NoCudaStream
+    return True
 
 
 def main(argv=None):
@@ -182,6 +208,11 @@ def main(argv=None):
         except Exception as e:  # noqa: BLE001 -- any config problem refuses the start
             print("serve_nx: config refused: %s" % e, file=sys.stderr)
             return 3
+        if a.stream_interval is not None:
+            serve_args, why = with_stream_interval(serve_args, a.stream_interval, cfg.out_dir)
+            if why:
+                print("serve_nx: %s" % why, file=sys.stderr)
+                return 3
         if a.pick_port:
             if flag_value(serve_args, "--port") is not None:
                 print("serve_nx: --pick-port with --port in the serve arguments", file=sys.stderr)
@@ -197,6 +228,7 @@ def main(argv=None):
                 return 3
             start_reporter(a.report_addr, a.report_host, int(port), a.report_timeout_s)
         if a.record:
+            os.makedirs(os.path.dirname(os.path.abspath(a.record)), exist_ok=True)
             write_atomic(a.record, json.dumps(
                 {"schema": SCHEMA_RECORD, "pid": os.getpid(), "config": cfg.to_doc(),
                  "serve_args": serve_args, "patches": done, "argv0": sys.argv[0]},
