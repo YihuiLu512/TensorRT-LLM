@@ -9,22 +9,6 @@
 # changed or affected ran again at the last of them, and their entries name that commit; a row with
 # cases at both commits has an entry for each.
 entries:
-  # NT-101: K and chain ran
-  - row: F-01@03
-    features:
-    - F-01
-    cases:
-    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_chat_and_completions_basic
-    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
-    junit:
-    - run-1886043/r1-ds/junit/
-    - run-1886043/r1-none/
-    - run-1886043/r2-ds/junit/
-    - run-1886043/r2-none/
-    - run-1886043/r3-ds/junit/
-    - run-1886043/r3-none/
-    result: passed
-    chain_proof: ok
   # NT-109: K and chain ran
   - row: F-01@03
     features:
@@ -41,14 +25,29 @@ entries:
     - run-1901714/r3-none/
     result: passed
     chain_proof: ok
-  # NT-101, NT-102, NT-217: K and chain ran
+  # NT-101: K and chain ran
+  - row: F-01@03
+    features:
+    - F-01
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_chat_and_completions_basic
+    commit: dca6d4bce95ce8f2fc1c142a25a01725cfbe23e9
+    junit:
+    - run-1908878/r1-ds/junit/
+    - run-1908878/r1-none/
+    - run-1908878/r2-ds/junit/
+    - run-1908878/r2-none/
+    - run-1908878/r3-ds/junit/
+    - run-1908878/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-102, NT-217: K and chain ran
   # NT-102 fails on the chain, 3 runs of 3: a completion with echo fails in the orchestrator (an
   # existing defect, N77). Form K passes.
   - row: F-02@03
     features:
     - F-02
     cases:
-    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_chat_and_completions_basic
     - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_completions_echo
     - unittest/llmapi/apps/_test_openengine_ds_disagg_gsm8k.py::test_deepseek_v41_smoke_and_gsm8k_ctx_dep2_gen_tp2
     commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
@@ -81,6 +80,22 @@ entries:
     - run-1901714/r2-none/
     - run-1901714/r3-ds/junit/
     - run-1901714/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-101: K and chain ran
+  - row: F-02@03
+    features:
+    - F-02
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_chat_and_completions_basic
+    commit: dca6d4bce95ce8f2fc1c142a25a01725cfbe23e9
+    junit:
+    - run-1908878/r1-ds/junit/
+    - run-1908878/r1-none/
+    - run-1908878/r2-ds/junit/
+    - run-1908878/r2-none/
+    - run-1908878/r3-ds/junit/
+    - run-1908878/r3-none/
     result: passed
     chain_proof: ok
   # NT-103: chain ran
@@ -133,40 +148,36 @@ entries:
     chain_proof: ok
   # NT-106: chain ran
   # NT-106 [server_info] fails on the chain, 3 runs of 3: the ds engine reports no KV block size in
-  # its ServerInfo (an existing defect, Z3). The other endpoints pass. The test is the chain's only:
-  # form K has no worker front ends.
+  # its ServerInfo (an existing defect, Z3); the context KV endpoint matches the engine's. The other
+  # endpoints pass, /metrics holding GetLoad snapshots only. The test is the chain's only: form K
+  # has no worker front ends.
   - row: F-05b@03
     features:
     - F-05b
     cases:
     - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_worker_frontend_endpoints_direct
-    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    commit: 2f353c7b125b6583349317fd8269efdf73d8afb2
     junit:
-    - run-1901714/r1-ds/junit/
-    - run-1901714/r1-none/
-    - run-1901714/r2-ds/junit/
-    - run-1901714/r2-none/
-    - run-1901714/r3-ds/junit/
-    - run-1901714/r3-none/
+    - run-1910440/r1-ds/junit/
+    - run-1910440/r2-ds/junit/
+    - run-1910440/r3-ds/junit/
     result: failed
     chain_proof: ok
   # NT-106: chain ran
   # NT-106 [server_info] fails on the chain, 3 runs of 3: the ds engine reports no KV block size in
-  # its ServerInfo (an existing defect, Z3). The other endpoints pass. The test is the chain's only:
-  # form K has no worker front ends.
+  # its ServerInfo (an existing defect, Z3); the context KV endpoint matches the engine's. The other
+  # endpoints pass, /metrics holding GetLoad snapshots only. The test is the chain's only: form K
+  # has no worker front ends.
   - row: F-05c@03
     features:
     - F-05c
     cases:
     - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_worker_frontend_endpoints_direct
-    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    commit: 2f353c7b125b6583349317fd8269efdf73d8afb2
     junit:
-    - run-1901714/r1-ds/junit/
-    - run-1901714/r1-none/
-    - run-1901714/r2-ds/junit/
-    - run-1901714/r2-none/
-    - run-1901714/r3-ds/junit/
-    - run-1901714/r3-none/
+    - run-1910440/r1-ds/junit/
+    - run-1910440/r2-ds/junit/
+    - run-1910440/r3-ds/junit/
     result: failed
     chain_proof: ok
   # NT-107: K and chain ran
@@ -189,21 +200,19 @@ entries:
     chain_proof: incomplete
   # NT-106: chain ran
   # NT-106 [server_info] fails on the chain, 3 runs of 3: the ds engine reports no KV block size in
-  # its ServerInfo (an existing defect, Z3). The other endpoints pass. The test is the chain's only:
-  # form K has no worker front ends.
+  # its ServerInfo (an existing defect, Z3); the context KV endpoint matches the engine's. The other
+  # endpoints pass, /metrics holding GetLoad snapshots only. The test is the chain's only: form K
+  # has no worker front ends.
   - row: F-06@03
     features:
     - F-06
     cases:
     - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_worker_frontend_endpoints_direct
-    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    commit: 2f353c7b125b6583349317fd8269efdf73d8afb2
     junit:
-    - run-1901714/r1-ds/junit/
-    - run-1901714/r1-none/
-    - run-1901714/r2-ds/junit/
-    - run-1901714/r2-none/
-    - run-1901714/r3-ds/junit/
-    - run-1901714/r3-none/
+    - run-1910440/r1-ds/junit/
+    - run-1910440/r2-ds/junit/
+    - run-1910440/r3-ds/junit/
     result: failed
     chain_proof: ok
   # NT-100, NT-124: chain ran
@@ -771,40 +780,36 @@ entries:
     chain_proof: ok
   # NT-106: chain ran
   # NT-106 [server_info] fails on the chain, 3 runs of 3: the ds engine reports no KV block size in
-  # its ServerInfo (an existing defect, Z3). The other endpoints pass. The test is the chain's only:
-  # form K has no worker front ends.
+  # its ServerInfo (an existing defect, Z3); the context KV endpoint matches the engine's. The other
+  # endpoints pass, /metrics holding GetLoad snapshots only. The test is the chain's only: form K
+  # has no worker front ends.
   - row: F-42a@03
     features:
     - F-42a
     cases:
     - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_worker_frontend_endpoints_direct
-    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    commit: 2f353c7b125b6583349317fd8269efdf73d8afb2
     junit:
-    - run-1901714/r1-ds/junit/
-    - run-1901714/r1-none/
-    - run-1901714/r2-ds/junit/
-    - run-1901714/r2-none/
-    - run-1901714/r3-ds/junit/
-    - run-1901714/r3-none/
+    - run-1910440/r1-ds/junit/
+    - run-1910440/r2-ds/junit/
+    - run-1910440/r3-ds/junit/
     result: failed
     chain_proof: ok
   # NT-106: chain ran
   # NT-106 [server_info] fails on the chain, 3 runs of 3: the ds engine reports no KV block size in
-  # its ServerInfo (an existing defect, Z3). The other endpoints pass. The test is the chain's only:
-  # form K has no worker front ends.
+  # its ServerInfo (an existing defect, Z3); the context KV endpoint matches the engine's. The other
+  # endpoints pass, /metrics holding GetLoad snapshots only. The test is the chain's only: form K
+  # has no worker front ends.
   - row: F-42b@03
     features:
     - F-42b
     cases:
     - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_worker_frontend_endpoints_direct
-    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    commit: 2f353c7b125b6583349317fd8269efdf73d8afb2
     junit:
-    - run-1901714/r1-ds/junit/
-    - run-1901714/r1-none/
-    - run-1901714/r2-ds/junit/
-    - run-1901714/r2-none/
-    - run-1901714/r3-ds/junit/
-    - run-1901714/r3-none/
+    - run-1910440/r1-ds/junit/
+    - run-1910440/r2-ds/junit/
+    - run-1910440/r3-ds/junit/
     result: failed
     chain_proof: ok
   # NT-119: K and chain ran
@@ -963,21 +968,14 @@ entries:
     - run-1886043/r3-none/
     result: passed
     chain_proof: ok
-  # NT-101, NT-217: K and chain ran
+  # NT-217: chain ran
   - row: DG-12@03
     features:
     - DG-12
     cases:
-    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_chat_and_completions_basic
     - unittest/llmapi/apps/_test_openengine_ds_disagg_gsm8k.py::test_deepseek_v41_smoke_and_gsm8k_ctx_dep2_gen_tp2
     commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
     junit:
-    - run-1886043/r1-ds/junit/
-    - run-1886043/r1-none/
-    - run-1886043/r2-ds/junit/
-    - run-1886043/r2-none/
-    - run-1886043/r3-ds/junit/
-    - run-1886043/r3-none/
     - run-1896144/r1-ds/junit/
     - run-1896144/r1-none/
     - run-1896144/r2-ds/junit/
@@ -986,27 +984,52 @@ entries:
     - run-1896144/r3-none/
     result: passed
     chain_proof: ok
-  # NT-101, NT-217: K and chain ran
+  # NT-101: K and chain ran
+  - row: DG-12@03
+    features:
+    - DG-12
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_chat_and_completions_basic
+    commit: dca6d4bce95ce8f2fc1c142a25a01725cfbe23e9
+    junit:
+    - run-1908878/r1-ds/junit/
+    - run-1908878/r1-none/
+    - run-1908878/r2-ds/junit/
+    - run-1908878/r2-none/
+    - run-1908878/r3-ds/junit/
+    - run-1908878/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-217: chain ran
   - row: DG-13@03
     features:
     - DG-13
     cases:
-    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_chat_and_completions_basic
     - unittest/llmapi/apps/_test_openengine_ds_disagg_gsm8k.py::test_deepseek_v41_smoke_and_gsm8k_ctx_dep2_gen_tp2
     commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
     junit:
-    - run-1886043/r1-ds/junit/
-    - run-1886043/r1-none/
-    - run-1886043/r2-ds/junit/
-    - run-1886043/r2-none/
-    - run-1886043/r3-ds/junit/
-    - run-1886043/r3-none/
     - run-1896144/r1-ds/junit/
     - run-1896144/r1-none/
     - run-1896144/r2-ds/junit/
     - run-1896144/r2-none/
     - run-1896144/r3-ds/junit/
     - run-1896144/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-101: K and chain ran
+  - row: DG-13@03
+    features:
+    - DG-13
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_chat_and_completions_basic
+    commit: dca6d4bce95ce8f2fc1c142a25a01725cfbe23e9
+    junit:
+    - run-1908878/r1-ds/junit/
+    - run-1908878/r1-none/
+    - run-1908878/r2-ds/junit/
+    - run-1908878/r2-none/
+    - run-1908878/r3-ds/junit/
+    - run-1908878/r3-none/
     result: passed
     chain_proof: ok
   # NT-115: K and chain ran
@@ -1158,42 +1181,42 @@ entries:
     result: passed
     chain_proof: ok
   # NT-132: K and chain ran
-  # NT-132 [decode] fails in form K, 3 runs of 3: the ds generation worker cancels a streamed
-  # request without the log line the test waits for. The chain passes all three stages, and form K
-  # passes [queued] and [prefill]. WT-62-fix1 changes form K's evidence.
+  # NT-132: both forms pass all three stages, 3 runs of 3. In form K a left decode is shown ended by
+  # the generation worker's /load after a probe request: the ds worker does not log every streamed
+  # request whose client left.
   - row: DG-38@03
     features:
     - DG-38
     cases:
     - unittest/llmapi/apps/_test_openengine_ds_disagg_cancel.py::test_abort_stages
-    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    commit: dca6d4bce95ce8f2fc1c142a25a01725cfbe23e9
     junit:
-    - run-1901715/r1-ds/junit/
-    - run-1901715/r1-none/
-    - run-1901715/r2-ds/junit/
-    - run-1901715/r2-none/
-    - run-1901715/r3-ds/junit/
-    - run-1901715/r3-none/
-    result: failed
+    - run-1908880/r1-ds/junit/
+    - run-1908880/r1-none/
+    - run-1908880/r2-ds/junit/
+    - run-1908880/r2-none/
+    - run-1908880/r3-ds/junit/
+    - run-1908880/r3-none/
+    result: passed
     chain_proof: ok
   # NT-132: K and chain ran
-  # NT-132 [decode] fails in form K, 3 runs of 3: the ds generation worker cancels a streamed
-  # request without the log line the test waits for. The chain passes all three stages, and form K
-  # passes [queued] and [prefill]. WT-62-fix1 changes form K's evidence.
+  # NT-132: both forms pass all three stages, 3 runs of 3. In form K a left decode is shown ended by
+  # the generation worker's /load after a probe request: the ds worker does not log every streamed
+  # request whose client left.
   - row: DG-39c@03
     features:
     - DG-39c
     cases:
     - unittest/llmapi/apps/_test_openengine_ds_disagg_cancel.py::test_abort_stages
-    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    commit: dca6d4bce95ce8f2fc1c142a25a01725cfbe23e9
     junit:
-    - run-1901715/r1-ds/junit/
-    - run-1901715/r1-none/
-    - run-1901715/r2-ds/junit/
-    - run-1901715/r2-none/
-    - run-1901715/r3-ds/junit/
-    - run-1901715/r3-none/
-    result: failed
+    - run-1908880/r1-ds/junit/
+    - run-1908880/r1-none/
+    - run-1908880/r2-ds/junit/
+    - run-1908880/r2-none/
+    - run-1908880/r3-ds/junit/
+    - run-1908880/r3-none/
+    result: passed
     chain_proof: ok
   # NT-119, NT-140, NT-141: K and chain ran
   # NT-141 has no expectation entry: the test asserts the failed pull itself, and its chain proof
@@ -1222,22 +1245,21 @@ entries:
     result: passed
     chain_proof: ok
   # NT-215: chain ran
-  # NT-215 fails on the chain, 3 runs of 3: with ignore_eos the model's four tokens are all special
-  # tokens, the text is empty, and the test stops in its first batch, before the retry it checks.
-  # WT-62-fix1 changes the check.
+  # NT-215 passes on the chain in 2 runs of 3: every request completes with all its tokens, the
+  # orchestrator retries the lost context legs under new ids, and each generation leg takes one of
+  # them. In the third run the attached context front end never had two context legs in flight in
+  # ten batches, so the test failed before it killed the front end (a precondition of the test, not
+  # the behaviour checked).
   - row: DG-45@03
     features:
     - DG-45
     cases:
     - unittest/llmapi/apps/_test_openengine_ds_disagg_cluster.py::test_ctx_leg_retry_after_ctx_frontend_killed
-    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    commit: 92ea64e5e4e6579d245224e4c341ce83d87baaaf
     junit:
-    - run-1901715/r1-ds/junit/
-    - run-1901715/r1-none/
-    - run-1901715/r2-ds/junit/
-    - run-1901715/r2-none/
-    - run-1901715/r3-ds/junit/
-    - run-1901715/r3-none/
+    - run-1911481/r1-ds/junit/
+    - run-1911481/r2-ds/junit/
+    - run-1911481/r3-ds/junit/
     result: failed
     chain_proof: ok
   # NT-144: chain ran
@@ -1336,28 +1358,38 @@ entries:
     - run-1886045/r3-none/
     result: passed
     chain_proof: ok
-  # NT-101, NT-137: K and chain ran
+  # NT-137: chain ran
   # NT-150 to NT-156 (the ds OpenEngine server on its MockEngine) are WT-42's cases.
   - row: DG-83@03
     features:
     - DG-83
     cases:
-    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_chat_and_completions_basic
     - unittest/llmapi/apps/_test_openengine_ds_disagg_handoff.py::test_direct_handoff_auth_and_multimodal_attributes
     commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
     junit:
-    - run-1886043/r1-ds/junit/
-    - run-1886043/r1-none/
-    - run-1886043/r2-ds/junit/
-    - run-1886043/r2-none/
-    - run-1886043/r3-ds/junit/
-    - run-1886043/r3-none/
     - run-1891432/r1-ds/junit/
     - run-1891432/r1-none/
     - run-1891432/r2-ds/junit/
     - run-1891432/r2-none/
     - run-1891432/r3-ds/junit/
     - run-1891432/r3-none/
+    result: passed
+    chain_proof: ok
+  # NT-101: K and chain ran
+  # NT-150 to NT-156 (the ds OpenEngine server on its MockEngine) are WT-42's cases.
+  - row: DG-83@03
+    features:
+    - DG-83
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_chat_and_completions_basic
+    commit: dca6d4bce95ce8f2fc1c142a25a01725cfbe23e9
+    junit:
+    - run-1908878/r1-ds/junit/
+    - run-1908878/r1-none/
+    - run-1908878/r2-ds/junit/
+    - run-1908878/r2-none/
+    - run-1908878/r3-ds/junit/
+    - run-1908878/r3-none/
     result: passed
     chain_proof: ok
   # NT-139: chain ran
@@ -1394,22 +1426,6 @@ entries:
     - run-1886045/r3-none/
     result: passed
     chain_proof: ok
-  # NT-101: K and chain ran
-  - row: DG-86@03
-    features:
-    - DG-86
-    cases:
-    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_chat_and_completions_basic
-    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
-    junit:
-    - run-1886043/r1-ds/junit/
-    - run-1886043/r1-none/
-    - run-1886043/r2-ds/junit/
-    - run-1886043/r2-none/
-    - run-1886043/r3-ds/junit/
-    - run-1886043/r3-none/
-    result: passed
-    chain_proof: ok
   # NT-126: K and chain ran
   - row: DG-86@03
     features:
@@ -1426,9 +1442,28 @@ entries:
     - run-1901714/r3-none/
     result: passed
     chain_proof: ok
+  # NT-101: K and chain ran
+  - row: DG-86@03
+    features:
+    - DG-86
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_chat_and_completions_basic
+    commit: dca6d4bce95ce8f2fc1c142a25a01725cfbe23e9
+    junit:
+    - run-1908878/r1-ds/junit/
+    - run-1908878/r1-none/
+    - run-1908878/r2-ds/junit/
+    - run-1908878/r2-none/
+    - run-1908878/r3-ds/junit/
+    - run-1908878/r3-none/
+    result: passed
+    chain_proof: ok
   # NT-134: chain ran
-  # NT-134: the context engine is killed before the generation leg is sent; the variant with the
-  # generation request already in flight is added by WT-62-fix1 (U42).
+  # NT-134: test_engine_loss kills an engine with no request in flight;
+  # test_engine_loss_with_generation_in_flight (U42) kills the context engine while a generation leg
+  # waits on the generation engine, and that leg fails (500, 60 s after the generation engine takes
+  # it up) without hanging. Its chain proof is incomplete: the killed context engine's counters
+  # cannot be read.
   - row: DG-87@03
     features:
     - DG-87
@@ -1444,6 +1479,27 @@ entries:
     - run-1888773/r3-none/
     result: passed
     chain_proof: ok
+  # NT-134: chain ran
+  # NT-134: test_engine_loss kills an engine with no request in flight;
+  # test_engine_loss_with_generation_in_flight (U42) kills the context engine while a generation leg
+  # waits on the generation engine, and that leg fails (500, 60 s after the generation engine takes
+  # it up) without hanging. Its chain proof is incomplete: the killed context engine's counters
+  # cannot be read.
+  - row: DG-87@03
+    features:
+    - DG-87
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cancel.py::test_engine_loss_with_generation_in_flight
+    commit: dca6d4bce95ce8f2fc1c142a25a01725cfbe23e9
+    junit:
+    - run-1908880/r1-ds/junit/
+    - run-1908880/r1-none/
+    - run-1908880/r2-ds/junit/
+    - run-1908880/r2-none/
+    - run-1908880/r3-ds/junit/
+    - run-1908880/r3-none/
+    result: passed
+    chain_proof: incomplete
   # NT-119, NT-120: K and chain ran
   - row: DG-88@03
     features:
@@ -1463,21 +1519,19 @@ entries:
     chain_proof: ok
   # NT-106: chain ran
   # NT-106 [server_info] fails on the chain, 3 runs of 3: the ds engine reports no KV block size in
-  # its ServerInfo (an existing defect, Z3). The other endpoints pass. The test is the chain's only:
-  # form K has no worker front ends.
+  # its ServerInfo (an existing defect, Z3); the context KV endpoint matches the engine's. The other
+  # endpoints pass, /metrics holding GetLoad snapshots only. The test is the chain's only: form K
+  # has no worker front ends.
   - row: DG-89@03
     features:
     - DG-89
     cases:
     - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_worker_frontend_endpoints_direct
-    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    commit: 2f353c7b125b6583349317fd8269efdf73d8afb2
     junit:
-    - run-1901714/r1-ds/junit/
-    - run-1901714/r1-none/
-    - run-1901714/r2-ds/junit/
-    - run-1901714/r2-none/
-    - run-1901714/r3-ds/junit/
-    - run-1901714/r3-none/
+    - run-1910440/r1-ds/junit/
+    - run-1910440/r2-ds/junit/
+    - run-1910440/r3-ds/junit/
     result: failed
     chain_proof: ok
   # NT-133: K and chain ran
@@ -1504,14 +1558,14 @@ entries:
     - DS-S01
     cases:
     - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_chat_and_completions_basic
-    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    commit: dca6d4bce95ce8f2fc1c142a25a01725cfbe23e9
     junit:
-    - run-1886043/r1-ds/junit/
-    - run-1886043/r1-none/
-    - run-1886043/r2-ds/junit/
-    - run-1886043/r2-none/
-    - run-1886043/r3-ds/junit/
-    - run-1886043/r3-none/
+    - run-1908878/r1-ds/junit/
+    - run-1908878/r1-none/
+    - run-1908878/r2-ds/junit/
+    - run-1908878/r2-none/
+    - run-1908878/r3-ds/junit/
+    - run-1908878/r3-none/
     result: passed
     chain_proof: ok
   # NT-101: K and chain ran
@@ -1522,14 +1576,14 @@ entries:
     - DS-S02
     cases:
     - unittest/llmapi/apps/_test_openengine_ds_disagg_basic.py::test_chat_and_completions_basic
-    commit: 11ad334f5f83e7c2fcbb936abae186d688e4ac20
+    commit: dca6d4bce95ce8f2fc1c142a25a01725cfbe23e9
     junit:
-    - run-1886043/r1-ds/junit/
-    - run-1886043/r1-none/
-    - run-1886043/r2-ds/junit/
-    - run-1886043/r2-none/
-    - run-1886043/r3-ds/junit/
-    - run-1886043/r3-none/
+    - run-1908878/r1-ds/junit/
+    - run-1908878/r1-none/
+    - run-1908878/r2-ds/junit/
+    - run-1908878/r2-none/
+    - run-1908878/r3-ds/junit/
+    - run-1908878/r3-none/
     result: passed
     chain_proof: ok
   # NT-107: K and chain ran
@@ -1690,47 +1744,50 @@ entries:
     result: passed
     chain_proof: ok
   # NT-132: K and chain ran
-  # NT-132 [decode] fails in form K, 3 runs of 3: the ds generation worker cancels a streamed
-  # request without the log line the test waits for. The chain passes all three stages, and form K
-  # passes [queued] and [prefill]. WT-62-fix1 changes form K's evidence.
+  # NT-132: both forms pass all three stages, 3 runs of 3. In form K a left decode is shown ended by
+  # the generation worker's /load after a probe request: the ds worker does not log every streamed
+  # request whose client left.
   - row: DS-S11
     features:
     - DS-S11
     cases:
     - unittest/llmapi/apps/_test_openengine_ds_disagg_cancel.py::test_abort_stages
-    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    commit: dca6d4bce95ce8f2fc1c142a25a01725cfbe23e9
     junit:
-    - run-1901715/r1-ds/junit/
-    - run-1901715/r1-none/
-    - run-1901715/r2-ds/junit/
-    - run-1901715/r2-none/
-    - run-1901715/r3-ds/junit/
-    - run-1901715/r3-none/
-    result: failed
+    - run-1908880/r1-ds/junit/
+    - run-1908880/r1-none/
+    - run-1908880/r2-ds/junit/
+    - run-1908880/r2-none/
+    - run-1908880/r3-ds/junit/
+    - run-1908880/r3-none/
+    result: passed
     chain_proof: ok
   # NT-132: K and chain ran
-  # NT-132 [decode] fails in form K, 3 runs of 3: the ds generation worker cancels a streamed
-  # request without the log line the test waits for. The chain passes all three stages, and form K
-  # passes [queued] and [prefill]. WT-62-fix1 changes form K's evidence.
+  # NT-132: both forms pass all three stages, 3 runs of 3. In form K a left decode is shown ended by
+  # the generation worker's /load after a probe request: the ds worker does not log every streamed
+  # request whose client left.
   # NT-042 and NT-043 (direct gRPC to the ds engines) are WT-42's cases.
   - row: DS-S12
     features:
     - DS-S12
     cases:
     - unittest/llmapi/apps/_test_openengine_ds_disagg_cancel.py::test_abort_stages
-    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    commit: dca6d4bce95ce8f2fc1c142a25a01725cfbe23e9
     junit:
-    - run-1901715/r1-ds/junit/
-    - run-1901715/r1-none/
-    - run-1901715/r2-ds/junit/
-    - run-1901715/r2-none/
-    - run-1901715/r3-ds/junit/
-    - run-1901715/r3-none/
-    result: failed
+    - run-1908880/r1-ds/junit/
+    - run-1908880/r1-none/
+    - run-1908880/r2-ds/junit/
+    - run-1908880/r2-none/
+    - run-1908880/r3-ds/junit/
+    - run-1908880/r3-none/
+    result: passed
     chain_proof: ok
   # NT-133, NT-134, NT-135: K and chain ran
-  # NT-134: the context engine is killed before the generation leg is sent; the variant with the
-  # generation request already in flight is added by WT-62-fix1 (U42).
+  # NT-134: test_engine_loss kills an engine with no request in flight;
+  # test_engine_loss_with_generation_in_flight (U42) kills the context engine while a generation leg
+  # waits on the generation engine, and that leg fails (500, 60 s after the generation engine takes
+  # it up) without hanging. Its chain proof is incomplete: the killed context engine's counters
+  # cannot be read.
   # NT-042 and NT-043 (direct gRPC to the ds engines) are WT-42's cases.
   - row: DS-S13
     features:
@@ -1755,6 +1812,28 @@ entries:
     - run-1891432/r3-none/
     result: passed
     chain_proof: ok
+  # NT-134: chain ran
+  # NT-134: test_engine_loss kills an engine with no request in flight;
+  # test_engine_loss_with_generation_in_flight (U42) kills the context engine while a generation leg
+  # waits on the generation engine, and that leg fails (500, 60 s after the generation engine takes
+  # it up) without hanging. Its chain proof is incomplete: the killed context engine's counters
+  # cannot be read.
+  # NT-042 and NT-043 (direct gRPC to the ds engines) are WT-42's cases.
+  - row: DS-S13
+    features:
+    - DS-S13
+    cases:
+    - unittest/llmapi/apps/_test_openengine_ds_disagg_cancel.py::test_engine_loss_with_generation_in_flight
+    commit: dca6d4bce95ce8f2fc1c142a25a01725cfbe23e9
+    junit:
+    - run-1908880/r1-ds/junit/
+    - run-1908880/r1-none/
+    - run-1908880/r2-ds/junit/
+    - run-1908880/r2-none/
+    - run-1908880/r3-ds/junit/
+    - run-1908880/r3-none/
+    result: passed
+    chain_proof: incomplete
   # NT-126: K and chain ran
   - row: DS-S14
     features:
@@ -1883,14 +1962,14 @@ entries:
     - DS-R01
     cases:
     - unittest/llmapi/apps/_test_openengine_ds_disagg_handoff.py::test_role_mismatch_static_urls
-    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    commit: dca6d4bce95ce8f2fc1c142a25a01725cfbe23e9
     junit:
-    - run-1901715/r1-ds/junit/
-    - run-1901715/r1-none/
-    - run-1901715/r2-ds/junit/
-    - run-1901715/r2-none/
-    - run-1901715/r3-ds/junit/
-    - run-1901715/r3-none/
+    - run-1908878/r1-ds/junit/
+    - run-1908878/r1-none/
+    - run-1908878/r2-ds/junit/
+    - run-1908878/r2-none/
+    - run-1908878/r3-ds/junit/
+    - run-1908878/r3-none/
     result: passed
     chain_proof: ok
   # NT-135: K and chain ran
@@ -1917,14 +1996,14 @@ entries:
     - DS-R03
     cases:
     - unittest/llmapi/apps/_test_openengine_ds_disagg_handoff.py::test_role_mismatch_static_urls
-    commit: 2b910d3e5747e205b9990999ee5499375aaaee71
+    commit: dca6d4bce95ce8f2fc1c142a25a01725cfbe23e9
     junit:
-    - run-1901715/r1-ds/junit/
-    - run-1901715/r1-none/
-    - run-1901715/r2-ds/junit/
-    - run-1901715/r2-none/
-    - run-1901715/r3-ds/junit/
-    - run-1901715/r3-none/
+    - run-1908878/r1-ds/junit/
+    - run-1908878/r1-none/
+    - run-1908878/r2-ds/junit/
+    - run-1908878/r2-none/
+    - run-1908878/r3-ds/junit/
+    - run-1908878/r3-none/
     result: passed
     chain_proof: ok
   # NT-140: K and chain ran
