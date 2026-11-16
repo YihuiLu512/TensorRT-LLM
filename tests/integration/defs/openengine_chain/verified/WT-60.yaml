@@ -1,0 +1,389 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# End-to-end checks of the disaggregated chain (case-04, trtllm chain, B200, one node of 1 to 8
+# GPUs) in integration round R11, three runs of each case, all on the commit each entry names.
+# Each junit path is relative to the result directory of its runs, which the work item's status
+# file records. Runs that did not reach a case (the job ran out of time first) were run again in
+# later jobs; the paths name the jobs whose runs are counted.
+# The comment above each entry tags each of its cases:
+# - ok: the chain proof holds.
+# - failed, see below: the reason is given below the tags.
+# Hopper (H200 and H100, sm90 image with the same Python files), run as supplementary evidence
+# and not listed: XD-039 (F-33, EG-02) and XD-035 (F-36) passed in each run with the chain
+# proof ok.
+# Not run here: XD-230 (F-36), which the hardware of this round cannot run (R10 lists it as not
+#   runnable).
+# Owed but not listed: DG-10. Its case XD-313 passed in 3 of 9 runs; each failure is the test's
+#   own 300 s limit expiring while the second worker's engine still starts (the two workers
+#   start one after the other; an engine took 108 to 238 s to start where its JIT caches were
+#   cold and about 18 s where they were warm). Left to a fix item.
+entries:
+  # XD-213 ok, XD-225 ok, XD-059 ok
+  - row: F-33
+    features:
+    - F-33
+    cases:
+    - accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_chunked_prefill
+    - accuracy/test_disaggregated_serving.py::TestGLM52NVFP4::test_nvfp4_nixl[cache_mgr_v2]
+    - disaggregated/test_disaggregated.py::test_disaggregated_qwen3_32b_fp8[Qwen3/Qwen3-32B-FP8]
+    commit: e74f136fdb0401c2d92f9a1a28cbb7fa2a05b62f
+    junit:
+    - b200-2g-ch-a/b200-2g-ch-a/job-5993968_0-r0/node0/results/e03/outer-junit.xml
+    - b200-2g-ch-a/b200-2g-ch-a/job-5993968_1-r0/node0/results/e03/outer-junit.xml
+    - b200-2g-ch-a/b200-2g-ch-a/job-5993968_2-r0/node0/results/e03/outer-junit.xml
+    - b200-8g-ch-a/b200-8g-ch-a/job-5993574_0-r0/node0/results/e04/outer-junit.xml
+    - b200-8g-ch-a/b200-8g-ch-a/job-5993574_0-r0/node0/results/e07/outer-junit.xml
+    - b200-8g-ch-a/b200-8g-ch-a/job-5993574_1-r0/node0/results/e04/outer-junit.xml
+    - b200-8g-ch-a/b200-8g-ch-a/job-5993574_1-r0/node0/results/e07/outer-junit.xml
+    - b200-8g-ch-a/b200-8g-ch-a/job-5993574_2-r0/node0/results/e04/outer-junit.xml
+    - b200-8g-ch-a/b200-8g-ch-a/job-5993574_2-r0/node0/results/e07/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-220 ok, XD-225 ok, XD-230 not run, see below
+  - row: F-36
+    features:
+    - F-36
+    cases:
+    - accuracy/test_disaggregated_serving.py::TestKimiK25::test_nvfp4
+    - accuracy/test_disaggregated_serving.py::TestGLM52NVFP4::test_nvfp4_nixl[cache_mgr_v2]
+    commit: e74f136fdb0401c2d92f9a1a28cbb7fa2a05b62f
+    junit:
+    - b200-8g-ch-a/b200-8g-ch-a/job-5993574_0-r0/node0/results/e03/outer-junit.xml
+    - b200-8g-ch-a/b200-8g-ch-a/job-5993574_0-r0/node0/results/e04/outer-junit.xml
+    - b200-8g-ch-a/b200-8g-ch-a/job-5993574_1-r0/node0/results/e03/outer-junit.xml
+    - b200-8g-ch-a/b200-8g-ch-a/job-5993574_1-r0/node0/results/e04/outer-junit.xml
+    - b200-8g-ch-a/b200-8g-ch-a/job-5993574_2-r0/node0/results/e03/outer-junit.xml
+    - b200-8g-ch-a/b200-8g-ch-a/job-5993574_2-r0/node0/results/e04/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-056 failed, see below
+  # XD-056: failed: every request is refused with 400 extra_forbidden on max_completion_tokens,
+  #   so the test's error rate is 100%; it failed the same way in R10
+  - row: F-37
+    features:
+    - F-37
+    cases:
+    - disaggregated/test_disaggregated.py::test_llama4_long_context_kv_cache_overflow[llama4-models/nvidia/Llama-4-Maverick-17B-128E-Instruct-FP8]
+    commit: e74f136fdb0401c2d92f9a1a28cbb7fa2a05b62f
+    junit:
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_0-r0/node0/results/e04/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_1-r0/node0/results/e04/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_2-r0/node0/results/e04/outer-junit.xml
+    result: failed
+    chain_proof: incomplete
+  # XD-105 ok, XD-102 ok, XD-058 ok
+  - row: DG-08
+    features:
+    - DG-08
+    cases:
+    - disaggregated/test_auto_scaling.py::test_service_discovery[http-round_robin]
+    - disaggregated/test_auto_scaling.py::test_service_discovery[etcd-round_robin]
+    - disaggregated/test_disaggregated.py::test_disaggregated_gpt_oss_20b_kv_cache_aware[gpt_oss/gpt-oss-20b]
+    commit: e74f136fdb0401c2d92f9a1a28cbb7fa2a05b62f
+    junit:
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_0-r0/node0/results/e09/outer-junit.xml
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_1-r0/node0/results/e09/outer-junit.xml
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_2-r0/node0/results/e09/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_0-r0/node0/results/e08/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_0-r0/node0/results/e17/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_1-r0/node0/results/e08/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_1-r0/node0/results/e17/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_2-r0/node0/results/e08/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_2-r0/node0/results/e17/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-024 ok, XD-006 ok
+  - row: DG-18
+    features:
+    - DG-18
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_load_balance
+    - disaggregated/test_disaggregated.py::test_disaggregated_router[load_balancing]
+    commit: e74f136fdb0401c2d92f9a1a28cbb7fa2a05b62f
+    junit:
+    - b200-1g-ch-b/b200-1g-ch-b/job-5993240_2-r0/node0/results/e24/outer-junit.xml
+    - b200-1g-ch-sup-c/b200-1g-ch-sup-c/job-6014056_0-r0/node0/results/e01/outer-junit.xml
+    - b200-1g-ch-sup-c/b200-1g-ch-sup-c/job-6014056_1-r0/node0/results/e01/outer-junit.xml
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_0-r0/node0/results/e11/outer-junit.xml
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_1-r0/node0/results/e11/outer-junit.xml
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_2-r0/node0/results/e11/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-004 ok
+  - row: DG-33
+    features:
+    - DG-33
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_qwen3_multi_orchestrator
+    commit: e74f136fdb0401c2d92f9a1a28cbb7fa2a05b62f
+    junit:
+    - b200-1g-ch-sup-b/b200-1g-ch-sup-b/job-6014026_0-r0/node0/results/e01/outer-junit.xml
+    - b200-1g-ch-sup-b/b200-1g-ch-sup-b/job-6014026_1-r0/node0/results/e01/outer-junit.xml
+    - b200-1g-ch-sup-b/b200-1g-ch-sup-b/job-6014026_2-r0/node0/results/e01/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-002 ok
+  - row: DG-36
+    features:
+    - DG-36
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_single_gpu
+    commit: e74f136fdb0401c2d92f9a1a28cbb7fa2a05b62f
+    junit:
+    - b200-1g-ch-b/b200-1g-ch-b/job-5993240_2-r0/node0/results/e25/outer-junit.xml
+    - b200-1g-ch-sup-c/b200-1g-ch-sup-c/job-6014056_0-r0/node0/results/e02/outer-junit.xml
+    - b200-1g-ch-sup-c/b200-1g-ch-sup-c/job-6014056_1-r0/node0/results/e02/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # NT-011 not written, see below
+  # DG-43: its case NT-011 is not written (the row's notes): the orchestrator holds no engine, so
+  #   the evidence is the case-by-case comparison of this round with R10, in which no difference
+  #   traces to the orchestrator, and that none of the orchestrator's seven main files changed
+  #   (scripts/poc3/check_invariants.py passes on the commit below)
+  - row: DG-43+rest
+    features:
+    - DG-43
+    cases: []
+    commit: e74f136fdb0401c2d92f9a1a28cbb7fa2a05b62f
+    junit: []
+    result: passed
+    chain_proof: incomplete
+  # XD-108 ok, XD-109 ok
+  - row: DG-44
+    features:
+    - DG-44
+    cases:
+    - disaggregated/test_auto_scaling.py::test_minimal_instances[etcd-round_robin]
+    - disaggregated/test_auto_scaling.py::test_minimal_instances[http-round_robin]
+    commit: e74f136fdb0401c2d92f9a1a28cbb7fa2a05b62f
+    junit:
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_0-r0/node0/results/e02/outer-junit.xml
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_1-r0/node0/results/e02/outer-junit.xml
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_2-r0/node0/results/e02/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_0-r0/node0/results/e12/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_1-r0/node0/results/e12/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_2-r0/node0/results/e12/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-004 ok
+  - row: DG-52
+    features:
+    - DG-52
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_qwen3_multi_orchestrator
+    commit: e74f136fdb0401c2d92f9a1a28cbb7fa2a05b62f
+    junit:
+    - b200-1g-ch-sup-b/b200-1g-ch-sup-b/job-6014026_0-r0/node0/results/e01/outer-junit.xml
+    - b200-1g-ch-sup-b/b200-1g-ch-sup-b/job-6014026_1-r0/node0/results/e01/outer-junit.xml
+    - b200-1g-ch-sup-b/b200-1g-ch-sup-b/job-6014026_2-r0/node0/results/e01/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-004 ok
+  - row: DG-78
+    features:
+    - DG-78
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_qwen3_multi_orchestrator
+    commit: e74f136fdb0401c2d92f9a1a28cbb7fa2a05b62f
+    junit:
+    - b200-1g-ch-sup-b/b200-1g-ch-sup-b/job-6014026_0-r0/node0/results/e01/outer-junit.xml
+    - b200-1g-ch-sup-b/b200-1g-ch-sup-b/job-6014026_1-r0/node0/results/e01/outer-junit.xml
+    - b200-1g-ch-sup-b/b200-1g-ch-sup-b/job-6014026_2-r0/node0/results/e01/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-213 ok
+  - row: EG-02
+    features:
+    - EG-02
+    cases:
+    - accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_chunked_prefill
+    commit: e74f136fdb0401c2d92f9a1a28cbb7fa2a05b62f
+    junit:
+    - b200-2g-ch-a/b200-2g-ch-a/job-5993968_0-r0/node0/results/e03/outer-junit.xml
+    - b200-2g-ch-a/b200-2g-ch-a/job-5993968_1-r0/node0/results/e03/outer-junit.xml
+    - b200-2g-ch-a/b200-2g-ch-a/job-5993968_2-r0/node0/results/e03/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-206 [xgrammar-mtp_nextn=2] ok, XD-206 [xgrammar-mtp_nextn=0] ok
+  - row: EG-09
+    features:
+    - EG-09
+    cases:
+    - accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_guided_decoding[xgrammar-mtp_nextn=2]
+    - accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_guided_decoding[xgrammar-mtp_nextn=0]
+    commit: e74f136fdb0401c2d92f9a1a28cbb7fa2a05b62f
+    junit:
+    - b200-2g-ch-a/b200-2g-ch-a/job-5993968_0-r0/node0/results/e08/outer-junit.xml
+    - b200-2g-ch-a/b200-2g-ch-a/job-5993968_0-r0/node0/results/e16/outer-junit.xml
+    - b200-2g-ch-a/b200-2g-ch-a/job-5993968_1-r0/node0/results/e08/outer-junit.xml
+    - b200-2g-ch-a/b200-2g-ch-a/job-5993968_1-r0/node0/results/e16/outer-junit.xml
+    - b200-2g-ch-a/b200-2g-ch-a/job-5993968_2-r0/node0/results/e08/outer-junit.xml
+    - b200-2g-ch-a/b200-2g-ch-a/job-5993968_2-r0/node0/results/e16/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-011 ok, XD-030 ok, XD-031 ok, XD-032 ok, XD-034 ok
+  - row: EG-14a
+    features:
+    - EG-14a
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_multi_gpu
+    - disaggregated/test_disaggregated.py::test_disaggregated_ctxtp2_genpp2
+    - disaggregated/test_disaggregated.py::test_disaggregated_ctxpp2_gentp2
+    - disaggregated/test_disaggregated.py::test_disaggregated_ctxtp2pp2_gentp2pp2
+    - disaggregated/test_disaggregated.py::test_disaggregated_ctxpp4_gentp4
+    commit: e74f136fdb0401c2d92f9a1a28cbb7fa2a05b62f
+    junit:
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_0-r0/node0/results/e05/outer-junit.xml
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_0-r0/node0/results/e08/outer-junit.xml
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_0-r0/node0/results/e12/outer-junit.xml
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_1-r0/node0/results/e05/outer-junit.xml
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_1-r0/node0/results/e08/outer-junit.xml
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_1-r0/node0/results/e12/outer-junit.xml
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_2-r0/node0/results/e05/outer-junit.xml
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_2-r0/node0/results/e08/outer-junit.xml
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_2-r0/node0/results/e12/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_0-r0/node0/results/e13/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_0-r0/node0/results/e14/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_1-r0/node0/results/e13/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_1-r0/node0/results/e14/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_2-r0/node0/results/e13/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_2-r0/node0/results/e14/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-029 ok, XD-030 ok, XD-031 ok, XD-032 ok, XD-033 ok, XD-034 ok
+  - row: EG-14b
+    features:
+    - EG-14b
+    cases:
+    - disaggregated/test_disaggregated.py::test_disaggregated_ctxpp2_genpp2
+    - disaggregated/test_disaggregated.py::test_disaggregated_ctxtp2_genpp2
+    - disaggregated/test_disaggregated.py::test_disaggregated_ctxpp2_gentp2
+    - disaggregated/test_disaggregated.py::test_disaggregated_ctxtp2pp2_gentp2pp2
+    - disaggregated/test_disaggregated.py::test_disaggregated_ctxpp4_genpp4
+    - disaggregated/test_disaggregated.py::test_disaggregated_ctxpp4_gentp4
+    commit: e74f136fdb0401c2d92f9a1a28cbb7fa2a05b62f
+    junit:
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_0-r0/node0/results/e05/outer-junit.xml
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_0-r0/node0/results/e07/outer-junit.xml
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_0-r0/node0/results/e08/outer-junit.xml
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_1-r0/node0/results/e05/outer-junit.xml
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_1-r0/node0/results/e07/outer-junit.xml
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_1-r0/node0/results/e08/outer-junit.xml
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_2-r0/node0/results/e05/outer-junit.xml
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_2-r0/node0/results/e07/outer-junit.xml
+    - b200-4g-ch-b/b200-4g-ch-b/job-5994786_2-r0/node0/results/e08/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_0-r0/node0/results/e10/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_0-r0/node0/results/e13/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_0-r0/node0/results/e14/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_1-r0/node0/results/e10/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_1-r0/node0/results/e13/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_1-r0/node0/results/e14/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_2-r0/node0/results/e10/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_2-r0/node0/results/e13/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_2-r0/node0/results/e14/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-204 [fifo_v2-cudagraph:with_padding-pp1dp2cp2-overlap_off] ok, XD-204
+  #   [fifo_v2-cudagraph:with_padding-pp1tp2cp2-overlap_off] ok, XD-204
+  #   [fifo_v2-cudagraph:with_padding-pp1dp2cp2-overlap_on] ok, XD-204
+  #   [fifo_v2-cudagraph:with_padding-pp1tp2cp2-overlap_on] ok, XD-214
+  #   [fifo_v2-cudagraph:with_padding-pp1dp2cp2-overlap_off] ok, XD-214
+  #   [fifo_v2-cudagraph:with_padding-pp1dp2cp2-overlap_on] ok, XD-214
+  #   [fifo_v2-cudagraph:with_padding-pp1tp2cp2-overlap_off] ok, XD-214
+  #   [fifo_v2-cudagraph:with_padding-pp1tp2cp2-overlap_on] ok, XD-072 ok
+  - row: EG-14c
+    features:
+    - EG-14c
+    cases:
+    - accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1dp2cp2-overlap_off]
+    - accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1tp2cp2-overlap_off]
+    - accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1dp2cp2-overlap_on]
+    - accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1tp2cp2-overlap_on]
+    - accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1dp2cp2-overlap_off]
+    - accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1dp2cp2-overlap_on]
+    - accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1tp2cp2-overlap_off]
+    - accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1tp2cp2-overlap_on]
+    - disaggregated/test_disaggregated.py::test_disaggregated_mamba_conc_greater_than_mbs[NVIDIA-Nemotron-3-Super-120B-A12B-FP8]
+    commit: e74f136fdb0401c2d92f9a1a28cbb7fa2a05b62f
+    junit:
+    - b200-8g-ch-b/b200-8g-ch-b/job-5994568_0-r0/node0/results/e04/outer-junit.xml
+    - b200-8g-ch-b/b200-8g-ch-b/job-5994568_0-r0/node0/results/e14/outer-junit.xml
+    - b200-8g-ch-b/b200-8g-ch-b/job-5994568_0-r0/node0/results/e15/outer-junit.xml
+    - b200-8g-ch-b/b200-8g-ch-b/job-5994568_1-r0/node0/results/e04/outer-junit.xml
+    - b200-8g-ch-b/b200-8g-ch-b/job-5994568_1-r0/node0/results/e14/outer-junit.xml
+    - b200-8g-ch-b/b200-8g-ch-b/job-5994568_1-r0/node0/results/e15/outer-junit.xml
+    - b200-8g-ch-b/b200-8g-ch-b/job-5994568_2-r0/node0/results/e04/outer-junit.xml
+    - b200-8g-ch-b/b200-8g-ch-b/job-5994568_2-r0/node0/results/e14/outer-junit.xml
+    - b200-8g-ch-b/b200-8g-ch-b/job-5994568_2-r0/node0/results/e15/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_0-r0/node0/results/e00/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_0-r0/node0/results/e02/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_0-r0/node0/results/e03/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_0-r0/node0/results/e05/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_0-r0/node0/results/e07/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_0-r0/node0/results/e09/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_1-r0/node0/results/e00/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_1-r0/node0/results/e02/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_1-r0/node0/results/e03/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_1-r0/node0/results/e05/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_1-r0/node0/results/e07/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_1-r0/node0/results/e09/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_2-r0/node0/results/e00/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_2-r0/node0/results/e02/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_2-r0/node0/results/e03/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_2-r0/node0/results/e05/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_2-r0/node0/results/e07/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_2-r0/node0/results/e09/outer-junit.xml
+    result: passed
+    chain_proof: ok
+  # XD-204 [fifo_v2-cudagraph:with_padding-pp1dp2cp2-overlap_off] ok, XD-204
+  #   [fifo_v2-cudagraph:with_padding-pp1tp2cp2-overlap_off] ok, XD-204
+  #   [fifo_v2-cudagraph:with_padding-pp1dp2cp2-overlap_on] ok, XD-204
+  #   [fifo_v2-cudagraph:with_padding-pp1tp2cp2-overlap_on] ok, XD-214
+  #   [fifo_v2-cudagraph:with_padding-pp1dp2cp2-overlap_off] ok, XD-214
+  #   [fifo_v2-cudagraph:with_padding-pp1dp2cp2-overlap_on] ok, XD-214
+  #   [fifo_v2-cudagraph:with_padding-pp1tp2cp2-overlap_off] ok, XD-214
+  #   [fifo_v2-cudagraph:with_padding-pp1tp2cp2-overlap_on] ok, XD-054 ok
+  - row: EG-14d
+    features:
+    - EG-14d
+    cases:
+    - accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1dp2cp2-overlap_off]
+    - accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1tp2cp2-overlap_off]
+    - accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1dp2cp2-overlap_on]
+    - accuracy/test_disaggregated_serving.py::TestDeepSeekV3Lite::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1tp2cp2-overlap_on]
+    - accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1dp2cp2-overlap_off]
+    - accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1dp2cp2-overlap_on]
+    - accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1tp2cp2-overlap_off]
+    - accuracy/test_disaggregated_serving.py::TestQwen3_8B::test_auto_dtype_with_helix[fifo_v2-cudagraph:with_padding-pp1tp2cp2-overlap_on]
+    - disaggregated/test_disaggregated.py::test_disaggregated_deepseek_v3_lite_bf16_tllm_gen_helix[DeepSeek-V3-Lite-bf16-short_prompt]
+    commit: e74f136fdb0401c2d92f9a1a28cbb7fa2a05b62f
+    junit:
+    - b200-4g-ch-a/b200-4g-ch-a/job-5993317_0-r0/node0/results/e09/outer-junit.xml
+    - b200-4g-ch-a/b200-4g-ch-a/job-5993317_1-r0/node0/results/e09/outer-junit.xml
+    - b200-4g-ch-a/b200-4g-ch-a/job-5993317_2-r0/node0/results/e09/outer-junit.xml
+    - b200-8g-ch-b/b200-8g-ch-b/job-5994568_0-r0/node0/results/e04/outer-junit.xml
+    - b200-8g-ch-b/b200-8g-ch-b/job-5994568_0-r0/node0/results/e14/outer-junit.xml
+    - b200-8g-ch-b/b200-8g-ch-b/job-5994568_0-r0/node0/results/e15/outer-junit.xml
+    - b200-8g-ch-b/b200-8g-ch-b/job-5994568_1-r0/node0/results/e04/outer-junit.xml
+    - b200-8g-ch-b/b200-8g-ch-b/job-5994568_1-r0/node0/results/e14/outer-junit.xml
+    - b200-8g-ch-b/b200-8g-ch-b/job-5994568_1-r0/node0/results/e15/outer-junit.xml
+    - b200-8g-ch-b/b200-8g-ch-b/job-5994568_2-r0/node0/results/e04/outer-junit.xml
+    - b200-8g-ch-b/b200-8g-ch-b/job-5994568_2-r0/node0/results/e14/outer-junit.xml
+    - b200-8g-ch-b/b200-8g-ch-b/job-5994568_2-r0/node0/results/e15/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_0-r0/node0/results/e02/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_0-r0/node0/results/e03/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_0-r0/node0/results/e05/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_0-r0/node0/results/e07/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_0-r0/node0/results/e09/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_1-r0/node0/results/e02/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_1-r0/node0/results/e03/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_1-r0/node0/results/e05/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_1-r0/node0/results/e07/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_1-r0/node0/results/e09/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_2-r0/node0/results/e02/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_2-r0/node0/results/e03/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_2-r0/node0/results/e05/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_2-r0/node0/results/e07/outer-junit.xml
+    - b200-8g-ch-c/b200-8g-ch-c/job-5996618_2-r0/node0/results/e09/outer-junit.xml
+    result: passed
+    chain_proof: ok
