@@ -1,0 +1,270 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Integration round R14: the full rerun on one frozen pair of commits (TRT-LLM and ds-engine), the
+# evidence of AC3-F9 and the final evidence of AC3-F1 to AC3-F8. Each junit path is relative to
+# the evidence directory of the round, or for the GB300 runs to their result directory; the work
+# item's status file records both. For a two-node case the path names the first node's outer
+# junit; the chain proof of such a run merges both nodes' readings (runner.py --summarize-only).
+# The rows R11 to R13 verified keep their entries; this file lists only the rows R14 verifies for
+# the first time and EG-39, the only row judged on two nodes.
+# The performance criteria were not run again: they cite the reports of the performance batches.
+frozen:
+  trtllm: 0fa180c282de58921d04808f62faedb1600f4626
+  ds_engine: 94005ff481ac708506751304c8fe8ca44ef8be54
+# Where the junit of each platform lies and what ran there. Each
+# functional case ran three times per arm and each stress case once; a run that a bad node
+# spoiled was replaced and is not counted.
+runs:
+  cpu:
+    junit: >-
+      cpu/results/job-6081928-r0/
+    scope: >-
+      the nine groups of the CPU acceptance run
+    result: >-
+      5719 passed, 10 skipped, 7 failed; the 7 are the failures the baseline already has (test_peer
+      missing_heads and pool_roles, five TestEtcdDictionary tests), none new
+  b200:
+    junit: >-
+      results/<shard>/<shard>/job-<id>_<k>-r0/node0/results/e<nn>/outer-junit.xml, shards b200-*
+    scope: >-
+      FB-2 to FB-4 with the chain switch set (271 rows) and TG-1 to TG-4 without it (126 rows), one
+      node of 1 to 8 B200 GPUs
+  hopper:
+    junit: >-
+      same layout, shards hopper-*
+    scope: >-
+      the Hopper shard in both arms (19 rows each), without XD-066, XD-068 and XD-069
+  two_node:
+    junit: >-
+      same layout, shards 2node-*; merged chain proofs under analysis/merge/
+    scope: >-
+      XD-301 to XD-311 in both arms, two whole nodes of 8 B200 GPUs each, with the UCX variables of
+      round R12
+  case02_regression:
+    junit: >-
+      results/r2/chain_trtllm__<shard>/trtllm-<id>-r0/
+    scope: >-
+      the case-02 regression of PoC stage 2, 35 shards
+  gb300:
+    junit: >-
+      run-<job>/r<round>-ds/junit/ (chain) and run-<job>/r<round>-none/ (form K), under the GB300
+      result directory; run-<job>/E3-chain-r1/test/ for the multi-node smoke runs
+    scope: >-
+      FB-5 (case-03), the seven case lists of round R13, three rounds in form K and on the chain,
+      one node of four GB300 GPUs; NT-147's multi-node layouts on two and three nodes
+# One conclusion per acceptance criterion of the plan. "met" holds on this round's runs; "open"
+# names what is still missing and who decides it.
+acceptance:
+  AC3-F1:
+    verdict: open
+    note: >-
+      The rows under owed_rows have no end-to-end record yet. EG-25 stays "not verified (hardware)"
+      because PB-3 was not run, so the transfer of the KV cache across nodes is not covered; that
+      row needs the user's signature. DV-05 (XD-060 and XD-061 read kv_cache_size from the worker
+      front end) is not signed, and three of the owed rows depend on it.
+  AC3-F2:
+    verdict: met for the rows with records
+    note: >-
+      The cases behind the rows R11 to R13 recorded ran again, with the results AC3-F5 and AC3-F7
+      describe. This file adds DG-27, DS-S19a and DS-S19b. The case-list check passes on the frozen
+      commit.
+  AC3-F3:
+    verdict: met
+    note: >-
+      CH-7 (NT-181), CH-8 (XD-018, XD-023) and CH-9 (negative controls on the context and generation
+      sides) hold, each in every run. Cases whose proof is incomplete are the ones R11 and R12
+      already explain. XD-310 counts the orchestrator's requests as a lower bound, as in R12.
+  AC3-F4:
+    verdict: open
+    note: >-
+      The deviation list did not change in this round. DV-05 still needs the user's signature.
+  AC3-F5:
+    verdict: met, with the exceptions listed
+    note: >-
+      With the switch set, the cases that passed contain every case that passed in R10 without it,
+      on each platform, except four. XD-207[adp-mtp2] reads speculative-decoding statistics the
+      worker front end does not have (DV-06, signed). Hopper XD-124 fails with the same signature as
+      R11 and is waived. In 2 of XD-114's 3 runs no junit was written because the restarted worker
+      was slow, as in R11. XD-220 failed 1 of 3 runs only on the accuracy-evaluation time limit
+      (1620 s against 1500 s); its chain proof held.
+  AC3-F6:
+    verdict: met
+    note: >-
+      The seven main files of the orchestrator have no diff from the stage start, and
+      check_invariants passes. Without the switch, the results match R10 row by row, with these
+      differences. B200 has 126 rows. Two rows that passed in R10 failed some runs: XD-074 (a stress
+      case) failed 1 of 3, as R11's chain arm did, and XD-117 failed 2 of 3 on its 300 s wait after
+      the worker restart. Seven rows that failed in R10 passed some or all runs. Hopper has 19 rows;
+      XD-035, XD-036 and XD-052 failed 2 of 5 runs, on a node running two jobs at once, and passed
+      the 2 extra runs. The two-node group has 11 rows; XD-301 to XD-310 now pass with the UCX
+      variables (R10 ran without them), and XD-311 fails as in R10. The path without the switch is
+      unchanged, as the invariant check shows, so these differences come from timing and the
+      environment.
+  AC3-F7:
+    verdict: met for the runs that finished
+    note: >-
+      FB-5 matches R13. The chain's only failures are the known ones, each in every round except
+      NT-215. NT-102 echo returns an error on the chain, an existing orchestrator defect. NT-117
+      truncate and NT-106 server_info fail as well; the ds engine reports no kv_block_size. NT-215
+      met its precondition in 2 of 3 rounds and failed the third on that precondition. Form K had no
+      failures. NT-147 now has a run on each multi-node layout of this round, two nodes and three
+      nodes, both with the chain proof ok. The GSM8K list (r13-j7) was still running when this file
+      was written; until it ends, GSM8K cites round R13.
+  AC3-F8:
+    verdict: met
+    note: >-
+      The case-02 regression gives 340 passed, 34 skipped and 0 failed. Against R2, row by row, 320
+      rows passed in both and 34 were skipped in both. R2's 322 passes count two parametrized rows
+      twice. The 20 extra rows are outer wrappers that R2 does not list.
+  AC3-F9:
+    verdict: met
+    note: >-
+      The CPU gate has no new failure. Every case ran on the frozen pair, except two remaining runs
+      of the two-node set XD-308 to XD-311 with the switch set. Those cases cite R12, where XD-308
+      passed 2 of 3 and XD-309 and XD-310 passed 3 of 3. In this round's one run, XD-308 hit the
+      test's 1500 s limit after the context engine took 589 s to start.
+  AC3-P1:
+    verdict: not checked by this round
+    note: >-
+      A requirement on the document 03_perf-tests.md section 1; R14 ran no performance case.
+  AC3-P2:
+    verdict: met (PB-1b, status appendix BC)
+    note: >-
+      PU-03 (concurrency 16) and PU-05 at concurrency 8 ran nine paired rounds each. TPOT, e2e
+      latency, throughput and the generation step time stayed within noise. TTFT p99 at concurrency
+      16 and TTFT mean at concurrency 8 exceed it by 31 ms and 28 ms. No orphan handoff occurred in
+      the measurement windows.
+  AC3-P3:
+    verdict: met (PB-2a, status appendix AX)
+    note: >-
+      PU-06 paired E3-chain with E3-native and E3-native-al at concurrency 1, 8 and 32, including
+      the extra and repeated runs. Against E3-native, the TTFT median at concurrency 1 exceeds noise
+      (+8.4%, about +11 ms). At concurrency 32, the TPOT and e2e latency medians sit at the noise
+      line (+11%); against E3-mid they exceed it (+13%, +15%). Concurrency 8 cannot resolve TTFT.
+      The capacity of the ds OpenEngine server (E3-direct) is in the report.
+  AC3-P4:
+    verdict: met (appendices BC, AX and BE)
+    note: >-
+      Each difference beyond noise is assigned to the context leg, the generation leg, or the hop
+      between the orchestrator and the worker front end. Where a leg could not be narrowed further,
+      the report says "not located" and names the next measurement.
+  AC3-P5:
+    verdict: met (PB-0, status appendix F; PB-1b, appendix BC)
+    note: >-
+      In aggregated serving, the late first token lies inside the engine. At the disaggregated
+      points of the same shape, the agg-size delay does not appear; the median difference there is
+      +6.6 ms.
+# Rows whose dependencies have all landed and that still have no end-to-end record, with what
+# R14 measured for each and what the row now waits for. None of them is listed under entries.
+owed_rows:
+  - rows: [F-09+WT-57-fix2, F-30+rest]
+    cases: [XD-060, XD-061]
+    r14: >-
+      Both skipped on the chain in each run. The tests read kv_cache_size from the generation
+      worker's perf record (DV-05) and avg_decoded_tokens_per_iter from each GSM8K response (like
+      DV-06); a worker front end reports neither. Without the switch XD-060 and XD-061 passed 3
+      of 3.
+    waits_for: The user's signature on DV-05.
+  - rows: [EG-01f]
+    cases: [XD-228, XD-060, XD-061]
+    r14: >-
+      All skipped on the chain in each run. XD-228 reads the speculative-decoding statistics from
+      the generation worker's /metrics (DV-06, signed); XD-060 and XD-061 as above.
+    waits_for: The user's signature on DV-05.
+  - rows: [F-31]
+    cases: [XD-205, XD-203, XD-221]
+    r14: >-
+      XD-205 with mtp_nextn=0 passed 3 of 3 for both settings of the overlap scheduler, with the
+      chain proof ok; with mtp_nextn=2, and XD-203, it was skipped on the chain (DV-06, signed).
+      XD-221 with mtp_nextn=0 passed 3 of 3 with the chain proof ok; with mtp_nextn=3 it failed 3
+      of 3 when the KV cache ran out of memory, as in R10 and R11.
+    waits_for: A decision whether the passing cases are enough for the row, given DV-06.
+  - rows: [EG-14e+rest, EG-26]
+    cases: [XD-231]
+    r14: >-
+      Skipped on the chain in each run: it reads the speculative-decoding statistics from the
+      generation worker's /metrics (DV-06, signed).
+    waits_for: The row's status under DV-06, decided by the coordinator.
+  - rows: [DG-34+rest+WT-57-fix2, DG-82+rest]
+    cases: [XD-312]
+    r14: >-
+      Skipped on the chain in each run, by the WT-54 expectation: it asserts metrics headers that
+      only the engine measures; the chain's version is a separate test. Without the switch it
+      passed 3 of 3.
+    waits_for: A decision whether the chain's version of the test stands for this case.
+  - rows: [DG-40]
+    cases: [XD-021, XD-312]
+    r14: >-
+      Both skipped on the chain in each run, by the WT-54 expectation: they assert fields of the
+      generation worker's perf record that only the engine measures.
+    waits_for: The same decision as for XD-312.
+  - rows: [EG-37]
+    cases: [NT-212]
+    r14: Skipped in each run, because the image has no Ray, which the test needs.
+    waits_for: An image with Ray, or a decision to defer the row.
+  - rows: [EG-25]
+    cases: []
+    r14: >-
+      Not verified (hardware). PB-3 was not run, so no run covers the transfer of the KV cache
+      across nodes.
+    waits_for: The user's signature.
+# The comment above each entry tags each of its cases:
+# - ok: the chain proof holds.
+# - cpu: a CPU test whose own assertions check the chain over fake engines; no junit property
+#   records a chain proof.
+# - multi-node: one run of the case-03 chain on GB300 nodes, the layout the row names, through the
+#   performance harness (E3-chain, concurrency 8); NT-147's own module skips these layouts on
+#   one node.
+# - partial: fewer than three runs of this round finished when this file was written; the rest
+#   are queued and the entry is updated when they end.
+entries:
+  # NT-005 cpu
+  - row: DG-27
+    features:
+    - DG-27
+    cases:
+    - unittest/serve/openengine_poc/wt50/test_poc3_wt50_worker_registration.py::test_static_urls_reach_worker_frontends
+    commit: 0fa180c282de58921d04808f62faedb1600f4626
+    junit:
+    - cpu/results/job-6081928-r0/unittest_serve_openengine_poc.xml
+    result: passed
+    chain_proof: incomplete
+  # NT-147 ok, multi-node: two nodes, the context engine (attention DP 2) on one and the
+  #   generation engine (TP 4) on the other; 81 handoffs, each request crossing the nodes
+  - row: DS-S19a
+    features:
+    - DS-S19a
+    cases:
+    - perf/test_perf_sanity.py::test_e2e[disagg-e2e-gb300_deepseek-v41-flash-nvfp4-dspark5_8k1k_con8_ctx1_dep2_gen1_tp4_ccb-NIXL]
+    commit: 0fa180c282de58921d04808f62faedb1600f4626
+    junit:
+    - run-1961773/E3-chain-r1/test/
+    result: passed
+    chain_proof: ok
+  # NT-147 ok, multi-node: three nodes, the context engine on one and one generation instance
+  #   (TP 8) across the other two, whose leader and follower both passed; 81 handoffs
+  - row: DS-S19b
+    features:
+    - DS-S19b
+    cases:
+    - perf/test_perf_sanity.py::test_e2e[disagg-e2e-gb300_deepseek-v41-flash-nvfp4-dspark5_8k1k_con8_ctx1_dep2_gen1_tp8_ccb-NIXL]
+    commit: 0fa180c282de58921d04808f62faedb1600f4626
+    junit:
+    - run-1962384/E3-chain-r1/test/
+    result: passed
+    chain_proof: ok
+  # XD-301 ok, XD-309 ok partial (1 of 3 runs)
+  - row: EG-39
+    features:
+    - EG-39
+    cases:
+    - test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp2pp1-gen_tp2pp1]
+    - test_e2e.py::test_openai_disagg_multi_nodes_completion[ctx_tp1pp1-gen_tp1pp1]
+    commit: 0fa180c282de58921d04808f62faedb1600f4626
+    junit:
+    - results/2node-8g-ch-a/2node-8g-ch-a/job-6081962_1-r0/node0/results/e00/node-0/outer-junit.xml
+    - results/2node-8g-ch-a/2node-8g-ch-a/job-6081962_2-r0/node0/results/e00/node-0/outer-junit.xml
+    - results/2node-8g-ch-a2/2node-8g-ch-a2/job-6089557_0-r0/node0/results/e00/node-0/outer-junit.xml
+    - results/2node-8g-ch-b/2node-8g-ch-b/job-6097229_0-r0/node0/results/e01/node-0/outer-junit.xml
+    result: passed
+    chain_proof: ok
