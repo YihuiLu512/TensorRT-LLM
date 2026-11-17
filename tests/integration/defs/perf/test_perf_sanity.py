@@ -4603,8 +4603,16 @@ class AggrGenOnlyNoContextCmds(NamedTuple):
                             outputs.append("")
                             continue
                         if warmup_plan[client_idx]:
-                            # Before the gen log offsets and the arm's readings below, so that
-                            # neither the device step time nor the result counts the pass.
+                            # The pass runs between two clients' gen-log windows and before
+                            # this client's readings, so neither one's device step time nor
+                            # the result counts it: close the previous client's window here,
+                            # and open this client's after the pass.
+                            if pending_device_step_time:
+                                if arm_pump is not None:
+                                    arm_pump.pump()
+                                pending_device_step_time[-1]["end_offsets"] = gen_worker_log_sizes(
+                                    self.test_output_dir, self.num_gen_servers
+                                )
                             run_warmup_pass(
                                 client_cmd,
                                 client_config,
@@ -4629,7 +4637,10 @@ class AggrGenOnlyNoContextCmds(NamedTuple):
                         gen_log_start_offsets = gen_worker_log_sizes(
                             self.test_output_dir, self.num_gen_servers
                         )
-                        if pending_device_step_time:
+                        if (
+                            pending_device_step_time
+                            and pending_device_step_time[-1]["end_offsets"] is None
+                        ):
                             pending_device_step_time[-1]["end_offsets"] = gen_log_start_offsets
 
                         bench_env = copy.deepcopy(os.environ)

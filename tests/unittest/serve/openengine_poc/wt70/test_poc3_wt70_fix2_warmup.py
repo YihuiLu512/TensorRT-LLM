@@ -190,7 +190,7 @@ class _GenOnlyNoContextRun:
     requests had been served when it was taken.
     """
 
-    def __init__(self, arms, warmup_pass, tmp_path, *, arm_in_process=False):
+    def __init__(self, arms, warmup_pass, tmp_path, *, arm_in_process=False, clients=1):
         self.events: List[str] = []
         self.served = 0
         self.pending: List[dict] = []
@@ -305,8 +305,10 @@ class _GenOnlyNoContextRun:
         namespace["subprocess"] = SimpleNamespace(Popen=popen, STDOUT=-2)
         self.cmds = SimpleNamespace(
             server_cmds=[(["trtllm-serve", "m"], ["trtllm-serve", "disaggregated", "-c", "x"])],
-            client_cmds={0: [["python", "-m", "benchmark_serving", "--num-prompts", "16"]]},
-            client_configs={0: [_client(16)]},
+            client_cmds={
+                0: [["python", "-m", "benchmark_serving", "--num-prompts", "16"]] * clients
+            },
+            client_configs={0: [_client(16) for _ in range(clients)]},
             server_configs=[(None, None, None)],
             timeout=3600,
             num_gen_servers=1,
@@ -344,6 +346,20 @@ def test_gen_only_no_context_sends_the_pass_before_the_measured_window(
     # window starts after the 16 warmup requests were served.
     assert outputs == ["measured output of trtllm-benchmark.0.0.log"]
     assert [p["start_offsets"] for p in run.pending] == [[16]]
+
+
+@pytest.mark.parametrize("arm", ["E4-base", "E4-chain"])
+def test_gen_only_no_context_keeps_the_pass_out_of_every_clients_window(
+    arms, warmup_pass, arm_env, tmp_path, arm
+):
+    arm_env(arm)
+    run = _GenOnlyNoContextRun(arms, warmup_pass, tmp_path, clients=2)
+    outputs = run()
+    assert len([e for e in run.events if e.startswith("warmup")]) == 2
+    assert len(outputs) == 2
+    # Client 0 measures requests 16..32; client 1's pass (32..48) is in neither window.
+    windows = [(p["start_offsets"], p["end_offsets"]) for p in run.pending]
+    assert windows == [([16], [32]), ([48], None)]
 
 
 @pytest.mark.parametrize("arm, extra", [(None, {}), ("E4-chain", {"TRTLLM_PERF_WARMUP_PASS": "0"})])
@@ -449,6 +465,19 @@ def test_reading_counts_the_engines_postproc_workers_in_process_only(
     forked = [n for n in doc["notes"] if "forked by the engine" in n]
     in_process = ["4 post-processing workers forked by the engine's processes"]
     assert forked == (in_process if name == "E4-base" else [])
+
+
+def test_reading_leaves_case_03s_in_process_servers_alone(arms, tmp_path, monkeypatch):
+    monkeypatch.setattr(arms, "_read_ppid", _PPID.get)
+    monkeypatch.setattr(arms, "_read_cmdline", _CMDLINE.get)
+    spawned = arms.count_spawned
+    monkeypatch.setattr(arms, "count_spawned", lambda pids: spawned(pids, _CMDLINE.get))
+    # dsv4-serve serving HTTP itself: in-process, but not TRT-LLM's executor.
+    view = arms.role_view(arms.DISAGG_ARMS["E3-native"], "gen")
+    assert view.in_process
+    doc = _role_reader(arms, view, tmp_path).read("ab12", 0, "before")
+    assert doc["postproc_workers"]["started"] == 1
+    assert not [n for n in doc["notes"] if "forked by the engine" in n]
 
 
 # ----------------------------------------------------------------------------- the front end's CPU time

@@ -978,7 +978,9 @@ def cpu_by_process_note(
 
     Names the :data:`CPU_NOTE_PROCESSES` busiest processes, each with its CPU
     seconds and the start of its command line, so a front end that is busy can
-    be told apart into its main process and its post-processing workers.
+    be told apart into its main process and the workers it spawned. The
+    post-processing workers an in-process engine forks sit in the engine's
+    process tree, so neither this note nor the front end's CPU time counts them.
     """
     read = cmdline or _read_cmdline
     busiest = sorted(by_pid.items(), key=lambda item: (-item[1], item[0]))
@@ -2187,7 +2189,9 @@ class RoleReader:
         notes.append(note)
         if pids is not None:
             doc["postproc_workers"]["started"] = count_spawned(pids)
-            if self.view.in_process:
+            # Only TRT-LLM's in-process executor forks its post-processing workers from the
+            # engine's processes; case-03's in-process servers are dsv4-serve's own.
+            if self.view.in_process and self.view.case == CASE_DISAGG:
                 forked = count_engine_postproc(self.server.frontend_pid, self.reader)
                 notes.append(f"{forked} post-processing workers forked by the engine's processes")
                 doc["postproc_workers"]["started"] += forked
