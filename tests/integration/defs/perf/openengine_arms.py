@@ -963,6 +963,35 @@ class CpuReader:
         return found
 
 
+# How many front-end processes the note on the CPU time names, the busiest first.
+CPU_NOTE_PROCESSES = 8
+# How much of each one's command line it shows.
+CPU_NOTE_CMDLINE_CHARS = 120
+
+
+def cpu_by_process_note(
+    by_pid: Mapping[int, int],
+    ticks_per_s: float,
+    cmdline: Callable[[int], str | None] | None = None,
+) -> str:
+    """A note on how the front end's CPU time of one run splits over its processes.
+
+    Names the :data:`CPU_NOTE_PROCESSES` busiest processes, each with its CPU
+    seconds and the start of its command line, so a front end that is busy can
+    be told apart into its main process and its post-processing workers.
+    """
+    read = cmdline or _read_cmdline
+    busiest = sorted(by_pid.items(), key=lambda item: (-item[1], item[0]))
+    parts = [
+        f"{pid} {ticks / ticks_per_s:.2f}s {(read(pid) or '?')[:CPU_NOTE_CMDLINE_CHARS].strip()}"
+        for pid, ticks in busiest[:CPU_NOTE_PROCESSES]
+    ]
+    rest = busiest[CPU_NOTE_PROCESSES:]
+    if rest:
+        parts.append(f"{len(rest)} more {sum(t for _, t in rest) / ticks_per_s:.2f}s")
+    return "front-end CPU by process: " + ("; ".join(parts) if parts else "none")
+
+
 # ----------------------------------------------------------------------------- one run
 
 
@@ -1005,17 +1034,21 @@ class RunProbe:
         after = self.reader.snapshot(pids | set(self.cpu_before))
         total = 0
         older = 0
+        by_pid: dict[int, int] = {}
         for pid, (start, ticks) in after.items():
             before = self.cpu_before.get(pid)
             if before is not None and before[0] == start:
                 total += ticks - before[1]
+                by_pid[pid] = ticks - before[1]
             elif pid not in pids:
                 # The PID of a front-end process that exited, now another process's.
                 continue
             elif self.started is None or start >= self.started:
                 total += ticks
+                by_pid[pid] = ticks
             else:
                 older += 1
+        self.notes.append(cpu_by_process_note(by_pid, self.reader.ticks_per_s))
         if older:
             self.notes.append(
                 f"{older} front-end processes were not read at the start of the run and "
@@ -1502,6 +1535,28 @@ def disagg_arm(arm: Arm | None) -> Arm | None:
     return arm if arm is not None and arm.topology == TOPOLOGY_DISAGG else None
 
 
+# The benchmark modes that get perf sanity's warmup pass (warmup_pass.py) only under a
+# disaggregated arm. perf sanity sends none in them: their measured requests are then the first
+# the workers serve after start-up, and pay the one-time costs of the first requests, which differ
+# between an arm's workers in the chain and in process. The pass goes through the server the
+# client calls, before the measured window, as in the other modes. In gen_only it opens the
+# generation workers' benchmark fill gate (TLLM_BENCHMARK_REQ_QUEUES_SIZE), which opens once, so
+# the measured requests then start on arrival instead of all together; TRTLLM_PERF_WARMUP_PASS=0
+# keeps that mode's gated burst.
+ARM_WARMUP_MODES = ("gen_only", "gen_only_no_context")
+
+
+def arm_warmup_applies(
+    benchmark_mode: str | None, environ: Mapping[str, str] | None = None
+) -> bool:
+    """Whether a run in ``benchmark_mode`` gets a warmup pass because a disaggregated arm is set.
+
+    Raises:
+        ArmError: As :func:`selected_arm`, for a mode of :data:`ARM_WARMUP_MODES`.
+    """
+    return benchmark_mode in ARM_WARMUP_MODES and disagg_arm(selected_arm(environ)) is not None
+
+
 def role_arm(arm: Arm, role: str) -> RoleArm:
     """The settings of ``arm`` for the workers of ``role`` (``ctx`` or ``gen``).
 
@@ -1877,6 +1932,52 @@ def count_spawned(pids: Iterable[int], cmdline: Callable[[int], str | None] = _r
     return count
 
 
+def _read_ppid(pid: int) -> int | None:
+    """The parent PID of ``pid``, or ``None`` if it is gone."""
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as f:
+            stat = f.read()
+    except OSError:
+        return None
+    # Field 4 of proc(5), the second after the parenthesised command.
+    fields = stat[stat.rfind(b")") + 2 :].split()
+    return int(fields[1]) if len(fields) > 1 else None
+
+
+def count_engine_postproc(
+    root: int,
+    reader: "CpuReader",
+    *,
+    ppid: Callable[[int], int | None] | None = None,
+    cmdline: Callable[[int], str | None] | None = None,
+) -> int:
+    """How many post-processing workers the engine processes in ``root``'s tree forked.
+
+    An in-process server's executor starts its post-processing workers in its
+    leader rank, an engine process, from a process pool that forks them. A
+    forked worker runs its parent's command line, so :func:`count_spawned` does
+    not see it, and it is in the engine's tree, which
+    :meth:`CpuReader.frontend_pids` leaves out. It is counted here as a child
+    of an engine process that runs the same command line and is not an engine
+    process itself.
+    """
+    ppid = ppid or _read_ppid
+    cmdline = cmdline or _read_cmdline
+    pids = reader.tree(root)
+    on_gpu = reader.gpu()
+    if on_gpu is None:
+        return 0
+    engine = pids & on_gpu
+    count = 0
+    for pid in pids - engine:
+        parent = ppid(pid)
+        if parent in engine:
+            args = cmdline(pid)
+            if args and args == cmdline(parent):
+                count += 1
+    return count
+
+
 # ----------------------------------------------------------------------------- per-role readings
 
 PHASE_BEFORE = "before"
@@ -2086,6 +2187,10 @@ class RoleReader:
         notes.append(note)
         if pids is not None:
             doc["postproc_workers"]["started"] = count_spawned(pids)
+            if self.view.in_process:
+                forked = count_engine_postproc(self.server.frontend_pid, self.reader)
+                notes.append(f"{forked} post-processing workers forked by the engine's processes")
+                doc["postproc_workers"]["started"] += forked
         doc["frontends"]["started"] = self._frontends_started(notes)
         counters = (
             _read_counters(self.server.handle, notes) if self.server.handle is not None else None

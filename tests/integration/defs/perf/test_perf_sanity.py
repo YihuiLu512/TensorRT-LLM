@@ -1814,12 +1814,16 @@ def warmup_pass_requests_for(
     Args:
         client_config: The measured client's config; None gets no pass.
         benchmark_mode: The case's benchmark mode; None or "" for a plain
-            aggregated case.
+            aggregated case. The gen-only modes get one only under a
+            disaggregated arm (openengine_arms.arm_warmup_applies).
     """
     if (
         client_config is None
         or not warmup_pass_enabled()
-        or not warmup_pass_applies(benchmark_mode)
+        or not (
+            warmup_pass_applies(benchmark_mode)
+            or openengine_arms.arm_warmup_applies(benchmark_mode)
+        )
     ):
         return 0
     return client_config.warmup_pass_requests
@@ -4576,6 +4580,16 @@ class AggrGenOnlyNoContextCmds(NamedTuple):
                     write_startup_observations(self.test_output_dir, server_idx, [observation])
 
                     client_configs = self.client_configs.get(server_idx, [])
+                    # Only a disaggregated arm gets a warmup pass in this mode (see
+                    # openengine_arms.arm_warmup_applies); without one the plan is all 0.
+                    warmup_plan = warmup_pass_plan_for(
+                        [
+                            client_configs[i] if i < len(client_configs) else None
+                            for i in range(len(self.client_cmds[server_idx]))
+                        ],
+                        GEN_ONLY_NO_CONTEXT_MODE,
+                        collect_time_breakdown,
+                    )
                     for client_idx, client_cmd in enumerate(self.client_cmds[server_idx]):
                         client_config = (
                             client_configs[client_idx] if client_idx < len(client_configs) else None
@@ -4588,6 +4602,18 @@ class AggrGenOnlyNoContextCmds(NamedTuple):
                             )
                             outputs.append("")
                             continue
+                        if warmup_plan[client_idx]:
+                            # Before the gen log offsets and the arm's readings below, so that
+                            # neither the device step time nor the result counts the pass.
+                            run_warmup_pass(
+                                client_cmd,
+                                client_config,
+                                warmup_plan[client_idx],
+                                proxy_host,
+                                proxy_port,
+                                warmup_pass_log_path(self.test_output_dir, server_idx, client_idx),
+                                timeout=min(self.timeout, DEFAULT_TIMEOUT),
+                            )
 
                         benchmark_file_path = os.path.join(
                             self.test_output_dir,

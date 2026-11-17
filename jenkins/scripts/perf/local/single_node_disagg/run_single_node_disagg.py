@@ -104,6 +104,10 @@ SINGLE_SERVER_MODES = {"ctx_only": "ctx", "gen_only_no_context": "gen"}
 # The role name of that one pytest; it sets no DISAGG_SERVING_TYPE.
 SERVER_ROLE = "SERVER"
 GEN_ONLY_NO_CONTEXT_ENV = "TRTLLM_DISAGG_BENCHMARK_GEN_ONLY"
+# The executor's torch profiler trace path (with TLLM_PROFILE_START_STOP naming the iterations).
+# Every executor appends only its rank to it, so the driver gives each worker role a directory
+# of its own under the path's directory; the other roles start no executor and do not get it.
+TORCH_TRACE_ENV = "TLLM_TORCH_PROFILE_TRACE"
 TIME_BREAKDOWN_MODIFIER = "time_breakdown"
 # No role runs under an MPI launcher here (a worker with several GPUs spawns its
 # MPI workers itself), so no role gets the launcher's MPI or Slurm variables, as
@@ -305,11 +309,18 @@ def role_env(
     the fill gate. The one pytest of a one-server mode gets no
     ``DISAGG_SERVING_TYPE`` (it runs every process of the test), its server's
     GPUs and UCX variables, and under ``gen_only_no_context`` the generation-only
-    switch the local submit script exports.
+    switch the local submit script exports. With ``TLLM_TORCH_PROFILE_TRACE``
+    set, a worker gets it in a directory of its own (created here), named after
+    the role, and the other roles go without it.
     """
     env = {k: v for k, v in base.items() if not k.startswith(_MPI_ENV_PREFIXES)}
     # A role's pytest is not one started by a test.
     env.pop("PYTEST_CURRENT_TEST", None)
+    trace = env.pop(TORCH_TRACE_ENV, None)
+    if trace and gpus is not None:
+        directory = os.path.join(os.path.dirname(os.path.abspath(trace)), role)
+        os.makedirs(directory, exist_ok=True)
+        env[TORCH_TRACE_ENV] = os.path.join(directory, os.path.basename(trace))
     env["DISAGG_SERVING_TYPE"] = role
     if role == SERVER_ROLE:
         del env["DISAGG_SERVING_TYPE"]
