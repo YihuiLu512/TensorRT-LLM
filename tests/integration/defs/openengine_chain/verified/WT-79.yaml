@@ -101,15 +101,16 @@ acceptance:
       unchanged, as the invariant check shows, so these differences come from timing and the
       environment.
   AC3-F7:
-    verdict: met for the runs that finished
+    verdict: met
     note: >-
       FB-5 matches R13. The chain's only failures are the known ones, each in every round except
       NT-215. NT-102 echo returns an error on the chain, an existing orchestrator defect. NT-117
       truncate and NT-106 server_info fail as well; the ds engine reports no kv_block_size. NT-215
       met its precondition in 2 of 3 rounds and failed the third on that precondition. Form K had no
       failures. NT-147 now has a run on each multi-node layout of this round, two nodes and three
-      nodes, both with the chain proof ok. The GSM8K list (r13-j7) was still running when this file
-      was written; until it ends, GSM8K cites round R13.
+      nodes, both with the chain proof ok. The GSM8K cases passed in each of 3 rounds with the chain
+      proof ok. GSM8K-200 through the chain scored 96.5, 95.5 and 96.5, above the hard limit of 95.
+      Form K, in the same job, scored 97.0, 96.5 and 97.5, and the paired comparison passed.
   AC3-F8:
     verdict: met
     note: >-
@@ -119,10 +120,10 @@ acceptance:
   AC3-F9:
     verdict: met
     note: >-
-      The CPU gate has no new failure. Every case ran on the frozen pair, except two remaining runs
-      of the two-node set XD-308 to XD-311 with the switch set. Those cases cite R12, where XD-308
-      passed 2 of 3 and XD-309 and XD-310 passed 3 of 3. In this round's one run, XD-308 hit the
-      test's 1500 s limit after the context engine took 589 s to start.
+      The CPU gate has no new failure, and every case ran on the frozen pair. On two nodes with the
+      switch set, XD-308 passed 2 of 3, as in R12. Its failed run hit the test's 1500 s limit after
+      the context engine took 589 s to start. XD-309 and XD-310 passed 3 of 3, and XD-311 failed
+      3 of 3, as in R10 and R12.
   AC3-P1:
     verdict: not checked by this round
     note: >-
@@ -215,8 +216,6 @@ owed_rows:
 # - multi-node: one run of the case-03 chain on GB300 nodes, the layout the row names, through the
 #   performance harness (E3-chain, concurrency 8); NT-147's own module skips these layouts on
 #   one node.
-# - partial: fewer than three runs of this round finished when this file was written; the rest
-#   are queued and the entry is updated when they end.
 entries:
   # NT-005 cpu
   - row: DG-27
@@ -253,7 +252,7 @@ entries:
     - run-1962384/E3-chain-r1/test/
     result: passed
     chain_proof: ok
-  # XD-301 ok, XD-309 ok partial (1 of 3 runs)
+  # XD-301 ok, XD-309 ok
   - row: EG-39
     features:
     - EG-39
@@ -266,5 +265,7 @@ entries:
     - results/2node-8g-ch-a/2node-8g-ch-a/job-6081962_2-r0/node0/results/e00/node-0/outer-junit.xml
     - results/2node-8g-ch-a2/2node-8g-ch-a2/job-6089557_0-r0/node0/results/e00/node-0/outer-junit.xml
     - results/2node-8g-ch-b/2node-8g-ch-b/job-6097229_0-r0/node0/results/e01/node-0/outer-junit.xml
+    - results/2node-8g-ch-b/2node-8g-ch-b/job-6097229_1-r0/node0/results/e01/node-0/outer-junit.xml
+    - results/2node-8g-ch-b/2node-8g-ch-b/job-6097229_2-r0/node0/results/e01/node-0/outer-junit.xml
     result: passed
     chain_proof: ok
