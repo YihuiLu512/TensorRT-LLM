@@ -338,8 +338,9 @@ def start_addr_reporter(probe, path, host, port, timeout_s):
                 print("serve_glm: %s; not reporting the address" % why, file=sys.stderr)
                 return
             try:
-                with socket.create_connection((host, port), timeout=1.0):
-                    pass
+                with socket.create_connection((host, port), timeout=1.0) as c:
+                    if self_connected(c):  # not the server; drop it and keep polling
+                        raise OSError("self-connect")
             except OSError:
                 time.sleep(0.1)
                 continue
@@ -350,11 +351,9 @@ def start_addr_reporter(probe, path, host, port, timeout_s):
     return t
 
 
-def pick_free_port(host):
-    fam = socket.AF_INET6 if ":" in host else socket.AF_INET
-    with socket.socket(fam, socket.SOCK_STREAM) as s:
-        s.bind((host, 0))
-        return s.getsockname()[1]
+# --pick-port: a port below the kernel's ephemeral range that binds now, and the reporter's
+# self-connect check; shared with serve_nx (see serve_nx.pick_free_port for why).
+from capstubs.serve_nx import pick_free_port, self_connected  # noqa: E402,F401
 
 
 def mock_config(a):
