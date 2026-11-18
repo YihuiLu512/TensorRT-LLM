@@ -1,8 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """Submission policy for jobs that must not load a real model (INTERFACES.md 9.5; plan
-CONSTRAINTS section 2 "mechanisms" 1, 2, 5, 6), and for the one job type that may mount the
-model library: the tokenizer copy (user decision 2026-11-13, INTERFACES erratum R1b).
+CONSTRAINTS section 2 "mechanisms" 1, 2, 5, 6), for the tokenizer copy (user decision
+2026-11-13, INTERFACES erratum R1b), and for the whitelisted experiments that load a real model
+(MODEL_EXPERIMENTS; user decision 2026-11-18, DECISIONS 32nd answer).
 
 These are mechanisms, not judgement calls: the submit entry calls check_no_model_submission()
 (or check_prep_tokenizer_submission()) before writing a PLANNED ledger row, and
@@ -70,6 +71,31 @@ PREP_TOKENIZER_VOCAB_GLOBS = ("tokenizer.json", "tokenizer.model", "vocab.json",
 PREP_TOKENIZER_MAX_FILE_BYTES = 64 * 1024 * 1024
 PREP_ASSERTION_KEYS = ("purpose_prep_tokenizer", "gpus_zero", "model_mount_registered_ro",
                        "other_mounts_no_model", "basis_present")
+
+# ---- jobs that load a real model (user decision 2026-11-18 21:4x, DECISIONS 32nd answer) --------
+# The only experiment ids whose jobs may mount part of a model library: each id names the model
+# directories it may mount (identity mount, read-only; at least one of them) and its GPU ceiling
+# (the design's per-job GPU count). No other id may mount a model library: check_no_model_submission
+# is unchanged and still refuses every id below (none is in NO_MODEL_EXPERIMENTS).
+#   E11      tiny real model (design 2.3 S-TM: Qwen3-0.6B, load_format dummy, 1 layer), 1 GPU
+#   E13-S    E13 spot checks on the E11 set-up, 1 GPU
+#   E15-B    host <-> rank 0 hop, single-GPU TP1 (WT-21 pa_u8: gpt-oss-120b), 1 GPU
+#   E12-L2a, E12-L2b, E14   U4 point (GLM-5.3-Flash FP8, TP4), 4 GPUs of an exclusive 8-GPU node
+MODEL_LIBRARY = "/home/scratch.trt_llm_data_ci/llm-models"
+_QWEN3_06B = MODEL_LIBRARY + "/Qwen3/Qwen3-0.6B"
+_GPT_OSS_120B = MODEL_LIBRARY + "/gpt_oss/gpt-oss-120b"
+_GLM_53_FLASH = MODEL_LIBRARY + "/GLM-5.3-Flash"
+MODEL_EXPERIMENTS = {
+    "E11": {"max_gpus": 1, "model_dirs": (_QWEN3_06B,)},
+    "E13-S": {"max_gpus": 1, "model_dirs": (_QWEN3_06B,)},
+    "E15-B": {"max_gpus": 1, "model_dirs": (_GPT_OSS_120B,)},
+    "E12-L2a": {"max_gpus": 4, "model_dirs": (_GLM_53_FLASH,)},
+    "E12-L2b": {"max_gpus": 4, "model_dirs": (_GLM_53_FLASH,)},
+    "E14": {"max_gpus": 4, "model_dirs": (_GLM_53_FLASH,)},
+}
+MODEL_ASSERTION_KEYS = ("experiment_model_whitelisted", "gpus_within_design",
+                        "model_mounts_registered_ro", "other_mounts_no_model",
+                        "tokenizer_no_weights", "basis_present")
 
 
 class PolicyError(ConfigError):
@@ -193,6 +219,75 @@ def check_no_model_submission(experiment, gpus, mounts, tokenizer_dir, basis):
     if not isinstance(basis, str) or not basis.strip():
         raise PolicyError("the approval basis text is required")
     return {k: True for k in ASSERTION_KEYS}, tok_sha
+
+
+def is_model_experiment(experiment):
+    return isinstance(experiment, str) and experiment in MODEL_EXPERIMENTS
+
+
+def max_gpus_for(experiment):
+    """The per-job GPU ceiling: the whitelist entry's for a model experiment, else MAX_GPUS."""
+    return MODEL_EXPERIMENTS[experiment]["max_gpus"] if is_model_experiment(experiment) \
+        else MAX_GPUS
+
+
+def check_model_mounts(experiment, mounts):
+    """A model experiment's mounts: every mount that touches a model library is one of the
+    experiment's registered model dirs, mounted at the same path, read-only (literal path and
+    realpath both equal the registered one); at least one such mount; every other mount is
+    checked like any job's (check_mounts). Returns the sorted model dirs mounted."""
+    if not is_model_experiment(experiment):
+        raise PolicyError("experiment %r is not in the model whitelist %s"
+                          % (experiment, sorted(MODEL_EXPERIMENTS)))
+    if not isinstance(mounts, list) or not mounts:
+        raise PolicyError("mounts must be a non-empty list")
+    reg = {(_norm(d), os.path.realpath(d)): _norm(d)
+           for d in MODEL_EXPERIMENTS[experiment]["model_dirs"]}
+    lib, other = [], []
+    for m in mounts:
+        src, dst, mode = _mount_parts(m)
+        for p in (src, dst):
+            if not p.startswith("/"):
+                raise PolicyError("mount path must be absolute: %r" % p)
+        if _touches_library(src) or _touches_library(dst):
+            key = (_norm(src), os.path.realpath(src))
+            if key not in reg or dst != src or mode != "ro":
+                raise PolicyError("%s may only mount its registered model dirs %s at the same "
+                                  "path read-only, got %r"
+                                  % (experiment, sorted(reg.values()), m))
+            lib.append(reg[key])
+        else:
+            other.append(m)
+    if not lib:
+        raise PolicyError("%s mounts none of its model dirs %s" % (experiment, sorted(reg.values())))
+    if len(set(lib)) != len(lib):
+        raise PolicyError("a model dir is mounted twice: %s" % lib)
+    check_mounts(other)
+    return sorted(lib)
+
+
+def check_model_submission(experiment, gpus, mounts, tokenizer_dir, basis):
+    """The assertions of a model experiment's job, in a fixed order; raise PolicyError on the
+    first failure. Returns (assertions dict with every key True, tokenizer_dir_sha256)."""
+    if not is_model_experiment(experiment):
+        raise PolicyError("experiment %r is not in the model whitelist %s"
+                          % (experiment, sorted(MODEL_EXPERIMENTS)))
+    cap = MODEL_EXPERIMENTS[experiment]["max_gpus"]
+    if not isinstance(gpus, int) or isinstance(gpus, bool) or not 1 <= gpus <= cap:
+        raise PolicyError("%s: gpus must be an int in [1, %d], got %r" % (experiment, cap, gpus))
+    check_model_mounts(experiment, mounts)
+    tok_sha = tokenizer_dir_sha256(tokenizer_dir)
+    if not isinstance(basis, str) or not basis.strip():
+        raise PolicyError("the approval basis text is required")
+    return {k: True for k in MODEL_ASSERTION_KEYS}, tok_sha
+
+
+def check_any_submission(experiment, gpus, mounts, tokenizer_dir, basis):
+    """check_model_submission for a whitelisted model experiment, else check_no_model_submission
+    (which refuses any id outside NO_MODEL_EXPERIMENTS and any model-library mount)."""
+    if is_model_experiment(experiment):
+        return check_model_submission(experiment, gpus, mounts, tokenizer_dir, basis)
+    return check_no_model_submission(experiment, gpus, mounts, tokenizer_dir, basis)
 
 
 def check_test_only_argv(argv):

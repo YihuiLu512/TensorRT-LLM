@@ -15,9 +15,10 @@ from .clock import parse_wall_iso, wall_iso
 from .exitcodes import ConfigError
 from .hashing import is_sha256_hex
 from .jobplan import ITEM_ID_RE, check_item_class
-from .policy import (ASSERTION_KEYS, NO_MODEL_EXPERIMENTS, PREP_ASSERTION_KEYS,
-                     PREP_TOKENIZER_EXPERIMENT, PREP_TOKENIZER_PURPOSE, PolicyError,
-                     check_mounts, check_prep_tokenizer_mounts)
+from .policy import (ASSERTION_KEYS, MODEL_ASSERTION_KEYS, NO_MODEL_EXPERIMENTS,
+                     PREP_ASSERTION_KEYS, PREP_TOKENIZER_EXPERIMENT, PREP_TOKENIZER_PURPOSE,
+                     PolicyError, check_model_mounts, check_mounts, check_prep_tokenizer_mounts,
+                     is_model_experiment, max_gpus_for)
 
 REGISTRY_COLUMNS = ("registered_at", "experiment", "relpath", "sha256", "note")
 REGISTRY_KINDS = ("register", "register_md", "tier_table", "schedule", "prompts", "scenario",
@@ -168,8 +169,9 @@ def submissions_append(path, row):
             g = int(gpus)
         except (TypeError, ValueError):
             raise LedgerError("gpus must be an integer on PLANNED rows")
-        if g > 1:
-            raise LedgerError("gpus > 1 is not allowed by this submission path")
+        if g > max_gpus_for(row.get("experiment")):
+            raise LedgerError("gpus %d is above the ceiling %d of experiment %r"
+                              % (g, max_gpus_for(row.get("experiment")), row.get("experiment")))
         _check_planned_assertions(row)
     argv = row.get("sbatch_argv", "")
     if argv:
@@ -193,6 +195,8 @@ def _check_planned_assertions(row):
     tokenizer copy, policy.check_prep_tokenizer_submission) ran and passed."""
     if row.get("reason") == PREP_TOKENIZER_PURPOSE:
         return _check_prep_tokenizer_planned(row)
+    if is_model_experiment(row.get("experiment")):
+        return _check_model_planned(row)
     if row.get("experiment") not in NO_MODEL_EXPERIMENTS:
         raise LedgerError("experiment %r is not in the no-model list" % row.get("experiment"))
     try:
@@ -208,6 +212,33 @@ def _check_planned_assertions(row):
             or not all(v is True for v in assertions.values()):
         raise LedgerError("assertions_json must have every key of %s set to true"
                           % (ASSERTION_KEYS,))
+    tok = row.get("tokenizer_dir_sha256", "")
+    if tok != "none" and not is_sha256_hex(tok):
+        raise LedgerError("tokenizer_dir_sha256 must be 64 hex or 'none'")
+
+
+def _check_model_planned(row):
+    """A whitelisted model experiment's PLANNED row (policy.check_model_submission ran)."""
+    exp = row.get("experiment")
+    try:
+        g = int(str(row.get("gpus")))
+    except ValueError:
+        raise LedgerError("gpus must be an integer, got %r" % row.get("gpus"))
+    if not 1 <= g <= max_gpus_for(exp):
+        raise LedgerError("%s: gpus %d outside [1, %d]" % (exp, g, max_gpus_for(exp)))
+    try:
+        mounts = json.loads(row.get("mounts_json") or "")
+        assertions = json.loads(row.get("assertions_json") or "")
+    except ValueError:
+        raise LedgerError("PLANNED rows need mounts_json and assertions_json as JSON")
+    try:
+        check_model_mounts(exp, mounts)
+    except PolicyError as e:
+        raise LedgerError(str(e))
+    if not isinstance(assertions, dict) or set(assertions) != set(MODEL_ASSERTION_KEYS) \
+            or not all(v is True for v in assertions.values()):
+        raise LedgerError("assertions_json must have every key of %s set to true"
+                          % (MODEL_ASSERTION_KEYS,))
     tok = row.get("tokenizer_dir_sha256", "")
     if tok != "none" and not is_sha256_hex(tok):
         raise LedgerError("tokenizer_dir_sha256 must be 64 hex or 'none'")

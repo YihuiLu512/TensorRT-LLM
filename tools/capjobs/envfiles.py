@@ -57,14 +57,64 @@ def check_image(check_file):
             "passed": passed, "outcome": outcome}
 
 
-def check_mounts(mounts, must_read, forbidden=FORBIDDEN_MOUNT_PATHS):
+def _visible_only_toward(root, allowed):
+    """For a model library root that exists in the container of a model job: every directory on
+    the way from root down to each allowed model dir lists nothing but the next path component
+    toward an allowed dir (what pyxis creates for an identity mount of the dir); the allowed dirs
+    themselves are readable and non-empty. Returns (ok, state)."""
+    want = {}  # directory -> set of child names that may appear in it
+    for d in allowed:
+        rel = os.path.relpath(d, root)
+        if rel == "." or rel.startswith(".."):
+            continue
+        cur = root
+        for part in rel.split(os.sep):
+            want.setdefault(cur, set()).add(part)
+            cur = os.path.join(cur, part)
+    if not want:
+        return False, "present, but no allowed model dir lies under it"
+    for d, names in sorted(want.items()):
+        try:
+            seen = set(os.listdir(d))
+        except OSError as e:
+            return False, "unreadable %s: %s" % (d, e)
+        extra = sorted(seen - names)
+        if extra:
+            return False, "%s shows more than the allowed model dirs: %s" % (d, extra[:5])
+    for d in allowed:
+        try:
+            if not (os.path.isdir(d) and os.listdir(d)):
+                return False, "allowed model dir %s missing or empty" % d
+        except OSError as e:
+            return False, "allowed model dir %s unreadable: %s" % (d, e)
+    return True, "only the allowed model dirs %s are visible" % sorted(allowed)
+
+
+def check_mounts(mounts, must_read, forbidden=FORBIDDEN_MOUNT_PATHS, allow_model_dirs=()):
     """Model libraries absent or empty; every mount dst and must-read path is readable and
     non-empty (a missing mount looks like an empty directory), and neither it nor its realpath
-    equals, lies under or contains a model library path."""
+    equals, lies under or contains a model library path.
+
+    A whitelisted model job passes its registered model dirs as allow_model_dirs (job.env
+    CAPJOBS_MODEL_DIRS, from policy.check_model_submission): a library root may then exist but
+    show nothing except the path to those dirs, and a mount equal to one of them is accepted;
+    any other mount that touches a library still fails."""
+    allowed = sorted({os.path.normpath(d) for d in allow_model_dirs})
+    if any(not d.startswith("/") for d in allowed):
+        raise ValueError("allowed model dirs must be absolute: %s" % allowed)
     items = []
+    for d in allowed:
+        if not any(paths_related(d, f) for f in forbidden):
+            items.append({"path": d, "kind": "allowed_model_dir",
+                          "state": "not under a model library root", "ok": False})
     for p in forbidden:
         if not os.path.lexists(p):
             items.append({"path": p, "kind": "forbidden", "state": "absent", "ok": True})
+            continue
+        if any(paths_related(d, p) for d in allowed):
+            ok, state = _visible_only_toward(p, [d for d in allowed if paths_related(d, p)])
+            items.append({"path": p, "kind": "forbidden_allowing_model_dirs", "state": state,
+                          "ok": ok})
             continue
         try:
             empty = os.path.isdir(p) and not os.listdir(p)
@@ -77,7 +127,10 @@ def check_mounts(mounts, must_read, forbidden=FORBIDDEN_MOUNT_PATHS):
     for kind, paths in (("mount", [m.split(":")[1] for m in mounts]), ("must_read", must_read)):
         for p in paths:
             real = os.path.realpath(p)
-            libs = [f for f in forbidden for q in (p, real) if paths_related(q, f)]
+            if kind == "mount" and os.path.normpath(p) in allowed:
+                libs = []  # an allowed model dir; its realpath may resolve inside the library
+            else:
+                libs = [f for f in forbidden for q in (p, real) if paths_related(q, f)]
             try:
                 ok = os.access(p, os.R_OK) and (not os.path.isdir(p) or bool(os.listdir(p)))
                 state = "readable, non-empty" if ok else "missing, unreadable or empty"
@@ -172,6 +225,9 @@ def main(argv=None):
     ap.add_argument("--check-file")
     ap.add_argument("--mounts-json")
     ap.add_argument("--must-read", action="append", default=[])
+    ap.add_argument("--allow-model-dir", action="append", default=[],
+                    help="mounts: a whitelisted model job's registered model dir (job.env "
+                         "CAPJOBS_MODEL_DIRS); repeatable")
     ap.add_argument("--path", action="append", default=[])
     ap.add_argument("--min-free-bytes", type=int)
     ap.add_argument("--nvidia-smi")
@@ -191,7 +247,8 @@ def main(argv=None):
             doc = check_image(a.check_file)
         elif a.what == "mounts":
             with open(a.mounts_json, "r", encoding="utf-8") as f:
-                doc = check_mounts(json.load(f), a.must_read)
+                doc = check_mounts(json.load(f), a.must_read,
+                                   allow_model_dirs=a.allow_model_dir)
         elif a.what == "local-disk":
             doc = check_local_disk(a.path, a.min_free_bytes)
         elif a.what == "gpu-idle":

@@ -419,7 +419,8 @@ def _forbidden_cases(env):
 
 EXPECTED_REASON = {
     "experiment_E10": "no-model list", "experiment_E10_proxy": "no-model list",
-    "experiment_E13_main": "no-model list", "experiment_E11": "no-model list",
+    "experiment_E13_main": "no-model list",
+    "experiment_E11": "mounts none of its model dirs",  # whitelisted model id, no model mount
     "gpus_2": "gpus must be", "mount_model_lib": "model library",
     "mount_model_lib_2": "model library", "mount_ancestor": "model library",
     "mount_child": "model library", "tokenizer_weights": "weight file",
