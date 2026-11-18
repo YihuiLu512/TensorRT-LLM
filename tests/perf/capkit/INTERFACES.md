@@ -1839,6 +1839,13 @@ R2 自审（slug `capkit-b2judge-J17871`）发现的问题已直接改进本子�
 4. **follow-up（未改）**：`caplaunch.laddergen.packing` 按 0 个作业输入算时间预算（M-SPB-2）；FT1 的 E2a / E3 / E4 模板都声明了 `job_inputs`（请求字节、预制流），以后若经 laddergen 装箱，要改成按场景的种类数传入。
 5. **验证**：`tests/capstubs/test_null_llm_server.py`（`metronome-only` 的 `grpc_server_options` 缺省来源且逐档与就绪一致、`full` 下为 `null`、`full` 下给 `--max-unrequested-s` 退出码 3；`full` 下样本都是读者所发的 `req_id`；被拒请求的原文按到达顺序进样本）；`tests/capstubs/test_prebaked_server.py`（端到端样本 ⊆ 读者所发；无 `--schedule` 时非十进制原文进样本；样本按事件档；被拒请求进样本）；`tests/capstubs/test_oe_sink.py`（见第 3 条）。全量验证与作业路径 e2e 见 `_progress/merge-ft1.md`。
 
+### E10 线：E10-S 编号、serve_glm、G1 替身与 configs/glm（2026-11-18）
+
+- **实验编号 `E10-S`**：E10 的替身臂（G0 glm `MockEngine`、G1 `capstubs.glm_g1`）。用户第三十一次答复（2026-11-18 21:3x）开 E10 线、免逐项审批；真引擎臂按 Q6 不做。`capcommon.policy.NO_MODEL_EXPERIMENTS` 加 `E10-S`；裸 `E10`、`E10-proxy`、`E13-main` 仍被拒（§12 第 11 条的「需要独立编号」由此落实）。
+- **`capstubs.serve_glm`**（产品角色入口，glm venv Python 起）：`--engine mock|g1`、`--step-ms`（= 档位表负载档的 `beat_ns`，不等即拒绝起动）、`--tokens-per-step`、`--inject off|M1:count|M1:busy:NS`、`--diag`、`--pick-port` + `--report-addr`（服务端 READY 且端口能连上才写 `host:port`；所建引擎的种类与 `--engine` 不符则永不写，读者等不到就绪而失败）、`--procmon-*`（`capstubs.affinity`）。不改 glm 检出的任何文件：替身经 `glm5_serve.engine_api.MockEngine` 属性替换生效（`cli._create_engine` 在函数内导入）。
+- **`{raw}/snx/serve_glm.<pid>.jsonl`**（`capkit.serve_glm.diag/1`）：首行头（engine、step_ms、tokens_per_step、inject、diags、`sys.getswitchinterval()`），之后每秒一行：`M1`（hits/applied/applied_ns，累计）、`dispatch`（calls/responses 累计、max_batch 本秒）、`loop`（n/lag_ns/hist 累计、max_lag_ns 本秒）、`engine`（G1：`StepStats` 累计 + 本秒 max；G0：`_iter`、在途请求数）、`server`（phase、requests、generate_accepted）、`threads`、`gc`；进程退出时再写一行。`{raw}/snx/host.serve_glm.json`（`capkit.serve_glm/1`）记 glm 根目录、五个被包装文件的 sha256、Python 版本与前缀、解析后的 mock 配置与 serve 参数。
+- **`configs/glm/`**（`configs/gen_glm_configs.py`）：e10-{g0,g1}-{mc,r}，拓扑同 E8（K = 4 条 `capgrpc.load` 连接）且读者加 `--planned-msgs`；宿主 4 + 1（procmon）核。
+
 ## 审阅记录（r2，2026-11-13）
 
 审阅意见来自 spec-critic（JSON，24 条）。每条都对照设计稿 / 计划原文核对过；「采纳」= 按意见改，「部分采纳」= 问题属实、改法与意见不同（写理由），「不采纳」= 问题不成立。

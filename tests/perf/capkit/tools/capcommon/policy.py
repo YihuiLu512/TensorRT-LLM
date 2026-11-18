@@ -18,11 +18,12 @@ import os
 from .exitcodes import ConfigError
 
 # Experiment ids accepted by the no-model submission entry. Only ids the plan lists as "does not
-# load a real model" AND that have their own experiment id. E10's substitute arm and E13's main
-# body share an id with model-loading parts, so they are NOT listed; they need distinct ids
-# confirmed by the user and an INTERFACES.md erratum before they can be submitted.
+# load a real model" AND that have their own experiment id. E10-S is E10's substitute arms (G0
+# MockEngine, G1 capstubs.glm_g1; user 31st answer 2026-11-18 starts the E10 line, the real-engine
+# arm stays out by Q6); the bare id E10 and E13's main body share an id with model-loading parts
+# and are NOT listed.
 NO_MODEL_EXPERIMENTS = ("E0", "E1", "E2", "E2a", "E2b", "E3", "E4", "E5", "E6", "E7", "E8",
-                        "E9", "E15-A")
+                        "E9", "E10-S", "E15-A")
 
 # Model libraries that a no-model job must not be able to see (CONSTRAINTS section 2 item 1).
 FORBIDDEN_MOUNT_PATHS = ("/home/scratch.trt_llm_data_ci", "/home/scratch.trt_llm_data")
