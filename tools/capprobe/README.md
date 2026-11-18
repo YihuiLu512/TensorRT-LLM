@@ -84,7 +84,7 @@ fork 出来、没有 exec 的子进程命令行不变，仍启用（各自归零
 - 每个样本按距上一个样本的墙钟时间加权（`stack.main.wall_ns.<类>`），同时记主线程这段时间的 CPU（`stack.main.cpu_ns.<类>`）和样本数（`stack.main.n.<类>`）。采样要拿 GIL，主线程长时间占着 GIL 的 C 调用会算到调用它的 Python 帧上。
 - 其他 Python 线程（分词线程池等）只在不处于等待点时计入 `stack.thr.wall_ns.<类>`（线程·秒）；capkit 自己的线程跳过。
 - 每 0.5 s 读 `/proc/<pid>/task/*/children` 与子进程 `stat`：`stack.children_cpu_ns` 为见过的每个子进程的 utime+stime+cutime+cstime 之和，`stack.children` 为最近一次的存活子进程数。
-- 合计：`stack.samples`、`stack.wall_ns`、`stack.main_cpu_ns`、`stack.proc_cpu_ns`、`stack.sampler_cpu_ns`（采样线程自身 CPU，即直接开销）、`stack.errors`。按函数的明细（定类帧的 `类别|文件:函数` → 墙钟 ns，累计，最多 400 项）每 5 s 写进快照 meta 的 `stack_funcs`。
+- 合计：`stack.samples`、`stack.wall_ns`、`stack.main_cpu_ns`、`stack.proc_cpu_ns`、`stack.sampler_cpu_ns`（采样线程自身 CPU，即直接开销）、`stack.errors`。按函数的明细（定类帧的 `类别|文件:函数` → 墙钟 ns，累计，最多 200 项）每 2 s 写进快照 meta 的 `stack_funcs`。
 
 ## 覆盖清单（`capprobe.overlay`）的补充参数
 
