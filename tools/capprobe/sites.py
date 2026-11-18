@@ -82,6 +82,8 @@ SITES = {
 # Group `stack` (capprobe.stack): a stack sampler thread in every process where the group is on;
 # it has no code location in the probe tree (no SITES entry) and only these slots. Categories of
 # the main thread's samples and the run totals (meanings: capprobe.stack).
+# Groups without code locations: a P2 manifest opening only these lists no sites.
+SITELESS_GROUPS = ("stack",)
 STACK_CATEGORIES = ("idle", "loop", "grpc", "pool_ipc", "tok", "assemble", "facade",
                     "openai_req", "openai_stream", "encode", "http_in", "http_out", "probe",
                     "trtllm_other", "other")
