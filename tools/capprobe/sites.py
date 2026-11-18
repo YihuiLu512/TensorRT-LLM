@@ -88,7 +88,9 @@ STACK_CATEGORIES = ("idle", "loop", "grpc", "pool_ipc", "tok", "assemble", "faca
                     "openai_req", "openai_stream", "encode", "http_in", "http_out", "probe",
                     "trtllm_other", "other")
 STACK_TOTALS = ("samples", "wall_ns", "main_cpu_ns", "proc_cpu_ns", "sampler_cpu_ns",
-                "children_cpu_ns", "errors")
+                "children_cpu_ns", "errors", "gil_ns")
+# Class of the main thread's system call when a sample lands on the loop runner (idle).
+STACK_SYSCALLS = ("epoll", "futex", "io", "other")
 
 # What one pass means (cross-reference only, not part of the INTERFACES.md SITES contract).
 # The lag sites share LAG_NOTE.
@@ -153,10 +155,15 @@ def _build_slots():
         slots["stack.%s" % t] = {"kind": "counter", "site": None, "group": "stack",
                                  "per": "sample" if t == "samples" else "none"}
     slots["stack.children"] = {"kind": "gauge", "site": None, "group": "stack", "per": "none"}
+    for k in STACK_SYSCALLS:
+        slots["stack.main.idle_sys.%s" % k] = {"kind": "counter", "site": None, "group": "stack",
+                                               "per": "sample"}
     for c in STACK_CATEGORIES:
         slots["stack.main.n.%s" % c] = {"kind": "counter", "site": None, "group": "stack",
                                         "per": "sample"}
-        for q in ("main.wall_ns", "main.cpu_ns", "thr.wall_ns"):
+        slots["stack.main.forced.%s" % c] = {"kind": "counter", "site": None, "group": "stack",
+                                             "per": "sample"}
+        for q in ("main.wall_ns", "main.cpu_ns", "thr.wall_ns", "main.gil_ns"):
             slots["stack.%s.%s" % (q, c)] = {"kind": "counter", "site": None, "group": "stack",
                                              "per": "none"}
     for site in INJECT_SITES:
