@@ -20,8 +20,8 @@ window delta exactly at the sites whose kind is declared.
 
 # Every group named in the design. Only IMPLEMENTED_GROUPS may be switched on in this build;
 # naming any other known group is an error at import (it would silently measure nothing).
-ALL_GROUPS = ("count", "bytes", "lag", "queue", "ts", "pin")
-IMPLEMENTED_GROUPS = ("count", "lag")
+ALL_GROUPS = ("count", "bytes", "lag", "queue", "ts", "pin", "stack")
+IMPLEMENTED_GROUPS = ("count", "lag", "stack")
 RESERVED_GROUPS = tuple(g for g in ALL_GROUPS if g not in IMPLEMENTED_GROUPS)
 
 # Process kinds: each kind is the set of sites that every process of that kind passes while it
@@ -78,6 +78,15 @@ SITES = {
            "file": "tensorrt_llm/serve/openengine_poc/multi_frontend.py",
            "lines": [654], "slots": ["lag.Lmfa"]},
 }
+
+# Group `stack` (capprobe.stack): a stack sampler thread in every process where the group is on;
+# it has no code location in the probe tree (no SITES entry) and only these slots. Categories of
+# the main thread's samples and the run totals (meanings: capprobe.stack).
+STACK_CATEGORIES = ("idle", "loop", "grpc", "pool_ipc", "tok", "assemble", "facade",
+                    "openai_req", "openai_stream", "encode", "http_in", "http_out", "probe",
+                    "trtllm_other", "other")
+STACK_TOTALS = ("samples", "wall_ns", "main_cpu_ns", "proc_cpu_ns", "sampler_cpu_ns",
+                "children_cpu_ns", "errors")
 
 # What one pass means (cross-reference only, not part of the INTERFACES.md SITES contract).
 # The lag sites share LAG_NOTE.
@@ -138,6 +147,16 @@ def _build_slots():
         # How many times this install point was executed in the process (1 expected).
         slots["lag.%s.installs" % site] = {"kind": "counter", "site": site, "group": "lag",
                                            "per": "event"}
+    for t in STACK_TOTALS:
+        slots["stack.%s" % t] = {"kind": "counter", "site": None, "group": "stack",
+                                 "per": "sample" if t == "samples" else "none"}
+    slots["stack.children"] = {"kind": "gauge", "site": None, "group": "stack", "per": "none"}
+    for c in STACK_CATEGORIES:
+        slots["stack.main.n.%s" % c] = {"kind": "counter", "site": None, "group": "stack",
+                                        "per": "sample"}
+        for q in ("main.wall_ns", "main.cpu_ns", "thr.wall_ns"):
+            slots["stack.%s.%s" % (q, c)] = {"kind": "counter", "site": None, "group": "stack",
+                                             "per": "none"}
     for site in INJECT_SITES:
         for q in ("hits", "applied", "applied_ns"):
             slots["inject.%s.%s" % (site, q)] = {"kind": "counter", "site": site,
