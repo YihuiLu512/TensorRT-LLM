@@ -219,5 +219,5 @@ def test_gc_freeze_now():
 
 
 def test_sites_table_names():
-    assert set(snx_inject.SITES) == {"Hs", "Hd", "Fr"}
+    assert set(snx_inject.SITES) == {"Hs", "Hd", "Fr", "Pp"}
     assert os.path.basename(snx_inject.__file__) == "snx_inject.py"
