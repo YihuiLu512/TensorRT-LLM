@@ -91,7 +91,8 @@ child = subprocess.Popen([sys.executable, "-c",
 th.start()
 t0 = time.monotonic_ns()
 ns["burn"](0.8)
-time.sleep(0.3)
+import asyncio
+asyncio.run(asyncio.sleep(0.3))  # idle on the selector (epoll)
 th.join(); child.wait()
 time.sleep(0.7)  # one more children poll after the child exited
 el = time.monotonic_ns() - t0
@@ -123,6 +124,11 @@ def test_sampler_in_process(probe_env):
     assert meta["probe"]["groups"] == ["stack"]
     assert meta["probe"]["stack_period_ns"] == stack.PERIOD_NS
     funcs = meta["stack_funcs"]
-    assert funcs["grpc|fake.py:burn"] == v["stack.main.wall_ns.grpc"]
+    assert funcs["grpc|grpc/fake.py:burn"] == v["stack.main.wall_ns.grpc"]
     assert "other|<string>:<module>" in funcs and not any(k.startswith("idle|") for k in funcs)
+    # busy Python code: the sampler waited for the GIL (forced switches), idle: it did not
+    assert v["stack.main.forced.grpc"] > 0 and v["stack.main.gil_ns.grpc"] >= 0.2e9
+    assert v["stack.main.gil_ns.idle"] < 0.05e9
+    assert v["stack.main.n.idle"] > 0 and v["stack.main.idle_sys.epoll"] >= 0.8 * v["stack.main.n.idle"]
+    assert v["stack.gil_ns"] == sum(v["stack.main.gil_ns.%s" % c] for c in sites.STACK_CATEGORIES)
     assert out["live_threads"] == ["MainThread", "capkit-snapshot", "capkit-stack"]

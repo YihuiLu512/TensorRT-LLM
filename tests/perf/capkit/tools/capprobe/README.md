@@ -82,6 +82,7 @@ fork 出来、没有 exec 的子进程命令行不变，仍启用（各自归零
 
 - 打开后 `_setup` 启动 `capkit-stack` 线程：每 4 ms 读一次 `sys._current_frames()`，主线程的栈从最内层向外找第一个能定类的帧，归入 `sites.STACK_CATEGORIES` 之一（规则表在 `capprobe.stack._FILE_RULES`；asyncio、uvloop 等循环框架帧透明；pydantic、json 等序列化帧取外侧第一个定类帧的类别，外侧是流式生成器时记 `encode`；最内层就是循环 runner 时记 `idle`，即等 I/O 或在循环的 C 代码里）。
 - 每个样本按距上一个样本的墙钟时间加权（`stack.main.wall_ns.<类>`），同时记主线程这段时间的 CPU（`stack.main.cpu_ns.<类>`）和样本数（`stack.main.n.<类>`）。采样要拿 GIL，主线程长时间占着 GIL 的 C 调用会算到调用它的 Python 帧上。
+- 采样线程睡醒后等 GIL 的时间（主线程或别的线程占着 GIL）记为该样本的 `stack.main.gil_ns.<类>`（≥ 2 ms 的计入 `stack.main.forced.<类>`，多半是解释器的强制切换，即主线程正在跑 Python 代码），合计 `stack.gil_ns`。落在 runner（`idle`）的样本再按主线程当时的系统调用分 `stack.main.idle_sys.{epoll,futex,io,other}`：epoll 是真空闲，futex 是主线程在等 GIL。按函数明细的键为 `类别|上级目录/文件:函数`。
 - 其他 Python 线程（分词线程池等）只在不处于等待点时计入 `stack.thr.wall_ns.<类>`（线程·秒）；capkit 自己的线程跳过。
 - 每 0.5 s 读 `/proc/<pid>/task/*/children` 与子进程 `stat`：`stack.children_cpu_ns` 为见过的每个子进程的 utime+stime+cutime+cstime 之和，`stack.children` 为最近一次的存活子进程数。
 - 合计：`stack.samples`、`stack.wall_ns`、`stack.main_cpu_ns`、`stack.proc_cpu_ns`、`stack.sampler_cpu_ns`（采样线程自身 CPU，即直接开销）、`stack.errors`。按函数的明细（定类帧的 `类别|文件:函数` → 墙钟 ns，累计，最多 200 项）每 2 s 写进快照 meta 的 `stack_funcs`。

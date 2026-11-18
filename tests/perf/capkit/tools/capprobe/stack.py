@@ -94,6 +94,21 @@ _WAIT_POINTS = (
 )
 
 
+# A sample whose GIL wait is at least this long was most likely taken at a forced switch (the
+# interpreter's switch interval is 5 ms): the main thread was running Python code, not waiting.
+FORCED_NS = 2_000_000
+# /proc/<pid>/task/<tid>/syscall first field (x86_64 numbers) -> class
+_SYSCALL_CLASS = {"232": "epoll", "281": "epoll", "441": "epoll", "7": "epoll", "271": "epoll",
+                  "202": "futex", "0": "io", "1": "io", "19": "io", "20": "io", "44": "io",
+                  "45": "io", "46": "io", "47": "io", "running": "other"}
+
+
+def _short(path):
+    """Last two components of a file name (logging/__init__.py, serve/openai_server.py)."""
+    parts = path.replace("\\", "/").rsplit("/", 2)
+    return "/".join(parts[-2:])
+
+
 def _norm(path):
     return "/" + path.replace("\\", "/").lstrip("/")
 
@@ -234,6 +249,12 @@ class StackSampler:
         self._wall = {c: off("stack.main.wall_ns.%s" % c) for c in CATEGORIES}
         self._cpu = {c: off("stack.main.cpu_ns.%s" % c) for c in CATEGORIES}
         self._thr = {c: off("stack.thr.wall_ns.%s" % c) for c in CATEGORIES}
+        self._gil = {c: off("stack.main.gil_ns.%s" % c) for c in CATEGORIES}
+        self._forced = {c: off("stack.main.forced.%s" % c) for c in CATEGORIES}
+        self._idle_sys = {k: off("stack.main.idle_sys.%s" % k) for k in _sites.STACK_SYSCALLS}
+        nid = threading.main_thread().native_id if main_ident is None else None
+        self._sys_path = (None if nid is None else
+                          os.path.join(proc_root, "self", "task", str(nid), "syscall"))
         try:
             self._main_clock = time.pthread_getcpuclockid(self.main_ident)
         except (OSError, AttributeError, OverflowError):
@@ -247,8 +268,19 @@ class StackSampler:
         except OSError:
             return 0
 
-    def sample_once(self, dt_ns, dcpu_ns, skip_idents):
-        """Take one sample weighted by dt_ns of wall and dcpu_ns of main-thread CPU."""
+    def _main_syscall(self):
+        """Class of the main thread's current system call: epoll, futex, io or other."""
+        try:
+            with open(self._sys_path) as f:
+                tok = f.read(16).split(" ", 1)[0]
+        except (OSError, TypeError):
+            return "other"
+        return _SYSCALL_CLASS.get(tok, "other")
+
+    def sample_once(self, dt_ns, dcpu_ns, skip_idents, gil_ns=0):
+        """Take one sample weighted by dt_ns of wall and dcpu_ns of main-thread CPU. gil_ns: how
+        long the sampler waited for the GIL after its sleep (the main thread or another thread
+        held it); the sample's category gets that busy time too (stack.main.gil_ns.<cat>)."""
         v = self._v
         frames = sys._current_frames()
         main = frames.get(self.main_ident)
@@ -258,8 +290,13 @@ class StackSampler:
             v[self._n[cat]] += 1
             v[self._wall[cat]] += dt_ns
             v[self._cpu[cat]] += dcpu_ns
-            if cat != "idle":
-                key = "%s|%s:%s" % (cat, os.path.basename(code.co_filename), code.co_name) \
+            v[self._gil[cat]] += gil_ns
+            if gil_ns >= FORCED_NS:
+                v[self._forced[cat]] += 1
+            if cat == "idle":
+                v[self._idle_sys[self._main_syscall()]] += 1
+            else:
+                key = "%s|%s:%s" % (cat, _short(code.co_filename), code.co_name) \
                     if code is not None else "%s|-" % cat
                 self.funcs[key] = self.funcs.get(key, 0) + dt_ns
         for ident, fr in frames.items():
@@ -274,6 +311,7 @@ class StackSampler:
         v[self._tot["samples"]] += 1
         v[self._tot["wall_ns"]] += dt_ns
         v[self._tot["main_cpu_ns"]] += dcpu_ns
+        v[self._tot["gil_ns"]] += gil_ns
 
     def poll_children(self):
         seen = self._children
@@ -305,11 +343,13 @@ class StackSampler:
         skip = self._skip_idents()
         next_skip = t_prev + CHILD_POLL_NS
         period_s = self.period_ns / 1e9
+        t_sleep = t_prev
         while not self._stop.wait(period_s):
             try:
                 now = time.monotonic_ns()
                 c_now = self._main_cpu()
-                self.sample_once(now - t_prev, max(0, c_now - c_prev), skip)
+                self.sample_once(now - t_prev, max(0, c_now - c_prev), skip,
+                                 max(0, now - t_sleep - self.period_ns))
                 t_prev, c_prev = now, c_now
                 if now >= next_child:
                     self.poll_children()
@@ -324,6 +364,7 @@ class StackSampler:
                 v[tot["errors"]] += 1
             v[tot["sampler_cpu_ns"]] = time.thread_time_ns()
             v[tot["proc_cpu_ns"]] = time.process_time_ns()
+            t_sleep = time.monotonic_ns()
 
     def start(self):
         self._thread = threading.Thread(target=self._run, name=THREAD_NAME, daemon=True)
