@@ -260,7 +260,7 @@ def build_manifest(tier, probe_tree, image_commit, base_commit, capkit_root, cap
                                    % (unknown, groups))
             chosen = {k: open_sites[k] for k in sites}
             selection = "cli"
-        if not chosen:
+        if not chosen and not set(groups) <= set(_sites.SITELESS_GROUPS):
             raise OverlayError("P2 manifest would list no sites")
     else:
         chosen, selection = {}, "none"

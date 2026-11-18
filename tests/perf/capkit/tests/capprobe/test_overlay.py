@@ -92,6 +92,8 @@ def test_p1_p2_use_probe_head(world):
         m2["patchcheck"]["found_location_count"]
     m3 = build(world, "P2", groups=["count"], sites=["F2"])
     assert m3["sites_selection"] == "cli" and list(m3["sites"]) == ["F2"]
+    m4 = build(world, "P2", groups=["stack"])  # siteless group: no sites, no error
+    assert m4["groups"] == ["stack"] and m4["sites"] == {} and m4["files"] == m2["files"]
 
 
 @pytest.mark.parametrize("kw,msg", [
