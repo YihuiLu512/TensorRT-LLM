@@ -8,6 +8,13 @@
                "argv": ["{PY}", "-m", "caplaunch", "--workdir", "/abs/W",
                         "--scenario", "02_e0/E0/register/x.scenario.json", ...]}]}
 
+A launch may carry "body": "script" (default "caplaunch"; capcommon.policy.SCRIPT_BODY_EXPERIMENTS
+names the experiments allowed to use it, checked by capjobs.submit). A script launch runs
+argv = [{PY} | bash | /bin/bash, {SNAP}/<file in the job's code snapshot>, args...] as is: no
+scenario, no pin table, no job inputs and no appended flags; capjobs.launches passes the
+identity, the launch tree (CAPKIT_RUN_DIR) and the job files in the environment instead
+(launches.script_env). The script owns everything in between; the job keeps its gate, budget,
+process-tree kill, copy-back, verification and STATE line. Plans do not mix the two bodies.
 The identity arguments (--experiment --arm --launch-seq --job-id --restart-count --register-sha
 --role --run-dir), --overlay-manifest, --nvidia-smi, --job-env-dir, --pin-table and --job-input
 are appended by capjobs.launches from the plan, the job's snapshot, job.env, the job dir, the pin
@@ -44,6 +51,18 @@ RESERVED_FLAGS = ("--experiment", "--arm", "--launch-seq", "--job-id", "--restar
                   "--register-sha", "--role", "--run-dir", "--overlay-manifest", "--nvidia-smi",
                   "--job-env-dir", "--pin-table", "--job-input")
 _PH_RE = re.compile(r"\{([^{}]*)\}")
+BODIES = ("caplaunch", "script")
+SCRIPT_INTERPRETERS = ("{PY}", "bash", "/bin/bash")
+SCRIPT_PREFIX = "{SNAP}/"
+
+
+def body_of(ln):
+    return ln.get("body", "caplaunch")
+
+
+def script_relpath(ln):
+    """The snapshot-relative path of a script launch's file (argv[1] after {SNAP}/)."""
+    return ln["argv"][1][len(SCRIPT_PREFIX):]
 
 
 class PlanError(ConfigError):
@@ -77,8 +96,13 @@ def validate(doc):
         raise PlanError("launches must be a non-empty list")
     seqs = set()
     for i, ln in enumerate(launches):
-        if not isinstance(ln, dict) or set(ln) != {"launch_seq", "arm", "budget_s", "argv"}:
-            raise PlanError("launch %d must have exactly launch_seq, arm, budget_s, argv" % i)
+        if not isinstance(ln, dict) or not ({"launch_seq", "arm", "budget_s", "argv"} <= set(ln)
+                                            <= {"launch_seq", "arm", "budget_s", "argv",
+                                                "body"}):
+            raise PlanError("launch %d must have exactly launch_seq, arm, budget_s, argv "
+                            "(and optionally body)" % i)
+        if body_of(ln) not in BODIES:
+            raise PlanError("launch %d: body must be one of %s" % (i, BODIES))
         if not _int(ln["launch_seq"], 0) or ln["launch_seq"] in seqs:
             raise PlanError("launch %d: launch_seq must be a unique int >= 0" % i)
         seqs.add(ln["launch_seq"])
@@ -98,6 +122,17 @@ def validate(doc):
             for name in _PH_RE.findall(a):
                 if name not in PLACEHOLDERS:
                     raise PlanError("launch %d: unknown placeholder {%s}" % (i, name))
+        if body_of(ln) == "script":
+            rel = argv[1][len(SCRIPT_PREFIX):] if len(argv) > 1 else ""
+            if argv[0] not in SCRIPT_INTERPRETERS or len(argv) < 2 \
+                    or not argv[1].startswith(SCRIPT_PREFIX) or not rel \
+                    or _PH_RE.search(rel) or os.path.isabs(rel) \
+                    or ".." in rel.split("/"):
+                raise PlanError("launch %d: a script launch's argv must start with one of %s "
+                                "then %s<relative path in the code snapshot>"
+                                % (i, SCRIPT_INTERPRETERS, SCRIPT_PREFIX))
+    if len({body_of(ln) for ln in launches}) > 1:
+        raise PlanError("a plan must not mix caplaunch and script launches")
     return doc
 
 
@@ -177,7 +212,10 @@ def load_scenario(ln):
 
 def in_job_bound_s(ln):
     """Seconds one launch may spend in the job before its launcher starts: the pin-table bound
-    plus JOB_INPUT_TIMEOUT_S per job-input kind its scenario declares."""
+    plus JOB_INPUT_TIMEOUT_S per job-input kind its scenario declares; 0 for a script launch
+    (neither is generated)."""
+    if body_of(ln) == "script":
+        return 0
     return PINS_TIMEOUT_S + JOB_INPUT_TIMEOUT_S * len(jobinputs.kinds_of(load_scenario(ln)))
 
 
@@ -186,6 +224,8 @@ def check_kill_grace(doc):
     Returns {launch_seq: worst-case seconds}."""
     out = {}
     for ln in doc["launches"]:
+        if body_of(ln) == "script":  # no orchestrator: the job's kill_grace_s is the bound
+            continue
         worst, _rel = worst_stop_s(ln)
         if doc["kill_grace_s"] < worst:
             raise PlanError("kill_grace_s %d < launch %d's worst-case orchestrator stop %.1f s "

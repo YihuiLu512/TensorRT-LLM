@@ -354,3 +354,21 @@ def check_prep_tokenizer_submission(gpus, mounts, basis):
     if not isinstance(basis, str) or not basis.strip():
         raise PolicyError("the approval basis text is required")
     return {k: True for k in PREP_ASSERTION_KEYS}
+
+
+# Experiments whose launch plans may use the script job body (capjobs.launchplan "body":
+# "script"): E12-L2 runs the WT-21-style harness (design 12.6(a); main session decision D-37a,
+# 2026-11-19). Every other experiment keeps caplaunch launches only. A script body changes
+# nothing else: check_any_submission (whitelist, read-only model mounts, GPU ceiling) still runs.
+SCRIPT_BODY_EXPERIMENTS = ("E12-L2a", "E12-L2b", "E14")
+
+
+def check_job_body(experiment, bodies):
+    """Refuse a script body for an experiment outside SCRIPT_BODY_EXPERIMENTS."""
+    bodies = set(bodies)
+    if not bodies <= {"caplaunch", "script"}:
+        raise PolicyError("unknown job body %s" % sorted(bodies - {"caplaunch", "script"}))
+    if "script" in bodies and experiment not in SCRIPT_BODY_EXPERIMENTS:
+        raise PolicyError("experiment %r may not use the script job body (only %s)"
+                          % (experiment, SCRIPT_BODY_EXPERIMENTS))
+    return sorted(bodies)
