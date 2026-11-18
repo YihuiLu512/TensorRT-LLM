@@ -7,22 +7,23 @@
 # clean-up by an inherited marker variable; differences: identity, launch tree and budget come
 # from capjobs.launches (CAPKIT_*), the tensorrt_llm overlay is capjobs' (not copied here), the
 # client PATH shim is tools/cape12/bin (E12_REQLOG_DIR -> cape12.reqlog_l2a), no GLM chain, and a
-# preflight refuses the whole launch when steps x step timeout does not fit the launch budget
-# (12.6(c): a job missing any step is out of the main analysis, so it should not start).
+# preflight refuses the whole launch when steps x the registered expected step duration
+# (--step-expect) exceeds 80% of the launch budget (12.6(c): a job missing any step is out of the
+# main analysis, so it should not start); --step-timeout still bounds each step.
 #
 # E12_PYTHON (default python3) is the interpreter for the CUDA probe and the runner (tests only).
-# usage: e12_inner.sh --src DIR --src-head SHA --config-dir DIR --gpus N --step-timeout S \
+# usage: e12_inner.sh --src DIR --src-head SHA --config-dir DIR --gpus N --step-timeout S --step-expect S \
 #            --steps "ARM=CASE ARM=CASE ..."
 #   ARM in A-def A-1f0 B-s1 B-full; CASE = test_e2e[aggr-CASE] (the YAML stem and server name).
 # Exit: 0 every step ran (each step's own rc is in its step.txt); 6 GPU count / CUDA probe wrong
 # (ENV_INVALID); 3 refused before any step (bad arguments, source tree, preflight); 4 the node
 # was left contaminated by a step (later steps NOT_RUN).
 set -uo pipefail
-SRC= SRC_HEAD= CFG= GPUS= STEP_TIMEOUT= STEPS=
+SRC= SRC_HEAD= CFG= GPUS= STEP_TIMEOUT= STEP_EXPECT= STEPS=
 while [[ $# -gt 0 ]]; do
     case $1 in
         --src) SRC=$2;; --src-head) SRC_HEAD=$2;; --config-dir) CFG=$2;; --gpus) GPUS=$2;;
-        --step-timeout) STEP_TIMEOUT=$2;; --steps) STEPS=$2;;
+        --step-timeout) STEP_TIMEOUT=$2;; --step-expect) STEP_EXPECT=$2;; --steps) STEPS=$2;;
         *) echo "e12_inner: unknown argument $1" >&2; exit 3;;
     esac
     shift 2
@@ -30,7 +31,7 @@ done
 OUT=${CAPKIT_RUN_DIR:?}/raw
 mkdir -p "$OUT"
 refuse() { echo "REFUSED: $*" | tee "$OUT/REFUSED"; exit 3; }
-for v in SRC SRC_HEAD CFG GPUS STEP_TIMEOUT STEPS; do [[ -n ${!v} ]] || refuse "missing --${v,,}"; done
+for v in SRC SRC_HEAD CFG GPUS STEP_TIMEOUT STEP_EXPECT STEPS; do [[ -n ${!v} ]] || refuse "missing --${v,,}"; done
 [[ $(git -C "$SRC" rev-parse HEAD 2>/dev/null) == "$SRC_HEAD" ]] || refuse "source HEAD differs"
 [[ -z $(git -C "$SRC" status --porcelain --untracked-files=no) ]] || refuse "source tree modified"
 RUNNER=$SRC/tests/integration/defs/openengine_chain/runner.py
@@ -39,7 +40,7 @@ read -r -a STEP_LIST <<< "$STEPS"
 T0=$(date +%s)
 BUDGET=${CAPKIT_LAUNCH_BUDGET_S:?}
 DEADLINE=$(( T0 + BUDGET - 60 ))
-NEED=$(( ${#STEP_LIST[@]} * (STEP_TIMEOUT + 150) ))
+NEED=$(( ${#STEP_LIST[@]} * STEP_EXPECT ))
 (( NEED * 10 <= BUDGET * 8 )) || refuse "steps need $NEED s > 80% of the launch budget $BUDGET s"
 for step in "${STEP_LIST[@]}"; do
     case ${step%%=*} in A-def|A-1f0|B-s1|B-full) ;; *) refuse "bad arm in step $step";; esac

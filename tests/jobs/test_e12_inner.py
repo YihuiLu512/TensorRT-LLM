@@ -48,7 +48,7 @@ def setup(tmp_path):
            "CAPKIT_EXPERIMENT": "E12-L2a", "CAPKIT_ARM": "job", "E12_PYTHON": str(py),
            "TMPDIR": str(tmp_path)}
     args = ["--src", str(src), "--src-head", head, "--config-dir", str(cfg), "--gpus", "4",
-            "--step-timeout", "600"]
+            "--step-timeout", "600", "--step-expect", "500"]
     return env, args, run_dir
 
 
@@ -85,7 +85,7 @@ def test_a_failing_step_is_recorded_and_the_rest_still_run(setup):
 
 
 @pytest.mark.parametrize("change, why", [
-    ({"budget": "1500"}, "80% of the launch budget"),       # 2 x (600 + 150) > 0.8 x 1500
+    ({"budget": "1200"}, "80% of the launch budget"),       # 2 x 500 > 0.8 x 1200
     ({"steps": "A-def=x C-s1=y"}, "bad arm"),
     ({"steps": "A-def="}, "bad step"),
     ({"head": "0" * 40}, "source HEAD differs"),
