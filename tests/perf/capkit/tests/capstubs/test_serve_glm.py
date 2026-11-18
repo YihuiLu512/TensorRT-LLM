@@ -193,3 +193,46 @@ def test_real_glm_targets_exist():
     ce = names(tree("cli.py"))["_create_engine"]
     inner = [n for n in ast.walk(ce) if isinstance(n, ast.ImportFrom) and n.module == "engine_api"]
     assert inner and any(a.name == "MockEngine" for a in inner[0].names)
+
+
+def test_pick_free_port_stays_below_the_ephemeral_range(tmp_path):
+    from capstubs import serve_nx
+    assert serve_glm.pick_free_port is serve_nx.pick_free_port
+    rf = tmp_path / "range"
+    rf.write_text("32768\t60999\n")
+    ports = {serve_glm.pick_free_port("127.0.0.1", range_file=str(rf)) for _ in range(20)}
+    assert all(serve_nx.PORT_FLOOR <= p < 32768 for p in ports)
+
+
+def test_addr_reporter_ignores_a_self_connect(tmp_path, monkeypatch):
+    """The reporter writes the address only after a connect that is not a self-connect."""
+    import socket
+    import time
+
+    class St:
+        READY = "ready"
+        phase = "ready"
+
+    class Probe:
+        state = St()
+
+        def engine_mismatch(self):
+            return None
+    seen = []
+
+    def fake_self_connected(sock):
+        seen.append(1)
+        return len(seen) <= 2  # first two connects look like self-connects
+    monkeypatch.setattr(serve_glm, "self_connected", fake_self_connected)
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(8)
+    port = srv.getsockname()[1]
+    out = tmp_path / "addr"
+    try:
+        t = serve_glm.start_addr_reporter(Probe(), str(out), "127.0.0.1", port, 10)
+        t.join(10)
+        assert out.read_text() == "127.0.0.1:%d\n" % port
+        assert len(seen) == 3
+    finally:
+        srv.close()
