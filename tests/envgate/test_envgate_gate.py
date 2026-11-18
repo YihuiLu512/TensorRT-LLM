@@ -240,6 +240,77 @@ def test_item6_synthetic_red_and_pass(tmp_path):
     assert it["status"] == "PASS"
 
 
+def _stat_env(tmp_path):
+    proc, sysr = tmp_path / "proc", tmp_path / "sys"
+    proc.mkdir()
+    (sysr / "devices/system/cpu").mkdir(parents=True)
+    (sysr / "devices/system/cpu/online").write_text("0-1\n")
+    return proc, sysr
+
+
+class _Ticker:
+    """A /proc/stat that advances by one row set per window: rows[k] is added during the k-th
+    window (calls alternate window, pause, window, ...; a pause adds nothing)."""
+
+    def __init__(self, proc, rows):
+        self.proc, self.rows, self.calls, self.acc = proc, rows, [], {0: [0, 0], 1: [0, 0]}
+        self.write()
+
+    def write(self):
+        _fake_stat(str(self.proc / "stat"), {c: tuple(v) for c, v in self.acc.items()})
+
+    def __call__(self, s):
+        self.calls.append(s)
+        if len(self.calls) % 2 == 1:  # a window
+            for c, (b, i) in self.rows[min(len(self.calls) // 2, len(self.rows) - 1)].items():
+                self.acc[c][0] += b
+                self.acc[c][1] += i
+            self.write()
+
+
+def test_item6_resample_persistent_busy_stays_red(tmp_path):
+    """Positive control: a core busy in every window stays red after all resamples."""
+    proc, sysr = _stat_env(tmp_path)
+    t = _Ticker(proc, [{0: (50, 50), 1: (1, 99)}])
+    it = gate.item6(30, 0.02, str(proc), str(sysr), sleep=t)
+    d = it["detail"]
+    assert it["status"] == "RED" and d["passed_on_window"] is None
+    assert d["windows_read"] == 1 + gate.IDLE_RESAMPLE_MAX == len(d["windows"]) == 4
+    assert t.calls == [30] * 7  # 4 windows and the 3 pauses between them
+    assert all(w["busy_cores"] == [0] and not w["passed"] for w in d["windows"])
+    assert d["busy_cores"] == [0] and d["windows"][0]["busy_frac_of_busy_cores"] == {"0": 0.5}
+    assert d["windows"][2]["max_busy_frac"] == 0.5 and d["note"] is None
+
+
+def test_item6_resample_passes_on_second_window(tmp_path):
+    """Transient noise: red in the first window, clean in the second -> pass on window 2."""
+    proc, sysr = _stat_env(tmp_path)
+    t = _Ticker(proc, [{0: (50, 50), 1: (1, 99)}, {0: (1, 99), 1: (0, 100)}])
+    it = gate.item6(30, 0.02, str(proc), str(sysr), sleep=t)
+    d = it["detail"]
+    assert it["status"] == "PASS" and d["passed_on_window"] == 2 and d["windows_read"] == 2
+    assert t.calls == [30, 30, 30]
+    assert [w["passed"] for w in d["windows"]] == [False, True]
+    assert d["windows"][0]["busy_cores"] == [0] and d["busy_cores"] == []
+    assert d["per_core"]["0"]["busy_frac"] == 0.01 and "window 2 of 2" in d["note"]
+
+
+def test_item6_clean_first_window_does_not_resample(tmp_path):
+    proc, sysr = _stat_env(tmp_path)
+    t = _Ticker(proc, [{0: (1, 99), 1: (2, 98)}, {0: (99, 1), 1: (99, 1)}])
+    it = gate.item6(30, 0.02, str(proc), str(sysr), sleep=t)
+    d = it["detail"]
+    assert it["status"] == "PASS" and t.calls == [30]
+    assert d["passed_on_window"] == 1 and d["windows_read"] == 1 and d["note"] is None
+
+
+def test_item6_resample_max_zero_is_single_window(tmp_path):
+    proc, sysr = _stat_env(tmp_path)
+    t = _Ticker(proc, [{0: (50, 50), 1: (1, 99)}, {0: (0, 100), 1: (0, 100)}])
+    it = gate.item6(30, 0.02, str(proc), str(sysr), sleep=t, resample_max=0)
+    assert it["status"] == "RED" and t.calls == [30]
+
+
 def test_item6_records_irq_and_softirq_per_core(tmp_path):
     """R1b (D14): the idle window keeps each core's irq and softirq ticks for capjudge.pilot."""
     proc, sysr = tmp_path / "proc", tmp_path / "sys"

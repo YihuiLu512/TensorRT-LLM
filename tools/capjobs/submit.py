@@ -559,10 +559,15 @@ def prepare_submit(a, code_state_fn):
             "budget": budget, "image": image}
 
 
+GATE_IDLE_RESAMPLE_MAX = 3  # = capenv.gate.IDLE_RESAMPLE_MAX (tests/jobs pin the two together)
+
+
 def time_budget(plan, renv, job_input_kinds=None):
     """Every in-allocation wait that has a registered or planned bound: per launch budget_s +
     kill_grace_s + margin_s and the pin-table and job-input generation bounds
-    (launchplan.in_job_bound_s), plus the gate's idle window and the longest slurm_view wait.
+    (launchplan.in_job_bound_s), plus the gate's idle window, its worst-case resampling
+    (capenv.gate.IDLE_RESAMPLE_MAX more windows, each after a pause of one window) and the
+    longest slurm_view wait.
     job_input_kinds None: each launch's count is read from its scenario (argv --workdir /
     --scenario); an int: every launch declares that many kinds (for plans without argv, such as
     caplaunch.laddergen's packing check)."""
@@ -576,6 +581,7 @@ def time_budget(plan, renv, job_input_kinds=None):
              "pin_tables_s": launchplan.PINS_TIMEOUT_S * len(plan["launches"]),
              "job_inputs_s": job_inputs_s,
              "gate_idle_window_s": renv["idle_window_s"],
+             "gate_idle_resample_s": GATE_IDLE_RESAMPLE_MAX * 2 * renv["idle_window_s"],
              "slurm_view_wait_s": renv["slurm_view_wait_s"]}
     return {"parts": parts, "total_s": sum(parts.values())}
 
