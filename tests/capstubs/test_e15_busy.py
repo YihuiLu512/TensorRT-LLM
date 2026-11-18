@@ -27,6 +27,15 @@ def test_settings():
             B.settings(bad)
 
 
+def test_heartbeat_to_stderr_without_out(capsys):
+    assert B.settings({B.ENV_DUTY: "0.5", B.ENV_PERIOD: "10"}) == (0.5, 10_000_000, None)
+    b = B.Busy(0.5, 10_000_000, None)
+    b.one_period()
+    assert b.write() is None
+    line = capsys.readouterr().err.strip()
+    assert line.startswith("capkit-e15-busy: ") and '"periods": 1' in line
+
+
 def test_duty_cycle_and_heartbeat(tmp_path):
     b = B.Busy(0.5, 20_000_000, str(tmp_path))
     for _ in range(10):

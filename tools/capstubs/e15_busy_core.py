@@ -7,7 +7,9 @@ so:
 
   CAPKIT_E15_BUSY_DUTY       duty cycle in (0, 1) (busy share of every period)
   CAPKIT_E15_BUSY_PERIOD_MS  period in ms (1..1000)
-  CAPKIT_E15_BUSY_OUT        directory for the heartbeat file e15_busy.<pid>.json
+  CAPKIT_E15_BUSY_OUT        optional: directory for the heartbeat file e15_busy.<pid>.json;
+                             unset: each heartbeat is one JSON line on stderr (prefix
+                             "capkit-e15-busy: "), so it lands in the role's captured log
 
 The first process that loads the hook claims it (CAPKIT_E15_BUSY_PID = its pid, set in
 os.environ before anything else starts); a child that inherits the environment sees another pid
@@ -16,6 +18,7 @@ there and does nothing. The heartbeat file is rewritten every 2 s: periods, busy
 
 import json
 import os
+import sys
 import threading
 import time
 
@@ -33,8 +36,9 @@ def settings(environ):
         return None
     duty = float(environ[ENV_DUTY])
     period_ms = int(environ.get(ENV_PERIOD, ""))
-    out = environ.get(ENV_OUT) or ""
-    if not 0 < duty < 1 or not 1 <= period_ms <= 1000 or not out.startswith("/"):
+    out = environ.get(ENV_OUT) or None
+    if not 0 < duty < 1 or not 1 <= period_ms <= 1000 or (out is not None
+                                                            and not out.startswith("/")):
         raise ValueError("bad e15 busy settings duty=%r period_ms=%r out=%r"
                          % (duty, period_ms, out))
     return duty, period_ms * 1_000_000, out
@@ -63,12 +67,16 @@ class Busy:
             self.stop.wait(rest / 1e9)
 
     def write(self):
-        os.makedirs(self.out_dir, exist_ok=True)
-        p = os.path.join(self.out_dir, "e15_busy.%d.json" % os.getpid())
         doc = {"schema": SCHEMA, "pid": os.getpid(), "duty": self.duty,
                "period_ns": self.period_ns, "periods": self.periods, "busy_ns": self.busy_ns,
                "loops": self.loops, "elapsed_ns": self.clock() - self.t0,
                "thread": THREAD_NAME}
+        if self.out_dir is None:
+            sys.stderr.write("capkit-e15-busy: %s\n" % json.dumps(doc, sort_keys=True))
+            sys.stderr.flush()
+            return None
+        os.makedirs(self.out_dir, exist_ok=True)
+        p = os.path.join(self.out_dir, "e15_busy.%d.json" % os.getpid())
         with open(p + ".tmp", "w", encoding="utf-8") as f:
             json.dump(doc, f, sort_keys=True)
         os.replace(p + ".tmp", p)
