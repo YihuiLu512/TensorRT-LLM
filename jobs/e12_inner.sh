@@ -28,6 +28,7 @@ while [[ $# -gt 0 ]]; do
     esac
     shift 2
 done
+export GIT_OPTIONAL_LOCKS=0
 OUT=${CAPKIT_RUN_DIR:?}/raw
 mkdir -p "$OUT"
 refuse() { echo "REFUSED: $*" | tee "$OUT/REFUSED"; exit 3; }
@@ -50,7 +51,8 @@ PY=${E12_PYTHON:-python3}
 { echo "experiment=${CAPKIT_EXPERIMENT:-} arm=${CAPKIT_ARM:-} job=${CAPKIT_JOB_ID:-}"
   echo "src=$SRC head=$SRC_HEAD config_dir=$CFG gpus=$GPUS step_timeout=$STEP_TIMEOUT"
   echo "steps=$STEPS"; echo "start=$(date -Is) budget_s=$BUDGET"; } > "$OUT/inner.txt"
-export TZ=UTC PYTHONDONTWRITEBYTECODE=1 LLM_ROOT=$SRC AGG_CONFIG_FOLDER=$CFG
+unset PYTHONPATH TRTLLM_TEST_OPENENGINE_CHAIN TRTLLM_OPENENGINE_RESULTS_DIR TRTLLM_PERF_ARM
+export TZ=UTC TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1 LLM_ROOT=$SRC AGG_CONFIG_FOLDER=$CFG
 export LLM_MODELS_ROOT=/home/scratch.trt_llm_data_ci/llm-models LLM_TEST_PARALLEL_OVERRIDE=1
 export HOME=${TMPDIR:-/tmp}/e12-home-${CAPKIT_JOB_ID:-x} PYTEST_ADDOPTS='-p no:cacheprovider'
 mkdir -p "$HOME"
@@ -100,7 +102,7 @@ for step in "${STEP_LIST[@]}"; do
         echo "NOT_RUN: $(( DEADLINE - now )) s left < step $STEP_TIMEOUT s + 150 s" > "$sd/NOT_RUN"; continue
     fi
     echo "perf/test_perf_sanity.py::test_e2e[aggr-$case_]" > "$sd/list.txt"
-    export TRTLLM_PERF_ARM=$arm E12_REQLOG_DIR=$sd/reqlog
+    export TRTLLM_PERF_ARM=$arm TRTLLM_PERF_RUN=$i E12_REQLOG_DIR=$sd/reqlog
     mark="${CAPKIT_JOB_ID:-x}-$i-$RANDOM$RANDOM"
     echo "=== STEP $i $arm $case_ chain=$chain start $(date -Is)" | tee "$sd/step.txt"
     t0=$(date +%s.%N)
