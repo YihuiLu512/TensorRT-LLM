@@ -82,8 +82,11 @@ def validate(res):
     if not isinstance(c, int) or isinstance(c, bool) or c <= 0:
         raise ResourceError("cpus_per_task must be an int > 0")
     g = res["gpus"]
-    if not isinstance(g, int) or isinstance(g, bool) or not 0 <= g <= MAX_GPUS:
-        raise ResourceError("gpus must be an int in [0, %d]" % MAX_GPUS)
+    cap = res.get("max_gpus", MAX_GPUS)  # a whitelisted model experiment's ceiling (submit)
+    if not isinstance(cap, int) or isinstance(cap, bool) or not MAX_GPUS <= cap <= 8:
+        raise ResourceError("max_gpus must be an int in [%d, 8]" % MAX_GPUS)
+    if not isinstance(g, int) or isinstance(g, bool) or not 0 <= g <= cap:
+        raise ResourceError("gpus must be an int in [0, %d]" % cap)
     if res["gpu_type"] is not None and not GPU_TYPE_RE.match(res["gpu_type"]):
         raise ResourceError("bad gpu type %r" % (res["gpu_type"],))
     if res["gpu_type"] is not None and g == 0:

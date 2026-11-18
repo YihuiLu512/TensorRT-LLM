@@ -39,6 +39,10 @@ import threading
 import time
 
 SCHEMA_RECORD = "capkit.serve_nx/1"
+WORKER_KINDS = ("null", "real")
+# the worker kind, for re-executed attached frontends (they never build a worker; recorded only)
+ENV_WORKER = "CAPKIT_SERVE_WORKER"
+LLM_API_KEY_RE = r"^[a-z_][a-z0-9_]*$"
 
 
 def build_parser():
@@ -70,6 +74,13 @@ def build_parser():
                    help="capstubs.snx_inject diagnostics, comma list of gc,threads,conn")
     p.add_argument("--gc-freeze-after-ready", action="store_true",
                    help="gc.collect() + gc.freeze() once --report-addr has been written")
+    p.add_argument("--worker", choices=WORKER_KINDS, default="null",
+                   help="null: S-NX NullWorker (default); real: the product worker with the real "
+                        "PyExecutor (S-TM, E11 / E13-S / E15-B), pinned to --worker-cores by "
+                        "capstubs.tm_worker.PinnedWorker")
+    p.add_argument("--llm-api-set", action="append", default=[], metavar="KEY=JSON",
+                   help="one more top-level key of the LLM API YAML that --stream-interval "
+                        "writes (value parsed as JSON); repeatable")
     from capstubs.affinity import add_split_args  # noqa: PLC0415
     add_split_args(p)
     return p
@@ -159,8 +170,29 @@ def start_reporter(path, host, port, timeout_s, after=None):
     return t
 
 
-def with_stream_interval(serve_args, s, out_dir):
-    """(serve args + ["--config", <yaml with stream_interval: s>], None) or (args, why)."""
+def parse_llm_api_sets(items):
+    """[(key, value)] of --llm-api-set KEY=JSON items, in order; ValueError on a bad item, a
+    duplicate key, or stream_interval (that one is --stream-interval)."""
+    import re  # noqa: PLC0415
+    out, seen = [], set()
+    for kv in items:
+        k, sep, v = kv.partition("=")
+        if not sep or not re.match(LLM_API_KEY_RE, k):
+            raise ValueError("--llm-api-set needs KEY=JSON with a lower-case key, got %r" % kv)
+        if k == "stream_interval" or k in seen:
+            raise ValueError("--llm-api-set key %r repeated or reserved" % k)
+        seen.add(k)
+        try:
+            out.append((k, json.loads(v)))
+        except ValueError:
+            raise ValueError("--llm-api-set %s: value is not JSON: %r" % (k, v)) from None
+    return out
+
+
+def with_stream_interval(serve_args, s, out_dir, extra=()):
+    """(serve args + ["--config", <yaml with stream_interval: s and the extra (key, value)
+    pairs, each value written as JSON, which YAML reads as the same value>], None) or
+    (args, why)."""
     if s < 1:
         return serve_args, "--stream-interval must be >= 1"
     if any(x in ("--config", "--extra_llm_api_options") or
@@ -170,7 +202,8 @@ def with_stream_interval(serve_args, s, out_dir):
         return serve_args, "--stream-interval needs --out-dir (the YAML is written there)"
     os.makedirs(out_dir, exist_ok=True)
     path = os.path.join(out_dir, "serve_nx.%d.llm_api.yaml" % os.getpid())
-    write_atomic(path, "stream_interval: %d\n" % s)
+    write_atomic(path, "stream_interval: %d\n" % s + "".join(
+        "%s: %s\n" % (k, json.dumps(v, sort_keys=True)) for k, v in extra))
     return serve_args + ["--config", path], None
 
 
@@ -190,18 +223,23 @@ def scrub_launcher_env(environ=None):
     return gone
 
 
-def apply_patches(patch_cuda_stream="auto"):
-    """Point GenerationExecutorProxy's worker_cls default at NullWorker; returns what was done."""
+def apply_patches(patch_cuda_stream="auto", worker="null"):
+    """Point GenerationExecutorProxy's worker_cls default at NullWorker (worker "null") or at
+    capstubs.tm_worker.PinnedWorker (worker "real"); returns what was done."""
     from tensorrt_llm.executor.proxy import GenerationExecutorProxy  # noqa: PLC0415
-
-    from capstubs.null_worker import NullWorker  # noqa: PLC0415
+    if worker == "real":
+        from capstubs.tm_worker import PinnedWorker as cls  # noqa: PLC0415
+    elif worker == "null":
+        from capstubs.null_worker import NullWorker as cls  # noqa: PLC0415
+    else:
+        raise ValueError("worker must be one of %s" % (WORKER_KINDS,))
     kwd = GenerationExecutorProxy.__init__.__kwdefaults__
     if not isinstance(kwd, dict) or "worker_cls" not in kwd:
         raise RuntimeError("GenerationExecutorProxy.__init__ has no keyword-only worker_cls")
-    kwd["worker_cls"] = NullWorker
-    if GenerationExecutorProxy.__init__.__kwdefaults__["worker_cls"] is not NullWorker:
+    kwd["worker_cls"] = cls
+    if GenerationExecutorProxy.__init__.__kwdefaults__["worker_cls"] is not cls:
         raise RuntimeError("worker_cls default did not take")
-    done = {"worker_cls": "%s.%s" % (NullWorker.__module__, NullWorker.__qualname__),
+    done = {"worker_cls": "%s.%s" % (cls.__module__, cls.__qualname__), "worker": worker,
             "cuda_stream_patched": False}
     if patch_cuda_stream == "auto":
         done["cuda_stream_patched"] = patch_cuda_stream_if_no_cuda()
@@ -247,7 +285,8 @@ def main(argv=None):
             print("serve_nx: usage: python -m capstubs.serve_nx [options] -- <trtllm-serve "
                   "args>", file=sys.stderr)
             return 2
-        apply_patches("auto")  # re-exec as an attached frontend: no engine here, patch anyway
+        # re-exec as an attached frontend: no engine here, patch anyway (same worker kind)
+        apply_patches("auto", os.environ.get(ENV_WORKER) or "null")
         _inj, why = install_inject(_snx_out_dir(ENV_VAR), "reexec")
         if why:
             print("serve_nx: inject refused: %s" % why, file=sys.stderr)
@@ -261,8 +300,18 @@ def main(argv=None):
         except Exception as e:  # noqa: BLE001 -- any config problem refuses the start
             print("serve_nx: config refused: %s" % e, file=sys.stderr)
             return 3
+        try:
+            extra = parse_llm_api_sets(a.llm_api_set)
+        except ValueError as e:
+            print("serve_nx: %s" % e, file=sys.stderr)
+            return 3
+        if extra and a.stream_interval is None:
+            print("serve_nx: --llm-api-set needs --stream-interval (it writes the YAML)",
+                  file=sys.stderr)
+            return 3
         if a.stream_interval is not None:
-            serve_args, why = with_stream_interval(serve_args, a.stream_interval, cfg.out_dir)
+            serve_args, why = with_stream_interval(serve_args, a.stream_interval, cfg.out_dir,
+                                                   extra)
             if why:
                 print("serve_nx: %s" % why, file=sys.stderr)
                 return 3
@@ -298,7 +347,8 @@ def main(argv=None):
         if a.diag:
             os.environ[snx_inject.ENV_DIAG] = a.diag
         scrubbed = [] if a.keep_launcher_env else scrub_launcher_env()
-        done = apply_patches(a.patch_cuda_stream)
+        os.environ[ENV_WORKER] = a.worker
+        done = apply_patches(a.patch_cuda_stream, a.worker)
         inj, why = install_inject(cfg.out_dir, "main")
         if why:
             print("serve_nx: inject refused: %s" % why, file=sys.stderr)

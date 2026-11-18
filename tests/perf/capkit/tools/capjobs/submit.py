@@ -1,7 +1,9 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 """The only submission entry for jobs that do not load a real model (INTERFACES.md 9.5, 11;
-plan CONSTRAINTS section 2, RESOURCES sections 3-4).
+plan CONSTRAINTS section 2, RESOURCES sections 3-4), and for the whitelisted experiments that do
+(capcommon.policy.MODEL_EXPERIMENTS: their registered model dirs only, read-only, GPUs up to the
+design's count; user decision 2026-11-18, DECISIONS 32nd answer).
 
     PYTHONPATH=<C>/tools:<C>/jobs python3.11 -m capjobs.submit <sub-command> ...
 
@@ -260,7 +262,8 @@ def resources_from_args(a):
     res = resources.validate({
         "account": a.account, "partition": a.partition, "qos": a.qos, "exclude": exclude,
         "time": a.time, "mem": a.mem, "cpus_per_task": a.cpus_per_task, "gpus": a.gpus,
-        "gpu_type": a.gpu_type, "job_name": a.job_name})
+        "gpu_type": a.gpu_type, "job_name": a.job_name,
+        "max_gpus": policy.max_gpus_for(getattr(a, "experiment", None))})
     res["exclude_source"] = source
     res["exclude_doc"] = doc
     return res
@@ -353,8 +356,10 @@ def register_environment(workdir, row, register_sha, experiment):
         raise SubmitError("register %s: 'environment' must have exactly %s" %
                           (path, REGISTER_ENV_KEYS))
     g = env["gpus"]
-    if not isinstance(g, int) or isinstance(g, bool) or not 0 <= g <= policy.MAX_GPUS:
-        raise SubmitError("register environment.gpus must be an int in [0, %d]" % policy.MAX_GPUS)
+    cap = policy.max_gpus_for(experiment)
+    low = 1 if policy.is_model_experiment(experiment) else 0
+    if not isinstance(g, int) or isinstance(g, bool) or not low <= g <= cap:
+        raise SubmitError("register environment.gpus must be an int in [%d, %d]" % (low, cap))
     if not _num(env["idle_window_s"], 0, 3600):
         raise SubmitError("register environment.idle_window_s must be in (0, 3600]")
     if not _num(env["idle_busy_max_frac"], 0, 1):
@@ -486,8 +491,10 @@ def prepare_submit(a, code_state_fn):
     mounts = [parse_mount(m) for m in a.mount]
     tok = None if a.no_tokenizer else check_path(os.path.abspath(a.tokenizer_dir),
                                                  "--tokenizer-dir")
-    assertions, tok_sha = policy.check_no_model_submission(
+    assertions, tok_sha = policy.check_any_submission(
         a.experiment, a.gpus, [m["text"] for m in mounts], tok, a.basis)
+    model_dirs = (policy.check_model_mounts(a.experiment, [m["text"] for m in mounts])
+                  if policy.is_model_experiment(a.experiment) else [])
     res = resources_from_args(a)
     paths = {k: check_path(os.path.abspath(getattr(a, k)), "--" + k.replace("_", "-"))
              for k in ("snapshot_root", "run_root", "local_base", "shm_base", "image")}
@@ -545,7 +552,7 @@ def prepare_submit(a, code_state_fn):
         if os.path.getsize(src) != size or sha256_file(src) != sha:
             raise SubmitError("overlay source %s differs from the overlay manifest" % rel)
     return {"workdir": workdir, "code_root": code_root, "plan": plan, "arms": arms,
-            "mounts": mounts, "tokenizer_dir": tok, "tok_sha": tok_sha,
+            "mounts": mounts, "tokenizer_dir": tok, "tok_sha": tok_sha, "model_dirs": model_dirs,
             "assertions": assertions, "res": res, "paths": paths, "coverage": coverage,
             "comparable": comparable, "head": head, "dirty": dirty, "overlay": overlay,
             "includes": includes, "file_plan": sorted(file_plan), "register": reg,
@@ -607,6 +614,8 @@ def _job_env(a, prep, plan_id, snap_dir):
         "CAPJOBS_IMAGE_SIZE": prep["image"]["size"],
         "CAPJOBS_IMAGE_MTIME_NS": prep["image"]["mtime_ns"],
         "CAPJOBS_MOUNTS": ",".join(m["text"] for m in prep["mounts"]),
+        # whitelisted model job: the registered model dirs the job-side mount check allows
+        "CAPJOBS_MODEL_DIRS": " ".join(prep["model_dirs"]),
         "CAPJOBS_SRUN_MPI": a.srun_mpi, "CAPJOBS_PYTHON": a.container_python,
         "CAPJOBS_GATE_MODULE": a.gate_module, "CAPJOBS_REGISTERED_HW_SHA": a.registered_hw_sha,
         "CAPJOBS_COMPARABLE_FILE": prep["comparable"],
@@ -647,6 +656,7 @@ def _submit(a, runner, prep, gate):
     summary = {"plan_id": plan_id, "snapshot_dir": snap_dir, "remote_argv": remote_argv,
                "argv": argv, "assertions": prep["assertions"],
                "tokenizer_dir_sha256": prep["tok_sha"], "coverage": prep["coverage"],
+               "model_dirs": prep["model_dirs"],
                "code_head": prep["head"], "dirty": prep["dirty"],
                "snapshot_files": len(prep["file_plan"]), "exclude": res["exclude"],
                "register_environment": prep["register"]["environment"],

@@ -134,8 +134,11 @@ ef job --snap "$SNAP" --plan-id "$CAPJOBS_PLAN_ID" --node "${CAPJOBS_NODE:-unkno
 ef image --check-file "$JOB_DIR/env/image_check.tsv" --out "$JOB_DIR/env/image.json" \
     || env_invalid "image check failed"
 [[ -n ${CAPJOBS_WORKDIR:-} ]] || env_invalid "job.env has no CAPJOBS_WORKDIR"
+# a whitelisted model job (capcommon.policy.MODEL_EXPERIMENTS) names its registered model dirs
+MODEL_ARGS=()
+for d in ${CAPJOBS_MODEL_DIRS:-}; do MODEL_ARGS+=(--allow-model-dir "$d"); done
 ef mounts --mounts-json "$SNAP/mounts.json" --must-read "$SNAP" --must-read "$JOB_DIR" \
-    --must-read "$CAPJOBS_WORKDIR" --out "$JOB_DIR/env/mounts.json" \
+    --must-read "$CAPJOBS_WORKDIR" "${MODEL_ARGS[@]}" --out "$JOB_DIR/env/mounts.json" \
     || env_invalid "mount check failed"
 ef local-disk --path "$LOCAL_BASE" --path "$SHM_BASE" \
     --min-free-bytes "$CAPJOBS_MIN_LOCAL_FREE_BYTES" --out "$JOB_DIR/env/local_disk.json" \
