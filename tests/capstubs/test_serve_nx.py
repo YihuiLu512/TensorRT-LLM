@@ -183,3 +183,57 @@ def test_scrub_launcher_env():
     assert serve_nx.scrub_launcher_env(env) == ["PMIX_RANK", "PMI_FD", "SLURMD_NODENAME",
                                                 "SLURM_JOB_ID"]
     assert set(env) == {"OMPI_MCA_x", "OPAL_PREFIX", "TRTLLM_CAPKIT_SNX"}
+
+
+def test_pick_free_port_stays_below_the_ephemeral_range(tmp_path):
+    rf = tmp_path / "range"
+    rf.write_text("32768\t60999\n")
+    ports = {serve_nx.pick_free_port("127.0.0.1", range_file=str(rf)) for _ in range(20)}
+    assert all(serve_nx.PORT_FLOOR <= p < 32768 for p in ports)
+    # positive control: the old OS-assigned pick lands in the ephemeral range
+    rf.write_text("10500 60999\n")  # no room below -> fallback to an OS-assigned port
+    assert serve_nx.pick_free_port("127.0.0.1", range_file=str(rf)) >= 10500
+    assert serve_nx.pick_free_port("127.0.0.1", range_file=str(tmp_path / "none")) > 0
+
+
+def test_pick_free_port_skips_a_bound_port(tmp_path):
+    rf = tmp_path / "range"
+    rf.write_text("32768 60999\n")
+    busy = socket.socket()
+    busy.bind(("127.0.0.1", 0))
+    taken = busy.getsockname()[1]
+    seq = iter([taken, 20001])
+
+    class Rng:
+        def randrange(self, a, b):
+            return next(seq)
+    try:
+        if not (serve_nx.PORT_FLOOR <= taken < 32768):
+            busy.close()
+            busy = socket.socket()
+            busy.bind(("127.0.0.1", 20000))
+            taken = 20000
+            seq = iter([taken, 20001])
+        assert serve_nx.pick_free_port("127.0.0.1", range_file=str(rf), rng=Rng()) == 20001
+    finally:
+        busy.close()
+
+
+def test_self_connected_detects_a_loopback_self_connect():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.connect(("127.0.0.1", port))  # TCP simultaneous open with itself
+    try:
+        assert serve_nx.self_connected(s)
+    finally:
+        s.close()
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    c = socket.create_connection(srv.getsockname()[:2])
+    try:
+        assert not serve_nx.self_connected(c)  # a real server answered
+    finally:
+        c.close()
+        srv.close()
