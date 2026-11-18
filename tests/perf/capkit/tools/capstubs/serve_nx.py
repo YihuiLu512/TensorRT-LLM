@@ -127,11 +127,51 @@ def resolve_config(a):
     return cfg
 
 
-def pick_free_port(host):
+PORT_RANGE_FILE = "/proc/sys/net/ipv4/ip_local_port_range"
+PORT_FLOOR = 10000  # picked ports lie in [PORT_FLOOR, ephemeral low end)
+
+
+def ephemeral_range(path=PORT_RANGE_FILE):
+    """(low, high) of the kernel's ephemeral (local) port range; None when unreadable."""
+    try:
+        lo, hi = (int(x) for x in open(path).read().split())
+        return lo, hi
+    except (OSError, ValueError):
+        return None
+
+
+def pick_free_port(host, range_file=PORT_RANGE_FILE, rng=None, tries=200):
+    """A port the server can bind later. The server binds tens of seconds after the pick, and
+    meanwhile processes poll TCP connects to that port (the address reporter here, the product's
+    frontend wait loop); a port inside the ephemeral range can be taken in between as the source
+    port of an outgoing connection (on loopback a connect to an unbound port can even
+    self-connect), so the server's bind fails with EADDRINUSE. Pick below the ephemeral range,
+    where no outgoing connection gets a source port, and check it binds now. Falls back to an
+    OS-assigned port (the old behaviour) only when the range is unreadable or leaves no room."""
+    import random  # noqa: PLC0415
     fam = socket.AF_INET6 if ":" in host else socket.AF_INET
+    rg = ephemeral_range(range_file)
+    rng = rng or random.SystemRandom()
+    if rg is not None and rg[0] - PORT_FLOOR >= 1000:
+        for _ in range(tries):
+            port = rng.randrange(PORT_FLOOR, rg[0])
+            with socket.socket(fam, socket.SOCK_STREAM) as s:
+                try:
+                    s.bind((host, port))
+                except OSError:
+                    continue
+                return port
     with socket.socket(fam, socket.SOCK_STREAM) as s:
         s.bind((host, 0))
         return s.getsockname()[1]
+
+
+def self_connected(sock):
+    """True for a loopback TCP self-connect (local and peer address equal): no server answered."""
+    try:
+        return sock.getsockname()[:2] == sock.getpeername()[:2]
+    except OSError:
+        return False
 
 
 def flag_value(args, flag):
@@ -158,8 +198,9 @@ def start_reporter(path, host, port, timeout_s, after=None):
         h = "[%s]" % host if ":" in host else host
         while time.monotonic() < deadline:
             try:
-                with socket.create_connection((host, port), timeout=1.0):
-                    pass
+                with socket.create_connection((host, port), timeout=1.0) as c:
+                    if self_connected(c):  # not the server; drop it and keep polling
+                        raise OSError("self-connect")
             except OSError:
                 time.sleep(0.1)
                 continue
