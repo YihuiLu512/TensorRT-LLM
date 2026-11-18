@@ -33,7 +33,7 @@ fork 出来、没有 exec 的子进程命令行不变，仍启用（各自归零
 ## 开关的补充规则（在 §6.5 之上，全部是导入时 `CapprobeConfigError`，它是 `RuntimeError`）
 
 - 只要有 `CAPPROBE_*`，不论哪个进程都校验在场的值：未知的 `CAPPROBE_` 变量名、非法 `CAPPROBE_TIER`、`CAPPROBE_GROUPS` 与 TIER 不符（P0、P1 ⇒ 组为空；P2 ⇒ 组非空；没有 TIER 却有组或注入）、未知组名、坏注入规格、坏 `CAPPROBE_ENTRY`、非正整数周期、相对路径 `CAPPROBE_SHM_DIR` 都报错。
-- 本版本只实现 `count`、`lag` 两组；`bytes`、`queue`、`ts`、`pin` 是已知组名但未实现，打开即报错。
+- 本版本实现 `count`、`lag`、`stack` 三组；`bytes`、`queue`、`ts`、`pin` 是已知组名但未实现，打开即报错。`stack` 没有代码位点（`sites_for_groups` 为空，覆盖清单的 `sites` 为空，C8 记 NOT_RUN）。
 - 任何组或注入打开时，`CAPPROBE_SHM_DIR`（绝对路径）、`CAPPROBE_INTERVAL_MS`、`CAPPROBE_IDENTITY_FILE` 必需；`lag` 打开时 `CAPPROBE_LAG_PERIOD_US` 必需。
 - 注入只支持位点 `H1`、`H3`、`F2`、`F4`，模式只支持 `busy`、`sleep`、`miscount`；`miscount` 要求 `count` 组打开（否则误计不可见）。注入打开时，四个位点都会经过注入器，没有规格的位点也计 `inject.<site>.hits`。在编排器下，注入只能经档位表 `launch_inject` 指名产品角色登记（INTERFACES 勘误 FT1-18）。
 
@@ -77,6 +77,14 @@ fork 出来、没有 exec 的子进程命令行不变，仍启用（各自归零
 - 版本自报（D11）：导入时写一份（`loop_impl` 为 null）；`install_loop_lag` 之后带上循环类与 `probe_loops`；产品在 `capprobe` 之后才 import `grpc` 的，写快照线程发现后自动刷新 `grpc`、`protobuf`、`protobuf_impl`。
 - `fork`：子进程里计数清零、换成子进程自己的 pid 与写快照线程、辅助线程重建；事件循环探针不继承。
 - `install_loop_lag(site)` 必须在运行中的循环里调用；同一进程同一安装点装两次报错。
+
+## 栈采样组 `stack`（`capprobe.stack`）
+
+- 打开后 `_setup` 启动 `capkit-stack` 线程：每 4 ms 读一次 `sys._current_frames()`，主线程的栈从最内层向外找第一个能定类的帧，归入 `sites.STACK_CATEGORIES` 之一（规则表在 `capprobe.stack._FILE_RULES`；asyncio、uvloop 等循环框架帧透明；pydantic、json 等序列化帧取外侧第一个定类帧的类别，外侧是流式生成器时记 `encode`；最内层就是循环 runner 时记 `idle`，即等 I/O 或在循环的 C 代码里）。
+- 每个样本按距上一个样本的墙钟时间加权（`stack.main.wall_ns.<类>`），同时记主线程这段时间的 CPU（`stack.main.cpu_ns.<类>`）和样本数（`stack.main.n.<类>`）。采样要拿 GIL，主线程长时间占着 GIL 的 C 调用会算到调用它的 Python 帧上。
+- 其他 Python 线程（分词线程池等）只在不处于等待点时计入 `stack.thr.wall_ns.<类>`（线程·秒）；capkit 自己的线程跳过。
+- 每 0.5 s 读 `/proc/<pid>/task/*/children` 与子进程 `stat`：`stack.children_cpu_ns` 为见过的每个子进程的 utime+stime+cutime+cstime 之和，`stack.children` 为最近一次的存活子进程数。
+- 合计：`stack.samples`、`stack.wall_ns`、`stack.main_cpu_ns`、`stack.proc_cpu_ns`、`stack.sampler_cpu_ns`（采样线程自身 CPU，即直接开销）、`stack.errors`。按函数的明细（定类帧的 `类别|文件:函数` → 墙钟 ns，累计，最多 400 项）每 5 s 写进快照 meta 的 `stack_funcs`。
 
 ## 覆盖清单（`capprobe.overlay`）的补充参数
 

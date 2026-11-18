@@ -26,6 +26,10 @@ D11 version self-report in the snapshot meta with the loop class.
 Self-check injection (CAPPROBE_INJECT, capcommon.inject) is fixed for the process lifetime and
 supports busy / sleep / miscount at the count sites; heartbeat counters inject.<site>.* appear
 in the snapshot.
+
+Stack sampling (group `stack`, capprobe.stack): with the group on, _setup starts the capkit-stack
+thread, which classifies the main thread's stack every few milliseconds and polls the CPU time of
+child processes; it needs no code location in the product.
 """
 
 import array
@@ -39,6 +43,7 @@ from capcommon import snapshot as _snapshot
 from capcommon import versions as _versions
 
 from . import sites as _sites
+from . import stack as _stack
 from .config import CapprobeConfigError, parse_config
 
 __all__ = ["CONFIG", "TIER", "GROUPS", "COUNT", "LAG", "ACTIVE", "ENABLED", "SITES", "SLOTS",
@@ -109,6 +114,13 @@ class _ProbeWriter(_snapshot.SnapshotWriter):
             self._meta_gen = -1
         self._grpc_seen = "grpc" in sys.modules
 
+    def set_extra(self, key, value):
+        """Replace one meta entry (rebuilt into the next snapshot)."""
+        reg = self.registry
+        with reg._lock:
+            self._extra[key] = value
+            self._meta_gen = -1
+
     def write_now(self):
         if not self._grpc_seen and "grpc" in sys.modules:
             self.refresh_versions()
@@ -116,7 +128,8 @@ class _ProbeWriter(_snapshot.SnapshotWriter):
 
 
 class _State:
-    __slots__ = ("pid", "registry", "writer", "injectors", "lag_probes", "installs_off")
+    __slots__ = ("pid", "registry", "writer", "injectors", "lag_probes", "installs_off",
+                 "sampler")
 
 
 _state = None
@@ -190,11 +203,15 @@ def _setup():
                 "tier": TIER, "groups": list(GROUPS),
                 "inject": [s.to_dict() for s in CONFIG.inject_specs],
                 "lag_period_ns": CONFIG.lag_period_ns,
+                "stack_period_ns": _stack.PERIOD_NS if "stack" in GROUPS else None,
                 "sites_on": sorted(s for s in _sites.COUNT_SITES if g["ON_" + s])}}
     st.writer = _ProbeWriter(reg, CONFIG.shm_dir, CONFIG.interval_ns, meta_extra=meta,
                              pid=st.pid)
+    st.sampler = _stack.StackSampler(reg, st.writer) if "stack" in GROUPS else None
     _state = st
     st.writer.start()
+    if st.sampler is not None:
+        st.sampler.start()
 
 
 def _after_fork_in_child():
@@ -211,6 +228,8 @@ def _at_exit():
     st = _state
     if st is None or st.pid != os.getpid():
         return
+    if st.sampler is not None:
+        st.sampler.stop()
     try:
         st.writer.stop()
     except OSError:
