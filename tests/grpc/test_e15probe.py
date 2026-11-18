@@ -11,6 +11,7 @@ import signal
 import subprocess
 import sys
 import time
+import types
 
 import pytest
 
@@ -282,3 +283,20 @@ def test_registered_as_an_aux_observer_tool():
     assert t["origin"] and t["ready"] and not t.get("tiers") and not t.get("snapshot")
     assert t["role_fixed"]["kind"] == "aux" and t["role_fixed"]["measure_class"] == "observer"
     assert t["role_fixed"]["uses_grpc"] is True and t["role_fixed"]["expected_procs"] == 1
+
+
+def test_checks_subset_runs_only_those(tmp_path):
+    recs = asyncio.run(ep.run_checks(FakeApi(), cfg(checks=["cancel"])))
+    assert [r["check"] for r in recs] == ["cancel"] and recs[0]["ok"]
+    assert recs[0]["stream_cancelled"] is True
+    a = ep.build_parser().parse_args(_argv(tmp_path, extra=["--checks", "greedy_aa,cancel"]))
+    assert ep.config_from_args(a)["checks"] == ["cancel", "greedy_aa"]  # CHECKS order
+    a = ep.build_parser().parse_args(_argv(tmp_path))
+    assert ep.config_from_args(a)["checks"] == list(ep.CHECKS)
+    for bad in ("cancel,nope", "", "cancel,cancel"):
+        a = ep.build_parser().parse_args(_argv(tmp_path, extra=["--checks", bad]))
+        with pytest.raises(ep.ConfigError):
+            ep.config_from_args(a)
+    doc = ep.write_result(str(tmp_path / "r.json"), types.SimpleNamespace(to_dict=dict),
+                          cfg(checks=["cancel"]), recs)
+    assert doc["all_ok"] is True
