@@ -16,6 +16,10 @@
   --report-addr, writes `host:port` to that file once a TCP connect to it succeeds: trtllm-serve's
   own --report_addr refuses multi-frontend serving and gRPC serving, which E9's n = 8 arms and the
   engine host need.
+- Optionally (--inject, --diag) installs capstubs.snx_inject's run-time site wrappers and host
+  diagnostics; the specs go into CAPKIT_SNX_INJECT / CAPKIT_SNX_DIAG so re-executed attached
+  frontends install the same (SUPP-Q3). --gc-freeze-after-ready runs gc.collect() + gc.freeze()
+  once the reported address accepts TCP.
 - Then rewrites sys.argv to the serve arguments and calls tensorrt_llm.commands.serve:main.
 
 Both architectures: the original `trtllm-serve <model dir>` (frontends x n + executor proxy <->
@@ -60,6 +64,12 @@ def build_parser():
     p.add_argument("--stream-interval", type=int,
                    help="LLM API stream_interval: writes <out-dir>/serve_nx.<pid>.llm_api.yaml "
                         "and appends --config <it> (the serve arguments must not have --config)")
+    p.add_argument("--inject", action="append", default=[], metavar="SITE:MODE",
+                   help="capstubs.snx_inject site spec (SITE:count or SITE:busy:NS); repeatable")
+    p.add_argument("--diag", default="", metavar="LIST",
+                   help="capstubs.snx_inject diagnostics, comma list of gc,threads,conn")
+    p.add_argument("--gc-freeze-after-ready", action="store_true",
+                   help="gc.collect() + gc.freeze() once --report-addr has been written")
     from capstubs.affinity import add_split_args  # noqa: PLC0415
     add_split_args(p)
     return p
@@ -127,9 +137,9 @@ def write_atomic(path, text):
     os.replace(tmp, path)
 
 
-def start_reporter(path, host, port, timeout_s):
+def start_reporter(path, host, port, timeout_s, after=None):
     """Daemon thread: poll a TCP connect to host:port every 100 ms; write `host:port\\n` to path on
-    the first success, then end."""
+    the first success, call `after()` (when given), then end."""
     def run():
         deadline = time.monotonic() + timeout_s
         h = "[%s]" % host if ":" in host else host
@@ -141,6 +151,8 @@ def start_reporter(path, host, port, timeout_s):
                 time.sleep(0.1)
                 continue
             write_atomic(path, "%s:%d\n" % (h, port))
+            if after is not None:
+                after()
             return
     t = threading.Thread(target=run, name="snx_report_addr", daemon=True)
     t.start()
@@ -210,6 +222,22 @@ def patch_cuda_stream_if_no_cuda():
     return True
 
 
+def install_inject(out_dir, role):
+    """capstubs.snx_inject.install_from_env; (Installed or None, error text or None)."""
+    from capstubs import snx_inject  # noqa: PLC0415
+    try:
+        return snx_inject.install_from_env(out_dir, header={"role": role}), None
+    except snx_inject.InjectSpecError as e:
+        return None, str(e)
+
+
+def _snx_out_dir(env_var):
+    try:
+        return json.loads(os.environ.get(env_var) or "{}").get("out_dir")
+    except ValueError:
+        return None
+
+
 def main(argv=None):
     from capstubs.null_executor import ENV_VAR  # noqa: PLC0415
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -220,6 +248,10 @@ def main(argv=None):
                   "args>", file=sys.stderr)
             return 2
         apply_patches("auto")  # re-exec as an attached frontend: no engine here, patch anyway
+        _inj, why = install_inject(_snx_out_dir(ENV_VAR), "reexec")
+        if why:
+            print("serve_nx: inject refused: %s" % why, file=sys.stderr)
+            return 3
         serve_args = argv
     else:
         own, serve_args = parts
@@ -251,8 +283,29 @@ def main(argv=None):
                 print("serve_nx: core split refused: %s" % e, file=sys.stderr)
                 return 3
         os.environ[ENV_VAR] = json.dumps(cfg.to_doc(), sort_keys=True)
+        from capstubs import snx_inject  # noqa: PLC0415
+        try:  # validate before anything starts; the env is what re-executed frontends read
+            snx_inject.parse_specs(";".join(a.inject))
+            snx_inject.parse_diags(a.diag)
+        except snx_inject.InjectSpecError as e:
+            print("serve_nx: inject refused: %s" % e, file=sys.stderr)
+            return 3
+        if a.gc_freeze_after_ready and not a.report_addr:
+            print("serve_nx: --gc-freeze-after-ready needs --report-addr", file=sys.stderr)
+            return 3
+        if a.inject:
+            os.environ[snx_inject.ENV_INJECT] = ";".join(a.inject)
+        if a.diag:
+            os.environ[snx_inject.ENV_DIAG] = a.diag
         scrubbed = [] if a.keep_launcher_env else scrub_launcher_env()
         done = apply_patches(a.patch_cuda_stream)
+        inj, why = install_inject(cfg.out_dir, "main")
+        if why:
+            print("serve_nx: inject refused: %s" % why, file=sys.stderr)
+            return 3
+        done["inject"] = {"specs": list(a.inject), "diag": a.diag,
+                          "jsonl": None if inj is None else inj.path,
+                          "gc_freeze_after_ready": bool(a.gc_freeze_after_ready)}
         done["launcher_env_removed"] = scrubbed
         done["affinity"] = affinity
         if a.report_addr:
@@ -261,7 +314,14 @@ def main(argv=None):
                 print("serve_nx: --report-addr needs a fixed --port (or --pick-port)",
                       file=sys.stderr)
                 return 3
-            start_reporter(a.report_addr, a.report_host, int(port), a.report_timeout_s)
+            after = None
+            if a.gc_freeze_after_ready:
+                def after():
+                    n = snx_inject.gc_freeze_now()
+                    if cfg.out_dir:
+                        write_atomic(os.path.join(cfg.out_dir, "gc_freeze.%d.json" % os.getpid()),
+                                     json.dumps({"t_ns": time.monotonic_ns(), "frozen": n}) + "\n")
+            start_reporter(a.report_addr, a.report_host, int(port), a.report_timeout_s, after)
         if a.record:
             os.makedirs(os.path.dirname(os.path.abspath(a.record)), exist_ok=True)
             write_atomic(a.record, json.dumps(
