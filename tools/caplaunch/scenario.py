@@ -90,6 +90,13 @@ TOOL_TABLE = {
                         "role_fixed": {"kind": "aux", "measure_class": "observer",
                                        "expected_procs": 1, "asyncio": False,
                                        "uses_grpc": False, "snapshots": "none"}},
+    # E15-B admission checks (Health with and without the inference probe, GetLoad, client
+    # cancel, Abort, greedy A/A) against the engine's gRPC address: an aux observer role, one
+    # process, writes its ready file at once and runs at origin + --at-s.
+    "capgrpc.e15probe": {"origin": True, "ready": True,
+                         "role_fixed": {"kind": "aux", "measure_class": "observer",
+                                        "expected_procs": 1, "workers": 1, "asyncio": False,
+                                        "uses_grpc": True, "snapshots": "none"}},
     # E0(c) HTTP smoke client (this package); identity/--run-dir/--cpus only, no ready file.
     "caplaunch.httpprobe": {},
     # caplaunch.smoke as a role (errata B2B-12): same arguments as httpprobe, no ready file.
