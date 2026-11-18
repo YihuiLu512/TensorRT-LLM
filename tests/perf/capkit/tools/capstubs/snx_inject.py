@@ -18,6 +18,10 @@ function runs):
     Fr  new-architecture frontend: tensorrt_llm.grpc.openengine_client.stream.GenerateStream.
         _validate(self, response) -> bool; called once per response read from a Generate call
         (the path of capprobe site F2).
+    Pp  new-architecture postproc pool process: tensorrt_llm.serve.openengine_poc.postproc_pool.
+        _handle(records, message, tokenizer, hook); called once per message a pool process takes
+        from its inbox (open, each event, close). Installed by capstubs/fe_inject (sitecustomize)
+        in the pool processes; serve_nx never imports it.
 
 Specs: CAPKIT_SNX_INJECT = 'SITE:count' or 'SITE:busy:NS' items joined by ';'. busy is
 capcommon.inject's inline busy wait (the GIL is held). Counters per site: hits / applied /
@@ -49,6 +53,7 @@ SITES = {
     "Hs": ("tensorrt_llm.grpc.openengine.servicer", "_format_result", None),
     "Hd": ("tensorrt_llm.executor.proxy", "global_tracer", None),
     "Fr": ("tensorrt_llm.grpc.openengine_client.stream", "_validate", "GenerateStream"),
+    "Pp": ("tensorrt_llm.serve.openengine_poc.postproc_pool", "_handle", None),
 }
 DIAGS = ("gc", "threads", "conn")
 LONG_PAUSE_NS = 50 * 1000 * 1000

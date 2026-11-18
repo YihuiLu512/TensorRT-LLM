@@ -56,3 +56,11 @@
 - 每档自报的 `request_id_samples`：本档（事件档，含被拒的请求）最先收到的至多 8 个原始 `request_id`（勘误 M-FT1-2），S-PB 同。
 - 产品模块只在 `minimal` / `full` 下导入（`--server-module`，缺省 `tensorrt_llm.grpc.openengine.server`），任何失败退出码 3；导入了什么写进就绪文件与每档自报的 `imported`。只在容器里能用；本机测试用 `tests/capstubs/snl_double.py`。
 - 读 S-NL 用 `capgrpc.load --request-format openengine`（原始请求格式没有 `request_id`，真 servicer 拒绝）。
+
+## `capstubs/fe_inject`（真前端与 postproc 池进程里的运行期注入位点，R3 的 E5 / E6 V 干预）
+
+- 用法：把 `capstubs/fe_inject` 目录放在前端角色 `PYTHONPATH` 的最前面（池进程是前端的 spawn 子进程，继承它），环境变量 `CAPKIT_FE_INJECT` 写位点规格（与 `snx_inject` 同语法，如 `Pp:busy:200000`、`Fr:count`）。不改产品文件。
+- 位点：`Fr` = `GenerateStream._validate`（前端进程，每读到一条 Generate 响应一次，F2 的路径）；`Pp` = `postproc_pool._handle`（每个池进程，每从 inbox 取一条消息一次：开流、每个事件、收尾）。
+- 机制：`sitecustomize` 先执行 sys.path 上下一个 `sitecustomize.py`（镜像自己的），再装一个导入钩子；位点所在模块在本进程加载完时，用 `snx_inject.install` 包住该函数（先计数，再按规格忙等，持 GIL）。规格写错直接退出码 2（site.py 会吞掉 sitecustomize 的异常，所以这里自己退出）。
+- 输出：每个进程每 2 s 与退出时在 stderr 写一行 `capkit-fe-inject-report {"pid", "sites": {site: hits/applied/applied_ns}}`；设了 `CAPKIT_FE_INJECT_DIR` 时改由 `snx_inject` 写 `<dir>/inject.<pid>.jsonl`。加载时与每装上一个位点时各写一行标记。
+- 测试 `tests/capstubs/test_fe_inject.py`：替身模块树上验证父进程与 spawn 子进程里的包裹、忙等时长与计数、无规格时不包、未知位点拒绝启动。
