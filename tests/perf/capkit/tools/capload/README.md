@@ -34,6 +34,7 @@
 | `--mode {open,wave}` | `open` | `wave` = 闭环波模式（见下） |
 | `--wave-size C`、`--wave-delays-ns d0,…`、`--wave-gap-ns G` | —、全 0、0 | 只在 `--mode wave` 时有效 |
 | `--slow-read-pause-us N` | 0 | 阳性对照：每次读到数据后 `pause_reading` N µs（「故意慢读」，验证 `FIONREAD` 读数会变） |
+| `--body-extra JSON` | 无 | 请求体里追加的字段（JSON 对象，例如 `{"detokenize": false}`）；不能覆盖 capload 自己写的字段（`httpwire.BODY_KEYS`） |
 
 ## capload 的行为要点
 

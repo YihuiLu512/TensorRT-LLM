@@ -51,11 +51,19 @@ def load_prompts(path):
     return sets
 
 
-def render_body(endpoint, model, max_tokens, kind, item):
-    """JSON request body. The fixed per-request content (INTERFACES 4.4) comes first; the prompt
-    is the last key so a sink can find max_tokens / include_usage near the start."""
+# Fields render_body writes itself (--body-extra may not name them).
+BODY_KEYS = ("model", "max_tokens", "stream", "stream_options", "ignore_eos", "prompt",
+             "messages", "prompt_token_ids")
+
+
+def render_body(endpoint, model, max_tokens, kind, item, extra=None):
+    """JSON request body. The fixed per-request content (INTERFACES 4.4) comes first, then the
+    --body-extra fields; the prompt is the last key so a sink can find max_tokens /
+    include_usage near the start."""
     d = {"model": model, "max_tokens": max_tokens, "stream": True,
          "stream_options": {"include_usage": True}, "ignore_eos": True}
+    if extra:
+        d.update(extra)
     if endpoint == "/v1/completions":
         d["prompt"] = item
     elif endpoint == "/v1/chat/completions":
@@ -73,7 +81,7 @@ class RequestBuilder:
     """Pre-rendered request bytes for the (tier, prompt item) pairs one worker will send."""
 
     def __init__(self, endpoint, model, host_header, conn_close, tier_table, prompt_sets,
-                 needed):
+                 needed, body_extra=None):
         """needed: {tier_seq: set of request ids} -- only these (tier, item) pairs are built."""
         if endpoint not in ENDPOINTS:
             raise ConfigError("endpoint must be one of %s" % (ENDPOINTS,))
@@ -105,7 +113,7 @@ class RequestBuilder:
                 body = bodies.get(key)
                 if body is None:
                     body = render_body(endpoint, model, t.max_tokens, ps["kind"],
-                                       ps["items"][idx])
+                                       ps["items"][idx], body_extra)
                     bodies[key] = body
                 suf = (b"\r\n" + lines + b"Content-Length: " + str(len(body)).encode("ascii")
                        + b"\r\n\r\n" + body)

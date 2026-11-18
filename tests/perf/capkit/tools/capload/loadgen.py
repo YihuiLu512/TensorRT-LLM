@@ -250,7 +250,7 @@ class Worker:
         self.prompt_sets = load_prompts(cfg["prompts"])
         self.builder = RequestBuilder(cfg["endpoint"], cfg["model"], cfg["host_header"],
                                       cfg["conn_policy"] == "new-per-request", self.table,
-                                      self.prompt_sets, needed)
+                                      self.prompt_sets, needed, cfg.get("body_extra"))
         self.cli_specs = [parse_inject_spec(t) for t in cfg["inject"]]
         self.keepalive = cfg["conn_policy"] == "keepalive"
         self.full_mode = cfg["recv_mode"] == "full"

@@ -3,6 +3,7 @@
 """``python -m capload``: command line (INTERFACES.md 11) and the parent process."""
 
 import argparse
+import json
 import os
 import sys
 
@@ -13,7 +14,7 @@ from capcommon.lifecycle import write_ready_file
 
 from . import LOADGEN_SLOTS
 from ._proc import ParentRunner
-from .httpwire import ENDPOINTS
+from .httpwire import BODY_KEYS, ENDPOINTS
 
 
 def build_parser():
@@ -50,7 +51,26 @@ def build_parser():
                    help="pause between the end of a wave and the next wave (wave mode)")
     o.add_argument("--slow-read-pause-us", type=int, default=0,
                    help="positive control: pause reading this long after every read")
+    o.add_argument("--body-extra", default=None,
+                   help="JSON object of extra request-body fields (e.g. {\"detokenize\": false});"
+                        " may not name a field capload sets itself")
     return p
+
+
+def parse_body_extra(raw):
+    """--body-extra: a JSON object whose keys are not fields capload writes (httpwire.BODY_KEYS)."""
+    if raw is None:
+        return None
+    try:
+        d = json.loads(raw)
+    except ValueError:
+        raise ConfigError("--body-extra must be a JSON object, got %r" % raw) from None
+    if not isinstance(d, dict) or not d:
+        raise ConfigError("--body-extra must be a non-empty JSON object")
+    clash = sorted(set(d) & set(BODY_KEYS))
+    if clash:
+        raise ConfigError("--body-extra may not set %s (capload sets them)" % clash)
+    return d
 
 
 def config_from_args(args, common):
@@ -88,6 +108,7 @@ def config_from_args(args, common):
     for path, what in ((args.schedule, "--schedule"), (args.prompts, "--prompts")):
         if not os.path.isfile(path):
             raise ConfigError("%s %s does not exist" % (what, path))
+    body_extra = parse_body_extra(args.body_extra)
     table = common.load_tier_table()  # validate now (exit 3), workers load it again
     return {
         "identity": common.identity.to_dict(), "run_dir": common.run_dir, "loop": common.loop,
@@ -105,7 +126,7 @@ def config_from_args(args, common):
         "fionread_every_ms": args.fionread_every_ms, "lag_period_us": args.lag_period_us,
         "max_records": args.max_records_per_worker, "mode": args.mode,
         "wave_size": args.wave_size, "wave_delays_ns": delays, "wave_gap_ns": args.wave_gap_ns,
-        "slow_read_pause_us": args.slow_read_pause_us,
+        "slow_read_pause_us": args.slow_read_pause_us, "body_extra": body_extra,
     }
 
 
