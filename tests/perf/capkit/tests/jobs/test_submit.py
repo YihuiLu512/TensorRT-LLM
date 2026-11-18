@@ -202,7 +202,9 @@ def test_submit_end_to_end(env, stub_runner, capsys):
                         capture_output=True, text=True, check=True)
     assert sh.stdout.split("|") == ["1", "30", "0.02", "300", "slurm_view", env.image_sha,
                                     str(os.stat(env.image).st_mtime_ns)]
-    assert out["time_budget"]["total_s"] == 2 * (600 + 60 + 60 + 120) + 30 + 300
+    # + the gate's worst-case idle resampling: 3 x (30 s pause + 30 s window)
+    assert out["time_budget"]["total_s"] == 2 * (600 + 60 + 60 + 120) + 30 + 3 * 2 * 30 + 300
+    assert out["time_budget"]["parts"]["gate_idle_resample_s"] == 180
     assert out["time_budget"]["parts"]["pin_tables_s"] == 2 * launchplan.PINS_TIMEOUT_S
 
 

@@ -19,6 +19,7 @@ from capcommon.exitcodes import ConfigError
 from capcommon.hashing import sha256_bytes, sha256_file
 from conftest import CODE_ROOT
 
+from capenv import gate
 from capjobs import jobinputs, launches, launchplan, overlay, snapshot, submit
 from test_container import SELF_TERM, exited_popen, launch_env
 
@@ -432,6 +433,9 @@ def test_in_job_bound_counts_each_declared_kind(tmp_path):
     b = submit.time_budget(plan, renv)
     assert b["parts"]["pin_tables_s"] == launchplan.PINS_TIMEOUT_S
     assert b["parts"]["job_inputs_s"] == 2 * launchplan.JOB_INPUT_TIMEOUT_S
+    # the gate's worst-case idle resampling: IDLE_RESAMPLE_MAX x (pause + window)
+    assert submit.GATE_IDLE_RESAMPLE_MAX == gate.IDLE_RESAMPLE_MAX
+    assert b["parts"]["gate_idle_resample_s"] == gate.IDLE_RESAMPLE_MAX * 2 * 3
     assert b["total_s"] == sum(b["parts"].values())
     # an explicit count (plans without argv, as caplaunch.laddergen's packing check passes 0)
     # replaces reading the scenario; the other parts are the same

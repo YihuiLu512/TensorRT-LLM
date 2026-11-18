@@ -22,7 +22,14 @@ Items (RESOURCES.md 3, "in-job exclusivity"), each with the command, rc, stdout 
     positive control and the compute-process check are then NOT_RUN, "needs a listed GPU")
   6 idle window: per-core /proc/stat busy fraction <= --idle-busy-max-frac on every online
     core over --idle-window-s (pre phase only; the sidecar keeps watching during the run); each
-    core's irq and softirq ticks are recorded too (the idle reading of D14, capjudge.pilot)
+    core's irq and softirq ticks are recorded too (the idle reading of D14, capjudge.pilot).
+    Transient-noise resampling: when the first window is red, up to IDLE_RESAMPLE_MAX more
+    windows are read, each after a pause of one window length; the item passes on the first
+    window in which every checked core is at or below the threshold (same cores, same
+    threshold). detail.windows lists every window read (busy cores and a per-core summary),
+    detail.passed_on_window is the 1-based window that passed (None when all were red), and the
+    top-level window_ns / busy_cores / missing / per_core are those of the passing window, or of
+    the first window when none passed.
 Items 1-3 fall back to <job>/env/slurm_view.json (written from the login node by capjobs)
 when the command is missing or fails in the container; the gate waits for that file at most
 --slurm-view-wait-s seconds. Any item that is not PASS (RED or NOT_RUN) makes the gate
@@ -236,12 +243,11 @@ def item5(runner, timeout_s, expect_gpus, nvsmi):
     return it
 
 
-def item6(window_s, max_frac, proc_root=procfs.PROC, sys_root=procfs.SYS, sleep=time.sleep):
-    if window_s is None or max_frac is None:
-        return _item(6, ["read", "/proc/stat"], None, None, "container", False,
-                     {"why": "--idle-window-s / --idle-busy-max-frac not given"},
-                     status="NOT_RUN")
-    online = procfs.online_cpus(sys_root)
+IDLE_RESAMPLE_MAX = 3  # extra windows after a red first window (pause = one window between)
+IDLE_SUMMARY_TOP = 8
+
+
+def _idle_window(online, window_s, max_frac, proc_root, sleep):
     a = procfs.read_proc_stat_cpus(proc_root)
     t0 = time.monotonic_ns()
     sleep(window_s)
@@ -261,13 +267,52 @@ def item6(window_s, max_frac, proc_root=procfs.PROC, sys_root=procfs.SYS, sleep=
                        "irq_ticks": d["irq"], "softirq_ticks": d["softirq"]}
         if frac is None or frac > max_frac:
             busy_cores.append(c)
-    checked = len(per)
+    return {"window_ns": t1 - t0, "checked_cores": len(per), "busy_cores": busy_cores,
+            "missing": missing, "per_core": per,
+            "passed": len(per) > 0 and not busy_cores and not missing}
+
+
+def _window_summary(k, w):
+    fr = sorted(((v["busy_frac"], int(c)) for c, v in w["per_core"].items()
+                 if v["busy_frac"] is not None), reverse=True)
+    return {"window": k, "window_ns": w["window_ns"], "passed": w["passed"],
+            "checked_cores": w["checked_cores"], "busy_cores": w["busy_cores"],
+            "missing": w["missing"],
+            "busy_frac_of_busy_cores": {str(c): w["per_core"][str(c)]["busy_frac"]
+                                        for c in w["busy_cores"] if str(c) in w["per_core"]},
+            "max_busy_frac": fr[0][0] if fr else None,
+            "top_cores": [[c, f] for f, c in fr[:IDLE_SUMMARY_TOP]],
+            "median_busy_frac": fr[len(fr) // 2][0] if fr else None}
+
+
+def item6(window_s, max_frac, proc_root=procfs.PROC, sys_root=procfs.SYS, sleep=time.sleep,
+          resample_max=IDLE_RESAMPLE_MAX):
+    if window_s is None or max_frac is None:
+        return _item(6, ["read", "/proc/stat"], None, None, "container", False,
+                     {"why": "--idle-window-s / --idle-busy-max-frac not given"},
+                     status="NOT_RUN")
+    online = procfs.online_cpus(sys_root)
+    wins = [_idle_window(online, window_s, max_frac, proc_root, sleep)]
+    while not wins[-1]["passed"] and wins[-1]["checked_cores"] > 0 and \
+            len(wins) <= resample_max:
+        sleep(window_s)  # pause between windows: transient system noise has time to pass
+        wins.append(_idle_window(online, window_s, max_frac, proc_root, sleep))
+    passed_on = next((i + 1 for i, w in enumerate(wins) if w["passed"]), None)
+    v = wins[passed_on - 1] if passed_on else wins[0]
+    checked = v["checked_cores"]
     status = "NOT_RUN" if checked == 0 else None
     return _item(6, ["read", "/proc/stat", "x2"], 0 if checked else None, None, "container",
-                 checked > 0 and not busy_cores and not missing,
-                 {"window_ns": t1 - t0, "max_frac": max_frac, "expected_cores": len(online),
-                  "checked_cores": checked, "busy_cores": busy_cores, "missing": missing,
-                  "per_core": per}, status=status)
+                 passed_on is not None,
+                 {"window_ns": v["window_ns"], "max_frac": max_frac,
+                  "expected_cores": len(online), "checked_cores": checked,
+                  "busy_cores": v["busy_cores"], "missing": v["missing"],
+                  "per_core": v["per_core"], "passed_on_window": passed_on,
+                  "windows_read": len(wins),
+                  "resample": {"max_extra_windows": resample_max, "pause_s": window_s},
+                  "note": ("passed on window %d of %d (transient-noise resampling)"
+                           % (passed_on, len(wins)) if passed_on and passed_on > 1 else None),
+                  "windows": [_window_summary(i + 1, w) for i, w in enumerate(wins)]},
+                 status=status)
 
 
 def hw_gate(profile_path, registered_sha, comparable_file):

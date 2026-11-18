@@ -224,7 +224,8 @@ def test_capjobs_time_budget_is_checked_too(w):
         L.generate(ns(w, "cal", w.root, "--settle-s", "30", "--time-limit-s", "7600",
                       phase="V0cal", per_job=4))
     _f, summary, *_ = gen(w, "cal", "--settle-s", "30", phase="V0cal", per_job=4)
-    assert summary["packing"]["time_budget_s"] == 7610  # r7/out/plan_r7.json v0_cal
+    # r7/out/plan_r7.json v0_cal (7610 s) + the gate's idle resampling 3 x (30 s + 30 s)
+    assert summary["packing"]["time_budget_s"] == 7610 + 180
 
 
 def test_plan_k_fit_matches_plan_r4(w, capsys):
