@@ -43,6 +43,7 @@ def test_main_refuses_llm_api_set_without_stream_interval(monkeypatch, capsys):
     with pytest.raises(SystemExit):
         serve_nx.build_parser().parse_args(["--worker", "fake"])
     assert serve_nx.build_parser().parse_args([]).worker == "null"
+    assert serve_nx.build_parser().parse_args(["--worker", "product"]).worker == "product"
 
 
 @pytest.fixture

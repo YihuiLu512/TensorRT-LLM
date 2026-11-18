@@ -47,6 +47,9 @@ def build_parser():
     o.add_argument("--wave-size", type=int, default=None, help="requests per wave (wave mode)")
     o.add_argument("--wave-delays-ns", default=None,
                    help="comma list, per-slot send delay from the wave start (wave mode)")
+    o.add_argument("--wave-sizes", default=None, metavar="LABEL:N,...",
+                   help="wave mode: per-tier wave size by tier label (tiers not listed use "
+                        "--wave-size); not with --wave-delays-ns (E15-B concurrency tiers)")
     o.add_argument("--wave-gap-ns", type=int, default=0,
                    help="pause between the end of a wave and the next wave (wave mode)")
     o.add_argument("--slow-read-pause-us", type=int, default=0,
@@ -93,6 +96,7 @@ def config_from_args(args, common):
             raise ConfigError("--target must be HOST:PORT, got %r" % args.target)
         host_header = host_header or args.target
     delays = None
+    sizes = {}
     if args.mode == "wave":
         if not args.wave_size or args.wave_size < 1:
             raise ConfigError("--mode wave needs --wave-size >= 1")
@@ -103,7 +107,11 @@ def config_from_args(args, common):
                 raise ConfigError("--wave-delays-ns must be a comma list of integers")
             if len(delays) != args.wave_size or min(delays) < 0:
                 raise ConfigError("--wave-delays-ns needs %d values >= 0" % args.wave_size)
-    elif args.wave_size is not None or args.wave_delays_ns or args.wave_gap_ns:
+        sizes = parse_wave_sizes(args.wave_sizes)
+        if sizes and args.wave_delays_ns:
+            raise ConfigError("--wave-sizes cannot be combined with --wave-delays-ns")
+    elif args.wave_size is not None or args.wave_delays_ns or args.wave_gap_ns \
+            or args.wave_sizes:
         raise ConfigError("--wave-* options need --mode wave")
     for path, what in ((args.schedule, "--schedule"), (args.prompts, "--prompts")):
         if not os.path.isfile(path):
@@ -126,8 +134,23 @@ def config_from_args(args, common):
         "fionread_every_ms": args.fionread_every_ms, "lag_period_us": args.lag_period_us,
         "max_records": args.max_records_per_worker, "mode": args.mode,
         "wave_size": args.wave_size, "wave_delays_ns": delays, "wave_gap_ns": args.wave_gap_ns,
+        "wave_sizes": sizes,
         "slow_read_pause_us": args.slow_read_pause_us, "body_extra": body_extra,
     }
+
+
+def parse_wave_sizes(raw):
+    """--wave-sizes 'label:N,label:N' -> {label: N}; ConfigError on a bad item or N < 1."""
+    out = {}
+    for item in (raw or "").split(","):
+        if not item:
+            continue
+        lab, sep, n = item.rpartition(":")
+        if not sep or not lab or not n.isdigit() or int(n) < 1 or lab in out:
+            raise ConfigError("--wave-sizes item %r must be LABEL:N (N >= 1, labels unique)"
+                              % item)
+        out[lab] = int(n)
+    return out
 
 
 def main(argv=None):

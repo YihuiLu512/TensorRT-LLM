@@ -39,7 +39,7 @@ import threading
 import time
 
 SCHEMA_RECORD = "capkit.serve_nx/1"
-WORKER_KINDS = ("null", "real")
+WORKER_KINDS = ("null", "real", "product")
 # the worker kind, for re-executed attached frontends (they never build a worker; recorded only)
 ENV_WORKER = "CAPKIT_SERVE_WORKER"
 LLM_API_KEY_RE = r"^[a-z_][a-z0-9_]*$"
@@ -77,7 +77,9 @@ def build_parser():
     p.add_argument("--worker", choices=WORKER_KINDS, default="null",
                    help="null: S-NX NullWorker (default); real: the product worker with the real "
                         "PyExecutor (S-TM, E11 / E13-S / E15-B), pinned to --worker-cores by "
-                        "capstubs.tm_worker.PinnedWorker")
+                        "capstubs.tm_worker.PinnedWorker); product: worker_cls untouched (the "
+                        "product's own worker, e.g. E15-B where H-inproc builds its worker "
+                        "in-process and both arms must run the same worker class)")
     p.add_argument("--llm-api-set", action="append", default=[], metavar="KEY=JSON",
                    help="one more top-level key of the LLM API YAML that --stream-interval "
                         "writes (value parsed as JSON); repeatable")
@@ -227,6 +229,15 @@ def apply_patches(patch_cuda_stream="auto", worker="null"):
     """Point GenerationExecutorProxy's worker_cls default at NullWorker (worker "null") or at
     capstubs.tm_worker.PinnedWorker (worker "real"); returns what was done."""
     from tensorrt_llm.executor.proxy import GenerationExecutorProxy  # noqa: PLC0415
+    if worker == "product":
+        kwd = GenerationExecutorProxy.__init__.__kwdefaults__ or {}
+        cls = kwd.get("worker_cls")
+        done = {"worker_cls": None if cls is None else "%s.%s" % (cls.__module__,
+                                                                  cls.__qualname__),
+                "worker": worker, "cuda_stream_patched": False}
+        if patch_cuda_stream == "auto":
+            done["cuda_stream_patched"] = patch_cuda_stream_if_no_cuda()
+        return done
     if worker == "real":
         from capstubs.tm_worker import PinnedWorker as cls  # noqa: PLC0415
     elif worker == "null":

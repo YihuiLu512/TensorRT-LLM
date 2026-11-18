@@ -867,13 +867,15 @@ class Worker:
             return
         seq, rows = groups[self.wave_gi]
         t0 = max(self.origin + self.table.tiers[seq].start_ns, earliest_abs)
-        wave = rows[self.wave_ri:self.wave_ri + self.wave_size]
+        size = (self.cfg.get("wave_sizes") or {}).get(self.table.tiers[seq].label,
+                                                      self.wave_size)
+        wave = rows[self.wave_ri:self.wave_ri + size]
         self.wave_ri += len(wave)
         self.wave_pending = len(wave)
         self.wave_count += 1
         self.wave_handles = []
         for j, i in enumerate(wave):
-            planned = t0 + self.wave_delays[j]
+            planned = t0 + (self.wave_delays[j] if j < len(self.wave_delays) else 0)
             self.wave_handles.append(call_at_ns(self.loop, planned, self._wave_send, i, planned))
 
     def _wave_send(self, i, planned):
