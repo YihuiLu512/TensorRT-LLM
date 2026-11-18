@@ -165,7 +165,7 @@ async def _check_stop(api, client, rec, cfg, how):
         rec["running_mid"] = run_mid
         if how == "cancel":
             stream.cancel()
-            rec["stream_cancelled"] = stream.cancelled()
+            rec["stream_cancelled"] = stream.cancelled is True  # a property on GenerateStream
         else:
             rec["abort_outcome"] = api.abort_outcome(await client.abort(stream.request_id))
             rest = 0

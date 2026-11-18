@@ -25,7 +25,8 @@ class FakeStream:
         self.eng, self.request_id, self.n = eng, rid, n_tokens
         self.i, self._cancelled, self._aborted = 0, False, False
 
-    def cancelled(self):
+    @property
+    def cancelled(self):  # a property, as on the product's GenerateStream
         return self._cancelled
 
     def cancel(self):
