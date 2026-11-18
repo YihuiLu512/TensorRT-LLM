@@ -231,3 +231,13 @@ def test_no_second_state_order_in_the_tools():
     assert judge.worst_state is runtree.worst_state
     assert inputs.worst_state is runtree.worst_state
     assert not hasattr(inputs, "STATE_RANK")
+
+
+def test_registry_takes_the_e12_kinds(tmp_path):
+    p = str(tmp_path / "REGISTRY.tsv")
+    for i, kind in enumerate(("e12_config", "e12_runplan")):
+        row = ledger.registry_append(p, "E12-L2a", "07_gpu/E12/x/%s" % kind, "%064x" % (i + 1),
+                                     "kind=%s;" % kind)
+        assert ledger.registry_kind(row) == kind
+    with pytest.raises(ledger.LedgerError, match="unknown registry kind"):
+        ledger.registry_append(p, "E12-L2a", "07_gpu/E12/x/y", "%064x" % 9, "kind=e12_other;")

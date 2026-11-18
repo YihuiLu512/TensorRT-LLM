@@ -26,7 +26,9 @@ REGISTRY_KINDS = ("register", "register_md", "tier_table", "schedule", "prompts"
                   "hw_profile", "d14_rule",
                   # calibration v2 (calib-v2 DESIGN-r7a 3.1 P2-02, 3.2)
                   "errata", "ladder", "e0_params", "e0_summary", "d14_result", "e0_list",
-                  "job_plan", "node_exclusions", "node_list")
+                  "job_plan", "node_exclusions", "node_list",
+                  # E12-L2a script launches (07_gpu/E12): perf-sanity YAMLs, per-job run plan
+                  "e12_config", "e12_runplan")
 SUBMISSION_COLUMNS = ("event_at", "plan_id", "event", "job_id", "status", "reason", "experiment",
                       "arms", "launches", "basis", "account", "partition", "qos", "exclude",
                       "time_limit", "mem", "cpus_per_task", "gpus", "exclusive", "snapshot_dir",
