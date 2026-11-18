@@ -206,7 +206,8 @@ async def _check_greedy(api, client, rec, cfg):
 
 
 async def run_checks(api, cfg):
-    """All checks in CHECKS order; returns the list of records (never raises for one check)."""
+    """The selected checks (cfg["checks"], default all) in CHECKS order; returns the list of
+    records (never raises for one check)."""
     t0 = time.monotonic_ns()
     out = []
     client = await api.connect(cfg["target"], cfg["ready_timeout_s"])
@@ -219,7 +220,10 @@ async def run_checks(api, cfg):
                  ("cancel", lambda r: _check_stop(api, client, r, cfg, "cancel")),
                  ("abort", lambda r: _check_stop(api, client, r, cfg, "abort")),
                  ("greedy_aa", lambda r: _check_greedy(api, client, r, cfg))]
+        want = cfg.get("checks") or CHECKS
         for name, fn in steps:
+            if name not in want:
+                continue
             rec = _rec(name, t0)
             try:
                 await asyncio.wait_for(fn(rec), cfg["check_timeout_s"])
@@ -255,6 +259,8 @@ def build_parser():
     o.add_argument("--clear-timeout-s", type=float, default=30.0)
     o.add_argument("--stream-timeout-s", type=float, default=120.0)
     o.add_argument("--check-timeout-s", type=float, default=150.0)
+    o.add_argument("--checks", default=",".join(CHECKS),
+                   help="comma-separated subset of %s (run in that order)" % ",".join(CHECKS))
     return ap
 
 
@@ -264,6 +270,11 @@ def config_from_args(a):
             raise ConfigError("--%s must be > 0" % k.replace("_", "-"))
     if a.cancel_after_chunks >= a.max_tokens:
         raise ConfigError("--cancel-after-chunks must be < --max-tokens")
+    checks = [c for c in a.checks.split(",") if c]
+    bad = [c for c in checks if c not in CHECKS]
+    if not checks or bad or len(set(checks)) != len(checks):
+        raise ConfigError("--checks must be a non-empty subset of %s, got %r"
+                          % (",".join(CHECKS), a.checks))
     doc = json.load(open(a.prompts))
     s = (doc.get("sets") or {}).get(a.prompt_set)
     if doc.get("schema") != "capkit.prompts/1" or not s or s.get("kind") != "token_ids":
@@ -274,14 +285,15 @@ def config_from_args(a):
             "greedy_tokens": a.greedy_tokens, "ready_timeout_s": a.ready_timeout_s,
             "control_timeout_s": a.control_timeout_s, "probe_timeout_s": a.probe_timeout_s,
             "clear_timeout_s": a.clear_timeout_s, "stream_timeout_s": a.stream_timeout_s,
-            "check_timeout_s": a.check_timeout_s}
+            "check_timeout_s": a.check_timeout_s,
+            "checks": [c for c in CHECKS if c in checks]}
 
 
 def write_result(path, identity, cfg, records, error=None):
     doc = {"schema": SCHEMA, "identity": identity.to_dict(), "written_wall": wall_iso(),
            "config": {k: v for k, v in cfg.items() if k != "prompt"},
            "prompt_len": len(cfg["prompt"]), "error": error, "checks": records,
-           "all_ok": error is None and len(records) == len(CHECKS)
+           "all_ok": error is None and len(records) == len(cfg.get("checks") or CHECKS)
            and all(r["ok"] for r in records)}
     atomic_write_bytes(path, (dumps(doc) + "\n").encode())
     return doc
