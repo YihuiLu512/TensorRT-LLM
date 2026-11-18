@@ -84,6 +84,34 @@ def test_wave_mode(launch):
             prev_done = max(r[2] for r in wv)
 
 
+def test_wave_sizes_per_tier(launch):
+    """--wave-sizes: tier 0 runs waves of 2, tier 2 waves of 5 (default --wave-size 3)."""
+    lz = launch()
+    labs = {seq: lz.table.tiers[seq].label for seq in (0, 2)}
+    rc_l, rc_s = lz.run_pair(load_kw={"workers": 1, "extra": [
+        "--mode", "wave", "--wave-size", "3", "--wave-sizes",
+        "%s:2,%s:5" % (labs[0], labs[2])]})
+    assert (rc_l, rc_s) == (0, 0), lz.errtext("capload")
+    for seq, size in ((0, 2), (2, 5)):
+        rows = []
+        for _h, c in lz.capbins("capload", "requests", seq):
+            rows += [(c["planned_rel_ns"][i], c["done_rel_ns"][i])
+                     for i in range(len(c["req_id"]))]
+        rows.sort()
+        starts = sorted({r[0] for r in rows})
+        per = [sum(1 for r in rows if r[0] == t) for t in starts]
+        assert per[0] == size and max(per) == size, (seq, per)
+
+
+def test_wave_sizes_refusals(launch):
+    lz = launch()
+    assert _run_rc(_load_argv(lz, ["--wave-sizes", "a:2"]))[0] == 3
+    assert _run_rc(_load_argv(lz, ["--mode", "wave", "--wave-size", "2", "--wave-sizes",
+                                   "a:0"]))[0] == 3
+    assert _run_rc(_load_argv(lz, ["--mode", "wave", "--wave-size", "2", "--wave-sizes", "a:2",
+                                   "--wave-delays-ns", "0,1"]))[0] == 3
+
+
 def test_full_mode_chat_text_prompts(launch):
     prompts = {"schema": "capkit.prompts/1",
                "sets": {"p": {"kind": "text", "items": ["hello \"quoted\" max_tokens", "x"]}}}
