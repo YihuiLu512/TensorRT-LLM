@@ -120,3 +120,16 @@ def test_target_port_is_ascii_digits(target, ok):
     else:
         with pytest.raises(ConfigError, match="--target must be HOST:PORT"):
             config_from_args(args, common)
+
+
+def test_body_extra_fields_and_refusals():
+    from capcommon.exitcodes import ConfigError
+    from capload.main import parse_body_extra
+    d = json.loads(render_body("/v1/completions", "m", 4, "token_ids", [1, 2],
+                               {"detokenize": False}))
+    assert d["detokenize"] is False and d["max_tokens"] == 4 and list(d)[-1] == "prompt"
+    assert parse_body_extra(None) is None
+    assert parse_body_extra('{"detokenize": false}') == {"detokenize": False}
+    for bad in ('[1]', '{}', 'x', '{"max_tokens": 3}', '{"prompt": "p"}'):
+        with pytest.raises(ConfigError):
+            parse_body_extra(bad)
