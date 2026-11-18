@@ -388,6 +388,12 @@ def check_plan_scenarios(plan, workdir, register_doc):
     makes in the job, made before anything is submitted."""
     root = os.path.realpath(workdir)
     for ln in plan["launches"]:
+        if launchplan.body_of(ln) == "script":
+            # no scenario; the arm must still have registered files (what the script reads)
+            if not arm_files(register_doc, ln["arm"]):
+                raise SubmitError("launch %d: script launch arm %s has no registered files"
+                                  % (ln["launch_seq"], ln["arm"]))
+            continue
         wd, rel = launchplan.scenario_path(ln)
         if os.path.realpath(wd) != root:
             raise SubmitError("launch %d: --workdir %s is not --workdir %s"
@@ -425,6 +431,8 @@ def check_plan_argv(plan):
         raise SubmitError(message)
 
     for ln in plan["launches"]:
+        if launchplan.body_of(ln) == "script":  # no caplaunch argv (check_plan_scripts)
+            continue
         doc = launchplan.load_scenario(ln)
         kinds = []
         if jobinputs.declares(doc):
@@ -453,6 +461,19 @@ def check_plan_argv(plan):
         except SystemExit:
             raise SubmitError("launch %d: caplaunch would refuse its argv: it exited while "
                               "parsing (e.g. -h)" % ln["launch_seq"]) from None
+
+
+def check_plan_scripts(plan, file_plan):
+    """A script launch's file ({SNAP}/<relpath>) must be one of the files the job's code
+    snapshot ships (snapshot.plan_files): the job runs only committed, snapshotted code."""
+    have = set(file_plan)
+    for ln in plan["launches"]:
+        if launchplan.body_of(ln) != "script":
+            continue
+        rel = launchplan.script_relpath(ln)
+        if rel not in have:
+            raise SubmitError("launch %d: script %s is not in the job's code snapshot"
+                              % (ln["launch_seq"], rel))
 
 
 def workdir_inputs(workdir, reg, plan):
@@ -493,6 +514,7 @@ def prepare_submit(a, code_state_fn):
                                                  "--tokenizer-dir")
     assertions, tok_sha = policy.check_any_submission(
         a.experiment, a.gpus, [m["text"] for m in mounts], tok, a.basis)
+    policy.check_job_body(a.experiment, [launchplan.body_of(ln) for ln in plan["launches"]])
     model_dirs = (policy.check_model_mounts(a.experiment, [m["text"] for m in mounts])
                   if policy.is_model_experiment(a.experiment) else [])
     res = resources_from_args(a)
@@ -541,12 +563,15 @@ def prepare_submit(a, code_state_fn):
     check_plan_scenarios(plan, workdir, reg["doc"])
     coverage += check_coverage(mounts, [], workdir_inputs(workdir, reg, plan))
     for ln in plan["launches"]:
+        if launchplan.body_of(ln) == "script":
+            continue
         # caplaunch sets CAPKIT_CODE_SHA = --capkit-sha and refuses a different outer value; in the
         # job the outer value is the overlay manifest's capkit_code_sha, i.e. this HEAD
         if launchplan.flag_value(ln["argv"], "--capkit-sha") != head:
             raise SubmitError("launch %d: --capkit-sha must be the code HEAD %s"
                               % (ln["launch_seq"], head))
     check_plan_argv(plan)
+    check_plan_scripts(plan, file_plan)
     for rel, sha, size in snapshot.overlay_entries(overlay):
         src = os.path.join(code_root, rel)
         if os.path.getsize(src) != size or sha256_file(src) != sha:
@@ -573,12 +598,13 @@ def time_budget(plan, renv, job_input_kinds=None):
     caplaunch.laddergen's packing check)."""
     if job_input_kinds is None:
         job_inputs_s = sum(launchplan.in_job_bound_s(ln) - launchplan.PINS_TIMEOUT_S
-                           for ln in plan["launches"])
+                           for ln in plan["launches"] if launchplan.body_of(ln) != "script")
     else:
         job_inputs_s = launchplan.JOB_INPUT_TIMEOUT_S * job_input_kinds * len(plan["launches"])
     parts = {"launches": sum(ln["budget_s"] + plan["kill_grace_s"] + plan["margin_s"]
                              for ln in plan["launches"]),
-             "pin_tables_s": launchplan.PINS_TIMEOUT_S * len(plan["launches"]),
+             "pin_tables_s": launchplan.PINS_TIMEOUT_S * sum(
+                 1 for ln in plan["launches"] if launchplan.body_of(ln) != "script"),
              "job_inputs_s": job_inputs_s,
              "gate_idle_window_s": renv["idle_window_s"],
              "gate_idle_resample_s": GATE_IDLE_RESAMPLE_MAX * 2 * renv["idle_window_s"],

@@ -42,6 +42,12 @@ subreaper when run as main, so orphans re-parent here); after the launcher is go
 descendant still alive (same pid and start time) gets SIGTERM, then SIGKILL after kill_grace_s,
 and is listed in the launch record as a leftover.
 The judge appends its own STATE line later; this one only says the launch ran and its data is safe.
+
+Script launches (launchplan body "script"): no pin table and no job inputs; the argv runs with
+placeholders substituted and nothing appended, its environment carrying script_env(); the
+launcher never writes raw/launch.json, so a non-zero exit is not read as a pre-start config
+refusal: exit 0 -> VALID, 6 -> ENV_INVALID, anything else -> VOID (unless the script wrote its
+own STATE line by "caplaunch", which classify() treats as the launcher's record).
 """
 
 import argparse
@@ -114,6 +120,19 @@ def launch_argv(plan, ln, values, job_id, restart_count, run_dir, overlay_manife
                    "--launch-seq", str(ln["launch_seq"]), "--job-id", str(job_id),
                    "--restart-count", str(restart_count), "--register-sha", plan["register_sha"],
                    "--role", "launch", "--run-dir", run_dir]
+
+
+def script_env(base_env, plan, ln, job_id, restart_count, run_dir, overlay_manifest, nvidia_smi,
+               job_env_dir):
+    """The environment of a script launch: what launch_argv appends as flags for caplaunch."""
+    env = dict(base_env)
+    env.update({"CAPKIT_EXPERIMENT": plan["experiment"], "CAPKIT_ARM": ln["arm"],
+                "CAPKIT_LAUNCH_SEQ": str(ln["launch_seq"]), "CAPKIT_JOB_ID": str(job_id),
+                "CAPKIT_RESTART_COUNT": str(restart_count),
+                "CAPKIT_REGISTER_SHA": plan["register_sha"], "CAPKIT_RUN_DIR": run_dir,
+                "CAPKIT_OVERLAY_MANIFEST": overlay_manifest, "CAPKIT_NVIDIA_SMI": nvidia_smi,
+                "CAPKIT_JOB_ENV_DIR": job_env_dir, "CAPKIT_LAUNCH_BUDGET_S": str(ln["budget_s"])})
+    return env
 
 
 class JobTerminated(Exception):
@@ -476,9 +495,10 @@ def run_all(a, plan, manifest_doc, now_fn=time.time):
                      "kill grace %d s + margin %d s + pin table and job inputs %d s"
                      % (left, ln["budget_s"], grace, plan["margin_s"], bound))
             continue
+        script = launchplan.body_of(ln) == "script"
         pins = os.path.join(pins_dir, name + ".pin_table.json")
         try:
-            why = pin_table(a, plan, ln, env, pins)
+            why = None if script else pin_table(a, plan, ln, env, pins)
         except JobTerminated as e:
             halted = str(e)
             r.update(ran=False, status="NOT_RUN", reason="skipped: %s during the pin table" % e)
@@ -487,8 +507,8 @@ def run_all(a, plan, manifest_doc, now_fn=time.time):
             r.update(ran=False, status="NOT_RUN", reason="skipped: " + why, pin_table_failed=True)
             continue
         try:
-            jpaths, jrecs, why = job_inputs(a, ln, values, env,
-                                            os.path.join(a.job_dir, "job_inputs", name))
+            jpaths, jrecs, why = ({}, [], None) if script else job_inputs(
+                a, ln, values, env, os.path.join(a.job_dir, "job_inputs", name))
         except JobTerminated as e:
             halted = str(e)
             r.update(ran=False, status="NOT_RUN", reason="skipped: %s during the job inputs" % e)
@@ -501,15 +521,24 @@ def run_all(a, plan, manifest_doc, now_fn=time.time):
             continue
         local = os.path.join(a.local_root, "runs", name)
         private_mkdir(local)
-        argv = launch_argv(plan, ln, values, a.job_id, a.restart_count, local, a.overlay_manifest,
-                           a.nvidia_smi, os.path.join(a.job_dir, "env"), pins, jpaths)
+        if script:
+            argv = [launchplan.substitute(x, values) for x in ln["argv"]]
+            lenv = script_env(env, plan, ln, a.job_id, a.restart_count, local,
+                              a.overlay_manifest, a.nvidia_smi, os.path.join(a.job_dir, "env"))
+            r["body"] = "script"
+        else:
+            argv = launch_argv(plan, ln, values, a.job_id, a.restart_count, local,
+                               a.overlay_manifest, a.nvidia_smi, os.path.join(a.job_dir, "env"),
+                               pins, jpaths)
+            lenv = env
         r["argv"] = argv
         r["started_wall"] = wall_iso()
         logs = os.path.join(a.local_root, "logs", name)
         rc, timed_out, terminated, leftovers = run_with_budget(
-            argv, env, ln["budget_s"], grace, logs + ".launcher.out", logs + ".launcher.err")
+            argv, lenv, ln["budget_s"], grace, logs + ".launcher.out", logs + ".launcher.err")
         recorded = launcher_state(local)
-        early = early_config_error(local, logs + ".launcher.err")
+        # a script never writes raw/launch.json: its non-zero exit is a failure, not a refusal
+        early = None if script else early_config_error(local, logs + ".launcher.err")
         r.update(ran=True, rc=rc, timed_out=timed_out, terminated=terminated,
                  ended_wall=wall_iso(), leftovers=leftovers,
                  config_refused=prestart_config_refusal(rc, timed_out, terminated, recorded,
