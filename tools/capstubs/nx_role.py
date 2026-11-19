@@ -18,6 +18,18 @@ the drains' sends being in other processes), backlog.engine_open = active + queu
 the engine, backlog.pending_keys = request keys with responses not yet taken by
 await_responses. They are polled every --poll-ms on the loop thread.
 
+--engine-probe-ms P (default 0 = off): engine progress probe (PLAN-R2R5 3.1 B5, E7 R axis). Every
+P ms on the absolute grid origin + k x P, this role's loop thread reads the same engine counters
+(the worker's live record in proxy mode; nothing runs in the worker) and appends one row to
+<role>.w0.probe.capbin (kind snx.probe, split by the tier of the sample time): the counters since
+the first sample before the origin, the live record's age, and three backlog lags against the
+schedule. For counter x in (enqueued, taken, finished) the lag is the age of the oldest request
+planned by the sample time that the counter has not reached yet: lag = t - planned[x] when
+x < (requests planned by t), else 0, with planned = every schedule row's planned time in order
+(FIFO reading: the first x planned requests are the ones counted). The step thread writes its own
+steps records only when it runs a step, so a tier in which it is starved has no step rows; the
+probe samples at a fixed interval from outside the worker whether or not the engine advances.
+
 Per-tier summaries (written after the table end, like capgrpc.load): counts planned / sent / ok /
 failed / not_sent by the planned tier of each request; ok = the engine finished it (snx reqs
 records, matched by client id), failed = sent but not finished when the role stopped (reason
@@ -27,7 +39,9 @@ drains cannot tell which request a message belongs to). The nx_driver files (nxd
 """
 
 import argparse
+import array
 import asyncio
+import bisect
 import glob
 import json
 import os
@@ -57,6 +71,66 @@ SLOTS = {
     "lag.loop": {"kind": "hist", "site": None, "group": "lag", "per": "sample"},
 }
 MODES = ("standalone", "proxy")
+PROBE_KIND = "snx.probe"
+PROBE_FIELDS = [("t_rel_ns", "q"), ("live_age_ns", "q"), ("enqueued", "q"), ("taken", "q"),
+                ("finished", "q"), ("active", "i"), ("queued", "i"), ("pending_keys", "i"),
+                ("due", "q"), ("lag_enq_ns", "q"), ("lag_take_ns", "q"), ("lag_fin_ns", "q"),
+                ("tier_seq", "h")]
+PROBE_COUNTERS = ("enqueued", "taken", "finished")
+PROBE_SLEEP_CHUNK_S = 0.5
+
+
+class EngineProbe:
+    """--engine-probe-ms rows: engine counters on a fixed grid and the backlog lags against the
+    schedule (module docstring). sample() is called on the role's loop thread only."""
+
+    def __init__(self, plan, period_ms, tail_s):
+        from capcommon.capbin import RecordArray  # noqa: PLC0415
+        from capgrpc.common import TierCursor  # noqa: PLC0415
+        self.period_ns = int(period_ms) * 1_000_000
+        self.origin = plan.origin
+        self.planned = array.array("q", sorted(p - plan.origin for _i, p, _s in plan.rows))
+        n = (plan.tt.end_ns + int(tail_s * nxd.NS)) // self.period_ns + 16
+        self.rec = RecordArray(PROBE_FIELDS, int(n))
+        self.cursor = TierCursor(plan.tt)
+        self.base = None
+        self.missed = 0
+
+    def lag(self, t_rel, x, due):
+        """Age of the oldest request planned by t_rel that counter value x has not reached."""
+        return t_rel - self.planned[x] if 0 <= x < due else 0
+
+    def sample(self, c, t_abs):
+        """One row from engine counters c (LIVE_FIELDS-shaped, or None: counted as missed); the
+        first readable sample is the counters' base."""
+        if c is None:
+            self.missed += 1
+            return False
+        if self.base is None:
+            self.base = {k: int(c[k]) for k in PROBE_COUNTERS}
+        t = t_abs - self.origin
+        due = bisect.bisect_right(self.planned, t)
+        e, tk, f = (int(c[k]) - self.base[k] for k in PROBE_COUNTERS)
+        return self.rec.append(t, t_abs - int(c["t_ns"]), e, tk, f, int(c["active"]),
+                               int(c["queued"]), int(c["pending_keys"]), due,
+                               self.lag(t, e, due), self.lag(t, tk, due), self.lag(t, f, due),
+                               self.cursor.seq_at(t))
+
+    def samples_by_tier(self):
+        out = {}
+        col = self.rec.cols["tier_seq"]
+        for i in range(self.rec.n):
+            out[col[i]] = out.get(col[i], 0) + 1
+        return out
+
+    def meta(self):
+        return {"period_ns": self.period_ns, "base": self.base, "missed": self.missed,
+                "planned_requests": len(self.planned),
+                "lag_rule": "lag_<c>_ns = t_rel_ns - planned[c] if c < due else 0; planned = "
+                            "every schedule row's planned_rel_ns in order, due = rows planned "
+                            "<= t_rel_ns, c = counter since base (FIFO reading)",
+                "counters": "engine counters (proxy: the worker's snx.<pid>.live record) minus "
+                            "base; live_age_ns = sample time - the record's t_ns"}
 
 
 def build_parser():
@@ -77,6 +151,8 @@ def build_parser():
                    help="after the table ends: wait this long before stopping the engine")
     g.add_argument("--lag-period-us", type=int, required=True)
     g.add_argument("--poll-ms", type=int, default=10, help="engine counters -> slots period")
+    g.add_argument("--engine-probe-ms", type=int, default=0,
+                   help="engine progress probe period (0 = off): one snx.probe row per period")
     g.add_argument("--stream-interval", type=int, default=0, help="standalone only")
     g.add_argument("--model", help="proxy: model dir (tokenizer copy; no weights)")
     g.add_argument("--max-seq-len", type=int, default=8192)
@@ -115,6 +191,8 @@ def validate_args(args):
         raise ConfigError("--drain-inject needs a raw or deserialize drain")
     if args.lanes < 1 or args.poll_ms < 1 or args.tail_s < 0:
         raise ConfigError("--lanes and --poll-ms must be >= 1, --tail-s >= 0")
+    if getattr(args, "engine_probe_ms", 0) < 0:
+        raise ConfigError("--engine-probe-ms must be >= 0")
     if args.mode == "standalone" and args.worker_cores:
         raise ConfigError("--worker-cores is a proxy option (standalone has no worker)")
     if args.worker_cores < 0 or args.procmon_cores < 0 or args.procmon_interval_ms < 10:
@@ -168,9 +246,11 @@ class NxRole:
         self.ex = self.proxy = self.live = None
         self.children = []
         self.engine_pid = None
+        pm = getattr(args, "engine_probe_ms", 0)
+        self.probe = EngineProbe(self.plan, pm, args.tail_s) if pm else None
         self.info = {"mode": args.mode, "lanes": args.lanes, "consumer": self.stats.consumer,
                      "nxd_dir": args.nxd_dir, "snx_out_dir": args.snx_out_dir,
-                     "rows": len(self.plan.rows)}
+                     "rows": len(self.plan.rows), "engine_probe_ms": pm}
 
     # -- engine --------------------------------------------------------------------------------
     def build(self):
@@ -261,6 +341,24 @@ class NxRole:
             self.poll()
             await asyncio.sleep(period)
 
+    async def _probe_task(self):
+        """--engine-probe-ms: a base sample now, then one sample per grid point origin + k x P
+        (a late loop skips to the next grid point; the row carries the actual sample time)."""
+        pr = self.probe
+        origin, P = pr.origin, pr.period_ns
+        pr.sample(self.engine_counters(), time.monotonic_ns())
+        while not self.stop.is_set():
+            now = time.monotonic_ns()
+            k = -(-(now - origin) // P) if now > origin else 0
+            target = origin + k * P
+            while not self.stop.is_set() and target > now:
+                await asyncio.sleep(min((target - now) / nxd.NS, PROBE_SLEEP_CHUNK_S))
+                now = time.monotonic_ns()
+            if self.stop.is_set():
+                break
+            pr.sample(self.engine_counters(), now)
+            await asyncio.sleep(0)
+
     # -- run -----------------------------------------------------------------------------------
     async def run(self, loop):
         rt = self.rt
@@ -272,6 +370,7 @@ class NxRole:
         write_inprocess_ready(rt, self.args.ready_file, self.info)
         self.start_traffic()
         poller = loop.create_task(self._poll_task())
+        prober = loop.create_task(self._probe_task()) if self.probe is not None else None
         end_abs = self.common.origin_ns + rt.tt.end_ns
         until = end_abs + int(self.args.tail_s * nxd.NS)
         while not wake.is_set():
@@ -287,6 +386,8 @@ class NxRole:
         rt.close_tiers()
         self.stop.set()
         await poller
+        if prober is not None:
+            await prober
         await loop.run_in_executor(None, self.shutdown)
         rt.read_stop()
         self.write_outputs()
@@ -321,6 +422,10 @@ class NxRole:
         extra["engine_counters_at_stop"] = self.engine_counters() if self.ex else None
         nxd.write_json(os.path.join(a.nxd_dir, "nxd.%s.summary.json" % self.stats.name),
                        self.stats.summary(extra))
+        probe_n = {}
+        if self.probe is not None:
+            rt.dump_records(self.probe.rec, "probe", PROBE_KIND, self.probe.meta())
+            probe_n = self.probe.samples_by_tier()
         done, cancelled = set(), set()
         for _pid, path in _engine_files(a.snx_out_dir, "reqs" + REC_EXT):
             for r in read_records(path, "reqs"):
@@ -368,6 +473,11 @@ class NxRole:
                 "zmq": zmq.get(seq, {"msgs": 0, "bytes": 0, "parsed_msgs": 0, "responses": 0,
                                      "finals": 0}),
                 "attribution": "counts: planned tier of the request; zmq: receive time"})
+            if self.probe is not None:
+                payload["engine_probe"] = {"period_ns": self.probe.period_ns,
+                                           "samples": probe_n.get(seq, 0),
+                                           "missed": self.probe.missed,
+                                           "overflow": self.probe.rec.overflow}
             rt.write_summary(seq, payload)
 
 
