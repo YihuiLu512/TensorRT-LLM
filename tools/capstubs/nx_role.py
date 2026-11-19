@@ -108,10 +108,10 @@ def driver_args(args, common):
 def validate_args(args):
     if args.mode == "proxy" and not args.model:
         raise ConfigError("--mode proxy needs --model")
-    if args.mode == "standalone" and (args.lanes != 1 or args.consumer != "raw"
-                                      or args.drain_inject):
+    dr = getattr(args, "drain_inject", "")
+    if args.mode == "standalone" and (args.lanes != 1 or args.consumer != "raw" or dr):
         raise ConfigError("--lanes / --consumer / --drain-inject are proxy options")
-    if nxd.drain_injector(args.drain_inject) is not None and args.consumer == "product":
+    if nxd.drain_injector(dr) is not None and args.consumer == "product":
         raise ConfigError("--drain-inject needs a raw or deserialize drain")
     if args.lanes < 1 or args.poll_ms < 1 or args.tail_s < 0:
         raise ConfigError("--lanes and --poll-ms must be >= 1, --tail-s >= 0")
