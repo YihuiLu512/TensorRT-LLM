@@ -174,8 +174,12 @@ def _stub_modules(probe_tree, base, specs, export_dir, capkit_root):
 
 def build_manifest(tier, probe_tree, image_commit, base_commit, capkit_root, capkit_sha,
                    packages, groups, export_dir=None, allow_unshipped=(), sites=None,
-                   stub_modules=()):
-    """Return the manifest dict; raises OverlayError on every rule violation."""
+                   stub_modules=(), image_holds_target=False):
+    """Return the manifest dict; raises OverlayError on every rule violation.
+
+    image_holds_target (P0 only): the image was baked with the target commit's tensorrt_llm tree
+    (the D1 test image), so --image-commit must equal the target and the manifest lists no
+    product file (only the capkit packages); without it an empty product diff is refused."""
     if tier not in TIERS:
         raise OverlayError("--tier must be one of %s" % (TIERS,))
     image = resolve_commit(probe_tree, image_commit)
@@ -194,6 +198,8 @@ def build_manifest(tier, probe_tree, image_commit, base_commit, capkit_root, cap
         groups = [g for g in _sites.ALL_GROUPS if g in groups]
     if sites is not None and tier != "P2":
         raise OverlayError("--sites is only valid with tier P2")
+    if image_holds_target and tier != "P0":
+        raise OverlayError("--image-holds-target is only valid with tier P0")
     if tier in ("P1", "P2"):
         missing = [p for p in REQUIRED_PACKAGES_PROBED if p not in packages]
         if missing:
@@ -234,7 +240,11 @@ def build_manifest(tier, probe_tree, image_commit, base_commit, capkit_root, cap
         raise OverlayError("C++ / non-Python package content changed between image %s and "
                            "target %s (rebuild the image; ask the user first): %s"
                            % (image, target, non_python_changed))
-    if not py:
+    if image_holds_target:
+        if image != target:
+            raise OverlayError("--image-holds-target needs --image-commit == the target %s, got "
+                               "%s" % (target, image))
+    elif not py:
         raise OverlayError("no tensorrt_llm/**.py differs between image and target; nothing to "
                            "overlay (wrong commits?)")
     files = []
@@ -271,6 +281,7 @@ def build_manifest(tier, probe_tree, image_commit, base_commit, capkit_root, cap
             "stub_modules": stubs,
             "capkit_code_sha": capkit, "non_python_changed": [],
             "unshipped_allowed": allowed, "sites": chosen, "sites_selection": selection,
+            **({"image_holds_target": True} if image_holds_target else {}),
             "patchcheck": None if patch_report is None else {
                 k: patch_report[k] for k in ("status", "expected_site_count",
                                              "found_site_count", "expected_location_count",
@@ -294,6 +305,9 @@ def main(argv=None):
     ap.add_argument("--allow-unshipped", action="append", default=[])
     ap.add_argument("--sites", default=None, help="P2 only: comma list of site ids")
     ap.add_argument("--stub-module", action="append", default=[], metavar="KEY=PATH")
+    ap.add_argument("--image-holds-target", action="store_true",
+                    help="P0: the image already holds the target's tensorrt_llm tree (baked); "
+                         "--image-commit must be the target, no product file is listed")
     args = ap.parse_args(argv)
     try:
         man = build_manifest(args.tier, args.probe_tree, args.image_commit, args.base_commit,
@@ -301,7 +315,8 @@ def main(argv=None):
                              _parse_list(args.groups), export_dir=args.export_dir,
                              allow_unshipped=args.allow_unshipped,
                              sites=None if args.sites is None else _parse_list(args.sites),
-                             stub_modules=parse_stub_modules(args.stub_module))
+                             stub_modules=parse_stub_modules(args.stub_module),
+                             image_holds_target=args.image_holds_target)
     except exitcodes.CapkitError as e:
         print("capprobe.overlay: %s" % e, file=sys.stderr)
         return e.exit_code
