@@ -17,7 +17,9 @@ core threads) plus 1 for the process-tree sampler (capstubs.procmon).
 Every arm is one scenario + one tier-table template + one values checklist, as configs/snx.
 Arms e10-<engine>-<shape>-vload are the same scenario with a launch-level load-source injection
 in the tier table (V control, design card E10: busy delta_ns at capgrpc.load's recv.msg, once per
-received message in every reader worker; the boundary should not move).
+received message in every reader worker; the boundary should not move). Arms
+e10-<engine>-<shape>-k8 double the load source (capgrpc.load with K = 8 connections / workers on
+8 cores; design card E10 control "load source doubled"; the boundary should not move).
 Usage: python configs/gen_glm_configs.py <new output dir>   (writes <dir>/glm)
 """
 import json
@@ -211,12 +213,13 @@ def tpl(name, shape, launch_inject=()):
                                                       if launch_inject else ()) + (TEMPLATE_NOTE,))}
 
 
-def e10(engine, shape, vload=False):
-    name = "e10-%s-%s%s" % (engine, shape, "-vload" if vload else "")
-    roles = [host(engine), grpc_load("host", K)] + observers("reader")
+def e10(engine, shape, vload=False, k=K):
+    name = "e10-%s-%s%s%s" % (engine, shape, "-vload" if vload else "",
+                              "" if k == K else "-k%d" % k)
+    roles = [host(engine), grpc_load("host", k)] + observers("reader")
     w(name + ".scenario.json",
       scen(name, roles, "E10-S %s: capgrpc.load (%d connections) -> serve_glm host (glm5-serve "
-                        "--grpc --grpc-protocol openengine, %s)" % (name, K, ENGINE_NOTE[engine]),
+                        "--grpc --grpc-protocol openengine, %s)" % (name, k, ENGINE_NOTE[engine]),
            {"request_bytes": req_bytes()}))
     w(name + ".tiers.template.json", tpl(name, shape, VLOAD if vload else ()))
 
@@ -225,6 +228,7 @@ for _engine in ("g0", "g1"):
     for _shape in ("mc", "r"):
         for _vload in (False, True):
             e10(_engine, _shape, _vload)
+        e10(_engine, _shape, k=2 * K)
 
 _d = os.path.join(OUT, SUB)
 for n in sorted(os.listdir(_d)):
