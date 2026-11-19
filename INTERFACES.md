@@ -1874,6 +1874,15 @@ R2 自审（slug `capkit-b2judge-J17871`）发现的问题已直接改进本子�
 - **`capgrpc.reqbytes openengine --extra-detokenize true|false`**：每个模板的 `GenerateRequest.extra.detokenize` 设为该值；不给时 `extra` 不设（缺省行为与字节不变）。`capgrpc.load` 发的就是这些模板字节（只在前面拼 `request_id`），所以负载器侧的「发 `extra.detokenize=false`」就是作业输入 `request_bytes` 加这个参数（E8-py-nd 臂）。
 - **`configs/d1/`**（`configs/gen_d1_configs.py`，从 `configs/snx/` 的模板派生，只改 D1 差异，测试逐项核对其余部分与来源相同）：E16 的 e16-{py,pynd,2l,nx,nx-nodiag}-k4-{mc,r}，E9 的 e9-nc{1,8}f0-{mc,r}、e9-n2l8f0-{mc,r}；新参数 `d1_bin`、`d1_grpc_threads`；E16-zr 臂暂不生成模板，只留接口：S-ZR 由 `capstubs.szr_launch`（main 85c8ef54）起，`szr_launch.py make-wrapper` 生成的 `<目录>/szr-d1-wrap` 作为 `d1_bin` 参数（即 `--cpp-host-bin`）传入即可，宿主侧其余选项与 E16-nx 相同。说明见 `configs/d1/README.md`。
 
+### S-NX 线 B11：serve_nx 的 OpenEngine 服务端 gRPC 选项（2026-11-20）
+
+依据：`05_engine/PLAN-R2R5.md` 第 5 节（B11：E8 单宿主 max_pending A/B）；`05_engine/E9/analysis/cancelled-trace/REPORT.md` §6（grpcio 1.84.0 的准入拒绝随 `grpc.server.max_pending_requests` / `..._hard_limit` 变化，两项 2³¹−1 时不再拒绝）。
+
+1. **`capstubs.serve_nx --grpc-server-option KEY=VALUE`**（可重复）：只允许服务参数带 `--grpc-protocol openengine`（否则退出 3）。KEY 必须是 `grpc.` 开头的通道参数名，VALUE 是整数字面量时按整数传，否则按字符串；同一 KEY 重复、`grpc.so_reuseport`（产品自己在列表后追加）、缺 `=` 或空值都退出 3。在 `tensorrt_llm` 启动服务之前，把这些项写进产品模块 `tensorrt_llm.grpc.openengine.server._SERVER_OPTIONS`（运行时修改列表，不改产品文件）：已有的 KEY 原位替换，新 KEY 追加到末尾；`OpenEngineServer.__init__` 复制这个列表、再追加 `grpc.so_reuseport` 后构造 `grpc.aio.server`（镜像 9fd3822a00 与 2f22a98d6e 的 server.py:140-142 相同）。模块里没有该列表（或不是 `(key, value)` 列表）时退出 3。
+2. **读回**：同时包装 `grpc.aio.server`（透传），进程里每次构造服务端都向 `<out-dir>/grpc_server_options.<pid>.jsonl` 追加一行 `{pid, t_ns, options}`，`options` 是实际传给 C-core 的完整列表（含产品追加的 `grpc.so_reuseport`）。`--record` 的 `patches.grpc_server_options` 记 `given`、`before`、`after`、`readback`（读回文件路径）。不给该选项时不导入服务端模块、不包装、不写文件，缺省行为与字节不变。
+3. **re-exec 的附属前端**：选项写进环境变量 `CAPKIT_SNX_GRPC_SERVER_OPTIONS`（JSON `[[key, value], …]`），re-exec 模式读到就同样应用（附属前端若不构造 OpenEngine 服务端，就只是多一次模块导入；E8 单宿主没有附属前端）。
+4. **验证**：`tests/capstubs/test_serve_nx.py`（KEY=VALUE 解析与拒绝；用替身模块按产品的构造方式建真实 `grpc.aio.server`，核对原位替换 / 追加、读回行等于实际传入的列表；阴性对照：不给选项时列表与 `grpc.aio.server` 都不变、不写文件；列表缺失时拒绝；`main` 对非 openengine 服务参数与 `grpc.so_reuseport` 退出 3）。镜像内选项实际生效（2³¹−1 臂 CANCELLED 为 0、读回行含两项）【未运行】，属 B11 首个作业的冒烟核对（PLAN-R2R5 第 5 节）。
+
 ## 审阅记录（r2，2026-11-13）
 
 审阅意见来自 spec-critic（JSON，24 条）。每条都对照设计稿 / 计划原文核对过；「采纳」= 按意见改，「部分采纳」= 问题属实、改法与意见不同（写理由），「不采纳」= 问题不成立。

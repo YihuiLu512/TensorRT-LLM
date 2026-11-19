@@ -387,3 +387,97 @@ def test_capture_private_port(monkeypatch):
                                 template_dir="/t") == ["/b", "--launcher-endpoint",
                                                        "127.0.0.1:4321"]
     assert holder == {"port": 4321} and calls == [("/b", ("127.0.0.1", 1), 4321, "/t", None)]
+
+
+def test_parse_grpc_server_options():
+    assert serve_nx.parse_grpc_server_options([]) == []
+    got = serve_nx.parse_grpc_server_options(
+        ["grpc.server.max_pending_requests=2147483647",
+         "grpc.server.max_pending_requests_hard_limit=-1", "grpc.primary_user_agent=x=1"])
+    assert got == [("grpc.server.max_pending_requests", 2147483647),
+                   ("grpc.server.max_pending_requests_hard_limit", -1),
+                   ("grpc.primary_user_agent", "x=1")]
+    assert isinstance(got[0][1], int)
+    for bad in (["grpc.x"], ["grpc.x="], ["max_pending=1"], ["=1"], ["grpc.so_reuseport=1"],
+                ["grpc.a=1", "grpc.a=2"]):
+        with pytest.raises(ValueError):
+            serve_nx.parse_grpc_server_options(bad)
+
+
+def _fake_oe_server(monkeypatch):
+    """A stand-in for tensorrt_llm.grpc.openengine.server: the product's list shape and its
+    server construction (copy the list, append so_reuseport, call grpc.aio.server)."""
+    import sys
+    import grpc
+    mod = types.ModuleType(serve_nx.OE_SERVER_MODULE)
+    mod.grpc = grpc
+    mod._SERVER_OPTIONS = [("grpc.max_receive_message_length", 64 << 20),
+                           ("grpc.keepalive_time_ms", 30000)]
+
+    def build():
+        options = list(mod._SERVER_OPTIONS)
+        options.append(("grpc.so_reuseport", 0))
+        return mod.grpc.aio.server(options=options), options
+    mod.build = build
+    for name in ("tensorrt_llm", "tensorrt_llm.grpc", "tensorrt_llm.grpc.openengine"):
+        pkg = types.ModuleType(name)
+        pkg.__path__ = []
+        monkeypatch.setitem(sys.modules, name, pkg)
+    monkeypatch.setitem(sys.modules, mod.__name__, mod)
+    import grpc.aio as gaio
+    monkeypatch.setattr(gaio, "server", gaio.server)  # restored after the test
+    return mod
+
+
+def test_apply_grpc_server_options_reaches_grpc_aio_server(monkeypatch, tmp_path):
+    mod = _fake_oe_server(monkeypatch)
+    opts = [("grpc.keepalive_time_ms", 20000),
+            ("grpc.server.max_pending_requests", 2147483647),
+            ("grpc.server.max_pending_requests_hard_limit", 2147483647)]
+    out = tmp_path / "snx"
+    got = serve_nx.apply_grpc_server_options(opts, str(out))
+    assert got["before"] == [["grpc.max_receive_message_length", 64 << 20],
+                             ["grpc.keepalive_time_ms", 30000]]
+    # an existing key is replaced in place, new keys are appended, nothing is duplicated
+    assert got["after"] == [["grpc.max_receive_message_length", 64 << 20],
+                            ["grpc.keepalive_time_ms", 20000],
+                            ["grpc.server.max_pending_requests", 2147483647],
+                            ["grpc.server.max_pending_requests_hard_limit", 2147483647]]
+    server, passed = mod.build()  # a real grpc.aio.server accepts the options
+    assert server is not None
+    assert passed[-1] == ("grpc.so_reuseport", 0)
+    lines = [json.loads(x) for x in open(got["readback"])]
+    assert got["readback"] == str(out / ("grpc_server_options.%d.jsonl" % os.getpid()))
+    assert len(lines) == 1 and lines[0]["pid"] == os.getpid()
+    assert lines[0]["options"] == [list(x) for x in passed]
+    assert ["grpc.server.max_pending_requests", 2147483647] in lines[0]["options"]
+
+
+def test_apply_grpc_server_options_default_is_untouched(monkeypatch, tmp_path):
+    """Negative control: without the option nothing is added and nothing is logged."""
+    mod = _fake_oe_server(monkeypatch)
+    import grpc.aio as gaio
+    orig = gaio.server
+    _server, passed = mod.build()
+    assert [k for k, _v in passed] == ["grpc.max_receive_message_length",
+                                       "grpc.keepalive_time_ms", "grpc.so_reuseport"]
+    assert gaio.server is orig and not list(tmp_path.iterdir())
+
+
+def test_apply_grpc_server_options_refuses_a_missing_list(monkeypatch):
+    mod = _fake_oe_server(monkeypatch)
+    mod._SERVER_OPTIONS = (("grpc.a", 1),)  # not a list: an in-place edit would be lost
+    with pytest.raises(RuntimeError):
+        serve_nx.apply_grpc_server_options([("grpc.b", 1)], None)
+
+
+def test_main_refuses_bad_grpc_server_options(monkeypatch, capsys):
+    monkeypatch.delenv(ENV_VAR, raising=False)
+    monkeypatch.delenv(serve_nx.ENV_GRPC_SERVER_OPTIONS, raising=False)
+    assert serve_nx.main(["--grpc-server-option", "grpc.server.max_pending_requests=1", "--",
+                          "model", "--grpc"]) == 3
+    assert serve_nx.main(["--grpc-server-option", "grpc.so_reuseport=1", "--",
+                          "model", "--grpc", "--grpc-protocol", "openengine"]) == 3
+    err = capsys.readouterr().err
+    assert "needs --grpc-protocol openengine" in err and "product sets" in err
+    assert serve_nx.ENV_GRPC_SERVER_OPTIONS not in os.environ
