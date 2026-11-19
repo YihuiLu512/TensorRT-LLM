@@ -6,6 +6,7 @@
 |---|---|
 | e10-g0-{mc,r} | `capgrpc.load`（4 条连接，`--planned-msgs`）→ `capstubs.serve_glm --engine mock`：glm 自带 `MockEngine`（G0） |
 | e10-g1-{mc,r} | 同上，`--engine g1`：`capstubs.glm_g1.G1Engine`（G1：绝对节拍、每步一次入队） |
+| e10-{g0,g1}-{mc,r}-vload | 与对应臂同一场景；档位表 `launch_inject` 在读者（`capgrpc.load`）的 `recv.msg` 位点注入忙等 `TBD:delta_ns`（每条消息、每个 worker 一次）：设计卡 E10 的负载源一侧 V 对照，预期边界不动 |
 
 要点：
 - 实验编号 `E10-S`（`capcommon.policy.NO_MODEL_EXPERIMENTS`）；裸 `E10` 与真引擎臂不在白名单里（Q6 不做）。

@@ -51,3 +51,19 @@ def test_scenario_validates(name):
     assert serve[serve.index("--grpc-protocol") + 1] == "openengine"
     assert "--planned-msgs" in roles["reader"]["args"]
     assert not any("trt_llm_data" in x for x in json.dumps(doc).split('"'))
+
+
+def test_vload_templates_inject_at_the_reader_only():
+    names = sorted(n for n in os.listdir(GLM) if n.endswith(".tiers.template.json"))
+    assert len(names) == 8
+    for n in names:
+        with open(os.path.join(GLM, n)) as f:
+            t = json.load(f)
+        if n.endswith("-vload.tiers.template.json"):
+            assert t["launch_inject"] == [{"role": "reader", "site": "recv.msg", "mode": "busy",
+                                           "delta_ns": "TBD:delta_ns"}]
+            with open(os.path.join(GLM, n.replace("-vload", ""))) as f:
+                base = json.load(f)
+            assert t["tiers"] == base["tiers"] and t["common"] == base["common"]
+        else:
+            assert t["launch_inject"] == []
