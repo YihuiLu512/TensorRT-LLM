@@ -21,7 +21,10 @@ the load generator never builds protobuf objects:
 Commands:
     python -m capgrpc.reqbytes raw --in FILE --out PATH [--method M]
     python -m capgrpc.reqbytes openengine --pb2-module MODULE --prompts P --tier-table T
-        --model NAME --out PATH [--method M]
+        --model NAME --out PATH [--method M] [--extra-detokenize true|false]
+--extra-detokenize sets GenerateRequest.extra.detokenize (a google.protobuf.Struct key) in every
+template; without it `extra` stays unset (the Python host then detokenizes, the C++ host does not:
+the E8-py-nd arm sends false so both hosts do the same work).
 The openengine builder imports the product's generated module only when asked (container-only);
 when it cannot be imported the command exits 3.
 """
@@ -149,15 +152,21 @@ def load_prompts(path):
     return doc
 
 
-def build_openengine(pb2, prompts_doc, tier_table, model, method=None, source=None):
+def build_openengine(pb2, prompts_doc, tier_table, model, method=None, source=None, extra=None):
     """Templates for every (prompt_set, item, max_tokens) used by the tier table's load tiers.
 
     pb2: the product's generated module exposing GenerateRequest (passed in, so a test can hand
-    over a stand-in module built from a descriptor)."""
+    over a stand-in module built from a descriptor). extra: keys set in GenerateRequest.extra
+    (a google.protobuf.Struct); None or {} leaves the field unset."""
     req_cls = pb2.GenerateRequest
     fd = req_cls.DESCRIPTOR.fields_by_name.get("request_id")
     if fd is None or fd.type != fd.TYPE_STRING:
         raise ConfigError("GenerateRequest.request_id is not a string field")
+    if extra:
+        xf = req_cls.DESCRIPTOR.fields_by_name.get("extra")
+        if xf is None or xf.message_type is None or \
+                xf.message_type.full_name != "google.protobuf.Struct":
+            raise ConfigError("GenerateRequest.extra is not a google.protobuf.Struct field")
     sets = prompts_doc["sets"]
     keys = sorted({(t.prompt_set, t.max_tokens) for t in tier_table.tiers if t.is_load})
     entries = []
@@ -174,6 +183,8 @@ def build_openengine(pb2, prompts_doc, tier_table, model, method=None, source=No
                 msg.token_ids.ids.extend(item)
             msg.stopping.max_tokens = max_tokens
             msg.stopping.ignore_eos = True
+            if extra:
+                msg.extra.update(extra)
             entries.append(_entry(set_name, idx, max_tokens,
                                   msg.SerializeToString(deterministic=True)))
     return {"schema": SCHEMA, "format": "openengine", "method": method,
@@ -206,6 +217,8 @@ def main(argv=None):
     o.add_argument("--model", required=True)
     o.add_argument("--out", required=True)
     o.add_argument("--method")
+    o.add_argument("--extra-detokenize", choices=("true", "false"),
+                   help="set GenerateRequest.extra.detokenize (default: extra unset)")
     args = p.parse_args(argv)
     try:
         if args.cmd == "raw":
@@ -222,7 +235,11 @@ def main(argv=None):
                    "prompts": args.prompts, "prompts_sha256": sha256_file(args.prompts),
                    "tier_table": args.tier_table, "tier_table_sha256": tt.sha256,
                    "model": args.model}
-            doc = build_openengine(pb2, prompts, tt, args.model, args.method, src)
+            extra = None
+            if args.extra_detokenize is not None:
+                extra = {"detokenize": args.extra_detokenize == "true"}
+                src["extra"] = extra
+            doc = build_openengine(pb2, prompts, tt, args.model, args.method, src, extra)
         ReqBytes(doc, args.out)  # validate what we are about to write
         atomic_write_bytes(args.out, (dumps(doc) + "\n").encode("utf-8"))
         print("%s: %d entries (%s)" % (args.out, len(doc["entries"]), doc["format"]))
