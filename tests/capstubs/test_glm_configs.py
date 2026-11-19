@@ -55,7 +55,7 @@ def test_scenario_validates(name):
 
 def test_vload_templates_inject_at_the_reader_only():
     names = sorted(n for n in os.listdir(GLM) if n.endswith(".tiers.template.json")
-                   and "-k8" not in n)
+                   and "-k8" not in n and "-tps4" not in n)
     assert len(names) == 8
     for n in names:
         with open(os.path.join(GLM, n)) as f:
@@ -91,3 +91,23 @@ def test_k8_arms_double_the_load_source_only():
         with open(os.path.join(GLM, t8.replace("-k8", ""))) as f:
             b = json.load(f)
         assert a["tiers"] == b["tiers"] and a["launch_inject"] == b["launch_inject"] == []
+
+
+def test_tps4_arms_change_tokens_per_msg_only():
+    names = sorted(n for n in os.listdir(GLM) if n.endswith("-tps4.tiers.template.json"))
+    assert names == ["e10-g0-mc-tps4.tiers.template.json", "e10-g1-mc-tps4.tiers.template.json"]
+    for n in names:
+        with open(os.path.join(GLM, n)) as f:
+            a = json.load(f)
+        with open(os.path.join(GLM, n.replace("-tps4", ""))) as f:
+            b = json.load(f)
+        assert a["common"]["tokens_per_msg"] == 4 and b["common"]["tokens_per_msg"] == 1
+        assert dict(a["common"], tokens_per_msg=1) == b["common"]
+        assert a["tiers"] == b["tiers"] and a["launch_inject"] == b["launch_inject"] == []
+        s = n.replace(".tiers.template.json", ".scenario.json")
+        with open(os.path.join(GLM, s)) as f:
+            sa = json.load(f)
+        with open(os.path.join(GLM, s.replace("-tps4", ""))) as f:
+            sb = json.load(f)
+        assert sa["roles"] == sb["roles"]
+        assert "glm_tokens_per_step" in sa["params_required"]

@@ -1,0 +1,275 @@
+{
+ "schema": "capkit.scenario/1",
+ "experiment": "E10-S",
+ "name": "e10-g0-mc-tps4",
+ "tier_table": "04_frontend/E10/register/e10-g0-mc-tps4.tiers.json",
+ "schedule": "04_frontend/E10/register/e10-g0-mc-tps4.schedule.capbin",
+ "prompts": "04_frontend/E10/register/e10-g0-mc-tps4.prompts.json",
+ "probe_tier": "P0",
+ "probe_groups": [],
+ "stop_grace_s": 10.0,
+ "stop_order": [
+  "reader",
+  "host",
+  "sidecar",
+  "canary"
+ ],
+ "reconcile": {
+  "schema": "capkit.reconcile/1",
+  "chains": [
+   {
+    "name": "requests",
+    "kind": "requests",
+    "gate": null,
+    "include_usage": null,
+    "hops": [
+     {
+      "role": "reader",
+      "source": "summary.counts.ok",
+      "scope": "tier"
+     }
+    ],
+    "corrections": []
+   }
+  ]
+ },
+ "roles": [
+  {
+   "role": "host",
+   "launcher": "product",
+   "kind": "server",
+   "start_after": [],
+   "pin_role": "host",
+   "cpus_needed": 5,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "under_test",
+   "asyncio": true,
+   "uses_grpc": true,
+   "loop": "asyncio",
+   "probe_tier": "P0",
+   "readiness": [
+    {
+     "kind": "report_addr"
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "--engine",
+    "mock",
+    "--step-ms",
+    "{param:glm_step_ms}",
+    "--tokens-per-step",
+    "{param:glm_tokens_per_step}",
+    "--tier-table",
+    "{input:tier_table}",
+    "--out-dir",
+    "{raw}/snx",
+    "--record",
+    "{raw}/snx/host.serve_glm.json",
+    "--inject",
+    "{param:glm_inject}",
+    "--diag",
+    "{param:glm_diag}",
+    "--pick-port",
+    "--report-host",
+    "127.0.0.1",
+    "--report-addr",
+    "{own:report_addr}",
+    "--procmon-out",
+    "{raw}/snx/procmon.host.jsonl",
+    "--procmon-interval-ms",
+    "1000",
+    "--procmon-cores",
+    "1",
+    "--",
+    "{param:tokenizer_dir}",
+    "--host",
+    "127.0.0.1",
+    "--max_seq_len",
+    "{param:nx_max_seq_len}",
+    "--grpc",
+    "--grpc-protocol",
+    "openengine"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "command": [
+    "{param:glm_python}",
+    "-m",
+    "capstubs.serve_glm"
+   ],
+   "port": {
+    "kind": "report_addr",
+    "host": "127.0.0.1"
+   },
+   "note": "serve_glm host (glm5-serve --grpc --grpc-protocol openengine, G0 glm MockEngine (sleep(step) then work: period = step + work)): event loop + glm5-engine-dispatch + substitute thread + gRPC core threads on 4 cores, procmon on 1"
+  },
+  {
+   "role": "reader",
+   "launcher": "capkit",
+   "kind": "client",
+   "start_after": [
+    "host"
+   ],
+   "pin_role": "reader",
+   "cpus_needed": 4,
+   "numa": null,
+   "workers": 4,
+   "expected_procs": 5,
+   "measure_class": "load_source",
+   "asyncio": true,
+   "uses_grpc": true,
+   "loop": "asyncio",
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [
+    "backlog.inflight",
+    "backlog.active_streams",
+    "backlog.read"
+   ],
+   "snapshots": "all",
+   "args": [
+    "--target",
+    "{addr:host}",
+    "--method",
+    "/openengine.v1.Inference/Generate",
+    "--channels-per-worker",
+    "1",
+    "--request-format",
+    "openengine",
+    "--request-bytes",
+    "{input:request_bytes}",
+    "--planned-msgs",
+    "--msg-sample-mod",
+    "{param:msg_sample_mod}",
+    "--schedule",
+    "{input:schedule}",
+    "--lag-period-us",
+    "{param:lag_period_us}",
+    "--max-records-per-worker",
+    "{param:reader_max_records_per_worker}",
+    "--max-msg-records-per-worker",
+    "{param:reader_max_msg_records_per_worker}"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capgrpc.load",
+   "note": "capgrpc.load, 4 connection(s) (one channel per worker), --planned-msgs (message lag against the schedule's beat grid)"
+  },
+  {
+   "role": "sidecar",
+   "launcher": "capkit",
+   "kind": "aux",
+   "start_after": [
+    "reader"
+   ],
+   "pin_role": "sidecar",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "observer",
+   "asyncio": false,
+   "uses_grpc": false,
+   "loop": null,
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "--interval-ms",
+    "{param:sidecar_interval_ms}",
+    "--gpu-every-s",
+    "{param:sidecar_gpu_every_s}",
+    "--numa-every-s",
+    "{param:sidecar_numa_every_s}",
+    "--nvidia-smi",
+    "{nvidia_smi}"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capenv.sidecar"
+  },
+  {
+   "role": "canary",
+   "launcher": "capkit",
+   "kind": "aux",
+   "start_after": [],
+   "pin_role": "canary",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "observer",
+   "asyncio": false,
+   "uses_grpc": false,
+   "loop": null,
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "--interval-ms",
+    "{param:canary_interval_ms}"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capenv.canary"
+  }
+ ],
+ "params_required": [
+  "canary_interval_ms",
+  "glm_diag",
+  "glm_inject",
+  "glm_python",
+  "glm_step_ms",
+  "glm_tokens_per_step",
+  "lag_period_us",
+  "msg_sample_mod",
+  "nx_max_seq_len",
+  "reader_max_msg_records_per_worker",
+  "reader_max_records_per_worker",
+  "sidecar_gpu_every_s",
+  "sidecar_interval_ms",
+  "sidecar_numa_every_s",
+  "tokenizer_dir"
+ ],
+ "dims": {
+  "tokenizer": "TBD-by-registration (configs/tokenizers/GLM-5.3-Flash)",
+  "stub": "E10 substitute in the glm5-serve process (capstubs.serve_glm --engine mock|g1); no glm file changed",
+  "response_timing_switches": "glm_step_ms = the tier beat; glm_tokens_per_step",
+  "interpretation": "REPLAN-20261116 R2 E10 coverage round: exploratory",
+  "log_sink": "raw/logs on the node-local disk (orchestrator redirect)"
+ },
+ "note": "E10-S e10-g0-mc-tps4: capgrpc.load (4 connections) -> serve_glm host (glm5-serve --grpc --grpc-protocol openengine, G0 glm MockEngine (sleep(step) then work: period = step + work)). TEMPLATE: every TBD value is filled at registration (REPLAN-20261116 R2: E10 coverage round, exploratory)",
+ "job_inputs": {
+  "request_bytes": {
+   "args": [
+    "openengine",
+    "--pb2-module",
+    "tensorrt_llm.grpc.openengine._generated.generation_pb2",
+    "--prompts",
+    "{input:prompts}",
+    "--tier-table",
+    "{input:tier_table}",
+    "--model",
+    "{param:tokenizer_dir}"
+   ]
+  }
+ }
+}

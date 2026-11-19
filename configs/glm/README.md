@@ -8,6 +8,7 @@
 | e10-g1-{mc,r} | 同上，`--engine g1`：`capstubs.glm_g1.G1Engine`（G1：绝对节拍、每步一次入队） |
 | e10-{g0,g1}-{mc,r}-vload | 与对应臂同一场景；档位表 `launch_inject` 在读者（`capgrpc.load`）的 `recv.msg` 位点注入忙等 `TBD:delta_ns`（每条消息、每个 worker 一次）：设计卡 E10 的负载源一侧 V 对照，预期边界不动 |
 | e10-{g0,g1}-{mc,r}-k8 | 与对应臂相同，只把负载源翻倍：`capgrpc.load` 8 条连接（8 个 worker、8 个核）；设计卡 E10 的「负载源翻倍」对照，预期边界不动 |
+| e10-{g0,g1}-mc-tps4 | 与 mc 臂相同的场景；档位表 `tokens_per_msg` 为 4，替身按 `{param:glm_tokens_per_step}` = 4 运行，每条步消息带 4 个 token：设计卡 E10 的维度检验「tokens_per_step = 4」 |
 
 要点：
 - 实验编号 `E10-S`（`capcommon.policy.NO_MODEL_EXPERIMENTS`）；裸 `E10` 与真引擎臂不在白名单里（Q6 不做）。
