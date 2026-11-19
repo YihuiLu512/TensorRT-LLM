@@ -1852,7 +1852,7 @@ R2 自审（slug `capkit-b2judge-J17871`）发现的问题已直接改进本子�
 
 1. **判定器：准入拒绝归过载型**（新模块 `capjudge.admission`；`symptoms.failures_by_class` 多一个可选参数 `adm`，`judge_tree` 建 `ctx.admission` 并传给 C3、C5～C7 的过载数下限与 X）。一条失败条目里，满足下面全部条件的请求数（上限为条目的 `count`）记为过载型、`by_category` 记 `admission_rejected`，其余部分按原规则（勘误 B2-2E-6、设计 2.6）：
    - 逐请求（读同档、同角色、同 worker 的 `requests.capbin`，状态号按该文件自己的 `meta.status_codes` 映射，gRPC 读者各 worker 的编号不同）：gRPC 读者 `grpc_CANCELLED` 且 `frames == 0`；HTTP 负载器（新架构前端后面的 capload）`protocol_error` 且 `frames <= 1`、`tokens <= 0`；两者都要 `done - sent <= 5 s`（`ADMISSION_MAX_NS`，远低于 gRPC 30 s 未领取时限与登记超时，远高于 E9 N-8f0 实测最坏 1.2 s）。
-   - 整个启动（不满足则本启动一条也不改归）：S-NX rank 0 自报 `raw/snx/snx.<pid>.summary.json` 存在且都没有 `fatal_error`，且候选总数 ≤ 负载器全部档的 `counts.sent` 之和 − rank 0 的 `counts.taken`（「未达 rank 0」的守恒判据）；有 HTTP 候选时，前端日志 `raw/logs/frontend*.out` 里 `failed a request: OpenEngine Generate on … failed with CANCELLED: CANCELLED` 的行数 ≥ HTTP 候选数（HTTP 负载器看不到 gRPC 状态，以前端日志为证）。
+   - 整个启动（不满足则本启动一条也不改归）：S-NX rank 0 自报 `raw/snx/snx.<pid>.summary.json` 存在且都没有 `fatal_error`，且候选总数 ≤ 负载器全部档的 `counts.sent` 之和 − rank 0 的 `counts.taken` − 负载器的 `conn_refused` / `conn_fail` 失败数（这些请求连客户端都没离开；「未达 rank 0」的守恒判据）；有 HTTP 候选时，前端日志 `raw/logs/frontend*.out` 里 `failed a request: OpenEngine Generate on … failed with CANCELLED: CANCELLED` 的行数 ≥ HTTP 候选数（HTTP 负载器看不到 gRPC 状态，以前端日志为证）。
    - `verdicts.json` 新增可选键 `admission`（只在有候选原因的启动出现）：`candidates`、`sent`、`rank0_taken`、`fe_log_cancelled`、`admitted`、`why`。
    - 只有判定器（`judge_tree`）改用新规则；不经 `judge_tree` 调 `failures_by_class` 的分析脚本不传 `adm`，保持原规则。
    - 不改带：S-NX 读数（`snx_readout.py` / `ft_readout.py`）的送达、xrel、e1 口径都把任何失败当不稳定，与失败的类别无关。

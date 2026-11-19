@@ -161,6 +161,20 @@ def test_launch_gate_negatives(tmp_path):
     assert f["overload"] == 0
 
 
+def test_unconnected_failures_tighten_the_gate(tmp_path):
+    """conn_fail requests never left the client: they cannot count as 'did not reach rank 0'
+    room for the CANCELLED candidates."""
+    td = _Td(3, "reader", 0, [{"reason": "grpc_CANCELLED", "count": 4,
+                               "class_hint": "unclassified"},
+                              {"reason": "conn_fail", "count": 3, "class_hint": "unclassified"}],
+             {"1": "grpc_CANCELLED", "2": "conn_fail"},
+             _rows([(1, 0, -1, MS)] * 4 + [(2, 0, -1, MS)] * 3), 10)
+    f, adm = _classify(td, _raw(tmp_path / "a", taken=3))  # 10 - 3 - 3 = 4 >= 4
+    assert f["overload"] == 4 and adm.detail["unconnected"] == 3
+    f, adm = _classify(td, _raw(tmp_path / "b", taken=4))  # 10 - 4 - 3 = 3 < 4
+    assert f["overload"] == 0 and "unconnected 3" in adm.detail["why"]
+
+
 def test_partial_entry_is_split(tmp_path):
     td = _grpc_td(5, [(1, 0, -1, MS)] * 3 + [(1, 2, -1, MS)] * 2)
     f, _ = _classify(td, _raw(tmp_path, taken=95))

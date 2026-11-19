@@ -19,8 +19,9 @@ that file's own meta.status_codes, which differ between gRPC reader workers):
     registered request timeouts, far above the 1.2 s worst case measured on E9 N-8f0).
 Per launch, all of these must hold, otherwise no failure of the launch is reclassified:
   * never reached rank 0: S-NX rank 0 self-reports (raw/snx/snx.<pid>.summary.json) exist, none
-    has a fatal error, and candidates <= sent - taken (sent: the load generators' sent requests
-    over every tier; taken: rank 0's taken requests);
+    has a fatal error, and candidates <= sent - taken - unconnected (sent: the load generators'
+    sent requests over every tier; taken: rank 0's taken requests; unconnected: the load
+    generators' conn_refused / conn_fail failures, which never left the client either);
   * HTTP candidates only: the frontend logs (raw/logs/frontend*.out) report at least as many
     OpenEngine Generate failures with status CANCELLED and details "CANCELLED" as there are HTTP
     candidates, because the HTTP loader never sees the gRPC status.
@@ -38,6 +39,7 @@ GRPC_REASON = "grpc_CANCELLED"
 HTTP_REASON = "protocol_error"
 CATEGORY = "admission_rejected"
 REQUESTS_KIND = "loadgen.requests"
+UNCONNECTED_REASONS = ("conn_refused", "conn_fail")
 FE_LOG_GLOB = "frontend*.out"
 FE_LOG_MARK = b"failed a request: OpenEngine Generate on "
 FE_LOG_CANCELLED = b"failed with CANCELLED: CANCELLED"
@@ -112,7 +114,7 @@ def _count_lines(body):
     return c, o
 
 
-def launch_gate(cand, sent, taken, rank0_ok, fe_cancelled):
+def launch_gate(cand, sent, taken, rank0_ok, fe_cancelled, unconnected=0):
     """(admitted?, reason text) for a launch: cand = {reason: launch total}; taken None = no rank 0
     self-report; fe_cancelled None = no frontend log."""
     n = sum(cand.values())
@@ -121,13 +123,14 @@ def launch_gate(cand, sent, taken, rank0_ok, fe_cancelled):
     if taken is None or not rank0_ok:
         return False, "rank 0 self-report missing or fatal: cannot show the candidates never " \
                       "reached rank 0"
-    if n > sent - taken:
-        return False, "candidates %d > sent %d - rank 0 taken %d" % (n, sent, taken)
+    if n > sent - taken - unconnected:
+        return False, "candidates %d > sent %d - rank 0 taken %d - unconnected %d" % (
+            n, sent, taken, unconnected)
     h = cand.get(HTTP_REASON, 0)
     if h and (fe_cancelled is None or fe_cancelled < h):
         return False, "HTTP candidates %d > frontend-log CANCELLED failures %s" % (h, fe_cancelled)
-    return True, "candidates %d <= sent %d - taken %d%s" % (
-        n, sent, taken, "; frontend-log CANCELLED %d" % fe_cancelled if h else "")
+    return True, "candidates %d <= sent %d - taken %d - unconnected %d%s" % (
+        n, sent, taken, unconnected, "; frontend-log CANCELLED %d" % fe_cancelled if h else "")
 
 
 class Admission:
@@ -145,7 +148,7 @@ class Admission:
 
     def _compute(self):
         self._done = True
-        cand, sent, loaders = {}, 0, set()
+        cand, sent, unconnected, loaders = {}, 0, 0, set()
         for seq, td in self.tds.items():
             for ident, header, cols in td.capbins.get(REQUESTS_KIND, []):
                 role, worker = ident.get("role"), ident.get("worker")
@@ -159,6 +162,8 @@ class Admission:
             for role in loaders:
                 for doc in td.summaries.get(role, {}).values():
                     sent += int((doc.get("counts") or {}).get("sent", 0))
+                    unconnected += sum(int(f.get("count", 0)) for f in doc.get("failures") or []
+                                       if f.get("reason") in UNCONNECTED_REASONS)
         taken, rank0_ok = self._rank0()
         fe = None
         if cand.get(HTTP_REASON):
@@ -168,8 +173,9 @@ class Admission:
                 for p in paths:
                     self._note(p)
                 self.detail["fe_log_other_failures"] = other
-        self.admitted, why = launch_gate(cand, sent, taken, rank0_ok, fe)
-        self.detail.update({"candidates": cand, "sent": sent, "rank0_taken": taken,
+        self.admitted, why = launch_gate(cand, sent, taken, rank0_ok, fe, unconnected)
+        self.detail.update({"candidates": cand, "sent": sent, "unconnected": unconnected,
+                            "rank0_taken": taken,
                             "fe_log_cancelled": fe, "admitted": self.admitted, "why": why})
 
     def _rank0(self):
