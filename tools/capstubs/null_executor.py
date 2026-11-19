@@ -109,6 +109,7 @@ class SnxConfig:
     worker_cpus: list = dataclasses.field(default_factory=list)
     flush_bytes: int = 1 << 16
     flush_interval_ms: int = 500
+    worker_inject: str = ""  # capstubs.snx_inject worker-site specs ("Wr:busy:NS"), rank 0 only
     note: str = ""
 
     def validate(self):
@@ -130,6 +131,8 @@ class SnxConfig:
             raise ConfigError("snx config: token_ids must be a non-empty list of ints >= 0")
         if any(not isinstance(c, int) or isinstance(c, bool) or c < 0 for c in self.worker_cpus):
             raise ConfigError("snx config: worker_cpus must be a list of cpu numbers >= 0")
+        if not isinstance(self.worker_inject, str):
+            raise ConfigError("snx config: worker_inject must be a string")
         if self.idle_restart not in ("grid", "immediate"):
             raise ConfigError("snx config: idle_restart must be grid or immediate")
         for kw in self.k_mix:

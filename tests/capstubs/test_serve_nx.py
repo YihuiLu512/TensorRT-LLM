@@ -237,3 +237,39 @@ def test_self_connected_detects_a_loopback_self_connect():
     finally:
         c.close()
         srv.close()
+
+
+def test_drain_inject_dr_busy_counts_per_tier(tmp_path):
+    now = time.monotonic_ns()
+    plan = FakePlan(now - 10 ** 9, now + 10 ** 10)
+    st = nx_driver.LaneStats(plan, str(tmp_path), "lane1", "raw", 0)
+    inj = nx_driver.drain_injector("Dr:busy:300000")
+    t0 = time.monotonic_ns()
+    nx_driver.drain_loop(FakeZq(_frames(False), False), st, "raw", 0, threading.Event(), inj)
+    assert time.monotonic_ns() - t0 >= 3 * 300000  # the sentinel frame is received too
+    t = st.tiers[0]
+    assert t["msgs"] == 2 and t["dr_hits"] == 2 and t["dr_applied"] == 2
+    assert t["dr_applied_ns"] >= 2 * 300000
+    c = inj.counters()
+    assert c["hits"] == 3 and c["applied"] == 3
+
+
+def test_drain_inject_count_and_refusals(tmp_path):
+    now = time.monotonic_ns()
+    plan = FakePlan(now - 10 ** 9, now + 10 ** 10)
+    st = nx_driver.LaneStats(plan, str(tmp_path), "lane1", "deserialize", 0)
+    nx_driver.drain_loop(FakeZq(_frames(True), True), st, "deserialize", 0, threading.Event(),
+                         nx_driver.drain_injector("Dr:count"))
+    assert st.tiers[0]["dr_hits"] == 2 and "dr_applied" not in st.tiers[0]
+    st2 = nx_driver.LaneStats(plan, str(tmp_path), "lane2", "raw", 0)
+    nx_driver.drain_loop(FakeZq(_frames(False), False), st2, "raw", 0, threading.Event())
+    assert "dr_hits" not in st2.tiers[0]  # no Dr: summaries as before
+    assert nx_driver.drain_injector("") is None
+    for bad in ("Dr:busy:0", "Dr:busy", "Wr:count", "Dr:sleep:5", "Dr:busy:x"):
+        with pytest.raises(nx_driver.ConfigError):
+            nx_driver.drain_injector(bad)
+    a = nx_driver.build_parser().parse_args(["drain", "--attach-info", "x", "--frontend-id", "1",
+                                             "--lanes", "2", "--drain-inject", "Dr:busy:5",
+                                             "--tier-table", "t", "--schedule", "s",
+                                             "--origin-ns", "1", "--out-dir", "o"])
+    assert a.drain_inject == "Dr:busy:5"
