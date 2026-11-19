@@ -1867,6 +1867,13 @@ R2 自审（slug `capkit-b2judge-J17871`）发现的问题已直接改进本子�
 
 6. **验证**：`tests/judge/test_admission.py`（逐请求签名；状态号按文件映射；阳性对照 E8 形态与 E9 HTTP 形态判过载；阴性对照：本端取消、收到过消息的 CANCELLED、30 s 时限路径、登记超时、前端日志为 UNAVAILABLE、旧架构无 OpenEngine 行、守恒不成立、rank 0 自报缺失或 fatal；条目部分改归；无候选原因时不读任何证据；日志跨块计数）；`tests/grpc/test_unrequested.py`（服务端 CANCELLED 的条目 `zero_msgs`、`max_send_to_end_ns`）；`tests/capstubs/test_snx_inject.py`（Wr 计数与忙等、宿主 / worker 位点互拒、serve_nx 把 Wr 写进配置而不写进环境变量、tname 只改缺省名且可还原）；`tests/capstubs/test_serve_nx.py`（Dr 忙等与逐档计数、count 模式、非法规格拒绝、drain 子命令参数）；`tests/capstubs/test_null_executor.py`（`worker_inject` 键）。镜像内 Wr 的真实安装（worker 进程能导入 `base_worker` 且 `_send_rsp` 被替换）、Dr / tname 在作业里的效果【未运行】，属 R3 首个作业的冒烟核对（PLAN-R2R5 第 1 节阳性对照）。
 
+### D1 线（TRTLLM-18068 W9）：E16 编号、serve_nx 的 C++ 宿主模式、reqbytes 的 extra.detokenize 与 configs/d1（2026-11-19）
+
+- **实验编号 `E16`**：D1 规划 `08_engine-host-cpp-d1/04_perf-plan.md` §2 的 C++ 宿主卡（被测是 `trtllm-openengine-host`，响应源是 S-NX 或回放桩，不加载模型；P0 冒烟也挂在它下面）。`capcommon.policy.NO_MODEL_EXPERIMENTS` 加 `E16`。D1 的 E9 补充臂（NC、N2l）沿用 `E9`。
+- **`capstubs.serve_nx` 的 C++ 宿主选项**（服务参数带 `--openengine-host-impl cpp` 时才允许，否则退出 3）：`--cpp-host-bin`（→ `TLLM_OPENENGINE_CPP_HOST_BIN`）、`--cpp-host-arg`（可重复，按序 `shlex.join` 成 `TLLM_OPENENGINE_CPP_HOST_ARGS`；`--listen`、`--launcher-endpoint`、`--template` 由 launcher 设，给了即拒绝；参数里有 `--diag-out DIR` 时先建目录）、`--cpp-host-inject`（→ `TLLM_D1_INJECT`）、`--report-target public|private`（缺省 public 不变；private 时包装 `tensorrt_llm.grpc.openengine.cpp_host.cpp_host_command` 拿到 launcher 回环端口，公开端口（C++ 宿主）与回环端口都能连上之后，`--report-addr` 写 `127.0.0.1:<回环端口>`；没有 `--report-addr` 即拒绝）。C++ 宿主是宿主角色进程的子进程，继承它自己的核（`--worker-cores`、`--procmon-cores` 切走之后的那组）。`--record` 加两个键：`patches.cpp_host`（只在用了这些选项时出现：所设环境变量、`diag_out`、`report_target`）与 `clock`（相邻读取的 `monotonic_ns` / `time_ns`，读数工具用它把 C++ 宿主自报行的墙钟时间换到起点时钟）。
+- **`capgrpc.reqbytes openengine --extra-detokenize true|false`**：每个模板的 `GenerateRequest.extra.detokenize` 设为该值；不给时 `extra` 不设（缺省行为与字节不变）。`capgrpc.load` 发的就是这些模板字节（只在前面拼 `request_id`），所以负载器侧的「发 `extra.detokenize=false`」就是作业输入 `request_bytes` 加这个参数（E8-py-nd 臂）。
+- **`configs/d1/`**（`configs/gen_d1_configs.py`，从 `configs/snx/` 的模板派生，只改 D1 差异，测试逐项核对其余部分与来源相同）：E16 的 e16-{py,pynd,2l,nx,nx-nodiag}-k4-{mc,r}，E9 的 e9-nc{1,8}f0-{mc,r}、e9-n2l8f0-{mc,r}；新参数 `d1_bin`、`d1_grpc_threads`；E16-zr 臂暂不生成模板，只留接口：S-ZR 由 `capstubs.szr_launch`（main 85c8ef54）起，`szr_launch.py make-wrapper` 生成的 `<目录>/szr-d1-wrap` 作为 `d1_bin` 参数（即 `--cpp-host-bin`）传入即可，宿主侧其余选项与 E16-nx 相同。说明见 `configs/d1/README.md`。
+
 ## 审阅记录（r2，2026-11-13）
 
 审阅意见来自 spec-critic（JSON，24 条）。每条都对照设计稿 / 计划原文核对过；「采纳」= 按意见改，「部分采纳」= 问题属实、改法与意见不同（写理由），「不采纳」= 问题不成立。

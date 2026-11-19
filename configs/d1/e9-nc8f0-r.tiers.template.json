@@ -1,0 +1,174 @@
+{
+ "schema": "capkit.tiers_template/1",
+ "experiment": "E9",
+ "name": "e9-nc8f0-r",
+ "arrival": {
+  "dist": "fixed",
+  "seed": "TBD:arrival_seed"
+ },
+ "axis": {
+  "name": "R",
+  "load_key": "rate_rps",
+  "unit": "req/s",
+  "order": "asc"
+ },
+ "request_timeout_ns": "TBD:request_timeout_ns",
+ "default_gate": {
+  "mode": "enforce",
+  "rule": "abs_max",
+  "readings": [
+   {
+    "name": "loadgen_inflight",
+    "terms": [
+     {
+      "role": "capload",
+      "slot": "backlog.inflight",
+      "sign": 1,
+      "agg": "sum"
+     }
+    ],
+    "abs_max": 0
+   }
+  ],
+  "poll_ns": "TBD:gate_poll_ns",
+  "settle_polls": "TBD:gate_settle_polls",
+  "deadline_guard_ns": "TBD:gate_deadline_guard_ns",
+  "max_snapshot_age_ns": "TBD:gate_max_snapshot_age_ns"
+ },
+ "launch_inject": [],
+ "common": {
+  "max_tokens": 1,
+  "beat_ns": "TBD:beat_ns",
+  "tokens_per_msg": 1,
+  "stream_interval": "TBD:stream_interval",
+  "prompt_set": "TBD:prompt_set"
+ },
+ "tiers": [
+  {
+   "label": "warmup",
+   "kind": "warmup",
+   "ramp_ns": 0,
+   "window_ns": "TBD:warmup_ns",
+   "tail_ns": 0,
+   "rate_rps": "TBD:rate_warmup"
+  },
+  {
+   "label": "drain-01",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-01",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": true,
+   "rate_rps": "TBD:rate_0"
+  },
+  {
+   "label": "drain-02",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-02",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": false,
+   "rate_rps": "TBD:rate_1"
+  },
+  {
+   "label": "drain-03",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-03",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": false,
+   "rate_rps": "TBD:rate_2"
+  },
+  {
+   "label": "drain-04",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-04",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": false,
+   "rate_rps": "TBD:rate_3"
+  },
+  {
+   "label": "drain-05",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-05",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": false,
+   "rate_rps": "TBD:rate_4"
+  },
+  {
+   "label": "drain-06",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-06",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": false,
+   "rate_rps": "TBD:rate_5"
+  },
+  {
+   "label": "drain-07",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-07",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": false,
+   "rate_rps": "TBD:rate_6"
+  },
+  {
+   "label": "drain-08",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  },
+  {
+   "label": "up-08",
+   "kind": "up",
+   "ramp_ns": "TBD:ramp_ns",
+   "window_ns": "TBD:window_ns",
+   "tail_ns": "TBD:tail_ns",
+   "baseline": false,
+   "rate_rps": "TBD:rate_7"
+  },
+  {
+   "label": "drain-09",
+   "kind": "drain",
+   "window_ns": "TBD:drain_max_wait_ns"
+  }
+ ],
+ "note": "D1 arm (configs/gen_d1_configs.py, TRTLLM-18068 04_perf-plan.md): derived from configs/snx/e9-n8f0-r; NC-8f0: the frontends connect to the C++ host; R axis: shortest output (max_tokens 1), rate doubling; same NullExecutor parameters and arrival schedule in both arms; stream interval s is a registered value (nx_stream_interval must equal it); TEMPLATE: every TBD value is filled at registration (REPLAN-20261116 R1 coverage round: one launch per point, exploratory)"
+}

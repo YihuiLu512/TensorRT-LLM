@@ -1,0 +1,362 @@
+{
+ "schema": "capkit.scenario/1",
+ "experiment": "E9",
+ "name": "e9-n2l8f0-r",
+ "tier_table": "09_d1-host/perf/E9s/register/e9-n2l8f0-r.tiers.json",
+ "schedule": "09_d1-host/perf/E9s/register/e9-n2l8f0-r.schedule.capbin",
+ "prompts": "09_d1-host/perf/E9s/register/e9-n2l8f0-r.prompts.json",
+ "probe_tier": "P0",
+ "probe_groups": [],
+ "stop_grace_s": 10.0,
+ "stop_order": [
+  "capload",
+  "frontend",
+  "host",
+  "sidecar",
+  "canary"
+ ],
+ "reconcile": {
+  "schema": "capkit.reconcile/1",
+  "chains": [
+   {
+    "name": "requests",
+    "kind": "requests",
+    "gate": null,
+    "include_usage": null,
+    "hops": [
+     {
+      "role": "capload",
+      "source": "summary.counts.ok",
+      "scope": "tier"
+     }
+    ],
+    "corrections": []
+   }
+  ]
+ },
+ "roles": [
+  {
+   "role": "host",
+   "launcher": "product",
+   "kind": "server",
+   "start_after": [],
+   "pin_role": "host",
+   "cpus_needed": 4,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "under_test",
+   "asyncio": true,
+   "uses_grpc": true,
+   "loop": "uvloop",
+   "probe_tier": "P0",
+   "readiness": [
+    {
+     "kind": "report_addr"
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "--tier-table",
+    "{input:tier_table}",
+    "--origin-ns",
+    "{origin_ns}",
+    "--out-dir",
+    "{raw}/snx",
+    "--record",
+    "{raw}/snx/host.serve_nx.json",
+    "--stream-interval",
+    "{param:nx_stream_interval}",
+    "--pick-port",
+    "--report-host",
+    "127.0.0.1",
+    "--report-addr",
+    "{own:report_addr}",
+    "--set",
+    "busy_ns_per_step={param:snx_busy_ns_per_step}",
+    "--set",
+    "first_response_delay_steps={param:snx_first_response_delay_steps}",
+    "--set",
+    "idle_restart=\"grid\"",
+    "--cpp-host-bin",
+    "{param:d1_bin}",
+    "--cpp-host-arg=--grpc-threads",
+    "--cpp-host-arg",
+    "{param:d1_grpc_threads}",
+    "--report-target",
+    "private",
+    "--",
+    "{param:tokenizer_dir}",
+    "--host",
+    "127.0.0.1",
+    "--max_seq_len",
+    "{param:nx_max_seq_len}",
+    "--gpus_per_node",
+    "1",
+    "--grpc",
+    "--grpc-protocol",
+    "openengine",
+    "--openengine-host-impl",
+    "cpp"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "command": [
+    "{param:python}",
+    "-m",
+    "capstubs.serve_nx"
+   ],
+   "port": {
+    "kind": "report_addr",
+    "host": "127.0.0.1"
+   },
+   "note": "serve_nx host (--grpc --grpc-protocol openengine; 1 gRPC process): event loop + dispatch thread; the MPI worker (rank 0, S-NX) inherits the core set; 4 cores; C++ host mode: the launcher starts trtllm-openengine-host (param d1_bin) as attached frontend 1 on the public port, on this role's own cores, --grpc-threads (param d1_grpc_threads), no self-report; --report-target private: report_addr is the launcher's loopback OpenEngine port (Python Generate, lane 0)"
+  },
+  {
+   "role": "frontend",
+   "launcher": "product",
+   "kind": "server",
+   "start_after": [
+    "host"
+   ],
+   "pin_role": "frontend",
+   "cpus_needed": 88,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "under_test",
+   "asyncio": true,
+   "uses_grpc": true,
+   "loop": "uvloop",
+   "probe_tier": "P0",
+   "readiness": [
+    {
+     "kind": "report_addr"
+    },
+    {
+     "kind": "http_get",
+     "path": "/health",
+     "expect_status": 200,
+     "timeout_s": 2.0
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "--tier-table",
+    "{input:tier_table}",
+    "--origin-ns",
+    "{origin_ns}",
+    "--out-dir",
+    "{raw}/snx",
+    "--record",
+    "{raw}/snx/frontend.serve_nx.json",
+    "--stream-interval",
+    "{param:nx_stream_interval}",
+    "--pick-port",
+    "--report-host",
+    "127.0.0.1",
+    "--report-addr",
+    "{own:report_addr}",
+    "--set",
+    "busy_ns_per_step={param:snx_busy_ns_per_step}",
+    "--set",
+    "first_response_delay_steps={param:snx_first_response_delay_steps}",
+    "--set",
+    "idle_restart=\"grid\"",
+    "--",
+    "{param:tokenizer_dir}",
+    "--host",
+    "127.0.0.1",
+    "--max_seq_len",
+    "{param:nx_max_seq_len}",
+    "--gpus_per_node",
+    "1",
+    "--openengine-endpoint",
+    "{addr:host}",
+    "--num_serve_frontends",
+    "8",
+    "--num_postprocess_workers",
+    "0",
+    "--num_input_processor_workers",
+    "8"
+   ],
+   "env": {},
+   "proc_kinds": [
+    "frontend",
+    "frontend_openengine",
+    "frontend_launcher",
+    "frontend_attached"
+   ],
+   "command": [
+    "{param:python}",
+    "-m",
+    "capstubs.serve_nx"
+   ],
+   "port": {
+    "kind": "report_addr",
+    "host": "127.0.0.1"
+   },
+   "note": "N-NX frontend: 8 frontend(s), postproc pool 0 per frontend; cores: per frontend 1 loop + 8 input-processor threads + 2, + pool"
+  },
+  {
+   "role": "capload",
+   "launcher": "capkit",
+   "kind": "client",
+   "start_after": [
+    "frontend"
+   ],
+   "pin_role": "capload",
+   "cpus_needed": 8,
+   "numa": null,
+   "workers": 8,
+   "expected_procs": 9,
+   "measure_class": "load_source",
+   "asyncio": true,
+   "uses_grpc": false,
+   "loop": "asyncio",
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [
+    "backlog.inflight"
+   ],
+   "snapshots": "all",
+   "args": [
+    "--target",
+    "{addr:frontend}",
+    "--model",
+    "{param:tokenizer_dir}",
+    "--endpoint",
+    "/v1/completions",
+    "--schedule",
+    "{input:schedule}",
+    "--prompts",
+    "{input:prompts}",
+    "--conn-policy",
+    "keepalive",
+    "--pool-pick",
+    "{param:capload_pool_pick}",
+    "--pool-seed",
+    "{param:capload_pool_seed}",
+    "--pool-reset",
+    "{param:capload_pool_reset}",
+    "--recv-mode",
+    "count",
+    "--chunk-sample-mod",
+    "{param:capload_chunk_sample_mod}",
+    "--fionread-every-ms",
+    "{param:capload_fionread_every_ms}",
+    "--lag-period-us",
+    "{param:lag_period_us}",
+    "--max-records-per-worker",
+    "{param:capload_max_records_per_worker}"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capload",
+   "note": "capload, 8 workers (parent + 8); --model = the served model name (the tokenizer dir)"
+  },
+  {
+   "role": "sidecar",
+   "launcher": "capkit",
+   "kind": "aux",
+   "start_after": [
+    "capload"
+   ],
+   "pin_role": "sidecar",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "observer",
+   "asyncio": false,
+   "uses_grpc": false,
+   "loop": null,
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "--interval-ms",
+    "{param:sidecar_interval_ms}",
+    "--gpu-every-s",
+    "{param:sidecar_gpu_every_s}",
+    "--numa-every-s",
+    "{param:sidecar_numa_every_s}",
+    "--nvidia-smi",
+    "{nvidia_smi}"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capenv.sidecar"
+  },
+  {
+   "role": "canary",
+   "launcher": "capkit",
+   "kind": "aux",
+   "start_after": [],
+   "pin_role": "canary",
+   "cpus_needed": 1,
+   "numa": null,
+   "workers": 1,
+   "expected_procs": 1,
+   "measure_class": "observer",
+   "asyncio": false,
+   "uses_grpc": false,
+   "loop": null,
+   "probe_tier": null,
+   "readiness": [
+    {
+     "kind": "capkit_ready"
+    }
+   ],
+   "backlog_slots": [],
+   "snapshots": "none",
+   "args": [
+    "--interval-ms",
+    "{param:canary_interval_ms}"
+   ],
+   "env": {},
+   "proc_kinds": [],
+   "module": "capenv.canary"
+  }
+ ],
+ "params_required": [
+  "canary_interval_ms",
+  "capload_chunk_sample_mod",
+  "capload_fionread_every_ms",
+  "capload_max_records_per_worker",
+  "capload_pool_pick",
+  "capload_pool_reset",
+  "capload_pool_seed",
+  "d1_bin",
+  "d1_grpc_threads",
+  "lag_period_us",
+  "nx_max_seq_len",
+  "nx_stream_interval",
+  "python",
+  "sidecar_gpu_every_s",
+  "sidecar_interval_ms",
+  "sidecar_numa_every_s",
+  "snx_busy_ns_per_step",
+  "snx_first_response_delay_steps",
+  "tokenizer_dir"
+ ],
+ "dims": {
+  "tokenizer": "TBD-by-registration (configs/tokenizers/GLM-5.3-Flash)",
+  "stub": "S-NX (capstubs NullExecutor in the product rank 0 worker; capkit.snx_config/1 from the tier table + SNX_SET params)",
+  "response_timing_switches": "S-NX: first_response_delay_steps / busy_ns_per_step params; the rest defaults",
+  "interpretation": "REPLAN-20261116 R1 coverage round: exploratory, one launch per point",
+  "log_sink": "raw/logs on the node-local disk (orchestrator redirect)"
+ },
+ "note": "D1 arm (configs/gen_d1_configs.py, TRTLLM-18068 04_perf-plan.md): derived from configs/snx/e9-n8f0-r; N2l-8f0: the frontends connect to the C++ host mode launcher's loopback port. E9 e9-n8f0-r: N-NX: capload -> new-architecture frontend -> gRPC -> serve_nx host (S-NX); n = 8 frontend(s), postproc pool 0; capload 8 workers. TEMPLATE: every TBD value is filled at registration (REPLAN-20261116 R1 coverage round: one launch per point, exploratory)"
+}
