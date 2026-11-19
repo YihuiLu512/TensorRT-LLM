@@ -20,6 +20,12 @@
   diagnostics; the specs go into CAPKIT_SNX_INJECT / CAPKIT_SNX_DIAG so re-executed attached
   frontends install the same (SUPP-Q3). --gc-freeze-after-ready runs gc.collect() + gc.freeze()
   once the reported address accepts TCP.
+- C++ host mode (serve arguments with `--openengine-host-impl cpp`, D1): --cpp-host-bin,
+  --cpp-host-arg and --cpp-host-inject set TLLM_OPENENGINE_CPP_HOST_BIN / _ARGS and TLLM_D1_INJECT
+  for the launcher, which starts the C++ host as attached frontend 1 on the public port (the host
+  inherits this process's core set). --report-target private makes --report-addr name the
+  launcher's loopback OpenEngine port instead (its Python Generate on lane 0: the E8-2l / N2l
+  arms), written once the public port accepts, i.e. after the C++ host is ready.
 - Then rewrites sys.argv to the serve arguments and calls tensorrt_llm.commands.serve:main.
 
 Both architectures: the original `trtllm-serve <model dir>` (frontends x n + executor proxy <->
@@ -43,6 +49,12 @@ WORKER_KINDS = ("null", "real", "product")
 # the worker kind, for re-executed attached frontends (they never build a worker; recorded only)
 ENV_WORKER = "CAPKIT_SERVE_WORKER"
 LLM_API_KEY_RE = r"^[a-z_][a-z0-9_]*$"
+# C++ host mode (D1): the launcher reads these (tensorrt_llm.grpc.openengine.cpp_host)
+ENV_CPP_HOST_BIN = "TLLM_OPENENGINE_CPP_HOST_BIN"
+ENV_CPP_HOST_ARGS = "TLLM_OPENENGINE_CPP_HOST_ARGS"
+ENV_CPP_HOST_INJECT = "TLLM_D1_INJECT"
+CPP_HOST_LAUNCHER_FLAGS = ("--listen", "--launcher-endpoint", "--template")
+REPORT_TARGETS = ("public", "private")
 
 
 def build_parser():
@@ -84,9 +96,64 @@ def build_parser():
     p.add_argument("--llm-api-set", action="append", default=[], metavar="KEY=JSON",
                    help="one more top-level key of the LLM API YAML that --stream-interval "
                         "writes (value parsed as JSON); repeatable")
+    p.add_argument("--cpp-host-bin", metavar="PATH",
+                   help="C++ host mode: the host executable (%s)" % ENV_CPP_HOST_BIN)
+    p.add_argument("--cpp-host-arg", action="append", default=[], metavar="ARG",
+                   help="C++ host mode: one more host argument, in order, joined into %s; write "
+                        "flags as --cpp-host-arg=--diag-out; repeatable" % ENV_CPP_HOST_ARGS)
+    p.add_argument("--cpp-host-inject", metavar="SPECS",
+                   help="C++ host mode: %s, e.g. hs:busy:2000" % ENV_CPP_HOST_INJECT)
+    p.add_argument("--report-target", choices=REPORT_TARGETS, default="public",
+                   help="private (C++ host mode): --report-addr gets the launcher's loopback "
+                        "OpenEngine address, written once the public port accepts")
     from capstubs.affinity import add_split_args  # noqa: PLC0415
     add_split_args(p)
     return p
+
+
+def cpp_host_mode(serve_args):
+    """True when the serve arguments select the C++ OpenEngine host."""
+    return flag_value(serve_args, "--openengine-host-impl") == "cpp"
+
+
+def cpp_host_env(a, serve_args):
+    """({env var: value} for the C++ host options, None) or ({}, why refused). Also returns the
+    --diag-out directory (created by the caller) as env key None."""
+    import shlex  # noqa: PLC0415
+    given = a.cpp_host_bin or a.cpp_host_arg or a.cpp_host_inject or \
+        a.report_target == "private"
+    if not given:
+        return {}, None
+    if not cpp_host_mode(serve_args):
+        return {}, ("--cpp-host-* / --report-target private need --openengine-host-impl cpp in "
+                    "the serve arguments")
+    for x in a.cpp_host_arg:
+        if x.split("=", 1)[0] in CPP_HOST_LAUNCHER_FLAGS:
+            return {}, "--cpp-host-arg %s: the launcher sets that flag" % x
+    env = {}
+    if a.cpp_host_bin:
+        env[ENV_CPP_HOST_BIN] = a.cpp_host_bin
+    if a.cpp_host_arg:
+        env[ENV_CPP_HOST_ARGS] = shlex.join(a.cpp_host_arg)
+    if a.cpp_host_inject:
+        env[ENV_CPP_HOST_INJECT] = a.cpp_host_inject
+    diag = flag_value(a.cpp_host_arg, "--diag-out")
+    if diag:
+        env[None] = diag
+    return env, None
+
+
+def capture_private_port(holder):
+    """Wrap tensorrt_llm.grpc.openengine.cpp_host.cpp_host_command (the launcher imports it at call
+    time) so the launcher's loopback port lands in holder["port"]."""
+    import tensorrt_llm.grpc.openengine.cpp_host as ch  # noqa: PLC0415
+    orig = ch.cpp_host_command
+
+    def cpp_host_command(binary, *, launcher_port, **kw):
+        holder["port"] = int(launcher_port)
+        return orig(binary, launcher_port=launcher_port, **kw)
+    ch.cpp_host_command = cpp_host_command
+    return orig
 
 
 def split_argv(argv):
@@ -191,21 +258,35 @@ def write_atomic(path, text):
     os.replace(tmp, path)
 
 
-def start_reporter(path, host, port, timeout_s, after=None):
+def tcp_accepts(host, port):
+    """True when a TCP connect to host:port succeeds and is not a loopback self-connect."""
+    try:
+        with socket.create_connection((host, port), timeout=1.0) as c:
+            return not self_connected(c)
+    except OSError:
+        return False
+
+
+def start_reporter(path, host, port, timeout_s, after=None, target=None):
     """Daemon thread: poll a TCP connect to host:port every 100 ms; write `host:port\\n` to path on
-    the first success, call `after()` (when given), then end."""
+    the first success, call `after()` (when given), then end. With `target` (a callable returning
+    (host, port) or None while unknown), the address written is target's once host:port and it
+    both accept."""
     def run():
         deadline = time.monotonic() + timeout_s
-        h = "[%s]" % host if ":" in host else host
         while time.monotonic() < deadline:
-            try:
-                with socket.create_connection((host, port), timeout=1.0) as c:
-                    if self_connected(c):  # not the server; drop it and keep polling
-                        raise OSError("self-connect")
-            except OSError:
+            if not tcp_accepts(host, port):
                 time.sleep(0.1)
                 continue
-            write_atomic(path, "%s:%d\n" % (h, port))
+            th, tp = host, port
+            if target is not None:
+                t = target()
+                if t is None or not tcp_accepts(t[0], t[1]):
+                    time.sleep(0.1)
+                    continue
+                th, tp = t
+            h = "[%s]" % th if ":" in th else th
+            write_atomic(path, "%s:%d\n" % (h, tp))
             if after is not None:
                 after()
             return
@@ -402,6 +483,17 @@ def main(argv=None):
         if a.gc_freeze_after_ready and not a.report_addr:
             print("serve_nx: --gc-freeze-after-ready needs --report-addr", file=sys.stderr)
             return 3
+        cpp_env, why = cpp_host_env(a, serve_args)
+        if why:
+            print("serve_nx: %s" % why, file=sys.stderr)
+            return 3
+        if a.report_target == "private" and not a.report_addr:
+            print("serve_nx: --report-target private needs --report-addr", file=sys.stderr)
+            return 3
+        diag_dir = cpp_env.pop(None, None)
+        if diag_dir:
+            os.makedirs(diag_dir, exist_ok=True)
+        os.environ.update(cpp_env)
         if host_inject:
             os.environ[snx_inject.ENV_INJECT] = ";".join(host_inject)
         if a.diag:
@@ -419,6 +511,12 @@ def main(argv=None):
                           "gc_freeze_after_ready": bool(a.gc_freeze_after_ready)}
         done["launcher_env_removed"] = scrubbed
         done["affinity"] = affinity
+        private = {}
+        if a.report_target == "private":
+            capture_private_port(private)
+        if cpp_env or a.report_target == "private":
+            done["cpp_host"] = {"env": dict(cpp_env), "diag_out": diag_dir,
+                                "report_target": a.report_target}
         if a.report_addr:
             port = flag_value(serve_args, "--port")
             if port is None or not port.isdigit() or int(port) == 0:
@@ -432,12 +530,18 @@ def main(argv=None):
                     if cfg.out_dir:
                         write_atomic(os.path.join(cfg.out_dir, "gc_freeze.%d.json" % os.getpid()),
                                      json.dumps({"t_ns": time.monotonic_ns(), "frozen": n}) + "\n")
-            start_reporter(a.report_addr, a.report_host, int(port), a.report_timeout_s, after)
+            target = None
+            if a.report_target == "private":
+                def target():
+                    return None if "port" not in private else ("127.0.0.1", private["port"])
+            start_reporter(a.report_addr, a.report_host, int(port), a.report_timeout_s, after,
+                           target)
         if a.record:
             os.makedirs(os.path.dirname(os.path.abspath(a.record)), exist_ok=True)
             write_atomic(a.record, json.dumps(
                 {"schema": SCHEMA_RECORD, "pid": os.getpid(), "config": cfg.to_doc(),
-                 "serve_args": serve_args, "patches": done, "argv0": sys.argv[0]},
+                 "serve_args": serve_args, "patches": done, "argv0": sys.argv[0],
+                 "clock": {"monotonic_ns": time.monotonic_ns(), "time_ns": time.time_ns()}},
                 indent=1, sort_keys=True) + "\n")
     from tensorrt_llm.commands.serve import main as serve_main  # noqa: PLC0415
     sys.argv = [sys.argv[0]] + serve_args
