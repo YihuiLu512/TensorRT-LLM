@@ -19,7 +19,8 @@ out=""; prev=""
 for a in "$@"; do [[ $prev == --out ]] && out=$a; prev=$a; done
 mkdir -p "$out"
 { echo "argv=$*"; echo "arm=$TRTLLM_PERF_ARM"; echo "reqlog=$E12_REQLOG_DIR";
-  echo "mark=$E12_MARK"; echo "path0=${PATH%%:*}"; echo "agg=$AGG_CONFIG_FOLDER"; } > "$out/fake.txt"
+  echo "mark=$E12_MARK"; echo "path0=${PATH%%:*}"; echo "agg=$AGG_CONFIG_FOLDER";
+  echo "python=$(command -v python)"; } > "$out/fake.txt"
 exit ${FAKE_RUNNER_RC:-0}
 """
 
@@ -69,7 +70,8 @@ def test_steps_run_in_order_with_their_environment(setup):
                     .splitlines())
         assert fake["arm"] == arm and fake["reqlog"] == str(raw / name / "reqlog")
         assert ("--chain %s" % chain) in fake["argv"] and fake["mark"].startswith("77-")
-        assert fake["path0"].endswith("tools/cape12/bin") and fake["agg"] == args[5]
+        assert fake["path0"] == str(run_dir / "e12shim" / "bin") and fake["agg"] == args[5]
+        assert fake["python"] == str(run_dir / "e12shim" / "bin" / "python")
         assert (raw / name / "list.txt").read_text().strip() == \
             "perf/test_perf_sanity.py::test_e2e[aggr-u4m-r1]"
         assert "rc=0" in (raw / name / "step.txt").read_text()
@@ -106,3 +108,29 @@ def test_cuda_probe_failure_is_env_invalid(setup):
     p = _run(env, args, FAKE_PROBE_FAIL="1")
     assert p.returncode == 6
     assert not any(d.is_dir() for d in (run_dir / "raw").iterdir())
+
+
+def test_shim_works_from_a_read_only_snapshot_without_exec_bits(setup, tmp_path):
+    """Positive control for E12 smoke 6148825: capjobs' snapshot drops exec bits; the inner must
+    still put an executable shim first on PATH (a run-local copy)."""
+    import shutil
+    env, args, run_dir = setup
+    snap = tmp_path / "snap"
+    (snap / "jobs").mkdir(parents=True)
+    shutil.copyfile(INNER, snap / "jobs" / "e12_inner.sh")
+    shutil.copytree(os.path.join(CODE_ROOT, "tools", "cape12"), snap / "tools" / "cape12",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    for root, dirs, files in os.walk(snap):
+        for f in files:
+            os.chmod(os.path.join(root, f), 0o444)
+    assert not os.access(snap / "tools" / "cape12" / "bin" / "python", os.X_OK)
+    p = subprocess.run(["bash", str(snap / "jobs" / "e12_inner.sh")] + args
+                       + ["--steps", "A-def=u4m-r1"], env=env, capture_output=True, text=True,
+                       timeout=120)
+    assert p.returncode == 0, p.stdout + p.stderr
+    fake = dict(x.split("=", 1) for x in (run_dir / "raw" / "01_A-def__u4m-r1" / "run" /
+                                          "fake.txt").read_text().splitlines())
+    shim = run_dir / "e12shim"
+    assert fake["python"] == str(shim / "bin" / "python") and os.access(fake["python"], os.X_OK)
+    assert (shim / "reqlog_l2a.py").is_file()
+    assert "reqlog_files=0" in (run_dir / "raw" / "01_A-def__u4m-r1" / "step.txt").read_text()
