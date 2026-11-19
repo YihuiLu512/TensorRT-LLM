@@ -15,6 +15,9 @@ max_tokens 1). The host gets 4 cores (event loop + dispatch thread + substitute 
 core threads) plus 1 for the process-tree sampler (capstubs.procmon).
 
 Every arm is one scenario + one tier-table template + one values checklist, as configs/snx.
+Arms e10-<engine>-<shape>-vload are the same scenario with a launch-level load-source injection
+in the tier table (V control, design card E10: busy delta_ns at capgrpc.load's recv.msg, once per
+received message in every reader worker; the boundary should not move).
 Usage: python configs/gen_glm_configs.py <new output dir>   (writes <dir>/glm)
 """
 import json
@@ -183,7 +186,10 @@ SHAPE_NOTES = {
 }
 
 
-def tpl(name, shape):
+VLOAD = [{"role": "reader", "site": "recv.msg", "mode": "busy", "delta_ns": "TBD:delta_ns"}]
+
+
+def tpl(name, shape, launch_inject=()):
     axis, common, warm, up = SHAPES[shape]
     common = dict(common, tokens_per_msg=1, stream_interval="TBD:stream_interval",
                   prompt_set="TBD:prompt_set")
@@ -199,23 +205,26 @@ def tpl(name, shape):
     return {"schema": "capkit.tiers_template/1", "experiment": "E10-S", "name": name,
             "arrival": {"dist": "fixed", "seed": "TBD:arrival_seed"}, "axis": axis,
             "request_timeout_ns": "TBD:request_timeout_ns", "default_gate": READER_GATE,
-            "launch_inject": [], "common": common, "tiers": tiers,
-            "note": "; ".join((SHAPE_NOTES[shape], TEMPLATE_NOTE))}
+            "launch_inject": list(launch_inject), "common": common, "tiers": tiers,
+            "note": "; ".join((SHAPE_NOTES[shape],) + (("V: busy delta at the reader's recv.msg "
+                                                       "(every message, every worker)",)
+                                                      if launch_inject else ()) + (TEMPLATE_NOTE,))}
 
 
-def e10(engine, shape):
-    name = "e10-%s-%s" % (engine, shape)
+def e10(engine, shape, vload=False):
+    name = "e10-%s-%s%s" % (engine, shape, "-vload" if vload else "")
     roles = [host(engine), grpc_load("host", K)] + observers("reader")
     w(name + ".scenario.json",
       scen(name, roles, "E10-S %s: capgrpc.load (%d connections) -> serve_glm host (glm5-serve "
                         "--grpc --grpc-protocol openengine, %s)" % (name, K, ENGINE_NOTE[engine]),
            {"request_bytes": req_bytes()}))
-    w(name + ".tiers.template.json", tpl(name, shape))
+    w(name + ".tiers.template.json", tpl(name, shape, VLOAD if vload else ()))
 
 
 for _engine in ("g0", "g1"):
     for _shape in ("mc", "r"):
-        e10(_engine, _shape)
+        for _vload in (False, True):
+            e10(_engine, _shape, _vload)
 
 _d = os.path.join(OUT, SUB)
 for n in sorted(os.listdir(_d)):
