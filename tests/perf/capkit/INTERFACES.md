@@ -1904,6 +1904,15 @@ R2 自审（slug `capkit-b2judge-J17871`）发现的问题已直接改进本子�
 4. **新臂**（每臂都与同作业比较的那一臂同一模板形状，同一份值文件可登记两者）：`e2a-sfe-1c-{mc,r}`（单连接，对 `e2a-spb-1c-*`；S-FE 多连接行即 `e3c-sfe-kc-*`，同 S-NL 多连接行即 `e3a-snl-kc-*` 的做法）；`e3c-sfe-kc-{mc,r}`（3a 的 S-NL 换 S-FE，对 `e3a-snl-kc-*`）；`e3c-ees-snl-{mc,r}`（3b 的对端 S-PB 换 S-NL full，对 `e3b-ees-*`）；`e4c-mc`（对 `e4b-mc`）。
 5. **验证**：`tests/launch/test_e2a_e3_e4_configs.py`（生成器逐字节复现全部文件；每臂 validate / expand / cross_check；S-FE 角色与 e0 的启动、就绪、端口一致，读者按地址连、门与链只含 capkit 角色；新臂与配对臂的档位表形状、值名与非桩角色相同）。S-FE 在镜像里由编排器起停、读者按 `{addr:sfe}` 连上、S-FE 实际步周期【未运行】，属各相位首个作业的核对。
 
+### S-NX 线 B5：E8 读端 `--planned-msgs` 的多 worker 验证、E7 的引擎进度探针（2026-11-20）
+
+依据：`05_engine/PLAN-R2R5.md` 第 3.1 节（B5）与同文件勘误 E-B5-n。
+
+1. **E8 读端 `--planned-msgs`**：`capgrpc.load` 早已有该参数（勘误 FT1-9，`capgrpc.msgplan`），本节不改读端代码；E8 场景只需在读端参数里加上它（登记侧做）。S-NX 的步时钟与读端的 `BeatSchedule` 来自同一份档位表与原点（`null_executor.StepClock`），所以从时间表推出的消息计划时刻与 S-NX 的出消息步一致（再加请求在途与最多一拍的取整）。新增测试 `tests/capstubs/test_planned_msgs_e8.py`：E8 形态（监督进程 + 2 个 worker、`--request-format openengine`、采样模数与 worker 数互素）对 S-PB，每个 worker 都写 `drain.msgs`，每行的步与计划时刻等于 `step_at_or_after(请求计划时刻) + offsets[j]`，`unplanned` 为 0；`LoadWorker.planned_msg` 在手造流上的滞后值逐条精确（准时流 0、延迟 50 ms 的流每条 50 ms、超出应有条数的消息记 unplanned、不进滞后）；窗口后半延迟 50 ms 的流，两半中位数恰差 50 ms。
+2. **`capstubs.nx_role --engine-probe-ms P`**（缺省 0 = 关，关时行为与输出字节不变）：引擎进度探针。nx_role 自己的事件循环线程按绝对网格 `origin + k × P` 读引擎计数（proxy 模式读 worker 的 `snx.<pid>.live` 记录，worker 里不加任何代码与线程；standalone 读进程内计数），每次追加一行到 `<role>.w0.probe.capbin`（kind `snx.probe`，按采样时刻所在档拆分）。列：`t_rel_ns`（实际采样时刻）、`live_age_ns`（采样时刻 − live 记录的 `t_ns`）、`enqueued` / `taken` / `finished`（减去首个样本即原点之前那次的基数）、`active`、`queued`、`pending_keys`、`due`（计划时刻 ≤ 采样时刻的请求数）、`lag_enq_ns` / `lag_take_ns` / `lag_fin_ns`、`tier_seq`。滞后的定义：计数 x < due 时 = 采样时刻 − 第 x 个（从 0 起）计划时刻，否则 0，即「已到计划时刻、该计数还没走到的最老请求的年龄」，按 FIFO 读（前 x 个计划的请求就是被计入的那些；K ≥ 2 时两条 lane 各自按时发送，次序近似）。读不到 live 记录的采样记 `missed`，不写行。每档 summary 多 `engine_probe`（`period_ns`、本档样本数、`missed`、`overflow`）；capbin 的 meta 记周期、基数、计划请求数与滞后规则。容量 = (档位表总长 + tail) / P + 16。
+3. **为什么在 nx_role 里采**：S-NX 的 steps 记录由步线程自己在跑完一步后写；步线程拿不到 GIL 时整档没有 step 行（E7 COVER-R1 §4：R 轴 9051、10763 两档 0 或 118 行），取件滞后与唤醒滞后无样本，按读数规则 r2 判不可判。探针在另一个进程里按固定间隔采，引擎不推进时计数不动、滞后随采样时刻线性增长，所以过载档也有样本。
+4. **验证**：`tests/capstubs/test_nx_role.py`（standalone 端到端：每 20 ms 一行、按档拆分、summary 样本数一致、计数单调、finished 到全部请求、引擎跟得上时滞后小；阳性对照：手造计数在 1 s 处冻结 taken / finished，take 与 finish 滞后每 100 ms 增 100 ms、精确等于采样时刻 − 第一个未完成请求的计划时刻，enqueue 滞后保持 0；读不到计数记 missed；容量公式；负值拒绝）。proxy 模式下经 live 记录采样、E7 R 轴过载档样本数 ≥ 100【未运行】，属 B5 E7 首个作业的冒烟核对。
+
 ## 审阅记录（r2，2026-11-13）
 
 审阅意见来自 spec-critic（JSON，24 条）。每条都对照设计稿 / 计划原文核对过；「采纳」= 按意见改，「部分采纳」= 问题属实、改法与意见不同（写理由），「不采纳」= 问题不成立。

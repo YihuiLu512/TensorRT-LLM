@@ -133,3 +133,106 @@ def test_tool_table_entry():
     assert "out_dir" not in flags  # --out-dir is orchestrator-managed
     for k in nx_role.SLOTS:
         assert k.startswith(("backlog.", "self.", "lag."))
+
+
+# ---- --engine-probe-ms (PLAN-R2R5 3.1 B5, E7 R axis) ----------------------------------------
+
+def test_engine_probe_end_to_end(tmp_path, monkeypatch):
+    """A healthy engine: one probe row per 20 ms grid point (plus the base sample before the
+    origin), rows split by the tier of the sample time, per-tier summaries count them, counters
+    never go back, the finished counter reaches every request, and the backlog lags stay small."""
+    from capcommon.aio import run as aio_run
+    from capcommon.capbin import read_capbin
+    monkeypatch.setattr(nx_role, "standalone_parts", fake_parts)
+    launch, args, common = _role(tmp_path, ["--engine-probe-ms", "20"])
+    role = nx_role.NxRole(args, common, StopController(install=False))
+    role.build()
+    assert aio_run(role.run, "asyncio") == OK
+    tree = launch.tree
+    n_all = sum(int(v) for v in launch.sched_meta["per_tier"].values())
+    rows = {}
+    for seq, label in ((0, "warmup-0"), (1, "drain-1"), (2, "up-2"), (3, "drain-3")):
+        h, c = read_capbin(tree.tier_file(seq, label, "nx", 0, "probe", "capbin"))
+        assert h["kind"] == nx_role.PROBE_KIND and h["meta"]["overflow"] == 0
+        assert h["meta"]["period_ns"] == 20 * MS and h["meta"]["planned_requests"] == n_all
+        assert set(c["tier_seq"]) == {seq}
+        win_ms = (300, 200, 300, 200)[seq]
+        assert win_ms // 20 - 2 <= len(c["t_rel_ns"]) <= win_ms // 20 + 1, (seq, len(c["t_rel_ns"]))
+        doc = json.load(open(tree.tier_file(seq, label, "nx", 0, "summary", "json")))
+        assert doc["engine_probe"]["samples"] == len(c["t_rel_ns"])
+        assert doc["engine_probe"]["period_ns"] == 20 * MS and doc["engine_probe"]["missed"] == 0
+        rows[seq] = c
+    up = rows[2]
+    # grid samples: every sample time is at or just after a 20 ms grid point
+    assert all(0 <= t % (20 * MS) < 15 * MS for t in up["t_rel_ns"])
+    for k in ("enqueued", "taken", "finished", "due"):
+        seq_vals = [v for s in (0, 1, 2, 3) for v in rows[s][k]]
+        assert seq_vals == sorted(seq_vals), k
+    assert rows[3]["finished"][-1] == n_all and rows[3]["due"][-1] == n_all
+    # the engine keeps up (beat 5 ms, 4 tokens): the oldest unfinished request is never old
+    assert max(up["lag_fin_ns"]) < 100 * MS and max(up["lag_enq_ns"]) < 50 * MS
+
+
+class _Plan:
+    def __init__(self, planned_abs, origin, tt):
+        self.rows = [(i, p, 0) for i, p in enumerate(planned_abs)]
+        self.origin = origin
+        self.tt = tt
+
+
+def _probe(period_ms=100, rate=1000.0, dur_ms=2000):
+    from capcommon.tiers import TierTable
+    tt = TierTable.from_doc(g.table_doc([("warmup", dur_ms, rate, {"n": 1, "beat": MS}),
+                                          ("drain", 300, 0.0, {"beat": MS})]))
+    origin = 10 ** 15
+    planned = [origin + int(i * 1e9 / rate) for i in range(int(rate * dur_ms / 1000))]
+    return nx_role.EngineProbe(_Plan(planned, origin, tt), period_ms, 0.0), origin, planned
+
+
+def _counters(t_abs, enq, taken, fin, base=(5, 5, 5)):
+    return {"t_ns": t_abs, "enqueued": enq + base[0], "taken": taken + base[1],
+            "finished": fin + base[2], "active": 0, "queued": enq - taken, "pending_keys": 0}
+
+
+def test_engine_probe_lags_keep_up_and_stall():
+    """Positive control on hand-made counters (1000 req/s, one sample per 100 ms): an engine that
+    keeps up gives lag 0; once the step thread stops at the 1 s point (taken / finished frozen,
+    enqueued still following the plan) the take and finish lags grow with the sample time, one
+    second of stall = one second of lag, and the enqueue lag stays 0."""
+    pr, origin, planned = _probe()
+    assert pr.sample(_counters(origin - 10 ** 9, 0, 0, 0), origin - 10 ** 9)  # base before origin
+    assert pr.base == {"enqueued": 5, "taken": 5, "finished": 5}
+    frozen = None
+    for k in range(20):
+        t = origin + k * 100 * MS
+        due = sum(1 for p in planned if p <= t)
+        if k < 10:
+            assert pr.sample(_counters(t, due, due, due), t)
+        else:
+            frozen = frozen if frozen is not None else due_prev
+            assert pr.sample(_counters(t - 5 * MS, due, frozen, frozen), t)
+        due_prev = due
+    c = {k: list(v[:pr.rec.n]) for k, v in pr.rec.cols.items()}
+    assert c["lag_enq_ns"] == [0] * 21
+    assert c["lag_fin_ns"][:11] == [0] * 11 and c["lag_take_ns"][:11] == [0] * 11
+    stalled = c["lag_fin_ns"][11:]
+    assert stalled == c["lag_take_ns"][11:]
+    # frozen at the count due at 0.9 s: the oldest unfinished request was planned at 0.901 s
+    assert stalled == [k * 100 * MS - (frozen * MS) for k in range(10, 20)]
+    assert all(b - a == 100 * MS for a, b in zip(stalled, stalled[1:]))
+    assert c["live_age_ns"][11:] == [5 * MS] * 10
+    assert c["tier_seq"][0] == -1 and set(c["tier_seq"][1:]) == {0}
+
+
+def test_engine_probe_missed_and_capacity():
+    pr, origin, _planned = _probe(period_ms=500, dur_ms=1000)
+    assert pr.rec.capacity == (1000 + 300) * MS // (500 * MS) + 16
+    assert pr.sample(None, origin) is False and pr.missed == 1 and pr.base is None
+    assert pr.lag(10, 3, 3) == 0 and pr.lag(10, 2, 3) == 10 - pr.planned[2]
+
+
+def test_engine_probe_refusal(tmp_path):
+    launch, args, common = _role(tmp_path)
+    args.engine_probe_ms = -1
+    with pytest.raises(ConfigError):
+        nx_role.validate_args(args)
