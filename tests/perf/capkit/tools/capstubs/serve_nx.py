@@ -26,6 +26,14 @@
   inherits this process's core set). --report-target private makes --report-addr name the
   launcher's loopback OpenEngine port instead (its Python Generate on lane 0: the E8-2l / N2l
   arms), written once the public port accepts, i.e. after the C++ host is ready.
+- Optionally (--grpc-server-option KEY=VALUE, OpenEngine host only) adds gRPC channel arguments
+  to the OpenEngine server's option list (tensorrt_llm.grpc.openengine.server._SERVER_OPTIONS,
+  which OpenEngineServer copies when it builds grpc.aio.server), e.g. the admission limits
+  grpc.server.max_pending_requests / grpc.server.max_pending_requests_hard_limit (PLAN-R2R5 5,
+  B11). A key already in the list is replaced in place, a new key appended; every
+  grpc.aio.server call in the process is logged with its options to
+  <out-dir>/grpc_server_options.<pid>.jsonl (the read-back). The options also go into
+  CAPKIT_SNX_GRPC_SERVER_OPTIONS so re-executed attached frontends apply the same.
 - Then rewrites sys.argv to the serve arguments and calls tensorrt_llm.commands.serve:main.
 
 Both architectures: the original `trtllm-serve <model dir>` (frontends x n + executor proxy <->
@@ -55,6 +63,12 @@ ENV_CPP_HOST_ARGS = "TLLM_OPENENGINE_CPP_HOST_ARGS"
 ENV_CPP_HOST_INJECT = "TLLM_D1_INJECT"
 CPP_HOST_LAUNCHER_FLAGS = ("--listen", "--launcher-endpoint", "--template")
 REPORT_TARGETS = ("public", "private")
+# --grpc-server-option: OpenEngine server channel arguments (JSON [[key, value], ...] for re-exec)
+ENV_GRPC_SERVER_OPTIONS = "CAPKIT_SNX_GRPC_SERVER_OPTIONS"
+GRPC_OPTION_KEY_RE = r"^grpc\.[A-Za-z0-9_.]+$"
+GRPC_OPTION_INT_RE = r"^-?[0-9]+$"
+GRPC_OPTIONS_OWNED = ("grpc.so_reuseport",)  # the product appends it after the list
+OE_SERVER_MODULE = "tensorrt_llm.grpc.openengine.server"
 
 
 def build_parser():
@@ -106,9 +120,74 @@ def build_parser():
     p.add_argument("--report-target", choices=REPORT_TARGETS, default="public",
                    help="private (C++ host mode): --report-addr gets the launcher's loopback "
                         "OpenEngine address, written once the public port accepts")
+    p.add_argument("--grpc-server-option", action="append", default=[], metavar="KEY=VALUE",
+                   help="OpenEngine host (--grpc-protocol openengine): one more gRPC server "
+                        "channel argument in %s._SERVER_OPTIONS (VALUE an integer, else a "
+                        "string; a key already there is replaced); repeatable" % OE_SERVER_MODULE)
     from capstubs.affinity import add_split_args  # noqa: PLC0415
     add_split_args(p)
     return p
+
+
+def parse_grpc_server_options(items):
+    """[(key, value)] of --grpc-server-option KEY=VALUE items, in order (VALUE an int when it is
+    an integer literal, else the string); ValueError on a bad item, a repeated key or a key the
+    product sets itself."""
+    import re  # noqa: PLC0415
+    out, seen = [], set()
+    for kv in items:
+        k, sep, v = kv.partition("=")
+        if not sep or not re.match(GRPC_OPTION_KEY_RE, k) or v == "":
+            raise ValueError("--grpc-server-option needs KEY=VALUE with a grpc.* key, got %r" % kv)
+        if k in GRPC_OPTIONS_OWNED:
+            raise ValueError("--grpc-server-option %s: the product sets that option" % k)
+        if k in seen:
+            raise ValueError("--grpc-server-option key %r repeated" % k)
+        seen.add(k)
+        out.append((k, int(v) if re.match(GRPC_OPTION_INT_RE, v) else v))
+    return out
+
+
+def apply_grpc_server_options(opts, out_dir):
+    """Put opts into the OpenEngine server module's _SERVER_OPTIONS (in place: a key already
+    there is replaced, a new one appended) and wrap grpc.aio.server so every call appends
+    {pid, t_ns, options} to <out_dir>/grpc_server_options.<pid>.jsonl (when out_dir is set).
+    Returns {"before", "after", "readback"}; RuntimeError when the module has no list."""
+    import importlib  # noqa: PLC0415
+    import grpc.aio as gaio  # noqa: PLC0415
+    srv = importlib.import_module(OE_SERVER_MODULE)
+    lst = getattr(srv, "_SERVER_OPTIONS", None)
+    if not isinstance(lst, list) or not all(isinstance(x, tuple) and len(x) == 2 for x in lst):
+        raise RuntimeError("%s._SERVER_OPTIONS is not a list of (key, value) pairs"
+                           % OE_SERVER_MODULE)
+    before = [list(x) for x in lst]
+    for k, v in opts:
+        idx = [i for i, x in enumerate(lst) if x[0] == k]
+        if idx:
+            for i in idx:
+                lst[i] = (k, v)
+        else:
+            lst.append((k, v))
+    after = [list(x) for x in srv._SERVER_OPTIONS]
+    path = None if not out_dir else os.path.join(out_dir, "grpc_server_options.%d.jsonl"
+                                                 % os.getpid())
+    if path:
+        os.makedirs(out_dir, exist_ok=True)
+    orig = gaio.server
+
+    def server(*args, **kwargs):
+        options = kwargs.get("options")
+        if options is None and len(args) >= 4:  # server(thread_pool, handlers, interceptors, opts)
+            options = args[3]
+        if path:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"pid": os.getpid(), "t_ns": time.monotonic_ns(),
+                                    "options": [list(x) for x in (options or ())]},
+                                   sort_keys=True) + "\n")
+        return orig(*args, **kwargs)
+    server.__wrapped__ = orig
+    gaio.server = server
+    return {"before": before, "after": after, "readback": path}
 
 
 def cpp_host_mode(serve_args):
@@ -425,6 +504,9 @@ def main(argv=None):
         if why:
             print("serve_nx: inject refused: %s" % why, file=sys.stderr)
             return 3
+        if os.environ.get(ENV_GRPC_SERVER_OPTIONS):
+            apply_grpc_server_options([tuple(x) for x in json.loads(
+                os.environ[ENV_GRPC_SERVER_OPTIONS])], _snx_out_dir(ENV_VAR))
         serve_args = argv
     else:
         own, serve_args = parts
@@ -438,6 +520,15 @@ def main(argv=None):
             extra = parse_llm_api_sets(a.llm_api_set)
         except ValueError as e:
             print("serve_nx: %s" % e, file=sys.stderr)
+            return 3
+        try:
+            grpc_opts = parse_grpc_server_options(a.grpc_server_option)
+        except ValueError as e:
+            print("serve_nx: %s" % e, file=sys.stderr)
+            return 3
+        if grpc_opts and flag_value(serve_args, "--grpc-protocol") != "openengine":
+            print("serve_nx: --grpc-server-option needs --grpc-protocol openengine in the serve "
+                  "arguments", file=sys.stderr)
             return 3
         if extra and a.stream_interval is None:
             print("serve_nx: --llm-api-set needs --stream-interval (it writes the YAML)",
@@ -509,6 +600,15 @@ def main(argv=None):
                           "diag": a.diag,
                           "jsonl": None if inj is None else inj.path,
                           "gc_freeze_after_ready": bool(a.gc_freeze_after_ready)}
+        if grpc_opts:
+            try:
+                done["grpc_server_options"] = dict(
+                    apply_grpc_server_options(grpc_opts, cfg.out_dir),
+                    given=[list(x) for x in grpc_opts])
+            except (ImportError, RuntimeError) as e:
+                print("serve_nx: --grpc-server-option refused: %s" % e, file=sys.stderr)
+                return 3
+            os.environ[ENV_GRPC_SERVER_OPTIONS] = json.dumps([list(x) for x in grpc_opts])
         done["launcher_env_removed"] = scrubbed
         done["affinity"] = affinity
         private = {}
