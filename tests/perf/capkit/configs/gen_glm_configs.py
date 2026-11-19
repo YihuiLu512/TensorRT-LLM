@@ -19,7 +19,10 @@ Arms e10-<engine>-<shape>-vload are the same scenario with a launch-level load-s
 in the tier table (V control, design card E10: busy delta_ns at capgrpc.load's recv.msg, once per
 received message in every reader worker; the boundary should not move). Arms
 e10-<engine>-<shape>-k8 double the load source (capgrpc.load with K = 8 connections / workers on
-8 cores; design card E10 control "load source doubled"; the boundary should not move).
+8 cores; design card E10 control "load source doubled"; the boundary should not move). Arms
+e10-<engine>-mc-tps4 are the mc arm with tokens_per_msg 4 in the tier table (the substitute is
+run with {param:glm_tokens_per_step} = 4, so every step message carries 4 tokens; design card E10
+dimension check "tokens_per_step = 4"); scenario as the base arm.
 Usage: python configs/gen_glm_configs.py <new output dir>   (writes <dir>/glm)
 """
 import json
@@ -191,9 +194,9 @@ SHAPE_NOTES = {
 VLOAD = [{"role": "reader", "site": "recv.msg", "mode": "busy", "delta_ns": "TBD:delta_ns"}]
 
 
-def tpl(name, shape, launch_inject=()):
+def tpl(name, shape, launch_inject=(), tokens_per_msg=1):
     axis, common, warm, up = SHAPES[shape]
-    common = dict(common, tokens_per_msg=1, stream_interval="TBD:stream_interval",
+    common = dict(common, tokens_per_msg=tokens_per_msg, stream_interval="TBD:stream_interval",
                   prompt_set="TBD:prompt_set")
     tiers = [dict({"label": "warmup", "kind": "warmup", "ramp_ns": 0,
                    "window_ns": "TBD:warmup_ns", "tail_ns": 0}, **warm),
@@ -213,15 +216,15 @@ def tpl(name, shape, launch_inject=()):
                                                       if launch_inject else ()) + (TEMPLATE_NOTE,))}
 
 
-def e10(engine, shape, vload=False, k=K):
-    name = "e10-%s-%s%s%s" % (engine, shape, "-vload" if vload else "",
-                              "" if k == K else "-k%d" % k)
+def e10(engine, shape, vload=False, k=K, tps=1):
+    name = "e10-%s-%s%s%s%s" % (engine, shape, "-vload" if vload else "",
+                                "" if k == K else "-k%d" % k, "" if tps == 1 else "-tps%d" % tps)
     roles = [host(engine), grpc_load("host", k)] + observers("reader")
     w(name + ".scenario.json",
       scen(name, roles, "E10-S %s: capgrpc.load (%d connections) -> serve_glm host (glm5-serve "
                         "--grpc --grpc-protocol openengine, %s)" % (name, k, ENGINE_NOTE[engine]),
            {"request_bytes": req_bytes()}))
-    w(name + ".tiers.template.json", tpl(name, shape, VLOAD if vload else ()))
+    w(name + ".tiers.template.json", tpl(name, shape, VLOAD if vload else (), tps))
 
 
 for _engine in ("g0", "g1"):
@@ -229,6 +232,7 @@ for _engine in ("g0", "g1"):
         for _vload in (False, True):
             e10(_engine, _shape, _vload)
         e10(_engine, _shape, k=2 * K)
+    e10(_engine, "mc", tps=4)
 
 _d = os.path.join(OUT, SUB)
 for n in sorted(os.listdir(_d)):
