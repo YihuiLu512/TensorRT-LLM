@@ -61,6 +61,16 @@ def test_closed_logs_like_the_original_plus_w5_w6(tmp_path):
     assert reqs[0]["prompt_sha1"] == reqs[2]["prompt_sha1"]
 
 
+def test_header_records_run_step_and_arm(tmp_path):
+    env = {"E12_REQLOG_DIR": str(tmp_path), "E12_RUN": "c8_r1_text", "TRTLLM_PERF_RUN": "3",
+           "TRTLLM_PERF_ARM": "B-s1"}
+    hdr, reqs = run(rl.load_config(env, ARGV), 2)
+    assert len(reqs) == 2
+    assert (hdr["run"], hdr["step"], hdr["arm"]) == ("c8_r1_text", "3", "B-s1")
+    hdr, _reqs = run(rl.load_config({"E12_REQLOG_DIR": str(tmp_path)}, ARGV), 1)
+    assert (hdr["run"], hdr["step"], hdr["arm"]) == (None, None, None)
+
+
 def test_w1_closed_delta_waits_delta_before_the_call(tmp_path):
     cfg = rl.load_config({"E12_REQLOG_DIR": str(tmp_path), "E12_MODE": "closed_delta",
                           "E12_DELTA_MS": "12.5"}, ARGV)
