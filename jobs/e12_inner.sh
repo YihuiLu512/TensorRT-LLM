@@ -56,7 +56,17 @@ export TZ=UTC TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1 LLM_ROOT=$SRC AGG_CONFIG_FOL
 export LLM_MODELS_ROOT=/home/scratch.trt_llm_data_ci/llm-models LLM_TEST_PARALLEL_OVERRIDE=1
 export HOME=${TMPDIR:-/tmp}/e12-home-${CAPKIT_JOB_ID:-x} PYTEST_ADDOPTS='-p no:cacheprovider'
 mkdir -p "$HOME"
-export PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../tools/cape12/bin" && pwd):$PATH"
+# The PATH shim runs from a run-local executable copy: the job's code snapshot is read-only and
+# without exec bits (capjobs.snapshot), and a non-executable `python` on PATH is skipped silently,
+# so the client would run without reqlog (E12 smoke 6148825). The copy keeps the shim's layout
+# (bin/python next to ../reqlog_l2a.py); `command -v python` must resolve to it.
+CAPE12="$(cd "$(dirname "${BASH_SOURCE[0]}")/../tools/cape12" && pwd)" || refuse "tools/cape12 missing"
+SHIM=$CAPKIT_RUN_DIR/e12shim
+mkdir -p "$SHIM/bin" && cp "$CAPE12/bin/python" "$SHIM/bin/python" \
+    && cp "$CAPE12/reqlog_l2a.py" "$SHIM/reqlog_l2a.py" && chmod 0755 "$SHIM/bin/python" \
+    || refuse "cannot set up the PATH shim"
+export PATH="$SHIM/bin:$PATH"
+[[ $(command -v python) == "$SHIM/bin/python" ]] || refuse "PATH shim not first: $(command -v python)"
 "$PY" - "$GPUS" > "$OUT/cuda_probe.txt" 2>&1 <<'PY' || { echo "ENV_INVALID: CUDA probe"; exit 6; }
 import sys, torch
 n = torch.cuda.device_count(); print('CUDA_DEVICE_COUNT', n, flush=True)
@@ -110,7 +120,8 @@ for step in "${STEP_LIST[@]}"; do
         --chain "$chain" --out "$sd/run" --list "$sd/list.txt" --timeout $((STEP_TIMEOUT - 120)) \
         > "$sd/runner.log" 2>&1
     rc=$?
-    echo "rc=$rc t0=$t0 t1=$(date +%s.%N) end=$(date -Is)" | tee -a "$sd/step.txt"
+    echo "rc=$rc t0=$t0 t1=$(date +%s.%N) end=$(date -Is) reqlog_files=$(ls "$sd/reqlog" 2>/dev/null | wc -l)" \
+        | tee -a "$sd/step.txt"
     clean_leftovers "$mark" "$sd"
 done
 echo "=== INNER DONE $(date -Is)" | tee -a "$OUT/inner.txt"
