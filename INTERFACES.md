@@ -1846,6 +1846,27 @@ R2 自审（slug `capkit-b2judge-J17871`）发现的问题已直接改进本子�
 - **`{raw}/snx/serve_glm.<pid>.jsonl`**（`capkit.serve_glm.diag/1`）：首行头（engine、step_ms、tokens_per_step、inject、diags、`sys.getswitchinterval()`），之后每秒一行：`M1`（hits/applied/applied_ns，累计）、`dispatch`（calls/responses 累计、max_batch 本秒）、`loop`（n/lag_ns/hist 累计、max_lag_ns 本秒）、`engine`（G1：`StepStats` 累计 + 本秒 max；G0：`_iter`、在途请求数）、`server`（phase、requests、generate_accepted）、`threads`、`gc`；进程退出时再写一行。`{raw}/snx/host.serve_glm.json`（`capkit.serve_glm/1`）记 glm 根目录、五个被包装文件的 sha256、Python 版本与前缀、解析后的 mock 配置与 serve 参数。
 - **`configs/glm/`**（`configs/gen_glm_configs.py`）：e10-{g0,g1}-{mc,r}，拓扑同 E8（K = 4 条 `capgrpc.load` 连接）且读者加 `--planned-msgs`；宿主 4 + 1（procmon）核。
 
+### S-NX 线 B1 / R3：准入拒绝改归过载、Wr / Dr 位点、tname（2026-11-19）
+
+依据：`05_engine/PLAN-R2R5.md` 第 6 节（B1）、第 1 节（R3 原架构 V）、第 3.2 节（B6）；`05_engine/E9/analysis/cancelled-trace/REPORT.md`（准入拒绝的机制与 1.84.0 本地复现）。
+
+1. **判定器：准入拒绝归过载型**（新模块 `capjudge.admission`；`symptoms.failures_by_class` 多一个可选参数 `adm`，`judge_tree` 建 `ctx.admission` 并传给 C3、C5～C7 的过载数下限与 X）。一条失败条目里，满足下面全部条件的请求数（上限为条目的 `count`）记为过载型、`by_category` 记 `admission_rejected`，其余部分按原规则（勘误 B2-2E-6、设计 2.6）：
+   - 逐请求（读同档、同角色、同 worker 的 `requests.capbin`，状态号按该文件自己的 `meta.status_codes` 映射，gRPC 读者各 worker 的编号不同）：gRPC 读者 `grpc_CANCELLED` 且 `frames == 0`；HTTP 负载器（新架构前端后面的 capload）`protocol_error` 且 `frames <= 1`、`tokens <= 0`；两者都要 `done - sent <= 5 s`（`ADMISSION_MAX_NS`，远低于 gRPC 30 s 未领取时限与登记超时，远高于 E9 N-8f0 实测最坏 1.2 s）。
+   - 整个启动（不满足则本启动一条也不改归）：S-NX rank 0 自报 `raw/snx/snx.<pid>.summary.json` 存在且都没有 `fatal_error`，且候选总数 ≤ 负载器全部档的 `counts.sent` 之和 − rank 0 的 `counts.taken`（「未达 rank 0」的守恒判据）；有 HTTP 候选时，前端日志 `raw/logs/frontend*.out` 里 `failed a request: OpenEngine Generate on … failed with CANCELLED: CANCELLED` 的行数 ≥ HTTP 候选数（HTTP 负载器看不到 gRPC 状态，以前端日志为证）。
+   - `verdicts.json` 新增可选键 `admission`（只在有候选原因的启动出现）：`candidates`、`sent`、`rank0_taken`、`fe_log_cancelled`、`admitted`、`why`。
+   - 只有判定器（`judge_tree`）改用新规则；不经 `judge_tree` 调 `failures_by_class` 的分析脚本不传 `adm`，保持原规则。
+   - 不改带：S-NX 读数（`snx_readout.py` / `ft_readout.py`）的送达、xrel、e1 口径都把任何失败当不稳定，与失败的类别无关。
+
+2. **gRPC 读者（`capgrpc.load`、`capgrpc.oe_sink`）**：读者自己取消的请求（任务被取消，如停止时；oe_sink 的流被本端取消且不是到时）原因由 `grpc_CANCELLED` 改为 `client_cancelled`（`class_hint` `non_overload`），`grpc_CANCELLED` 只表示服务端返回的 CANCELLED 状态。每档 summary 的每条失败条目新增 `zero_msgs`（其中一条消息都没收到的请求数）与 `max_send_to_end_ns`（其中最长的发出到结束时间）。旧树没有这两个键、旧树里两种取消同名；判定器只读逐请求记录，不依赖这两个键。
+
+3. **S-NX 位点 Wr（rank 0 worker）**：`capstubs.snx_inject.SITES["Wr"]` = `tensorrt_llm.executor.base_worker._send_rsp(worker, response, postproc_batches=None, rsp_batch=None)`（镜像 9fd3822a00 与 2f22a98d6e 的 base_worker.py 相同、不在 P0 覆盖清单里；唯一的逐响应调用点是 `AwaitResponseHelper.handle_for_ipc_batched` 的循环，base_worker.py:1586，按模块全局名查找）。worker 进程拿不到 `CAPKIT_SNX_INJECT`（MpiPoolSession 只转发 `TRTLLM*`），所以：`serve_nx --inject Wr:…` 写进 S-NX 配置新键 `worker_inject`（`capkit.snx_config/1` 加键，缺省 `""`），`null_worker.build_null_executor` 在 worker 里 `snx_inject.install_worker` 安装；`install_from_env`（宿主 / 前端进程）拒绝 worker 位点，`install_worker` 拒绝非 worker 位点；`--worker` 不是 `null` 时给 Wr 退出码 3。nx_role / nx_driver 用 `--set worker_inject=Wr:…`。计数照旧写 `<out_dir>/inject.<pid>.jsonl`（首行 `process: worker`）。
+
+4. **nx_driver 排空端位点 Dr**：`nx_driver proxy|drain`、`nx_role` 新参数 `--drain-inject Dr:count | Dr:busy:NS`（只用于 raw / deserialize 排空端；K ≥ 2 时传给每个 drain 子进程），在排空线程每收到一帧之后立即执行；每个 lane 的 `nxd.<lane>.summary.json` 每档（接收时刻）新增 `dr_hits`、`dr_applied`、`dr_applied_ns`（不给参数时不出现这些键）。
+
+5. **宿主诊断 tname（B6）**：`snx_inject` 诊断新增 `tname`：安装之后启动、名字是缺省形式（`Thread-N` 或 `Thread-N (target)`）的线程，改名为其 target 的限定名（`<模块末段>.<qualname>`；覆写 run 的子类用类名）；只改 Python 线程名，threads 普查据此给出名字。serve_nx 的缺省不变（不默认开），由 R3 新运行树的场景显式给 `--diag gc,threads,tname`（见 PLAN-R2R5 勘误 E-R3-3）。
+
+6. **验证**：`tests/judge/test_admission.py`（逐请求签名；状态号按文件映射；阳性对照 E8 形态与 E9 HTTP 形态判过载；阴性对照：本端取消、收到过消息的 CANCELLED、30 s 时限路径、登记超时、前端日志为 UNAVAILABLE、旧架构无 OpenEngine 行、守恒不成立、rank 0 自报缺失或 fatal；条目部分改归；无候选原因时不读任何证据；日志跨块计数）；`tests/grpc/test_unrequested.py`（服务端 CANCELLED 的条目 `zero_msgs`、`max_send_to_end_ns`）；`tests/capstubs/test_snx_inject.py`（Wr 计数与忙等、宿主 / worker 位点互拒、serve_nx 把 Wr 写进配置而不写进环境变量、tname 只改缺省名且可还原）；`tests/capstubs/test_serve_nx.py`（Dr 忙等与逐档计数、count 模式、非法规格拒绝、drain 子命令参数）；`tests/capstubs/test_null_executor.py`（`worker_inject` 键）。镜像内 Wr 的真实安装（worker 进程能导入 `base_worker` 且 `_send_rsp` 被替换）、Dr / tname 在作业里的效果【未运行】，属 R3 首个作业的冒烟核对（PLAN-R2R5 第 1 节阳性对照）。
+
 ## 审阅记录（r2，2026-11-13）
 
 审阅意见来自 spec-critic（JSON，24 条）。每条都对照设计稿 / 计划原文核对过；「采纳」= 按意见改，「部分采纳」= 问题属实、改法与意见不同（写理由），「不采纳」= 问题不成立。
