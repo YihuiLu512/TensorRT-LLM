@@ -30,6 +30,15 @@ x < (requests planned by t), else 0, with planned = every schedule row's planned
 steps records only when it runs a step, so a tier in which it is starved has no step rows; the
 probe samples at a fixed interval from outside the worker whether or not the engine advances.
 
+--frame-capture-dir D (default '' = off; proxy mode, --lanes 1, raw / deserialize drain only):
+ZeroMQ frame capture for design 13.3 E15-A2 (capstubs.frame_capture). Result frames are taken by
+the drain where it counts them; request frames by a wrapper of ZeroMqQueue._prepare_data in this
+process that records what the proxy's request_queue sends. Every --frame-capture-every'th frame of
+a direction is written, at most --frame-capture-per-tier per tier and direction and
+--frame-capture-max-mb in all, to D/frames.{result,request}.bin with D/frames.meta.json and the two
+queues' HMAC keys in D/frames.keys.json (mode 0600). Nothing runs in the worker. Not for runs that
+measure a ceiling (the capture's writes are on the drain thread and the sender thread).
+
 Per-tier summaries (written after the table end, like capgrpc.load): counts planned / sent / ok /
 failed / not_sent by the planned tier of each request; ok = the engine finished it (snx reqs
 records, matched by client id), failed = sent but not finished when the role stopped (reason
@@ -160,6 +169,14 @@ def build_parser():
     g.add_argument("--sample-every", type=int, default=0)
     g.add_argument("--lanes", type=int, default=1)
     g.add_argument("--drain-cpus", default="")
+    g.add_argument("--frame-capture-dir", default="",
+                   help="E15-A2 frame capture directory ('' = off; proxy, --lanes 1)")
+    g.add_argument("--frame-capture-every", type=int, default=1,
+                   help="capture every N-th frame of a direction")
+    g.add_argument("--frame-capture-per-tier", type=int, default=1000,
+                   help="captured frames per tier and direction at most")
+    g.add_argument("--frame-capture-max-mb", type=int, default=512,
+                   help="captured bytes of both directions at most (MiB)")
     nxd.add_drain_inject_arg(g)
     g.add_argument("--python", default=sys.executable)
     g.add_argument("--keep-launcher-env", action="store_true",
@@ -193,6 +210,13 @@ def validate_args(args):
         raise ConfigError("--lanes and --poll-ms must be >= 1, --tail-s >= 0")
     if getattr(args, "engine_probe_ms", 0) < 0:
         raise ConfigError("--engine-probe-ms must be >= 0")
+    if getattr(args, "frame_capture_dir", ""):
+        if args.mode != "proxy" or args.lanes != 1 or args.consumer == "product":
+            raise ConfigError("--frame-capture-dir needs --mode proxy, --lanes 1 and a raw or "
+                              "deserialize drain")
+        if min(args.frame_capture_every, args.frame_capture_per_tier,
+               args.frame_capture_max_mb) < 1:
+            raise ConfigError("--frame-capture-every / -per-tier / -max-mb must be >= 1")
     if args.mode == "standalone" and args.worker_cores:
         raise ConfigError("--worker-cores is a proxy option (standalone has no worker)")
     if args.worker_cores < 0 or args.procmon_cores < 0 or args.procmon_interval_ms < 10:
@@ -209,6 +233,17 @@ def _engine_files(snx_dir, kind, exclude_pid=None):
         if pid != exclude_pid:
             out.append((pid, p))
     return out
+
+
+def make_capture(args, plan):
+    """The FrameCapture of --frame-capture-* (the directory must not hold an earlier capture)."""
+    from .frame_capture import FrameCapture  # noqa: PLC0415
+    try:
+        return FrameCapture(args.frame_capture_dir, plan, every=args.frame_capture_every,
+                            per_tier=args.frame_capture_per_tier,
+                            max_bytes=args.frame_capture_max_mb << 20)
+    except FileExistsError as e:
+        raise ConfigError("--frame-capture-dir already holds frames: %s" % e) from e
 
 
 def standalone_parts():
@@ -244,6 +279,7 @@ class NxRole:
                                    "self_drain" if args.mode == "standalone" else args.consumer,
                                    args.sample_every)
         self.ex = self.proxy = self.live = None
+        self.capture = None
         self.children = []
         self.engine_pid = None
         pm = getattr(args, "engine_probe_ms", 0)
@@ -262,8 +298,15 @@ class NxRole:
         if self.args.mode == "standalone":
             self._build_standalone()
         else:
+            if getattr(self.args, "frame_capture_dir", ""):
+                self.capture = self.da.frame_capture = make_capture(self.args, self.plan)
             self.proxy, extra = nxd.start_proxy(self.da, self.plan, self.stats, self.stop)
             self.info.update(extra)
+            if self.capture is not None:
+                from .frame_capture import attach_proxy  # noqa: PLC0415
+                attach_proxy(self.capture, self.proxy)
+                self.info["frame_capture"] = {"dir": self.args.frame_capture_dir,
+                                              "queues": self.capture.queues}
             lives = _engine_files(self.args.snx_out_dir, "live")
             if len(lives) != 1:
                 raise ConfigError("expected one worker live file in %s, found %d"
@@ -400,6 +443,12 @@ class NxRole:
             self.ex.shutdown()
         if self.proxy is not None:
             self.proxy.shutdown()
+        if self.capture is not None:
+            self.capture.close({"role": TOOL, "prompt_len": self.args.prompt_len,
+                                "origin_ns": self.plan.origin,
+                                "recvs": "nxd.%s.recvs%s" % (self.stats.name, REC_EXT),
+                                "sends": "nxd.%s.sends%s" % (self.stats.name, REC_EXT),
+                                "engine_pid": self.engine_pid})
         if self.live is not None:
             self.live.close()
 

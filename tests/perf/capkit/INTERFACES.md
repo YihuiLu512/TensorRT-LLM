@@ -1913,6 +1913,19 @@ R2 自审（slug `capkit-b2judge-J17871`）发现的问题已直接改进本子�
 3. **为什么在 nx_role 里采**：S-NX 的 steps 记录由步线程自己在跑完一步后写；步线程拿不到 GIL 时整档没有 step 行（E7 COVER-R1 §4：R 轴 9051、10763 两档 0 或 118 行），取件滞后与唤醒滞后无样本，按读数规则 r2 判不可判。探针在另一个进程里按固定间隔采，引擎不推进时计数不动、滞后随采样时刻线性增长，所以过载档也有样本。
 4. **验证**：`tests/capstubs/test_nx_role.py`（standalone 端到端：每 20 ms 一行、按档拆分、summary 样本数一致、计数单调、finished 到全部请求、引擎跟得上时滞后小；阳性对照：手造计数在 1 s 处冻结 taken / finished，take 与 finish 滞后每 100 ms 增 100 ms、精确等于采样时刻 − 第一个未完成请求的计划时刻，enqueue 滞后保持 0；读不到计数记 missed；容量公式；负值拒绝）。proxy 模式下经 live 记录采样、E7 R 轴过载档样本数 ≥ 100【未运行】，属 B5 E7 首个作业的冒烟核对。
 
+### S-NX 线 E15-A2：抓帧（nx_role `--frame-capture-*`）与离线回放（`capstubs.frame_replay`）（2026-11-20）
+
+依据：`05_engine/PLAN-R2R5.md` 第 7 节与同文件勘误 E-E15A-n；设计稿 13.3 E15-A。
+
+1. **抓帧**（`capstubs.frame_capture`；缺省关，只有给了 `capstubs.nx_role --frame-capture-dir D` 才打开，没有环境变量开关；只允许 `--mode proxy --lanes 1`、raw / deserialize 排空端，即 K = 1 的 tcp PAIR 形态）：
+   - 结果方向：`nx_driver.drain_loop` 多一个 `cap` 参数，排空端在调 `LaneStats.received` 的同一处把这一帧交给 `cap.record("result", data, now)`；关机哨兵不计也不抓。所以结果帧序号 k = 排空端 recvs 记录第 k 条 = worker 第 k 次非空 `await_responses`（`snx.<pid>.takes.rec`）。
+   - 请求方向：`frame_capture.attach_proxy` 在 nx_role 进程里把 `tensorrt_llm.executor.ipc.ZeroMqQueue._prepare_data`（类属性）包一层：调用原函数后，若队列是 proxy 的 `request_queue` 且对象类型名是 `GenerationRequest`，记下返回的字节；同一队列上的其他对象（关机哨兵等）只计数。请求帧序号 k = 排空端 sends 记录第 k 条。`close()` 时恢复原函数。产品文件、worker 与 executor 都不改。
+   - 写法：每个方向每 `--frame-capture-every` 帧取 1 帧，每档每方向最多 `--frame-capture-per-tier` 帧，两方向合计最多 `--frame-capture-max-mb` MiB。`D/frames.{result,request}.bin` = 逐帧 `FRAME_HDR`（`<qqhI`：seq、t_ns、tier_seq、nbytes）+ 原始帧字节（pickle + 32 字节 HMAC）；`D/frames.meta.json`（每档 seen / captured、其他对象计数、两个队列的名字、recvs / sends 文件名、engine_pid、prompt_len）；`D/frames.keys.json`（权限 0600，两个队列的 HMAC 密钥，只在本次启动的 raw 目录里）。
+   - 不用于定上限的运行：抓帧的写盘在排空线程与发送线程上。
+2. **离线回放**（`python -m capstubs.frame_replay --capture-dir D --nxd-dir <raw>/nxd --snx-dir <raw>/snx --out X.json [--reps 5] [--impl auto|product|local] [--max-unequal-share 0.01] [--max-frames 0]`）：单线程，逐帧分别计时四个操作（结果批 `_prepare_data` = dumps + HMAC、结果批 `_parse_data` = 校验 + loads、请求的同两项），每项先不计时调用一次，再连续 `--reps` 次取平均，报线程 CPU 与墙钟；`product` 直接调用产品 `ZeroMqQueue` 的方法（对象只带密钥、不建 socket），`local` 是同样步骤的本地实现，`auto` 能导入产品时用产品。分层：结果帧按档与每帧响应数（2 的幂分桶），请求帧按档与 prompt 长度 L；单位 微秒/响应（请求：微秒/请求）、微秒/帧、字节/响应。
+   - 自检（任何一项不过就不出计时数）：任一方向抽样帧数为 0 ⇒ rc 2；对账（应有数来自回放脚本不写的记录：结果帧对 recvs 的字节数与接收时刻、对 worker takes 的响应数；请求帧对 sends 的 client id、对 worker reqs 的 prompt 长度；未改动的帧 HMAC 校验必须通过）不符 ⇒ rc 3；篡改阳性对照（每帧改签名中的一个字节、改载荷中间的一个字节，都必须校验失败）不过 ⇒ rc 4；等价性（重新 dumps 与原帧逐字节相等才计时 dumps；不等占比超过 `--max-unequal-share` 时该方向的 dumps 项不报）。`--out` 只写一次，已存在时 rc 5。
+3. **验证**：`tests/capstubs/test_frame_capture.py`（11 项：抽样间隔、每档上限、字节上限、文件格式与截断、密钥文件 0600、请求包装只认目标队列与请求类型并在关闭时恢复、排空端钩子与 recvs 逐条对齐且不抓哨兵、nx_role 参数与拒绝、回放端到端（真 HMAC 帧 + 生产格式的 recvs / sends / takes / reqs）、抽样为 0 / 对账不符 / 篡改对照不过三种退出码、不等价时 dumps 不报、产品四个方法原文的替身与本地实现逐字节一致）。产品 proxy 下的抓帧【未运行】，属 E15-A 抓帧作业的首作业冒烟核对。
+
 ## 审阅记录（r2，2026-11-13）
 
 审阅意见来自 spec-critic（JSON，24 条）。每条都对照设计稿 / 计划原文核对过；「采纳」= 按意见改，「部分采纳」= 问题属实、改法与意见不同（写理由），「不采纳」= 问题不成立。
