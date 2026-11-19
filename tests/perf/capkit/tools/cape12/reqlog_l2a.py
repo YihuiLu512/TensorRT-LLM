@@ -16,13 +16,18 @@ client entry of the perf-sanity YAML):
                    request i (in wrapper-entry order) is called at first-entry + offsets_s[i]
   E12_WARMUP_SEED  W4: a client whose argv `--seed` equals this value is the warm-up client: it
                    runs closed, with no delay and no schedule, whatever E12_MODE says
+  E12_RUN          the client's run name in the run plan (cape12.configgen sets it per client);
+                   recorded in the header as "run", with the step number and arm the inner
+                   script exports (TRTLLM_PERF_RUN, TRTLLM_PERF_ARM) as "step" and "arm", so
+                   every reqlog file can be matched to its run plan entry (design 12.6(i))
 
 W3: in open / replay mode `--max-concurrency <n>` is removed from argv before benchmark_serving
 parses it (the scaffold always writes it; with it the semaphore still caps in-flight requests).
-W5: the header line records the final argv, mode, delta, schedule sha256, mask seed / fraction
-and whether this is the warm-up client. W6: every request line carries output_sha1 (the
-generated text) besides prompt_sha1. Request lines add t_enter (wrapper entry) and t_call (the
-real call) so the applied delay / schedule lateness is measurable.
+W5: the header line records the final argv, mode, delta, schedule sha256, mask seed / fraction,
+whether this is the warm-up client, and the run / step / arm identity (null when not set).
+W6: every request line carries output_sha1 (the generated text) besides prompt_sha1. Request
+lines add t_enter (wrapper entry) and t_call (the real call) so the applied delay / schedule
+lateness is measurable.
 """
 
 import functools
@@ -77,7 +82,9 @@ def load_config(env, argv):
     warmup = wseed is not None and argv_seed(argv) == wseed
     cfg = {"out_dir": env["E12_REQLOG_DIR"], "requested_mode": mode, "warmup": warmup,
            "mode": "closed" if warmup else mode, "delta_s": 0.0, "mask_seed": None,
-           "mask_frac": None, "schedule_sha256": None, "offsets_s": None}
+           "mask_frac": None, "schedule_sha256": None, "offsets_s": None,
+           "run": env.get("E12_RUN"), "step": env.get("TRTLLM_PERF_RUN"),
+           "arm": env.get("TRTLLM_PERF_ARM")}
     m = cfg["mode"]
     if m in ("closed_delta", "partial_delta"):
         if "E12_DELTA_MS" not in env:
@@ -135,7 +142,8 @@ class Wrapper:
         self.first_entry = None
         hdr = {"hdr": 1, "pid": os.getpid(), "wall0": self.wall0, "perf0": self.perf0}
         hdr.update({k: cfg[k] for k in ("argv", "mode", "requested_mode", "warmup", "delta_s",
-                                        "mask_seed", "mask_frac", "schedule_sha256")})
+                                        "mask_seed", "mask_frac", "schedule_sha256", "run",
+                                        "step", "arm")})
         hdr["n_offsets"] = None if cfg["offsets_s"] is None else len(cfg["offsets_s"])
         log.write(json.dumps(hdr) + "\n")
 
