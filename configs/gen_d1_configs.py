@@ -25,8 +25,8 @@ each D1 arm stays comparable with the S-NX arm it comes from:
 The C++ host is started by the launcher (trtllm-serve --openengine-host-impl cpp) as a child of
 the host role's process, so it runs on the host role's own cores (4, as the Python host; the
 rank 0 worker and procmon keep their cores). E16-zr (replay stub S-ZR instead of rank 0) is not
-generated here: its response source is capstubs.szr_launch (branch szr-d1, W13); see
-configs/d1/README.md.
+generated here: its response source is capstubs.szr_launch, whose make-wrapper output
+(<dir>/szr-d1-wrap) is passed as param d1_bin; see configs/d1/README.md.
 
 Usage: python configs/gen_d1_configs.py <new output dir>   (writes <dir>/d1; reads configs/snx)
 """
