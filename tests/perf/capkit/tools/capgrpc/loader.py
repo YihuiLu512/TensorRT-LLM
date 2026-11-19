@@ -14,6 +14,11 @@
   message-level lag = receive time - stamped planned time (INTERFACES.md 7.4).
 - --planned-msgs: for unstamped streams (the OpenEngine stubs), message-level lag against the
   planned time derived from the schedule (capgrpc.msgplan; INTERFACES errata FT1-9).
+- --consume client: each worker reads its streams through the product's OpenEngine client
+  (OpenEngineClient.generate -> GenerateStream: protobuf requests and responses, one read task per
+  message, stream-contract validation, the post-terminal drain) instead of raw bytes on a raw
+  multicallable (--consume raw, the default). Same schedule, tiers, records and summary; message
+  bytes are not counted (capgrpc.oe_sink.LoadClientWorker; PLAN-R2R5 2).
 - --in-process: run the single worker in this process (weak-reader mode with
   --workers 1 --channels-per-worker 1); otherwise a supervisor process spawns the workers.
   capgrpc.oe_sink subclasses LoadWorker / RequestPlan and takes the same reader arguments
@@ -48,6 +53,7 @@ from .msgplan import MsgPlan
 from .reqbytes import encode_pb_string_field, load_prompts, load_reqbytes
 
 REQUEST_FORMATS = ("capkit", "openengine", "raw")
+CONSUMES = ("raw", "client")
 REQ_FIELDS = [("req_id", "q"), ("planned_rel_ns", "q"), ("sent_rel_ns", "q"),
               ("first_rel_ns", "q"), ("done_rel_ns", "q"), ("frames", "i"), ("bytes", "q"),
               ("tokens", "i"), ("status", "h"), ("conn_id", "i"), ("new_conn", "b"),
@@ -99,6 +105,10 @@ def build_parser():
                         "channels of a worker share one connection")
     g.add_argument("--stamped", action="store_true",
                    help="drain mode: read the beat stamp of every message (INTERFACES.md 7.4)")
+    g.add_argument("--consume", choices=CONSUMES, default="raw",
+                   help="raw: raw bytes on a raw multicallable (default); client: the product's "
+                        "OpenEngineClient / GenerateStream per request (container only; needs "
+                        "--request-format openengine, one channel per worker)")
     return p
 
 
@@ -133,6 +143,14 @@ def validate_args(args, common):
                               "raw request bytes carry their own")
     if len(common.cpus) < args.workers:
         raise ConfigError("--cpus lists %d cpus for %d workers" % (len(common.cpus), args.workers))
+    if getattr(args, "consume", "raw") == "client":
+        if args.request_format != "openengine":
+            raise ConfigError("--consume client needs --request-format openengine")
+        if args.stamped:
+            raise ConfigError("--consume client and --stamped exclude each other")
+        if args.channels_per_worker != 1:
+            raise ConfigError("--consume client drives one client per worker: "
+                              "--channels-per-worker must be 1")
 
 
 # ---- per-worker request plan ------------------------------------------------------------------
@@ -648,7 +666,11 @@ def worker_run(args, worker, link):
     rt = ToolRuntime(common, TOOL, SLOTS, SITES, worker, args.workers, cpus, args.lag_period_us,
                      args.lag_records_capacity)
     plan = RequestPlan(args, rt.tt, worker)
-    w = LoadWorker(args, rt, plan, link)
+    if getattr(args, "consume", "raw") == "client":
+        from .oe_sink import load_client_worker  # noqa: PLC0415 - imports the product
+        w = load_client_worker(args, rt, plan, link)
+    else:
+        w = LoadWorker(args, rt, plan, link)
     return aio_run(w.run, common.loop)
 
 

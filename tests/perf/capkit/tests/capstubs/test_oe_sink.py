@@ -411,6 +411,117 @@ def test_template_with_request_id_is_refused(launch):
     assert "carries a request_id" in launch.stderr("sink")
 
 
+# ---- capgrpc.load --consume client (PLAN-R2R5 2) ------------------------------------------------
+
+LOAD = "capgrpc.load"
+
+
+def load_argv(launch, role, rb, workers=2, *extra, cpu0=1):
+    """capgrpc.load's multi-process reader argv (K = workers, one channel each)."""
+    return launch.common(role, cpus=",".join(str(cpu0 + i) for i in range(workers))) + [
+        "--target-port-file", launch.tree.port_file("spb"), "--method", METHOD,
+        "--workers", str(workers), "--channels-per-worker", "1",
+        "--schedule", launch.sched_path, "--request-format", "openengine", "--request-bytes", rb,
+        "--msg-sample-mod", "1", "--max-records-per-worker", "1000"] + list(extra)
+
+
+def test_load_consume_client_counts_equal_raw(launch):
+    """The same K = 2 reader with --consume raw (default) and --consume client side by side on
+    one S-PB: per tier the same planned / sent / ok / failed request counts and message counts,
+    every one reconciled with S-PB; only the client one reads GenerateResponse objects."""
+    pb_path, rb = setup(launch)
+    start_spb(launch, pb_path, "--schedule", launch.sched_path)
+    launch.start("raw", LOAD, load_argv(launch, "raw", rb, 2, *PLANNED, cpu0=1))
+    launch.start("cli", LOAD, load_argv(launch, "cli", rb, 2, *PLANNED, cpu0=3)
+                 + ["--consume", "client"])
+    assert launch.wait_exit("raw", 60) == 0, launch.stderr("raw")
+    assert launch.wait_exit("cli", 60) == 0, launch.stderr("cli")
+    assert launch.stop("spb") == 0, launch.stderr("spb")
+    rw, cl, sp = launch.summaries("raw"), launch.summaries("cli"), launch.summaries("spb")
+    for key in ("counts.planned", "counts.sent", "counts.ok", "counts.failed", "msgs.msgs"):
+        assert per_tier(rw, key) == per_tier(cl, key), key
+    planned = per_tier(cl, "counts.planned")
+    assert planned[0] > 0 and planned[2] > 0 and total(cl, "counts.failed") == 0
+    assert per_tier(cl, "counts.ok") == planned
+    m = expect.msgs_per_request(5, 1, 1, "product") + 1
+    for seq in (0, 2):
+        assert len(cl[seq]) == 2 and len(rw[seq]) == 2  # one summary per worker
+        assert sum(d["msgs"]["msgs"] for d in cl[seq]) == planned[seq] * m
+        assert sum(d["counts"]["ok"] for d in cl[seq]) == \
+            sum(d["recv_types"].get("GenerateResponse", 0) for d in cl[seq])
+        assert sum(d["recv_types"].get("bytes", 0) for d in rw[seq]) == planned[seq]
+    assert total(sp, "counts.streams_accepted") == total(rw, "counts.ok") + total(cl, "counts.ok")
+    assert total(sp, "counts.msgs_sent") == total(rw, "msgs.msgs") + total(cl, "msgs.msgs")
+    d = cl[2][0]
+    assert d["tool"] == LOAD and d["n_workers"] == 2 and d["in_process"] is False
+    assert d["consume"] == {"mode": "client", "tier": TIER1, "connect": "channel",
+                            "timeout_mechanism": "grpc_deadline"}
+    assert d["msgs"]["bytes"] is None and d["local_subchannel_pool"] is True
+    assert d["imported"]["modules"]["tensorrt_llm.grpc.openengine_client"].startswith(launch.pkg)
+    assert "consume" not in rw[2][0] and rw[2][0]["msgs"]["bytes"] > 0  # raw output unchanged
+    reqs, _ = launch.records("cli", "requests")
+    assert set(reqs["bytes"]) == {-1} and set(reqs["status"]) == {0}
+    for role in ("raw", "cli"):
+        msgs, h = launch.records(role, "msgs")
+        assert h[0]["meta"]["planned_source"] == "schedule"
+        assert len(msgs["idx"]) == total(launch.summaries(role), "msgs.msgs")
+    with open(launch.tree.ready_file("cli")) as f:
+        workers = json.load(f)["info"]["workers"]
+    assert len(workers) == 2 and all(w["info"]["consume"] == "client" for w in workers)
+
+
+def test_load_consume_client_failures_equal_raw(launch):
+    """Streams longer than the request timeout: both consumers end every request as
+    timeout_registered (the gRPC deadline from the planned time), same counts."""
+    sp = [("warmup", 400, 10.0, {"n": 40, "beat": 20 * MS}),
+          ("drain", 1200, 0.0, {"beat": 20 * MS})]
+    pb_path, rb = setup(launch, sp=sp, timeout_ns=200 * MS)
+    start_spb(launch, pb_path, "--schedule", launch.sched_path)
+    launch.start("raw", LOAD, load_argv(launch, "raw", rb, 2, cpu0=1))
+    launch.start("cli", LOAD, load_argv(launch, "cli", rb, 2, cpu0=3) + ["--consume", "client"])
+    assert launch.wait_exit("raw", 60) == 0, launch.stderr("raw")
+    assert launch.wait_exit("cli", 60) == 0, launch.stderr("cli")
+    assert launch.stop("spb") == 0
+    out = {}
+    for role in ("raw", "cli"):
+        sk = launch.summaries(role)
+        fails = {}
+        for d in sk[0]:
+            for f in d["failures"]:
+                fails[(f["reason"], f["class_hint"])] = \
+                    fails.get((f["reason"], f["class_hint"]), 0) + f["count"]
+        out[role] = (total(sk, "counts.planned"), total(sk, "counts.ok"),
+                     total(sk, "counts.failed"), fails)
+    n = out["raw"][0]
+    assert n > 0 and out["raw"] == out["cli"] == (
+        n, 0, n, {("timeout_registered", "overload"): n})
+
+
+@pytest.mark.parametrize("case", ["capkit", "stamped", "channels", "no_product"])
+def test_load_consume_client_refusals(launch, case):
+    pb_path, rb = setup(launch)
+    argv = load_argv(launch, "cli", rb, 2) + ["--consume", "client"]
+    if case == "capkit":
+        argv[argv.index("--request-format") + 1] = "capkit"
+        j = argv.index("--request-bytes")
+        argv[j:j + 2] = ["--prompts", launch.prompts_path]
+        want = "--consume client needs --request-format openengine"
+    elif case == "stamped":
+        argv += ["--stamped"]
+        want = "--consume client and --stamped exclude each other"
+    elif case == "channels":
+        argv[argv.index("--channels-per-worker") + 1] = "2"
+        want = "--channels-per-worker must be 1"
+    else:
+        start_spb(launch, pb_path, "--schedule", launch.sched_path)
+        launch.product = False
+        want = "container only"
+    rc = run_reader(launch, "cli", LOAD, argv, timeout=40)
+    assert rc == 3, (rc, launch.stderr("cli"))
+    assert want in launch.stderr("cli"), launch.stderr("cli")
+    assert not os.path.exists(launch.tree.ready_file("cli"))
+
+
 # ---- in-process unit checks (the client double imported into this process) ----------------------
 
 @pytest.fixture
