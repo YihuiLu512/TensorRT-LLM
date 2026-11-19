@@ -414,10 +414,14 @@ def _fake_oe_server(monkeypatch):
     mod._SERVER_OPTIONS = [("grpc.max_receive_message_length", 64 << 20),
                            ("grpc.keepalive_time_ms", 30000)]
 
-    def build():
+    async def _build():
         options = list(mod._SERVER_OPTIONS)
         options.append(("grpc.so_reuseport", 0))
         return mod.grpc.aio.server(options=options), options
+
+    def build():  # the product builds its server inside the running event loop
+        import asyncio
+        return asyncio.run(_build())
     mod.build = build
     for name in ("tensorrt_llm", "tensorrt_llm.grpc", "tensorrt_llm.grpc.openengine"):
         pkg = types.ModuleType(name)
