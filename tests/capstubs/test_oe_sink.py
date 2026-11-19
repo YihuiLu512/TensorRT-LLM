@@ -264,8 +264,11 @@ def test_timeouts_are_registered(launch, tier):
     sk = launch.summaries("sink")
     d = sk[0][0]
     assert d["counts"]["ok"] == 0 and d["counts"]["failed"] == d["counts"]["planned"] > 0
-    assert d["failures"] == [{"reason": "timeout_registered", "count": d["counts"]["planned"],
-                              "class_hint": "overload"}]
+    assert [{k: f[k] for k in ("reason", "count", "class_hint")} for f in d["failures"]] == [
+        {"reason": "timeout_registered", "count": d["counts"]["planned"],
+         "class_hint": "overload"}]
+    assert 0 <= d["failures"][0]["zero_msgs"] <= d["counts"]["planned"]
+    assert d["failures"][0]["max_send_to_end_ns"] >= 200 * MS
     assert 0 < d["msgs"]["msgs"] < d["counts"]["planned"] * 41
     reqs, _ = launch.records("sink", "requests")
     for p, done in zip(reqs["planned_rel_ns"], reqs["done_rel_ns"]):

@@ -137,8 +137,9 @@ def test_raw_body_rejected_by_capkit_sink_is_counted(launch):
     assert sum(planned.values()) > 0
     assert per_tier(ld, "counts.failed") == planned and per_tier(ld, "counts.ok")[0] == 0
     fails = [f for docs in ld.values() for d in docs for f in d["failures"]]
-    assert fails == [{"reason": "grpc_INVALID_ARGUMENT", "count": planned[0],
-                      "class_hint": "unclassified"}]
+    assert [{k: f[k] for k in ("reason", "count", "class_hint")} for f in fails] == [
+        {"reason": "grpc_INVALID_ARGUMENT", "count": planned[0], "class_hint": "unclassified"}]
+    assert fails[0]["zero_msgs"] == planned[0] and fails[0]["max_send_to_end_ns"] > 0
     assert sum(per_tier(sk, "counts.streams_rejected").values()) == sum(planned.values())
     reqs, heads = launch.records("load", "requests")
     assert set(reqs["status"]) == {1}
