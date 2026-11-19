@@ -290,9 +290,12 @@ def parse_batch(obj):
     return n, fin, err
 
 
-def drain_loop(zq, stats, consumer, sample_every, stop, inj=None):
+def drain_loop(zq, stats, consumer, sample_every, stop, inj=None, cap=None):
     """The raw / deserialize result drain: recv() every frame of the lane's ZMQ socket. `inj`
-    (site Dr, drain_injector) runs right after each recv."""
+    (site Dr, drain_injector) runs right after each recv. `cap` (capstubs.frame_capture
+    FrameCapture, nx_role --frame-capture-dir) gets every frame the drain counts, next to
+    stats.received, so its result seq k is the k-th recvs record (the shutdown sentinel is not
+    counted and not captured)."""
     zq.setup_lazily()
     sock = zq.socket
     i = 0
@@ -311,18 +314,24 @@ def drain_loop(zq, stats, consumer, sample_every, stop, inj=None):
                     pickle.loads(data)  # nosec B301 -- the product's own lane
             except Exception as e:  # noqa: BLE001 -- counted, not fatal
                 stats.errors.append(repr(e))
+                if cap is not None:
+                    cap.record("result", data, now)
                 stats.received(now, len(data), inj_ns=ns)
                 continue
             got = parse_batch(obj)
             if got is None:
                 stats.sentinel = True
                 return
+            if cap is not None:
+                cap.record("result", data, now)
             stats.received(now, len(data), *got, inj_ns=ns)
         else:
             if len(data) < 64 and pickle.loads(  # nosec B301
                     data[:-32] if zq.use_hmac_encryption else data) is None:
                 stats.sentinel = True
                 return
+            if cap is not None:
+                cap.record("result", data, now)
             stats.received(now, len(data), inj_ns=ns)
 
 
@@ -353,12 +362,12 @@ def send_loop(plan, rows, submit, stats, stop, end_id):
         stats.sent(req_id, planned, clock(), seq, -1 if cid is None else cid)
 
 
-def raw_class(base, stats, consumer, sample_every, stop, inj=None):
+def raw_class(base, stats, consumer, sample_every, stop, inj=None, cap=None):
     """A subclass of a product proxy class whose result dispatch is the capkit drain."""
 
     class _RawDrain(base):
         def dispatch_result_task(self):
-            drain_loop(self.result_queue.queue, stats, consumer, sample_every, stop, inj)
+            drain_loop(self.result_queue.queue, stats, consumer, sample_every, stop, inj, cap)
             return False
 
     _RawDrain.__name__ = "Raw" + base.__name__
@@ -472,9 +481,12 @@ def start_proxy(a, plan, stats, stop):
     inj = drain_injector(getattr(a, "drain_inject", ""))
     if inj is not None and a.consumer == "product":
         raise ConfigError("--drain-inject needs a raw or deserialize drain")
+    cap = getattr(a, "frame_capture", None)
+    if cap is not None and (a.consumer == "product" or lanes >= 2):
+        raise ConfigError("frame capture needs --lanes 1 and a raw or deserialize drain")
     base = GenerationExecutorProxy
     cls = base if a.consumer == "product" or lanes >= 2 else \
-        raw_class(base, stats, a.consumer, a.sample_every, stop, inj)
+        raw_class(base, stats, a.consumer, a.sample_every, stop, inj, cap)
     t0 = time.monotonic_ns()
     proxy = cls({"hf_model_dir": Path(a.model), "tokenizer": None, "llm_args": llm_args},
                 model_world_size=1, worker_cls=NullWorker,
