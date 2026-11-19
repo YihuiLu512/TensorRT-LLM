@@ -1883,6 +1883,17 @@ R2 自审（slug `capkit-b2judge-J17871`）发现的问题已直接改进本子�
 3. **re-exec 的附属前端**：选项写进环境变量 `CAPKIT_SNX_GRPC_SERVER_OPTIONS`（JSON `[[key, value], …]`），re-exec 模式读到就同样应用（附属前端若不构造 OpenEngine 服务端，就只是多一次模块导入；E8 单宿主没有附属前端）。
 4. **验证**：`tests/capstubs/test_serve_nx.py`（KEY=VALUE 解析与拒绝；用替身模块按产品的构造方式建真实 `grpc.aio.server`，核对原位替换 / 追加、读回行等于实际传入的列表；阴性对照：不给选项时列表与 `grpc.aio.server` 都不变、不写文件；列表缺失时拒绝；`main` 对非 openengine 服务参数与 `grpc.so_reuseport` 退出 3）。镜像内选项实际生效（2³¹−1 臂 CANCELLED 为 0、读回行含两项）【未运行】，属 B11 首个作业的冒烟核对（PLAN-R2R5 第 5 节）。
 
+### S-NX 线 §2：capgrpc.load 读端的产品客户端消费方式（2026-11-20）
+
+依据：`05_engine/PLAN-R2R5.md` 第 2 节（E8 读端节奏 A/B）。
+
+1. **`capgrpc.load --consume raw|client`**（缺省 `raw`，行为与输出字节不变）。`client`：每个 worker 进程启动时导入产品客户端（`tensorrt_llm.grpc.openengine_client`、`tensorrt_llm.grpc.openengine.bindings`，同 `capgrpc.oe_sink` 的 `Product("generate-stream")`；导入失败退出 3），核对 `--method` 是产品 InferenceStub 的 Generate 路径，用产品 pb2 预先解析全部请求模板；在一条自建通道上构造 `OpenEngineClient`（通道选项：产品 `connect()` 设的收发上限 `MAX_MESSAGE_BYTES`，再加 capgrpc.load 自己的 `grpc.use_local_subchannel_pool=1`，给 `--shared-subchannel-pool` 时不加），不发 Control（同 oe_sink `--connect channel`）；每个请求 `client.generate(msg, timeout=…)` 得到 `GenerateStream` 并异步迭代：读取节奏、逐条流契约校验、终止事件后的收尾读（最多 1 s 等服务端关流）都是产品自己的。时限同 raw（从计划时刻起的 gRPC deadline）。
+2. **产品客户端的读法（读码，`probe-tree` = 2f22a98d6e 的 `openengine_client/stream.py`、`client.py`；镜像 9fd3822a00 的 P0 覆盖清单含这些文件）**：`generate()` 复制请求（`CopyFrom`）并设 `request_id`，首次迭代时经生成的 `InferenceStub.Generate`（protobuf 序列化 / 反序列化）发出；`__anext__` 每条消息 `asyncio.ensure_future(call.read())` + `asyncio.wait`（每条一个 Task，不批读），`_validate` 逐条校验；通道没有窗口或流控相关选项（只有收发上限）。所以 client 方式与 raw 的差别是：每条消息多一次 protobuf 反序列化、一个 Task 与一次 `asyncio.wait`、一次校验，每个请求多一次请求复制与序列化。
+3. **限制**：只能配 `--request-format openengine`；`--channels-per-worker` 必须为 1（每个 worker 一个客户端 = 产品每个前端一条通道）；与 `--stamped` 互斥（`--planned-msgs` 可用）；不计字节（`msgs.bytes` 为 null，请求行 `bytes` 为 −1，`bytes.recv` 槽保持 0）。其余（时间表、档、记录、summary、失败原因与类别、注入位点）与 raw 相同。
+4. **输出**：只在 `client` 时，每档 summary 多 `consume`（`mode`、`tier`、`connect`、`timeout_mechanism`）与 `imported`（导入的模块文件、tensorrt_llm 版本、protobuf 实现），就绪文件每个 worker 的 `info` 多 `consume`、`connect`、`imported`；`recv_types` 记 `GenerateResponse`。
+5. **实现**：`capgrpc.oe_sink.LoadClientWorker`（`OeSinkWorker` 的子类，只换 `connect`、自报两处）与 `load_client_worker()`；`OeSinkWorker.__init__` 多一个可选参数 `link`（多进程时的监督链接），`connect` / `slow_read_us` 改为缺省读取（oe_sink 自己的参数不变）。
+6. **验证**：`tests/capstubs/test_oe_sink.py`（同一 S-PB 上 K = 2 的 raw 与 client 并排：逐档 planned / sent / ok / failed 与消息数相等、与 S-PB 对账，client 的 `recv_types` 是 `GenerateResponse`、raw 的输出不多键；超时路径两者都全部 `timeout_registered`、计数相同；拒绝：capkit 格式、`--stamped`、2 条通道、无产品包）。镜像里 4 个 worker 各自导入整个 tensorrt_llm 的启动耗时与内存【未运行】，属 §2 首个作业的冒烟核对。
+
 ## 审阅记录（r2，2026-11-13）
 
 审阅意见来自 spec-critic（JSON，24 条）。每条都对照设计稿 / 计划原文核对过；「采纳」= 按意见改，「部分采纳」= 问题属实、改法与意见不同（写理由），「不采纳」= 问题不成立。

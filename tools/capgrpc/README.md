@@ -24,6 +24,7 @@
 | `--max-msg-records-per-worker N` | `msgs` 记录容量；`capkit` 格式下不给就按时间表与 `expect.msgs_per_request` 精确算出 |
 | `--lag-records-capacity N` | 事件循环延迟的逐样本记录（缺省 0 = 只有直方图） |
 | `--planned-msgs` | 不盖戳的流（S-PB、S-NL）也算消息层滞后：计划时刻由时间表推出（`capgrpc.msgplan`，勘误 FT1-9）；与 `--stamped` 互斥，`raw` 格式不可用，要给 `--max-msg-records-per-worker` |
+| `--consume raw\|client` | 读端的消费方式：`raw`（缺省，原样）为原始字节读流；`client` 时每个 worker 用产品 `OpenEngineClient.generate` → `GenerateStream` 读流（protobuf 请求与响应、每条消息一个读任务、逐条流契约校验、终止事件后的收尾读），实现为 `capgrpc.oe_sink.LoadClientWorker`；只能配 `--request-format openengine`、`--channels-per-worker 1`，与 `--stamped` 互斥；不计字节；summary 多 `consume`、`imported` 两键（PLAN-R2R5 第 2 节；INTERFACES「S-NX 线 §2」） |
 
 `--request-format`：`capkit`（`wire.GRPC_REQ` 头 + prompt 字节，每请求现拼头部）、`openengine`（请求字节文件里的 `GenerateRequest` 模板前面拼上 `request_id` 字段：protobuf 解析把串接的序列化合并，所以发送路径上不建 protobuf 对象）、`raw`（新增取值：每请求同一段字节，没有请求号）。请求超时只读档位表的 `request_timeout_ns`，**从计划时刻起算**（发送时剩余时间 < 1 ms 时按 1 ms 发）；超时记 `timeout_registered`。请求处理中抛出的非 gRPC 异常（客户端自身故障）记 `client_error`（`class_hint = unclassified`），首次出现打印到标准错误。
 

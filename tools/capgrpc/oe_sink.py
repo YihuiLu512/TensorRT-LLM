@@ -21,6 +21,11 @@ client classes and discards the events (design E3 card 3b; INTERFACES errata FT1
   "reader slow").
 The product is imported at start-up; any failure to import it exits 3 (container only), and what
 was imported is in the ready file and every tier summary.
+
+LoadClientWorker is capgrpc.load's --consume client worker (one per load process; PLAN-R2R5 2):
+the generate-stream tier on a channel this module builds (the product client's message-size
+options, plus capgrpc.load's own-connection option unless --shared-subchannel-pool), no Control
+call, no slow-read switch.
 """
 
 import argparse
@@ -36,7 +41,7 @@ from capcommon.clock import now_ns
 from capcommon.exitcodes import CapkitError, ConfigError
 
 from . import SITES, SLOTS as LOAD_SLOTS
-from .common import ToolRuntime, product_versions, wait_channels_ready
+from .common import LOCAL_SUBCHANNEL_POOL, ToolRuntime, product_versions, wait_channels_ready
 from .loader import (CLIENT_CANCELLED, LoadWorker, RequestPlan, add_reader_args,
                      validate_args as validate_reader)
 
@@ -193,13 +198,14 @@ class OeSinkWorker(LoadWorker):
 
     COUNT_BYTES = False
 
-    def __init__(self, args, rt, plan, product, templates):
-        super().__init__(args, rt, plan, None)
+    def __init__(self, args, rt, plan, product, templates, link=None):
+        super().__init__(args, rt, plan, link)
         self.product = product
         self.templates = templates
         self.tier2 = product.tier == "engine-event-stream"
-        self.connect_mode = args.connect
-        self.slow_s = args.slow_read_us / 1e6 if args.slow_read_us else None
+        self.connect_mode = getattr(args, "connect", "channel")
+        slow = getattr(args, "slow_read_us", None)
+        self.slow_s = slow / 1e6 if slow else None
         self.pauses_by_tier = [0] * len(rt.tt)
         self.client = self.engine = None
         self.loop = None
@@ -264,7 +270,8 @@ class OeSinkWorker(LoadWorker):
                 "imported": self.product.report, "slow_read_ns": self._slow_ns()}
 
     def _slow_ns(self):
-        return self.args.slow_read_us * 1000 if self.args.slow_read_us else None
+        slow = getattr(self.args, "slow_read_us", None)
+        return slow * 1000 if slow else None
 
     # -- one request -------------------------------------------------------------------------------
     def open_stream(self, rid, seq, timeout):
@@ -357,6 +364,45 @@ class OeSinkWorker(LoadWorker):
                             "slow_read_ns": self._slow_ns(),
                             "slow_read_pauses": self.pauses_by_tier[seq]},
                 "imported": self.product.report}
+
+
+class LoadClientWorker(OeSinkWorker):
+    """capgrpc.load --consume client: one load worker that reads its streams through the
+    product's GenerateStream (OpenEngineClient.generate), on a channel built here."""
+
+    CONTROL_TIMEOUT_S = 5.0  # the client's default; no Control call is made
+
+    async def connect(self, target):
+        P = self.product
+        self.loop = asyncio.get_running_loop()
+        opts = [("grpc.max_send_message_length", P.max_message_bytes),
+                ("grpc.max_receive_message_length", P.max_message_bytes)]
+        if self.local_pool:
+            opts.append(LOCAL_SUBCHANNEL_POOL)
+        channel = grpc.aio.insecure_channel(target, options=opts)
+        self.client = P.Client(target, channel, control_timeout=self.CONTROL_TIMEOUT_S,
+                               allow_newer_schema=False)
+        await wait_channels_ready([channel], self.origin)
+        self.self_check()
+
+    def connection_info(self):
+        return {"consume": "client", "connect": "channel", "imported": self.product.report}
+
+    def extra_summary(self, seq):
+        return {"consume": {"mode": "client", "tier": self.product.tier, "connect": "channel",
+                            "timeout_mechanism": "grpc_deadline"},
+                "imported": self.product.report}
+
+
+def load_client_worker(args, rt, plan, link):
+    """The --consume client worker of capgrpc.load: imports the product (ConfigError, exit 3,
+    when it cannot), checks --method against the product's Generate path and parses the
+    request templates with the product's pb2 before the origin."""
+    product = Product("generate-stream")
+    if args.method != product.method:
+        raise ConfigError("--method %s is not the product's Generate path %s"
+                          % (args.method, product.method))
+    return LoadClientWorker(args, rt, plan, product, Templates(product, plan), link=link)
 
 
 # ---- entry ------------------------------------------------------------------------------------
