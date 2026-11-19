@@ -27,3 +27,7 @@
 ## 未核对
 
 本机只做了结构校验、档位表展开与 `cross_check`（无进程）。容器里的真实运行（真 pb2、真 S-NL 产品模块）属集群冒烟与 E2a 本身。K（`kc` 的进程数）是生成器常量，应按 E1-gRPC 的每 worker 健康带核对后再登记。
+
+## S-FE 臂（前端线第 8 项，2026-11-20）
+
+`e2a-sfe-1c-mc`、`e2a-sfe-1c-r`：`capgrpc.load` 单连接 → 一个零改动的 S-FE（`fake_openengine.py`，直连形态、无指纹，读者按 `{addr:sfe}` 连），与 `e2a-spb-1c-*` 同一模板形状、同作业对照。S-FE 每条流各自睡 `step_delay`，没有 md 臂；S-FE 不自报，门与链只读读者。S-FE 的多连接行是 `configs/e3` 的 `e3c-sfe-kc-*`。详见 `INTERFACES.md`「前端线第 8 项」。
