@@ -21,9 +21,11 @@ from .exitcodes import ConfigError
 # load a real model" AND that have their own experiment id. E10-S is E10's substitute arms (G0
 # MockEngine, G1 capstubs.glm_g1; user 31st answer 2026-11-18 starts the E10 line, the real-engine
 # arm stays out by Q6); the bare id E10 and E13's main body share an id with model-loading parts
-# and are NOT listed.
+# and are NOT listed. E16 is the C++ engine host card of the D1 plan (TRTLLM-18068,
+# 08_engine-host-cpp-d1/04_perf-plan.md section 2: the C++ host behind S-NX or a replay stub,
+# no model; its P0 smoke runs under it too); the D1 E9 supplementary arms keep the id E9.
 NO_MODEL_EXPERIMENTS = ("E0", "E1", "E2", "E2a", "E2b", "E3", "E4", "E5", "E6", "E7", "E8",
-                        "E9", "E10-S", "E15-A")
+                        "E9", "E10-S", "E15-A", "E16")
 
 # Model libraries that a no-model job must not be able to see (CONSTRAINTS section 2 item 1).
 FORBIDDEN_MOUNT_PATHS = ("/home/scratch.trt_llm_data_ci", "/home/scratch.trt_llm_data")

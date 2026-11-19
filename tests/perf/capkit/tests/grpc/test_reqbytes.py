@@ -144,3 +144,61 @@ def test_raw_body_rejected_by_capkit_sink_is_counted(launch):
     reqs, heads = launch.records("load", "requests")
     assert set(reqs["status"]) == {1}
     assert heads[0]["meta"]["status_codes"] == {"1": "grpc_INVALID_ARGUMENT"}
+
+
+def fake_pb2_with_extra():
+    """fake_pb2's GenerateRequest plus field 12 `extra` (google.protobuf.Struct), as
+    generation.proto."""
+    from google.protobuf import struct_pb2  # noqa: PLC0415
+    fdp = descriptor_pb2.FileDescriptorProto(name="fake_gen_x.proto", package="fakeox",
+                                             syntax="proto3",
+                                             dependency=["google/protobuf/struct.proto"])
+    stop = fdp.message_type.add(name="StoppingOptions")
+    stop.field.add(name="max_tokens", number=1, type=13, label=1)
+    stop.field.add(name="ignore_eos", number=4, type=8, label=1)
+    req = fdp.message_type.add(name="GenerateRequest")
+    req.field.add(name="request_id", number=1, type=9, label=1)
+    req.field.add(name="model", number=2, type=9, label=1)
+    req.field.add(name="prompt", number=3, type=9, label=1)
+    req.field.add(name="stopping", number=6, type=11, label=1,
+                  type_name=".fakeox.StoppingOptions")
+    req.field.add(name="extra", number=12, type=11, label=1,
+                  type_name=".google.protobuf.Struct")
+    pool = descriptor_pool.DescriptorPool()
+    pool.AddSerializedFile(struct_pb2.DESCRIPTOR.serialized_pb)
+    pool.Add(fdp)
+    cls = message_factory.GetMessageClass(pool.FindMessageTypeByName("fakeox.GenerateRequest"))
+    return types.SimpleNamespace(GenerateRequest=cls)
+
+
+def _text_table(tmp_path):
+    from capcommon.tiers import TierTable
+    p = tmp_path / "t.json"
+    p.write_text(json.dumps(table_doc([("warmup", 200, 10.0, {"n": 3, "prompt_set": "t"}),
+                                       ("drain", 200, 0.0, {})])))
+    return TierTable.load(str(p))
+
+
+def test_openengine_extra_detokenize(tmp_path):
+    from conftest import prompts_doc
+    tt, pb2 = _text_table(tmp_path), fake_pb2_with_extra()
+    plain = ReqBytes(build_openengine(pb2, prompts_doc(), tt, "m0"))
+    nd = ReqBytes(build_openengine(pb2, prompts_doc(), tt, "m0", extra={"detokenize": False}))
+    m0 = pb2.GenerateRequest.FromString(encode_pb_string_field(1, "5") + plain.lookup("t", 0, 3))
+    m1 = pb2.GenerateRequest.FromString(encode_pb_string_field(1, "5") + nd.lookup("t", 0, 3))
+    # default unchanged: no extra at all; with the option the only difference is extra
+    assert not m0.HasField("extra")
+    assert m1.HasField("extra") and dict(m1.extra) == {"detokenize": False}
+    assert m1.extra.fields["detokenize"].WhichOneof("kind") == "bool_value"
+    m1.ClearField("extra")
+    assert m1 == m0 and plain.lookup("t", 0, 3) != nd.lookup("t", 0, 3)
+
+
+def test_openengine_extra_needs_a_struct_field(tmp_path):
+    from capcommon.exitcodes import ConfigError  # noqa: PLC0415
+    from conftest import prompts_doc
+    with pytest.raises(ConfigError):
+        build_openengine(fake_pb2(), prompts_doc(), _text_table(tmp_path), "m0",
+                         extra={"detokenize": False})
+    # without extra the Struct-less module still works (the default path)
+    assert build_openengine(fake_pb2(), prompts_doc(), _text_table(tmp_path), "m0")["entries"]

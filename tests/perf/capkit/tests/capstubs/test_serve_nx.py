@@ -273,3 +273,117 @@ def test_drain_inject_count_and_refusals(tmp_path):
                                              "--tier-table", "t", "--schedule", "s",
                                              "--origin-ns", "1", "--out-dir", "o"])
     assert a.drain_inject == "Dr:busy:5"
+
+
+# ---------------------------------------------------------------- C++ host mode (D1)
+def _cpp(argv):
+    own, serve = serve_nx.split_argv(argv)
+    return serve_nx.cpp_host_env(serve_nx.build_parser().parse_args(own), serve)
+
+
+def test_cpp_host_env_sets_the_launcher_variables():
+    env, why = _cpp(["--cpp-host-bin", "/usr/local/bin/trtllm-openengine-host",
+                     "--cpp-host-arg=--grpc-threads", "--cpp-host-arg", "4",
+                     "--cpp-host-arg=--diag-out", "--cpp-host-arg", "/r/d1 x",
+                     "--cpp-host-inject", "hs:busy:2000", "--",
+                     "m", "--grpc", "--openengine-host-impl", "cpp"])
+    assert why is None
+    assert env == {"TLLM_OPENENGINE_CPP_HOST_BIN": "/usr/local/bin/trtllm-openengine-host",
+                   "TLLM_OPENENGINE_CPP_HOST_ARGS": "--grpc-threads 4 --diag-out '/r/d1 x'",
+                   "TLLM_D1_INJECT": "hs:busy:2000", None: "/r/d1 x"}
+    import shlex
+    assert shlex.split(env["TLLM_OPENENGINE_CPP_HOST_ARGS"]) == \
+        ["--grpc-threads", "4", "--diag-out", "/r/d1 x"]
+
+
+def test_cpp_host_env_refusals_and_default():
+    # no C++ host option: nothing set, Python host arms unchanged
+    assert _cpp(["--", "m", "--grpc"]) == ({}, None)
+    assert _cpp(["--", "m", "--openengine-host-impl", "cpp"]) == ({}, None)
+    # options without the cpp host impl
+    for own in (["--cpp-host-bin", "/b"], ["--cpp-host-arg=--grpc-threads"],
+                ["--cpp-host-inject", "hd:busy:1"], ["--report-target", "private"]):
+        env, why = _cpp(own + ["--", "m", "--grpc", "--openengine-host-impl", "python"])
+        assert env == {} and "openengine-host-impl cpp" in why, own
+    # flags the launcher owns
+    for flag in ("--listen", "--launcher-endpoint=1", "--template"):
+        env, why = _cpp(["--cpp-host-arg=%s" % flag, "--", "m", "--openengine-host-impl=cpp"])
+        assert env == {} and "launcher sets" in why, flag
+
+
+def test_main_refuses_bad_cpp_host_options(monkeypatch, capsys):
+    monkeypatch.delenv(ENV_VAR, raising=False)
+    for k in ("TLLM_OPENENGINE_CPP_HOST_BIN", "TLLM_OPENENGINE_CPP_HOST_ARGS", "TLLM_D1_INJECT"):
+        monkeypatch.delenv(k, raising=False)
+    assert serve_nx.main(["--cpp-host-bin", "/b", "--", "model", "--grpc"]) == 3
+    assert serve_nx.main(["--report-target", "private", "--", "model",
+                          "--openengine-host-impl", "cpp"]) == 3
+    err = capsys.readouterr().err
+    assert "openengine-host-impl cpp" in err and "needs --report-addr" in err
+    assert "TLLM_OPENENGINE_CPP_HOST_BIN" not in os.environ
+
+
+def test_reporter_private_target_waits_for_both_ports(tmp_path):
+    pub, priv = serve_nx.pick_free_port("127.0.0.1"), serve_nx.pick_free_port("127.0.0.1")
+    assert pub != priv
+    holder = {}
+    out = str(tmp_path / "addr")
+    t = serve_nx.start_reporter(out, "127.0.0.1", pub, 10.0,
+                                target=lambda: None if "port" not in holder
+                                else ("127.0.0.1", holder["port"]))
+    socks = []
+    try:
+        s = socket.socket()
+        s.bind(("127.0.0.1", priv))
+        s.listen(1)
+        socks.append(s)
+        holder["port"] = priv
+        time.sleep(0.3)
+        assert not os.path.exists(out)  # the public port (the C++ host) is not up yet
+        s = socket.socket()
+        s.bind(("127.0.0.1", pub))
+        s.listen(1)
+        socks.append(s)
+        t.join(5)
+        with open(out) as f:
+            assert f.read() == "127.0.0.1:%d\n" % priv
+    finally:
+        for s in socks:
+            s.close()
+
+
+def test_reporter_private_target_needs_the_port(tmp_path):
+    """Positive control of the wait: the public port accepts but the private port is unknown, so
+    nothing is written."""
+    pub = serve_nx.pick_free_port("127.0.0.1")
+    out = str(tmp_path / "addr")
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", pub))
+    srv.listen(1)
+    try:
+        serve_nx.start_reporter(out, "127.0.0.1", pub, 1.0, target=lambda: None).join(3)
+        assert not os.path.exists(out)
+    finally:
+        srv.close()
+
+
+def test_capture_private_port(monkeypatch):
+    mod = types.ModuleType("tensorrt_llm.grpc.openengine.cpp_host")
+    calls = []
+
+    def cpp_host_command(binary, *, listen, launcher_port, template_dir, extra_args=None):
+        calls.append((binary, listen, launcher_port, template_dir, extra_args))
+        return [binary, "--launcher-endpoint", "127.0.0.1:%d" % launcher_port]
+    mod.cpp_host_command = cpp_host_command
+    for name in ("tensorrt_llm", "tensorrt_llm.grpc", "tensorrt_llm.grpc.openengine"):
+        pkg = types.ModuleType(name)
+        pkg.__path__ = []
+        monkeypatch.setitem(__import__("sys").modules, name, pkg)
+    monkeypatch.setitem(__import__("sys").modules, mod.__name__, mod)
+    __import__("sys").modules["tensorrt_llm.grpc.openengine"].cpp_host = mod
+    holder = {}
+    serve_nx.capture_private_port(holder)
+    assert mod.cpp_host_command("/b", listen=("127.0.0.1", 1), launcher_port=4321,
+                                template_dir="/t") == ["/b", "--launcher-endpoint",
+                                                       "127.0.0.1:4321"]
+    assert holder == {"port": 4321} and calls == [("/b", ("127.0.0.1", 1), 4321, "/t", None)]

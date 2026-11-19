@@ -300,3 +300,25 @@ def test_cli_stub_module(world, tmp_path):
     assert "1 stub modules" in r.stdout
     m = json.loads(out.read_text())
     assert [e["key"] for e in m["stub_modules"]] == ["sfe"]
+
+
+def test_image_holds_target(world):
+    """D1 image: baked with the target's tensorrt_llm tree; the manifest lists capkit files only.
+    Positive controls: without the flag the same commits are refused (empty product diff), and
+    with the flag an image commit other than the target is refused."""
+    m = overlay.build_manifest("P0", world["prod"], world["base"], world["base"], world["cap"],
+                               world["capsha"], ["capprobe"], [],
+                               export_dir=str(world["tmp"] / "export"), image_holds_target=True)
+    assert m["files"] == [] and m["image_holds_target"] is True
+    assert m["image_commit"] == m["target_commit"] == world["base"]
+    assert m["non_python_changed"] == [] and len(m["capkit_packages"]) == 2
+    with pytest.raises(overlay.OverlayError, match="nothing to overlay"):
+        overlay.build_manifest("P0", world["prod"], world["base"], world["base"], world["cap"],
+                               world["capsha"], ["capprobe"], [],
+                               export_dir=str(world["tmp"] / "export2"))
+    with pytest.raises(overlay.OverlayError, match="needs --image-commit == the target"):
+        build(world, "P0", image_holds_target=True)
+    with pytest.raises(overlay.OverlayError, match="only valid with tier P0"):
+        build(world, "P1", groups=[], image_holds_target=True)
+    # the default manifest has no image_holds_target key (unchanged shape)
+    assert "image_holds_target" not in build(world, "P0")
