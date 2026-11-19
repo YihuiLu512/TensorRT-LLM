@@ -208,7 +208,7 @@ def check_c3(ctx, td):
         for doc in td.summaries.get(role["role"], {}).values():
             c = doc.get("counts") or {}
             r.checked += int(c.get("ok", 0)) + int(c.get("failed", 0))
-    f = failures_by_class(td, ctx.roles)
+    f = failures_by_class(td, ctx.roles, getattr(ctx, "admission", None))
     r.red = f["non_overload"]
     r.detail.append("non_overload=%d overload=%d by_reason=%s by_category=%s"
                     % (f["non_overload"], f["overload"], f["by_reason"], f["by_category"]))
@@ -386,7 +386,7 @@ def hop_range(ctx, td, chain, role, ovl=None):
     t = td.tier
     n = int(ctx.schedule_meta["per_tier"].get(str(t.seq), 0))
     if ovl is None:
-        ovl = failures_by_class(td, ctx.roles)["overload"]
+        ovl = failures_by_class(td, ctx.roles, getattr(ctx, "admission", None))["overload"]
     hi = expect.expected_hop_count(chain, n, t.max_tokens, t.tokens_per_msg, t.stream_interval,
                                    role)
     lo = expect.expected_hop_count(chain, n - ovl, t.max_tokens, t.tokens_per_msg,
@@ -399,7 +399,7 @@ def check_chains(ctx, ld, td, next_drain, kind):
     every chain of that kind is one checked item, expected in hop_range."""
     cid = CHAIN_CHECK[kind]
     r = Result(cid, td.tier.seq, "launch.json reconcile + schedule meta.per_tier")
-    ovl = failures_by_class(td, ctx.roles)["overload"]
+    ovl = failures_by_class(td, ctx.roles, getattr(ctx, "admission", None))["overload"]
     for chain in ctx.launch["reconcile"]["chains"]:
         if chain["kind"] != kind:
             continue

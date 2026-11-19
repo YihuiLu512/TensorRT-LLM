@@ -21,7 +21,7 @@ import bisect
 from capcommon import expect
 from capcommon.schedule import BeatSchedule
 
-from . import nullz, stats
+from . import admission, nullz, stats
 from .thresholds import band_key
 from .treedata import NS, per_second
 
@@ -214,20 +214,28 @@ def gauge_series(ld, td, role):
     return out
 
 
-def failures_by_class(td, roles=None):
+def failures_by_class(td, roles=None, adm=None):
     """Sum the per-worker `failures` of every summary in the tier, by class and by category
-    (reclassify_failure). `roles` is launch.json's {role: {measure_class...}} (None: unknown)."""
+    (reclassify_failure). `roles` is launch.json's {role: {measure_class...}} (None: unknown).
+    `adm` (capjudge.admission.Admission, None: not used) moves the admission rejections of an
+    entry to ("overload", "admission_rejected"); the rest of the entry keeps its class."""
     out = {"overload": 0, "non_overload": 0, "by_reason": {}, "by_category": {}}
+    cats = out["by_category"]
     for role, per_worker in td.summaries.items():
         mc = ((roles or {}).get(role) or {}).get("measure_class")
-        for doc in per_worker.values():
+        for worker, doc in per_worker.items():
             for f in doc.get("failures") or []:
-                cls, cat = reclassify_failure(role, f, mc)
                 n = int(f.get("count", 0))
-                out["overload" if cls == "overload" else "non_overload"] += n
+                a = adm.admitted_count(td.tier.seq, role, worker, f) if adm is not None else 0
+                if a:
+                    out["overload"] += a
+                    cats[admission.CATEGORY] = cats.get(admission.CATEGORY, 0) + a
+                cls, cat = reclassify_failure(role, f, mc)
+                if n - a:
+                    out["overload" if cls == "overload" else "non_overload"] += n - a
+                    cats[cat] = cats.get(cat, 0) + n - a
                 key = "%s:%s" % (role, f.get("reason"))
                 out["by_reason"][key] = out["by_reason"].get(key, 0) + n
-                out["by_category"][cat] = out["by_category"].get(cat, 0) + n
     return out
 
 
@@ -240,6 +248,7 @@ def reclassify_failure(role, failure, measure_class=None):
       ("non_overload", "loadgen_connection"), even with an 'overload' hint;
     * class_hint 'overload' (the registered timeout) -> ("overload", "registered_overload");
     * anything else, including 'unclassified' -> ("non_overload", "unclassified" or the hint).
+    Admission rejections (capjudge.admission) are split off by failures_by_class before this.
     Server-log reasons (503 at the per-request backlog cap, watchdog aborts) are not read: no
     capkit tool writes them yet, so they stay non-overload."""
     reason, hint = failure.get("reason"), failure.get("class_hint")
@@ -326,7 +335,7 @@ def evaluate_x(ctx, ld, td, base_td, record, hooks=None):
     beat = BeatSchedule(ctx.tt)
     regime = ctx.tier_regime[tier.seq]
     out = {"X2": [], "X1": [], "X3": [], "reasons": []}
-    fails = failures_by_class(td, getattr(ctx, "roles", None))
+    fails = failures_by_class(td, getattr(ctx, "roles", None), getattr(ctx, "admission", None))
     out["failures_by_category"] = fails["by_category"]
     out["overload_failures"] = fails["overload"]
     load_roles = td.roles_with("loadgen.requests")

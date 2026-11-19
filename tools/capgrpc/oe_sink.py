@@ -37,7 +37,8 @@ from capcommon.exitcodes import CapkitError, ConfigError
 
 from . import SITES, SLOTS as LOAD_SLOTS
 from .common import ToolRuntime, product_versions, wait_channels_ready
-from .loader import LoadWorker, RequestPlan, add_reader_args, validate_args as validate_reader
+from .loader import (CLIENT_CANCELLED, LoadWorker, RequestPlan, add_reader_args,
+                     validate_args as validate_reader)
 
 TOOL = "capgrpc.oe_sink"
 TIERS = ("generate-stream", "engine-event-stream")
@@ -327,7 +328,7 @@ class OeSinkWorker(LoadWorker):
             v[self.i_active] -= 1
             active = False
             if stream.cancelled:
-                reason = "timeout_registered" if expired else "grpc_CANCELLED"
+                reason = "timeout_registered" if expired else CLIENT_CANCELLED
         except P.RpcError as e:
             reason = self._reason(e.code)
         except P.EngineError:
@@ -335,7 +336,7 @@ class OeSinkWorker(LoadWorker):
         except P.ProtocolError:
             reason = "protocol_error"
         except asyncio.CancelledError:
-            reason = "grpc_CANCELLED"
+            reason = CLIENT_CANCELLED
         except Exception as e:  # noqa: BLE001 - a client-side fault still ends the request once
             reason = "client_error"
             self.log_client_error(rid, e)

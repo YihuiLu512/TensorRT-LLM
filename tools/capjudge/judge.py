@@ -33,7 +33,7 @@ from capcommon.runtree import append_state, read_state, worst_state
 from . import checks as C
 from . import grade as G
 from . import inputs as I
-from . import intervene, localize, stats
+from . import admission, intervene, localize, stats
 from .symptoms import Record, evaluate_x
 from .treedata import LaunchData, TierData
 
@@ -349,6 +349,7 @@ def judge_tree(ctx, log, code_ok=True, code_note=""):
     ld = LaunchData(ctx)
     tt = ctx.tt
     tds = {t.seq: TierData(ctx, t) for t in tt.tiers}
+    ctx.admission = admission.for_judge(ctx, tds)
     applied = set(ctx.checks_applied)
     rows = []
     # ---- launch-level preconditions -----------------------------------------------------
@@ -471,6 +472,8 @@ def judge_tree(ctx, log, code_ok=True, code_note=""):
                         completed=completed)
     if c13_means is not None:
         v["c13_mean"] = c13_means
+    if ctx.admission.detail:
+        v["admission"] = ctx.admission.detail
     return {"verdicts": v, "rows": rows}
 
 
