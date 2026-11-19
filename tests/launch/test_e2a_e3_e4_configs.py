@@ -191,19 +191,20 @@ def test_reader_connection_shapes():
 def test_stubs_are_one_process_on_one_core_and_schedule_only_when_read_directly():
     """A stub read by a capgrpc reader takes --schedule (request_id = req_id, streams filed by
     planned tier); a stub behind the frontend does not (the frontend's request ids are not
-    schedule ids). E4 weak-reader arms keep the frontend arms' stub argv."""
+    schedule ids). E4 weak-reader arms keep the frontend arms' stub argv. S-FE (zero changes)
+    has no --schedule anywhere."""
     n = 0
     for s, a in ALL:
         doc = _scen(s, a)
         rs = _roles(doc)
-        for name in ("spb", "snl"):
+        for name in ("spb", "snl", "sfe"):
             if name not in rs:
                 continue
             n += 1
             r = rs[name]
             assert r["cpus_needed"] == r["workers"] == r["expected_procs"] == 1, a
             behind_fe = s == "e4"
-            assert ("--schedule" in _strs(r["args"])) == (not behind_fe), a
+            assert ("--schedule" in _strs(r["args"])) == (not behind_fe and name != "sfe"), a
             if name == "snl":
                 mode = _opt(r["args"], "--mode")
                 assert mode == ("metronome-only" if "-mono-" in a else "full"), a
@@ -371,7 +372,7 @@ def test_e4_frontend_main_tier_and_stub_tokenizer_settings():
     for a in _arms("e4"):
         doc = _scen("e4", a)
         rs = _roles(doc)
-        stub = "spb" if "spb" in rs else "snl"
+        stub = [x for x in ("spb", "snl", "sfe") if x in rs][0]
         if "frontend" in rs:
             n += 1
             fe = rs["frontend"]
@@ -392,6 +393,11 @@ def test_e4_frontend_main_tier_and_stub_tokenizer_settings():
             assert doc["job_inputs"]["fingerprint"]["args"] == FP_FIXED, a
             assert _opt(rs["spb"]["args"], "--model") == "{param:tokenizer_dir}", a
             assert "--sfe-module" in _strs(rs["spb"]["args"]), a
+        elif stub == "sfe":
+            assert doc["job_inputs"] == {"fingerprint": {"args": FP_FIXED}}, a
+            assert _opt(rs["sfe"]["args"], "--model") == "{param:tokenizer_dir}", a
+            assert rs["sfe"]["args"][-1] == {"splice_json": "{input:fingerprint}",
+                                             "key": "sfe_args"}, a
         else:
             sa = _strs(rs["snl"]["args"])
             assert sa[sa.index("--tokenizer"):sa.index("--tokenizer") + 6] == FP_FIXED, a
@@ -399,7 +405,7 @@ def test_e4_frontend_main_tier_and_stub_tokenizer_settings():
             assert "--server-module" not in sa, a  # the product's server module
         if "reader" in rs:
             assert doc["job_inputs"]["request_bytes"]["args"][-1] == "{param:tokenizer_dir}"
-    assert n == 13
+    assert n == 14
 
 
 def test_direct_arms_name_one_model_for_stub_and_request_bytes():
@@ -415,3 +421,79 @@ def test_direct_arms_name_one_model_for_stub_and_request_bytes():
                 assert _opt(rs["snl"]["args"], "--model") == "{param:model_name}", a
             if "spb" in rs:
                 assert doc["job_inputs"]["prebaked"]["args"][3] == "{input:tier_table}", a
+            if "sfe" in rs:
+                assert _opt(rs["sfe"]["args"], "--model") == "{param:model_name}", a
+                assert set(JI.kinds_of(doc)) == {"request_bytes"}, a  # no fingerprint
+
+
+SFE_PAIRS = (("e2a", "e2a-sfe-1c-mc", "e2a", "e2a-spb-1c-mc"),
+             ("e2a", "e2a-sfe-1c-r", "e2a", "e2a-spb-1c-r"),
+             ("e3", "e3c-sfe-kc-mc", "e3", "e3a-snl-kc-mc"),
+             ("e3", "e3c-sfe-kc-r", "e3", "e3a-snl-kc-r"),
+             ("e3", "e3c-ees-snl-mc", "e3", "e3b-ees-mc"),
+             ("e3", "e3c-ees-snl-r", "e3", "e3b-ees-r"),
+             ("e4", "e4c-mc", "e4", "e4b-mc"))
+
+
+def test_sfe_arms_are_the_zero_change_fake_on_its_own_cadence():
+    """Design 2.3 'S-FE' (cards E2 / E3-3c / E4-4c): fake_openengine.py launched as configs/e0
+    e0a-frontend-sfe ({param:python} {param:sfe_script}, plain port file, one core), its step
+    delay and tokens per step registration values; the reader reaches it by address (S-FE writes
+    a plain port file); gates and chains read only capkit roles (S-FE reports nothing)."""
+    e0 = _roles(_load(os.path.join(cf.C, "configs", "e0"), "e0a-frontend-sfe.scenario.json"))
+    n = 0
+    for s, a in ALL:
+        doc = _scen(s, a)
+        rs = _roles(doc)
+        if "sfe" not in rs:
+            continue
+        n += 1
+        r = rs["sfe"]
+        assert (r["launcher"], r["probe_tier"], r["snapshots"]) == ("product", "P0", "none"), a
+        assert r["command"] == ["{param:python}", "{param:sfe_script}"] == e0["sfe"]["command"]
+        assert r["readiness"] == [{"kind": "plain_port_file"}] == e0["sfe"]["readiness"]
+        assert r["port"] == e0["sfe"]["port"] and r["backlog_slots"] == [], a
+        args = _strs(r["args"])
+        for flag, val in (("--profile", "trtllm-like"), ("--port-file", "{own:port_file}"),
+                          ("--step-delay", "{param:sfe_step_delay_s}"),
+                          ("--tokens-per-step", "{param:sfe_tokens_per_step}"),
+                          ("--max-context-length", "{param:sfe_max_context_length}")):
+            assert _opt(args, flag) == val, (a, flag)
+        assert doc["probe_tier"] == "P0", a
+        if "reader" in rs:
+            ra = _strs(rs["reader"]["args"])
+            assert _opt(ra, "--target") == "{addr:sfe}" and "--target-port-file" not in ra, a
+            assert rs["reader"]["start_after"] == ["sfe"], a
+        else:
+            assert _opt(_strs(rs["frontend"]["args"]), "--openengine-endpoint") == "{addr:sfe}"
+        terms = {t["role"] for rd in _tpl(s, a)["default_gate"]["readings"] for t in rd["terms"]}
+        assert terms == ({"reader"} if "reader" in rs else {"capload"}), a
+        hops = {h["role"] for c in doc["reconcile"]["chains"] for h in c["hops"]}
+        assert hops == ({"reader"} if "reader" in rs else {"capload"}), a
+    assert n == 5
+
+
+def test_sfe_and_stub_swap_arms_register_with_their_pair_arms_values():
+    """Each new arm has the same tier shape as the arm it is compared with in the same job
+    (E2a S-FE vs S-PB single connection; E3-3c vs e3a-snl-kc / e3b-ees; E4-4c vs e4b), so one
+    values file fits both; only the stub role (and the gate / chains that name it) differ."""
+    for s, a, bs, b in SFE_PAIRS:
+        t, bt = _tpl(s, a), _tpl(bs, b)
+        for k in ("tiers", "common", "axis", "arrival", "launch_inject", "experiment",
+                  "request_timeout_ns"):
+            assert t[k] == bt[k], (a, k)
+        assert tiergen.tbd_names(t) == tiergen.tbd_names(bt), a
+        r, br = _roles(_scen(s, a)), _roles(_scen(bs, b))
+        assert sorted(set(r) ^ set(br)) in (["sfe", "snl"], ["sfe", "spb"], ["snl", "spb"]), a
+        for name in set(r) & set(br):
+            x, y = dict(r[name]), dict(br[name])
+            if name in ("reader", "frontend"):  # only the address of the stub differs
+                for d in (x, y):
+                    d["args"] = [v for v in d["args"] if not (isinstance(v, str) and (
+                        "{addr:" in v or "{port_file:" in v
+                        or v in ("--target", "--target-port-file")))]
+                    d["start_after"] = []
+                    d.pop("note", None)
+            if name == "reader":
+                x.pop("measure_class"), y.pop("measure_class")
+            assert x == y, (a, name)

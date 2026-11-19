@@ -1894,6 +1894,16 @@ R2 自审（slug `capkit-b2judge-J17871`）发现的问题已直接改进本子�
 5. **实现**：`capgrpc.oe_sink.LoadClientWorker`（`OeSinkWorker` 的子类，只换 `connect`、自报两处）与 `load_client_worker()`；`OeSinkWorker.__init__` 多一个可选参数 `link`（多进程时的监督链接），`connect` / `slow_read_us` 改为缺省读取（oe_sink 自己的参数不变）。
 6. **验证**：`tests/capstubs/test_oe_sink.py`（同一 S-PB 上 K = 2 的 raw 与 client 并排：逐档 planned / sent / ok / failed 与消息数相等、与 S-PB 对账，client 的 `recv_types` 是 `GenerateResponse`、raw 的输出不多键；超时路径两者都全部 `timeout_registered`、计数相同；拒绝：capkit 格式、`--stamped`、2 条通道、无产品包）。镜像里 4 个 worker 各自导入整个 tensorrt_llm 的启动耗时与内存【未运行】，属 §2 首个作业的冒烟核对。
 
+### 前端线第 8 项：S-FE 臂（E2a S-FE、E3-3c、E4-4c）（2026-11-20）
+
+依据：`04_frontend/PLAN-R2R5.md` 第 8 节；设计稿 §2.3「S-FE」、E2 卡（E2a S-FE）、E3 卡「3c 对照」、E4 卡「4c 节奏敏感性」。只新增 `configs/gen_e2a_e3_e4_configs.py` 生成的模板，原有 `configs/e2a`、`e3`、`e4` 文件逐字节不变。
+
+1. **S-FE 角色**（`sfe`）：零改动的 `tests/unittest/grpc/openengine_client/fake_openengine.py`，启动方式同 `configs/e0` 的 `e0a-frontend-sfe`：launcher `product`、`command {param:python} {param:sfe_script}`、`--port-file {own:port_file}` + 就绪 `plain_port_file`、探针档 `P0`、1 进程 1 核。参数 `--step-delay {param:sfe_step_delay_s}`、`--tokens-per-step {param:sfe_tokens_per_step}`、`--max-context-length {param:sfe_max_context_length}`：登记时 `sfe_step_delay_s` 取档位表的节拍（秒），`sfe_tokens_per_step` 取 `tokens_per_msg`。每条流每步之后各自睡 `step_delay`（没有共同节拍，所以没有 md 臂：节拍不能逐档变）。S-FE 不自报（无 backlog 槽、无 summary），门与对账链只读 capkit 角色（读者或 capload）。
+2. **直连形态**（E2a、E3-3c）：`--model {param:model_name}`（与 `request_bytes` 同名），不带指纹（合成 token id；`capgrpc.reqbytes` 设 `ignore_eos`）；读者 `capgrpc.load` 用 `--target {addr:sfe}`（S-FE 写的是纯端口文件，不是 capkit 端口文件），其余读者参数与其他直连臂相同。
+3. **前端形态**（E4-4c）：`--model {param:tokenizer_dir}` + 作业输入 `fingerprint` 拼接（同 S-PB 前端模式）；前端角色与 `e4b-mc` 只差 `--openengine-endpoint {addr:sfe}` 与 `start_after`。
+4. **新臂**（每臂都与同作业比较的那一臂同一模板形状，同一份值文件可登记两者）：`e2a-sfe-1c-{mc,r}`（单连接，对 `e2a-spb-1c-*`；S-FE 多连接行即 `e3c-sfe-kc-*`，同 S-NL 多连接行即 `e3a-snl-kc-*` 的做法）；`e3c-sfe-kc-{mc,r}`（3a 的 S-NL 换 S-FE，对 `e3a-snl-kc-*`）；`e3c-ees-snl-{mc,r}`（3b 的对端 S-PB 换 S-NL full，对 `e3b-ees-*`）；`e4c-mc`（对 `e4b-mc`）。
+5. **验证**：`tests/launch/test_e2a_e3_e4_configs.py`（生成器逐字节复现全部文件；每臂 validate / expand / cross_check；S-FE 角色与 e0 的启动、就绪、端口一致，读者按地址连、门与链只含 capkit 角色；新臂与配对臂的档位表形状、值名与非桩角色相同）。S-FE 在镜像里由编排器起停、读者按 `{addr:sfe}` 连上、S-FE 实际步周期【未运行】，属各相位首个作业的核对。
+
 ## 审阅记录（r2，2026-11-13）
 
 审阅意见来自 spec-critic（JSON，24 条）。每条都对照设计稿 / 计划原文核对过；「采纳」= 按意见改，「部分采纳」= 问题属实、改法与意见不同（写理由），「不采纳」= 问题不成立。

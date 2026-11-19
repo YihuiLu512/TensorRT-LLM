@@ -559,6 +559,104 @@ e4("spb", "mc", v="vf2")
 e4("spb", "mc", v="vf4")
 
 
+# ================= S-FE arms (cards E2 E2a S-FE, E3-3c, E4-4c; PLAN-R2R5 8) =================
+SFE_NOTE = ("S-FE = tests/unittest/grpc/openengine_client/fake_openengine.py, zero changes, as "
+            "configs/e0 e0a-frontend-sfe ({param:python} {param:sfe_script}; plain port file); "
+            "one process on one core. Every stream sleeps --step-delay after each of its steps "
+            "(no shared beat): register sfe_step_delay_s = the tier beat and "
+            "sfe_tokens_per_step = tokens_per_msg. No capkit self-report (no backlog slots, no "
+            "summary): its rate is read at the reader (design E2 'S-FE')")
+
+
+def sfe(mclass, frontend=False):
+    """S-FE, one process on one core. Direct (E2a, E3-3c): --model = the request bytes' model,
+    no fingerprint (synthetic token ids; capgrpc.reqbytes sets ignore_eos). Frontend (E4-4c):
+    --model = the tokenizer dir and the fingerprint job input, as S-PB frontend mode."""
+    args = ["--profile", "trtllm-like", "--host", "127.0.0.1", "--port", "0",
+            "--port-file", "{own:port_file}",
+            "--model", "{param:tokenizer_dir}" if frontend else "{param:model_name}",
+            "--max-context-length", "{param:sfe_max_context_length}",
+            "--tokens-per-step", "{param:sfe_tokens_per_step}",
+            "--step-delay", "{param:sfe_step_delay_s}"]
+    if frontend:
+        args.append({"splice_json": "{input:fingerprint}", "key": "sfe_args"})
+    return role("sfe", "product", "server", mclass, True, "asyncio", True, "P0",
+                [{"kind": "plain_port_file"}], [], "none", args,
+                command=["{param:python}", "{param:sfe_script}"],
+                port={"kind": "plain_port_file", "host": "127.0.0.1"},
+                note=SFE_NOTE + ("; frontend mode: fingerprint args from the job input"
+                                 if frontend else "; direct mode, no fingerprint"))
+
+
+def sfe_reader(procs, mclass="load_source"):
+    """capgrpc.load against S-FE: the reader argv of every direct arm with --target {addr:sfe}
+    (S-FE writes a plain port file, not a capkit port file)."""
+    r = grpc_load("sfe", procs, mclass)
+    a = r["args"]
+    i = a.index("--target-port-file")
+    a[i:i + 2] = ["--target", "{addr:sfe}"]
+    return r
+
+
+def sfe_direct(exp, name, procs, shape, note):
+    """capgrpc.load (procs connections) -> one S-FE (under test). Gate and chain read the reader
+    only (S-FE reports nothing)."""
+    roles = [sfe("under_test"), sfe_reader(procs)] + observers("reader")
+    arm(exp, name,
+        scen(exp, name, roles, ["reader", "sfe", "sidecar", "canary"],
+             [req_chain(("reader", "summary.counts.ok"))],
+             "S-FE (fake_openengine.py, zero changes, direct mode)", note,
+             job_inputs={"request_bytes": req_bytes("{param:model_name}")}),
+        tpl(exp, name, shape, "short",
+            gate_t([rd("reader_active", ("reader", "backlog.active_streams", 1)),
+                    rd("reader_inflight", ("reader", "backlog.inflight", 1))])))
+
+
+# E2a S-FE: the single-connection shape (the shape E4-4c's frontend sees; the S-FE multi-connection
+# row is e3c-sfe-kc-*, as the S-NL multi-connection rows are e3a-snl-kc-*). No md arm: S-FE's
+# step delay is one value per launch, so the beat cannot change from tier to tier.
+for _shape in ("mc", "r"):
+    sfe_direct("E2a", "e2a-sfe-1c-%s" % _shape, 1, _shape,
+               "E2a e2a-sfe-1c-%s: capgrpc.load single-connection shape -> one S-FE (design 2.3 "
+               "'S-FE'; the E4-4c weak-reader reference)" % _shape)
+# E3-3c (card E3 '3c'): 3a with S-FE in place of S-NL (S-FE's servicer against the real servicer:
+# register with the values of e3a-snl-kc-<shape>), and 3b's oe_sink against S-NL in place of
+# S-PB (the stub swap of design 2.3: register with the values of e3b-ees-<shape>).
+for _shape in ("mc", "r"):
+    sfe_direct("E3", "e3c-sfe-kc-%s" % _shape, K_CONN, _shape,
+               "E3-3c e3c-sfe-kc-%s: capgrpc.load, %d connections -> one S-FE; pair of "
+               "e3a-snl-kc-%s at the same values (S-FE's servicer against the real one)"
+               % (_shape, K_CONN, _shape))
+    direct_arm("E3", "e3c-ees-snl-%s" % _shape, snl("stub_out_of_domain"),
+               oe_sink("snl", "engine-event-stream"), _shape, None,
+               "E3-3c e3c-ees-snl-%s: one S-NL full on one core -> oe_sink --tier "
+               "engine-event-stream (under test); pair of e3b-ees-%s at the same values (the "
+               "stub swap S-PB -> S-NL)" % (_shape, _shape))
+
+
+def e4c(shape):
+    """E4-4c (card E4): capload -> the real frontend (main tier) -> one S-FE, every stream on
+    its own cadence; register with the values of e4b-<shape> (4b: every step together)."""
+    name = "e4c-%s" % shape
+    roles = [sfe("stub_out_of_domain", frontend=True), frontend("sfe"),
+             capload(W_HTTP)] + observers("capload")
+    arm("E4", name,
+        scen("E4", name, roles, ["capload", "frontend", "sfe", "sidecar", "canary"],
+             [req_chain(("capload", "summary.counts.ok"))],
+             "S-FE (fake_openengine.py, zero changes, frontend mode)",
+             "E4-4c %s: capload (%d workers) -> trtllm-serve new-arch frontend (1 frontend, "
+             "postproc pool off; under test, %d cores) -> one S-FE on one core (every stream on "
+             "its own step delay; pair of e4b-%s at the same values)"
+             % (name, W_HTTP, FE_CPUS, shape),
+             job_inputs={"fingerprint": FINGERPRINT},
+             tok="TBD-by-registration (configs/tokenizers/GLM-5.3-Flash)"),
+        tpl("E4", name, shape, E4_PROMPTS,
+            gate_t([rd("loadgen_inflight", ("capload", "backlog.inflight", 1))])))
+
+
+e4c("mc")
+
+
 # ---------------- values checklists (fill, then python -m caplaunch.tiergen) ----------------
 for _sub in sorted(set(SUB.values())):
     _d = os.path.join(OUT, _sub)

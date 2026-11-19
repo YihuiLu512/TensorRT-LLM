@@ -19,3 +19,7 @@
 ## 未核对
 
 同 `configs/e2a/README.md`；另外 `oe_sink` 读真产品包、`metronome-only` 在集群上的节拍器份额都只在集群上能看到。
+
+## S-FE 臂（前端线第 8 项，2026-11-20）
+
+E3 卡「3c 对照」：`e3c-sfe-kc-{mc,r}` = 3a 的 S-NL 换成零改动的 S-FE（对 `e3a-snl-kc-*`，同一套值）；`e3c-ees-snl-{mc,r}` = 3b 的 `oe_sink --tier engine-event-stream` 对端由 S-PB 换成 S-NL full（对 `e3b-ees-*`，同一套值）。S-FE 臂的门与链只读读者。详见 `INTERFACES.md`「前端线第 8 项」。

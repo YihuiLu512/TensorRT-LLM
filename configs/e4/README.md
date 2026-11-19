@@ -30,3 +30,7 @@
 ## 未核对
 
 本机只做了结构校验、档位表展开与 `cross_check`（`vf2` / `vf4` 另有本机的编排器端到端：替身产品进程里真 capprobe 的心跳逐窗可读，勘误 FT1-20）。真前端里 F2 / F4 的注入与心跳要靠集群冒烟确认。真前端连 S-PB / S-NL、`--num_input_processor_workers` 在镜像加覆盖后的实际行为、前端在负载下实际可运行的线程数、前端是否把 `max_tokens` 截短（R 轴 `max_tokens` 1 没有对应的预制流时 S-PB 会拒绝）都要靠 E0 补充冒烟与 E4 自身的冒烟确认。
+
+## S-FE 臂（前端线第 8 项，2026-11-20）
+
+E4 卡 4c：`e4c-mc` = `e4b-mc` 的 S-PB 换成零改动的 S-FE（前端形态：`--model {param:tokenizer_dir}` + 指纹作业输入），每条流各自睡 `step_delay`（不齐发）；前端、capload、观察者与 `e4b-mc` 相同，门只读 `capload backlog.inflight`，链只有 `capload counts.ok`。4a（S-FC）仍没有模板。详见 `INTERFACES.md`「前端线第 8 项」。
