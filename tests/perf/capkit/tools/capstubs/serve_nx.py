@@ -69,9 +69,10 @@ def build_parser():
                    help="LLM API stream_interval: writes <out-dir>/serve_nx.<pid>.llm_api.yaml "
                         "and appends --config <it> (the serve arguments must not have --config)")
     p.add_argument("--inject", action="append", default=[], metavar="SITE:MODE",
-                   help="capstubs.snx_inject site spec (SITE:count or SITE:busy:NS); repeatable")
+                   help="capstubs.snx_inject site spec (SITE:count or SITE:busy:NS); repeatable; "
+                        "worker sites (Wr) go to the rank 0 worker through the S-NX config")
     p.add_argument("--diag", default="", metavar="LIST",
-                   help="capstubs.snx_inject diagnostics, comma list of gc,threads,conn")
+                   help="capstubs.snx_inject diagnostics, comma list of gc,threads,conn,tname")
     p.add_argument("--gc-freeze-after-ready", action="store_true",
                    help="gc.collect() + gc.freeze() once --report-addr has been written")
     p.add_argument("--worker", choices=WORKER_KINDS, default="null",
@@ -383,7 +384,6 @@ def main(argv=None):
             except Exception as e:  # noqa: BLE001 -- refuse the start like a config problem
                 print("serve_nx: core split refused: %s" % e, file=sys.stderr)
                 return 3
-        os.environ[ENV_VAR] = json.dumps(cfg.to_doc(), sort_keys=True)
         from capstubs import snx_inject  # noqa: PLC0415
         try:  # validate before anything starts; the env is what re-executed frontends read
             snx_inject.parse_specs(";".join(a.inject))
@@ -391,11 +391,19 @@ def main(argv=None):
         except snx_inject.InjectSpecError as e:
             print("serve_nx: inject refused: %s" % e, file=sys.stderr)
             return 3
+        # worker sites travel in the S-NX config (TRTLLM_CAPKIT_SNX reaches the worker)
+        host_inject, worker_inject = snx_inject.split_worker_specs(a.inject)
+        if worker_inject:
+            if a.worker != "null":
+                print("serve_nx: worker inject sites need --worker null", file=sys.stderr)
+                return 3
+            cfg.worker_inject = ";".join(worker_inject)
+        os.environ[ENV_VAR] = json.dumps(cfg.to_doc(), sort_keys=True)
         if a.gc_freeze_after_ready and not a.report_addr:
             print("serve_nx: --gc-freeze-after-ready needs --report-addr", file=sys.stderr)
             return 3
-        if a.inject:
-            os.environ[snx_inject.ENV_INJECT] = ";".join(a.inject)
+        if host_inject:
+            os.environ[snx_inject.ENV_INJECT] = ";".join(host_inject)
         if a.diag:
             os.environ[snx_inject.ENV_DIAG] = a.diag
         scrubbed = [] if a.keep_launcher_env else scrub_launcher_env()
@@ -405,7 +413,8 @@ def main(argv=None):
         if why:
             print("serve_nx: inject refused: %s" % why, file=sys.stderr)
             return 3
-        done["inject"] = {"specs": list(a.inject), "diag": a.diag,
+        done["inject"] = {"specs": list(a.inject), "worker_specs": worker_inject,
+                          "diag": a.diag,
                           "jsonl": None if inj is None else inj.path,
                           "gc_freeze_after_ready": bool(a.gc_freeze_after_ready)}
         done["launcher_env_removed"] = scrubbed

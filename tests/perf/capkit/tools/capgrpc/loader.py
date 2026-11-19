@@ -55,7 +55,10 @@ REQ_FIELDS = [("req_id", "q"), ("planned_rel_ns", "q"), ("sent_rel_ns", "q"),
 MSG_FIELDS = [("stream_id", "q"), ("idx", "i"), ("step", "q"), ("planned_rel_ns", "q"),
               ("recv_rel_ns", "q"), ("tier_seq", "h")]
 CLASS_HINTS = {"timeout_registered": "overload", "protocol_error": "non_overload",
-               "engine_error": "non_overload"}
+               "engine_error": "non_overload", "client_cancelled": "non_overload"}
+# A request this reader cancelled itself (its task was cancelled, e.g. at stop). Distinct from
+# grpc_CANCELLED, the CANCELLED status the server side returned (capjudge.admission).
+CLIENT_CANCELLED = "client_cancelled"
 
 
 # ---- command line -----------------------------------------------------------------------------
@@ -285,6 +288,8 @@ class LoadWorker:
         self.mismatch_by_tier = [0] * nt
         self.unplanned_by_tier = [0] * nt
         self.fail_reasons = [dict() for _ in range(nt)]
+        self.fail_zero = [dict() for _ in range(nt)]  # reason -> failures without a message
+        self.fail_max_ns = [dict() for _ in range(nt)]  # reason -> longest send-to-end ns
         self.recv_types = [dict() for _ in range(nt)]
         self.send_hist = [_hist.new_counts() for _ in range(nt)]
         self.send_max = [None] * nt
@@ -469,6 +474,12 @@ class LoadWorker:
             v[self.i_failed] += 1
             fr = self.fail_reasons[seq]
             fr[reason] = fr.get(reason, 0) + 1
+            if nmsg == 0:
+                fz = self.fail_zero[seq]
+                fz[reason] = fz.get(reason, 0) + 1
+            fm = self.fail_max_ns[seq]
+            if done - t0 > fm.get(reason, -1):
+                fm[reason] = done - t0
         self.msgs_by_tier[seq] += nmsg
         if nbytes >= 0:
             self.bytes_by_tier[seq] += nbytes
@@ -543,7 +554,7 @@ class LoadWorker:
         except grpc.aio.AioRpcError as e:
             reason = self._reason(e.code())
         except asyncio.CancelledError:
-            reason = "grpc_CANCELLED"
+            reason = CLIENT_CANCELLED
             if call is not None:
                 call.cancel()
         except Exception as e:  # noqa: BLE001 - a client-side fault still ends the request once
@@ -602,7 +613,9 @@ class LoadWorker:
                 "counts": {"planned": P, "sent": S, "ok": self.ok_by_tier[seq],
                            "failed": self.failed_by_tier[seq], "not_sent": P - S},
                 "failures": [{"reason": r, "count": c,
-                              "class_hint": CLASS_HINTS.get(r, "unclassified")}
+                              "class_hint": CLASS_HINTS.get(r, "unclassified"),
+                              "zero_msgs": self.fail_zero[seq].get(r, 0),
+                              "max_send_to_end_ns": self.fail_max_ns[seq].get(r)}
                              for r, c in sorted(self.fail_reasons[seq].items())],
                 "msgs": {"msgs": self.msgs_by_tier[seq],
                          "bytes": self.bytes_by_tier[seq] if self.COUNT_BYTES else None,

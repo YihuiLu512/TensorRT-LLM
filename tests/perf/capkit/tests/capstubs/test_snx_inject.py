@@ -219,5 +219,102 @@ def test_gc_freeze_now():
 
 
 def test_sites_table_names():
-    assert set(snx_inject.SITES) == {"Hs", "Hd", "Fr", "Pp"}
+    assert set(snx_inject.SITES) == {"Hs", "Hd", "Fr", "Pp", "Wr"}
+    assert snx_inject.SITES["Wr"] == ("tensorrt_llm.executor.base_worker", "_send_rsp", None)
+    assert snx_inject.WORKER_SITES == ("Wr",) and "Wr" not in snx_inject.host_sites()
     assert os.path.basename(snx_inject.__file__) == "snx_inject.py"
+
+
+def fake_base_worker():
+    bw = types.ModuleType("tensorrt_llm.executor.base_worker")
+    bw.sent = []
+    bw._send_rsp = lambda worker, response, postproc_batches=None, rsp_batch=None: \
+        bw.sent.append(response)
+
+    def handle_for_ipc_batched(responses):  # the module global is looked up per call
+        for r in responses:
+            bw._send_rsp(None, r, postproc_batches=None, rsp_batch=[])
+    bw.handle = handle_for_ipc_batched
+    return {"tensorrt_llm.executor.base_worker": bw}
+
+
+def test_worker_site_wr_counts_and_busy(tmp_path):
+    mods = fake_base_worker()
+    st = snx_inject.install_worker("Wr:busy:200000", str(tmp_path), header={"role": "worker"},
+                                   modules=mods)
+    try:
+        bw = mods["tensorrt_llm.executor.base_worker"]
+        t0 = time.monotonic_ns()
+        bw.handle(["a", "b", "c"])
+        assert time.monotonic_ns() - t0 >= 3 * 200000
+        assert bw.sent == ["a", "b", "c"]
+        c = st.injectors["Wr"].counters()
+        assert (c["hits"], c["applied"]) == (3, 3) and c["applied_ns"] >= 3 * 200000
+        st.write_line()
+        lines = [json.loads(x) for x in open(st.path)]
+        assert lines[0]["process"] == "worker" and lines[0]["specs"]["Wr"]["delta_ns"] == 200000
+        assert lines[-1]["sites"]["Wr"]["applied"] == 3
+    finally:
+        st.stop()
+        st.uninstall()
+    assert snx_inject.install_worker("", str(tmp_path)) is None
+
+
+def test_worker_and_host_sites_are_kept_apart(tmp_path):
+    with pytest.raises(InjectSpecError):  # the host / frontend environment never installs Wr
+        snx_inject.install_from_env(str(tmp_path), environ={snx_inject.ENV_INJECT: "Wr:count"})
+    with pytest.raises(InjectSpecError):  # the worker config never installs host sites
+        snx_inject.install_worker("Hs:count", str(tmp_path), modules=fake_modules())
+    assert snx_inject.split_worker_specs(["Hd:count", "Wr:busy:39062", " Fr:count"]) == (
+        ["Hd:count", " Fr:count"], ["Wr:busy:39062"])
+
+
+def test_serve_nx_routes_worker_sites_into_the_config(monkeypatch, tmp_path):
+    """--inject Wr:... goes into TRTLLM_CAPKIT_SNX's worker_inject (what the worker reads), not
+    into CAPKIT_SNX_INJECT; the host sites stay in the environment."""
+    from capstubs.null_executor import ENV_VAR
+    for k in (ENV_VAR, snx_inject.ENV_INJECT, snx_inject.ENV_DIAG):
+        monkeypatch.delenv(k, raising=False)
+    seen = {}
+
+    def stop_at_patches(*_a):
+        seen["cfg"] = json.loads(os.environ[ENV_VAR])
+        seen["env"] = os.environ.get(snx_inject.ENV_INJECT)
+        raise SystemExit(7)
+    monkeypatch.setattr(serve_nx, "apply_patches", stop_at_patches)
+    with pytest.raises(SystemExit):
+        serve_nx.main(["--inject", "Wr:busy:39062", "--inject", "Hd:count", "--out-dir",
+                       str(tmp_path), "--", "m"])
+    assert seen["cfg"]["worker_inject"] == "Wr:busy:39062" and seen["env"] == "Hd:count"
+    for k in (ENV_VAR, snx_inject.ENV_INJECT):
+        monkeypatch.delenv(k, raising=False)
+    assert serve_nx.main(["--inject", "Wr:count", "--worker", "product", "--out-dir",
+                          str(tmp_path), "--", "m"]) == 3
+
+
+def test_tname_renames_default_named_threads_only():
+    st = snx_inject.install({}, ("tname",))
+    try:
+        def work_fn():
+            pass
+        a = threading.Thread(target=work_fn)
+        b = threading.Thread(target=work_fn, name="keep_me")
+
+        class Runner(threading.Thread):
+            def run(self):
+                pass
+        c = Runner()
+        for t in (a, b, c):
+            t.start()
+            t.join()
+        assert a.name == "test_snx_inject.test_tname_renames_default_named_threads_only." \
+                         "<locals>.work_fn"
+        assert b.name == "keep_me"
+        assert c.name.endswith("Runner")
+    finally:
+        st.uninstall()
+    d = threading.Thread(target=lambda: None)
+    d.start()
+    d.join()
+    assert d.name.startswith("Thread-")
+    assert snx_inject.parse_diags("gc,threads,tname") == ["gc", "threads", "tname"]

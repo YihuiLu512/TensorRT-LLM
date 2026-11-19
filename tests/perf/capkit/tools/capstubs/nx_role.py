@@ -84,6 +84,7 @@ def build_parser():
     g.add_argument("--sample-every", type=int, default=0)
     g.add_argument("--lanes", type=int, default=1)
     g.add_argument("--drain-cpus", default="")
+    nxd.add_drain_inject_arg(g)
     g.add_argument("--python", default=sys.executable)
     g.add_argument("--keep-launcher-env", action="store_true",
                    help="keep SLURM_* / PMI_* / PMIX_* (default: removed before the product is "
@@ -100,14 +101,18 @@ def driver_args(args, common):
         out_dir=args.nxd_dir, tail_s=args.tail_s, config_json=args.config_json, set=args.set,
         snx_out_dir=args.snx_out_dir, model=args.model, max_seq_len=args.max_seq_len,
         consumer=args.consumer, sample_every=args.sample_every, lanes=args.lanes,
-        drain_cpus=args.drain_cpus, python=args.python, stream_interval=args.stream_interval)
+        drain_cpus=args.drain_cpus, python=args.python, stream_interval=args.stream_interval,
+        drain_inject=args.drain_inject)
 
 
 def validate_args(args):
     if args.mode == "proxy" and not args.model:
         raise ConfigError("--mode proxy needs --model")
-    if args.mode == "standalone" and (args.lanes != 1 or args.consumer != "raw"):
-        raise ConfigError("--lanes / --consumer are proxy options")
+    dr = getattr(args, "drain_inject", "")
+    if args.mode == "standalone" and (args.lanes != 1 or args.consumer != "raw" or dr):
+        raise ConfigError("--lanes / --consumer / --drain-inject are proxy options")
+    if nxd.drain_injector(dr) is not None and args.consumer == "product":
+        raise ConfigError("--drain-inject needs a raw or deserialize drain")
     if args.lanes < 1 or args.poll_ms < 1 or args.tail_s < 0:
         raise ConfigError("--lanes and --poll-ms must be >= 1, --tail-s >= 0")
     if args.mode == "standalone" and args.worker_cores:

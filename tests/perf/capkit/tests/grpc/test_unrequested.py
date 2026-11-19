@@ -149,6 +149,19 @@ def _sink_stall(launch, value_s):
     return _failures(launch, "load")
 
 
+def test_server_cancel_entry_records_zero_msgs_and_longest_duration(launch):
+    """A server-side CANCELLED (the unrequested-time limit here) is grpc_CANCELLED; its failure
+    entry counts the failures that got no message and the longest send-to-end time, the per-
+    request evidence capjudge.admission reads (here every one waited >= the 1 s limit)."""
+    _sink_stall(launch, 1)
+    ents = [f for docs in launch.summaries("load").values() for d in docs
+            for f in d["failures"]]
+    canc = [f for f in ents if f["reason"] == "grpc_CANCELLED"]
+    assert canc and all(f["zero_msgs"] == f["count"] for f in canc), ents
+    assert max(f["max_send_to_end_ns"] for f in canc) >= 900_000_000, canc
+    assert not [f for f in ents if f["reason"] == "client_cancelled"], ents
+
+
 def test_short_value_cancels_streams_queued_behind_a_stalled_loop(launch):
     """The option reaches gRPC core: with 1 s, at least one stream queued behind the 3 s stall
     is cancelled, and every stream is either cancelled or completed."""

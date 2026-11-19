@@ -26,6 +26,9 @@ the product worker with a NullExecutor engine. The result side is a drain chosen
 and K drain subprocesses, each an attached GenerationExecutorFrontendProxy subclass that submits its
 share of the rows (req_id % K) and drains its own lane; the launcher's lane 0 only starts the
 worker. --lanes 1 drains lane 0 of a single-frontend proxy (tcp PAIR).
+--drain-inject Dr:count | Dr:busy:NS (raw / deserialize drains): site Dr, a capcommon.inject busy
+wait right after every frame a drain receives (the drain's per-message path, in the thread that
+recv()s); each drain counts it per receive-time tier (dr_hits / dr_applied / dr_applied_ns).
 
 Output (--out-dir): nxd.<role>.ready.json once the worker is ready; per lane / process a summary
 (nxd.<lane>.summary.json: per tier planned / sent / send lag / messages / bytes / responses
@@ -57,6 +60,30 @@ SEND_FIELDS = ("req_id", "client_id", "planned_ns", "sent_ns", "tier_seq")
 RECV_REC = struct.Struct("<qii")
 RECV_FIELDS = ("recv_ns", "bytes", "responses")
 CONSUMERS = ("raw", "deserialize", "product")
+DRAIN_SITE = "Dr"
+
+
+def drain_injector(text):
+    """capcommon.inject Injector of site Dr from 'Dr:count' / 'Dr:busy:NS' ('' -> None)."""
+    if not text:
+        return None
+    from capcommon.inject import InjectSpec, Injector  # noqa: PLC0415
+    parts = text.strip().split(":")
+    if parts[0] != DRAIN_SITE or not (parts[1:] == ["count"] or (
+            len(parts) == 3 and parts[1] == "busy" and parts[2].isdigit()
+            and int(parts[2]) > 0)):
+        raise ConfigError("--drain-inject must be Dr:count or Dr:busy:NS (NS > 0), got %r"
+                          % text)
+    inj = Injector(DRAIN_SITE)
+    if parts[1] == "busy":
+        inj.set_spec(InjectSpec(DRAIN_SITE, "busy", delta_ns=int(parts[2])))
+    return inj
+
+
+def add_drain_inject_arg(p):
+    p.add_argument("--drain-inject", default="", metavar="SPEC",
+                   help="Dr:count or Dr:busy:NS at every frame the raw / deserialize drain "
+                        "receives")
 
 
 def add_snx_args(p):
@@ -102,6 +129,7 @@ def build_parser():
     x.add_argument("--drain-cpus", default="",
                    help="K comma-separated cpu lists (taskset) for the drain subprocesses")
     x.add_argument("--python", default=sys.executable)
+    add_drain_inject_arg(x)
     d = sub.add_parser("drain")
     add_load_args(d)
     d.add_argument("--attach-info", required=True)
@@ -109,6 +137,7 @@ def build_parser():
     d.add_argument("--lanes", type=int, required=True)
     d.add_argument("--consumer", choices=CONSUMERS, default="raw")
     d.add_argument("--sample-every", type=int, default=0)
+    add_drain_inject_arg(d)
     return p
 
 
@@ -205,11 +234,17 @@ class LaneStats:
                 t["send_lag_ns_max"] = lag
         self.sends.add(req_id, client_id, planned_ns, sent_ns, seq)
 
-    def received(self, now, nbytes, responses=-1, finals=0, errors=0):
+    def received(self, now, nbytes, responses=-1, finals=0, errors=0, inj_ns=-1):
+        """inj_ns: ns the Dr site spent on this frame (0 = passed, not applied; -1 = no Dr)."""
         seq = self.plan.tier_seq_at(now)
         with self.lock:
             t = self._t(seq)
             t["msgs"] += 1
+            if inj_ns >= 0:
+                t["dr_hits"] = t.get("dr_hits", 0) + 1
+                if inj_ns > 0:
+                    t["dr_applied"] = t.get("dr_applied", 0) + 1
+                    t["dr_applied_ns"] = t.get("dr_applied_ns", 0) + inj_ns
             t["bytes"] += nbytes
             if responses >= 0:
                 t["parsed_msgs"] += 1
@@ -255,17 +290,20 @@ def parse_batch(obj):
     return n, fin, err
 
 
-def drain_loop(zq, stats, consumer, sample_every, stop):
-    """The raw / deserialize result drain: recv() every frame of the lane's ZMQ socket."""
+def drain_loop(zq, stats, consumer, sample_every, stop, inj=None):
+    """The raw / deserialize result drain: recv() every frame of the lane's ZMQ socket. `inj`
+    (site Dr, drain_injector) runs right after each recv."""
     zq.setup_lazily()
     sock = zq.socket
     i = 0
     clock = time.monotonic_ns
+    hit = inj.hit if inj is not None else None
     while not stop.is_set():
         if not sock.poll(200):
             continue
         data = sock.recv()
         now = clock()
+        ns = hit() if hit is not None else -1
         i += 1
         if consumer == "deserialize" and (sample_every <= 1 or i % sample_every == 0):
             try:
@@ -273,19 +311,19 @@ def drain_loop(zq, stats, consumer, sample_every, stop):
                     pickle.loads(data)  # nosec B301 -- the product's own lane
             except Exception as e:  # noqa: BLE001 -- counted, not fatal
                 stats.errors.append(repr(e))
-                stats.received(now, len(data))
+                stats.received(now, len(data), inj_ns=ns)
                 continue
             got = parse_batch(obj)
             if got is None:
                 stats.sentinel = True
                 return
-            stats.received(now, len(data), *got)
+            stats.received(now, len(data), *got, inj_ns=ns)
         else:
             if len(data) < 64 and pickle.loads(  # nosec B301
                     data[:-32] if zq.use_hmac_encryption else data) is None:
                 stats.sentinel = True
                 return
-            stats.received(now, len(data))
+            stats.received(now, len(data), inj_ns=ns)
 
 
 def make_request(plan, req_id, seq, end_id):
@@ -315,12 +353,12 @@ def send_loop(plan, rows, submit, stats, stop, end_id):
         stats.sent(req_id, planned, clock(), seq, -1 if cid is None else cid)
 
 
-def raw_class(base, stats, consumer, sample_every, stop):
+def raw_class(base, stats, consumer, sample_every, stop, inj=None):
     """A subclass of a product proxy class whose result dispatch is the capkit drain."""
 
     class _RawDrain(base):
         def dispatch_result_task(self):
-            drain_loop(self.result_queue.queue, stats, consumer, sample_every, stop)
+            drain_loop(self.result_queue.queue, stats, consumer, sample_every, stop, inj)
             return False
 
     _RawDrain.__name__ = "Raw" + base.__name__
@@ -431,9 +469,12 @@ def start_proxy(a, plan, stats, stop):
         raise ConfigError("--lanes must be >= 1")
     llm_args = TorchLlmArgs(model=a.model, max_seq_len=a.max_seq_len, stream_interval=s,
                             num_serve_frontends=lanes + 1 if lanes >= 2 else 1)
+    inj = drain_injector(getattr(a, "drain_inject", ""))
+    if inj is not None and a.consumer == "product":
+        raise ConfigError("--drain-inject needs a raw or deserialize drain")
     base = GenerationExecutorProxy
     cls = base if a.consumer == "product" or lanes >= 2 else \
-        raw_class(base, stats, a.consumer, a.sample_every, stop)
+        raw_class(base, stats, a.consumer, a.sample_every, stop, inj)
     t0 = time.monotonic_ns()
     proxy = cls({"hf_model_dir": Path(a.model), "tokenizer": None, "llm_args": llm_args},
                 model_world_size=1, worker_cls=NullWorker,
@@ -461,6 +502,8 @@ def spawn_drains(a, proxy, out_dir, stopped):
                 "--prompt-len", str(a.prompt_len),
                 "--prompt-first-id", str(a.prompt_first_id), "--end-id", str(a.end_id),
                 "--out-dir", out_dir, "--tail-s", str(a.tail_s)]
+        if getattr(a, "drain_inject", ""):
+            argv += ["--drain-inject", a.drain_inject]
         if len(cpus) >= fid and cpus[fid - 1]:
             argv = ["taskset", "-c", cpus[fid - 1]] + argv
         children.append(subprocess.Popen(argv))  # nosec B603
@@ -526,9 +569,12 @@ def run_drain(a, holder):
     plan = Plan(a, share=fid - 1, n_shares=a.lanes)
     stop = threading.Event()
     stats = LaneStats(plan, a.out_dir, "lane%d" % fid, a.consumer, a.sample_every)
+    inj = drain_injector(a.drain_inject)
+    if inj is not None and a.consumer == "product":
+        raise ConfigError("--drain-inject needs a raw or deserialize drain")
     base = GenerationExecutorFrontendProxy
     cls = base if a.consumer == "product" else \
-        raw_class(base, stats, a.consumer, a.sample_every, stop)
+        raw_class(base, stats, a.consumer, a.sample_every, stop, inj)
     proxy = cls(info, frontend_id=fid, postproc_worker_config=PostprocWorkerConfig(),
                 is_llm_executor=True)
     try:

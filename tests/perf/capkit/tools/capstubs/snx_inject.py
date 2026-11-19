@@ -22,6 +22,13 @@ function runs):
         _handle(records, message, tokenizer, hook); called once per message a pool process takes
         from its inbox (open, each event, close). Installed by capstubs/fe_inject (sitecustomize)
         in the pool processes; serve_nx never imports it.
+    Wr  rank 0 worker, await_response_thread: tensorrt_llm.executor.base_worker._send_rsp(worker,
+        response, postproc_batches=None, rsp_batch=None); AwaitResponseHelper.
+        handle_for_ipc_batched calls it once per response it sends towards the proxy (looked up
+        as a module global at each call). A worker site (WORKER_SITES): the worker process does
+        not get CAPKIT_SNX_INJECT (MpiPoolSession forwards only TRTLLM* variables), so serve_nx
+        puts worker specs into the S-NX config (worker_inject) and capstubs.null_worker installs
+        them; install_from_env refuses them.
 
 Specs: CAPKIT_SNX_INJECT = 'SITE:count' or 'SITE:busy:NS' items joined by ';'. busy is
 capcommon.inject's inline busy wait (the GIL is held). Counters per site: hits / applied /
@@ -30,7 +37,10 @@ applied_ns (capcommon.inject.Injector, private slots, one writer thread per site
 Diagnostics (CAPKIT_SNX_DIAG, comma list): gc (gc.callbacks: per generation count, total and
 longest pause, and the thread that ran each pause >= 50 ms), threads (Python thread name <->
 native id census), conn (ESTABLISHED TCP connections whose local port is one of this process's
-listening ports, i.e. accepted connections, with their peer ports).
+listening ports, i.e. accepted connections, with their peer ports), tname (threads started after
+install with a default name, "Thread-N" or "Thread-N (target)", are renamed to the qualified
+name of their target, or of their class when run() is overridden, so the census names them;
+only the Python name changes).
 
 Every second a reporter thread appends one JSON line to <out_dir>/inject.<pid>.jsonl:
 {"t_ns": monotonic ns, "sites": {site: counters}, "gc": {...}, "threads": [...],
@@ -41,6 +51,7 @@ import atexit
 import gc
 import json
 import os
+import re
 import threading
 import time
 
@@ -54,8 +65,11 @@ SITES = {
     "Hd": ("tensorrt_llm.executor.proxy", "global_tracer", None),
     "Fr": ("tensorrt_llm.grpc.openengine_client.stream", "_validate", "GenerateStream"),
     "Pp": ("tensorrt_llm.serve.openengine_poc.postproc_pool", "_handle", None),
+    "Wr": ("tensorrt_llm.executor.base_worker", "_send_rsp", None),
 }
-DIAGS = ("gc", "threads", "conn")
+WORKER_SITES = ("Wr",)
+DIAGS = ("gc", "threads", "conn", "tname")
+DEFAULT_THREAD_NAME = re.compile(r"^Thread-\d+( \(.*\))?$")
 LONG_PAUSE_NS = 50 * 1000 * 1000
 CONN_EVERY_S = 5.0
 
@@ -64,8 +78,9 @@ class SiteMissing(InjectSpecError):
     pass
 
 
-def parse_specs(text):
-    """'Hs:busy:156250;Hd:count' -> {site: InjectSpec or None (count only)}."""
+def parse_specs(text, allowed=None):
+    """'Hs:busy:156250;Hd:count' -> {site: InjectSpec or None (count only)}. `allowed`: the
+    sites this process may install (None: any known site)."""
     out = {}
     for item in (text or "").split(";"):
         item = item.strip()
@@ -75,6 +90,9 @@ def parse_specs(text):
         site = parts[0]
         if site not in SITES:
             raise InjectSpecError("unknown S-NX inject site %r (known: %s)" % (site, sorted(SITES)))
+        if allowed is not None and site not in allowed:
+            raise InjectSpecError("site %s cannot be installed in this process (allowed: %s)"
+                                  % (site, sorted(allowed)))
         if site in out:
             raise InjectSpecError("site %s given twice" % site)
         if parts[1:] == ["count"]:
@@ -96,6 +114,44 @@ def parse_diags(text):
     if bad:
         raise InjectSpecError("unknown S-NX diagnostics %s (known: %s)" % (bad, list(DIAGS)))
     return sorted(set(out))
+
+
+def split_worker_specs(items):
+    """serve_nx --inject items -> (process-side items, worker-side items)."""
+    host, worker = [], []
+    for item in items:
+        (worker if item.strip().split(":")[0] in WORKER_SITES else host).append(item)
+    return host, worker
+
+
+def host_sites():
+    return tuple(s for s in SITES if s not in WORKER_SITES)
+
+
+def thread_target_name(thread):
+    """The qualified name a default-named thread gets under the tname diagnostic."""
+    fn = getattr(thread, "_target", None)
+    if fn is not None:
+        mod = getattr(fn, "__module__", None) or ""
+        qn = getattr(fn, "__qualname__", None) or getattr(fn, "__name__", None) or repr(fn)
+        return "%s.%s" % (mod.rsplit(".", 1)[-1], qn) if mod else qn
+    return type(thread).__qualname__
+
+
+def patch_thread_names():
+    """Wrap threading.Thread.start (tname diagnostic). Returns the original start."""
+    orig = threading.Thread.start
+
+    def start(self):
+        if DEFAULT_THREAD_NAME.match(self.name):
+            try:
+                self.name = thread_target_name(self)
+            except Exception:  # noqa: BLE001 -- naming is diagnostic; never block a start
+                pass
+        return orig(self)
+    start.__wrapped__ = orig
+    threading.Thread.start = start
+    return orig
 
 
 def _target(site, modules):
@@ -219,6 +275,7 @@ class Installed:
         self.originals = {}
         self.diags = []
         self.gc = None
+        self.thread_start = None
         self.path = None
         self._stop = threading.Event()
         self._thread = None
@@ -270,6 +327,9 @@ class Installed:
         self.originals.clear()
         if self.gc is not None and self.gc in gc.callbacks:
             gc.callbacks.remove(self.gc)
+        if self.thread_start is not None:
+            threading.Thread.start = self.thread_start
+            self.thread_start = None
 
 
 def install(specs, diags=(), out_dir=None, modules=None, reporter=True, header=None):
@@ -292,6 +352,8 @@ def install(specs, diags=(), out_dir=None, modules=None, reporter=True, header=N
     if "gc" in st.diags:
         st.gc = GcStats()
         gc.callbacks.append(st.gc)
+    if "tname" in st.diags:
+        st.thread_start = patch_thread_names()
     if out_dir and (specs or st.diags):
         os.makedirs(out_dir, exist_ok=True)
         st.path = os.path.join(out_dir, "inject.%d.jsonl" % os.getpid())
@@ -307,9 +369,10 @@ def install(specs, diags=(), out_dir=None, modules=None, reporter=True, header=N
 
 
 def install_from_env(out_dir, environ=None, header=None):
-    """install() from CAPKIT_SNX_INJECT / CAPKIT_SNX_DIAG; None when both are empty."""
+    """install() from CAPKIT_SNX_INJECT / CAPKIT_SNX_DIAG; None when both are empty. Worker
+    sites are refused (they come from the S-NX config: install_worker)."""
     env = os.environ if environ is None else environ
-    specs = parse_specs(env.get(ENV_INJECT, ""))
+    specs = parse_specs(env.get(ENV_INJECT, ""), allowed=host_sites())
     diags = parse_diags(env.get(ENV_DIAG, ""))
     if not specs and not diags:
         return None
@@ -321,3 +384,13 @@ def gc_freeze_now():
     gc.collect()
     gc.freeze()
     return gc.get_freeze_count()
+
+
+def install_worker(text, out_dir, header=None, modules=None):
+    """install() of the worker sites in `text` (the S-NX config's worker_inject, in the rank 0
+    worker process); None when empty."""
+    specs = parse_specs(text, allowed=WORKER_SITES)
+    if not specs:
+        return None
+    return install(specs, (), out_dir=out_dir, modules=modules,
+                   header=dict(header or {}, process="worker"))

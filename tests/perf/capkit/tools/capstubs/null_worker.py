@@ -28,7 +28,9 @@ def build_null_executor(llm_args, cfg=None):
     """A started NullExecutor for this worker: config from TRTLLM_CAPKIT_SNX unless given,
     tier table loaded from it, stream_interval cross-checked against llm_args. With
     cfg.worker_cpus every thread of this process is pinned there first (rank 0's own cores;
-    serve_nx / nx_role --worker-cores), and the before / after affinity goes into meta.json."""
+    serve_nx / nx_role --worker-cores), and the before / after affinity goes into meta.json.
+    cfg.worker_inject installs capstubs.snx_inject worker sites (Wr) here, before the worker's
+    await_response_thread starts."""
     cfg = cfg or SnxConfig.from_env()
     pin = pin_all_tasks(cfg.worker_cpus) if cfg.worker_cpus else None
     tt = None
@@ -37,8 +39,22 @@ def build_null_executor(llm_args, cfg=None):
         tt = TierTable.load(cfg.tier_table)
     llm_s = getattr(llm_args, "stream_interval", None) if llm_args is not None else None
     max_seq_len = getattr(llm_args, "max_seq_len", None) if llm_args is not None else None
-    return NullExecutor(cfg, ProductAdapter(), tier_table=tt, llm_stream_interval=llm_s,
-                        max_seq_len=max_seq_len or cfg.max_seq_len, pin_info=pin)
+    ex = NullExecutor(cfg, ProductAdapter(), tier_table=tt, llm_stream_interval=llm_s,
+                      max_seq_len=max_seq_len or cfg.max_seq_len, pin_info=pin)
+    if cfg.worker_inject:
+        ex.worker_inject = install_worker_inject(cfg)
+    return ex
+
+
+def install_worker_inject(cfg):
+    """capstubs.snx_inject worker sites (cfg.worker_inject) in this rank 0 worker process; a
+    missing target or a bad spec refuses the engine (ConfigError)."""
+    from . import snx_inject  # noqa: PLC0415
+    try:
+        return snx_inject.install_worker(cfg.worker_inject, cfg.out_dir or None,
+                                         header={"role": "worker"})
+    except snx_inject.InjectSpecError as e:
+        raise ConfigError("worker_inject: %s" % e) from e
 
 
 class NullWorker(GenerationExecutorWorker):

@@ -355,3 +355,13 @@ def test_step_thread_error_is_reported_as_event_loop_error(tmp_path):
     assert ex.await_responses(timeout=1) == []
     with open(os.path.join(str(tmp_path), "snx.%d.summary.json" % os.getpid())) as f:
         assert json.load(f)["counts"]["step_thread_errors"] == 1
+
+
+def test_config_worker_inject_is_a_string():
+    from capstubs.null_executor import SCHEMA_CONFIG, SnxConfig
+    from capcommon.exitcodes import ConfigError
+    assert SnxConfig().worker_inject == ""
+    doc = {"schema": SCHEMA_CONFIG, "worker_inject": "Wr:busy:39062"}
+    assert SnxConfig.from_doc(doc).to_doc()["worker_inject"] == "Wr:busy:39062"
+    with pytest.raises(ConfigError):
+        SnxConfig.from_doc({"schema": SCHEMA_CONFIG, "worker_inject": 5})
