@@ -14,6 +14,12 @@
   message-level lag = receive time - stamped planned time (INTERFACES.md 7.4).
 - --planned-msgs: for unstamped streams (the OpenEngine stubs), message-level lag against the
   planned time derived from the schedule (capgrpc.msgplan; INTERFACES errata FT1-9).
+- --count-tokens (raw consume, OpenEngine requests): every response is read with
+  capgrpc.tokcount (TokenOutput token entries), so a server that merges adjacent token events
+  (one message with k >= 1 tokens, D1 stage S3) is reconciled by tokens: the requests rows carry
+  each request's token count, every tier summary gets a `tokens` block (tokens, token messages,
+  the merge-factor histogram of k, OK requests whose tokens != max_tokens), and --planned-msgs
+  plans each message at the step of its first token. Off: outputs as before, byte for byte.
 - --consume client: each worker reads its streams through the product's OpenEngine client
   (OpenEngineClient.generate -> GenerateStream: protobuf requests and responses, one read task per
   message, stream-contract validation, the post-terminal drain) instead of raw bytes on a raw
@@ -50,6 +56,7 @@ from .common import (ToolRuntime, TierCursor, child_main, open_channel, raw_stre
                      resolve_target, run_supervisor, status_reason, wait_channels_ready,
                      worker_ready_info, write_inprocess_ready)
 from .msgplan import MsgPlan
+from .tokcount import KHist, response_tokens
 from .reqbytes import encode_pb_string_field, load_prompts, load_reqbytes
 
 REQUEST_FORMATS = ("capkit", "openengine", "raw")
@@ -105,6 +112,10 @@ def build_parser():
                         "channels of a worker share one connection")
     g.add_argument("--stamped", action="store_true",
                    help="drain mode: read the beat stamp of every message (INTERFACES.md 7.4)")
+    g.add_argument("--count-tokens", action="store_true",
+                   help="count the tokens of every response (TokenOutput entries; raw consume, "
+                        "--request-format openengine): token reconcile, merge factor k, "
+                        "--planned-msgs by first token")
     g.add_argument("--consume", choices=CONSUMES, default="raw",
                    help="raw: raw bytes on a raw multicallable (default); client: the product's "
                         "OpenEngineClient / GenerateStream per request (container only; needs "
@@ -143,6 +154,11 @@ def validate_args(args, common):
                               "raw request bytes carry their own")
     if len(common.cpus) < args.workers:
         raise ConfigError("--cpus lists %d cpus for %d workers" % (len(common.cpus), args.workers))
+    if getattr(args, "count_tokens", False):
+        if args.request_format != "openengine" or getattr(args, "consume", "raw") != "raw" \
+                or args.stamped:
+            raise ConfigError("--count-tokens needs --request-format openengine, --consume raw "
+                              "and no --stamped")
     if getattr(args, "consume", "raw") == "client":
         if args.request_format != "openengine":
             raise ConfigError("--consume client needs --request-format openengine")
@@ -294,6 +310,7 @@ class LoadWorker:
         self.local_pool = not args.shared_subchannel_pool
         self.stamped = args.stamped
         self.msgplan = MsgPlan(rt.tt) if args.planned_msgs else None
+        self.count_tokens = bool(getattr(args, "count_tokens", False))
         self.mod = args.msg_sample_mod
         T = self.tt.request_timeout_ns
         self.timeout_ns = T
@@ -305,6 +322,10 @@ class LoadWorker:
         self.bytes_by_tier = [0] * nt
         self.mismatch_by_tier = [0] * nt
         self.unplanned_by_tier = [0] * nt
+        if self.count_tokens:
+            self.khist_by_tier = [KHist() for _ in range(nt)]
+            self.tokens_ok_by_tier = [0] * nt  # tokens of OK requests (planned tier)
+            self.tok_mismatch_by_tier = [0] * nt  # OK requests whose tokens != max_tokens
         self.fail_reasons = [dict() for _ in range(nt)]
         self.fail_zero = [dict() for _ in range(nt)]  # reason -> failures without a message
         self.fail_max_ns = [dict() for _ in range(nt)]  # reason -> longest send-to-end ns
@@ -473,7 +494,7 @@ class LoadWorker:
         v[self.i_active] += 1
         return t0, timeout
 
-    def end_request(self, rid, seq, prel, t0, first, nmsg, nbytes, reason, ch):
+    def end_request(self, rid, seq, prel, t0, first, nmsg, nbytes, reason, ch, ntok=-1):
         """Outcome bookkeeping of one request (the active gauge is the caller's): counters,
         failure reasons, msgs per planned tier, and its requests row."""
         plan, v, origin = self.plan, self.v, self.origin
@@ -486,6 +507,10 @@ class LoadWorker:
             em = plan.expected_msgs[seq]
             if em is not None and nmsg != em:
                 self.mismatch_by_tier[seq] += 1
+            if ntok >= 0 and self.count_tokens:
+                self.tokens_ok_by_tier[seq] += ntok
+                if ntok != self.tt.tiers[seq].max_tokens:
+                    self.tok_mismatch_by_tier[seq] += 1
         else:
             status = self._status_id(reason)
             self.failed_by_tier[seq] += 1
@@ -502,7 +527,8 @@ class LoadWorker:
         if nbytes >= 0:
             self.bytes_by_tier[seq] += nbytes
         self.req_rec.append(rid, prel, t0 - origin, first - origin if first >= 0 else -1,
-                            done - origin, nmsg, nbytes, -1, status, ch, 0, seq)
+                            done - origin, nmsg, nbytes, ntok if status == 0 else -1, status, ch,
+                            0, seq)
 
     def log_client_error(self, rid, e):
         if not self.client_error_logged:
@@ -517,10 +543,12 @@ class LoadWorker:
         ch = i % self.nch
         t0, timeout = self.begin_request(seq, prel)
         active = True
-        nmsg = nbytes = 0
+        nmsg = nbytes = ntok = 0
         first = -1
         reason = None
         call = None
+        count_tokens = self.count_tokens
+        khist = self.khist_by_tier[seq] if count_tokens else None
         stamped, sampled = self.stamped, rid % self.mod == 0
         msgplan = self.msgplan
         mst = msgplan.stream(prel, seq) if msgplan is not None else None
@@ -560,6 +588,19 @@ class LoadWorker:
                     if sampled:
                         self.msg_rec.append(rid, nmsg, step, splanned, rel,
                                             self.cursor.seq_at(rel))
+                elif count_tokens:
+                    try:
+                        k, is_tok = response_tokens(msg)
+                    except ValueError:
+                        reason = "protocol_error"
+                        call.cancel()
+                        break
+                    if msgplan is not None:
+                        self.planned_msg(mst, msgplan.msg_of_token(seq, ntok), t, rid, seq,
+                                         sampled)
+                    if is_tok:
+                        khist.add(k)
+                    ntok += k
                 elif msgplan is not None:
                     self.planned_msg(mst, nmsg, t, rid, seq, sampled)
                 nmsg += 1
@@ -583,7 +624,8 @@ class LoadWorker:
         finally:
             if active:
                 v[self.i_active] -= 1
-        self.end_request(rid, seq, prel, t0, first, nmsg, nbytes, reason, ch)
+        self.end_request(rid, seq, prel, t0, first, nmsg, nbytes, reason, ch,
+                         ntok if count_tokens else -1)
 
     def planned_msg(self, mst, j, t, rid, seq, sampled):
         """--planned-msgs: lag of message j (received at t) against its derived planned time."""
@@ -609,7 +651,9 @@ class LoadWorker:
         rt.dump_records(self.req_rec, "requests", "loadgen.requests",
                         {"status_codes": status_codes, "method": args.method,
                          "request_format": plan.format, "conn_id": "channel index",
-                         "tokens": "-1 = not counted by the gRPC loader",
+                         "tokens": "TokenOutput token entries of an OK request (--count-tokens; "
+                                   "-1 for a failed request, which capjudge C4 does not compare)"
+                         if self.count_tokens else "-1 = not counted by the gRPC loader",
                          "schedule_sha256": plan.schedule_sha256})
         msg_src = "stamp" if self.stamped else "schedule" if self.msgplan is not None else None
         if self.msg_rec is not None:
@@ -654,6 +698,16 @@ class LoadWorker:
                 "overflow": {"requests": self.req_rec.overflow,
                              "msgs": self.msg_rec.overflow if self.msg_rec else 0,
                              "lag": rt.lag_records.overflow if rt.lag_records else 0}})
+            if self.count_tokens:
+                kh = self.khist_by_tier[seq].summary()
+                kh.update({"attribution": "tokens and k: messages of requests planned in this "
+                                          "tier; ok_*: OK requests of this tier",
+                           "ok_tokens": self.tokens_ok_by_tier[seq],
+                           "ok_tokens_expected": self.ok_by_tier[seq]
+                           * self.tt.tiers[seq].max_tokens,
+                           "ok_requests_with_unexpected_token_count":
+                               self.tok_mismatch_by_tier[seq]})
+                payload["tokens"] = kh
             payload.update(self.extra_summary(seq))
             rt.write_summary(seq, payload)
 

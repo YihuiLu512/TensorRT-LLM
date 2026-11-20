@@ -19,9 +19,15 @@ each D1 arm stays comparable with the S-NX arm it comes from:
     e16-zr-k4-<s>        E16-zr: e16-nx with the S-ZR replay stub as the response source
                          (serve_nx --cpp-host-szr-bin {param:szr_bin} --cpp-host-szr-dir
                          {raw}/szr; S-ZR on the rank 0 worker's cores, rank 0 idle)
+    e16-nxtk-k4-<s>,     e16-nx / e16-zr with the reader counting tokens (capgrpc.load
+    e16-zrtk-k4-<s>      --count-tokens): stage S3 merges adjacent token events, so these arms
+                         reconcile by tokens and report the merge factor k
   E9 supplementary (experiment E9; from e9-n<n>f0-<shape>: capload -> n new-architecture frontends
   -> engine host)
-    e9-nc<n>f0-<s>       NC: the frontends connect to the C++ host (public port)
+    e9-nc<n>f0-<s>       NC: the frontends connect to the C++ host (public port); n = 1, 8,
+                         and 4 (from e9-n4f0-<s>, the E13 4-frontend point)
+    e9-nc8fP-mc          NC-8fP: e9-n8fP-mc (8 frontends, postproc pool) with the C++ host
+                         (configs/snx has no e9-n8fP-r, so no r shape)
     e9-n2l8f0-<s>        N2l: the 8 frontends connect to the launcher's loopback port (Python host in
                          the two-lane multi-frontend mode)
 
@@ -136,6 +142,18 @@ def unchanged(sc, roles):
     pass
 
 
+def count_tokens(edit):
+    """`edit` plus capgrpc.load --count-tokens on the reader."""
+    def both(sc, roles):
+        edit(sc, roles)
+        r = roles["reader"]
+        assert r.get("module") == "capgrpc.load", r.get("module")
+        r["args"] = r["args"] + ["--count-tokens"]
+        r["note"] = r.get("note", "") + "; --count-tokens: tokens per response, token reconcile, " \
+            "merge factor k (D1 stage S3)"
+    return both
+
+
 def main(out):
     arms = []
     for shape in ("mc", "r"):
@@ -152,7 +170,11 @@ def main(out):
             ("E16", src, "e16-nx-nodiag-k4-%s" % shape, cpp_host(diag=False),
              "E16-nx without the self-report (--diag-out off)"),
             ("E16", src, "e16-zr-k4-%s" % shape, cpp_host(diag=True, szr=True),
-             "E16-zr: the C++ host in front of the S-ZR replay stub, self-report on")]
+             "E16-zr: the C++ host in front of the S-ZR replay stub, self-report on"),
+            ("E16", src, "e16-nxtk-k4-%s" % shape, count_tokens(cpp_host(diag=True)),
+             "E16-nx with the reader counting tokens (--count-tokens; stage S3)"),
+            ("E16", src, "e16-zrtk-k4-%s" % shape, count_tokens(cpp_host(diag=True, szr=True)),
+             "E16-zr with the reader counting tokens (--count-tokens; stage S3)")]
         for n in (1, 8):
             src9 = "e9-n%df0-%s" % (n, shape)
             arms.append(("E9", src9, "e9-nc%df0-%s" % (n, shape), cpp_host(diag=True),
@@ -162,6 +184,10 @@ def main(out):
                              cpp_host(diag=False, private=True),
                              "N2l-%df0: the frontends connect to the C++ host mode launcher's "
                              "loopback port" % n))
+        arms.append(("E9", "e9-n4f0-%s" % shape, "e9-nc4f0-%s" % shape, cpp_host(diag=True),
+                     "NC-4f0: the 4 frontends connect to the C++ host (E13 4-frontend point)"))
+    arms.append(("E9", "e9-n8fP-mc", "e9-nc8fP-mc", cpp_host(diag=True),
+                 "NC-8fP: the 8 frontends (postproc pool) connect to the C++ host"))
     for exp, src, name, edit, what in arms:
         sc, tp = derive(exp, src, name, edit, what)
         w(out, name + ".scenario.json", sc)
