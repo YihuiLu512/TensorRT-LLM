@@ -34,6 +34,11 @@
   grpc.aio.server call in the process is logged with its options to
   <out-dir>/grpc_server_options.<pid>.jsonl (the read-back). The options also go into
   CAPKIT_SNX_GRPC_SERVER_OPTIONS so re-executed attached frontends apply the same.
+- E16-zr (--cpp-host-szr-bin / --cpp-host-szr-dir / --cpp-host-szr-arg, C++ host mode only): writes
+  capstubs.szr_launch's wrapper into the S-ZR dir and gives it to the launcher as the host binary;
+  the wrapper starts the S-ZR replay stub from TRTLLM_CAPKIT_SNX (this launch's tier table and
+  origin) on the rank 0 worker's cpus as D1's request entry and lane-1 result source, then execs
+  --cpp-host-bin. rank 0 (S-NX) stays up and idle.
 - Then rewrites sys.argv to the serve arguments and calls tensorrt_llm.commands.serve:main.
 
 Both architectures: the original `trtllm-serve <model dir>` (frontends x n + executor proxy <->
@@ -117,6 +122,17 @@ def build_parser():
                         "flags as --cpp-host-arg=--diag-out; repeatable" % ENV_CPP_HOST_ARGS)
     p.add_argument("--cpp-host-inject", metavar="SPECS",
                    help="C++ host mode: %s, e.g. hs:busy:2000" % ENV_CPP_HOST_INJECT)
+    p.add_argument("--cpp-host-szr-bin", metavar="PATH",
+                   help="C++ host mode, E16-zr: the S-ZR replay stub (trtllm-oehost-szr). The "
+                        "launcher then starts <--cpp-host-szr-dir>/szr-d1-wrap (written here, "
+                        "capstubs.szr_launch) in place of --cpp-host-bin: it starts S-ZR from this "
+                        "process's S-NX config on the rank 0 worker's cpus as D1's request entry "
+                        "and result source on lane 1, and execs --cpp-host-bin")
+    p.add_argument("--cpp-host-szr-dir", metavar="DIR",
+                   help="E16-zr: S-ZR's out dir (templates, timetable, self-report, wrapper)")
+    p.add_argument("--cpp-host-szr-arg", action="append", default=[], metavar="ARG",
+                   help="E16-zr: one more capstubs.szr_launch run option, in order (write flags "
+                        "as --cpp-host-szr-arg=--dump); repeatable")
     p.add_argument("--report-target", choices=REPORT_TARGETS, default="public",
                    help="private (C++ host mode): --report-addr gets the launcher's loopback "
                         "OpenEngine address, written once the public port accepts")
@@ -200,12 +216,19 @@ def cpp_host_env(a, serve_args):
     --diag-out directory (created by the caller) as env key None."""
     import shlex  # noqa: PLC0415
     given = a.cpp_host_bin or a.cpp_host_arg or a.cpp_host_inject or \
-        a.report_target == "private"
+        a.report_target == "private" or a.cpp_host_szr_bin or a.cpp_host_szr_dir or \
+        a.cpp_host_szr_arg
     if not given:
         return {}, None
     if not cpp_host_mode(serve_args):
         return {}, ("--cpp-host-* / --report-target private need --openengine-host-impl cpp in "
                     "the serve arguments")
+    if (a.cpp_host_szr_dir or a.cpp_host_szr_arg) and not a.cpp_host_szr_bin:
+        return {}, "--cpp-host-szr-dir / --cpp-host-szr-arg need --cpp-host-szr-bin"
+    if a.cpp_host_szr_bin and not (a.cpp_host_bin and a.cpp_host_szr_dir):
+        return {}, "--cpp-host-szr-bin needs --cpp-host-bin (the real host) and --cpp-host-szr-dir"
+    if a.cpp_host_szr_bin and a.report_target == "private":
+        return {}, "--cpp-host-szr-bin with --report-target private: the load must reach the C++ host"
     for x in a.cpp_host_arg:
         if x.split("=", 1)[0] in CPP_HOST_LAUNCHER_FLAGS:
             return {}, "--cpp-host-arg %s: the launcher sets that flag" % x
@@ -220,6 +243,20 @@ def cpp_host_env(a, serve_args):
     if diag:
         env[None] = diag
     return env, None
+
+
+def szr_wrapper(a, cfg):
+    """E16-zr: write the S-ZR wrapper (capstubs.szr_launch.write_wrapper, S-NX config from
+    TRTLLM_CAPKIT_SNX, S-ZR pinned to the rank 0 worker's cpus when the role was split); returns
+    (wrapper path, record dict)."""
+    from capstubs import szr_launch  # noqa: PLC0415
+    argv = ["--out-dir", a.cpp_host_szr_dir, "--szr-bin", a.cpp_host_szr_bin]
+    if cfg.worker_cpus:
+        argv += ["--cpus", ",".join(str(c) for c in cfg.worker_cpus)]
+    argv += list(a.cpp_host_szr_arg)
+    path = szr_launch.write_wrapper(a.cpp_host_szr_dir, a.cpp_host_bin, argv, snx_env=True)
+    return path, {"wrapper": path, "szr_bin": a.cpp_host_szr_bin, "d1_bin": a.cpp_host_bin,
+                  "argv": argv}
 
 
 def capture_private_port(holder):
@@ -584,6 +621,13 @@ def main(argv=None):
         diag_dir = cpp_env.pop(None, None)
         if diag_dir:
             os.makedirs(diag_dir, exist_ok=True)
+        szr = None
+        if a.cpp_host_szr_bin:
+            try:
+                cpp_env[ENV_CPP_HOST_BIN], szr = szr_wrapper(a, cfg)
+            except SystemExit as e:  # argparse refusal of an S-ZR option
+                print("serve_nx: --cpp-host-szr-arg refused (%s)" % e, file=sys.stderr)
+                return 3
         os.environ.update(cpp_env)
         if host_inject:
             os.environ[snx_inject.ENV_INJECT] = ";".join(host_inject)
@@ -616,7 +660,7 @@ def main(argv=None):
             capture_private_port(private)
         if cpp_env or a.report_target == "private":
             done["cpp_host"] = {"env": dict(cpp_env), "diag_out": diag_dir,
-                                "report_target": a.report_target}
+                                "report_target": a.report_target, "szr": szr}
         if a.report_addr:
             port = flag_value(serve_args, "--port")
             if port is None or not port.isdigit() or int(port) == 0:

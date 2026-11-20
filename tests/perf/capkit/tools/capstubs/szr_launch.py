@@ -35,6 +35,9 @@ capstubs.serve_nx: --config-json, --set KEY=JSON, --tier-table, --origin-ns):
               request_addr in TLLM_EXECUTOR_ATTACH_INFO to S-ZR's and execs the real D1 binary. rank 0
               (S-NX) stays up and idle: control plane, template package and the shutdown sentinel on
               lane 1 still come from the launcher; only the data path goes to S-ZR.
+              capstubs.serve_nx --cpp-host-szr-bin writes the wrapper itself at start (write_wrapper
+              with snx_env): the wrap step then reads the launch's S-NX config (tier table, origin,
+              rank 0 worker cpus) from TRTLLM_CAPKIT_SNX, which the C++ host inherits.
 
 Not replayed (refused in the S-NX config): k_mix, token_source "prompt", first_response_delay_steps,
 prefill_token_budget, step_time_replay, max_active, busy_ns_per_step.
@@ -545,12 +548,17 @@ def cmd_run(a, cfg):
     return proc.wait()
 
 
-def cmd_make_wrapper(a, argv_rest):
-    out_dir = os.path.abspath(a.out_dir)
+def write_wrapper(out_dir, d1_bin, argv, snx_env=False):
+    """Write <out_dir>/wrap.json and the executable <out_dir>/szr-d1-wrap; returns its path.
+    snx_env: the wrap step takes the S-NX config from TRTLLM_CAPKIT_SNX (set by capstubs.serve_nx
+    for the launcher and inherited by the C++ host it starts) instead of argv's config options."""
+    out_dir = os.path.abspath(out_dir)
     os.makedirs(out_dir, exist_ok=True)
+    build_parser().parse_args(["run"] + list(argv))  # refuse bad S-ZR options before the launch
     tools = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     _write_json(os.path.join(out_dir, "wrap.json"),
-                {"schema": SCHEMA_RECORD, "mode": "wrap", "argv": argv_rest, "d1_bin": a.d1_bin})
+                {"schema": SCHEMA_RECORD, "mode": "wrap", "argv": list(argv), "d1_bin": d1_bin,
+                 "snx_env": bool(snx_env)})
     path = os.path.join(out_dir, "szr-d1-wrap")
     with open(path, "w", encoding="utf-8") as f:
         f.write("#!/bin/sh\n# S-ZR wrapper for TLLM_OPENENGINE_CPP_HOST_BIN (capstubs.szr_launch)\n"
@@ -558,8 +566,26 @@ def cmd_make_wrapper(a, argv_rest):
                 "--wrap-config %s -- \"$@\"\n" % (tools, sys.executable,
                                                   os.path.join(out_dir, "wrap.json")))
     os.chmod(path, 0o755)
-    print(path)
+    return path
+
+
+def cmd_make_wrapper(a, argv_rest):
+    print(write_wrapper(a.out_dir, a.d1_bin, argv_rest))
     return 0
+
+
+def config_from_env():
+    """The S-NX config capstubs.serve_nx put into TRTLLM_CAPKIT_SNX (tier table, origin, out_dir,
+    worker cpus of the launch), checked like resolve()."""
+    from capstubs.null_executor import ENV_VAR, SnxConfig, tier_shape  # noqa: PLC0415
+    text = os.environ.get(ENV_VAR)
+    if not text:
+        raise LaunchError("%s is not set (the wrapper must run under capstubs.serve_nx)" % ENV_VAR)
+    cfg = SnxConfig.from_doc(json.loads(text))
+    if cfg.tier_table:
+        from capcommon.tiers import TierTable  # noqa: PLC0415
+        tier_shape(TierTable.load(cfg.tier_table), cfg)
+    return cfg
 
 
 def d1_flag(args, flag):
@@ -575,7 +601,7 @@ def cmd_wrap(wrap_config, d1_args):
     with open(wrap_config, "r", encoding="utf-8") as f:
         rec = json.load(f)
     a = build_parser().parse_args(["run"] + rec["argv"])
-    cfg = resolve(a)
+    cfg = config_from_env() if rec.get("snx_env") else resolve(a)
     info = json.loads(os.environ["TLLM_EXECUTOR_ATTACH_INFO"])
     fid = int(os.environ["TLLM_EXECUTOR_FRONTEND_ID"])
     out_dir = os.path.abspath(a.out_dir)
@@ -597,6 +623,7 @@ def cmd_wrap(wrap_config, d1_args):
     argv = szr_argv(a, cfg, out_dir, templates, tt_path, request_addr, lane) + ["--exit-with-parent"]
     _write_json(os.path.join(out_dir, "szr_launch.json"),
                 {"schema": SCHEMA_RECORD, "mode": "wrap", "argv": argv, "snx_config": cfg.to_doc(),
+                 "snx_env": bool(rec.get("snx_env")),
                  "templates": templates, "timetable": tt_path, "ipc_dir": ipc_dir,
                  "rank0_request_addr": info["request_addr"], "lane": lane, "frontend_id": fid,
                  "d1_bin": rec["d1_bin"], "d1_args": d1_args})

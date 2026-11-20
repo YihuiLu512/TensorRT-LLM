@@ -1872,7 +1872,7 @@ R2 自审（slug `capkit-b2judge-J17871`）发现的问题已直接改进本子�
 - **实验编号 `E16`**：D1 规划 `08_engine-host-cpp-d1/04_perf-plan.md` §2 的 C++ 宿主卡（被测是 `trtllm-openengine-host`，响应源是 S-NX 或回放桩，不加载模型；P0 冒烟也挂在它下面）。`capcommon.policy.NO_MODEL_EXPERIMENTS` 加 `E16`。D1 的 E9 补充臂（NC、N2l）沿用 `E9`。
 - **`capstubs.serve_nx` 的 C++ 宿主选项**（服务参数带 `--openengine-host-impl cpp` 时才允许，否则退出 3）：`--cpp-host-bin`（→ `TLLM_OPENENGINE_CPP_HOST_BIN`）、`--cpp-host-arg`（可重复，按序 `shlex.join` 成 `TLLM_OPENENGINE_CPP_HOST_ARGS`；`--listen`、`--launcher-endpoint`、`--template` 由 launcher 设，给了即拒绝；参数里有 `--diag-out DIR` 时先建目录）、`--cpp-host-inject`（→ `TLLM_D1_INJECT`）、`--report-target public|private`（缺省 public 不变；private 时包装 `tensorrt_llm.grpc.openengine.cpp_host.cpp_host_command` 拿到 launcher 回环端口，公开端口（C++ 宿主）与回环端口都能连上之后，`--report-addr` 写 `127.0.0.1:<回环端口>`；没有 `--report-addr` 即拒绝）。C++ 宿主是宿主角色进程的子进程，继承它自己的核（`--worker-cores`、`--procmon-cores` 切走之后的那组）。`--record` 加两个键：`patches.cpp_host`（只在用了这些选项时出现：所设环境变量、`diag_out`、`report_target`）与 `clock`（相邻读取的 `monotonic_ns` / `time_ns`，读数工具用它把 C++ 宿主自报行的墙钟时间换到起点时钟）。
 - **`capgrpc.reqbytes openengine --extra-detokenize true|false`**：每个模板的 `GenerateRequest.extra.detokenize` 设为该值；不给时 `extra` 不设（缺省行为与字节不变）。`capgrpc.load` 发的就是这些模板字节（只在前面拼 `request_id`），所以负载器侧的「发 `extra.detokenize=false`」就是作业输入 `request_bytes` 加这个参数（E8-py-nd 臂）。
-- **`configs/d1/`**（`configs/gen_d1_configs.py`，从 `configs/snx/` 的模板派生，只改 D1 差异，测试逐项核对其余部分与来源相同）：E16 的 e16-{py,pynd,2l,nx,nx-nodiag}-k4-{mc,r}，E9 的 e9-nc{1,8}f0-{mc,r}、e9-n2l8f0-{mc,r}；新参数 `d1_bin`、`d1_grpc_threads`；E16-zr 臂暂不生成模板，只留接口：S-ZR 由 `capstubs.szr_launch`（main 85c8ef54）起，`szr_launch.py make-wrapper` 生成的 `<目录>/szr-d1-wrap` 作为 `d1_bin` 参数（即 `--cpp-host-bin`）传入即可，宿主侧其余选项与 E16-nx 相同。说明见 `configs/d1/README.md`。
+- **`configs/d1/`**（`configs/gen_d1_configs.py`，从 `configs/snx/` 的模板派生，只改 D1 差异，测试逐项核对其余部分与来源相同）：E16 的 e16-{py,pynd,2l,nx,nx-nodiag}-k4-{mc,r}，E9 的 e9-nc{1,8}f0-{mc,r}、e9-n2l8f0-{mc,r}；新参数 `d1_bin`、`d1_grpc_threads`；E16-zr 臂当时只留接口（2026-11-20 起由 serve_nx 写包装器并生成 `e16-zr-k4-*`，见下文「D1 线 E16-zr」）。说明见 `configs/d1/README.md`。
 
 ### S-NX 线 B11：serve_nx 的 OpenEngine 服务端 gRPC 选项（2026-11-20）
 
@@ -1976,6 +1976,15 @@ R2 自审（slug `capkit-b2judge-J17871`）发现的问题已直接改进本子�
 1. **模板**：`configs/gen_snx_configs.py` 的 `e9()` 多一个可选参数 `workers`（capload worker 数；缺省照旧 `W_HTTP`，n ≥ 8 时翻倍），新增 `e9("N", 4, 0, shape, workers=8)`，shape 为 `mc`、`r`，生成 `configs/snx/e9-n4f0-{mc,r}.{scenario,tiers.template,values.todo}.json`。与 `e9-n8f0-*` 只差三处：`--num_serve_frontends 4`、前端角色的 `cpus_needed`（生成器值 4 × 11 = 44，登记时由 snxcov_lib 的布局改写）与文字（name、note）。宿主、S-NX worker、capload（8 个 worker）、门、档位模板都相同。原有模板逐字节不变。
 2. **登记侧**（不在本仓库）：`05_engine/plans/snxcov_lib.py --phase e13n4`，布局 `nnx4` = 每前端 4 核（同 8f0）+ 宿主 4 核，核数合计 35，放进一个 NUMA 节点（56）；档表从 `08_compose` 已登记的档表文件读，见 PLAN-R2R5 勘误 E-E13N4-n。
 3. **验证**：`tests/capstubs/test_snx_configs.py` 新增 `test_e9_n4f0_differs_from_n8f0_only_in_frontend_count`（两种 shape：角色集合相同，capload 都是 8 个 worker，除上面三处外各角色逐字段相等，档位模板除 name 外相等）；生成器逐字节复现与场景校验的原有用例自动覆盖新文件。
+
+### D1 线 E16-zr：serve_nx 起 S-ZR 包装器、场景模板 `e16-zr-k4-{mc,r}`（2026-11-20）
+
+依据：D1 规划 `08_engine-host-cpp-d1/04_perf-plan.md` §2 E16 卡（E16-zr 臂、H7）。原先只留接口（`make-wrapper` 生成的包装器作 `d1_bin`），但静态包装器拿不到每次启动才定的档表起点（origin）与 rank0 worker 的核，所以改由 serve_nx 在启动时写包装器。
+
+1. **`capstubs.serve_nx`**：新选项 `--cpp-host-szr-bin PATH`、`--cpp-host-szr-dir DIR`、`--cpp-host-szr-arg ARG`（可重复，按序拼成 `szr_launch run` 的选项）。只在 C++ 宿主模式下允许；`--cpp-host-szr-bin` 要同时给 `--cpp-host-bin`（真 D1）与 `--cpp-host-szr-dir`；另两项要有 `--cpp-host-szr-bin`；不能与 `--report-target private` 同用。启动时（S-NX 配置与核划分完成后）调 `szr_launch.write_wrapper` 在 `--cpp-host-szr-dir` 写 `wrap.json` 与 `szr-d1-wrap`，`TLLM_OPENENGINE_CPP_HOST_BIN` 改为这个包装器；划了 `--worker-cores` 时 S-ZR 加 `--cpus <rank0 worker 的核>`。`--record` 的 `cpp_host.szr` 记包装器路径与 S-ZR 选项。
+2. **`capstubs.szr_launch`**：`write_wrapper(out_dir, d1_bin, argv, snx_env)`（`make-wrapper` 也改用它，输出不变，`wrap.json` 多一个 `snx_env` 字段）；先按 `run` 的选项表解析 argv，坏选项在启动前就拒。`snx_env` 为真时 `wrap` 步从 `TRTLLM_CAPKIT_SNX`（serve_nx 设、C++ 宿主继承）取 S-NX 配置（档表、origin、worker_cpus），不设时报错退出、不 exec D1；`szr_launch.json` 记 `snx_env`。
+3. **模板**：`configs/gen_d1_configs.py` 新增 `e16-zr-k4-{mc,r}` = `e16-nx-k4-*` 的宿主角色再加 `--cpp-host-szr-bin {param:szr_bin} --cpp-host-szr-dir {raw}/szr`；新参数 `szr_bin`（镜像里是 `/usr/local/bin/trtllm-oehost-szr`）。档位模板、其余角色与 e16-nx 相同；原有模板逐字节不变。S-ZR 用 rank0 worker 的 3 核，rank0（S-NX）照常起、空转（控制面、模板包与 lane 1 的关停哨兵仍走它）。
+4. **验证**：`tests/capstubs/test_szr_launch.py` 新增 serve_nx 写的包装器从环境取配置（`--cpus 5,6,7`、节拍、每步 token 数传给 S-ZR；无 `TRTLLM_CAPKIT_SNX` 时拒起、不 exec 的阴性对照）与坏选项被拒；`tests/capstubs/test_d1_configs.py` 计数 48 → 54、zr 臂只比 nx 多 S-ZR 两个选项、S-ZR 选项缺搭档时被拒（含阳性对照：完整选项通过）。
 
 ## 审阅记录（r2，2026-11-13）
 

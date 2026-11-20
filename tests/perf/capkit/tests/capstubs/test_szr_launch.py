@@ -117,3 +117,57 @@ def test_wrap_rewrites_request_addr_and_execs_d1(tmp_path):
     rec = json.loads((out / "szr_launch.json").read_text())
     assert rec["rank0_request_addr"] == "ipc:///rank0/request.sock"
     assert oct((out / "hmac_key.hex").stat().st_mode & 0o777) == "0o600"
+
+
+def _fakes(tmp_path):
+    szr = tmp_path / "fake_szr.py"
+    szr.write_text(FAKE_SZR % sys.executable)
+    d1 = tmp_path / "fake_d1.py"
+    d1.write_text(FAKE_D1 % sys.executable)
+    for p in (szr, d1):
+        p.chmod(0o755)
+    tpl = tmp_path / "tpl.json"
+    tpl.write_text(json.dumps(L.make_templates(L.FakeFactory(), 2, self_check_frames=1)))
+    return szr, d1, tpl
+
+
+def test_serve_nx_wrapper_takes_the_launch_config_from_the_env(tmp_path):
+    from capstubs import serve_nx
+    from capstubs.null_executor import ENV_VAR, SnxConfig
+    szr, d1, tpl = _fakes(tmp_path)
+    out = tmp_path / "szr"
+    a = serve_nx.build_parser().parse_args(
+        ["--cpp-host-bin", str(d1), "--cpp-host-szr-bin", str(szr), "--cpp-host-szr-dir", str(out),
+         "--cpp-host-szr-arg=--templates", "--cpp-host-szr-arg", str(tpl),
+         "--cpp-host-szr-arg=--ipc-dir", "--cpp-host-szr-arg", str(tmp_path)])
+    cfg = SnxConfig.from_doc({"schema": "capkit.snx_config/1", "beat_ns": 2000000,
+                              "tokens_per_step": 2, "worker_cpus": [5, 6, 7]})
+    path, rec = serve_nx.szr_wrapper(a, cfg)
+    assert path == str(out / "szr-d1-wrap") and rec["argv"][rec["argv"].index("--cpus") + 1] == "5,6,7"
+    attach = {"mode": "classic", "request_addr": "ipc:///rank0/request.sock",
+              "result_addrs": ["ipc:///x/r0.sock", "ipc:///x/r1.sock"], "hmac_key": "cd" * 32,
+              "model_world_size": 1}
+    env = dict(os.environ, TLLM_EXECUTOR_ATTACH_INFO=json.dumps(attach), TLLM_EXECUTOR_FRONTEND_ID="1",
+               FAKE_D1_OUT=str(tmp_path / "d1.json"), PYTHONPATH=TOOLS)
+    env.pop(ENV_VAR, None)
+    # negative control: without the launch's S-NX config in the env the wrapper refuses to start
+    r = subprocess.run([path, "--listen", "0:1"], env=env, capture_output=True, text=True, timeout=60)
+    assert r.returncode != 0 and ENV_VAR in r.stderr
+    assert not (tmp_path / "d1.json").exists()
+    env[ENV_VAR] = json.dumps(cfg.to_doc(), sort_keys=True)
+    subprocess.run([path, "--listen", "0:1"], env=env, check=True, timeout=60)
+    seen = json.loads((tmp_path / "d1.json").read_text())
+    assert seen["argv"] == ["--listen", "0:1"]
+    assert seen["attach"]["request_addr"] == "ipc://%s/request.sock" % tmp_path
+    szr_a = json.loads((out / "szr.ready.json.argv").read_text())["argv"]
+    assert szr_a[szr_a.index("--cpus") + 1] == "5,6,7"
+    assert szr_a[szr_a.index("--beat-ns") + 1] == "2000000"
+    assert szr_a[szr_a.index("--tokens-per-step") + 1] == "2"
+    assert szr_a[szr_a.index("--result-addr") + 1] == "ipc:///x/r1.sock"
+    launch = json.loads((out / "szr_launch.json").read_text())
+    assert launch["snx_env"] is True and launch["snx_config"]["worker_cpus"] == [5, 6, 7]
+
+
+def test_write_wrapper_refuses_bad_szr_options(tmp_path):
+    with pytest.raises(SystemExit):
+        L.write_wrapper(str(tmp_path / "o"), "/bin/true", ["--out-dir", str(tmp_path), "--no-such"])
