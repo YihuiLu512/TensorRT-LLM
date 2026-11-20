@@ -11,7 +11,13 @@ thread (the frontend's event loop) adds to that segment's count, thread CPU
 counted (n_other). A timed call made inside another timed call is counted (n, n_nested) but not
 timed again, so the segment sums never count the same CPU twice. Segments:
 
-  S1j  starlette.requests' json.loads: the request body's JSON parse (Request.json)
+  S1j  tensorrt_llm.serve.openai_server's json.loads: the request body's JSON parse. The
+       server's route class _MsgspecRoute makes FastAPI read the body through
+       _MsgspecRequest.json, which calls that module's own json.loads (not Starlette's
+       Request.json), so the module global json of openai_server is replaced by a proxy whose
+       loads is timed; json.loads everywhere else stays the real one
+  S1k  tensorrt_llm.serve.kv_hints KvHintsRequest.filter_kv_hints: the hint trust policy applied
+       to the decoded body (called by _MsgspecRequest.json)
   S1v  fastapi._compat.v2.ModelField.validate: pydantic validation of the body (CompletionRequest)
   S2   OpenEngineLLM.generate_async (facade): building the engine request (sync)
   S3   completion_stream_post_processor: OpenAI event conversion and SSE encoding, per output
@@ -56,7 +62,8 @@ REPORT_MS_DEFAULT = 250
 # id -> (module, target, kind). kind: time = sync callable, timed; count_coro = a coroutine
 # function, counted only; inject = the H1 injection wrapper.
 SEGMENTS = {
-    "S1j": ("starlette.requests", "json.loads", "time"),
+    "S1j": ("tensorrt_llm.serve.openai_server", "json.loads", "time"),
+    "S1k": ("tensorrt_llm.serve.kv_hints", "KvHintsRequest.filter_kv_hints", "time"),
     "S1v": ("fastapi._compat.v2", "ModelField.validate", "time"),
     "S2": ("tensorrt_llm.serve.openengine_poc.facade", "OpenEngineLLM.generate_async", "time"),
     "S3": ("tensorrt_llm.serve.openai_server", "completion_stream_post_processor", "time"),
@@ -64,8 +71,11 @@ SEGMENTS = {
     "S5": ("tensorrt_llm.grpc.openengine_client.stream", "GenerateStream._validate", "time"),
 }
 TIMED = tuple(s for s, v in SEGMENTS.items() if v[2] == "time")
-# Segments summed into the card's sum of S (S4 is count only): S1 = S1j + S1v.
-SUM_SEGMENTS = ("S1j", "S1v", "S2", "S3", "S5")
+# Segments summed into the card's sum of S (S4 is count only): S1 = S1j + S1k + S1v.
+S1_SEGMENTS = ("S1j", "S1k", "S1v")
+SUM_SEGMENTS = S1_SEGMENTS + ("S2", "S3", "S5")
+# Sites whose target is a module global json's loads (the module's json becomes a _JsonProxy).
+JSON_LOADS = "json.loads"
 INJECT_SITES = {"H1": ("tensorrt_llm.serve.responses_utils",
                        "ServerArrivalTimeMiddleware.__call__", "inject")}
 S3_ALSO = "tensorrt_llm.serve.postprocess_handlers"
@@ -278,8 +288,10 @@ class State:
     def install_site(self, site, module):
         """Wrap one site in `module` (raises SiteError when it is missing or of the wrong kind)."""
         modname, target, kind = SEGMENTS.get(site) or INJECT_SITES[site]
-        if site == "S1j":
+        if target == JSON_LOADS:
             real = getattr(module, "json", None)
+            if isinstance(real, _JsonProxy):
+                raise SiteError("%s.json is already wrapped" % modname)
             if real is None or not callable(getattr(real, "loads", None)) \
                     or getattr(real, "__name__", None) != "json":
                 raise SiteError("%s has no module global json with loads" % modname)
@@ -450,3 +462,36 @@ def window_delta(reports, t0, t1):
     out["gap_ns"] = max(rs[i + 1]["t_ns"] - rs[i]["t_ns"] for i in range(lo, hi))
     out["n_reports"] = len(inside)
     return out
+
+
+def zero_hit_sites(delta, installed):
+    """Installed sites without a call in a window (window_delta() output): a segment whose
+    main-thread count n is not > 0, the injection site whose main-thread hits are not > 0, or a
+    site missing from the delta. Sorted list; empty = every installed site was hit. An installed
+    name this module does not know raises ValueError (a report of another version)."""
+    bad = []
+    for s in installed:
+        if s in SEGMENTS:
+            v = (delta.get("seg") or {}).get(s)
+            n = None if v is None else v.get("n")
+        elif s in INJECT_SITES:
+            v = (delta.get("inject") or {}).get(s)
+            n = None if v is None else v.get("hits")
+        else:
+            raise ValueError("unknown q1seg site %r in a report's installed list" % (s,))
+        if n is None or not n > 0:
+            bad.append(s)
+    return sorted(bad)
+
+
+def arrivals(delta):
+    """Requests that arrived in a window (window_delta() output), the per-request denominator:
+    (H1 hits + hits_other, "H1_hits") when the H1 site reports, else (S2 n + n_other,
+    "S2_calls"), else (None, None)."""
+    h1 = (delta.get("inject") or {}).get("H1")
+    if h1 is not None and h1.get("hits") is not None:
+        return h1["hits"] + (h1.get("hits_other") or 0), "H1_hits"
+    s2 = (delta.get("seg") or {}).get("S2")
+    if s2 is not None and s2.get("n") is not None:
+        return s2["n"] + (s2.get("n_other") or 0), "S2_calls"
+    return None, None

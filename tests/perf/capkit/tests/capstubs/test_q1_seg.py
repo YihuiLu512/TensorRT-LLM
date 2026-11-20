@@ -50,8 +50,27 @@ FAKE = {
         def completion_stream_post_processor(rsp, args):
             return ["data: %s\\n\\n" % (rsp,)]
         """,
+    "tensorrt_llm/serve/kv_hints.py": """
+        class KvHintsRequest:
+            def __init__(self, body):
+                self._body = body
+            def filter_kv_hints(self, body):
+                if isinstance(body, dict):
+                    body.pop("kv_hints", None)
+                return body
+        """,
     "tensorrt_llm/serve/openai_server.py": """
+        import json
+        from .kv_hints import KvHintsRequest
         from .postprocess_handlers import completion_stream_post_processor
+        class _MsgspecRequest(KvHintsRequest):
+            async def json(self):
+                if not hasattr(self, "_json_body"):
+                    try:
+                        self._json_body = json.loads(self._body)
+                    except json.JSONDecodeError:
+                        self._json_body = {}
+                return self.filter_kv_hints(self._json_body)
         class OpenAIServer:
             async def await_disconnected(self, raw_request, promise):
                 return None
@@ -81,7 +100,7 @@ FAKE = {
 }
 
 DRIVER = """
-import asyncio, sys, threading
+import asyncio, json, sys, threading
 import starlette.requests as sr
 from fastapi._compat.v2 import ModelField
 from tensorrt_llm.serve import openai_server as osv, postprocess_handlers as ph
@@ -98,7 +117,9 @@ srv = osv.OpenAIServer()
 
 async def one():
     await mw({"type": "http", "path": "/v1/completions"}, None, None)
-    body = await sr.Request(b'{"prompt": [1, 2]}').json()
+    body = await osv._MsgspecRequest(b'{"prompt": [1, 2], "kv_hints": {"a": 1}}').json()
+    assert body == {"prompt": [1, 2]}, body
+    assert await sr.Request(b'{"x": 1}').json() == {"x": 1}  # Starlette's own: not S1j
     ModelField().validate(body)
     OpenEngineLLM().generate_async([1, 2])
     await asyncio.ensure_future(srv.await_disconnected(None, None))
@@ -118,6 +139,11 @@ th.start()
 th.join()
 assert ph.completion_stream_post_processor is osv.completion_stream_post_processor
 assert getattr(osv.completion_stream_post_processor, "_capkit_q1seg", False)
+# S1j wraps only openai_server's own name: json.loads elsewhere stays the real function.
+assert getattr(osv.json.loads, "_capkit_q1seg", False) and osv.json is not json
+assert sr.json is json and not hasattr(json.loads, "_capkit_q1seg")
+assert osv.json.JSONDecodeError is json.JSONDecodeError and osv.json.dumps is json.dumps
+assert json.loads("[1]") == [1]
 print("driver ok")
 """
 
@@ -293,7 +319,7 @@ def test_end_to_end_hit_counts_and_h1_count(tmp_path):
     last = rs[-1]
     assert sorted(last["installed"]) == sorted(list(q1seg.SEGMENTS) + ["H1"])
     seg = {k: dict(zip(q1seg.SEG_FIELDS, v)) for k, v in last["seg"].items()}
-    want = {"S1j": n, "S1v": n, "S2": n, "S3": 2 * n, "S4": n, "S5": 2 * n}
+    want = {"S1j": n, "S1k": n, "S1v": n, "S2": n, "S3": 2 * n, "S4": n, "S5": 2 * n}
     assert {k: v["n"] for k, v in seg.items()} == want
     assert seg["S5"]["n_other"] == 1
     assert all(seg[k]["n_nested"] == 0 for k in seg)
@@ -322,6 +348,7 @@ def test_segment_subset_and_report_period(tmp_path):
                      'False)', "")
             .replace("        await one()\n", "        await one()\n"
                      "        await asyncio.sleep(0.003)\n"))
+    code = code.split("# S1j wraps only")[0] + 'print("driver ok")\n'  # S1j not requested
     assert code.count("asyncio.sleep(0.003)") == 1 and "_capkit_q1seg" not in code
     r = run(tmp_path, {"CAPKIT_Q1SEG": "S2,S5", "CAPKIT_Q1SEG_REPORT_MS": "1"}, code=code,
             args=("40",))
@@ -370,9 +397,21 @@ def test_bad_switches_exit_2(tmp_path, env):
       "class GenerateStream:\n    async def _validate(self, r):\n        return True\n"},
      "site S5"),
     ({"tensorrt_llm/serve/openai_server.py":
-      "class OpenAIServer:\n    def await_disconnected(self, a, b):\n        return None\n"},
+      "import json\nclass OpenAIServer:\n    def await_disconnected(self, a, b):\n"
+      "        return None\n"},
      "site S3"),
-    ({"starlette/requests.py": "class Request:\n    pass\n"}, "site S1j"),
+    ({"tensorrt_llm/serve/openai_server.py":
+      "from .postprocess_handlers import completion_stream_post_processor\n"
+      "class OpenAIServer:\n    async def await_disconnected(self, a, b):\n"
+      "        return None\n"}, "site S1j"),
+    ({"tensorrt_llm/serve/openai_server.py":
+      "import json as _j\njson = _j.loads\n"
+      "from .postprocess_handlers import completion_stream_post_processor\n"
+      "class OpenAIServer:\n    async def await_disconnected(self, a, b):\n"
+      "        return None\n"}, "site S1j"),
+    ({"tensorrt_llm/serve/kv_hints.py":
+      "class KvHintsRequest:\n    async def filter_kv_hints(self, body):\n"
+      "        return body\n"}, "site S1k"),
     ({"fastapi/_compat/v2.py": "class ModelField:\n    validate = staticmethod(lambda v: v)\n"},
      "site S1v"),
 ])
@@ -391,8 +430,8 @@ def test_wrong_await_disconnected_kind_exits_3(tmp_path):
 
 
 def test_site_never_loaded_exits_3_at_first_timed_call(tmp_path):
-    code = ("import asyncio, starlette.requests as sr\n"
-            "asyncio.run(sr.Request(b'{}').json())\nprint('driver ok')\n")
+    code = ("import tensorrt_llm.serve.kv_hints as kh\n"
+            "kh.KvHintsRequest(b'{}').filter_kv_hints({})\nprint('driver ok')\n")
     r = run(tmp_path, ALL, code=code, args=())
     assert r.returncode == 3, r.stderr
     assert "were never installed" in r.stderr and "driver ok" not in r.stdout
@@ -411,6 +450,13 @@ def test_product_sites_exist_with_their_kind_in_the_probe_tree():
             continue
         path = os.path.join(root, *mod.split(".")) + ".py"
         tree = ast.parse(open(path).read())
+        if target == q1seg.JSON_LOADS:
+            binds = [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom,
+                                                            ast.Assign))
+                     and "json" in _bound_names(n)]
+            assert len(binds) == 1 and isinstance(binds[0], ast.Import), (site, binds)
+            assert [a.asname for a in binds[0].names if a.name == "json"] == [None]
+            continue
         if site == "S3":
             path = os.path.join(root, *q1seg.S3_ALSO.split(".")) + ".py"
             defs = [n for n in ast.parse(open(path).read()).body
@@ -425,3 +471,100 @@ def test_product_sites_exist_with_their_kind_in_the_probe_tree():
                and n.name == fn]
         want = ast.FunctionDef if kind == "time" else ast.AsyncFunctionDef
         assert isinstance(f, want) and not f.decorator_list, (site, type(f).__name__)
+
+
+def _bound_names(node):
+    if isinstance(node, (ast_mod().Import, ast_mod().ImportFrom)):
+        return [a.asname or a.name.split(".")[0] for a in node.names]
+    return [t.id for t in node.targets if isinstance(t, ast_mod().Name)]
+
+
+def ast_mod():
+    import ast  # noqa: PLC0415
+    return ast
+
+
+def _calls(fn):
+    """'name.attr' / 'name' strings of every call in a function body."""
+    ast = ast_mod()
+    out = []
+    for n in ast.walk(fn):
+        if isinstance(n, ast.Call):
+            f = n.func
+            if isinstance(f, ast.Attribute) and isinstance(f.value, ast.Name):
+                out.append("%s.%s" % (f.value.id, f.attr))
+            elif isinstance(f, ast.Name):
+                out.append(f.id)
+    return out
+
+
+def test_s1_sites_are_on_the_request_body_path_in_the_probe_tree():
+    """S1j / S1k are on the hot path (not only present): the server installs _MsgspecRoute as
+    the route class, its request type _MsgspecRequest(KvHintsRequest) reads the body with the
+    openai_server module's json.loads and passes it to self.filter_kv_hints, which it does not
+    override (so wrapping KvHintsRequest.filter_kv_hints covers it)."""
+    ast = ast_mod()
+    root = os.path.join(C, "probe-tree")
+    src = open(os.path.join(root, "tensorrt_llm", "serve", "openai_server.py")).read()
+    tree = ast.parse(src)
+    cls = {n.name: n for n in tree.body if isinstance(n, ast.ClassDef)}
+    req, route = cls["_MsgspecRequest"], cls["_MsgspecRoute"]
+    assert [b.id for b in req.bases if isinstance(b, ast.Name)] == ["KvHintsRequest"]
+    [js] = [n for n in req.body if isinstance(n, ast.AsyncFunctionDef) and n.name == "json"]
+    calls = _calls(js)
+    assert "json.loads" in calls and "self.filter_kv_hints" in calls, calls
+    assert not [n for n in req.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and n.name == "filter_kv_hints"]
+    assert any(isinstance(n, ast.Assign) and isinstance(n.value, ast.Name)
+               and n.value.id == "_MsgspecRequest"
+               and [t.id for t in n.targets if isinstance(t, ast.Name)] == ["request_type"]
+               for n in route.body)
+    assert "route_class = _MsgspecRoute" in src
+    kv = ast.parse(open(os.path.join(root, "tensorrt_llm", "serve", "kv_hints.py")).read())
+    imp = [n for n in tree.body if isinstance(n, ast.ImportFrom) and n.module == "kv_hints"]
+    assert imp and "KvHintsRequest" in [a.name for a in imp[0].names]
+    assert [n.name for n in kv.body if isinstance(n, ast.ClassDef)][:1] == ["KvHintsRequest"]
+
+
+def _delta(seg, h1=None):
+    d = {"seg": {k: dict(zip(q1seg.SEG_FIELDS, v)) for k, v in seg.items()}, "inject": {}}
+    if h1 is not None:
+        d["inject"]["H1"] = dict(zip(q1seg.INJ_FIELDS, h1))
+    return d
+
+
+def test_zero_hit_sites_negative_control_and_pass():
+    """The J6190736 shape (S1j installed, 0 calls in the window) fails; every installed site hit
+    passes; a site missing from the delta, an H1 without hits and an unknown name are caught."""
+    full = {"S1j": [0, 0, 0, 0, 0], "S1v": [40377, 1, 1, 0, 0], "S2": [40377, 1, 1, 0, 0],
+            "S3": [40301, 1, 1, 0, 0], "S4": [40377, 0, 0, 0, 0], "S5": [80664, 1, 1, 0, 0]}
+    inst = ["H1", "S1j", "S1v", "S2", "S3", "S4", "S5"]
+    assert q1seg.zero_hit_sites(_delta(full, [40377, 0, 0, 0]), inst) == ["S1j"]
+    ok = dict(full, S1j=[40377, 5, 5, 0, 0], S1k=[40377, 2, 2, 0, 0])
+    assert q1seg.zero_hit_sites(_delta(ok, [40377, 0, 0, 0]), inst + ["S1k"]) == []
+    assert q1seg.zero_hit_sites(_delta(ok, [0, 0, 0, 3]), ["H1", "S2"]) == ["H1"]
+    assert q1seg.zero_hit_sites(_delta({"S2": [5, 1, 1, 0, 0]}), ["S2", "S1k"]) == ["S1k"]
+    assert q1seg.zero_hit_sites(_delta({"S2": [5, 1, 1, 3, 0]}), ["S2"]) == []
+    assert q1seg.zero_hit_sites(_delta({"S2": [0, 0, 0, 3, 0]}), ["S2"]) == ["S2"]
+    with pytest.raises(ValueError):
+        q1seg.zero_hit_sites(_delta(ok), ["S9"])
+
+
+def test_arrivals_denominator():
+    assert q1seg.arrivals(_delta({"S2": [99, 1, 1, 0, 0]}, [100, 0, 0, 2])) == (102, "H1_hits")
+    assert q1seg.arrivals(_delta({"S2": [99, 1, 1, 1, 0]})) == (100, "S2_calls")
+    assert q1seg.arrivals(_delta({"S5": [9, 1, 1, 0, 0]})) == (None, None)
+
+
+def test_end_to_end_window_hit_check_and_arrivals(tmp_path):
+    """On the stand-in tree every installed site is hit in a window spanning the run, and the
+    arrivals equal the requests made."""
+    n = 6
+    r = run(tmp_path, dict(ALL, CAPKIT_Q1SEG_INJECT="H1:count", CAPKIT_Q1SEG_REPORT_MS="1"),
+            args=(str(n),))
+    assert r.returncode == 0, r.stderr
+    rs = reports(r.stderr)
+    d = q1seg.window_delta(rs, rs[0]["t_ns"], rs[-1]["t_ns"])
+    assert q1seg.zero_hit_sites(d, rs[-1]["installed"]) == []
+    first = dict(zip(q1seg.INJ_FIELDS, rs[0]["inject"]["H1"]))["hits"]
+    assert q1seg.arrivals(d) == (n - first, "H1_hits")
