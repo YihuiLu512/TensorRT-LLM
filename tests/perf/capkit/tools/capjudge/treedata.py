@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """Read one launch tree's raw data (INTERFACES 5). Roles, workers and tiers are taken from the
 `identity` / `schema` / `kind` inside each file, never from file or directory names. The only
-name-based choices are the file type suffix (.json, .capbin, .bin, .jsonl) and the fixed paths
-INTERFACES assigns (raw/launch.json, raw/sidecar/threads.jsonl, ...).
+name-based choices are the file type suffix (.json, .capbin, .bin, .jsonl), the fixed paths
+INTERFACES assigns (raw/launch.json, raw/sidecar/threads.jsonl, ...) and FRAME_CAPTURE_FILES.
 """
 
 import json
@@ -21,6 +21,10 @@ NS = 1_000_000_000
 SUMMARY_SCHEMA = "capkit.tier_summary/1"
 TIER_SCHEMA = "capkit.tier/1"
 DRAIN_GATE_SCHEMA = "capkit.drain_gate/1"
+# The frame files capstubs.frame_capture writes (nx_role --frame-capture-dir, anywhere under
+# raw/): .bin by suffix but not snapshots and without an identity, so no reader of the judge
+# opens them. Matched by exact file name only; every other .bin is still read as a snapshot.
+FRAME_CAPTURE_FILES = frozenset(("frames.result.bin", "frames.request.bin"))
 
 
 class TierData:
@@ -55,6 +59,8 @@ class TierData:
         for d, dirs, files in os.walk(self.dir):
             dirs.sort()
             for name in sorted(files):
+                if name in FRAME_CAPTURE_FILES:
+                    continue
                 p = os.path.join(d, name)
                 rel = os.path.relpath(p, ctx.root)
                 try:

@@ -23,6 +23,7 @@ from capcommon.tiers import TierTable, TierTableError
 
 from . import calib, nullz
 from .thresholds import BandError, Bands
+from .treedata import FRAME_CAPTURE_FILES
 
 LAUNCH_SCHEMA = "capkit.launch/1"
 REGISTER_SCHEMA = "capkit.register/1"
@@ -608,9 +609,12 @@ JOB_KEY_FIELDS = ("experiment", "job_id", "restart_count", "register_sha")
 
 def _scan_identities(ctx):
     """Every identity-bearing file under raw/ must carry this launch's six key fields
-    (files directly in raw/env/: the four job key fields)."""
+    (files directly in raw/env/: the four job key fields). The frame files of
+    capstubs.frame_capture (treedata.FRAME_CAPTURE_FILES) are not opened; their count is
+    recorded as frame_capture_files_skipped when there are any."""
     env_dir = os.path.join(ctx.tree.raw, "env")
     n = 0
+    skipped = 0
     bad = []
     for d, dirs, files in os.walk(ctx.tree.raw):
         dirs.sort()
@@ -621,6 +625,9 @@ def _scan_identities(ctx):
             p = os.path.join(d, name)
             if os.path.islink(p):
                 bad.append((p, "symlink"))
+                continue
+            if name in FRAME_CAPTURE_FILES:
+                skipped += 1
                 continue
             ident = _file_identity(p)
             if ident is _NO_IDENTITY:
@@ -633,6 +640,8 @@ def _scan_identities(ctx):
         raise InputInvalid("identity", "%d file(s) differ from launch.json, first: %r"
                            % (len(bad), bad[0]))
     ctx.identity_scan = {"files_with_identity": n}
+    if skipped:
+        ctx.identity_scan["frame_capture_files_skipped"] = skipped
 
 
 _NO_IDENTITY = object()
