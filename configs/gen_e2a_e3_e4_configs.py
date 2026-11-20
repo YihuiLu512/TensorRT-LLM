@@ -656,6 +656,45 @@ def e4c(shape):
 
 e4c("mc")
 
+# Front-end item 10 (design card 10', PLAN-R2R5): per-segment CPU timing of the frontend's
+# request path on the E4-4b R axis. The frontend role of e4b-r gets capstubs/q1_seg first on its
+# PYTHONPATH (sitecustomize chains the image's own) and the capstubs.q1seg switches as literal
+# env (role env takes no placeholders, so no new params): every segment timed, and the H1 site
+# only counted (q1seg) or busy-waiting H1_DELTA_NS per /v1/ request (q1seg-h1, the card's
+# remainder positive control). Everything else is e4b-r's; register with e4b-r's values.
+Q1SEG_DIR = "/usr/local/lib/python3.12/dist-packages/capstubs/q1_seg"
+H1_DELTA_NS = 100000
+
+
+def e4q1(h1):
+    name = "e4b-r-q1seg" + ("-h1" if h1 else "")
+    spec = "H1:busy:%d" % H1_DELTA_NS if h1 else "H1:count"
+    fe = frontend("spb")
+    fe["env"] = {"PYTHONPATH": Q1SEG_DIR, "CAPKIT_Q1SEG": "all", "CAPKIT_Q1SEG_INJECT": spec}
+    fe["note"] += ("; front-end item 10: capstubs/q1_seg sitecustomize, CAPKIT_Q1SEG all, "
+                   "CAPKIT_Q1SEG_INJECT %s (report lines on the frontend's stderr)" % spec)
+    roles = [fe_stub("spb"), fe, capload(W_HTTP)] + observers("capload")
+    arm("E4", name,
+        scen("E4", name, roles, ["capload", "frontend", "spb", "sidecar", "canary"],
+             [req_chain(("capload", "summary.counts.ok"),
+                        ("spb", "summary.counts.streams_accepted"))],
+             FE_STUB["spb"],
+             "E4-4b %s: e4b-r with per-segment CPU timing in the frontend (front-end item 10, "
+             "design card 10'): capstubs.q1seg times S1 (JSON parse + body validation), S2 "
+             "(facade generate_async), S3 (completion_stream_post_processor), S5 "
+             "(GenerateStream._validate) on the event-loop thread, counts S4 "
+             "(await_disconnected); H1 %s; register with the values of e4b-r"
+             % (name, "busy %d ns per /v1/ request (remainder positive control)" % H1_DELTA_NS
+                if h1 else "counted only"),
+             job_inputs=fe_inputs("spb"),
+             tok="TBD-by-registration (configs/tokenizers/GLM-5.3-Flash)"),
+        tpl("E4", name, "r", E4_PROMPTS,
+            stub_gate("spb", rd("loadgen_inflight", ("capload", "backlog.inflight", 1)))))
+
+
+e4q1(False)
+e4q1(True)
+
 
 # ---------------- values checklists (fill, then python -m caplaunch.tiergen) ----------------
 for _sub in sorted(set(SUB.values())):
