@@ -14,6 +14,10 @@ the field-3 submessage; any other event counts 0 tokens.
 
 GENERATE_RESPONSE_TOKEN = 3
 TOKEN_OUTPUT_TOKENS = 2
+# the buckets of D1's diag counter tokens_per_token_msg (DESIGN-coalesce section 7.2), so the
+# client-side histogram compares with the host's directly; None = no upper bound
+D1_K_BUCKETS = ((1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8), (9, 16),
+                (17, 32), (33, 64), (65, None))
 
 
 def _varint(b, i):
@@ -90,4 +94,16 @@ class KHist:
         return {"token_msgs": n, "tokens": toks,
                 "k_mean": round(toks / n, 4) if n else None,
                 "k_max": max(self.counts) if self.counts else None,
-                "k_hist": {str(k): c for k, c in sorted(self.counts.items())}}
+                "k_hist": {str(k): c for k, c in sorted(self.counts.items())},
+                "k_buckets": k_buckets(self.counts)}
+
+
+def k_buckets(counts):
+    """{k: count} as D1's tokens_per_token_msg: [[lo, hi, count], ...] over D1_K_BUCKETS, empty
+    buckets left out, hi None for the open bucket."""
+    out = []
+    for lo, hi in D1_K_BUCKETS:
+        c = sum(n for k, n in counts.items() if k >= lo and (hi is None or k <= hi))
+        if c:
+            out.append([lo, hi, c])
+    return out

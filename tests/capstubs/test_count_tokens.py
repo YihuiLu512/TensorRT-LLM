@@ -56,7 +56,12 @@ def test_response_tokens_on_real_messages():
     for k in (1, 2, 2, 3):
         h.add(k)
     assert h.summary() == {"token_msgs": 4, "tokens": 8, "k_mean": 2.0, "k_max": 3,
-                           "k_hist": {"1": 1, "2": 2, "3": 1}}
+                           "k_hist": {"1": 1, "2": 2, "3": 1},
+                           "k_buckets": [[1, 1, 1], [2, 2, 2], [3, 3, 1]]}
+    from capgrpc.tokcount import k_buckets
+    assert k_buckets({8: 1, 9: 2, 16: 1, 17: 1, 64: 3, 65: 1, 300: 1}) == \
+        [[8, 8, 1], [9, 16, 3], [17, 32, 1], [33, 64, 3], [65, None, 2]]
+    assert k_buckets({}) == []
 
 
 def _tt(n=5, k=1):
@@ -165,7 +170,8 @@ def test_merged_stream_reconciles_by_tokens_and_plans_by_first_token(monkeypatch
     w, r, m, lags = _worker(monkeypatch, tt, msgs, True)
     assert r["tokens"] == [5] and r["frames"] == [4] and r["status"] == [0]
     assert w.khist_by_tier[0].summary() == {"token_msgs": 3, "tokens": 5, "k_mean": 1.6667,
-                                            "k_max": 2, "k_hist": {"1": 1, "2": 2}}
+                                            "k_max": 2, "k_hist": {"1": 1, "2": 2},
+                                            "k_buckets": [[1, 1, 1], [2, 2, 2]]}
     assert w.tokens_ok_by_tier[0] == 5 and w.tok_mismatch_by_tier[0] == 0
     assert m["idx"] == [0, 1, 3, 5]  # first token of each message; finished at its own index
     offs = expect.msg_step_offsets(5, 1, 1, "product")
