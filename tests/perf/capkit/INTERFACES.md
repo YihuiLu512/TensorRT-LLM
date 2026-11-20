@@ -1969,6 +1969,14 @@ R2 自审（slug `capkit-b2judge-J17871`）发现的问题已直接改进本子�
 5. **验证**：`tests/judge/test_frame_capture_files.py`（6 项）：两个名字与 `frame_capture.DIRECTIONS` 一致；抓帧文件在 `raw/e15a/` 或档目录里时照常出判定，并记 `frame_capture_files_skipped = 2`；没有抓帧文件时 `identity_scan` 只有 `files_with_identity`；阳性对照：魔数被改坏的真快照，以及同样字节换名为 `frames.other.bin`，都仍然 INPUT_INVALID。
 6. **各线怎样用上新版**：各线的判读脚本用 `PYTHONPATH=<运行树>/tools` 调判定器（S-NX 线由 `SNXJ_RT` 选运行树，前端线 / GPU 线按 RUN_SHA.tsv 的行号选）。改动只在判定器里，任何启动树都可以用含本节改动的运行树（RUN_SHA.tsv 行 `CJFX`）来判，不需要重投作业。
 
+### S-NX 线 E13「4 前端」新点：场景模板 `e9-n4f0-{mc,r}`（2026-11-20）
+
+依据：`05_engine/PLAN-R2R5.md` 勘误 E-38-4 / E-E13-1（用户第三十八次答复 Q-E13-scope ②）。
+
+1. **模板**：`configs/gen_snx_configs.py` 的 `e9()` 多一个可选参数 `workers`（capload worker 数；缺省照旧 `W_HTTP`，n ≥ 8 时翻倍），新增 `e9("N", 4, 0, shape, workers=8)`，shape 为 `mc`、`r`，生成 `configs/snx/e9-n4f0-{mc,r}.{scenario,tiers.template,values.todo}.json`。与 `e9-n8f0-*` 只差三处：`--num_serve_frontends 4`、前端角色的 `cpus_needed`（生成器值 4 × 11 = 44，登记时由 snxcov_lib 的布局改写）与文字（name、note）。宿主、S-NX worker、capload（8 个 worker）、门、档位模板都相同。原有模板逐字节不变。
+2. **登记侧**（不在本仓库）：`05_engine/plans/snxcov_lib.py --phase e13n4`，布局 `nnx4` = 每前端 4 核（同 8f0）+ 宿主 4 核，核数合计 35，放进一个 NUMA 节点（56）；档表从 `08_compose` 已登记的档表文件读，见 PLAN-R2R5 勘误 E-E13N4-n。
+3. **验证**：`tests/capstubs/test_snx_configs.py` 新增 `test_e9_n4f0_differs_from_n8f0_only_in_frontend_count`（两种 shape：角色集合相同，capload 都是 8 个 worker，除上面三处外各角色逐字段相等，档位模板除 name 外相等）；生成器逐字节复现与场景校验的原有用例自动覆盖新文件。
+
 ## 审阅记录（r2，2026-11-13）
 
 审阅意见来自 spec-critic（JSON，24 条）。每条都对照设计稿 / 计划原文核对过；「采纳」= 按意见改，「部分采纳」= 问题属实、改法与意见不同（写理由），「不采纳」= 问题不成立。

@@ -380,9 +380,12 @@ def e8(procs, shape):
 
 
 # ================= E9 (old / new whole chain, same NullExecutor) =================
-def e9(arch, n, pool, shape):
+def e9(arch, n, pool, shape, workers=None):
+    """workers: capload workers; default W_HTTP, doubled at n >= 8 (the E13 4-frontend arms pass
+    the n = 8 value so that only the frontend count differs from e9-n8f0)."""
     name = "e9-%s%df%s-%s" % (arch.lower(), n, "P" if pool else "0", shape)
-    workers = W_HTTP * (2 if n >= 8 else 1)
+    if workers is None:
+        workers = W_HTTP * (2 if n >= 8 else 1)
     if arch == "O":
         roles = [onx(n, pool), capload("onx", workers)] + observers("capload")
         stop = ["capload", "onx", "sidecar", "canary"]
@@ -416,6 +419,10 @@ for _arch in ("O", "N"):
         for _shape in ("mc", "r"):
             e9(_arch, _n, 0, _shape)
     e9(_arch, 8, 4, "mc")
+# E13 4-frontend point (05_engine/PLAN-R2R5.md erratum E-E13-1 R2): N-NX with n = 4 frontends,
+# everything else as e9-n8f0 (host, S-NX worker, capload with the n = 8 worker count)
+for _shape in ("mc", "r"):
+    e9("N", 4, 0, _shape, workers=W_HTTP * 2)
 
 
 # ---------------- values checklists (fill, then python -m caplaunch.tiergen) ----------------

@@ -7,7 +7,7 @@
 | E2b | e2b-sa-{mc,md,r}、e2b-px-mc | `capstubs.nx_role` standalone（无 IPC、自排空）；proxy（产品 proxy ↔ ZMQ ↔ NullWorker，原始字节排空） |
 | E7 | e7-raw-k2-{mc,md,r}、e7-raw-k1-mc、e7-deser-k2-mc | `capstubs.nx_role` proxy，K 条活跃 lane（K=1 为 tcp PAIR 单列）；deser = 隔离检验 (b) |
 | E8 | e8-k4-{mc,md,r}、e8-k1-mc | `capgrpc.load`（K 条连接）→ `capstubs.serve_nx` 宿主（`--grpc --grpc-protocol openengine`）↔ ZMQ ↔ NullWorker |
-| E9 | e9-{o,n}{1,8}f0-{mc,r}、e9-{o,n}8fP-mc | O-NX：`capload` → `serve_nx` 原架构（n 前端、池 w）；N-NX：`capload` → `serve_nx` 包装的新架构前端 → gRPC → `serve_nx` 宿主 |
+| E9 | e9-{o,n}{1,8}f0-{mc,r}、e9-{o,n}8fP-mc、e9-n4f0-{mc,r}（E13 4 前端点：只有前端数与 e9-n8f0 不同，capload 仍 8 个 worker） | O-NX：`capload` → `serve_nx` 原架构（n 前端、池 w）；N-NX：`capload` → `serve_nx` 包装的新架构前端 → gRPC → `serve_nx` 宿主 |
 
 要点：
 - S-NX 角色自己读档位表与起点（`--tier-table {input:tier_table} --origin-ns {origin_ns}`），NullExecutor 的步网格 = 档位表的节拍表，每步 token 数与 s 取自档位（`tier_shape`）。`nx_stream_interval` 必须等于档位的 s（NullWorker 交叉核对，不等即拒绝起动）。
