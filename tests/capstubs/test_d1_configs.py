@@ -47,7 +47,7 @@ def test_generator_reproduces_configs(tmp_path):
                    check=True)
     made = sorted(os.listdir(os.path.join(out, "d1")))
     assert made == sorted(n for n in os.listdir(D1) if n != "README.md")
-    assert len(made) == 3 * 16
+    assert len(made) == 3 * 18
     for n in made:
         with open(os.path.join(out, "d1", n), "rb") as a, open(os.path.join(D1, n), "rb") as b:
             assert a.read() == b.read(), n
@@ -75,11 +75,15 @@ def test_scenario_validates_and_differs_only_by_the_d1_delta(name):
                              "--cpp-host-arg", "{param:d1_grpc_threads}"]
         diag = ["--cpp-host-arg=--diag-out", "--cpp-host-arg", "{raw}/d1"]
         private = ["--report-target", "private"]
-        want = {"nx": diag, "nc": diag, "nx-nodiag": [], "2l": private, "n2l": private}
+        szr = ["--cpp-host-szr-bin", "{param:szr_bin}", "--cpp-host-szr-dir", "{raw}/szr"]
+        want = {"nx": diag, "nc": diag, "nx-nodiag": [], "2l": private, "n2l": private,
+                "zr": diag + szr}
         kind = ("nx-nodiag" if "-nodiag-" in arm else "2l" if arm.startswith("e16-2l")
-                else "nx" if arm.startswith("e16-nx") else "n2l" if "-n2l" in arm else "nc")
+                else "zr" if arm.startswith("e16-zr") else "nx" if arm.startswith("e16-nx")
+                else "n2l" if "-n2l" in arm else "nc")
         assert extra[5:] == want[kind], arm
         assert {"d1_bin", "d1_grpc_threads"} <= set(doc["params_required"])
+        assert ("szr_bin" in doc["params_required"]) == (kind == "zr")
     else:
         assert arm.startswith(("e16-py-", "e16-pynd-")) and ha["args"] == hb["args"]
     # everything else is the source's: roles minus the host's args / note, job inputs, stop order
@@ -128,3 +132,32 @@ def test_pynd_job_input_parses():
     p_args = [a.replace("{input:prompts}", "/p").replace("{input:tier_table}", "/t")
               .replace("{param:tokenizer_dir}", "/m") for a in args]
     assert reqbytes.main(p_args) == 3  # cannot import the product pb2 here: exit 3, not a usage error
+
+
+def test_zr_arm_is_nx_plus_szr_only():
+    for shape in ("mc", "r"):
+        zr, nx = load(D1, "e16-zr-k4-%s.scenario.json" % shape), load(D1, "e16-nx-k4-%s.scenario.json" % shape)
+        own, serve = host_parts(zr)
+        own0, serve0 = host_parts(nx)
+        assert serve == serve0 and own == own0 + ["--cpp-host-szr-bin", "{param:szr_bin}",
+                                                  "--cpp-host-szr-dir", "{raw}/szr"]
+        assert load(D1, "e16-zr-k4-%s.tiers.template.json" % shape)["tiers"] == \
+            load(D1, "e16-nx-k4-%s.tiers.template.json" % shape)["tiers"]
+
+
+def test_szr_options_refused_without_their_partners():
+    own, serve = host_parts(load(D1, "e16-zr-k4-mc.scenario.json"))
+    own = [INT_PLACEHOLDERS.get(x, x) for x in own]
+    p = serve_nx.build_parser()
+    assert serve_nx.cpp_host_env(p.parse_args(own), serve)[1] is None
+    i = own.index("--cpp-host-szr-dir")
+    no_dir = own[:i] + own[i + 2:]
+    assert "--cpp-host-szr-dir" in serve_nx.cpp_host_env(p.parse_args(no_dir), serve)[1]
+    j = own.index("--cpp-host-szr-bin")
+    no_bin = own[:j] + own[j + 2:]
+    assert "need --cpp-host-szr-bin" in serve_nx.cpp_host_env(p.parse_args(no_bin), serve)[1]
+    k = own.index("--cpp-host-bin")
+    no_host = own[:k] + own[k + 2:]
+    assert "--cpp-host-bin" in serve_nx.cpp_host_env(p.parse_args(no_host), serve)[1]
+    private = own + ["--report-target", "private"]
+    assert "private" in serve_nx.cpp_host_env(p.parse_args(private), serve)[1]

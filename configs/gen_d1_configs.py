@@ -16,6 +16,9 @@ each D1 arm stays comparable with the S-NX arm it comes from:
     e16-nx-k4-<s>        E16-nx: the C++ host (lane 1) in front of S-NX, --grpc-threads, self-report
                          (--diag-out {raw}/d1)
     e16-nx-nodiag-k4-<s> E16-nx without --diag-out (P0: cost of the self-report)
+    e16-zr-k4-<s>        E16-zr: e16-nx with the S-ZR replay stub as the response source
+                         (serve_nx --cpp-host-szr-bin {param:szr_bin} --cpp-host-szr-dir
+                         {raw}/szr; S-ZR on the rank 0 worker's cores, rank 0 idle)
   E9 supplementary (experiment E9; from e9-n<n>f0-<shape>: capload -> n new-architecture frontends
   -> engine host)
     e9-nc<n>f0-<s>       NC: the frontends connect to the C++ host (public port)
@@ -24,9 +27,9 @@ each D1 arm stays comparable with the S-NX arm it comes from:
 
 The C++ host is started by the launcher (trtllm-serve --openengine-host-impl cpp) as a child of
 the host role's process, so it runs on the host role's own cores (4, as the Python host; the
-rank 0 worker and procmon keep their cores). E16-zr (replay stub S-ZR instead of rank 0) is not
-generated here: its response source is capstubs.szr_launch, whose make-wrapper output
-(<dir>/szr-d1-wrap) is passed as param d1_bin; see configs/d1/README.md.
+rank 0 worker and procmon keep their cores). In E16-zr capstubs.serve_nx writes the S-ZR wrapper
+(capstubs.szr_launch) at start and the launcher runs it in place of the host binary; the S-ZR
+process takes the rank 0 worker's cores (3), rank 0 stays up and idle; see configs/d1/README.md.
 
 Usage: python configs/gen_d1_configs.py <new output dir>   (writes <dir>/d1; reads configs/snx)
 """
@@ -43,6 +46,7 @@ CPP_IMPL = ["--openengine-host-impl", "cpp"]
 D1_THREADS = ["--cpp-host-arg=--grpc-threads", "--cpp-host-arg", "{param:d1_grpc_threads}"]
 D1_DIAG = ["--cpp-host-arg=--diag-out", "--cpp-host-arg", "{raw}/d1"]
 D1_BIN = ["--cpp-host-bin", "{param:d1_bin}"]
+SZR = ["--cpp-host-szr-bin", "{param:szr_bin}", "--cpp-host-szr-dir", "{raw}/szr"]
 NOTE = ("D1 arm (configs/gen_d1_configs.py, TRTLLM-18068 04_perf-plan.md): derived from "
         "configs/snx/%s; %s")
 
@@ -102,18 +106,25 @@ def derive(exp, src, name, edit, what):
     return sc, tp
 
 
-def cpp_host(diag=True, private=False):
+def cpp_host(diag=True, private=False, szr=False):
     def edit(sc, roles):
         own = D1_BIN + D1_THREADS + (D1_DIAG if diag else [])
         if private:
             own = own + ["--report-target", "private"]
+        if szr:
+            own = own + SZR
         host_delta(roles["host"], own, CPP_IMPL,
                    "C++ host mode: the launcher starts trtllm-openengine-host (param d1_bin) "
                    "as attached frontend 1 on the public port, on this role's own cores, "
-                   "--grpc-threads (param d1_grpc_threads)%s%s" % (
+                   "--grpc-threads (param d1_grpc_threads)%s%s%s" % (
                        ", self-report in {raw}/d1" if diag else ", no self-report",
                        "; --report-target private: report_addr is the launcher's loopback "
-                       "OpenEngine port (Python Generate, lane 0)" if private else ""))
+                       "OpenEngine port (Python Generate, lane 0)" if private else "",
+                       "; E16-zr: the launcher starts capstubs.szr_launch's wrapper instead, which "
+                       "starts the S-ZR replay stub (param szr_bin, self-report in {raw}/szr) on "
+                       "the rank 0 worker's cores as the host's request entry and lane-1 result "
+                       "source on the S-NX grid of this launch, then execs the host; rank 0 (S-NX) "
+                       "stays up and idle" if szr else ""))
     return edit
 
 
@@ -139,7 +150,9 @@ def main(out):
             ("E16", src, "e16-nx-k4-%s" % shape, cpp_host(diag=True),
              "E16-nx: the C++ host in front of S-NX, self-report on"),
             ("E16", src, "e16-nx-nodiag-k4-%s" % shape, cpp_host(diag=False),
-             "E16-nx without the self-report (--diag-out off)")]
+             "E16-nx without the self-report (--diag-out off)"),
+            ("E16", src, "e16-zr-k4-%s" % shape, cpp_host(diag=True, szr=True),
+             "E16-zr: the C++ host in front of the S-ZR replay stub, self-report on")]
         for n in (1, 8):
             src9 = "e9-n%df0-%s" % (n, shape)
             arms.append(("E9", src9, "e9-nc%df0-%s" % (n, shape), cpp_host(diag=True),
