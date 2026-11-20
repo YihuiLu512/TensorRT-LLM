@@ -1935,7 +1935,8 @@ R2 自审（slug `capkit-b2judge-J17871`）发现的问题已直接改进本子�
 
    | 段 | 包装对象 | 种类 |
    |---|---|---|
-   | S1j | `starlette.requests` 模块全局 `json` 换成代理，代理的 `loads` 计时（`Request.json` 的 `json.loads(body)`） | 计时 |
+   | S1j | `tensorrt_llm.serve.openai_server` 模块全局 `json` 换成代理，代理的 `loads` 计时（产品路由类 `_MsgspecRoute` 的请求类型 `_MsgspecRequest.json` 用这个名字解析请求体；见第 8 条） | 计时 |
+   | S1k | `tensorrt_llm.serve.kv_hints.KvHintsRequest.filter_kv_hints`（`_MsgspecRequest.json` 对解码后的请求体执行 hint 信任策略） | 计时 |
    | S1v | `fastapi._compat.v2.ModelField.validate`（请求体的 pydantic 校验，即 `CompletionRequest` 的构造与校验） | 计时 |
    | S2 | `OpenEngineLLM.generate_async`（facade，同步） | 计时 |
    | S3 | `completion_stream_post_processor`（`openai_server` 与 `postprocess_handlers` 两处换成同一个包装对象，`_streaming_of` 的身份比较不变） | 计时 |
@@ -1943,12 +1944,19 @@ R2 自审（slug `capkit-b2judge-J17871`）发现的问题已直接改进本子�
    | S5 | `GenerateStream._validate` | 计时 |
    | H1 | `ServerArrivalTimeMiddleware.__call__`：http 且路径以 `/v1/` 开头时计一次；`busy` 时在主线程忙等 `<ns>`（持 GIL），再返回原协程 | 注入，所有段之外 |
 
-   S1 = S1j + S1v；ΣS = S1j + S1v + S2 + S3 + S5（S4 不计时）。
+   S1 = S1j + S1k + S1v；ΣS = S1j + S1k + S1v + S2 + S3 + S5（S4 不计时）。
 3. **计量**：只在主线程（事件循环线程）上累计 `n`、`cpu_ns`（`time.thread_time_ns`）、`wall_ns`（`time.perf_counter_ns`）；其他线程只加 `n_other`；计时调用内部再进入的计时调用只加 `n` 与 `n_nested`，不重复计时。H1 计 `hits`、`applied`、`applied_ns`（实测忙等时长）、`hits_other`。
-4. **拒绝（防空检查报 PASS）**：开关写错退出码 2；包装点不存在或类型不符（计时段是协程 / 异步生成器函数、S4 或 H1 不是协程函数、静态 / 类方法、S3 两处不是同一个对象、`starlette.requests` 没有 `json` 全局）在其模块加载时退出码 3；第一次计时调用时仍有段没装上，退出码 3。每个装上的位点与加载各写一行 stderr 标记（`capkit-q1seg: site <S> installed …`、`capkit-q1seg: loaded …`）。
+4. **拒绝（防空检查报 PASS）**：开关写错退出码 2；包装点不存在或类型不符（计时段是协程 / 异步生成器函数、S4 或 H1 不是协程函数、静态 / 类方法、S3 两处不是同一个对象、`openai_server` 没有 `json` 模块全局或已被包过）在其模块加载时退出码 3；第一次计时调用时仍有段没装上，退出码 3。每个装上的位点与加载各写一行 stderr 标记（`capkit-q1seg: site <S> installed …`、`capkit-q1seg: loaded …`）。
 5. **输出**（不登记为 capprobe 槽，见勘误 10′-n）：主线程在计时调用结束后、计时区间之外，至多每 `CAPKIT_Q1SEG_REPORT_MS`（缺省 250 ms）写一行，退出时再写一行 `capkit-q1seg-report {"v":1,"pid","seq","t_ns","seg":{段:[n,cpu_ns,wall_ns,n_other,n_nested]},"inject":{"H1":[hits,applied,applied_ns,hits_other]},"installed","segments","inject_spec"}` 到 stderr（编排器拷到 `raw/logs/frontend.w0.<pid>.err`）。`t_ns` 是 `time.monotonic_ns()`，与档位窗口 `abs_window_*_ns` 同一时钟。读法：`q1seg.parse_reports(lines, pid)`、`q1seg.window_delta(reports, t0, t1)`（在窗口两端线性插值；窗口端点在报告范围外返回 `None`）。不起线程。
 6. **场景模板**：`configs/e4` 新增 `e4b-r-q1seg`（`H1:count`）与 `e4b-r-q1seg-h1`（`H1:busy:100000`），只比 `e4b-r` 多前端角色的三个环境变量（`PYTHONPATH=/usr/local/lib/python3.12/dist-packages/capstubs/q1_seg`、`CAPKIT_Q1SEG=all`、`CAPKIT_Q1SEG_INJECT`）；角色 env 不展开占位符，所以没有新参数，`params_required` 与 `e4b-r` 相同；探针档 P0。原有模板逐字节不变（生成器单测核对）。
 7. **验证**：`tests/capstubs/test_q1_seg.py`（24 项）：已知 CPU（按 thread_time 自旋 2 ms）与已知墙钟（sleep 3 ms，CPU ≈ 0）的阳性对照 ±5 %；包装开销微基准 ≤ 1 µs（本机约 0.7 µs）；协程 / 异步生成器拒绝；嵌套与其他线程；链式 sitecustomize；开关关闭不导入 capstubs；错开关退出 2；五种包装点缺失或类型错与「首个计时调用时未装全」退出 3；替身模块树上每段命中数逐个精确（每请求 S1j / S1v / S2 / S4 各 1、S3 / S5 各 2，另一线程的调用进 `n_other`，/health 与 lifespan 不计 H1）；H1 忙等阳性对照（applied = hits，applied_ns 在 δ×applied 的 1.0～1.2 倍，ΣS 不含忙等）；报告行插值；探针树里各产品位点的函数类型。`tests/launch/test_e2a_e3_e4_configs.py` 加两臂与 `e4b-r` 的逐字段对照。真前端里的装载与报告行【未运行】，属首个作业的冒烟核对。
+
+8. **修订（2026-11-20，勘误 10′-11，capkit ft10b）**：首个作业 J6190736 里 S1j 在各臂各档都是 0 次。原因：产品把路由类换成 `_MsgspecRoute`（openai_server.py:883、:203），它的请求类型 `_MsgspecRequest.json`（:188～:200）覆盖了 Starlette 的 `Request.json`，用 openai_server 模块自己的 `json.loads`（:199，模块在 :9 `import json`）解析请求体，再调用 `KvHintsRequest.filter_kv_hints`（kv_hints.py:17）。改法：
+   - S1j 改包 openai_server 模块命名空间里的 `json`（代理只换 `loads`，`JSONDecodeError`、`dumps` 等原样转发）；Starlette 的 `json` 与全局 `json.loads` 不动。同模块里别的 `json.loads` 调用（Anthropic 路由等）也会计入 S1j，E4 的 `/v1/completions` 不走它们。
+   - 新增 S1k = `KvHintsRequest.filter_kv_hints`（同步；`_MsgspecRequest` 不覆盖它，所以包 `KvHintsRequest` 的属性即覆盖热路径）。`CAPKIT_Q1SEG=all` 自动包含 S1k，`configs/e4` 两个模板不变。
+   - 命中数检查：`q1seg.zero_hit_sites(delta, installed)` 列出窗口内调用次数不 > 0 的已装位点（段看主线程 `n`，H1 看 `hits`，delta 里没有的也算 0），未知位点名抛 ValueError。readout 与冒烟用它判「每个已装位点在每档每请求调用次数 > 0」。
+   - 分母：`q1seg.arrivals(delta)` = 窗口内 H1 的 `hits + hits_other`（到达数）；没有 H1 时用 S2 的 `n + n_other`。
+   - 单测新增：替身树改成产品形状（`_MsgspecRequest(KvHintsRequest)` 用本模块 `json.loads`），每请求 S1j / S1k 各 1 次，同时调用 Starlette 的 `Request.json` 不计入 S1j，全局 `json.loads` 与 `starlette.requests.json` 不被替换；S1j（无 `json` 全局、`json` 不是模块）与 S1k（协程）的退出 3；探针树 AST 核对热路径（`route_class = _MsgspecRoute`、`request_type = _MsgspecRequest`、`json` 方法里调用 `json.loads` 与 `self.filter_kv_hints`、子类不覆盖 `filter_kv_hints`、openai_server 顶层只有一处 `import json`）；`zero_hit_sites` 的阴性对照（J6190736 形态 S1j = 0 判不过）与通过例；`arrivals` 两种来源；替身树端到端窗口内命中检查为空、到达数等于请求数。同一组新测试对旧 q1seg（527587cc）跑：端到端与 S1j 退出 3 用例失败、两个新函数不存在（阴性对照）。
 
 ### 判定器：不读抓帧文件（`treedata.FRAME_CAPTURE_FILES`）（2026-11-20）
 
