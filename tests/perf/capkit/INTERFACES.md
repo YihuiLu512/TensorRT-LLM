@@ -1986,6 +1986,15 @@ R2 自审（slug `capkit-b2judge-J17871`）发现的问题已直接改进本子�
 3. **模板**：`configs/gen_d1_configs.py` 新增 `e16-zr-k4-{mc,r}` = `e16-nx-k4-*` 的宿主角色再加 `--cpp-host-szr-bin {param:szr_bin} --cpp-host-szr-dir {raw}/szr`；新参数 `szr_bin`（镜像里是 `/usr/local/bin/trtllm-oehost-szr`）。档位模板、其余角色与 e16-nx 相同；原有模板逐字节不变。S-ZR 用 rank0 worker 的 3 核，rank0（S-NX）照常起、空转（控制面、模板包与 lane 1 的关停哨兵仍走它）。
 4. **验证**：`tests/capstubs/test_szr_launch.py` 新增 serve_nx 写的包装器从环境取配置（`--cpus 5,6,7`、节拍、每步 token 数传给 S-ZR；无 `TRTLLM_CAPKIT_SNX` 时拒起、不 exec 的阴性对照）与坏选项被拒；`tests/capstubs/test_d1_configs.py` 计数 48 → 54、zr 臂只比 nx 多 S-ZR 两个选项、S-ZR 选项缺搭档时被拒（含阳性对照：完整选项通过）。
 
+### D1 线 S0 阶段记录：Python 宿主结果路径的逐段 CPU 计时（`capstubs.snx_segtime`，serve_nx `--segtime`）（2026-11-20）
+
+依据：D1 专题 `08_engine-host-cpp-d1/06_staged-comparison.md` 第 2 节第 4 项（S0 各子步骤开销，与 D1 的 `--segtime` 对齐）与第 6 节 L-B 线。与前端线第 10 项（`capstubs.q1seg`）同法：运行时替换产品的同步可调用对象，记 `time.thread_time_ns`；不改产品代码、不改 worker、不用 ptrace。宿主进程本来就由 serve_nx 在进程内拉起（`snx_inject` 的先例），所以在 serve_nx 里安装，不需要 sitecustomize。
+
+1. **`capstubs.snx_segtime`**：位点 `dtask`（`GenerationExecutorProxy.dispatch_result_task`，每帧）、`recv`（`ZeroMqQueue._recv_data`）、`parse`（`_parse_data`）、`hmac`（`_verify_hmac`）、`pickle`（`executor.ipc` 的模块全局 `pickle` 换成代理，只计 `loads`）、`notify`（`_SyncQueue.notify_many`）、`wake`（`_SyncQueue._notify_many`，事件循环上唤醒结果队列）、`handle`（`DetokenizedGenerationResultBase._handle_response`）、`hbase`（`GenerationResultBase._handle_response`）、`deser`（`LlmResult.deserialize`）、`format`（servicer 模块全局 `_format_result`）、`pbser` / `pbdeser`（Generate 处理器的响应序列化 / 请求反序列化：在 `grpc.unary_stream_rpc_method_handler` 收到 `GenerateResponse.SerializeToString` / `GenerateRequest.FromString` 时换成计时版，其他处理器不动）、`gen`（`BaseLLM.generate_async`）、`prep`（`_prepare_data`）。计时是**包含式**：嵌套的位点各自计（`NESTING` 给出父子关系，读数据此算独占部分）。计数**按线程**（线程名 + native id），读数可与 procmon 的同一线程 CPU 对比得覆盖率。目标缺失或类型不符（静态方法 / 普通函数 / 未包装的 pickle 模块）时在改动任何东西之前拒绝（`SiteMissing`）。
+2. **输出**：`<out-dir>/segtime.<pid>.jsonl`。首行 `capkit.snx_segtime/1` 头：位点、嵌套、`calibration`（本线程上一次包装后空调用增加的线程 CPU `per_call_ns` 与落在计时区间内的部分 `inside_ns`）；之后每 `--segtime-report-ms`（默认 1000）由线程 `snx_segtime_report` 写一行累计值 `{"t_ns": 单调时钟, "threads": [{"name", "native_id", "seg": {位点: [n, cpu_ns]}}]}`，退出时再写一行。`window_delta` 在档窗口两端线性插值（两行间隔 > 2.5 s 或窗口在行外时返回 None）。
+3. **`capstubs.serve_nx`**：新选项 `--segtime LIST`（`all` 或逗号列表）与 `--segtime-report-ms`；需要 `--out-dir`；只在主进程（引擎宿主）安装，再执行的附属前端不装；`--record` 的 `patches.segtime` 记位点与文件。不带 `--segtime` 时行为不变。
+4. **验证**：`tests/capstubs/test_snx_segtime.py`：已知 CPU 的阳性对照（±25 %）与包含式嵌套、派发线程路径（按线程分开、pickle 代理只计 loads、静态方法仍是静态方法、卸载复原）、gRPC 处理器只换 Generate 的两个函数、缺失 / 类型不符在改动前拒绝、协程与重复包装被拒、报告行与窗口插值、校准、serve_nx 选项检查、位点与调用路径对探针树源码核对（与镜像 `d1-344675d793` 的产品文件逐个 sha1 相同）。
+
 ## 审阅记录（r2，2026-11-13）
 
 审阅意见来自 spec-critic（JSON，24 条）。每条都对照设计稿 / 计划原文核对过；「采纳」= 按意见改，「部分采纳」= 问题属实、改法与意见不同（写理由），「不采纳」= 问题不成立。

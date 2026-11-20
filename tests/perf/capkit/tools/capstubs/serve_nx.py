@@ -26,6 +26,9 @@
   inherits this process's core set). --report-target private makes --report-addr name the
   launcher's loopback OpenEngine port instead (its Python Generate on lane 0: the E8-2l / N2l
   arms), written once the public port accepts, i.e. after the C++ host is ready.
+- Optionally (--segtime LIST) installs capstubs.snx_segtime's per-thread segment CPU timers on
+  the engine host's result path in this process (not in re-executed attached frontends);
+  <out-dir>/segtime.<pid>.jsonl.
 - Optionally (--grpc-server-option KEY=VALUE, OpenEngine host only) adds gRPC channel arguments
   to the OpenEngine server's option list (tensorrt_llm.grpc.openengine.server._SERVER_OPTIONS,
   which OpenEngineServer copies when it builds grpc.aio.server), e.g. the admission limits
@@ -104,6 +107,11 @@ def build_parser():
                         "worker sites (Wr) go to the rank 0 worker through the S-NX config")
     p.add_argument("--diag", default="", metavar="LIST",
                    help="capstubs.snx_inject diagnostics, comma list of gc,threads,conn,tname")
+    p.add_argument("--segtime", default="", metavar="LIST",
+                   help="capstubs.snx_segtime sites timed in this (engine host) process: 'all' or "
+                        "a comma list; writes <out-dir>/segtime.<pid>.jsonl (needs --out-dir)")
+    p.add_argument("--segtime-report-ms", type=int, default=1000,
+                   help="capstubs.snx_segtime reporter interval (ms)")
     p.add_argument("--gc-freeze-after-ready", action="store_true",
                    help="gc.collect() + gc.freeze() once --report-addr has been written")
     p.add_argument("--worker", choices=WORKER_KINDS, default="null",
@@ -600,6 +608,16 @@ def main(argv=None):
         except snx_inject.InjectSpecError as e:
             print("serve_nx: inject refused: %s" % e, file=sys.stderr)
             return 3
+        from capstubs import snx_segtime  # noqa: PLC0415
+        try:  # checked before anything starts; installed after the patches (below)
+            segtime_sites = snx_segtime.parse_sites(a.segtime)
+        except snx_segtime.SiteMissing as e:
+            print("serve_nx: --segtime refused: %s" % e, file=sys.stderr)
+            return 3
+        if segtime_sites and (not cfg.out_dir or a.segtime_report_ms <= 0):
+            print("serve_nx: --segtime needs --out-dir and --segtime-report-ms > 0",
+                  file=sys.stderr)
+            return 3
         # worker sites travel in the S-NX config (TRTLLM_CAPKIT_SNX reaches the worker)
         host_inject, worker_inject = snx_inject.split_worker_specs(a.inject)
         if worker_inject:
@@ -640,6 +658,17 @@ def main(argv=None):
         if why:
             print("serve_nx: inject refused: %s" % why, file=sys.stderr)
             return 3
+        if segtime_sites:
+            from capstubs import snx_segtime  # noqa: PLC0415
+            try:
+                seg = snx_segtime.install(segtime_sites, out_dir=cfg.out_dir,
+                                          reporter_s=a.segtime_report_ms / 1000.0,
+                                          header={"role": "main"})
+            except snx_segtime.SiteMissing as e:
+                print("serve_nx: --segtime refused: %s" % e, file=sys.stderr)
+                return 3
+            done["segtime"] = {"sites": list(segtime_sites), "jsonl": seg.path,
+                               "report_ms": a.segtime_report_ms}
         done["inject"] = {"specs": list(a.inject), "worker_specs": worker_inject,
                           "diag": a.diag,
                           "jsonl": None if inj is None else inj.path,
