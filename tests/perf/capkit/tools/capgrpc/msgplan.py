@@ -18,7 +18,13 @@ request at its planned time: the stub's own first step is step_at_or_after(accep
 and up to one beat of step rounding. A message with no planned step (index past the expected
 count, a tier without beat, or a step past the schedule end) is counted as unplanned and not put
 into the lag.
+
+With token counting (capgrpc.load --count-tokens) a received message is mapped to the planned
+message of its first token (msg_of_token), so a merged message (k tokens) is planned at the step
+of its first token; for k = 1 the mapping is the identity.
 """
+
+import bisect
 
 from capcommon import expect
 from capcommon.exitcodes import ConfigError
@@ -35,6 +41,7 @@ class MsgPlan:
         if self.bs.n_steps == 0:
             raise ConfigError("--planned-msgs needs a tier table with beat_ns > 0 tiers")
         self.offsets = [None] * len(tt)
+        self.tok_ends = [None] * len(tt)  # cumulative token count at the end of each message
         for t in tt.tiers:
             if not t.is_load:
                 continue
@@ -44,6 +51,11 @@ class MsgPlan:
             except expect.ExpectError as e:
                 raise ConfigError("--planned-msgs: tier %d: %s" % (t.seq, e))
             self.offsets[t.seq] = tuple(offs) + (offs[-1],)  # + the finished message
+            ends, acc = [], 0
+            for n in expect.msg_tokens(t.max_tokens, t.tokens_per_msg, t.stream_interval, GATE):
+                acc += n
+                ends.append(acc)
+            self.tok_ends[t.seq] = tuple(ends)
 
     def stream(self, planned_rel_ns, seq):
         """The plan of one request, or None when its messages have no planned steps."""
@@ -54,6 +66,14 @@ class MsgPlan:
         if first is None:
             return None
         return first, offs
+
+    def msg_of_token(self, seq, i):
+        """Index of the planned message that carries token i (0-based) of a tier-`seq` request;
+        i at or past the last token -> the finished message's index. A received message is
+        planned by its first token (tokens received before it), so a server that merges k
+        adjacent token messages into one is not charged the k - 1 later steps (capgrpc.load
+        --count-tokens); with one token per message this is the message's own index."""
+        return bisect.bisect_right(self.tok_ends[seq], i)
 
     def planned(self, st, j):
         """(step, planned_rel_ns) of message j of a request planned by stream(), or None."""

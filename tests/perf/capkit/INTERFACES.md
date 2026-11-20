@@ -1995,6 +1995,21 @@ R2 自审（slug `capkit-b2judge-J17871`）发现的问题已直接改进本子�
 3. **`capstubs.serve_nx`**：新选项 `--segtime LIST`（`all` 或逗号列表）与 `--segtime-report-ms`；需要 `--out-dir`；只在主进程（引擎宿主）安装，再执行的附属前端不装；`--record` 的 `patches.segtime` 记位点与文件。不带 `--segtime` 时行为不变。
 4. **验证**：`tests/capstubs/test_snx_segtime.py`：已知 CPU 的阳性对照（±25 %）与包含式嵌套、派发线程路径（按线程分开、pickle 代理只计 loads、静态方法仍是静态方法、卸载复原）、gRPC 处理器只换 Generate 的两个函数、缺失 / 类型不符在改动前拒绝、协程与重复包装被拒、报告行与窗口插值、校准、serve_nx 选项检查、位点与调用路径对探针树源码核对（与镜像 `d1-344675d793` 的产品文件逐个 sha1 相同）。
 
+### D1 线 CAPKIT-K：读端按 token 对账与合并倍数 k（`capgrpc.load --count-tokens`）（2026-11-20）
+
+依据：D1 专题 `06_staged-comparison.md` 的 S3 阶段（结果路径把相邻 token 事件合并）。设计稿 `09_d1-host/perf/STAGES/S3/DESIGN-coalesce.md` 写出之前按「一条 `TokenOutput` 含 1..k 个 `TokenInfo`、`finished` 单独一条」实现。
+
+1. **读码核实（改前 main `182ce8a9`）**：假设「消息数 = token 数」的位置——
+   - `tools/capgrpc/msgplan.py:40-45`（`expect.msg_step_offsets` 按 `tokens_per_msg` 排每条消息的计划步）与 `tools/capgrpc/loader.py:564`、`tools/capgrpc/oe_sink.py:330`（`--planned-msgs` 把第 j 条收到的消息配给第 j 个计划步）：k>1 时第 j 条消息实际携带的是更靠后的 token，计划时刻偏早、B5 lag 偏大。**本次已改（loader）**。
+   - `tools/capgrpc/loader.py:189、223-224、486-488、640-643`（`expected_msgs` 与 `ok_requests_with_unexpected_msg_count`）：只对 capkit 请求格式赋值，openengine 格式为 None，不参与 D1 臂。
+   - `tools/capjudge/checks.py:382-395`（`hop_range` → `capcommon/expect.py:174 expected_hop_count`）、`checks.py:458`（C7 逐请求帧对账）、`tools/capjudge/e1report.py:97`、`tools/capjudge/symptoms.py:103`：只作用于登记了 `messages` / `chunks` 链的场景（e0 / e2a / e3 / e4 的桩模板）；D1 模板只有 `requests` 链，D1 阶段登记的检查为 C3、C5、C9、C10、C11（`09_d1-host/perf/plans/d1_lib.py:62`），所以「S3 各档会被误判」不成立。
+   - `tools/capload/loadgen.py:639`（`completion_tokens != expect_tokens`）：本来就按 token，无需改。capjudge C4 在 `tokens` 列 ≥ 0 时用它，所以本选项让失败请求记 -1。
+2. **`capgrpc.tokcount`**：`response_tokens(msg)` 直接走 protobuf 线格式（`GenerateResponse.token` = 字段 3，`TokenOutput.tokens` = 字段 2），返回 `(token 数, 是否 token 事件)`；格式错抛 `ValueError`（读端记 `protocol_error`）。`KHist` 汇总 `token_msgs`、`tokens`、`k_mean`、`k_max`、`k_hist`。
+3. **`MsgPlan.msg_of_token(seq, i)`**：第 i 个 token（0 起）所在的计划消息号（按档的 `tokens_per_msg` 累计末端二分）；k=1 时是恒等映射（含 `finished` 那一条）。
+4. **`capgrpc.load --count-tokens`**（只在 build_parser，不进 `add_reader_args`；要求 openengine 格式、`--consume raw`、不带 `--stamped`）：每条消息数 token；带 `--planned-msgs` 时每条消息按**首个 token** 的计划步记；成功请求的 `tokens` 列 = 收到的 token 数（失败 -1）；每档 summary 多一个 `tokens` 块（`KHist` 各项 + `ok_tokens`、`ok_tokens_expected`、`ok_requests_with_unexpected_token_count`）。不带该选项时输出逐字节不变。
+5. **场景**：`configs/d1/` 新增 `e16-nxtk-k4-{mc,r}`、`e16-zrtk-k4-{mc,r}`（读端加 `--count-tokens`）、`e9-nc4f0-{mc,r}`、`e9-nc8fP-mc`；原 54 个文件重生成后逐字节相同。
+6. **验证**：`tests/capstubs/test_count_tokens.py`（真 `generation_pb2` 的 k = 0..5、候选、finished、格式错；`msg_of_token`；固定时钟的 `LoadWorker.one`：k=1 时消息记录、lag、计数器与不计数时相同、只有 `tokens` 列不同；合并流 [1,2,2] 的计划消息号 [0,1,3,5] 与 k 分布；反向对照：不计数时同一流按消息序号 [0,1,2,3]；短流记为 token 数不符；选项检查）；`tests/capstubs/test_d1_configs.py` 加 tk 臂「只比来源多 `--count-tokens`」。
+
 ## 审阅记录（r2，2026-11-13）
 
 审阅意见来自 spec-critic（JSON，24 条）。每条都对照设计稿 / 计划原文核对过；「采纳」= 按意见改，「部分采纳」= 问题属实、改法与意见不同（写理由），「不采纳」= 问题不成立。

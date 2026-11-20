@@ -22,7 +22,7 @@ D1 = os.path.join(C, "configs", "d1")
 SNX = os.path.join(C, "configs", "snx")
 SCENARIOS = sorted(n for n in os.listdir(D1) if n.endswith(".scenario.json"))
 SOURCE = {"e16": "e8-k4-%s", "e9-nc1f0": "e9-n1f0-%s", "e9-nc8f0": "e9-n8f0-%s",
-          "e9-n2l8f0": "e9-n8f0-%s"}
+          "e9-n2l8f0": "e9-n8f0-%s", "e9-nc4f0": "e9-n4f0-%s", "e9-nc8fP": "e9-n8fP-%s"}
 
 
 def load(d, n):
@@ -47,7 +47,7 @@ def test_generator_reproduces_configs(tmp_path):
                    check=True)
     made = sorted(os.listdir(os.path.join(out, "d1")))
     assert made == sorted(n for n in os.listdir(D1) if n != "README.md")
-    assert len(made) == 3 * 18
+    assert len(made) == 3 * 25
     for n in made:
         with open(os.path.join(out, "d1", n), "rb") as a, open(os.path.join(D1, n), "rb") as b:
             assert a.read() == b.read(), n
@@ -90,6 +90,13 @@ def test_scenario_validates_and_differs_only_by_the_d1_delta(name):
     for r in (ha, hb):
         r.pop("args")
         r.pop("note")
+    if "tk-k4-" in arm:  # token-counting arms: the reader adds --count-tokens, nothing else
+        ra = next(r for r in a["roles"] if r["role"] == "reader")
+        rb = next(r for r in b["roles"] if r["role"] == "reader")
+        assert ra["args"] == rb["args"] + ["--count-tokens"]
+        for r in (ra, rb):
+            r.pop("args")
+            r.pop("note")
     ji_a = a.get("job_inputs", {}).get("request_bytes", {}).get("args")
     ji_b = b.get("job_inputs", {}).get("request_bytes", {}).get("args")
     if arm.startswith("e16-pynd-"):
@@ -161,3 +168,19 @@ def test_szr_options_refused_without_their_partners():
     assert "--cpp-host-bin" in serve_nx.cpp_host_env(p.parse_args(no_host), serve)[1]
     private = own + ["--report-target", "private"]
     assert "private" in serve_nx.cpp_host_env(p.parse_args(private), serve)[1]
+
+
+def test_tk_arms_are_their_base_plus_count_tokens_only():
+    for base in ("e16-nx", "e16-zr"):
+        for shape in ("mc", "r"):
+            tk = load(D1, "%stk-k4-%s.scenario.json" % (base, shape))
+            b0 = load(D1, "%s-k4-%s.scenario.json" % (base, shape))
+            ra = next(r for r in tk["roles"] if r["role"] == "reader")
+            rb = next(r for r in b0["roles"] if r["role"] == "reader")
+            assert ra["args"] == rb["args"] + ["--count-tokens"]
+            assert host_parts(tk) == host_parts(b0)
+            assert load(D1, "%stk-k4-%s.tiers.template.json" % (base, shape))["tiers"] == \
+                load(D1, "%s-k4-%s.tiers.template.json" % (base, shape))["tiers"]
+    # positive control: a base arm has no --count-tokens
+    nx = load(D1, "e16-nx-k4-mc.scenario.json")
+    assert "--count-tokens" not in next(r for r in nx["roles"] if r["role"] == "reader")["args"]
