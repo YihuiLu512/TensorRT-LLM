@@ -34,3 +34,5 @@
 ## S-FE 臂（前端线第 8 项，2026-11-20）
 
 E4 卡 4c：`e4c-mc` = `e4b-mc` 的 S-PB 换成零改动的 S-FE（前端形态：`--model {param:tokenizer_dir}` + 指纹作业输入），每条流各自睡 `step_delay`（不齐发）；前端、capload、观察者与 `e4b-mc` 相同，门只读 `capload backlog.inflight`，链只有 `capload counts.ok`。4a（S-FC）仍没有模板。详见 `INTERFACES.md`「前端线第 8 项」。
+
+前端线第 10 项（设计卡 10′）：`e4b-r-q1seg`、`e4b-r-q1seg-h1` = `e4b-r` 的前端角色多三个环境变量（`PYTHONPATH` 指向镜像里的 `capstubs/q1_seg`、`CAPKIT_Q1SEG=all`、`CAPKIT_Q1SEG_INJECT` 为 `H1:count` 或 `H1:busy:100000`），其余与 `e4b-r` 逐字段相同，用 `e4b-r` 的值登记；没有新参数（角色 env 不展开占位符），探针档仍是 P0。详见 `INTERFACES.md`「前端线第 10 项」。

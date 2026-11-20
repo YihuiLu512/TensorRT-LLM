@@ -405,7 +405,7 @@ def test_e4_frontend_main_tier_and_stub_tokenizer_settings():
             assert "--server-module" not in sa, a  # the product's server module
         if "reader" in rs:
             assert doc["job_inputs"]["request_bytes"]["args"][-1] == "{param:tokenizer_dir}"
-    assert n == 14
+    assert n == 16
 
 
 def test_direct_arms_name_one_model_for_stub_and_request_bytes():
@@ -497,3 +497,37 @@ def test_sfe_and_stub_swap_arms_register_with_their_pair_arms_values():
             if name == "reader":
                 x.pop("measure_class"), y.pop("measure_class")
             assert x == y, (a, name)
+
+
+Q1SEG_ARMS = {"e4b-r-q1seg": "H1:count", "e4b-r-q1seg-h1": "H1:busy:100000"}
+
+
+def test_q1seg_arms_are_e4b_r_plus_the_frontend_timing_env():
+    """Front-end item 10 (design card 10'): e4b-r-q1seg / -h1 differ from e4b-r only in the
+    frontend role's env (capstubs/q1_seg first on PYTHONPATH, every segment, H1 counted or
+    busy) and the per-arm names, so they register with e4b-r's values and share its jobs; no
+    new params; probe tier stays P0."""
+    from capstubs import q1seg  # noqa: PLC0415
+    bdoc, bt = _scen("e4", "e4b-r"), _tpl("e4", "e4b-r")
+    assert os.path.isfile(os.path.join(cf.C, "tools", "capstubs", "q1_seg", "sitecustomize.py"))
+    for a, spec in Q1SEG_ARMS.items():
+        doc, t = _scen("e4", a), _tpl("e4", a)
+        per_arm = ("name", "note", "tier_table", "schedule", "prompts", "roles")
+        assert {k: x for k, x in doc.items() if k not in per_arm} == \
+            {k: x for k, x in bdoc.items() if k not in per_arm}, a
+        r, br = _roles(doc), _roles(bdoc)
+        assert list(r) == list(br)
+        for name in r:
+            x, y = dict(r[name]), dict(br[name])
+            if name == "frontend":
+                assert y["env"] == {} and x["env"] == {
+                    "PYTHONPATH": "/usr/local/lib/python3.12/dist-packages/capstubs/q1_seg",
+                    "CAPKIT_Q1SEG": "all", "CAPKIT_Q1SEG_INJECT": spec}, a
+                assert q1seg.parse_segments(x["env"]["CAPKIT_Q1SEG"]) == tuple(q1seg.SEGMENTS)
+                assert q1seg.parse_inject(spec)["site"] == "H1"
+                assert x["probe_tier"] == "P0" and x["snapshots"] == "none"
+                for d in (x, y):
+                    d.pop("env"), d.pop("note")
+            assert x == y, (a, name)
+        assert {k: x for k, x in t.items() if k != "name"} == \
+            {k: x for k, x in bt.items() if k != "name"}, a

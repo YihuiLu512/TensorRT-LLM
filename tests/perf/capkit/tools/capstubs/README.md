@@ -64,3 +64,12 @@
 - 机制：`sitecustomize` 先执行 sys.path 上下一个 `sitecustomize.py`（镜像自己的），再装一个导入钩子；位点所在模块在本进程加载完时，用 `snx_inject.install` 包住该函数（先计数，再按规格忙等，持 GIL）。规格写错直接退出码 2（site.py 会吞掉 sitecustomize 的异常，所以这里自己退出）。
 - 输出：每个进程每 2 s 与退出时在 stderr 写一行 `capkit-fe-inject-report {"pid", "sites": {site: hits/applied/applied_ns}}`；设了 `CAPKIT_FE_INJECT_DIR` 时改由 `snx_inject` 写 `<dir>/inject.<pid>.jsonl`。加载时与每装上一个位点时各写一行标记。
 - 测试 `tests/capstubs/test_fe_inject.py`：替身模块树上验证父进程与 spawn 子进程里的包裹、忙等时长与计数、无规格时不包、未知位点拒绝启动。
+
+## `capstubs/q1_seg` + `capstubs.q1seg`（真前端请求路径的逐段 CPU 计时，前端线第 10 项）
+
+- 用法：把 `capstubs/q1_seg` 目录放在前端角色 `PYTHONPATH` 的最前面；`CAPKIT_Q1SEG` = `all` 或段号列表（`S1j,S1v,S2,S3,S4,S5`），`CAPKIT_Q1SEG_INJECT` = `H1:count` 或 `H1:busy:<ns>`，`CAPKIT_Q1SEG_REPORT_MS`（缺省 250）。两个开关都没设时只链式执行镜像自带的 sitecustomize，不导入 capstubs。不改产品文件。
+- 段：S1j = `starlette.requests` 的 `json.loads`（请求体 JSON 解析）、S1v = `fastapi._compat.v2.ModelField.validate`（pydantic 校验请求体）、S2 = `OpenEngineLLM.generate_async`、S3 = `completion_stream_post_processor`（`openai_server` 与 `postprocess_handlers` 里换成同一个包装对象）、S4 = `OpenAIServer.await_disconnected`（协程函数，只计次数）、S5 = `GenerateStream._validate`。H1 = `ServerArrivalTimeMiddleware.__call__`（http、路径以 `/v1/` 开头时计一次；`busy` 时在主线程忙等 `<ns>` 再交回原协程），在所有段之外。
+- 计量：只在主线程（事件循环）上计 `n / cpu_ns（thread_time_ns）/ wall_ns（perf_counter_ns）`；别的线程只计 `n_other`；计时调用里再进入的计时调用只计 `n`、`n_nested`，不重复计时。实测每次调用的包装开销约 0.7 µs（本机，单测上限 1 µs）。
+- 拒绝：段名或注入规格写错退出码 2；包装点不存在、类型不对（计时段遇到协程函数、S4 / H1 不是协程函数、静态方法等）在模块加载时退出码 3；第一次计时调用时还有段没装上，也退出码 3。
+- 输出：主线程在计时调用结束后（计时区间之外）至多每 `CAPKIT_Q1SEG_REPORT_MS` 写一行、退出时再写一行 `capkit-q1seg-report {json}` 到 stderr（累计值，`t_ns` = `time.monotonic_ns()`，与编排器的档窗口同一时钟）；没有额外线程。`q1seg.parse_reports`、`q1seg.window_delta` 读这些行并在档窗口两端线性插值。
+- 测试 `tests/capstubs/test_q1_seg.py`：已知 CPU / 墙钟的阳性对照 ±5 %、包装开销 ≤ 1 µs、协程拒绝、嵌套与其他线程、链式 sitecustomize、开关关闭、错开关退出 2、包装点缺失或类型错退出 3、替身树上的命中数逐个精确、H1 忙等阳性对照、报告行插值、探针树里各位点的类型。

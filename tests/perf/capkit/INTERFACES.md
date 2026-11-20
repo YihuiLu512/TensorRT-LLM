@@ -1926,6 +1926,30 @@ R2 自审（slug `capkit-b2judge-J17871`）发现的问题已直接改进本子�
    - 自检（任何一项不过就不出计时数）：任一方向抽样帧数为 0 ⇒ rc 2；对账（应有数来自回放脚本不写的记录：结果帧对 recvs 的字节数与接收时刻、对 worker takes 的响应数；请求帧对 sends 的 client id、对 worker reqs 的 prompt 长度；未改动的帧 HMAC 校验必须通过）不符 ⇒ rc 3；篡改阳性对照（每帧改签名中的一个字节、改载荷中间的一个字节，都必须校验失败）不过 ⇒ rc 4；等价性（重新 dumps 与原帧逐字节相等才计时 dumps；不等占比超过 `--max-unequal-share` 时该方向的 dumps 项不报）。`--out` 只写一次，已存在时 rc 5。
 3. **验证**：`tests/capstubs/test_frame_capture.py`（11 项：抽样间隔、每档上限、字节上限、文件格式与截断、密钥文件 0600、请求包装只认目标队列与请求类型并在关闭时恢复、排空端钩子与 recvs 逐条对齐且不抓哨兵、nx_role 参数与拒绝、回放端到端（真 HMAC 帧 + 生产格式的 recvs / sends / takes / reqs）、抽样为 0 / 对账不符 / 篡改对照不过三种退出码、不等价时 dumps 不报、产品四个方法原文的替身与本地实现逐字节一致）。产品 proxy 下的抓帧【未运行】，属 E15-A 抓帧作业的首作业冒烟核对。
 
+### 前端线第 10 项：真前端请求路径的逐段 CPU 计时（`capstubs.q1seg`）（2026-11-20）
+
+依据：`04_frontend/PLAN-R2R5.md` 设计卡 10′ 与同文件勘误 10′-n。不改产品文件、worker、`executor/`、`_torch/`，不改 caplaunch 的进程登记。
+
+1. **机制**：`capstubs/q1_seg/sitecustomize.py`（前端角色 `PYTHONPATH` 第一项）先链式执行镜像自带的 sitecustomize，再按 `CAPKIT_Q1SEG`（`all` 或段号列表）与 `CAPKIT_Q1SEG_INJECT`（`H1:count` / `H1:busy:<ns>`）装 `capstubs.q1seg` 的包装（已加载的模块立即装，其余用导入钩子在模块加载完时装）。两个开关都空 = 关，只链式执行。只在显式环境变量打开时生效。
+2. **段**（包装点按镜像 cv2 的 FastAPI 0.139.2 / Starlette 1.10.0 与 2f22a98d6e 的产品文件定）：
+
+   | 段 | 包装对象 | 种类 |
+   |---|---|---|
+   | S1j | `starlette.requests` 模块全局 `json` 换成代理，代理的 `loads` 计时（`Request.json` 的 `json.loads(body)`） | 计时 |
+   | S1v | `fastapi._compat.v2.ModelField.validate`（请求体的 pydantic 校验，即 `CompletionRequest` 的构造与校验） | 计时 |
+   | S2 | `OpenEngineLLM.generate_async`（facade，同步） | 计时 |
+   | S3 | `completion_stream_post_processor`（`openai_server` 与 `postprocess_handlers` 两处换成同一个包装对象，`_streaming_of` 的身份比较不变） | 计时 |
+   | S4 | `OpenAIServer.await_disconnected`（协程函数） | 只计次数，原样返回协程对象 |
+   | S5 | `GenerateStream._validate` | 计时 |
+   | H1 | `ServerArrivalTimeMiddleware.__call__`：http 且路径以 `/v1/` 开头时计一次；`busy` 时在主线程忙等 `<ns>`（持 GIL），再返回原协程 | 注入，所有段之外 |
+
+   S1 = S1j + S1v；ΣS = S1j + S1v + S2 + S3 + S5（S4 不计时）。
+3. **计量**：只在主线程（事件循环线程）上累计 `n`、`cpu_ns`（`time.thread_time_ns`）、`wall_ns`（`time.perf_counter_ns`）；其他线程只加 `n_other`；计时调用内部再进入的计时调用只加 `n` 与 `n_nested`，不重复计时。H1 计 `hits`、`applied`、`applied_ns`（实测忙等时长）、`hits_other`。
+4. **拒绝（防空检查报 PASS）**：开关写错退出码 2；包装点不存在或类型不符（计时段是协程 / 异步生成器函数、S4 或 H1 不是协程函数、静态 / 类方法、S3 两处不是同一个对象、`starlette.requests` 没有 `json` 全局）在其模块加载时退出码 3；第一次计时调用时仍有段没装上，退出码 3。每个装上的位点与加载各写一行 stderr 标记（`capkit-q1seg: site <S> installed …`、`capkit-q1seg: loaded …`）。
+5. **输出**（不登记为 capprobe 槽，见勘误 10′-n）：主线程在计时调用结束后、计时区间之外，至多每 `CAPKIT_Q1SEG_REPORT_MS`（缺省 250 ms）写一行，退出时再写一行 `capkit-q1seg-report {"v":1,"pid","seq","t_ns","seg":{段:[n,cpu_ns,wall_ns,n_other,n_nested]},"inject":{"H1":[hits,applied,applied_ns,hits_other]},"installed","segments","inject_spec"}` 到 stderr（编排器拷到 `raw/logs/frontend.w0.<pid>.err`）。`t_ns` 是 `time.monotonic_ns()`，与档位窗口 `abs_window_*_ns` 同一时钟。读法：`q1seg.parse_reports(lines, pid)`、`q1seg.window_delta(reports, t0, t1)`（在窗口两端线性插值；窗口端点在报告范围外返回 `None`）。不起线程。
+6. **场景模板**：`configs/e4` 新增 `e4b-r-q1seg`（`H1:count`）与 `e4b-r-q1seg-h1`（`H1:busy:100000`），只比 `e4b-r` 多前端角色的三个环境变量（`PYTHONPATH=/usr/local/lib/python3.12/dist-packages/capstubs/q1_seg`、`CAPKIT_Q1SEG=all`、`CAPKIT_Q1SEG_INJECT`）；角色 env 不展开占位符，所以没有新参数，`params_required` 与 `e4b-r` 相同；探针档 P0。原有模板逐字节不变（生成器单测核对）。
+7. **验证**：`tests/capstubs/test_q1_seg.py`（24 项）：已知 CPU（按 thread_time 自旋 2 ms）与已知墙钟（sleep 3 ms，CPU ≈ 0）的阳性对照 ±5 %；包装开销微基准 ≤ 1 µs（本机约 0.7 µs）；协程 / 异步生成器拒绝；嵌套与其他线程；链式 sitecustomize；开关关闭不导入 capstubs；错开关退出 2；五种包装点缺失或类型错与「首个计时调用时未装全」退出 3；替身模块树上每段命中数逐个精确（每请求 S1j / S1v / S2 / S4 各 1、S3 / S5 各 2，另一线程的调用进 `n_other`，/health 与 lifespan 不计 H1）；H1 忙等阳性对照（applied = hits，applied_ns 在 δ×applied 的 1.0～1.2 倍，ΣS 不含忙等）；报告行插值；探针树里各产品位点的函数类型。`tests/launch/test_e2a_e3_e4_configs.py` 加两臂与 `e4b-r` 的逐字段对照。真前端里的装载与报告行【未运行】，属首个作业的冒烟核对。
+
 ## 审阅记录（r2，2026-11-13）
 
 审阅意见来自 spec-critic（JSON，24 条）。每条都对照设计稿 / 计划原文核对过；「采纳」= 按意见改，「部分采纳」= 问题属实、改法与意见不同（写理由），「不采纳」= 问题不成立。
