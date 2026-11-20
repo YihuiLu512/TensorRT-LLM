@@ -55,3 +55,33 @@ def test_origin_ns_placeholder():
                          tier_table_path="/t.json", origin_ns=12345, own_files={},
                          port_file_of=None, addr_of=None)
     assert sc.resolve("--origin-ns={origin_ns}", "r", ctx) == "--origin-ns=12345"
+
+
+@pytest.mark.parametrize("shape", ["mc", "r"])
+def test_e9_n4f0_differs_from_n8f0_only_in_frontend_count(shape):
+    """E13 4-frontend arms: host, S-NX worker, capload (8 workers), gates and tier template are
+    those of e9-n8f0; only --num_serve_frontends, the frontend role's cores and the texts differ."""
+    def load(n, kind):
+        with open(os.path.join(SNX, "e9-n%df0-%s.%s.json" % (n, shape, kind))) as f:
+            return json.load(f)
+
+    s4, s8 = load(4, "scenario"), load(8, "scenario")
+    r4, r8 = ({r["role"]: r for r in s["roles"]} for s in (s4, s8))
+    assert sorted(r4) == sorted(r8)
+    assert r4["capload"]["workers"] == r8["capload"]["workers"] == 8
+    for name in r8:
+        a, b = dict(r4[name]), dict(r8[name])
+        if name == "frontend":
+            i = b["args"].index("--num_serve_frontends")
+            assert (a["args"][i + 1], b["args"][i + 1]) == ("4", "8")
+            a["args"] = a["args"][:i + 1] + a["args"][i + 2:]
+            b["args"] = b["args"][:i + 1] + b["args"][i + 2:]
+            assert (a.pop("cpus_needed"), b.pop("cpus_needed")) == (44, 88)
+            a.pop("note"), b.pop("note")
+        assert a == b, name
+    for k in ("name", "note", "tier_table", "schedule", "prompts", "roles"):
+        s4.pop(k), s8.pop(k)
+    assert s4 == s8
+    t4, t8 = load(4, "tiers.template"), load(8, "tiers.template")
+    assert t4.pop("name") == "e9-n4f0-%s" % shape and t8.pop("name") == "e9-n8f0-%s" % shape
+    assert t4 == t8
