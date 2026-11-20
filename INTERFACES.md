@@ -1950,6 +1950,17 @@ R2 自审（slug `capkit-b2judge-J17871`）发现的问题已直接改进本子�
 6. **场景模板**：`configs/e4` 新增 `e4b-r-q1seg`（`H1:count`）与 `e4b-r-q1seg-h1`（`H1:busy:100000`），只比 `e4b-r` 多前端角色的三个环境变量（`PYTHONPATH=/usr/local/lib/python3.12/dist-packages/capstubs/q1_seg`、`CAPKIT_Q1SEG=all`、`CAPKIT_Q1SEG_INJECT`）；角色 env 不展开占位符，所以没有新参数，`params_required` 与 `e4b-r` 相同；探针档 P0。原有模板逐字节不变（生成器单测核对）。
 7. **验证**：`tests/capstubs/test_q1_seg.py`（24 项）：已知 CPU（按 thread_time 自旋 2 ms）与已知墙钟（sleep 3 ms，CPU ≈ 0）的阳性对照 ±5 %；包装开销微基准 ≤ 1 µs（本机约 0.7 µs）；协程 / 异步生成器拒绝；嵌套与其他线程；链式 sitecustomize；开关关闭不导入 capstubs；错开关退出 2；五种包装点缺失或类型错与「首个计时调用时未装全」退出 3；替身模块树上每段命中数逐个精确（每请求 S1j / S1v / S2 / S4 各 1、S3 / S5 各 2，另一线程的调用进 `n_other`，/health 与 lifespan 不计 H1）；H1 忙等阳性对照（applied = hits，applied_ns 在 δ×applied 的 1.0～1.2 倍，ΣS 不含忙等）；报告行插值；探针树里各产品位点的函数类型。`tests/launch/test_e2a_e3_e4_configs.py` 加两臂与 `e4b-r` 的逐字段对照。真前端里的装载与报告行【未运行】，属首个作业的冒烟核对。
 
+### 判定器：不读抓帧文件（`treedata.FRAME_CAPTURE_FILES`）（2026-11-20）
+
+依据：`05_engine/PLAN-R2R5.md` 勘误 E-E15A-13。
+
+1. **问题**：判定器按后缀把 `raw/` 下所有 `.bin` 当快照读：`inputs._scan_identities` 遍历整个 `raw/` 取身份，`treedata.TierData` 遍历档目录取快照。`capstubs.frame_capture` 写的 `frames.result.bin`、`frames.request.bin`（上节）也是 `.bin`，但不是快照（逐帧 `FRAME_HDR` + 原始帧，没有魔数，也没有身份）。所以带抓帧目录的启动树一律 INPUT_INVALID（`identity: … bad snapshot magic/version`）。
+2. **改法**：`capjudge.treedata.FRAME_CAPTURE_FILES` = {`frames.result.bin`, `frames.request.bin`}，按确切文件名匹配，不论在 `raw/` 下哪一层（`--frame-capture-dir` 可以是任意目录）。上述两处遍历都跳过这两个名字：不读、不记进 `files_read`。其他任何 `.bin` 照旧按快照读，读不了照旧 INPUT_INVALID，包括损坏的快照、换了名字的帧文件。同目录的 `frames.meta.json`、`frames.keys.json` 本来就没有 `identity` 键，身份扫描一直不计它们，这次不改。
+3. **记录**：跳过了文件时，`inputs.json` 的 `identity_scan` 多一个键 `frame_capture_files_skipped`（个数）。没有跳过时这个键不出现，所以没有抓帧文件的树，判定输出与改动前逐项相同。
+4. **不改**：快照的命名与位置（`raw/tiers/<seq>_<label>/snapshots/<role>.<pid>.<which>.bin`）、`capstubs.frame_capture` 的文件名与格式、其余检查。
+5. **验证**：`tests/judge/test_frame_capture_files.py`（6 项）：两个名字与 `frame_capture.DIRECTIONS` 一致；抓帧文件在 `raw/e15a/` 或档目录里时照常出判定，并记 `frame_capture_files_skipped = 2`；没有抓帧文件时 `identity_scan` 只有 `files_with_identity`；阳性对照：魔数被改坏的真快照，以及同样字节换名为 `frames.other.bin`，都仍然 INPUT_INVALID。
+6. **各线怎样用上新版**：各线的判读脚本用 `PYTHONPATH=<运行树>/tools` 调判定器（S-NX 线由 `SNXJ_RT` 选运行树，前端线 / GPU 线按 RUN_SHA.tsv 的行号选）。改动只在判定器里，任何启动树都可以用含本节改动的运行树（RUN_SHA.tsv 行 `CJFX`）来判，不需要重投作业。
+
 ## 审阅记录（r2，2026-11-13）
 
 审阅意见来自 spec-critic（JSON，24 条）。每条都对照设计稿 / 计划原文核对过；「采纳」= 按意见改，「部分采纳」= 问题属实、改法与意见不同（写理由），「不采纳」= 问题不成立。
